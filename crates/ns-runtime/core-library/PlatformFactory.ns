@@ -70,14 +70,12 @@ class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Val
   ///
   /// §8.3 describes the platform as an object that "provides accessors to
   /// various modules"; each is a lazy slot (§6.3.3), built on first use,
-  /// so a program pays only for what it asks for. This module's classes
-  /// -- `Platform`, `Transcript`, `KernelNamespace`, `Time` and
-  /// `Stopwatch` -- are handed out by class accessors, each exactly
-  /// `^outer PlatformFactory <Name>`, which lets an image name the class
-  /// by its declaration rather than carry it
-  /// (`docs/design/image-format.md`, "Shipped names"). Each is a lexical send, which reaches the root's
-  /// private classes (§5.9). The collections module's classes are its
-  /// facet's, handed out the same way.
+  /// so a program pays only for what it asks for. It hands out none of
+  /// this module's classes: a program holds the instances its members
+  /// answer, and since `class` is protected it reaches no class of
+  /// theirs, so it can make no second platform or transcript. `Time`
+  /// hands out `Stopwatch`, which a program instantiates itself, and the
+  /// collections facet the collections module's classes.
   private class Platform = Value new () (
     /// The program's standard output, a `Transcript`, written as UTF-8.
     /// Built on first use; every later send answers the same one.
@@ -97,31 +95,6 @@ class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Val
     /// The namespace of `Stopwatch`, a `Time`. Built on first use;
     /// every later send answers the same one.
     lazy public time = Time new.
-
-    /// Answers this module's class `Platform`.
-    public Platform = (
-      ^outer PlatformFactory Platform.
-    )
-
-    /// Answers this module's class `Transcript`.
-    public Transcript = (
-      ^outer PlatformFactory Transcript.
-    )
-
-    /// Answers this module's class `KernelNamespace`.
-    public KernelNamespace = (
-      ^outer PlatformFactory KernelNamespace.
-    )
-
-    /// Answers this module's class `Time`.
-    public Time = (
-      ^outer PlatformFactory Time.
-    )
-
-    /// Answers this module's class `Stopwatch`.
-    public Stopwatch = (
-      ^outer PlatformFactory Stopwatch.
-    )
   )
 
   /// The program's standard output: writes text, line breaks and the

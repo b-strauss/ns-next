@@ -888,7 +888,7 @@ activation.
   written; or record the writing process's clock reading in the image and
   offset the loading process's origin by it, which rebases every reading
   at once without a rule for `Stopwatch`. Pinned today only within one
-  process (`tests/image.rs`, `a_stopwatch_is_a_record_of_its_path_named_class`).
+  process (`tests/image.rs`, `a_stopwatch_is_a_record_of_its_shipped_class`).
   [core-library.md](design/core-library.md), "The platform".
 - **A valid method whose body is one long chain of messages aborts `ns-next
   run`.** A chain, `1 + 1 + …`, nests a send per message through its

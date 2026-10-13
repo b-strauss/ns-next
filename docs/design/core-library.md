@@ -605,11 +605,6 @@ class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Val
         lazy public collections = collectionsModule newCollections.
         lazy public kernel = KernelNamespace new.
         lazy public time = Time new.
-        public Platform = ( ^outer PlatformFactory Platform )
-        public Transcript = ( ^outer PlatformFactory Transcript )
-        public KernelNamespace = ( ^outer PlatformFactory KernelNamespace )
-        public Time = ( ^outer PlatformFactory Time )
-        public Stopwatch = ( ^outer PlatformFactory Stopwatch )
     )
     private class Transcript = Value new () ( show: and newLine, through vmMirror )
     private class KernelNamespace = Value new () ( Exception, ..., each through kernelModule )
@@ -630,7 +625,6 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
       private kernelCollection = theKernel Collection. |
 ) (
     private class Collections = Value new () (
-        public Collections = ( ^outer CollectionsFactory Collections )
         public Collection = ( ^kernelCollection )
         public ConcurrentModification = ( ^outer CollectionsFactory ConcurrentModification )
         public IdentityMap = ( ^outer CollectionsFactory IdentityMap )
@@ -662,12 +656,16 @@ member of the root, never through a slot of its own, so the facets keep
 `new` and hold no privileged state in slots of their own -- `Transcript`,
 `KernelNamespace`, `Time` and the collections module's `Collections`
 declare none, `Stopwatch`'s two slots hold only its own readings, and
-`Platform`'s four lazy slots hold only facets: `platform Transcript new`
-makes a transcript equal to `platform transcript`, and `platform Platform
-new` a platform that writes like the first
-(`goldens/library/platform/a_second_platform_writes_like_the_first`). The platform
-hands out instances of the facets by lazy slots and their classes by class
-accessors, methods whose whole body is `^outer PlatformFactory <Name>`.
+`Platform`'s four lazy slots hold only facets, so a second transcript or
+platform, which only a host can make, is equal to the first and writes like
+it (`tests/platform.rs`, `the_platform_and_its_parts_are_values`,
+`a_second_platform_writes_too`). The platform hands out instances of the
+facets by lazy slots and none of their classes: a program holds only the
+facets it is handed, and since `class` is protected it reaches no class of
+theirs ("`class` and the class accessors are protected" below). `Time`
+hands out `Stopwatch` by a class accessor, a method whose whole body is
+`^outer PlatformFactory Stopwatch`, since a program instantiates its
+stopwatches itself.
 Because the root is unreachable, no program can instantiate it over forged
 arguments, so the pattern needs no runtime refusal beside it: the guarantee
 is made by how the shipped classes are arranged, not by a check in the VM
@@ -678,15 +676,15 @@ handed out.
 **The factory's nested classes are private, and its one public member
 makes the facet.** A class accessor and a lazy slot's initializer reach a
 private class of the root by a lexical send, which may find a private
-member (§5.9), so a program still gets every class it is meant to have,
-through the facet; but a public send to the root instance finds nothing
+member (§5.9), so a program still gets every facet and class it is meant
+to have; but a public send to the root instance finds nothing
 but `newPlatform`, `^Platform new`, which the host sends at boot. That is
 a second line of defence behind the root instance being unreachable ("No
 program reaches a shipped module's root" below): even a holder of the
 root could make only another platform from it, never name a class that
 reaches the mirror (`tests/platform.rs`,
 `the_platform_factory_answers_only_new_platform`,
-`the_platforms_class_accessors_reach_the_private_classes`).
+`the_platform_hands_out_none_of_its_modules_classes`).
 `CollectionsFactory.ns` follows the same pattern: its root holds the kernel
 instance, every nested class -- `Collections`, `List`, `Map`, `IdentityMap`,
 `Set`, `NotFound` and `ConcurrentModification` -- is private, and its one
@@ -705,13 +703,13 @@ lazy slot `collectionsModule`, which asks the mirror's
 platform; `Platform`'s `collections` answers that instance's
 `newCollections`. So every platform's facet comes from one factory and
 hands out one class of each name, and the facets, values, are all equal
-(`goldens/library/collection/every_platform_shares_one_collections_module`;
-`tests/platform.rs`, `the_collections_module_is_built_once_at_boot`).
-The facet names its own class, `^outer CollectionsFactory Collections`, as
-`Platform>>Platform` does, and each of the module's classes by `^outer
-CollectionsFactory <Name>`: class accessors the compiler recognizes in
-every shipped module but the kernel, which is what lets an image name these
-private classes as values ("Shipped names in the image" below).
+(`tests/platform.rs`, `the_platform_and_its_parts_are_values`,
+`the_collections_module_is_built_once_at_boot`). The facet hands out each
+of the module's classes by `^outer CollectionsFactory <Name>`, a class
+accessor the compiler recognizes in every shipped module but the kernel,
+which is what lets an image name these private classes as values
+("Shipped names in the image" below), and not its own class, so a program
+makes no second facet.
 `Collection` it answers from the root's `kernelCollection`, the kernel's
 own class.
 
@@ -757,11 +755,10 @@ member of its root, so their `vmMirror` sends are mirror sends and the two
 methods are primitive methods — and their leaf (`platform.rs`) reads
 nothing off the receiver, only the string argument. The capability is the
 mirror, which only shipped source reaches; `Transcript` is no builtin, so
-the VM could not recognize its class anyway. A user subclass of
-`Transcript`, reached as `platform Transcript`, therefore inherits a
-working `show:` (`tests/platform.rs`,
-`a_subclass_of_the_transcript_class_writes_too`), and so does a subclass of
-the platform's class (`a_subclass_of_the_platform_class_writes_too`).
+the VM could not recognize its class anyway. So a second transcript, of a
+second platform a host makes, writes like the first (`tests/platform.rs`,
+`a_second_platform_writes_too`); no program reaches the class to make one
+or a subclass of it.
 
 **`show:` writes a string; `print:` writes any object** (decided with the
 user on 2026-09-27). The leaf refuses an argument that is no `String` as an
@@ -784,7 +781,7 @@ write, so each costs one activation more than it did as a kernel accessor
 (`interpreter/kernel.rs`,
 `the_platform_modules_members_have_the_fast_path_they_should`). A
 namespace member is asked for once, typically in a slot initializer. The
-platform's class accessors, and the collections facet's, carry no fast
+collections facet's class accessors, and `Time`'s, carry no fast
 path either: the compiler recognizes them
 (`MixinMethod::class_accessor`) for the image's rule of what may be named
 where alone ("Shipped names in the image" below), and
@@ -793,20 +790,19 @@ no send reads the mark
 
 Being values, the platform and its members have no identity: two
 transcripts are equal and so identical, two platforms too, and a
-transcript kept in an image is the loading platform's after the load. None
-has an accessor on `Object`, since a program reaches them through the
-platform it is given, and the platform declares no accessor for a
-predefined class either: `platform Array` reaches `Object`'s (§3.2), which
-it inherits like every object
-(`goldens/library/platform/the_platform_and_its_parts_are_values`).
+transcript kept in an image is the loading platform's after the load
+(`goldens/library/platform/the_platform_and_its_parts_are_values`, and
+`tests/platform.rs`'s test of that name for the second ones a host makes).
+None has an accessor on `Object`, since a program reaches them through the
+platform it is given.
 
 **`platform time` is Primordial Soup's `Time` facet, narrowed to its
 `Stopwatch`.** Both came in for `benchmarks/are-we-fast-yet/AreWeFastYet.ns`,
 which measures with them ("The on-demand rule" below). `Time` is a value
 like the other members, and its one method, `Stopwatch`, is a class
-accessor like the platform's own, which answers the same class; an image
-names that class by its shortest path, `Stopwatch`, never `time Stopwatch`
-(`tests/image.rs`, `a_class_the_platform_hands_out_is_named_by_its_accessor`).
+accessor, so an image names that class by its declaration,
+`PlatformFactory Stopwatch` (`tests/image.rs`,
+`a_class_the_platform_hands_out_is_named_by_its_declaration`).
 `Stopwatch` answers only what the harness sends, `start` and
 `elapsedNanoseconds`, with Primordial Soup's meaning
 (`prior-art/primordialsoup/newspeak/Time.ns`): an
@@ -818,8 +814,8 @@ accumulated time in mutable slots, which §3.1.1 forbids a value, so its
 class is `Object new`, as the collections module's `List` is, and it is
 the one class of `PlatformFactory.ns` that is not a value. So two
 stopwatches are two objects, and an image writes one as an ordinary record
-of the class the path `Stopwatch` names, readings included
-(`a_stopwatch_is_a_record_of_its_path_named_class`). Its slots hold no
+of `PlatformFactory Stopwatch`, readings included
+(`a_stopwatch_is_a_record_of_its_shipped_class`). Its slots hold no
 privileged state: the clock is reached through the root's `vmMirror`,
 lexically, by the private `currentMonotonicNanoseconds`, a mirror forwarder
 over the row `clockMonotonicNanoseconds:ifFail:` whose leaf
@@ -842,8 +838,8 @@ it, read correctly.
 **No program reaches a shipped module's root.** The platform's class is
 `PlatformFactory`'s nested `Platform`, whose factory is `new`; the factory
 that takes the mirror belongs to the root, and nothing a program can name
-answers the root's instance or its class -- the platform's class accessors
-answer nested classes only, and the root instance is only ever the
+answers the root's instance or its class -- the class accessors of its
+facets answer nested classes only, and the root instance is only ever the
 enclosing object of the classes a program is handed. So no program can
 build a second root instance over something that is not the mirror, and no
 runtime refusal is needed: the bootstrap instantiates `Kernel` and
@@ -2703,8 +2699,7 @@ boot built. The design as decided:
   The factory's parameters are copied into private slots, since neither a
   lazy slot nor a method may name them (§6), and the three nested classes
   reach the mirror and the kernel through those slots, so they keep `new`
-  and declare no slots: `platform Transcript new` still makes a transcript
-  equal to `platform transcript`. In plan 1 `Collections>>List` answers the kernel's
+  and declare no slots. In plan 1 `Collections>>List` answers the kernel's
   `OrderedCollection` through `Object`'s accessor.
 - **The transcript leaf takes no receiver.** It checked
   `BuiltinClass::Transcript` so that a user subclass of a builtin declines;
@@ -2721,8 +2716,9 @@ boot built. The design as decided:
   which `Platform`'s
   `usingVmMirror:kernel:` factory no longer answered; that line was
   replaced, and the other checks kept their recorded output. The factory
-  pattern gave the platform's class `new` back, and the golden its
-  original checks.
+  pattern gave the platform's class `new` back; since the platform hands
+  out none of its module's classes, those checks are the host's
+  (`tests/platform.rs`, `the_platform_and_its_parts_are_values`).
 - **The host takes every entry from the table itself**; `PlatformFactory.ns`
   reaches `CollectionsFactory`'s instance through `moduleInstanceNamed:`.
 
@@ -2736,8 +2732,7 @@ metaclasses and the levels their `<:` clauses add -- by its module, its
 declaration and its kind, resolved by table lookup against the shipped world
 the boot built, before the graph is decoded and without a send. The
 platform, its facets, a `List`, a `Stopwatch` are ordinary records of their
-shipped classes; a second platform made with `platform Platform new` is
-one like the first. It replaced plan 1's platform paths, which named a shipped
+shipped classes; a second platform a host makes is one like the first. It replaced plan 1's platform paths, which named a shipped
 object by the public members sent from the platform to reach it: the loader
 had to send them before it decoded the graph, and a path reached only what
 the platform hands out, so a plain kernel class, a private one or the level
@@ -2831,13 +2826,11 @@ a handle on, not a class the image needs a name for.
   class of each; the platform's lazy
   `collections` slot answers that instance's `newCollections`, its one
   public member, and plan 1's `Collections` class has left
-  `PlatformFactory.ns`. **How the facet's class is named, settled with the
-  user on 2026-09-28:** the facet names its own class with `public
-  Collections = ( ^outer CollectionsFactory Collections )`, as
-  `Platform>>Platform` does, which is what lets an image name it
-  (`CollectionsFactory Collections`, "Shipped names in the image" above);
-  the class-accessor recognition (`MixinMethod::class_accessor`) is not
-  widened, and `Platform>>Collections` is gone. `List` is a private class of
+  `PlatformFactory.ns`. The facet hands out none of its own class, as the
+  platform none of its module's: an image names the facet by its
+  declaration, `CollectionsFactory Collections`, as a record's class ("Shipped
+  names in the image" above), and no program makes a second one (decided
+  with the user on 2026-10-13). `List` is a private class of
   the factory, handed out by the facet's class accessor `public List = (
   ^outer CollectionsFactory List )`; a program may still subclass it
   (`goldens/library/collection/a_user_subclass_of_list_inherits_its_protocol`).

@@ -473,48 +473,6 @@ fn share_a_class(interpreter: &mut Interpreter, left: &Root, right: &Root) -> bo
     })
 }
 
-/// `goldens/library/collection/every_platform_shares_one_collections_module.ns`:
-/// the collections facet is an instance of the class its `Collections`
-/// answers.
-#[test]
-fn every_platform_shares_one_collections_module_whose_facet_is_a_collections() {
-    let mut interpreter = Interpreter::bootstrap();
-    let platform = interpreter.platform();
-    let collections = answer(&mut interpreter, &platform, "collections");
-    let collections_class = answer(&mut interpreter, &collections, "Collections");
-    assert!(
-        is_an_instance_of(&mut interpreter, &collections, &collections_class),
-        "`platform collections Collections == platform collections class`"
-    );
-}
-
-/// `goldens/library/platform/a_second_platform_writes_like_the_first.ns`:
-/// the platform's `Transcript` and `Platform` answer the classes of its
-/// transcript and of itself, and a second platform's `Platform` the class
-/// of the first.
-#[test]
-fn a_second_platform_hands_out_the_classes_of_the_first() {
-    let mut interpreter = Interpreter::bootstrap();
-    let platform = interpreter.platform();
-    let transcript = answer(&mut interpreter, &platform, "transcript");
-    let transcript_class = answer(&mut interpreter, &platform, "Transcript");
-    assert!(
-        is_an_instance_of(&mut interpreter, &transcript, &transcript_class),
-        "`platform Transcript == platform transcript class`"
-    );
-    let platform_class = answer(&mut interpreter, &platform, "Platform");
-    assert!(
-        is_an_instance_of(&mut interpreter, &platform, &platform_class),
-        "`platform Platform == platform class`"
-    );
-    let second = answer(&mut interpreter, &platform_class, "new");
-    let second_platform_class = answer(&mut interpreter, &second, "Platform");
-    assert!(
-        is_an_instance_of(&mut interpreter, &platform, &second_platform_class),
-        "`second Platform == platform class`"
-    );
-}
-
 /// `goldens/library/platform/the_platform_and_its_parts_are_values.ns`:
 /// the transcript and the collections facet are each an instance of a
 /// class of its own, not of the platform's.

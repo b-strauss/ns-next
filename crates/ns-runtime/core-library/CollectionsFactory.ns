@@ -48,16 +48,9 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
 ) (
   /// The namespace `platform collections` answers: it hands out the
   /// module's classes, one accessor each, and the kernel's `Collection`;
-  /// nothing else.
-  ///
-  /// It names its own class as `Platform` does, so that the class has a
-  /// path too.
+  /// nothing else. Its own class is not among them, so a program makes
+  /// no second namespace.
   private class Collections = Value new () (
-    /// Answers the `Collections` class.
-    public Collections = (
-      ^outer CollectionsFactory Collections.
-    )
-
     /// Answers the `List` class: `List new`, `List new: capacity` or
     /// `List withAll: collection`.
     ///

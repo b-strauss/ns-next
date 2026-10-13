@@ -501,11 +501,22 @@ mod tests {
                 name("CollectionsFactory", "List", ShippedKind::Class),
             );
             assert!(list.value && list.superclass && list.header);
-            let platform = positions_of(
-                world,
-                name("PlatformFactory", "Platform", ShippedKind::Class),
-            );
-            assert!(platform.value && platform.header);
+            // The platform hands out none of its module's classes and the
+            // collections facet not its own: a program holds their
+            // instances, records of them, but never the classes.
+            for (module, declaration) in [
+                ("PlatformFactory", "Platform"),
+                ("PlatformFactory", "Transcript"),
+                ("PlatformFactory", "KernelNamespace"),
+                ("PlatformFactory", "Time"),
+                ("CollectionsFactory", "Collections"),
+            ] {
+                let positions = positions_of(world, name(module, declaration, ShippedKind::Class));
+                assert!(
+                    !positions.value && !positions.superclass && positions.header,
+                    "{module} {declaration} is a record's class only"
+                );
+            }
             for root in ["Kernel", "PlatformFactory", "CollectionsFactory"] {
                 let positions = positions_of(world, name(root, root, ShippedKind::Class));
                 assert!(!positions.value && !positions.header && positions.frame_class);
@@ -532,7 +543,6 @@ mod tests {
         interpreter.enter(|mutator| {
             let world = &mutator.shipped_world;
             for (module, declaration) in [
-                ("PlatformFactory", "Transcript"),
                 ("PlatformFactory", "Stopwatch"),
                 ("CollectionsFactory", "Map"),
             ] {

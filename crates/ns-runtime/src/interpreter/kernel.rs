@@ -1445,33 +1445,44 @@ mod tests {
     /// form `^outer Kernel <Name>`, which no module but the kernel can write.
     /// Every other shipped module's pure class accessors, such as
     /// `Collections>>List`, are recognized too, as `MixinMethod::class_accessor`,
-    /// but only the image code reads that recognition, to step a platform
-    /// path through the accessor; a send runs the method like any other.
+    /// but only the image's rule of what may be named where reads that
+    /// recognition; a send runs the method like any other.
     /// `KernelNamespace`'s members send to the kernel instance the platform was
     /// handed, so they are neither. Each costs one activation more than a
     /// kernel accessor; a namespace member is asked for once, typically in a
     /// slot initializer, not in a loop. `Transcript`'s two and `Stopwatch`'s
     /// clock reading are mirror forwarders like the kernel's:
     /// `PlatformFactory.ns` is resolved with `resolve_kernel`. `Time`'s
-    /// `Stopwatch` is a class accessor, like the platform's.
+    /// `Stopwatch` is a class accessor. The classes are read on the host
+    /// side, off the members the platform answers, since the platform hands
+    /// out none of its module's classes.
     #[test]
     fn the_platform_modules_members_have_the_fast_path_they_should() {
         let mut interpreter = Interpreter::bootstrap();
         let platform = interpreter.platform();
-        let mut class_named =
-            |name: &str| match interpreter.send(&platform, crate::Symbol::intern(name), &[]) {
-                Ok(class) => class,
-                Err(_) => panic!("platform {name} failed"),
-            };
-        let kernel_namespace = class_named("KernelNamespace");
-        let transcript = class_named("Transcript");
-        let time = class_named("Time");
-        let stopwatch = class_named("Stopwatch");
-        let collections = class_named("collections");
-        let collections = interpreter.enter(|mutator| {
-            let class = mutator.class_of(mutator.fetch(&collections));
-            mutator.stash(crate::Value::object(class))
-        });
+        let mut member = |receiver: &crate::Root, name: &str| match interpreter.send(
+            receiver,
+            crate::Symbol::intern(name),
+            &[],
+        ) {
+            Ok(answer) => answer,
+            Err(_) => panic!("{name} failed"),
+        };
+        let kernel = member(&platform, "kernel");
+        let transcript = member(&platform, "transcript");
+        let time = member(&platform, "time");
+        let stopwatch = member(&time, "Stopwatch");
+        let collections = member(&platform, "collections");
+        let class_of = |interpreter: &mut Interpreter, subject: &crate::Root| {
+            interpreter.enter(|mutator| {
+                let class = mutator.class_of(mutator.fetch(subject));
+                mutator.stash(crate::Value::object(class))
+            })
+        };
+        let kernel_namespace = class_of(&mut interpreter, &kernel);
+        let transcript = class_of(&mut interpreter, &transcript);
+        let time = class_of(&mut interpreter, &time);
+        let collections = class_of(&mut interpreter, &collections);
         interpreter.enter(|mutator| {
             let fast_path = |class: &crate::Root, selector: &str| {
                 let Some(class) = mutator.fetch(class).as_object() else {
@@ -1559,12 +1570,14 @@ mod tests {
         });
     }
 
-    /// The platform hands out its module's classes by methods the compiler
-    /// recognizes as class accessors (`MixinMethod::class_accessor`), and the
-    /// collections facet its module's the same way; only the image code
-    /// reads them: none carries a fast path, so no send pays for the
-    /// recognition. `Object`'s accessors are `Kernel.ns`'s, whose classes an
-    /// image names by their builtin tags, so none of them is one.
+    /// The collections facet hands out its module's classes by methods the
+    /// compiler recognizes as class accessors (`MixinMethod::class_accessor`),
+    /// which only the image's rule of what may be named where reads: none
+    /// carries a fast path, so no send pays for the recognition. The platform
+    /// hands out none of its module's classes, and the facet not its own, so
+    /// a program can make no second platform, transcript or facet. `Object`'s
+    /// accessors are `Kernel.ns`'s, recognized as `MethodFastPath::BuiltinClass`
+    /// instead, so none of them is one.
     #[test]
     fn the_platforms_class_accessors_are_recognized_without_a_fast_path() {
         let mut interpreter = Interpreter::bootstrap();
@@ -1580,21 +1593,26 @@ mod tests {
                 .heap()
                 .class_application(collections_class)
                 .expect("Collections has an application");
-            for name in ["Collections", "List"] {
-                let method = facet_application
+            let method = facet_application
+                .mixin
+                .compiled_method(crate::Symbol::intern("List"))
+                .expect("Collections declares List");
+            assert_eq!(
+                method.class_accessor,
+                Some(crate::mixin::ClassAccessor {
+                    depth: 1,
+                    class_name: crate::Symbol::intern("List"),
+                }),
+                "Collections>>List"
+            );
+            assert_eq!(method.fast_path, None, "Collections>>List");
+            assert!(
+                facet_application
                     .mixin
-                    .compiled_method(crate::Symbol::intern(name))
-                    .unwrap_or_else(|| panic!("Collections declares no {name}"));
-                assert_eq!(
-                    method.class_accessor,
-                    Some(crate::mixin::ClassAccessor {
-                        depth: 1,
-                        class_name: crate::Symbol::intern(name),
-                    }),
-                    "Collections>>{name}"
-                );
-                assert_eq!(method.fast_path, None, "Collections>>{name}");
-            }
+                    .compiled_method(crate::Symbol::intern("Collections"))
+                    .is_none(),
+                "the facet hands out its own class"
+            );
             let Some(platform) = mutator.platform_value().as_object() else {
                 panic!("the platform is an object");
             };
@@ -1610,19 +1628,13 @@ mod tests {
                 "Time",
                 "Stopwatch",
             ] {
-                let method = application
-                    .mixin
-                    .compiled_method(crate::Symbol::intern(name))
-                    .unwrap_or_else(|| panic!("Platform declares no {name}"));
-                assert_eq!(
-                    method.class_accessor,
-                    Some(crate::mixin::ClassAccessor {
-                        depth: 1,
-                        class_name: crate::Symbol::intern(name),
-                    }),
-                    "Platform>>{name}"
+                assert!(
+                    application
+                        .mixin
+                        .compiled_method(crate::Symbol::intern(name))
+                        .is_none(),
+                    "Platform hands out its module's class {name}"
                 );
-                assert_eq!(method.fast_path, None, "Platform>>{name}");
             }
             let object = mutator.builtin_class(BuiltinClass::Object);
             let object_application = mutator

@@ -3236,11 +3236,10 @@ interpreter's caches are not empty (four sites, three global entries, pinned
 by a test).
 
 New goldens pin the lazy-slot rules (`goldens/language/slot/accessor/spec_6_3_3_*`,
-`goldens/library/value/a_values_lazy_slot_*`) and
-`goldens/library/platform/a_second_platform_writes_like_the_first`;
-`goldens/library/platform/the_platform_and_its_parts_are_values` checks
-that a second platform made from the first's class, `platform Platform
-new`, equals it, and
+`goldens/library/value/a_values_lazy_slot_*`) and the platform as a value
+(`goldens/library/platform/the_platform_and_its_parts_are_values`; a second
+platform, which only a host makes, equal to the first in `tests/platform.rs`'s
+test of that name), and
 `spec_6_3_3_a_lazy_slot_is_initialized_on_first_use` runs, unskipped.
 
 **Measured** ([execution.md](design/execution.md), "What the platform module
@@ -3376,10 +3375,9 @@ Plan: [ns-next-collections-module](superpowers/plans/2026-09-28-0102-ns-next-col
 In the factory pattern, decided with the user: a shipped
 `CollectionsFactory.ns`, whose root holds the kernel and is never handed
 out, and whose private nested `Collections` is the facet `platform
-collections` answers. The facet names its own class (`public Collections = (
-^outer CollectionsFactory Collections )`) as `Platform` does, so its image
-path is `collections Collections` without widening the compiler's
-class-accessor recognition. `List` is a private class of the factory,
+collections` answers. The facet hands out the module's classes but not
+its own, as the platform hands out none of its module's. `List` is a
+private class of the factory,
 Newspeak over arrays it replaces when full, handed out by the facet's class
 accessor. The mirror's `moduleNamed:` leaf builds a shipped module's root
 class on every request and keeps nothing in Rust; `PlatformFactory`'s lazy
@@ -4960,7 +4958,7 @@ record of that class. A project module may now be named like one of
 **Goldens.** About 44 goldens and 33 Rust tests sent `class` to another
 object; each now checks what it checked through the public protocol
 (`isKindOf…`, the class a handler catches, a class-side `metaclass`
-answering `self class`, the platform's own class accessors), every
+answering `self class`, a second platform the host makes), every
 recorded line kept byte for byte or translated by one rule -- a class
 name printed for a kind became `true`, and
 `a_non_boolean_receiver_is_caught_as_an_error` prints the error's

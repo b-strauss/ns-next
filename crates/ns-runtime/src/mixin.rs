@@ -141,7 +141,7 @@ pub struct MixinMethod {
     /// shipped core-library source other than the kernel: a unary method
     /// whose whole body is `^outer <Root> <Nested>`. Read by the shipped
     /// world alone (`interpreter::shipped_world`), which lets the class it
-    /// answers -- `platform Transcript` -- stand as a value in an image; no
+    /// answers -- `platform collections List` -- stand as a value in an image; no
     /// send ever reads it, so it costs the run loop nothing, unlike a
     /// `MethodFastPath` variant (`docs/design/execution.md`, "What the
     /// platform module cost"). `None` for every other method, and for every
