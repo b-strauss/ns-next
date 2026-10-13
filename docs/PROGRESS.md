@@ -35,6 +35,7 @@ first.
 | `///` line comments | Complete | 2026-10-11 | [line-comments](superpowers/plans/2026-10-11-1750-ns-next-line-comments.md) |
 | The lossless AST and the formatter: `ns-next-analyzer fmt`, Reformat Code, the repository formatted | Complete | 2026-10-12 | [ns-next-formatter](superpowers/plans/2026-10-12-0112-ns-next-formatter.md) |
 | Editing in the JetBrains plugin: Reformat Code reaching the server, one-line methods, the formatter's indentation and width, Enter, a message bundle | Complete | 2026-10-12 | — |
+| `class` and `Object`'s class accessors protected | Complete | 2026-10-13 | [protected-class](superpowers/plans/2026-10-13-1158-protected-class.md) |
 | Road step 5 — mirrors and atomic installation, on `become:` as an eager bulk forward | Not started | — | — |
 | Road step 6 — inline allocation in the interpreter | Not started | — | — |
 | Road step 7 — an execution model for compiled code | Not started | — | — |
@@ -2957,7 +2958,7 @@ its hash is derived from its mixin's name alone; and in the image a class
 record's metaclass is a record of its own, a prebuilt class's is named by
 tag, and the amplification bound does not move. Two more were settled while
 building it: `Behavior>>==` and `Metaclass>>==` are the same forwarder as
-`=`, to the same leaf, so `self class == other class` costs no activation;
+`=`, to the same leaf, so comparing two class objects costs no activation;
 and the hash of a value class object is taken from its mixin's name, which
 survives a copy and a round trip where a dispatch id does not.
 
@@ -2970,7 +2971,8 @@ of `Object`'s `an Object`, since a metaclass's superclass is now `Class`.
 the class objects `Plain`, `Maker` and `Plain` again declare no class-side
 `printString` and now answer `Class`'s, their names, instead of `Object`'s
 default. New: `language/class/class-side/the_class_of_a_class_is_its_metaclass`,
-`language/class/class-side/a_class_object_cannot_be_made_by_instantiation`,
+`a_class_object_cannot_be_made_by_instantiation` (a golden then, a test of
+`crates/ns-runtime/tests/representation.rs` since `class` is protected),
 `language/class/class-side/a_metaclass_does_not_understand_new`,
 `language/class/class-side/a_class_and_its_metaclass_print_their_names`,
 `language/class/class-side/a_class_side_does_not_understand_handles_its_class_objects_sends`,
@@ -4927,3 +4929,63 @@ What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the cost
 of building the shipped world at boot and the two ways back; a second class
 record applying a module's root row; `accessed_classes`' match by class
 name across a whole module; the trust a running world's image needs.
+
+## `class` and the class accessors protected (2026-10-13)
+
+Plan: [protected-class](superpowers/plans/2026-10-13-1158-protected-class.md);
+[core-library.md](design/core-library.md), "`class` and the class
+accessors are protected", "The predefined classes are accessors on
+`Object`", "Decisions"; [image-format.md](design/image-format.md),
+"Verification", "Shipped names".
+
+Built before the kernel's fifth sub-project. `Object>>class` and `Object`'s
+sixteen class accessors are `protected`, so that holding an instance does
+not hand out its class, its factory and its class side: `self class`,
+`super class` and a bare `Integer` still reach them, `other class` and
+`other Integer` fall to `doesNotUnderstand:`. The core library's three
+sends of `class` to another object are rewritten: `Value>>valueEquals:`
+reads the other object's class through the mirror, and the two index
+checks of `CollectionsFactory.ns` ask `isKindOfInteger`. `Proxy` no longer
+overrides the members `Object` now protects. No program reaches the
+private `NonBooleanReceiver` as a value any more, so the shipped world's
+value clause for a class the VM signals goes, with
+`ErrorClass::is_signalled` and `ErrorClass::ALL`; a caught instance stays a
+record of that class. A project module may now be named like one of
+`Object`'s accessors, `Array` say, and is reached through the manifest.
+
+**Goldens.** About 44 goldens and 38 Rust tests sent `class` to another
+object; each now checks what it checked through the public protocol
+(`isKindOf…`, the class a handler catches, a class-side `metaclass`
+answering `self class`, the platform's own class accessors), every
+recorded line kept byte for byte or translated by one rule -- a class
+name printed for a kind became `true`, and
+`a_non_boolean_receiver_is_caught_as_an_error` prints the error's
+description in place of the private class's name. What only the
+representation shows -- the boundary between `Integer` and `LargeInteger`,
+chains of metaclasses, the identity of class objects -- left the goldens
+for `crates/ns-runtime/tests/representation.rs`, which reads classes on
+the host side, and so did two goldens whole:
+`language/class/class-side/a_class_object_cannot_be_made_by_instantiation`
+and `library/builtin-subclass/a_subclass_of_large_integer_is_no_number`,
+now tests of the same names there. New:
+`language/send/an_outside_class_send_is_not_understood`,
+`language/send/an_outside_class_accessor_send_is_not_understood`,
+`language/send/a_bare_class_name_still_answers_its_class_everywhere`,
+`language/class/class-side/self_class_on_the_class_side_is_the_metaclass`
+and `library/object/a_proxy_forwards_an_outside_class_send_to_its_target`.
+The golden image fixture was regenerated with each change to the shipped
+modules; only its fingerprint bytes changed.
+
+- `aba0d9e9`, `6511b4a9` -- the design and the plan.
+- `3ab5fc7c` -- the core library sends `class` to no other object.
+- `9ec2f8a0`, `09d3581a` -- the language and number goldens, and
+  `representation.rs`.
+- `21225052`, `8c405858` -- the library goldens.
+- `2b87cdeb`, `588d7985` -- the Rust tests read classes on the host side.
+- `33af3ef5` -- `class` and the class accessors protected, the value
+  clause for `NonBooleanReceiver` gone, and the new goldens.
+- `6f736b08` -- `Proxy`'s overrides of the protected members dropped.
+- This commit -- the documents.
+
+What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the
+reflective checks return as goldens with road step 5's mirrors.

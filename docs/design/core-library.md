@@ -60,9 +60,9 @@ them.
 
 ```
 Top                     (private; no superclass, declares nothing)
-└── Object              class, ==, =, hash, identityHash, printString, yourself,
-    │                   doesNotUnderstand:, halt, subclassResponsibility, and an
-    │                   accessor per nameable builtin (String, ...)
+└── Object              class (protected), ==, =, hash, identityHash, printString,
+    │                   yourself, doesNotUnderstand:, halt, subclassResponsibility,
+    │                   and a protected accessor per nameable builtin (String, ...)
     ├── Value           =, ==, hash, and the two slot-reading leaves
     │   ├── Boolean     ├── True
     │   │               └── False
@@ -662,9 +662,9 @@ member of the root, never through a slot of its own, so the facets keep
 `new` and hold no privileged state in slots of their own -- `Transcript`,
 `KernelNamespace`, `Time` and the collections module's `Collections`
 declare none, `Stopwatch`'s two slots hold only its own readings, and
-`Platform`'s four lazy slots hold only facets: `t class new` makes a
-transcript equal to `t`, and `platform class new` a platform that writes
-like the first
+`Platform`'s four lazy slots hold only facets: `platform Transcript new`
+makes a transcript equal to `platform transcript`, and `platform Platform
+new` a platform that writes like the first
 (`goldens/library/platform/a_second_platform_writes_like_the_first`). The platform
 hands out instances of the facets by lazy slots and their classes by class
 accessors, methods whose whole body is `^outer PlatformFactory <Name>`.
@@ -972,10 +972,13 @@ through it, answers an immediate again once a result fits.
 
 **The class.** `LargeInteger` is a kernel class, a subclass of `Integer`,
 which stays the class of the immediate integers: §5.1.1 asks only that an
-integer "obeys the protocol of class `Integer`", so `3 class` keeps
-answering `Integer`. `Object` declares no accessor for it -- a program meets
-it only as an integer's class (`interpreter/kernel.rs`'s
-`objects_class_accessors_are_exactly_the_nameable_builtins`) -- and an image
+integer "obeys the protocol of class `Integer`", so an immediate's `self
+class` keeps answering `Integer`. `Object` declares no accessor for it
+(`interpreter/kernel.rs`'s
+`objects_class_accessors_are_exactly_the_nameable_builtins`), and `class` is
+protected, so no program reaches it: a `LargeInteger` answers
+`isKindOfInteger` and the whole protocol of `Integer`, and only the host
+tells it from one (`crates/ns-runtime/tests/representation.rs`). An image
 names it by its shipped name, `Kernel LargeInteger`. It is a value object (§3.1.1): `==` is
 `Value`'s, `^self = other`, and `=` and `hash` come from its sign and
 magnitude, never from an identity hash, so a value whose slot holds one
@@ -988,8 +991,9 @@ numeric hash of its value, so a `LargeInteger` equals the `Float` of its
 exact value and hashes like it ("The numeric tower" below). An instance of a
 subclass of it, or `LargeInteger new`, holds no digits; every leaf
 declines it on the missing payload, never on the class, and the send falls
-to `Object`'s methods
-(`goldens/library/builtin-subclass/a_subclass_of_large_integer_is_no_number.ns`).
+to `Object`'s methods (`crates/ns-runtime/tests/representation.rs`,
+`a_subclass_of_large_integer_is_no_number`, whose module the host hands
+`LargeInteger` as a factory argument, since no program can name it).
 
 **The leaves.** `LargeInteger` forwards `+ - * // \\ < > <= >= =`, `bitAnd:`,
 `bitOr:`, `bitXor:`, `<<`, `hash`, `negated`, `abs`, `asFloat`, `printString`
@@ -1235,8 +1239,8 @@ an ordinary `Float`; a class of its own was considered and set aside:
   its inline cache would turn polymorphic for all float arithmetic, not
   only for NaN;
 - the class of `0.0 / 0.0` would differ from that of `1.0 / 2.0`, and
-  `x class == Float` would be false for a value that is an IEEE double and
-  computes like one;
+  `self class == Float` would be false in a method of a value that is an
+  IEEE double and computes like one;
 - it would save only the test inside `isNaN`; equality is already settled
   by `=` above.
 
@@ -2111,7 +2115,7 @@ an error is the VM's business.
   `description` is the class's name and that slot's `printString`
   (`ArgumentError: 3`). The slot is `argument`, not `value`, so that an
   `ArgumentError` does not pass for a block, and `behavior`, not `class`,
-  which would override `Object>>class`. `NonBooleanReceiver` is private to
+  whose public getter would override the protected `Object>>class`. `NonBooleanReceiver` is private to
   the kernel: a program catches it as an `Error`, and `platform kernel`
   answers the other three. `CannotInstantiate` is ns-next's own, not
   Primordial Soup's, which marks a class nobody may instantiate by naming
@@ -2699,8 +2703,8 @@ boot built. The design as decided:
   The factory's parameters are copied into private slots, since neither a
   lazy slot nor a method may name them (§6), and the three nested classes
   reach the mirror and the kernel through those slots, so they keep `new`
-  and declare no slots: `t class new` still makes a transcript equal to
-  `t`. In plan 1 `Collections>>List` answers the kernel's
+  and declare no slots: `platform Transcript new` still makes a transcript
+  equal to `platform transcript`. In plan 1 `Collections>>List` answers the kernel's
   `OrderedCollection` through `Object`'s accessor.
 - **The transcript leaf takes no receiver.** It checked
   `BuiltinClass::Transcript` so that a user subclass of a builtin declines;
@@ -2713,7 +2717,8 @@ boot built. The design as decided:
 - **Retired:** `BuiltinClass::Platform`, `Transcript`, `Collections` and
   `KernelNamespace`.
 - **One golden changed:** `goldens/library/platform/the_platform_and_its_parts_are_values`
-  asked `platform = platform class new`, which `Platform`'s
+  asked whether a second platform made from the first's class equals it,
+  which `Platform`'s
   `usingVmMirror:kernel:` factory no longer answered; that line was
   replaced, and the other checks kept their recorded output. The factory
   pattern gave the platform's class `new` back, and the golden its
@@ -2731,8 +2736,8 @@ metaclasses and the levels their `<:` clauses add -- by its module, its
 declaration and its kind, resolved by table lookup against the shipped world
 the boot built, before the graph is decoded and without a send. The
 platform, its facets, a `List`, a `Stopwatch` are ordinary records of their
-shipped classes; a second platform made with `platform class new` is one
-like the first. It replaced plan 1's platform paths, which named a shipped
+shipped classes; a second platform made with `platform Platform new` is
+one like the first. It replaced plan 1's platform paths, which named a shipped
 object by the public members sent from the platform to reach it: the loader
 had to send them before it decoded the graph, and a path reached only what
 the platform hands out, so a plain kernel class, a private one or the level
@@ -2751,9 +2756,9 @@ image can carry:
 - **A class is a value only if it is public or a public class accessor of
   its module answers it**, a method the compiler recognizes in shipped
   source other than the kernel as exactly `^outer <Root> <Name>`
-  (`MixinMethod::class_accessor`), or if the VM signals its instances into a
-  program as a VM error (`ErrorClass::is_signalled`; the private
-  `NonBooleanReceiver`), since a program that catches one holds its class.
+  (`MixinMethod::class_accessor`). A class whose instances the VM signals
+  into a program, the private `NonBooleanReceiver`, is no exception: a
+  program that catches one holds the instance, and `class` is protected.
   Only such a class, and its metaclass, may
   stand in a slot, an element or a register, or be a program's superclass
   or the mixin a program's `<:` clause applies. A private class without
@@ -3206,9 +3211,11 @@ names `MessageNotUnderstood`, `Halt`, `Message`, `ArgumentError`,
 through `platform kernel`, which answers `Exception` and `Error` too, and `Activation`, `NonBooleanReceiver` and
 `FutureImplementation` not at all ("Exceptions" above, "The pull future"
 below).
-Each is an ordinary public method of `Kernel.ns`'s `Object`,
-`public String = ( ^outer Kernel String )`, whose body sends the kernel
-instance its nested-class accessor. The `outer Kernel` is required, not
+Each is an ordinary protected method of `Kernel.ns`'s `Object`,
+`protected String = ( ^outer Kernel String )`, whose body sends the kernel
+instance its nested-class accessor; protected, so that a bare name, an
+implicit-receiver send, reaches it and `other String` does not ("`class`
+and the class accessors are protected" below). The `outer Kernel` is required, not
 style: inside `Object`, §5.7's innermost declaration of `String` is `Object`
 itself, so a bare `^String` would send the accessor to itself forever. This
 is wider than both references: SOMns declares only `Object`, `Value` and
@@ -3299,72 +3306,107 @@ names `Array` and `OrderedCollection` every iteration, is 1.5% slower, about
 1.4 ns per accessor send against the constant load it replaces. `vm::run`
 grew from 6,507 to 6,626 instructions and is still one function.
 
-### Planned: `class` and the class accessors protected
+### `class` and the class accessors are protected
 
-Decided with the user on 2026-10-13, to be built before sub-project 5.
+Decided with the user on 2026-10-13 and built the same day, before
+sub-project 5
+([plan](../superpowers/plans/2026-10-13-1158-protected-class.md)).
 `Object>>class` and every class accessor `Object` declares ("The predefined
-classes are accessors on `Object`" above) become `protected`, so that an
+classes are accessors on `Object`" above) are `protected`, so that an
 instance's authority is separated from its class's.
 
-**Why.** Both are public today, so whoever holds an object holds its class:
+**Why.** Were they public, whoever holds an object would hold its class:
 every public message of its class side, the factory included, mints new
 instances that run in the same enclosing object with its capabilities (a
 module that hands out one `File path:` would hand out every file); `class
-Sub = (x class) ()` subclasses it and reaches its protected members in that
-environment; and public class-side state is shared with every holder. The
-specification says nothing on `class`, but §8.2 makes reflection a
-capability held through mirrors, and the object-capability argument of
-`newspeak.pdf` and `newspeak-modules.pdf` applies. Both Newspeak kernels
-make it protected: `prior-art/newspeak/squeak/KernelForSqueak.ns`, line
-1193, and Primordial Soup's `KernelForPrimordialSoup.ns`, "to separate the
-authority of an instance from the authority of its class", its class
-accessors on `Object` too. SOMns's root classes declare no `class`.
+Sub = (anObject class) ()` would subclass it and reach its protected
+members in that environment; and public class-side state would be shared
+with every holder. The specification says nothing on `class`, but §8.2
+makes reflection a capability held through mirrors, and the
+object-capability argument of `newspeak.pdf` and `newspeak-modules.pdf`
+applies. Both Newspeak kernels make it protected:
+`prior-art/newspeak/squeak/KernelForSqueak.ns`, line 1193, and Primordial
+Soup's `KernelForPrimordialSoup.ns`, "to separate the authority of an
+instance from the authority of its class", its class accessors on `Object`
+too. SOMns's root classes declare no `class`.
 
-**What changes for a program.** `self class`, `super class` and a bare name
-such as `Integer` stay what they are: a self send, a super send and an
+**What a program sees.** `self class`, `super class` and a bare name such
+as `Integer` are what they were: a self send, a super send and an
 implicit-receiver send, all of which reach a protected member, from a
-subclass, a block and the class side alike (on the class side `self class`
-answers the metaclass). `other class` and `other Integer` reach
-`doesNotUnderstand:`. No program can then reach `Behavior`, `Class` or
-`Metaclass`, a shipped class's metaclass, or the identity of another
-object's class, and none can tell an `Integer` from a `LargeInteger`: those
-were observable only through `class`.
+subclass, a block, a nested class and the class side alike (on the class
+side `self class` answers the metaclass). `other class` and `other
+Integer` reach `doesNotUnderstand:`. No program reaches `Behavior`,
+`Class` or `Metaclass`, a shipped class's metaclass, or the identity of
+another object's class, and none can tell an `Integer` from a
+`LargeInteger`: those were observable only through `class`. A program asks
+another object's kind through the public protocol: `isKindOfInteger` and
+its siblings, `printString`, the class a handler catches, and a class-side
+method of its own answering `self class` for one level of metaclass.
+`interpreter/kernel.rs`'s
+`objects_class_accessors_are_exactly_the_nameable_builtins` holds every
+accessor protected.
 
-**The core library** sends `class` to another object in three places, each
+**The core library** sent `class` to another object in three places, each
 rewritten without widening anything: `Value`'s `valueEquals:` compares
 `self class` with `vmMirror objectClass: other ifFail: […]`, since the
 kernel holds the mirror, and `CollectionsFactory.ns`'s two index checks ask
 `index isKindOfInteger` instead of `index class == Integer`, Primordial
 Soup's selector, which needs no mirror. `PlatformFactory.ns` sends neither.
+`Proxy` overrides none of them: an outside send already reaches its
+`doesNotUnderstand:`, and a bare `Integer` or `self class` inside a proxy
+keeps the accessor's direct answer ("The pull future" below).
 
-**The image.** The value clause for a class whose instances the VM signals
-(`ErrorClass::is_signalled` in `interpreter/shipped_world.rs`, which lets
-the private `NonBooleanReceiver` be a value and a superclass) goes: no
-program reaches that class as a value any more, and a caught instance stays
-an ordinary record of it, since a record's class may be any shipped class
-([image-format.md](image-format.md), "Shipped names"). The metaclasses and
+**A project's module may be named like a class accessor.** The manifest
+answers no protected member to a send from outside, so a module named
+`Array` is reached through it, `manifest Array`, as any other module
+(`crates/ns-cli/tests/run.rs`,
+`a_module_named_like_a_class_accessor_is_reached_through_the_manifest`);
+only a module named after a public member of every object, `yourself`
+say, is refused ([image-format.md](image-format.md), "Packaging").
+
+**The image.** No program reaches the private `NonBooleanReceiver` as a
+value, so the shipped world has no clause for a class whose instances the
+VM signals: a caught instance stays an ordinary record of that class,
+since a record's class may be any shipped class, and the class itself is
+refused as a value like any private class without a public accessor
+([image-format.md](image-format.md), "Shipped names";
+`crates/ns-runtime/tests/image.rs`,
+`a_caught_non_boolean_receiver_round_trips_through_a_package` and
+`non_boolean_receiver_as_a_value_is_refused`). The metaclasses and
 `Behavior`, `Class` and `Metaclass` stay values: they carry no authority,
 an error's payload (`CannotInstantiate`'s behavior) can still hand one out,
 and a rule narrower than what a program reaches refuses to build a program
 that runs. `accessed_classes` counts public accessors only, and `Object`'s
 answer public kernel classes, which are values anyway, so the rest of the
-rule does not move.
+rule did not move.
 
-**The tests keep what they check.** About 44 goldens and 38 Rust tests send
-`class` to another object today. What a program can still observe, a
-golden checks through the public protocol: `isKindOfInteger` and its
-siblings for a result's kind, `printString` for a collection's, the class a
-handler catches (`on: kernel ArgumentError do:`) or `description` for an
-error's, and `self class` on the class side for one level of metaclass.
-What only the representation shows -- the boundary between `Integer` and
-`LargeInteger`, chains of metaclasses, that `Metaclass` refuses
-instantiation, the identity of class objects -- leaves the golden and is
-checked by a Rust test that asks the host for the class, which no
-capability rule binds. Each changed golden's new output is the old one with
-exactly the moved lines gone or translated. New goldens pin the rule: an
-outside `class` or class accessor send reaches `doesNotUnderstand:`, and
-the self, super and implicit sends keep working. The reflective checks
-return as goldens with road step 5's mirrors
+**The tests kept what they check.** About 44 goldens and 38 Rust tests
+sent `class` to another object. What a program can still observe, a golden
+checks through the public protocol: `isKindOfInteger` and its siblings for
+a result's kind, `printString` for a collection's, the class a handler
+catches (`on: kernel ArgumentError do:`) or `description` for an error's,
+and a class-side `metaclass` answering `self class` for one level of
+metaclass. What only the representation shows -- the boundary between
+`Integer` and `LargeInteger`, chains of metaclasses, that `Metaclass`
+refuses instantiation, the identity of class objects -- left the goldens
+and is checked by `crates/ns-runtime/tests/representation.rs`, which asks
+the host for the class (`Mutator::class_of`), bound by no capability rule;
+two goldens moved there whole, as
+`a_class_object_cannot_be_made_by_instantiation` and
+`a_subclass_of_large_integer_is_no_number`. Each changed golden's output is
+the old one with exactly the moved lines gone or translated. New goldens
+pin the rule: an outside `class` send and an outside class accessor send
+are not understood
+(`goldens/language/send/an_outside_class_send_is_not_understood.ns`,
+`goldens/language/send/an_outside_class_accessor_send_is_not_understood.ns`),
+a bare class name answers its class everywhere
+(`goldens/language/send/a_bare_class_name_still_answers_its_class_everywhere.ns`),
+`self class` on the class side is the metaclass
+(`goldens/language/class/class-side/self_class_on_the_class_side_is_the_metaclass.ns`),
+and a proxy forwards an outside `class` send to a target that does not
+understand it either
+(`goldens/library/object/a_proxy_forwards_an_outside_class_send_to_its_target.ns`).
+The reflective checks return as goldens with road step 5's mirrors
 ([OPEN-WORK.md](../OPEN-WORK.md)).
 
 ### The pull future
@@ -4138,17 +4180,32 @@ stands; the shipped-class naming the first item needs is built.
 - **The platform grows only against a whitelisted module**, so every capability
   has a test that would notice it breaking.
 - **The predefined classes are accessors on `Object`** (decided with the
-  user on 2026-09-24, built the same day): one public `Kernel.ns` method per
-  nameable builtin, `^outer Kernel <Name>`, answered by
+  user on 2026-09-24, built the same day): one `Kernel.ns` method per
+  nameable builtin, `^outer Kernel <Name>`, protected (below), answered by
   `MethodFastPath::BuiltinClass` without an activation, and a bare builtin
   name is the self send §5.7 makes it, so a class that declares or inherits
   the name reaches its own. `LoadBuiltinClass` and its wire tag 2 are
   retired — "The predefined classes are accessors on `Object`" above.
+- **`class` and the class accessors are protected** (decided with the user
+  on 2026-10-13, built the same day; "`class` and the class accessors are
+  protected" above;
+  [plan](../superpowers/plans/2026-10-13-1158-protected-class.md)):
+  `Object>>class` and `Object`'s sixteen class accessors are `protected`,
+  as in both Newspeak kernels, so that holding an instance does not hand
+  out its class's authority -- its factory, its class side's state, a
+  subclass in its environment; `self class`, `super class` and a bare name
+  keep working. The core library reads another object's class through the
+  mirror (`valueEquals:`) or asks `isKindOfInteger`, widening nothing; the
+  image's value clause for the classes the VM signals goes, since no
+  program holds `NonBooleanReceiver` as a value; and what only the
+  representation shows is checked from the host
+  (`crates/ns-runtime/tests/representation.rs`) until road step 5's
+  mirrors let goldens check it again.
 - **Integers are unbounded, through a `LargeInteger` written here**
   (decided with the user on 2026-09-29, built the same day): §5.1.1
   requires it, and a bignum crate would keep its digits outside the object
-  space. Every integer has one representation, `3 class` stays `Integer`,
-  and `//` rounds toward negative infinity, as Primordial Soup's does. The
+  space. Every integer has one representation, an immediate's class stays
+  `Integer`, and `//` rounds toward negative infinity, as Primordial Soup's does. The
   algorithms are adapted from `num-bigint` and `num-integer` under MIT, with
   their attribution in `THIRD-PARTY-NOTICES.md` and a header per file,
   including the number-theoretic transform and Burnikel-Ziegler division

@@ -1090,8 +1090,9 @@ and why:
 - **`Behavior`, `Class` and `Metaclass`** are no superclass and no mixin a
   level applies: a class object is made only by evaluating a declaration, so
   a class over one of them could never be instantiated. As a value they are
-  accepted, since a program reaches `Metaclass` as `3 class class class` and
-  may keep it in a slot. An object record that is no class object but whose
+  accepted: a program still reaches a metaclass as a class side's `self
+  class`, an error's payload can hand one of the three out, and either may
+  stand in a slot. An object record that is no class object but whose
   class refuses instantiation as a class object — an instance of `Class`,
   `Metaclass` or a metaclass — is `InstanceOfAClassClass`, and a class record
   whose row is some row's class side is `ClassRecordAppliesAClassSide`: no
@@ -1120,18 +1121,17 @@ mirrors, so no program may name its class. A record under the retired
 activation body tag 9 is an unknown tag
 (`a_record_under_the_retired_activation_tag_is_refused`).
 
-**`NonBooleanReceiver` is private and no capability, and the VM hands it
-out.** No source names it and no public class accessor answers it, but the
-VM signals its instances into a program, which catches one and reaches its
-class as `error class`; a program that runs must also build, so the rule
-lets a class the VM signals as a VM error (`ErrorClass::is_signalled`, every
-class of `types::ErrorClass`) stand as a value and a superclass, private or
-not. A caught instance is an ordinary instance record whose class the image
-names as its header, and its class object a value the graph may hold
-(`a_caught_non_boolean_receivers_class_round_trips_through_a_package`).
-The clause goes once `class` is protected, when no program reaches the class
-as a value ([core-library.md](core-library.md), "Planned: `class` and the
-class accessors protected").
+**`NonBooleanReceiver` is private, and an image carries its instances,
+never its class.** No source names it and no public class accessor answers
+it, and the VM signals its instances into a program, which catches one; but
+`class` is protected, so the program never holds the class
+([core-library.md](core-library.md), "`class` and the class accessors are
+protected"). A caught instance is an ordinary instance record whose class
+the image names as its header
+(`a_caught_non_boolean_receiver_round_trips_through_a_package`); the class
+object as a value is refused as any private class's is, by the encoder and
+by the decoder as `ShippedNameNotAllowed`
+(`non_boolean_receiver_as_a_value_is_refused`).
 
 **Futures in a graph: a resolved future is its value, an unresolved one a
 record of `Kernel FutureImplementation`.** `FutureImplementation` is the
@@ -1195,9 +1195,12 @@ round trip carries a data cycle through resolved futures).
 may; a program reaches them through `platform kernel` or `Object`'s
 accessors and may subclass them, and an instance of a program's subclass is
 an ordinary instance record. **`LargeInteger`** is public in `Kernel.ns`
-although `Object` declares no accessor for it: a program reaches it as an
-integer's class (`(9223372036854775807 + 1) class`) and may keep it in a slot
-or subclass it. A `LargeInteger` itself is never a record ("A `LargeInteger`
+although `Object` declares no accessor for it, so it may stand wherever a
+class may; with `class` protected no program reaches it on its own, but a host
+can hand it to one, as
+`crates/ns-runtime/tests/representation.rs`'s
+`a_subclass_of_large_integer_is_no_number` does, which keeps it in a slot
+and subclasses it. A `LargeInteger` itself is never a record ("A `LargeInteger`
 is a value on the wire" above); an instance of the class that holds no
 digits, which only `LargeInteger new` makes, is an ordinary instance record.
 **`Fraction`** is reached through `Object`'s accessor; a fraction itself is
@@ -1429,11 +1432,14 @@ After the file, `program::read_program` refuses, also before anything runs:
 a missing or unreadable module file, a module that does not parse or
 resolve, two modules declaring the same name, and a root whose factory is
 not `packageUsing:`. A module whose name is a public member of every
-object -- `Array`, `String` or any other predefined class `Object` has an
-accessor for -- is refused too, once the manifest exists and before the root
-is sent `packageUsing:`: the member would answer the send before the
-manifest's `doesNotUnderstand:` could (`Interpreter::responds_publicly`,
-`a_module_shadowed_by_an_object_member_is_refused`).
+object -- `yourself`, `printString` -- is refused too, once the manifest
+exists and before the root is sent `packageUsing:`: the member would answer
+the send before the manifest's `doesNotUnderstand:` could
+(`Interpreter::responds_publicly`,
+`a_module_shadowed_by_an_object_member_is_refused`). `Object`'s class
+accessors are protected, so a module named `Array` or `String` is reached
+through the manifest as any other
+(`a_module_named_like_a_class_accessor_is_reached_through_the_manifest`).
 
 **The schema** is `schemas/newspeak.schema.json` (JSON Schema 2020-12), the
 one copy. It describes `$schema`, `main`, `modules` and `scripts` and states
@@ -1792,7 +1798,7 @@ checked per position by the encoder and the decoder alike
 
 | Position | Allowed |
 |---|---|
-| a value (slot, register, element, root), a class as a value | a shipped class that is public, that a recognized public class accessor of its module answers (`MixinMethod::class_accessor`), or whose instances the VM signals as a VM error (`ErrorClass::is_signalled`: `NonBooleanReceiver` among the private ones), and its metaclass |
+| a value (slot, register, element, root), a class as a value | a shipped class that is public or that a recognized public class accessor of its module answers (`MixinMethod::class_accessor`), and its metaclass |
 | a superclass, `MIXIN_SHIPPED` | such a class, not its metaclass, but `Behavior`, `Class` and `Metaclass` |
 | a record's class | any shipped class but a module's root and `Top`; `Activation` only on a frame record, `FutureImplementation` only on an unresolved future's; never a metaclass or a level |
 | a frame's `current_class` and kind, a class record's declaring class | any shipped class, metaclass or level |
@@ -1801,9 +1807,9 @@ checked per position by the encoder and the decoder alike
 It keeps every capability out of a value -- `Top`, `Activation`,
 `FutureImplementation`, the module roots and their instances are no value,
 as no builtin class tag or platform path could name them either -- lets a
-program keep every class it can reach by running, the private
-`NonBooleanReceiver` included, and keeps a future private class without a
-public accessor, a `File` say, unnamed. The mirror's class has no declaration and so no name.
+program keep every class it can reach by running, and keeps a private
+class without a public accessor, `NonBooleanReceiver` or a future `File`
+say, unnamed as a value. The mirror's class has no declaration and so no name.
 Locks (3) and (4) of the mirror are this rule: the encoder names a shipped
 object by its declaration and refuses one the rule does not allow where it
 stands, and the decoder refuses the same, `Top` and `Activation` among

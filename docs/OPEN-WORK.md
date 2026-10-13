@@ -15,16 +15,6 @@ when they were written.
 
 ## Next
 
-**`class` and `Object`'s class accessors protected**, first (decided with
-the user on 2026-10-13): `Object>>class` and every class accessor `Object`
-declares become `protected`, the three core-library sends that need it are
-rewritten, the image's value clause for `NonBooleanReceiver` goes, and the
-goldens and tests that send `class` to another object check what they
-check through the public protocol or from the host
-([core-library.md](design/core-library.md), "Planned: `class` and the
-class accessors protected"). It has no plan yet, so the next session starts
-by writing one.
-
 **The kernel completed to Primordial Soup's core API**, before road step 5
 (decided with the user on 2026-10-06): `Kernel.ns` and
 `CollectionsFactory.ns` take Primordial Soup's whole public core API --
@@ -42,8 +32,7 @@ numbers, which is built too (`Float`'s mathematics and texts, `Integer`'s
 and `Number`'s protocol, `Fraction`, and the symmetric tower); `ByteArray`
 and `StringBuilder`, with typed arrays over a `ByteArray` as an API of our
 own beside them (decided with the user on 2026-10-11); weak references.
-Each has its own design and plan; the fifth sub-project follows the
-protected `class` --
+Each has its own design and plan; the fifth sub-project is next --
 `ByteArray` and `StringBuilder`, the UTF-8 conversions, and the typed
 arrays and `DataView` over a `ByteArray` -- and is designed (2026-10-12,
 [core-library.md](design/core-library.md), "Planned: sub-project 5,
@@ -215,12 +204,13 @@ and `prior-art/newspeak-benchmarks`.
   edited mixins in the image"). Left to its plan: how removing a slot
   recompiles a mixin whose declaration is absent, as a decoded one's is,
   and the questions "Planned: edited mixins in the image" leaves open.
-  The reflective checks that leave the goldens when `class` and `Object`'s
-  class accessors become protected -- the boundary between `Integer` and
+  The reflective checks no golden can make while `class` and `Object`'s
+  class accessors are protected -- the boundary between `Integer` and
   `LargeInteger`, chains of metaclasses, that `Metaclass` refuses
   instantiation, the identity of class objects -- return as goldens through
-  its mirrors ([core-library.md](design/core-library.md), "Planned: `class`
-  and the class accessors protected").
+  its mirrors; meanwhile `crates/ns-runtime/tests/representation.rs` checks
+  them from the host ([core-library.md](design/core-library.md), "`class`
+  and the class accessors are protected").
   Deferred beyond it: a shape-changing `setClass:`, a superclass change,
   edits of nested classes, `installAtomically:` over several builders,
   editing kernel methods, `ActivationMirror` and edit-and-continue, scoped
