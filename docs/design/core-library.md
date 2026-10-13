@@ -3376,9 +3376,10 @@ refused as a value like any private class without a public accessor
 `a_caught_non_boolean_receiver_round_trips_through_a_package` and
 `non_boolean_receiver_as_a_value_is_refused`). The metaclasses and
 `Behavior`, `Class` and `Metaclass` stay values: they carry no authority,
-and a host can hand a program any of them -- it reaches every one, as
-`crates/ns-runtime/tests/representation.rs` sends `Metaclass new` from
-the host -- which a narrower rule would refuse to build.
+and a host can hand a program any of them -- through
+`Mutator::builtin_class` or `Mutator::class_of`, as
+`crates/ns-runtime/tests/representation.rs` reaches `Metaclass` -- which
+a narrower rule would refuse to build.
 `accessed_classes` counts public accessors only, and `Object`'s answer
 public kernel classes, which are values anyway, so the rest of the rule
 did not move.

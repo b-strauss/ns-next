@@ -4,7 +4,7 @@
 //! `tests/builtins_collections_block.rs`.
 
 use indoc::indoc;
-use ns_runtime::{HostResult, HostSignal, Interpreter, Root, Symbol, ValueKind};
+use ns_runtime::{BuiltinClass, HostResult, HostSignal, Interpreter, Root, Symbol, ValueKind};
 
 /// Parses+resolves a one-class module and loads it into a freshly
 /// bootstrapped `Interpreter`, as `tests/builtins_collections_block.rs` does.
@@ -64,12 +64,28 @@ fn copy_from_to_answers_a_new_array_of_the_range() {
                 empty:: array copyFrom: 4 to: 3.
                 ^(copy == array) printString, ' ', copy size printString, ' ',
                     (copy at: 1) printString, ' ', (copy at: 2) printString, ' ',
-                    empty size printString, ' ',
-                    (empty isKindOfArray ifTrue: ['Array'] ifFalse: ['no Array'])
+                    empty size printString
             )
+            public empty = ( ^{1. 2. 3} copyFrom: 4 to: 3 )
         ) : ()
     "};
-    assert_eq!(answer_text(source, "m"), "false 2 2 3 0 Array");
+    assert_eq!(answer_text(source, "m"), "false 2 2 3 0");
+    // An empty range is still an Array, read on the host side since a
+    // program cannot ask another object for its class.
+    let (mut interpreter, class) = load(source);
+    let receiver = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let empty = expect_ok(
+        interpreter.send(&receiver, Symbol::intern("empty"), &[]),
+        "empty",
+    );
+    interpreter.enter(|mutator| {
+        let value = mutator.fetch(&empty);
+        let array = mutator.builtin_class(BuiltinClass::Array);
+        assert!(
+            mutator.class_of(value).same(array),
+            "`copyFrom: 4 to: 3` answers an Array"
+        );
+    });
 }
 
 #[test]
