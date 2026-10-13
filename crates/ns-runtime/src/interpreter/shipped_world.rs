@@ -664,10 +664,70 @@ mod tests {
         assert_eq!(inner_class_accessor(false), None);
     }
 
+    /// The level `Array`'s `<:` clause adds is a shipped object like the
+    /// class itself: named `Kernel Array level 0`, with its metaclass, a
+    /// frame's class or a class record's declaring class only; the name
+    /// resolves to the boot's own level, and the level leads back to its
+    /// entry by its class object. A level applies another declaration's
+    /// mixin, so `index_by_mixin` keys none.
+    #[test]
+    fn a_shipped_level_is_named_and_resolves_to_the_boots_own_object() {
+        let mut interpreter = crate::Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let world = &mutator.shipped_world;
+            let heap = mutator.heap();
+            let array = mutator.builtin_class(BuiltinClass::Array);
+            let level = heap
+                .class_superclass(array)
+                .expect("Array has a superclass");
+            let level_metaclass = heap
+                .class_metaclass(level)
+                .expect("a level has a metaclass");
+            let level_name = name("Kernel", "Array", ShippedKind::Level(0));
+            let metaclass_name = name("Kernel", "Array", ShippedKind::LevelMetaclass(0));
+            assert_eq!(level_name.describe(), "Kernel Array level 0");
+            for shipped in [level_name, metaclass_name] {
+                assert_eq!(
+                    positions_of(world, shipped),
+                    Positions::FRAME_CLASS_ONLY,
+                    "{}",
+                    shipped.describe()
+                );
+            }
+            let resolved =
+                crate::image::shipped_names::resolve(&[level_name, metaclass_name], world, false)
+                    .unwrap_or_else(|_| panic!("the level's names resolve"));
+            assert!(resolved[0].object.same(level));
+            assert!(resolved[1].object.same(level_metaclass));
+            let by_object = world.index_by_object(heap);
+            assert_eq!(
+                by_object.get(&heap.object_identity_key(level)),
+                world.index_of_name(&level_name).as_ref()
+            );
+            assert_eq!(
+                by_object.get(&heap.object_identity_key(level_metaclass)),
+                world.index_of_name(&metaclass_name).as_ref()
+            );
+            let level_mixin = heap
+                .class_application(level)
+                .expect("a level is a class")
+                .mixin
+                .clone();
+            let indexed_collection = world
+                .index_of_name(&name("Kernel", "IndexedCollection", ShippedKind::Class))
+                .expect("Kernel IndexedCollection is named");
+            assert_eq!(
+                world.index_by_mixin(heap).get(&mixin_key(&level_mixin)),
+                Some(&indexed_collection),
+                "the level's mixin is IndexedCollection's, keyed by its class"
+            );
+        });
+    }
+
     /// An object and a class's mixin each lead back to the one entry that
     /// names them: `Array` by its class object and by its mixin. A level
-    /// would lead back by its class object alone, but no shipped class
-    /// applies a mixin today (`docs/OPEN-WORK.md`).
+    /// leads back by its class object alone
+    /// (`a_shipped_level_is_named_and_resolves_to_the_boots_own_object`).
     #[test]
     fn an_object_and_a_mixin_lead_back_to_their_entry() {
         let mut interpreter = crate::Interpreter::bootstrap();

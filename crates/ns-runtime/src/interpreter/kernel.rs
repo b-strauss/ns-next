@@ -113,11 +113,16 @@ impl Interpreter {
     /// so the stress modes see it too.
     pub(crate) fn install_kernel(&mut self) {
         let resolved = resolved_kernel();
-        let (kernel_class, mirror) = self.enter(|mutator| {
-            let kernel_class = mutator.fill_builtin_classes(&resolved);
+        let (kernel_class, applied_classes, mirror) = self.enter(|mutator| {
+            let (kernel_class, applied_classes) = mutator.fill_builtin_classes(&resolved);
+            let applied_classes: Vec<(Rc<Mixin>, Root)> = applied_classes
+                .into_iter()
+                .map(|(mixin, class)| (mixin, mutator.stash(Value::object(class))))
+                .collect();
             let mirror = mutator.vm_mirror();
             (
                 mutator.stash(Value::object(kernel_class)),
+                applied_classes,
                 mutator.stash(mirror),
             )
         });
@@ -133,7 +138,7 @@ impl Interpreter {
                 panic!("internal: a return escaped Kernel.ns's instantiation")
             }
         };
-        self.enter(|mutator| mutator.wire_kernel_in(&kernel_class, &kernel));
+        self.enter(|mutator| mutator.wire_kernel_in(&kernel_class, &kernel, &applied_classes));
     }
 }
 
@@ -177,14 +182,21 @@ impl<'gc> Mutator<'gc> {
     /// superclass's -- `fill_order` puts every superclass ahead of its
     /// subclasses, so that one is filled already -- and the mirror's class,
     /// which `Kernel.ns` does not declare, keeps its mixin over the filled
-    /// `Object`. Then the kernel's own class is built over the filled
-    /// `Object`, every class object built so far is given its metaclass over
-    /// the filled `Class`, and the kernel's class is answered for the host
-    /// to instantiate.
+    /// `Value`. A builtin whose clause applies kernel mixins (`Array =
+    /// Collection <: IndexedCollection`) is applied over the levels §6.2
+    /// adds for them, built here from the classes those clauses name
+    /// (`applied_kernel_class`). Then the kernel's own class is built over
+    /// the filled `Value`, every class object built so far is given its
+    /// metaclass over the filled `Class`, and the kernel's class is answered
+    /// for the host to instantiate, with each applied kernel class and its
+    /// mixin, for `wire_kernel_in` to cache in the kernel instance.
     ///
     /// Nothing has run yet, so no inline cache or instance built before
     /// this phase can still hold a placeholder application.
-    fn fill_builtin_classes(&mut self, resolved: &ResolvedModule) -> ClassReference<'gc> {
+    fn fill_builtin_classes(
+        &mut self,
+        resolved: &ResolvedModule,
+    ) -> (ClassReference<'gc>, Vec<(Rc<Mixin>, ClassReference<'gc>)>) {
         let declaration = &resolved.module.root_class;
         let root_mixin = self.build_root_mixin(
             declaration,
@@ -192,6 +204,8 @@ impl<'gc> Mutator<'gc> {
             super::instantiate::ModuleSource::Kernel,
         );
         check_kernel_shape(&root_mixin, resolved);
+        let mut applied_classes: Vec<(Rc<Mixin>, ClassReference<'gc>)> = Vec::new();
+        let mut levels: Vec<ClassReference<'gc>> = Vec::new();
         for kind in fill_order(&root_mixin) {
             let class = self.builtin_class(kind);
             let mixin = if kind == BuiltinClass::VmMirror {
@@ -202,9 +216,10 @@ impl<'gc> Mutator<'gc> {
             } else {
                 nested_named(&root_mixin, kernel_class_name(kind)).clone()
             };
-            let superclass = superclass_of_kind(&root_mixin, kind);
-            let super_application = superclass
-                .and_then(|superclass| self.heap.class_application(self.builtin_class(superclass)));
+            let superclass = superclass_of_kind(&root_mixin, kind)
+                .map(|superclass| self.builtin_class(superclass));
+            let super_application =
+                superclass.and_then(|superclass| self.heap.class_application(superclass));
             // Recorded before `Value`'s own application is built, not after
             // the loop: `apply_mixin` asks whether the mixin it is applying
             // is this one, so that `Value`'s own application carries
@@ -225,15 +240,53 @@ impl<'gc> Mutator<'gc> {
             if kind == BuiltinClass::Behavior {
                 self.behavior_mixin = Some(mixin.clone());
             }
+            // The levels a `<:` clause adds sit between the builtin and the
+            // superclass its clause names, so the builtin's own mixin is
+            // applied over the topmost of them (§6.2), as a nested class's is
+            // (`nested::after_clause`). The clause is read, never run: each
+            // class it names is a kernel class built here from builtins
+            // alone, which `check_kernel_shape` has made sure of.
+            let applied: Vec<(usize, Value<'gc>)> = mixin
+                .declaration
+                .iter()
+                .flat_map(|declaration| declaration.mixin_applications.iter())
+                .enumerate()
+                .map(|(index, clause)| {
+                    let named = self.applied_kernel_class(
+                        &root_mixin,
+                        &clause.receiver.name,
+                        &mut applied_classes,
+                    );
+                    (index, Value::object(named))
+                })
+                .collect();
+            let (superclass, super_application) = if applied.is_empty() {
+                (superclass, super_application)
+            } else {
+                let below = superclass.zip(super_application);
+                let Ok(top) = super::nested::build_applied_levels(self, &mixin, below, &applied)
+                else {
+                    panic!(
+                        "internal: Kernel.ns's {kind:?} applies a class that is no class object"
+                    );
+                };
+                let (top, top_application) =
+                    top.expect("internal: a builtin that applies a mixin has a superclass");
+                let mut level = Some(top);
+                while let Some(class) =
+                    level.filter(|class| self.heap.class_is_applied_level(*class))
+                {
+                    levels.push(class);
+                    level = self.heap.class_superclass(class);
+                }
+                (Some(top), Some(top_application))
+            };
             let application = self.apply_mixin(&mixin, super_application.as_ref());
             if !self.heap.class_set_application(class, application) {
                 unreachable!("internal: a builtin class is a class object");
             }
             let linked = match superclass {
-                Some(superclass) => {
-                    let superclass_object = self.builtin_class(superclass);
-                    self.heap.class_set_superclass(class, superclass_object)
-                }
+                Some(superclass) => self.heap.class_set_superclass(class, superclass),
                 None => self.heap.class_clear_superclass(class),
             };
             if !linked {
@@ -288,25 +341,85 @@ impl<'gc> Mutator<'gc> {
         let application = self.apply_mixin(&root_mixin, super_application.as_ref());
         let kernel_class = self.new_class_object(application, None, None, superclass);
         // `Class` is filled, so every class object built so far -- each
-        // builtin, the `Value` level and the kernel's own class -- can get
-        // its metaclass now, and every one built from here on gets it with
-        // the class object.
-        let mut built = vec![kernel_class];
+        // builtin, each applied kernel class and the levels it adds, the
+        // `Value` level and the kernel's own class -- can get its metaclass
+        // now, and every one built from here on gets it with the class
+        // object.
+        let mut built: Vec<ClassReference<'gc>> =
+            applied_classes.iter().map(|(_, class)| *class).collect();
+        built.extend(levels);
         if shape.applies_value {
             if let Some(level) = superclass {
-                built.insert(0, level);
+                built.push(level);
             }
         }
+        built.push(kernel_class);
         self.give_existing_class_objects_metaclasses(&built);
-        kernel_class
+        (kernel_class, applied_classes)
+    }
+
+    /// The class of the kernel's nested class `name`, which a builtin's
+    /// `<:` clause applies: built once, the first time a clause names it,
+    /// and answered from `built` after that, so that every builtin applying
+    /// it applies one class -- the one `wire_kernel_in` caches in the
+    /// kernel instance, which the class's accessor then answers.
+    ///
+    /// Built as its accessor would build it (`nested::after_clause`), its
+    /// mixin over the builtin its clause names, which `check_kernel_shape`
+    /// has made sure is a bare builtin name; the kernel instance does not
+    /// exist yet, so its lexical context waits for `wire_kernel_in`.
+    fn applied_kernel_class(
+        &mut self,
+        root_mixin: &Rc<Mixin>,
+        name: &str,
+        built: &mut Vec<(Rc<Mixin>, ClassReference<'gc>)>,
+    ) -> ClassReference<'gc> {
+        if let Some((_, class)) = built.iter().find(|(mixin, _)| mixin.name.as_str() == name) {
+            return *class;
+        }
+        let mixin = nested_named(root_mixin, name).clone();
+        let superclass_kind = superclass_kind(&mixin)
+            .unwrap_or_else(|| panic!("internal: Kernel.ns's {name} names no superclass"));
+        let superclass = self.builtin_class(superclass_kind);
+        let super_application = self
+            .heap
+            .class_application(superclass)
+            .expect("internal: a builtin class is a class object");
+        // A placeholder's mixin was built from no source: applied over it,
+        // the class would inherit nothing of its superclass. `fill_order`
+        // ranks builtins only, so this is where a kernel that applies a
+        // class before its superclass is filled is caught.
+        assert!(
+            super_application.mixin.declaration.is_some(),
+            "internal: Kernel.ns's {name} is applied before its superclass {superclass_kind:?} is filled"
+        );
+        let application = self.apply_mixin(&mixin, Some(&super_application));
+        // §3.1.1's enclosing-object condition is asked of a value class as
+        // its accessor builds it, against the enclosing object, which does
+        // not exist yet.
+        assert!(
+            !application.inherits_value,
+            "internal: Kernel.ns's {name} is a value class, which the kernel phase cannot build before the kernel instance exists"
+        );
+        let class = self.new_class_object(application, None, None, Some(superclass));
+        built.push((mixin, class));
+        class
     }
 
     /// The kernel instance becomes every kernel class's enclosing object,
     /// and each of its hidden nested-class slots holds the builtin class it
     /// names -- so the nested-class accessor in kernel code answers the
     /// builtin class itself rather than building a second class object of
-    /// the same mixin.
-    fn wire_kernel_in(&mut self, kernel_class: &Root, kernel: &Root) {
+    /// the same mixin. So does the slot of each kernel class a builtin
+    /// applies (`applied_classes`, which `fill_builtin_classes` built), and
+    /// every level built before the kernel instance existed, the kernel's
+    /// own and each builtin's, takes the kernel's context too.
+    fn wire_kernel_in(
+        &mut self,
+        kernel_class: &Root,
+        kernel: &Root,
+        applied_classes: &[(Rc<Mixin>, Root)],
+    ) {
         let Some(kernel_class) = self.fetch(kernel_class).as_object() else {
             unreachable!("internal: the kernel class is a class object");
         };
@@ -338,35 +451,70 @@ impl<'gc> Mutator<'gc> {
             {
                 unreachable!("internal: the kernel instance has a field per nested class");
             }
+            self.set_kernel_lexical_context(class, kernel, kernel_class);
+            // Its levels were built from classes whose context was still
+            // empty.
+            self.set_levels_kernel_lexical_context(class, kernel, kernel_class);
+        }
+        for (mixin, class) in applied_classes {
+            let Some(class) = self.fetch(class).as_object() else {
+                unreachable!("internal: an applied kernel class is a class object");
+            };
+            let field = hidden_slot_of_mixin(self, kernel, mixin);
+            debug_assert!(
+                self.heap.instance_field(kernel, field).is_some_and(|value| value.is_nil()),
+                "internal: Kernel's initializer touched the nested class {} before the bootstrap could fill it",
+                mixin.name
+            );
             if !self
                 .heap
-                .class_set_lexical_context(class, Some(kernel), Some(kernel_class))
+                .instance_set_field(kernel, field, Value::object(class))
             {
-                unreachable!("internal: a builtin class is a class object");
+                unreachable!("internal: the kernel instance has a field per nested class");
             }
-            // The metaclass was built at the end of the fill, when the
-            // builtin's lexical context was still the placeholder's; §6.3
-            // puts a class side in its class's declaration, so it takes the
-            // same context.
-            self.set_metaclass_lexical_context(class, kernel, kernel_class);
+            self.set_kernel_lexical_context(class, kernel, kernel_class);
         }
         // The kernel's own `Value` level was built before the kernel
         // instance existed, over `Value`'s then-empty context.
-        let mut level = self.heap.class_superclass(kernel_class);
-        while let Some(class) = level {
-            if !self.heap.class_is_applied_level(class) {
-                break;
-            }
-            if !self
-                .heap
-                .class_set_lexical_context(class, Some(kernel), Some(kernel_class))
-            {
-                unreachable!("internal: an applied level is a class object");
-            }
-            self.set_metaclass_lexical_context(class, kernel, kernel_class);
+        self.set_levels_kernel_lexical_context(kernel_class, kernel, kernel_class);
+        self.kernel = Some(Value::object(kernel));
+    }
+
+    /// Gives `class` and its metaclass the kernel's lexical context: the
+    /// kernel instance and the kernel's class. The metaclass was built at
+    /// the end of the fill, when `class`'s context was still empty; §6.3
+    /// puts a class side in its class's declaration, so it takes the same
+    /// context.
+    fn set_kernel_lexical_context(
+        &mut self,
+        class: ClassReference<'gc>,
+        kernel: ObjectReference<'gc>,
+        kernel_class: ClassReference<'gc>,
+    ) {
+        if !self
+            .heap
+            .class_set_lexical_context(class, Some(kernel), Some(kernel_class))
+        {
+            unreachable!("internal: a kernel class is a class object");
+        }
+        self.set_metaclass_lexical_context(class, kernel, kernel_class);
+    }
+
+    /// Gives every level `class`'s own `<:` clauses added, the levels
+    /// directly below it, the kernel's lexical context: each was built from
+    /// a kernel class (§6.2: the level's enclosing object is the applied
+    /// class's) before the kernel instance existed.
+    fn set_levels_kernel_lexical_context(
+        &mut self,
+        class: ClassReference<'gc>,
+        kernel: ObjectReference<'gc>,
+        kernel_class: ClassReference<'gc>,
+    ) {
+        let mut level = self.heap.class_superclass(class);
+        while let Some(class) = level.filter(|class| self.heap.class_is_applied_level(*class)) {
+            self.set_kernel_lexical_context(class, kernel, kernel_class);
             level = self.heap.class_superclass(class);
         }
-        self.kernel = Some(Value::object(kernel));
     }
 
     /// Gives `class`'s metaclass the lexical context `wire_kernel_in` just
@@ -476,12 +624,14 @@ pub(crate) fn kernel_kind_named(name: &str) -> Option<BuiltinClass> {
 /// class per builtin but the mirror's, named as `kernel_class_name` says,
 /// each declaring no slots -- but the exception classes and `Message` --
 /// and the default factory `new`; a root class with
-/// exactly one slot, the immutable `vmMirror`; a clause on every class but
-/// `Top`, a bare name with no message arguments -- it is read, never run --
-/// naming a kernel class, from which the chain reaches `Top` without
-/// repeating, so that `fill_order` can sort by depth. And every mirror send
-/// passes a literal block only as its failure block
-/// (`check_mirror_send_arguments`).
+/// exactly one slot, the immutable `vmMirror`; a clause on every builtin's
+/// class but `Top`, a bare name with no message arguments -- it is read,
+/// never run -- naming a builtin, from which the chain reaches `Top` without
+/// repeating, so that `fill_order` can sort by depth, and `<:` clauses only
+/// as `check_applied_kernel_class` allows them. Every other nested class is
+/// an ordinary class, unchecked here: its accessor builds it, running its
+/// clause, as any class's does. And every mirror send passes a literal
+/// block only as its failure block (`check_mirror_send_arguments`).
 fn check_kernel_shape(root: &Rc<Mixin>, resolved: &ResolvedModule) {
     check_mirror_send_arguments(resolved);
     let kinds: Vec<BuiltinClass> = BuiltinClass::ALL
@@ -493,11 +643,6 @@ fn check_kernel_shape(root: &Rc<Mixin>, resolved: &ResolvedModule) {
             && root.slots[0].name.as_str() == "vmMirror"
             && !root.slots[0].mutable,
         "internal: Kernel.ns's root class must declare exactly one slot, the immutable vmMirror"
-    );
-    assert_eq!(
-        root.nested.len(),
-        kinds.len(),
-        "internal: Kernel.ns must declare exactly one nested class per builtin class"
     );
     for kind in kinds.iter().copied() {
         let name = kernel_class_name(kind);
@@ -556,6 +701,9 @@ fn check_kernel_shape(root: &Rc<Mixin>, resolved: &ResolvedModule) {
             (None, _) => panic!("internal: Kernel.ns's {name} declares no superclass clause"),
             (Some(clause), _) => check_clause(name, kind, clause),
         }
+        for applied in &declaration.mixin_applications {
+            check_applied_kernel_class(root, name, applied);
+        }
     }
     // Every chain ends at `Top` without repeating, which is what lets
     // `fill_order` sort the kinds by depth. Checked once the clauses are
@@ -592,6 +740,46 @@ fn check_clause(name: &str, kind: BuiltinClass, clause: &ast::SuperclassClause) 
     );
 }
 
+/// A builtin's `<:` clause is read, never run, like its superclass clause:
+/// a bare name with no message, naming a kernel class that is no builtin
+/// -- a builtin is a class Rust fills, never a mixin the bootstrap builds
+/// a class of. The bootstrap builds that class before any kernel code
+/// runs, so its own clause must be readable the same way, a bare builtin
+/// name, and it may apply no mixin of its own.
+fn check_applied_kernel_class(root: &Rc<Mixin>, name: &str, applied: &ast::SuperclassClause) {
+    let applied_name = applied.receiver.name.as_str();
+    assert!(
+        applied.prefix.is_none() && applied.messages.is_empty(),
+        "internal: Kernel.ns's {name} must apply {applied_name} by a bare name, with no message"
+    );
+    assert!(
+        kernel_kind_named(applied_name).is_none(),
+        "internal: Kernel.ns's {name} applies the builtin {applied_name}; only a kernel class that is no builtin may be applied"
+    );
+    let nested = root
+        .nested
+        .iter()
+        .find(|nested| nested.name.as_str() == applied_name)
+        .unwrap_or_else(|| {
+            panic!("internal: Kernel.ns's {name} applies {applied_name}, which is no kernel class")
+        });
+    let declaration = nested
+        .declaration
+        .as_ref()
+        .unwrap_or_else(|| panic!("internal: Kernel.ns's {applied_name} was built from no source"));
+    let clause = declaration.superclass.as_ref().unwrap_or_else(|| {
+        panic!("internal: Kernel.ns's {applied_name} declares no superclass clause")
+    });
+    assert!(
+        clause.prefix.is_none()
+            && clause.messages.is_empty()
+            && declaration.mixin_applications.is_empty()
+            && kernel_kind_named(&clause.receiver.name)
+                .is_some_and(|superclass| superclass != BuiltinClass::Top),
+        "internal: Kernel.ns's {applied_name}, which {name} applies, must name a builtin other than Top as its superclass by a bare name, with no message and no mixin of its own"
+    );
+}
+
 /// The kernel instance's field holding `vmMirror`: the root application's
 /// own slot base plus `vmMirror`'s position among the root mixin's own
 /// slots -- `InitializeSlot`'s rule (`bytecode.rs`, `own_index`).
@@ -615,11 +803,26 @@ pub(super) fn hidden_slot_of<'gc>(
 ) -> usize {
     let application = kernel_application(mutator, kernel);
     let nested = nested_named(&application.mixin, kernel_class_name(kind));
-    application
+    hidden_slot_of_mixin(mutator, kernel, nested)
+}
+
+/// The kernel instance's hidden slot caching the nested class whose mixin
+/// is `nested`, a builtin's or any other kernel class's.
+fn hidden_slot_of_mixin<'gc>(
+    mutator: &Mutator<'gc>,
+    kernel: ObjectReference<'gc>,
+    nested: &Rc<Mixin>,
+) -> usize {
+    kernel_application(mutator, kernel)
         .nested_slot
         .get(&mixin_key(nested))
         .copied()
-        .unwrap_or_else(|| panic!("internal: the kernel's application has no slot for {kind:?}"))
+        .unwrap_or_else(|| {
+            panic!(
+                "internal: the kernel's application has no slot for {}",
+                nested.name
+            )
+        })
 }
 
 /// The application of the kernel instance's class, the root mixin's.
@@ -788,231 +991,234 @@ mod tests {
     /// answers is already at hand, and a leaf for it would be a mirror row
     /// that only repeats what `Kernel.ns` can say. Listed here so that a
     /// forwarder the recognizer silently missed still fails the test below;
-    /// an entry is (class, selector).
-    const NOT_FORWARDERS: &[(BuiltinClass, &str)] = &[
-        (BuiltinClass::True, "hash"),
-        (BuiltinClass::False, "hash"),
+    /// an entry is (the class's name in `Kernel.ns`, selector), so that a
+    /// kernel class that is no builtin is listed as a builtin is.
+    const NOT_FORWARDERS: &[(&str, &str)] = &[
+        ("True", "hash"),
+        ("False", "hash"),
         // §3.1.1's identity method on a value: a send of `=`, which is what
         // makes the two agree for every subclass. No leaf could answer it
         // without sending `=` back into Newspeak.
-        (BuiltinClass::Value, "=="),
+        ("Value", "=="),
         // The Newspeak side of the derivation, which runs when a leaf
         // declines: both send `=` or `hash` to a slot, which a leaf may not.
-        (BuiltinClass::Value, "valueEquals:"),
-        (BuiltinClass::Value, "valueHashOfSlots"),
+        ("Value", "valueEquals:"),
+        ("Value", "valueHashOfSlots"),
         // A send of `hash`, which no leaf could answer for a value.
-        (BuiltinClass::Value, "identityHash"),
-        (BuiltinClass::Behavior, "identityHash"),
+        ("Value", "identityHash"),
+        ("Behavior", "identityHash"),
         // Forwarders in shape, but of their subject rather than of `self`:
         // §5.9 reaches a private member only through a lexical send, so the
         // other side's state has to be read by naming it as an argument,
         // which a primitive method may not do.
-        (BuiltinClass::Value, "valueSlotCountOf:"),
-        (BuiltinClass::Value, "valueSlotOf:at:"),
+        ("Value", "valueSlotCountOf:"),
+        ("Value", "valueSlotOf:at:"),
         // A string literal is no quick answer: an ordinary method, like
         // `hash` above, whose integer literal is none either.
-        (BuiltinClass::True, "printString"),
-        (BuiltinClass::False, "printString"),
-        (BuiltinClass::UndefinedObject, "printString"),
+        ("True", "printString"),
+        ("False", "printString"),
+        ("UndefinedObject", "printString"),
         // `cull:` tests its own arity, which no quick method does; the quick
         // methods of the nil protocol do what it says without sending it.
-        (BuiltinClass::Closure, "cull:"),
+        ("Closure", "cull:"),
         // A native loop's send of `value:` to an action that is no block,
         // pushed as a method so that its return carries the loop on
         // (`Mutator::send_value_then`): a send, no leaf.
-        (BuiltinClass::Closure, "valueOf:with:"),
+        ("Closure", "valueOf:with:"),
         // Iteration is Newspeak, after Primordial Soup's `Number`: a loop that
         // sends `<=`, `>=` and `+` to its receiver, which no leaf could do.
-        (BuiltinClass::Number, "to:do:"),
-        (BuiltinClass::Number, "to:by:do:"),
+        ("Number", "to:do:"),
+        ("Number", "to:by:do:"),
         // Primordial Soup's Newspeak body, `-1 - self`: a send of `-` to
         // `self`, which no leaf could do, and which `LargeInteger` inherits.
-        (BuiltinClass::Integer, "bitInvert"),
+        ("Integer", "bitInvert"),
         // Integer's methods written in Newspeak: `&` and `|` send `bitAnd:`
         // and `bitOr:`, the modular pair loops over sends of arithmetic, and
         // `denominator` answers the integer literal 1, which is no quick
         // constant.
-        (BuiltinClass::Integer, "&"),
-        (BuiltinClass::Integer, "|"),
-        (BuiltinClass::Integer, "raisedTo:modulo:"),
-        (BuiltinClass::Integer, "reciprocalModulo:"),
-        (BuiltinClass::Integer, "denominator"),
+        ("Integer", "&"),
+        ("Integer", "|"),
+        ("Integer", "raisedTo:modulo:"),
+        ("Integer", "reciprocalModulo:"),
+        ("Integer", "denominator"),
         // The class side: `parse:` sends `parse:radix:` to `self`.
-        (BuiltinClass::Integer, "parse:"),
+        ("Integer", "parse:"),
         // Primordial Soup's Newspeak bodies: `timesRepeat:` sends `to:do:`
         // and `value`, and `max:` sends `>` to `self`, which no leaf could
         // do.
-        (BuiltinClass::Integer, "timesRepeat:"),
-        (BuiltinClass::Number, "max:"),
-        (BuiltinClass::Number, "min:"),
-        (BuiltinClass::Number, "between:and:"),
-        (BuiltinClass::Number, "sqrt"),
-        (BuiltinClass::Number, "sin"),
-        (BuiltinClass::Number, "cos"),
-        (BuiltinClass::Number, "tan"),
-        (BuiltinClass::Number, "asin"),
-        (BuiltinClass::Number, "acos"),
-        (BuiltinClass::Number, "atan"),
-        (BuiltinClass::Number, "atan:"),
-        (BuiltinClass::Number, "exp"),
-        (BuiltinClass::Number, "ln"),
-        (BuiltinClass::Number, "log"),
-        (BuiltinClass::Number, "negated"),
-        (BuiltinClass::Number, "abs"),
-        (BuiltinClass::Number, "raisedTo:"),
+        ("Integer", "timesRepeat:"),
+        ("Number", "max:"),
+        ("Number", "min:"),
+        ("Number", "between:and:"),
+        ("Number", "sqrt"),
+        ("Number", "sin"),
+        ("Number", "cos"),
+        ("Number", "tan"),
+        ("Number", "asin"),
+        ("Number", "acos"),
+        ("Number", "atan"),
+        ("Number", "atan:"),
+        ("Number", "exp"),
+        ("Number", "ln"),
+        ("Number", "log"),
+        ("Number", "negated"),
+        ("Number", "abs"),
+        ("Number", "raisedTo:"),
         // A send to `self` is no leaf: `printString` reads the class's own
         // `name`, and a metaclass's `name` reads its own `thisClass` first.
-        (BuiltinClass::Class, "printString"),
-        (BuiltinClass::Metaclass, "name"),
-        (BuiltinClass::Metaclass, "printString"),
+        ("Class", "printString"),
+        ("Metaclass", "name"),
+        ("Metaclass", "printString"),
         // The Newspeak side of a value class object's equality, which runs
         // when the leaf declines: it sends `=` to an enclosing object and a
         // superclass, which a leaf may not.
-        (BuiltinClass::Behavior, "behaviorEquals:"),
+        ("Behavior", "behaviorEquals:"),
         // Forwarders in shape, but of their subject rather than of `self`,
         // for the reason `Value`'s slot readers above are.
-        (BuiltinClass::Behavior, "enclosingOf:"),
-        (BuiltinClass::Behavior, "superclassOf:"),
-        (BuiltinClass::Metaclass, "thisClassOf:"),
+        ("Behavior", "enclosingOf:"),
+        ("Behavior", "superclassOf:"),
+        ("Metaclass", "thisClassOf:"),
         // The marked methods (`UNWIND_MARKERS`): each keeps a local the
         // unwinder or `signal` reads, and sends `value` to `self`.
-        (BuiltinClass::Closure, "on:do:"),
-        (BuiltinClass::Closure, "ensure:"),
-        (BuiltinClass::Closure, "ifCurtailed:"),
+        ("Closure", "on:do:"),
+        ("Closure", "ensure:"),
+        ("Closure", "ifCurtailed:"),
         // A forwarder in shape, but of its argument rather than of `self`,
         // for the reason `Value`'s slot readers above are: the leaf's
         // subject is the exception, and the class is its argument.
-        (BuiltinClass::Class, "handles:"),
+        ("Class", "handles:"),
         // `Object>>halt` signals a `Halt`: sends, no leaf.
-        (BuiltinClass::Object, "halt"),
+        ("Object", "halt"),
         // `Object>>doesNotUnderstand:` signals a `MessageNotUnderstood` and
         // may send the message again: sends, no leaf.
-        (BuiltinClass::Object, "doesNotUnderstand:"),
+        ("Object", "doesNotUnderstand:"),
         // `Object>>subclassResponsibility` makes several mirror sends and
         // signals an `Error`: sends, no leaf.
-        (BuiltinClass::Object, "subclassResponsibility"),
+        ("Object", "subclassResponsibility"),
         // `Collection`'s protocol is written over `do:`, which a subclass
         // defines: every method sends, none forwards to a leaf.
-        (BuiltinClass::Collection, "do:"),
-        (BuiltinClass::Collection, "newForCollectUsingAdd:"),
-        (BuiltinClass::Collection, "allSatisfy:"),
-        (BuiltinClass::Collection, "anySatisfy:"),
-        (BuiltinClass::Collection, "noneSatisfy:"),
-        (BuiltinClass::Collection, "detect:"),
-        (BuiltinClass::Collection, "detect:ifNone:"),
-        (BuiltinClass::Collection, "do:separatedBy:"),
-        (BuiltinClass::Collection, "includes:"),
-        (BuiltinClass::Collection, "inject:into:"),
-        (BuiltinClass::Collection, "isEmpty"),
-        (BuiltinClass::Collection, "reduce:"),
-        (BuiltinClass::Collection, "reduce:ifEmpty:"),
-        (BuiltinClass::Collection, "collect:"),
-        (BuiltinClass::Collection, "select:"),
-        (BuiltinClass::Collection, "reject:"),
-        (BuiltinClass::Collection, "size"),
+        ("Collection", "do:"),
+        ("Collection", "newForCollectUsingAdd:"),
+        ("Collection", "allSatisfy:"),
+        ("Collection", "anySatisfy:"),
+        ("Collection", "noneSatisfy:"),
+        ("Collection", "detect:"),
+        ("Collection", "detect:ifNone:"),
+        ("Collection", "do:separatedBy:"),
+        ("Collection", "includes:"),
+        ("Collection", "inject:into:"),
+        ("Collection", "isEmpty"),
+        ("Collection", "reduce:"),
+        ("Collection", "reduce:ifEmpty:"),
+        ("Collection", "collect:"),
+        ("Collection", "select:"),
+        ("Collection", "reject:"),
+        ("Collection", "size"),
         // A fraction's text is built from its parts' texts: sends, no leaf.
-        (BuiltinClass::Fraction, "printString"),
-        (BuiltinClass::Fraction, "asString"),
-        (BuiltinClass::Fraction, "floor"),
-        (BuiltinClass::Fraction, "ceiling"),
-        (BuiltinClass::Fraction, "truncated"),
-        (BuiltinClass::Fraction, "asInteger"),
-        (BuiltinClass::Fraction, "rounded"),
-        // `Array`'s sequence protocol is Newspeak over its leaves --
-        // `at:`, `at:put:`, `size`, `copyFrom:to:` and
-        // `replaceFrom:to:with:startingAt:` -- and `new:` on its class side:
-        // every method sends, none forwards to a leaf.
-        (BuiltinClass::Array, "isEmpty"),
-        (BuiltinClass::Array, "first"),
-        (BuiltinClass::Array, "last"),
-        (BuiltinClass::Array, "indexOf:"),
-        (BuiltinClass::Array, "keysAndValuesDo:"),
-        (
-            BuiltinClass::Array,
-            "replaceFrom:to:withElementsOf:startingAt:",
-        ),
-        (BuiltinClass::Array, ","),
-        (BuiltinClass::Array, "copyWith:"),
-        (BuiltinClass::Array, "copyWithSize:"),
-        (BuiltinClass::Array, "collect:"),
-        (BuiltinClass::Array, "select:"),
-        (BuiltinClass::Array, "reject:"),
-        (BuiltinClass::Array, "sort:"),
-        (BuiltinClass::Array, "sortFrom:to:by:"),
-        (BuiltinClass::Array, "merge:into:from:width:count:by:"),
-        (BuiltinClass::Array, "withAll:"),
+        ("Fraction", "printString"),
+        ("Fraction", "asString"),
+        ("Fraction", "floor"),
+        ("Fraction", "ceiling"),
+        ("Fraction", "truncated"),
+        ("Fraction", "asInteger"),
+        ("Fraction", "rounded"),
+        // The sequence protocol is Newspeak over the leaves of the class
+        // applying it -- `at:`, `at:put:`, `size` and `newOfSize:`: every
+        // method sends, none forwards to a leaf.
+        ("IndexedCollection", "newOfSize:"),
+        ("IndexedCollection", "isEmpty"),
+        ("IndexedCollection", "first"),
+        ("IndexedCollection", "last"),
+        ("IndexedCollection", "indexOf:"),
+        ("IndexedCollection", "keysAndValuesDo:"),
+        ("IndexedCollection", "copyFrom:to:"),
+        ("IndexedCollection", "replaceFrom:to:with:startingAt:"),
+        ("IndexedCollection", ","),
+        ("IndexedCollection", "copyWith:"),
+        ("IndexedCollection", "copyWithSize:"),
+        ("IndexedCollection", "collect:"),
+        ("IndexedCollection", "select:"),
+        ("IndexedCollection", "reject:"),
+        ("IndexedCollection", "sort:"),
+        ("IndexedCollection", "sortFrom:to:by:"),
+        ("IndexedCollection", "merge:into:from:width:count:by:"),
+        ("IndexedCollection", "asArray"),
+        // `Array`'s new instance of its own kind, and its class side's
+        // `withAll:`: sends, no leaf.
+        ("Array", "newOfSize:"),
+        ("Array", "withAll:"),
         // `String`'s code-point protocol is Newspeak over its leaves --
         // `size`, `at:`, `copyFrom:to:` and the two searches: every method
         // sends, none forwards to a leaf.
-        (BuiltinClass::String, "do:"),
-        (BuiltinClass::String, "isEmpty"),
-        (BuiltinClass::String, "first"),
-        (BuiltinClass::String, "last"),
-        (BuiltinClass::String, "stringAt:"),
-        (BuiltinClass::String, "copyStringFrom:to:"),
-        (BuiltinClass::String, "indexOf:"),
-        (BuiltinClass::String, "lastIndexOf:"),
-        (BuiltinClass::String, "startsWith:"),
-        (BuiltinClass::String, "endsWith:"),
+        ("String", "do:"),
+        ("String", "isEmpty"),
+        ("String", "first"),
+        ("String", "last"),
+        ("String", "stringAt:"),
+        ("String", "copyStringFrom:to:"),
+        ("String", "indexOf:"),
+        ("String", "lastIndexOf:"),
+        ("String", "startsWith:"),
+        ("String", "endsWith:"),
         // What a `MessageNotUnderstood` hands a host: its message's
         // selector, a send, and its receiver, a slot.
-        (BuiltinClass::MessageNotUnderstood, "hostSelector"),
-        (BuiltinClass::MessageNotUnderstood, "hostReceiver"),
+        ("MessageNotUnderstood", "hostSelector"),
+        ("MessageNotUnderstood", "hostReceiver"),
         // The exception protocol (`docs/design/core-library.md`, "Exceptions")
         // is Newspeak over the activation leaves: each method sends, keeps
         // state in the exception's slots, or makes several mirror sends, none
         // of them a forwarder of `self` alone.
-        (BuiltinClass::Exception, "description"),
-        (BuiltinClass::Exception, "printString"),
-        (BuiltinClass::Exception, "reachedDefaultHandler"),
-        (BuiltinClass::Exception, "signal"),
-        (BuiltinClass::Exception, "signal:"),
-        (BuiltinClass::Exception, "pass"),
-        (BuiltinClass::Exception, "return:"),
-        (BuiltinClass::Exception, "return"),
-        (BuiltinClass::Exception, "retry"),
-        (BuiltinClass::Exception, "resume:"),
-        (BuiltinClass::Exception, "resume"),
-        (BuiltinClass::Exception, "defaultAction"),
-        (BuiltinClass::Exception, "hostSelector"),
-        (BuiltinClass::Exception, "hostReceiver"),
-        (BuiltinClass::Exception, "invokeNextHandler"),
-        (BuiltinClass::Exception, "isHandledAt:"),
-        (BuiltinClass::Exception, "invokeHandlerAt:disabling:"),
-        (BuiltinClass::Exception, "notInAHandler:"),
+        ("Exception", "description"),
+        ("Exception", "printString"),
+        ("Exception", "reachedDefaultHandler"),
+        ("Exception", "signal"),
+        ("Exception", "signal:"),
+        ("Exception", "pass"),
+        ("Exception", "return:"),
+        ("Exception", "return"),
+        ("Exception", "retry"),
+        ("Exception", "resume:"),
+        ("Exception", "resume"),
+        ("Exception", "defaultAction"),
+        ("Exception", "hostSelector"),
+        ("Exception", "hostReceiver"),
+        ("Exception", "invokeNextHandler"),
+        ("Exception", "isHandledAt:"),
+        ("Exception", "invokeHandlerAt:disabling:"),
+        ("Exception", "notInAHandler:"),
         // The class sides' `signal` and `signal:`, `^self new signal`: an
         // instantiation and a send. §3.2's metaclasses are flat, so each
         // kernel exception class declares its own.
-        (BuiltinClass::Error, "signal"),
-        (BuiltinClass::Error, "signal:"),
-        (BuiltinClass::MessageNotUnderstood, "signal"),
-        (BuiltinClass::MessageNotUnderstood, "signal:"),
-        (BuiltinClass::Halt, "signal"),
-        (BuiltinClass::Halt, "signal:"),
-        (BuiltinClass::ArgumentError, "signal"),
-        (BuiltinClass::ArgumentError, "signal:"),
-        (BuiltinClass::CannotReturn, "signal"),
-        (BuiltinClass::CannotReturn, "signal:"),
-        (BuiltinClass::NonBooleanReceiver, "signal"),
-        (BuiltinClass::NonBooleanReceiver, "signal:"),
-        (BuiltinClass::CannotInstantiate, "signal"),
-        (BuiltinClass::CannotInstantiate, "signal:"),
+        ("Error", "signal"),
+        ("Error", "signal:"),
+        ("MessageNotUnderstood", "signal"),
+        ("MessageNotUnderstood", "signal:"),
+        ("Halt", "signal"),
+        ("Halt", "signal:"),
+        ("ArgumentError", "signal"),
+        ("ArgumentError", "signal:"),
+        ("CannotReturn", "signal"),
+        ("CannotReturn", "signal:"),
+        ("NonBooleanReceiver", "signal"),
+        ("NonBooleanReceiver", "signal:"),
+        ("CannotInstantiate", "signal"),
+        ("CannotInstantiate", "signal:"),
         // The secondary factories of the error classes that carry a
         // subject, `^self new argument: offending` and its siblings: an
         // instantiation and a send.
-        (BuiltinClass::ArgumentError, "value:"),
-        (BuiltinClass::CannotReturn, "result:"),
-        (BuiltinClass::NonBooleanReceiver, "receiver:"),
-        (BuiltinClass::CannotInstantiate, "behavior:"),
+        ("ArgumentError", "value:"),
+        ("CannotReturn", "result:"),
+        ("NonBooleanReceiver", "receiver:"),
+        ("CannotInstantiate", "behavior:"),
         // Their `description`: a test of `messageText`, and a send of
         // `printString` to the subject.
-        (BuiltinClass::ArgumentError, "description"),
-        (BuiltinClass::CannotReturn, "description"),
-        (BuiltinClass::NonBooleanReceiver, "description"),
-        (BuiltinClass::CannotInstantiate, "description"),
+        ("ArgumentError", "description"),
+        ("CannotReturn", "description"),
+        ("NonBooleanReceiver", "description"),
+        ("CannotInstantiate", "description"),
         // A forwarder in shape, but of its argument rather than of `self`:
         // the row's subject is the computation the future will force.
-        (BuiltinClass::Future, "computing:"),
+        ("Future", "computing:"),
     ];
 
     /// The kernel forwarders whose row is reported under a selector other
@@ -1349,7 +1555,12 @@ mod tests {
     fn every_kernel_method_has_the_fast_path_it_should() {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
-            for kind in BuiltinClass::ALL {
+            let Some(kernel) = mutator.kernel.and_then(|value| value.as_object()) else {
+                panic!("the kernel is instantiated at bootstrap");
+            };
+            let kernel_mixin = super::kernel_application(mutator, kernel).mixin.clone();
+            for mixin in &kernel_mixin.nested {
+                let class_name = mixin.name.as_str();
                 // `Proxy`'s methods forward nothing to a leaf: each is a
                 // protected override of one of `Object`'s public members,
                 // there only to stop §5.5's lookupPublic, and none is ever
@@ -1358,39 +1569,31 @@ mod tests {
                 // checks them instead. `FutureImplementation`'s one method,
                 // `doesNotUnderstand:`, forces the future and sends the
                 // message on: a send, no leaf.
-                if matches!(
-                    kind,
-                    BuiltinClass::VmMirror | BuiltinClass::Proxy | BuiltinClass::FutureImplementation
-                ) {
+                if matches!(class_name, "Proxy" | "FutureImplementation") {
                     continue;
                 }
-                let class = mutator.builtin_class(kind);
-                let application = mutator
-                    .heap()
-                    .class_application(class)
-                    .expect("a builtin class has an application");
-                let mixin = &application.mixin;
+                let owned_by = |owner: BuiltinClass| super::kernel_class_name(owner) == class_name;
                 let class_side = mixin
                     .class_side
                     .iter()
                     .flat_map(|side| side.compiled_methods());
                 for method in mixin.compiled_methods().chain(class_side) {
                     let selector = method.selector.as_str();
-                    if NOT_FORWARDERS.contains(&(kind, selector)) {
+                    if NOT_FORWARDERS.contains(&(class_name, selector)) {
                         assert!(
                             method.fast_path.is_none(),
-                            "{kind:?}>>{selector} reaches a leaf after all; take it off NOT_FORWARDERS"
+                            "{class_name}>>{selector} reaches a leaf after all; take it off NOT_FORWARDERS"
                         );
                         continue;
                     }
                     if let Some((_, _, expected)) = QUICK_METHODS
                         .iter()
-                        .find(|(owner, name, _)| *owner == kind && *name == selector)
+                        .find(|(owner, name, _)| owned_by(*owner) && *name == selector)
                     {
                         assert_eq!(
                             method.fast_path,
                             Some(*expected),
-                            "{kind:?}>>{selector} is not the quick method it should be"
+                            "{class_name}>>{selector} is not the quick method it should be"
                         );
                         continue;
                     }
@@ -1398,7 +1601,7 @@ mod tests {
                     // own kind, which reaches no row;
                     // `objects_class_accessors_are_exactly_the_nameable_builtins`
                     // checks each one.
-                    if kind == BuiltinClass::Object
+                    if class_name == "Object"
                         && OBJECT_CLASS_ACCESSORS
                             .iter()
                             .any(|accessor| super::kernel_class_name(*accessor) == selector)
@@ -1413,16 +1616,16 @@ mod tests {
                         continue;
                     }
                     let Some(crate::mixin::MethodFastPath::Mirror(row)) = method.fast_path else {
-                        panic!("{kind:?}>>{selector} is not recognized as a primitive method");
+                        panic!("{class_name}>>{selector} is not recognized as a primitive method");
                     };
                     let reported = REPORTED_UNDER_ANOTHER_SELECTOR
                         .iter()
-                        .find(|(owner, name, _)| *owner == kind && *name == selector)
+                        .find(|(owner, name, _)| owned_by(*owner) && *name == selector)
                         .map_or(selector, |(_, _, reported)| *reported);
                     assert_eq!(
                         mirror_entry(row).reported,
                         reported,
-                        "{kind:?}>>{selector} forwards to a row reported under another selector"
+                        "{class_name}>>{selector} forwards to a row reported under another selector"
                     );
                 }
             }
@@ -1907,35 +2110,58 @@ mod tests {
         });
     }
 
+    /// The kernel's private classes: `Top`, which §3.2 lets only `Object`
+    /// name, `Activation` and `FutureImplementation`, which no program may
+    /// reach at all, `NonBooleanReceiver`, which a program catches as an
+    /// `Error` (`docs/design/core-library.md`, "Exceptions";
+    /// `docs/design/object-model.md`, "Simultaneous slots"), and
+    /// `IndexedCollection`, a mixin a program meets only through the
+    /// classes that apply it.
+    const PRIVATE_KERNEL_CLASSES: &[&str] = &[
+        "Top",
+        "Activation",
+        "FutureImplementation",
+        "NonBooleanReceiver",
+        "IndexedCollection",
+    ];
+
     /// §6.3.1 defaults an undeclared member to protected, and a protected
     /// nested class is unreachable from outside the module that declares it,
     /// so every kernel class has to say `public` for a program to name it --
-    /// every one but `Top`, which §3.2 lets only `Object` name,
-    /// `Activation` and `FutureImplementation`, which no program may reach
-    /// at all, and
-    /// `NonBooleanReceiver`, which a program catches as an `Error`
-    /// (`docs/design/core-library.md`, "Exceptions";
-    /// `docs/design/object-model.md`, "Simultaneous slots").
+    /// every one but `PRIVATE_KERNEL_CLASSES`. Every builtin but the
+    /// mirror's has its class among them, and every one of them is checked.
     #[test]
-    fn only_top_activation_future_implementation_and_non_boolean_receiver_are_private() {
+    fn only_the_kernels_private_classes_are_private() {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
             let Some(kernel) = mutator.kernel.and_then(|value| value.as_object()) else {
                 panic!("the kernel is instantiated at bootstrap");
             };
             let application = super::kernel_application(mutator, kernel);
+            let builtins = application
+                .mixin
+                .nested
+                .iter()
+                .filter(|nested| super::kernel_kind_named(nested.name.as_str()).is_some())
+                .count();
             assert_eq!(
-                application.mixin.nested.len(),
+                builtins,
                 BuiltinClass::ALL.len() - 1,
                 "the kernel declares one class per builtin but the mirror's"
             );
-            let top = super::kernel_class_name(BuiltinClass::Top);
-            let activation = super::kernel_class_name(BuiltinClass::Activation);
-            let future = super::kernel_class_name(BuiltinClass::FutureImplementation);
-            let non_boolean_receiver = super::kernel_class_name(BuiltinClass::NonBooleanReceiver);
+            for private in PRIVATE_KERNEL_CLASSES {
+                assert!(
+                    application
+                        .mixin
+                        .nested
+                        .iter()
+                        .any(|nested| nested.name.as_str() == *private),
+                    "the kernel declares {private}"
+                );
+            }
             for nested in &application.mixin.nested {
                 let name = nested.name.as_str();
-                let expected = if [top, activation, future, non_boolean_receiver].contains(&name) {
+                let expected = if PRIVATE_KERNEL_CLASSES.contains(&name) {
                     ns_syntax::ast::AccessModifier::Private
                 } else {
                     ns_syntax::ast::AccessModifier::Public
@@ -1970,7 +2196,6 @@ mod tests {
                 (BuiltinClass::Symbol, Some(BuiltinClass::String)),
                 (BuiltinClass::UndefinedObject, Some(BuiltinClass::Value)),
                 (BuiltinClass::Collection, Some(BuiltinClass::Object)),
-                (BuiltinClass::Array, Some(BuiltinClass::Collection)),
                 (BuiltinClass::Closure, Some(BuiltinClass::Object)),
                 (BuiltinClass::Proxy, Some(BuiltinClass::Object)),
                 (
@@ -1996,7 +2221,125 @@ mod tests {
                     None => assert!(actual.is_none(), "{kind:?} has no superclass"),
                 }
             }
+            // `Array = Collection <: IndexedCollection` (§6.2): its
+            // superclass is the level the clause adds, the kernel's
+            // `IndexedCollection` mixin applied over `Collection`.
+            let heap = mutator.heap();
+            let array = mutator.builtin_class(BuiltinClass::Array);
+            let level = heap
+                .class_superclass(array)
+                .expect("Array has a superclass");
+            let origin = heap
+                .class_applied_origin(level)
+                .expect("Array's superclass is the level its clause adds");
+            let array_mixin = heap
+                .class_application(array)
+                .expect("Array is a class")
+                .mixin
+                .clone();
+            assert!(std::rc::Rc::ptr_eq(&origin.declaration, &array_mixin));
+            assert_eq!(origin.index, 0);
+            let Some(kernel) = mutator.kernel.and_then(|value| value.as_object()) else {
+                panic!("the kernel is instantiated at bootstrap");
+            };
+            let kernel_mixin = super::kernel_application(mutator, kernel).mixin.clone();
+            let level_mixin = heap
+                .class_application(level)
+                .expect("a level is a class")
+                .mixin
+                .clone();
+            assert!(std::rc::Rc::ptr_eq(
+                &level_mixin,
+                super::nested_named(&kernel_mixin, "IndexedCollection")
+            ));
+            let collection = mutator.builtin_class(BuiltinClass::Collection);
+            assert!(
+                heap.class_superclass(level)
+                    .is_some_and(|class| class.same(collection)),
+                "the level sits on Collection"
+            );
         });
+    }
+
+    /// The level `IndexedCollection` adds under `Array` takes its lexical
+    /// context from the class it applies (§6.2), and that class is the
+    /// kernel's: enclosed by the kernel instance, declared by the kernel's
+    /// class, as is each one's metaclass (§6.3). A level built before the
+    /// kernel instance existed would otherwise keep an empty context, and
+    /// `outer` from a method of the mixin would answer nothing.
+    #[test]
+    fn an_applied_level_of_a_builtin_has_the_kernels_lexical_context() {
+        let mut interpreter = Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let Some(kernel) = mutator.kernel.and_then(|value| value.as_object()) else {
+                panic!("the kernel is instantiated at bootstrap");
+            };
+            let heap = mutator.heap();
+            let kernel_class = heap.object_class(kernel);
+            let array = mutator.builtin_class(BuiltinClass::Array);
+            let level = heap
+                .class_superclass(array)
+                .expect("Array has a superclass");
+            assert!(heap.class_is_applied_level(level));
+            let indexed_collection = indexed_collection_class(mutator, kernel)
+                .expect("the kernel's hidden slot holds IndexedCollection's class");
+            for class in [level, indexed_collection] {
+                let metaclass = heap
+                    .class_metaclass(class)
+                    .expect("a class has a metaclass");
+                for each in [class, metaclass] {
+                    assert!(
+                        heap.class_enclosing(each)
+                            .is_some_and(|enclosing| enclosing.same(kernel)),
+                        "enclosed by the kernel instance"
+                    );
+                    assert!(
+                        heap.class_declaring(each)
+                            .is_some_and(|declaring| declaring.same(kernel_class)),
+                        "declared by the kernel's class"
+                    );
+                }
+            }
+        });
+    }
+
+    /// The kernel phase builds `IndexedCollection`'s class itself, before
+    /// any shipped module boots, and leaves it in the kernel's hidden slot:
+    /// the accessor answers that class, so `complete_shipped_world` builds
+    /// no second one beside the class the level was applied from.
+    #[test]
+    fn the_kernel_phase_fills_the_hidden_slot_of_an_applied_kernel_class() {
+        let mut interpreter = Interpreter::with_kernel(crate::Lowering::Optimized);
+        interpreter.enter(|mutator| {
+            let Some(kernel) = mutator.kernel.and_then(|value| value.as_object()) else {
+                panic!("the kernel is instantiated by its phase");
+            };
+            let class = indexed_collection_class(mutator, kernel)
+                .expect("the kernel phase fills IndexedCollection's hidden slot");
+            let collection = mutator.builtin_class(BuiltinClass::Collection);
+            assert!(mutator
+                .heap()
+                .class_superclass(class)
+                .is_some_and(|superclass| superclass.same(collection)));
+        });
+    }
+
+    /// The class in the kernel's hidden slot for `IndexedCollection`, if
+    /// one is there.
+    fn indexed_collection_class<'gc>(
+        mutator: &crate::interpreter::Mutator<'gc>,
+        kernel: crate::types::ObjectReference<'gc>,
+    ) -> Option<crate::types::ClassReference<'gc>> {
+        let application = super::kernel_application(mutator, kernel);
+        let nested = super::nested_named(&application.mixin, "IndexedCollection");
+        let slot = application
+            .nested_slot
+            .get(&crate::mixin::mixin_key(nested))
+            .copied()?;
+        mutator
+            .heap()
+            .instance_field(kernel, slot)
+            .and_then(|value| value.as_object())
     }
 
     /// §3.1.1's "its class inherits from class `Value`", as the flag the two

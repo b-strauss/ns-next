@@ -401,22 +401,29 @@ mod tests {
         );
     }
 
-    /// A level past a declaration's `<:` clauses names nothing. No shipped
-    /// declaration applies a mixin today -- every module root is `= Value`
-    /// -- so no level of a shipped class is named at all, the kernel root's
-    /// first included; the first shipped mixin brings a level back to
-    /// resolve (`docs/OPEN-WORK.md`).
+    /// A level past a declaration's `<:` clauses names nothing: `Array`
+    /// applies one mixin, so its level 0 is named
+    /// (`shipped_world`'s
+    /// `a_shipped_level_is_named_and_resolves_to_the_boots_own_object`)
+    /// and its level 1 is not, nor any level of the kernel root, which is
+    /// `= Value` and applies none.
     #[test]
     fn a_level_past_the_clauses_is_refused() {
-        for clause in [0, 1] {
-            assert_eq!(
-                resolve_error(
-                    &[name("Kernel", "Kernel", ShippedKind::Level(clause))],
-                    false
-                ),
-                DecodeError::UnknownShippedName(format!("Kernel Kernel level {clause}"))
-            );
-        }
+        assert_eq!(
+            resolve_error(&[name("Kernel", "Array", ShippedKind::Level(1))], false),
+            DecodeError::UnknownShippedName("Kernel Array level 1".to_string())
+        );
+        assert_eq!(
+            resolve_error(
+                &[name("Kernel", "Array", ShippedKind::LevelMetaclass(1))],
+                false
+            ),
+            DecodeError::UnknownShippedName("Kernel Array level 1 class".to_string())
+        );
+        assert_eq!(
+            resolve_error(&[name("Kernel", "Kernel", ShippedKind::Level(0))], false),
+            DecodeError::UnknownShippedName("Kernel Kernel level 0".to_string())
+        );
     }
 
     #[test]

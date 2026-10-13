@@ -10,13 +10,18 @@
 /// Newspeak source over a VM mirror"). One nested class per builtin class;
 /// the bootstrap fills the builtin class objects from them before it
 /// instantiates this module, so a nested class here *is* the class a literal
-/// has. Every method that needs a leaf reaches Rust through `vmMirror`, the
-/// one object that holds the leaves, and nothing else here does.
+/// has. Beside them, ordinary classes, which their accessors build as any
+/// class's do. Every method that needs a leaf reaches Rust through
+/// `vmMirror`, the one object that holds the leaves, and nothing else here
+/// does.
 ///
-/// A superclass clause below names a sibling by its bare name and nothing
-/// else: the bootstrap reads the name and never runs the clause, because the
-/// classes it names must exist before any clause could run. `Top` declares
-/// none: it has no superclass.
+/// A builtin's superclass clause names a sibling by its bare name and
+/// nothing else, and so does each of its `<:` clauses, which may name only
+/// an ordinary class whose own clause is a bare builtin name: the bootstrap
+/// reads the names and runs neither clause, because the classes they name
+/// must exist before any clause could run. An ordinary class's clause runs
+/// when the boot builds the class. `Top` declares none: it has no
+/// superclass.
 ///
 /// Every class here says `public`: §6.3.1 makes an undeclared member
 /// protected, and a protected class is unreachable from another module, so
@@ -3498,9 +3503,332 @@ class Kernel vmMirror: mirror = Value (
     )
   )
 
+  /// The sequence protocol shared by the classes whose elements are
+  /// indexed from 1, a mixin `Array` applies over `Collection`
+  /// (`Collection <: IndexedCollection`, §6.2): every member here is
+  /// written over `at:`, `at:put:`, `size` and `newOfSize:`, which each
+  /// class applying it implements, and a class overrides any member it
+  /// can answer faster.
+  ///
+  /// It declares none of `at:`, `at:put:`, `size`, `do:`, `=`, `hash` and
+  /// `printString`, so that a failure block's `super` send in the class
+  /// applying it passes through to `Collection` and `Object`. Its own
+  /// superclass, `Collection`, records that its members build on
+  /// `Collection`'s protocol; applying it takes only its own members.
+  /// Private, as only the kernel classes no program may name are: a
+  /// program meets it only through the classes that apply it.
+  private class IndexedCollection = Collection () (
+    /// Answers a new instance of the receiver's kind holding `size`
+    /// elements, each the empty element of that kind.
+    ///
+    /// size: an Integer of at least 0.
+    ///
+    /// Here, signals the Error of `subclassResponsibility`,
+    /// 'IndexedCollection>>newOfSize: is abstract: … must implement it':
+    /// every class applying the mixin defines it.
+    protected newOfSize: size = (
+      ^self subclassResponsibility.
+    )
+
+    /// Answers whether the receiver has no element.
+    public isEmpty = (
+      ^self size = 0.
+    )
+
+    /// Answers the first element.
+    ///
+    /// Signals what `at:` signals for the index 1 when the receiver is
+    /// empty: for an Array, an ArgumentError carrying 1.
+    public first = (
+      ^self at: 1.
+    )
+
+    /// Answers the last element.
+    ///
+    /// Signals what `at:` signals for the index 0 when the receiver is
+    /// empty: for an Array, an ArgumentError carrying 0.
+    public last = (
+      ^self at: self size.
+    )
+
+    /// Answers the index of the first element `=` to `element`, or 0
+    /// when there is none. Each element is sent `=` with `element`, from
+    /// the first, until one answers true.
+    public indexOf: element = (
+      1 to: self size do: [:index | (self at: index) = element ifTrue: [^index]].
+      ^0.
+    )
+
+    /// Evaluates `action` with each index and the element there, from
+    /// the first, reading each element when it reaches it. Answers the
+    /// receiver.
+    ///
+    /// action: a two-argument block, given the index and the element.
+    public keysAndValuesDo: action = (
+      1 to: self size do: [:index | action value: index value: (self at: index)].
+    )
+
+    /// Answers a new collection of the receiver's kind holding the
+    /// elements from `start` to `stop`, in order; empty when `stop` is
+    /// `start - 1`. The receiver is unchanged.
+    ///
+    /// start, stop: Integers with 1 <= start <= stop + 1 and
+    ///     stop <= size.
+    ///
+    /// Signals what `newOfSize:` signals for a negative length, and what
+    /// `at:` signals for the first index outside the receiver.
+    public copyFrom: start to: stop = (
+      |
+        result
+      |
+      result:: self newOfSize: stop - start + 1.
+      1 to: result size do: [:index | result at: index put: (self at: start + index - 1)].
+      ^result.
+    )
+
+    /// Stores the elements of `source` from `sourceStart` on into the
+    /// receiver's positions `start` to `stop`, and answers the
+    /// receiver. Correct when `source` is the receiver and the ranges
+    /// overlap: every element is read before any is stored.
+    ///
+    /// start, stop: a range of the receiver, as for `copyFrom:to:`.
+    /// source: anything answering `size` and `at:` -- an Array, a List,
+    ///     a String, whose elements are its code points.
+    /// sourceStart: an Integer with 1 <= sourceStart and
+    ///     sourceStart + (stop - start) <= source size.
+    ///
+    /// Signals, before it stores anything, the ArgumentErrors an Array's
+    /// `replaceFrom:to:with:startingAt:` signals: for a range the
+    /// receiver does not hold, its text beginning 'replaceFrom: … to: …',
+    /// and for a source too short, one carrying `sourceStart`,
+    /// 'startingAt: … out of range: the source holds … elements, the
+    /// range needs … from …'. Then signals what `at:put:` signals for an
+    /// element the receiver cannot hold.
+    ///
+    /// The source is copied into an Array first, which is what makes an
+    /// overlapping range correct, and the range is checked by an Array of
+    /// the receiver's size taking that copy, so that the checks and their
+    /// texts are the Array leaf's rather than a second set of them.
+    public replaceFrom: start to: stop with: source startingAt: sourceStart = (
+      |
+        elements
+        checked
+      |
+      elements:: outer Kernel Array new: source size.
+      1 to: source size do: [:index | elements at: index put: (source at: index)].
+      checked:: outer Kernel Array new: self size.
+      checked replaceFrom: start to: stop with: elements startingAt: sourceStart.
+      start to: stop do: [:index | self at: index put: (checked at: index)].
+    )
+
+    /// Answers a new collection of the receiver's kind holding the
+    /// receiver's elements followed by those of `collection`. The
+    /// receiver is unchanged.
+    ///
+    /// collection: anything answering `size` and `at:` -- an Array, a
+    ///     List, a String, whose elements are its code points.
+    ///
+    /// Signals what `at:put:` signals for an element of `collection` the
+    /// receiver's kind cannot hold.
+    public , collection = (
+      |
+        result
+      |
+      result:: self newOfSize: self size + collection size.
+      result replaceFrom: 1 to: self size with: self startingAt: 1.
+      result replaceFrom: self size + 1 to: result size with: collection startingAt: 1.
+      ^result.
+    )
+
+    /// Answers a new collection of the receiver's kind one longer than
+    /// the receiver, `element` last. The receiver is unchanged.
+    ///
+    /// Signals what `at:put:` signals for an `element` the receiver's
+    /// kind cannot hold.
+    public copyWith: element = (
+      |
+        result
+      |
+      result:: self copyWithSize: self size + 1.
+      result at: result size put: element.
+      ^result.
+    )
+
+    /// Answers a new collection of the receiver's kind of `newSize`
+    /// elements: the receiver's first ones, cut off when `newSize` is
+    /// smaller than `size`, followed by the empty element of that kind
+    /// -- nil for an Array -- when it is larger. The receiver is
+    /// unchanged.
+    ///
+    /// newSize: an Integer of at least 0.
+    ///
+    /// Signals what `newOfSize:` signals for a `newSize` that is negative
+    /// or no Integer: for an Array, the ArgumentError of `Array new:`.
+    public copyWithSize: newSize = (
+      |
+        result
+        kept
+      |
+      result:: self newOfSize: newSize.
+      kept:: newSize < self size ifTrue: [newSize] ifFalse: [self size].
+      result replaceFrom: 1 to: kept with: self startingAt: 1.
+      ^result.
+    )
+
+    /// Answers a new Array of `transform`'s answer for each element, in
+    /// order: an Array whatever the receiver's kind, since `transform`
+    /// may answer anything. The receiver is unchanged.
+    ///
+    /// transform: a one-argument block.
+    public collect: transform = (
+      |
+        result
+      |
+      result:: outer Kernel Array new: self size.
+      1 to: self size do: [:index | result at: index put: (transform value: (self at: index))].
+      ^result.
+    )
+
+    /// Answers a new collection of the receiver's kind holding the
+    /// elements for which `predicate` answers true, in order. The
+    /// receiver is unchanged.
+    ///
+    /// predicate: a one-argument block answering a Boolean.
+    public select: predicate = (
+      |
+        result
+        count
+        element
+      |
+      result:: self newOfSize: self size.
+      count:: 0.
+      1 to: self size do: [:index |
+        element:: self at: index.
+        (predicate value: element) ifTrue: [
+          count:: count + 1.
+          result at: count put: element.
+        ].
+      ].
+      ^result copyFrom: 1 to: count.
+    )
+
+    /// Answers a new collection of the receiver's kind holding the
+    /// elements for which `predicate` answers false, in order. The
+    /// receiver is unchanged.
+    ///
+    /// predicate: a one-argument block answering a Boolean.
+    public reject: predicate = (
+      ^self select: [:element | (predicate value: element) not].
+    )
+
+    /// Sorts the elements in place, stably -- elements that may precede
+    /// each other both ways keep their order -- and answers the
+    /// receiver.
+    ///
+    /// lessOrEqual: a two-argument block answering whether its first
+    ///     argument may precede its second.
+    public sort: lessOrEqual = (
+      ^self sortFrom: 1 to: self size by: lessOrEqual.
+    )
+
+    /// Sorts the elements from `start` to `stop` in place, stably, as
+    /// `sort:` does, and answers the receiver; the rest stay where they
+    /// are.
+    ///
+    /// start, stop: a range of the receiver, as for `copyFrom:to:`.
+    /// lessOrEqual: a two-argument block answering whether its first
+    ///     argument may precede its second.
+    ///
+    /// Signals what `copyFrom:to:` signals for a range the receiver does
+    /// not hold: for an Array, its ArgumentError.
+    ///
+    /// A bottom-up merge sort over a copy of the range and a buffer of
+    /// the same size, trading the two each pass: no recursion, so its
+    /// depth does not grow with the range, and two collections of the
+    /// receiver's kind the size of the range as extra memory. Taking from
+    /// the left run while its element may precede the right run's keeps
+    /// it stable.
+    public sortFrom: start to: stop by: lessOrEqual = (
+      |
+        source
+        target
+        count
+        width
+        left
+        swap
+      |
+      source:: self copyFrom: start to: stop.
+      count:: source size.
+      count < 2 ifTrue: [^self].
+      target:: self newOfSize: count.
+      width:: 1.
+      [width < count] whileTrue: [
+        left:: 1.
+        [left <= count] whileTrue: [
+          self merge: source into: target from: left width: width count: count by: lessOrEqual.
+          left:: left + width + width.
+        ].
+        swap:: source.
+        source:: target.
+        target:: swap.
+        width:: width + width.
+      ].
+      self replaceFrom: start to: stop with: source startingAt: 1.
+    )
+
+    /// Merges the sorted runs of `source` that start at `left` -- the
+    /// first `width` elements long, the second the next `width`, each
+    /// cut off at `count` -- into the same positions of `target`,
+    /// taking from the first run while its element may precede the
+    /// second's.
+    private merge: source into: target from: left width: width count: count by: lessOrEqual = (
+      |
+        middle
+        right
+        leftCursor
+        rightCursor
+        targetCursor
+      |
+      middle:: left + width - 1.
+      middle > count ifTrue: [middle:: count].
+      right:: middle + width.
+      right > count ifTrue: [right:: count].
+      leftCursor:: left.
+      rightCursor:: middle + 1.
+      targetCursor:: left.
+      [targetCursor <= right] whileTrue: [
+        ((rightCursor > right) or: [
+          (leftCursor <= middle) and: [
+            lessOrEqual value: (source at: leftCursor) value: (source at: rightCursor).
+          ].
+        ]) ifTrue: [
+          target at: targetCursor put: (source at: leftCursor).
+          leftCursor:: leftCursor + 1.
+        ] ifFalse: [
+          target at: targetCursor put: (source at: rightCursor).
+          rightCursor:: rightCursor + 1.
+        ].
+        targetCursor:: targetCursor + 1.
+      ].
+    )
+
+    /// Answers a new Array of the receiver's elements, in order. The
+    /// receiver is unchanged, and later changes to either do not reach
+    /// the other.
+    public asArray = (
+      |
+        result
+      |
+      result:: outer Kernel Array new: self size.
+      1 to: self size do: [:index | result at: index put: (self at: index)].
+      ^result.
+    )
+  )
+
   /// A fixed-size sequence of objects, indexed from 1, and a Collection:
-  /// `Array new: 3`, or a literal such as `{1. 2}`.
-  public class Array = Collection () (
+  /// `Array new: 3`, or a literal such as `{1. 2}`. The sequence protocol
+  /// comes from `IndexedCollection`, over the leaves here.
+  public class Array = Collection <: IndexedCollection () (
     /// Answers true: the receiver is an Array.
     public isKindOfArray = (
       ^true.
@@ -3556,42 +3884,16 @@ class Kernel vmMirror: mirror = Value (
       ^self.
     )
 
-    /// Answers whether the Array has no element.
-    public isEmpty = (
-      ^self size = 0.
-    )
-
-    /// Answers the first element.
+    /// Answers a new Array of `size` elements, each nil: the new
+    /// instance of the receiver's kind the sequence protocol builds its
+    /// answers in.
     ///
-    /// Signals the ArgumentError of `at:`, carrying 1, for an empty
-    /// Array.
-    public first = (
-      ^self at: 1.
-    )
-
-    /// Answers the last element.
+    /// size: an Integer of at least 0.
     ///
-    /// Signals the ArgumentError of `at:`, carrying 0, for an empty
-    /// Array.
-    public last = (
-      ^self at: self size.
-    )
-
-    /// Answers the index of the first element `=` to `element`, or 0
-    /// when there is none. Each element is sent `=` with `element`, from
-    /// the first, until one answers true.
-    public indexOf: element = (
-      1 to: self size do: [:index | (self at: index) = element ifTrue: [^index]].
-      ^0.
-    )
-
-    /// Evaluates `action` with each index and the element there, from
-    /// the first, reading each element when it reaches it. Answers the
-    /// receiver.
-    ///
-    /// action: a two-argument block, given the index and the element.
-    public keysAndValuesDo: action = (
-      1 to: self size do: [:index | action value: index value: (self at: index)].
+    /// Signals the ArgumentError of `Array new:` for a `size` that is
+    /// negative or no Integer.
+    protected newOfSize: size = (
+      ^outer Kernel Array new: size.
     )
 
     /// Answers a new Array of the elements from `start` to `stop`; empty
@@ -3625,213 +3927,16 @@ class Kernel vmMirror: mirror = Value (
     /// not hold, and an ArgumentError carrying `sourceStart`,
     /// 'startingAt: … out of range: the source holds … elements, the
     /// range needs … from …', for a source too short.
+    ///
+    /// The leaf takes an Array source; any other source falls to
+    /// `IndexedCollection`'s, which copies it into an Array first.
     public replaceFrom: start to: stop with: source startingAt: sourceStart = (
       ^vmMirror collection: self
           replaceFrom: start
           to: stop
           with: source
           startingAt: sourceStart
-          ifFail: [self replaceFrom: start to: stop withElementsOf: source startingAt: sourceStart].
-    )
-
-    /// `replaceFrom:to:with:startingAt:` for a source that is no Array:
-    /// copies the whole source into a new Array of its size and hands
-    /// that to the leaf with `sourceStart` unchanged, so the leaf checks
-    /// the range and the start against a source of the same size, and
-    /// every error text is the leaf's.
-    ///
-    /// source: anything answering `size` and `at:`; signals the
-    ///     MessageNotUnderstood of the first it lacks.
-    ///
-    /// Signals what `replaceFrom:to:with:startingAt:` documents.
-    private replaceFrom: start to: stop withElementsOf: source startingAt: sourceStart = (
-      |
-        elements
-      |
-      elements:: outer Kernel Array new: source size.
-      1 to: source size do: [:index | elements at: index put: (source at: index)].
-      ^vmMirror collection: self
-          replaceFrom: start
-          to: stop
-          with: elements
-          startingAt: sourceStart
           ifFail: [^super replaceFrom: start to: stop with: source startingAt: sourceStart].
-    )
-
-    /// Answers a new Array of the receiver's elements followed by those
-    /// of `collection`. The receiver is unchanged.
-    ///
-    /// collection: an Array, or anything answering `size` and `at:` --
-    ///     a List, a String, whose elements are its code points.
-    public , collection = (
-      |
-        result
-      |
-      result:: outer Kernel Array new: self size + collection size.
-      result replaceFrom: 1 to: self size with: self startingAt: 1.
-      result replaceFrom: self size + 1 to: result size with: collection startingAt: 1.
-      ^result.
-    )
-
-    /// Answers a new Array one longer than the receiver, `element` last.
-    /// The receiver is unchanged.
-    public copyWith: element = (
-      |
-        result
-      |
-      result:: self copyWithSize: self size + 1.
-      result at: result size put: element.
-      ^result.
-    )
-
-    /// Answers a new Array of `newSize` elements: the receiver's first
-    /// ones, cut off when `newSize` is smaller than `size`, followed by
-    /// nils when it is larger. The receiver is unchanged.
-    ///
-    /// newSize: an Integer of at least 0.
-    ///
-    /// Signals the ArgumentError of `Array new:` for a `newSize` that
-    /// is negative or no Integer.
-    public copyWithSize: newSize = (
-      |
-        result
-        kept
-      |
-      result:: outer Kernel Array new: newSize.
-      kept:: newSize < self size ifTrue: [newSize] ifFalse: [self size].
-      result replaceFrom: 1 to: kept with: self startingAt: 1.
-      ^result.
-    )
-
-    /// Answers a new Array of `transform`'s answer for each element, in
-    /// order. The receiver is unchanged.
-    ///
-    /// transform: a one-argument block.
-    public collect: transform = (
-      |
-        result
-      |
-      result:: outer Kernel Array new: self size.
-      1 to: self size do: [:index | result at: index put: (transform value: (self at: index))].
-      ^result.
-    )
-
-    /// Answers a new Array of the elements for which `predicate`
-    /// answers true, in order. The receiver is unchanged.
-    ///
-    /// predicate: a one-argument block answering a Boolean.
-    public select: predicate = (
-      |
-        result
-        count
-      |
-      result:: outer Kernel Array new: self size.
-      count:: 0.
-      self do: [:element |
-        (predicate value: element) ifTrue: [
-          count:: count + 1.
-          result at: count put: element.
-        ].
-      ].
-      ^result copyFrom: 1 to: count.
-    )
-
-    /// Answers a new Array of the elements for which `predicate`
-    /// answers false, in order. The receiver is unchanged.
-    ///
-    /// predicate: a one-argument block answering a Boolean.
-    public reject: predicate = (
-      ^self select: [:element | (predicate value: element) not].
-    )
-
-    /// Sorts the elements in place, stably -- elements that may precede
-    /// each other both ways keep their order -- and answers the
-    /// receiver.
-    ///
-    /// lessOrEqual: a two-argument block answering whether its first
-    ///     argument may precede its second.
-    public sort: lessOrEqual = (
-      ^self sortFrom: 1 to: self size by: lessOrEqual.
-    )
-
-    /// Sorts the elements from `start` to `stop` in place, stably, as
-    /// `sort:` does, and answers the receiver; the rest stay where they
-    /// are.
-    ///
-    /// start, stop: a range of the receiver, as for `copyFrom:to:`.
-    /// lessOrEqual: a two-argument block answering whether its first
-    ///     argument may precede its second.
-    ///
-    /// Signals the ArgumentError of `copyFrom:to:` for a range the
-    /// receiver does not hold.
-    ///
-    /// A bottom-up merge sort over a copy of the range and a buffer of
-    /// the same size, trading the two each pass: no recursion, so its
-    /// depth does not grow with the range, and two Arrays the size of
-    /// the range as extra memory. Taking from the left run while its
-    /// element may precede the right run's keeps it stable.
-    public sortFrom: start to: stop by: lessOrEqual = (
-      |
-        source
-        target
-        count
-        width
-        left
-        swap
-      |
-      source:: self copyFrom: start to: stop.
-      count:: source size.
-      count < 2 ifTrue: [^self].
-      target:: outer Kernel Array new: count.
-      width:: 1.
-      [width < count] whileTrue: [
-        left:: 1.
-        [left <= count] whileTrue: [
-          self merge: source into: target from: left width: width count: count by: lessOrEqual.
-          left:: left + width + width.
-        ].
-        swap:: source.
-        source:: target.
-        target:: swap.
-        width:: width + width.
-      ].
-      self replaceFrom: start to: stop with: source startingAt: 1.
-    )
-
-    /// Merges the sorted runs of `source` that start at `left` -- the
-    /// first `width` elements long, the second the next `width`, each
-    /// cut off at `count` -- into the same positions of `target`,
-    /// taking from the first run while its element may precede the
-    /// second's.
-    private merge: source into: target from: left width: width count: count by: lessOrEqual = (
-      |
-        middle
-        right
-        leftCursor
-        rightCursor
-        targetCursor
-      |
-      middle:: left + width - 1.
-      middle > count ifTrue: [middle:: count].
-      right:: middle + width.
-      right > count ifTrue: [right:: count].
-      leftCursor:: left.
-      rightCursor:: middle + 1.
-      targetCursor:: left.
-      [targetCursor <= right] whileTrue: [
-        ((rightCursor > right) or: [
-          (leftCursor <= middle) and: [
-            lessOrEqual value: (source at: leftCursor) value: (source at: rightCursor).
-          ].
-        ]) ifTrue: [
-          target at: targetCursor put: (source at: leftCursor).
-          leftCursor:: leftCursor + 1.
-        ] ifFalse: [
-          target at: targetCursor put: (source at: rightCursor).
-          rightCursor:: rightCursor + 1.
-        ].
-        targetCursor:: targetCursor + 1.
-      ].
     )
   ) : (
     /// Answers a new Array of `size` elements, each nil.

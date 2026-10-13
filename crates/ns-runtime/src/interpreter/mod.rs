@@ -453,6 +453,15 @@ impl Interpreter {
     /// reference lowering is for checking the optimized one against it; an
     /// artifact decoded into either runs the code it carries.
     pub fn bootstrap_with(lowering: Lowering) -> Interpreter {
+        let mut interpreter = Interpreter::with_kernel(lowering);
+        interpreter.install_shipped_modules();
+        interpreter
+    }
+
+    /// An interpreter as the kernel phase leaves it: the kernel wired in,
+    /// no other shipped module booted. `bootstrap_with` goes on from here;
+    /// a test stops here to see what the kernel phase alone built.
+    pub(crate) fn with_kernel(lowering: Lowering) -> Interpreter {
         // Only the debug build's stress modes write to these fields below.
         #[cfg_attr(not(debug_assertions), allow(unused_mut))]
         let mut interpreter = Interpreter {
@@ -482,9 +491,8 @@ impl Interpreter {
         }
         // Last, after the stress modes are set up: the kernel's own
         // instantiation is a run like any other, and they should see it, as
-        // is the platform's, which needs the kernel instance.
+        // they see the shipped modules' that `bootstrap_with` boots next.
         interpreter.install_kernel();
-        interpreter.install_shipped_modules();
         interpreter
     }
 

@@ -6327,6 +6327,73 @@ fn the_hashes_of_objects_named_by_tag_survive_a_snapshot() {
     });
 }
 
+/// A shipped level is named, not carried, like a builtin class: the hash the
+/// level `Array`'s `<:` clause adds was given, and its metaclass's, travel in
+/// the closing table and land on the loading world's own level.
+#[test]
+fn the_hash_of_a_shipped_level_survives_a_snapshot() {
+    let source = indoc! {"
+        class X = Object new (
+        ) (
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let (bytes, level_hash, metaclass_hash) = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let array = mutator.builtin_class(BuiltinClass::Array);
+        let level = mutator
+            .heap()
+            .class_superclass(array)
+            .expect("Array has a superclass");
+        let metaclass = mutator
+            .heap()
+            .class_metaclass(level)
+            .expect("a level has a metaclass");
+        let level_hash = mutator.heap_mut().object_ensure_identity_hash(level);
+        let metaclass_hash = mutator.heap_mut().object_ensure_identity_hash(metaclass);
+        let bytes = snapshot_one(
+            mutator,
+            None,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &[],
+        )
+        .expect("snapshot");
+        (bytes, level_hash, metaclass_hash)
+    });
+
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    assert!(
+        report
+            .graph_tag_named_hashes
+            .contains(&format!("Kernel Array level 0 hash {level_hash}")),
+        "the level is named in the table: {:?}",
+        report.graph_tag_named_hashes
+    );
+    assert!(report
+        .graph_tag_named_hashes
+        .contains(&format!("Kernel Array level 0 class hash {metaclass_hash}")));
+
+    let mut loaded = image::load(&bytes).expect("load");
+    loaded.interpreter.enter(|mutator| {
+        let array = mutator.builtin_class(BuiltinClass::Array);
+        let level = mutator
+            .heap()
+            .class_superclass(array)
+            .expect("Array has a superclass");
+        let metaclass = mutator
+            .heap()
+            .class_metaclass(level)
+            .expect("a level has a metaclass");
+        assert!(mutator.heap().class_is_applied_level(level));
+        assert_eq!(mutator.heap().object_identity_hash(level), level_hash);
+        assert_eq!(
+            mutator.heap().object_identity_hash(metaclass),
+            metaclass_hash
+        );
+    });
+}
+
 /// The closing table alone, decoded against a freshly loaded world and the
 /// section of `FIXTURE_NAMES`.
 fn decode_tag_named(bytes: &[u8]) -> Result<u32, decode::DecodeError> {
