@@ -5067,7 +5067,8 @@ accessor. `StringBuilder` and `DataView` are classes of `Kernel.ns`, reached
 through `platform kernel`; the typed arrays are the shipped module
 `TypedArraysFactory.ns`, booted with the mirror and the kernel, whose
 private classes the facet `platform typedArrays` hands out, and
-`IndexedCollection` is public so that the module applies it. A view's and a
+`IndexedCollection` is public so that the module applies it, an image
+naming it still only as a record's class or a frame's. A view's and a
 typed array's size refusals are their own `ArgumentError`s under their own
 selector, an allocation decided beforehand by the mirror leaf
 `byteArrayClass:fits:ifFail:`. A view or a builder

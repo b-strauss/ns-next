@@ -155,21 +155,20 @@ fn resolve_shipped_source(shipped: &ShippedModule) -> ResolvedModule {
 
 impl crate::interpreter::Interpreter {
     /// The shipped-module phase of the bootstrap, right after the kernel's
-    /// (`docs/design/core-library.md`, "The factory pattern"). It records
-    /// the kernel's instance as the first shipped module's, then compiles
-    /// every `SHIPPED_MODULES` entry in table order and instantiates its
-    /// root through the ordinary `instantiate` -- `PlatformFactory` and
-    /// `TypedArraysFactory` with the VM mirror and the kernel instance,
-    /// `TranscriptFactory` and `TimeFactory` with the mirror alone,
-    /// `CollectionsFactory` with the kernel instance alone -- and records each instance as that module's
-    /// one instance (`interpreter::shipped_world`). Every shipped module is
-    /// built at every boot, because an image names the shipped world's
-    /// objects and the loader runs nothing the image chooses
+    /// (`docs/design/core-library.md`, "The factory pattern"). It records the
+    /// kernel's instance as the first shipped module's, then compiles every
+    /// `SHIPPED_MODULES` entry in table order and instantiates its root through
+    /// the ordinary `instantiate` -- `PlatformFactory` and `TypedArraysFactory`
+    /// with the VM mirror and the kernel instance, `TranscriptFactory` and
+    /// `TimeFactory` with the mirror alone, `CollectionsFactory` with the
+    /// kernel instance alone -- and records each instance as that module's one
+    /// instance (`interpreter::shipped_world`). Every shipped module is built
+    /// at every boot, because an image names the shipped world's objects and
+    /// the loader runs nothing the image chooses
     /// (`docs/design/image-format.md`, "Shipped names"); the mirror's
-    /// `moduleInstanceNamed:` answers these
-    /// instances and builds nothing. Then `complete_shipped_world` builds
-    /// every class the roots declare and records every shipped object
-    /// under its name.
+    /// `moduleInstanceNamed:` answers these instances and builds nothing. Then
+    /// `complete_shipped_world` builds every class the roots declare and
+    /// records every shipped object under its name.
     ///
     /// Last, `PlatformFactory`'s instance is sent `build`, its one
     /// public member, as an ordinary host send -- runs like the kernel's

@@ -749,36 +749,34 @@ ns_runtime::for_each_lowering! {
     }
 }
 
-/// What the bootstrap leaves in the caches. `PlatformFactory`'s
-/// instantiation runs its fourteen eager slot initializers, `kernel
-/// Exception` to `kernel DataView`, each a send to the kernel instance
-/// that takes a site and fills a global entry, but for `ArgumentError` and
-/// `Collection`, whose entries `CollectionsFactory`'s two initializers,
-/// `kernel ArgumentError` and `kernel Collection`, fill too, and
+/// What the bootstrap leaves in the caches. Each eager slot initializer
+/// of a shipped root that sends to the kernel instance takes a site and
+/// fills the global entry of the class it names: `PlatformFactory`'s
+/// fourteen, `kernel Exception` to `kernel DataView`, fill fourteen;
+/// `CollectionsFactory`'s two, `kernel ArgumentError` and `kernel
+/// Collection`, fill none more, those entries being filled already; and
 /// `TypedArraysFactory`'s three, `kernel ArgumentError`, `kernel
-/// Collection` and `kernel IndexedCollection`, take three sites and fill
-/// one entry more, `IndexedCollection`'s; the platform's
-/// boot sends `PlatformFactory`'s `build`, `^Platform new`, whose
-/// family takes two sites and fills two global entries (the lexical
-/// `Platform`, and `new` to the class), and `Platform`'s superclass clause,
-/// `Value`, whose family takes two more and whose lexical `Value` fills
-/// another. The boot builds every class the shipped roots declare, so the
-/// superclass clause of every one that is no builtin runs too --
-/// `StringBuilder` and `DataView`'s `Object` and its two byte orders'
-/// `DataView` in the kernel,
-/// `KernelNamespace` in `PlatformFactory`, `Transcript` in
-/// `TranscriptFactory`, `Time` and `Stopwatch` in `TimeFactory`, the
-/// seven classes of `CollectionsFactory`, whose two Errors name `Error` bare,
-/// and in `TypedArraysFactory` the facet's `Value`, `TypedArray`'s
-/// `Collection <: IndexedCollection` and the ten typed arrays'
-/// `TypedArray`, whose ten sites share one global entry
-/// -- and their families take the remaining sites and fill the remaining
-/// global entries, a lexical send keyed by the module it is sent in. Pinned so that the boot
-/// growing -- more shipped code run at every start -- is noticed rather
-/// than absorbed by the tests that count from it. The cache stress mode
-/// vacates the caches at the boot's safepoints, which may empty the global
-/// entries, so those are counted only without it; the sites stay either
-/// way.
+/// Collection` and `kernel IndexedCollection`, fill one more,
+/// `IndexedCollection`'s. The platform's boot sends `PlatformFactory`'s
+/// `build`, `^Platform new`, whose family takes two sites and fills two
+/// global entries (the lexical `Platform`, and `new` to the class), and
+/// `Platform`'s superclass clause, `Value`, whose family takes two more
+/// and whose lexical `Value` fills another. The boot builds every class
+/// the shipped roots declare, so the superclass clause of every one that
+/// is no builtin runs too -- `StringBuilder` and `DataView`'s `Object` and
+/// its two byte orders' `DataView` in the kernel, `KernelNamespace` in
+/// `PlatformFactory`, `Transcript` in `TranscriptFactory`, `Time` and
+/// `Stopwatch` in `TimeFactory`, the seven classes of
+/// `CollectionsFactory`, whose two Errors name `Error` bare, and in
+/// `TypedArraysFactory` the facet's `Value`, `TypedArray`'s `Collection <:
+/// IndexedCollection` and the ten typed arrays' `TypedArray`, whose ten
+/// sites share one global entry -- and their families take the remaining
+/// sites and fill the remaining global entries, a lexical send keyed by
+/// the module it is sent in. Pinned so that the boot growing -- more
+/// shipped code run at every start -- is noticed rather than absorbed by
+/// the tests that count from it. The cache stress mode vacates the caches
+/// at the boot's safepoints, which may empty the global entries, so those
+/// are counted only without it; the sites stay either way.
 #[test]
 fn a_fresh_bootstrap_leaves_fifty_three_sites_and_thirty_one_global_entries() {
     let mut interpreter = Interpreter::bootstrap();

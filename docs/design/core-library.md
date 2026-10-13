@@ -182,12 +182,15 @@ below `Behavior` can be instantiated
 That is §3.2's shape and §3.1.1's, taken literally. §3.2 says "a class is
 either the empty class `Top` or the application of a mixin to another class",
 and "only the class `Object` may have `Top` as its superclass", so `Top`
-exists, declares nothing, and is private, as are only the classes no
-program may name (`Activation`, `NonBooleanReceiver`,
-`FutureImplementation` and `DataView`'s two byte orders) — every other
-class says `public`, because §6.3.1 makes an undeclared member
-protected and a protected class is unreachable from any other module, which
-is where a program's `Integer` or `String` has to come from. §3.1.1 says a
+exists, declares nothing, and is private, as are `Activation`,
+`NonBooleanReceiver`, `FutureImplementation` and `DataView`'s two byte
+orders, classes no program may name — every other class says `public`,
+because §6.3.1 makes an undeclared member protected and a protected class
+is unreachable from any other module, which is where a program's `Integer`
+or `String` has to come from. `IndexedCollection` is public for that reason
+too, though no program may name it either: the module that is its other
+user, `TypedArraysFactory.ns`, reaches it as `kernel IndexedCollection`,
+and no facet hands it out. §3.1.1 says a
 value object's "class inherits from class `Value`", so every class whose
 instances are values hangs below `Value`, and `Number` sits between it and
 `Integer`, `Float` and `Fraction` because §3.1.1 names `Number` among them.
@@ -2002,8 +2005,12 @@ accessors on `ByteArray`:
   typed array's the same under `new:`, the last counting `size` × the
   width. They no longer borrow `Array new:`'s refusal, whose texts would
   name `new:` of another class. A size that only pretends to be an `Integer`
-  -- an object answering `true` to `isKindOfInteger` -- passes the first two
-  checks and falls to `ByteArray new:`'s own refusal.
+  -- an object answering `true` to `isKindOfInteger` and `false` to `< 0`
+  -- passes the first two checks, and the leaf below declines it; the
+  decline is refused as a size that is no `Integer`, under the sent
+  selector too. `bytesFor:width:` first refuses, under its own selector, a
+  width other than 1, 2, 4 and 8, which no typed array gives, so that its
+  decline can stem from the size alone.
 
   Whether a size can be allocated is decided before allocating, by the mirror
   leaf `byteArrayClass:fits:ifFail:`, which answers a Boolean through
@@ -2023,10 +2030,12 @@ accessors on `ByteArray`:
 ### Errors and tests
 
 Every error is an `ArgumentError` carrying what was wrong -- the index, the
-position, the value, the argument, or the byte position of invalid UTF-8 --
-in the texts of `Array`'s and `String`'s existing errors, and none leaves a
-half-changed state: `at:put:`, `add:` and `addCodePoint:` check before they
-write. **A refusal written in Newspeak renders the argument with its
+position, the value, the argument, the size, or the byte position of
+invalid UTF-8 -- in the texts of `Array`'s and `String`'s existing errors
+but for the size refusals of `new:byteOrder:` and a typed array's `new:`,
+which have texts of their own ("Size refusals are the view's own" above),
+and none leaves a half-changed state: `at:put:`, `add:` and
+`addCodePoint:` check before they write. **A refusal written in Newspeak renders the argument with its
 `printString`, a leaf's with `Heap::describe`**: the kernel cannot reach
 `describe`, and `String`'s own `startsWith:` already did the same, so
 `ByteArray withAll: {'x'}` says "withAll: requires an Integer from 0 to
@@ -2037,8 +2046,10 @@ The goldens are under `goldens/library/` -- `byte-array/`, `string/`
 (`a_string_converts_to_and_from_utf8`,
 `invalid_utf8_is_refused_at_its_byte`), `string-builder/`, `typed-array/`
 (each class at its bounds, float32 rounding, the infinities, NaN, shared
-storage) and `data-view/` (both orders, unaligned positions, bounds, and
-`every_accessor_round_trips_in_both_orders` over all 36 rows) -- and
+storage, and `a_typed_array_refuses_a_size_it_cannot_allocate`) and
+`data-view/` (both orders, unaligned positions, bounds,
+`every_accessor_round_trips_in_both_orders` over all 36 rows, and
+`a_view_refuses_a_size_it_cannot_allocate`) -- and
 `builtin-subclass/`'s two for a subclass of `Array` and of `ByteArray`,
 under both lowerings. `tests/byte_array_leaves.rs` and
 `tests/element_access.rs` call the leaves from the host; heap tests in
@@ -2083,14 +2094,18 @@ refuses a view or a builder whose slots an image crafted with an
   `TypedArraysFactory Float32Array`, the others by the kernel's.
   `LittleEndianDataView` and `BigEndianDataView` stand as a record's class
   or a frame's but never as a value, since they are private and no public
-  class accessor answers them. `IndexedCollection`, public but handed out
-  by no facet, is likewise named only as a record's class or a frame's,
-  and the levels it adds as a frame's class only. A started image may name
-  no shipped module but the kernel (`image-format.md`, "Shipped names").
-  Making the sixteen classes builtins was rejected: a builtin is a class
-  Rust needs a handle on, not a class the image needs a name for. Building
-  them at every boot costs every start time ([OPEN-WORK.md](../OPEN-WORK.md),
-  "The cost of building the shipped world at boot").
+  class accessor answers them. `IndexedCollection`, public only so that
+  `TypedArraysFactory.ns` may apply it and handed out by no facet, is
+  likewise named only as a record's class or a frame's, never as a value
+  or a superclass, and the levels it adds as a frame's class only. A
+  started image may name no shipped module but the kernel
+  (`image-format.md`, "Shipped names"). Making the sixteen classes --
+  `IndexedCollection`, `StringBuilder`, `DataView` and its two orders in
+  the kernel, `TypedArray` and its ten in `TypedArraysFactory.ns` --
+  builtins was rejected: a builtin is a class Rust needs a handle on, not a
+  class the image needs a name for. Building them at every boot costs
+  every start time ([OPEN-WORK.md](../OPEN-WORK.md), "The cost of building
+  the shipped world at boot").
 - **`Primitive` stays two bytes** (`resolve.rs`'s
   `a_resolution_stays_the_size_the_hot_path_was_measured_at`), so the
   generic element access of the typed arrays and `DataView`,

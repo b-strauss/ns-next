@@ -836,16 +836,16 @@ fn kernel_application<'gc>(
         .expect("internal: the kernel's class is a class object")
 }
 
-/// A mirror send in shipped source -- the kernel's and every shipped
-/// module's, `module` naming it in the panic -- passes a literal block
-/// only as its final, `ifFail:` argument. A literal block anywhere before it would be a block
-/// the leaf itself activates (as `whileTrue:`'s would be, were it passed
-/// as a literal), and the reference lowering, which marks the whole send
+/// A mirror send in shipped source -- the kernel's and every shipped module's,
+/// `module` naming it in the panic -- passes a literal block only as its final,
+/// `ifFail:` argument. A literal block anywhere before it would be a block the
+/// leaf itself activates (as `whileTrue:`'s would be, were it passed as a
+/// literal), and the reference lowering, which marks the whole send
 /// `SendInlinable` because its failure block is inlined by the optimized
-/// lowering, would exempt that block's activation from the depth count too
-/// -- while the optimized lowering counts it. The two lowerings would then count activations
-/// differently (`docs/design/compiler.md`, "How the limit counts"), so the
-/// shape is refused rather than the count special-cased. Such a block is
+/// lowering, would exempt that block's activation from the depth count too --
+/// while the optimized lowering counts it. The two lowerings would then count
+/// activations differently (`docs/design/compiler.md`, "How the limit counts"),
+/// so the shape is refused rather than the count special-cased. Such a block is
 /// passed through a local or an argument instead, which neither lowering
 /// marks.
 pub(super) fn check_mirror_send_arguments(resolved: &ResolvedModule, module: &str) {
