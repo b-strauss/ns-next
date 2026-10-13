@@ -1,8 +1,8 @@
-/// A `Proxy` overrides `class` as protected, so a forwarder receives an
-/// outside `class` send in `doesNotUnderstand:` and sends it on to its
-/// target as an ordinary public send. The target's `class` is protected
-/// too, so the forwarded send is not understood either: a proxy hands out
-/// no class its target does not.
+/// `Object>>class` is protected, so a forwarder receives an outside
+/// `class` send in `doesNotUnderstand:` and sends it on to its target as
+/// an ordinary public send. The target's `class` is protected too, so the
+/// forwarded send is not understood either: a proxy hands out no class
+/// its target does not.
 class AProxyForwardsAnOutsideClassSend = Object new (
   |
     Proxy ::= nil.

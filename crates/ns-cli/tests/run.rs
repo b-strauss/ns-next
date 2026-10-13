@@ -455,11 +455,7 @@ fn a_module_named_like_a_class_accessor_is_reached_through_the_manifest() {
     let out = run(&project);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "stderr: {stderr}");
-    assert_eq!(
-        String::from_utf8_lossy(&out.stdout),
-        "from the module
-"
-    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "from the module\n");
 }
 
 /// The root rule is a resolve error for every module root, so a project

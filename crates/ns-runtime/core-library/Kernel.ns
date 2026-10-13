@@ -1181,13 +1181,10 @@ class Kernel vmMirror: theMirror = Object <: Value (
   /// the proxy, a self send still reaches each of them. A member added to
   /// `Object` without its override here fails
   /// `a_proxy_overrides_every_public_member_of_object_as_protected`.
+  /// `class` and the class accessors need none: `Object` already
+  /// declares them protected, and a bare `Integer` or `self class` inside
+  /// a proxy keeps the accessor's direct answer.
   public class Proxy = Object new () (
-    /// As `Object>>class`, for a send from inside the proxy only: from
-    /// outside, the message reaches `doesNotUnderstand:`.
-    protected class = (
-      ^super class.
-    )
-
     /// As `Object>>==`, for a send from inside the proxy only.
     protected == other = (
       ^super == other.
@@ -1218,87 +1215,6 @@ class Kernel vmMirror: theMirror = Object <: Value (
     /// only.
     protected printString = (
       ^super printString.
-    )
-
-    /// As `Object>>Object`, for a send from inside the proxy only.
-    protected Object = (
-      ^super Object.
-    )
-
-    /// As `Object>>Value`, for a send from inside the proxy only.
-    protected Value = (
-      ^super Value.
-    )
-
-    /// As `Object>>Boolean`, for a send from inside the proxy only.
-    protected Boolean = (
-      ^super Boolean.
-    )
-
-    /// As `Object>>True`, for a send from inside the proxy only.
-    protected True = (
-      ^super True.
-    )
-
-    /// As `Object>>False`, for a send from inside the proxy only.
-    protected False = (
-      ^super False.
-    )
-
-    /// As `Object>>Number`, for a send from inside the proxy only.
-    protected Number = (
-      ^super Number.
-    )
-
-    /// As `Object>>Integer`, for a send from inside the proxy only.
-    protected Integer = (
-      ^super Integer.
-    )
-
-    /// As `Object>>Float`, for a send from inside the proxy only.
-    protected Float = (
-      ^super Float.
-    )
-
-    /// As `Object>>Fraction`, for a send from inside the proxy only.
-    protected Fraction = (
-      ^super Fraction.
-    )
-
-    /// As `Object>>String`, for a send from inside the proxy only.
-    protected String = (
-      ^super String.
-    )
-
-    /// As `Object>>Symbol`, for a send from inside the proxy only.
-    protected Symbol = (
-      ^super Symbol.
-    )
-
-    /// As `Object>>UndefinedObject`, for a send from inside the proxy
-    /// only.
-    protected UndefinedObject = (
-      ^super UndefinedObject.
-    )
-
-    /// As `Object>>Array`, for a send from inside the proxy only.
-    protected Array = (
-      ^super Array.
-    )
-
-    /// As `Object>>Closure`, for a send from inside the proxy only.
-    protected Closure = (
-      ^super Closure.
-    )
-
-    /// As `Object>>Exception`, for a send from inside the proxy only.
-    protected Exception = (
-      ^super Exception.
-    )
-
-    /// As `Object>>Error`, for a send from inside the proxy only.
-    protected Error = (
-      ^super Error.
     )
 
     /// As `Object>>isNil`, for a send from inside the proxy only.
