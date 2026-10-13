@@ -1178,6 +1178,19 @@ mod tests {
         // The class side's `fromUtf8:` checks its argument before it asks
         // the argument's size and sends `fromUtf8:from:to:`: no leaf.
         ("String", "fromUtf8:"),
+        // `StringBuilder` is Newspeak over `ByteArray`'s and `String`'s
+        // leaves: each member checks its argument, keeps its counts in its
+        // slots, or sends, and none forwards to a leaf. Its class side's
+        // `new` sends `new:`.
+        ("StringBuilder", "add:"),
+        ("StringBuilder", "addCodePoint:"),
+        ("StringBuilder", "writeln:"),
+        ("StringBuilder", "size"),
+        ("StringBuilder", "isEmpty"),
+        ("StringBuilder", "asString"),
+        ("StringBuilder", "asUtf8"),
+        ("StringBuilder", "ensureRoom:"),
+        ("StringBuilder", "new"),
         // What a `MessageNotUnderstood` hands a host: its message's
         // selector, a send, and its receiver, a slot.
         ("MessageNotUnderstood", "hostSelector"),
@@ -1541,6 +1554,15 @@ mod tests {
         ),
     ];
 
+    /// The quick methods of the kernel's ordinary classes, those that are no
+    /// `BuiltinClass` and so cannot be named in `QUICK_METHODS`: the class's
+    /// name, the selector, and the fast path it must have.
+    const ORDINARY_CLASS_QUICK_METHODS: &[(&str, &str, MethodFastPath)] = &[(
+        "StringBuilder",
+        "isKindOfStringBuilder",
+        MethodFastPath::Constant(QuickConstant::True),
+    )];
+
     /// §3.2's accessors for the predefined classes, which `Object` declares:
     /// every builtin a program can name, which is every one but `Top`, the
     /// mirror's class, `Behavior`, `Class`, `Metaclass`, `Activation`,
@@ -1618,6 +1640,17 @@ mod tests {
                     if let Some((_, _, expected)) = QUICK_METHODS
                         .iter()
                         .find(|(owner, name, _)| owned_by(*owner) && *name == selector)
+                    {
+                        assert_eq!(
+                            method.fast_path,
+                            Some(*expected),
+                            "{class_name}>>{selector} is not the quick method it should be"
+                        );
+                        continue;
+                    }
+                    if let Some((_, _, expected)) = ORDINARY_CLASS_QUICK_METHODS
+                        .iter()
+                        .find(|(owner, name, _)| *owner == class_name && *name == selector)
                     {
                         assert_eq!(
                             method.fast_path,
@@ -1761,6 +1794,7 @@ mod tests {
                 "Closure",
                 "Future",
                 "Proxy",
+                "StringBuilder",
             ] {
                 assert_eq!(
                     fast_path(&kernel_namespace, selector),

@@ -76,6 +76,8 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
     private Proxy = kernel Proxy.
     /// The kernel's `Collection`, which `KernelNamespace` hands out.
     private Collection = kernel Collection.
+    /// The kernel's `StringBuilder`, which `KernelNamespace` hands out.
+    private StringBuilder = kernel StringBuilder.
   |
 ) (
   /// The one collections module, the instance the boot built over the
@@ -195,6 +197,12 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
     /// of `Array`, `List`, `Map` and `Set`, for a program to subclass.
     public Collection = (
       ^outer PlatformFactory Collection.
+    )
+
+    /// Answers the kernel's class `StringBuilder`, which a program
+    /// instantiates with `new` or `new:` to build a String from pieces.
+    public StringBuilder = (
+      ^outer PlatformFactory StringBuilder.
     )
   )
 

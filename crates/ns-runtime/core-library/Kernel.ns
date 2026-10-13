@@ -3343,6 +3343,141 @@ class Kernel vmMirror: mirror = Value (
     )
   )
 
+  /// A growing text, built by appending Strings and code points: it keeps
+  /// the UTF-8 bytes of what was appended in a ByteArray that grows by half
+  /// again when it is full, so an append costs amortised constant time. Its
+  /// `size` counts code points, as a String's does. Equality and `hash` are
+  /// identity.
+  ///
+  /// capacity: an Integer of at least 0, the number of UTF-8 bytes to make
+  ///     room for at the start; a hint, since the builder grows as needed.
+  ///
+  /// Signals the ArgumentError of `ByteArray new:` for a capacity that is
+  /// negative, no Integer or too large to allocate.
+  public class StringBuilder new: capacity = Object (
+    |
+      /// The UTF-8 bytes appended so far, then unused room; never handed
+      /// out, so the first `byteCount` of them are always valid UTF-8.
+      private data ::= outer Kernel ByteArray new: capacity.
+      /// How many bytes of `data` are used.
+      private byteCount ::= 0.
+      /// How many code points those bytes encode.
+      private codePointCount ::= 0.
+    |
+  ) (
+    /// Answers true: the receiver is a StringBuilder.
+    public isKindOfStringBuilder = (
+      ^true.
+    )
+
+    /// Appends the code points of `aString` and answers it.
+    ///
+    /// aString: a String or a Symbol.
+    ///
+    /// Signals an ArgumentError carrying `aString`, 'add: requires a
+    /// String, got …' and its `printString`, for any other argument, a
+    /// ByteArray included; the builder is unchanged.
+    public add: aString = (
+      |
+        byteTotal
+      |
+      aString isKindOfString ifFalse: [
+        ^(outer Kernel ArgumentError value: aString) signal: 'add: requires a String, got '
+            , aString printString.
+      ].
+      byteTotal:: aString utf8Size.
+      self ensureRoom: byteCount + byteTotal.
+      data replaceFrom: byteCount + 1 to: byteCount + byteTotal with: aString startingAt: 1.
+      byteCount:: byteCount + byteTotal.
+      codePointCount:: codePointCount + aString size.
+      ^aString.
+    )
+
+    /// Appends one code point and answers it.
+    ///
+    /// codePoint: an Integer from 0 to 1114111 outside 55296 to 57343.
+    ///
+    /// Signals an ArgumentError carrying `codePoint`, 'addCodePoint:
+    /// requires a Unicode scalar value, got …' and its `printString`, for
+    /// any other argument; nothing is appended.
+    ///
+    /// The value is checked here, before the write, so that the error
+    /// names `addCodePoint:` rather than the ByteArray store behind it.
+    public addCodePoint: codePoint = (
+      (codePoint isKindOfInteger and: [
+        codePoint >= 0 and: [
+          codePoint <= 1114111 and: [(codePoint >= 55296 and: [codePoint <= 57343]) not].
+        ].
+      ]) ifFalse: [
+        ^(outer
+            Kernel
+            ArgumentError value: codePoint) signal: 'addCodePoint: requires a Unicode scalar value, got '
+            , codePoint printString.
+      ].
+      self ensureRoom: byteCount + 4.
+      byteCount:: byteCount + (data at: byteCount + 1 putCodePoint: codePoint).
+      codePointCount:: codePointCount + 1.
+      ^codePoint.
+    )
+
+    /// Appends the code points of `aString` and then a newline, code point
+    /// 10, and answers the receiver.
+    ///
+    /// aString: a String or a Symbol.
+    ///
+    /// Signals the ArgumentError of `add:`; the builder is unchanged.
+    public writeln: aString = (
+      self add: aString.
+      self addCodePoint: 10.
+      ^self.
+    )
+
+    /// Answers how many code points have been appended.
+    public size = (
+      ^codePointCount.
+    )
+
+    /// Answers whether nothing has been appended.
+    public isEmpty = (
+      ^codePointCount = 0.
+    )
+
+    /// Answers a new String of everything appended, in order; a new one
+    /// on every send, so the receiver's later appends do not reach it.
+    public asString = (
+      ^outer Kernel String fromUtf8: data from: 1 to: byteCount.
+    )
+
+    /// Answers a new ByteArray of the UTF-8 bytes of everything appended,
+    /// a copy: changing it leaves the receiver unchanged.
+    public asUtf8 = (
+      ^data copyFrom: 1 to: byteCount.
+    )
+
+    /// Makes `data` hold at least `byteTotal` bytes, replacing it with a
+    /// ByteArray of that size or of one and a half times its current size,
+    /// whichever is more, that begins with the used bytes.
+    ///
+    /// byteTotal: an Integer of at least `byteCount`.
+    ///
+    /// Growing by a fraction of the size rather than a fixed step is what
+    /// keeps the cost of an append amortised constant.
+    private ensureRoom: byteTotal = (
+      |
+        grown
+      |
+      byteTotal > data size ifFalse: [^self].
+      grown:: outer Kernel ByteArray new: (byteTotal max: data size * 3 // 2).
+      grown replaceFrom: 1 to: byteCount with: data startingAt: 1.
+      data:: grown.
+    )
+  ) : (
+    /// Answers a new, empty StringBuilder with room for 16 bytes.
+    public new = (
+      ^self new: 16.
+    )
+  )
+
   /// A group of elements that can be visited one by one: the abstract
   /// superclass of `Array` and of the collections module's `List`, `Map`
   /// and `Set`. A subclass defines `do:`, and inherits every other public

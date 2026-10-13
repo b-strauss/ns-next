@@ -1,0 +1,11 @@
+stdout = '''
+true 0 true false true
+abc def 233 128512
+abcdefé😀 8 8 12 false
+true 12 true
+true true
+abc 90 97
+true false true
+true 0 0
+4 4 false
+'''

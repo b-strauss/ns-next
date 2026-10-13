@@ -3873,7 +3873,9 @@ UTF-8; `byteCount`; and `codePointCount`.
 - **`addCodePoint: anInteger`**, Primordial Soup's `addByte:` renamed,
   appends one code point; anything that is no Unicode scalar value is an
   `ArgumentError` and nothing is appended (Primordial Soup's leaves a
-  stray zero byte). It answers the argument.
+  stray zero byte). It checks the value itself before it writes, so the
+  error names `addCodePoint:` and not the ByteArray store behind it. It
+  answers the argument.
 - `writeln: aString` is `add:` and then code point 10, answering the
   receiver. `size` counts code points, `isEmpty`, `isKindOfStringBuilder`.
 - `asString` answers `String fromUtf8: data from: 1 to: byteCount`, a new
@@ -3882,7 +3884,8 @@ UTF-8; `byteCount`; and `codePointCount`.
 - `=` and `hash` are identity. Two kernel-only leaves serve it: a string's
   UTF-8 length in bytes, its size when it is ASCII, and writing one code
   point as UTF-8 at a position of a `ByteArray`, answering the bytes
-  written, so `addCodePoint:` makes no intermediate string.
+  written, so `addCodePoint:` makes no intermediate string. A program
+  names the class as `platform kernel StringBuilder`.
 
 #### The typed arrays
 

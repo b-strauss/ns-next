@@ -750,8 +750,8 @@ ns_runtime::for_each_lowering! {
 }
 
 /// What the bootstrap leaves in the caches. `PlatformFactory`'s
-/// instantiation runs its twelve eager slot initializers, `kernel
-/// Exception` to `kernel Collection`, each a send to the kernel instance
+/// instantiation runs its thirteen eager slot initializers, `kernel
+/// Exception` to `kernel StringBuilder`, each a send to the kernel instance
 /// that takes a site and fills a global entry, but for `ArgumentError` and
 /// `Collection`, whose entries `CollectionsFactory`'s two initializers,
 /// `kernel ArgumentError` and `kernel Collection`, fill too; the platform's
@@ -761,6 +761,7 @@ ns_runtime::for_each_lowering! {
 /// `Value`, whose family takes two more and whose lexical `Value` fills
 /// another. The boot builds every class the shipped roots declare, so the
 /// superclass clause of every one that is no builtin runs too --
+/// `StringBuilder` in the kernel,
 /// `KernelNamespace` in `PlatformFactory`, `Transcript` in
 /// `TranscriptFactory`, `Time` and `Stopwatch` in `TimeFactory`, and the
 /// seven classes of `CollectionsFactory`, whose two Errors name `Error` bare
@@ -772,12 +773,12 @@ ns_runtime::for_each_lowering! {
 /// entries, so those are counted only without it; the sites stay either
 /// way.
 #[test]
-fn a_fresh_bootstrap_leaves_thirty_one_sites_and_twenty_two_global_entries() {
+fn a_fresh_bootstrap_leaves_thirty_three_sites_and_twenty_four_global_entries() {
     let mut interpreter = Interpreter::bootstrap();
     let statistics = interpreter.cache_statistics();
-    assert_eq!(statistics.site_entries, 31);
+    assert_eq!(statistics.site_entries, 33);
     let stress_caches = std::env::var("NS_NEXT_STRESS_CACHES").is_ok_and(|value| value == "1");
     if !stress_caches {
-        assert_eq!(statistics.filled_global_entries, 22);
+        assert_eq!(statistics.filled_global_entries, 24);
     }
 }
