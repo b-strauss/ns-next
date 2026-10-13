@@ -4818,8 +4818,8 @@ class Kernel vmMirror: mirror = Value (
     /// `printString` for a negative one, and 'new:byteOrder: cannot
     /// allocate a ByteArray of … bytes' for one too large to allocate.
     /// Each is signalled before anything is allocated. A `size` that
-    /// answers true to `isKindOfInteger` but is no Integer the VM sizes is
-    /// refused by `ByteArray new:`, with its own ArgumentErrors.
+    /// answers true to `isKindOfInteger` but is no Integer the VM knows is
+    /// a size that is no Integer.
     public new: size byteOrder: order = (
       self checkByteOrder: order selector: #new:byteOrder:.
       ^self on: (self bytesOfSize: size) byteOrder: order.
@@ -4831,15 +4831,15 @@ class Kernel vmMirror: mirror = Value (
     /// size: the size given to `new:byteOrder:`.
     ///
     /// Signals the ArgumentErrors `new:byteOrder:` describes for `size`.
-    /// An object that is no Integer the VM knows but answers true to
-    /// `isKindOfInteger` and false to `< 0` is not sized by the VM; it is
-    /// handed to `ByteArray new:`, which signals its own ArgumentErrors
-    /// for it.
     ///
     /// Whether the bytes can be allocated is asked of the VM before
     /// allocating, the same decision `ByteArray new:` makes, so that a
     /// size too large is refused under the message the program sent and
-    /// no other error is caught and replaced.
+    /// no other error is caught and replaced. Once `isKindOfInteger` has
+    /// answered true and `< 0` false, the VM declines to answer only for a
+    /// size that is no Integer it knows -- an object that merely claims to
+    /// be one -- so the decline is refused as a size that is no Integer,
+    /// under `new:byteOrder:` too.
     private bytesOfSize: size = (
       size isKindOfInteger ifFalse: [
         ^(outer
@@ -4854,7 +4854,10 @@ class Kernel vmMirror: mirror = Value (
             , size printString.
       ].
       (vmMirror byteArrayClass: outer Kernel ByteArray fits: size ifFail: [
-        ^outer Kernel ByteArray new: size.
+        ^(outer
+            Kernel
+            ArgumentError value: size) signal: 'new:byteOrder: requires an Integer size, got '
+            , size printString.
       ]) ifFalse: [
         ^(outer
             Kernel

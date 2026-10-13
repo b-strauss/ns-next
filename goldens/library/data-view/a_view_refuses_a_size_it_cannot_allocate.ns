@@ -2,7 +2,7 @@
 /// that is no Integer, a negative one and one too large to allocate, each
 /// with an ArgumentError of its own that names `new:byteOrder:` and
 /// carries the size, before it allocates anything. An object that only
-/// claims to be an Integer is refused by `ByteArray new:`, in its words.
+/// claims to be an Integer is a size that is no Integer.
 class AViewRefusesASizeItCannotAllocate = Object new (
   |
     transcript ::= nil.

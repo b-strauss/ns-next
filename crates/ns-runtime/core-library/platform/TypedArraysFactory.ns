@@ -2,8 +2,8 @@
 /// `Int8Array` to `Float64Array`, fixed-size sequences of numbers of one
 /// kind stored in a ByteArray, reached through `platform typedArrays`.
 /// Built once, at boot, over the VM mirror and the kernel, from which it
-/// takes `Collection`, `IndexedCollection` and `ArgumentError`; `Array`
-/// and `ByteArray` it names bare, through `Object`'s accessors.
+/// takes `Collection`, `IndexedCollection` and `ArgumentError`;
+/// `ByteArray` it names bare, through `Object`'s accessor.
 ///
 /// mirror: the VM mirror, through which a typed array reads and writes
 ///     the elements in its ByteArray.
@@ -266,27 +266,39 @@ class TypedArraysFactory usingVmMirror: mirror kernel: kernel = Value (
     /// typed array's `new:` views.
     ///
     /// size: the size given to the typed array's `new:`.
-    /// width: the typed array's `bytesPerElement`, a positive Integer.
+    /// width: the typed array's `bytesPerElement`: 1, 2, 4 or 8.
     ///
-    /// Signals an ArgumentError carrying `size`: 'new: requires an Integer
-    /// size, got …' and its `printString` for a size that is no Integer,
-    /// 'new: requires a size of at least 0, got …' and its `printString`
-    /// for a negative one, and 'new: cannot allocate a ByteArray of …
-    /// bytes', counting the bytes, for one too large to allocate. Each is
-    /// signalled before anything is allocated. A `width` that is no
-    /// positive Integer, which no typed array gives, is refused by `*` or
-    /// by `ByteArray new:`, with their own ArgumentErrors; so is a `size`
+    /// Signals an ArgumentError carrying `width`: 'bytesFor:width:
+    /// requires a width of 1, 2, 4 or 8, got …' and its `printString` for
+    /// any other width, which no typed array gives, before anything about
+    /// `size`. Then an ArgumentError carrying `size`: 'new: requires an
+    /// Integer size, got …' and its `printString` for a size that is no
+    /// Integer, 'new: requires a size of at least 0, got …' and its
+    /// `printString` for a negative one, and 'new: cannot allocate a
+    /// ByteArray of … bytes', counting the bytes, for one too large to
+    /// allocate. Each is signalled before anything is allocated. A `size`
     /// that answers true to `isKindOfInteger` but is no Integer the VM
-    /// sizes.
+    /// knows is a size that is no Integer.
     ///
     /// Whether the bytes can be allocated is asked of the VM before
     /// allocating, the same decision `ByteArray new:` makes, so that the
     /// error carries the size the program gave rather than the byte count
-    /// and no other error is caught and replaced.
+    /// and no other error is caught and replaced. The width is checked by
+    /// identity first, so that once `isKindOfInteger` has answered true and
+    /// `< 0` false, the VM declines to answer only for a byte count that is
+    /// no Integer it knows, which `size` alone can have caused: a real
+    /// Integer of at least 0 times 1, 2, 4 or 8 is one. The decline is
+    /// therefore refused as a size that is no Integer, under `new:`.
     public bytesFor: size width: width = (
       |
         count
       |
+      (width == 1 or: [width == 2 or: [width == 4 or: [width == 8]]]) ifFalse: [
+        ^(outer
+            TypedArraysFactory
+            ArgumentError value: width) signal: 'bytesFor:width: requires a width of 1, 2, 4 or 8, got '
+            , width printString.
+      ].
       size isKindOfInteger ifFalse: [
         ^(outer
             TypedArraysFactory
@@ -300,7 +312,12 @@ class TypedArraysFactory usingVmMirror: mirror kernel: kernel = Value (
             , size printString.
       ].
       count:: size * width.
-      (vmMirror byteArrayClass: ByteArray fits: count ifFail: [^ByteArray new: count]) ifFalse: [
+      (vmMirror byteArrayClass: ByteArray fits: count ifFail: [
+        ^(outer
+            TypedArraysFactory
+            ArgumentError value: size) signal: 'new: requires an Integer size, got '
+            , size printString.
+      ]) ifFalse: [
         ^(outer
             TypedArraysFactory
             ArgumentError value: size) signal: 'new: cannot allocate a ByteArray of '

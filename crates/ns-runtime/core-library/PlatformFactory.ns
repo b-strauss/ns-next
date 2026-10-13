@@ -15,24 +15,23 @@
 /// The factory pattern: this root holds what is privileged -- the mirror,
 /// and the kernel's classes `KernelNamespace` hands out, never the kernel
 /// instance -- and the host never hands its instance to anyone. It
-/// instantiates the root once, sends it `build`, its one public
-/// member, and hands every program that platform, an instance of the
-/// nested class `Platform`, whose factory is a harmless `new`. What a
-/// program receives are instances of the nested classes, the facets,
-/// through the platform's members; each reaches the mirror and the kernel's
-/// classes lexically, as a member of this root, never through a slot of its
-/// own, so every one of them writes through the one mirror. The nested
-/// classes are private, so even
-/// a holder of this root's instance could send it nothing but
-/// `build`: a second line of defence behind the instance being
-/// unreachable. The transcript, the clock, the collections and the typed
-/// arrays are each a module of their own, another such root
-/// (`platform/TranscriptFactory.ns`, `platform/TimeFactory.ns`,
-/// `platform/CollectionsFactory.ns`, `platform/TypedArraysFactory.ns`), whose one
-/// instance the host builds at boot and this root reaches through the
-/// mirror's `moduleInstanceNamed:`, keeping it in a private lazy slot
-/// here; the platform hands out only the facets their `build` answers. Nothing a program can name answers this root's
-/// instance or its class, so no program can build a second one over
+/// instantiates the root once, sends it `build`, its one public member, and
+/// hands every program that platform, an instance of the nested class
+/// `Platform`, whose factory is a harmless `new`. What a program receives
+/// are instances of the nested classes, the facets, through the platform's
+/// members; each reaches the mirror and the kernel's classes lexically, as
+/// a member of this root, never through a slot of its own, so every one of
+/// them writes through the one mirror. The nested classes are private, so
+/// even a holder of this root's instance could send it nothing but `build`:
+/// a second line of defence behind the instance being unreachable. The
+/// transcript, the clock, the collections and the typed arrays are each a
+/// module of their own, another such root (`platform/TranscriptFactory.ns`,
+/// `platform/TimeFactory.ns`, `platform/CollectionsFactory.ns`,
+/// `platform/TypedArraysFactory.ns`), whose one instance the host builds at
+/// boot and this root reaches through the mirror's `moduleInstanceNamed:`,
+/// keeping it in a private lazy slot here; the platform hands out only the
+/// facets their `build` answers. Nothing a program can name answers this
+/// root's instance or its class, so no program can build a second one over
 /// something that is not the mirror. Keep it so: no code whose receiver is
 /// this root's instance may send it anything it does not understand, since
 /// a `MessageNotUnderstood` hands its receiver to whoever catches it
@@ -41,9 +40,9 @@
 ///
 /// The factory's parameters are copied into slots because neither a lazy
 /// slot nor a method may name them (§6); of the kernel only the classes
-/// `KernelNamespace` hands out are kept, not the kernel instance itself. A send to `vmMirror` here is a
-/// mirror send, as in `Kernel.ns`: this module is resolved with
-/// `resolve_kernel`, which only shipped source is.
+/// `KernelNamespace` hands out are kept, not the kernel instance itself. A
+/// send to `vmMirror` here is a mirror send, as in `Kernel.ns`: this module
+/// is resolved with `resolve_kernel`, which only shipped source is.
 ///
 /// Everything here is a value (§3.1.1): stateless but for what the host
 /// hands the root and the modules the boot built, which the root reaches
