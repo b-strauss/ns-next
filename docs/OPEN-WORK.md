@@ -261,6 +261,23 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 
 ## Planned: performance and representation
 
+- **A mirror leaf's index as a `u16`, at the 257th row.** `MIRROR` holds
+  234 of the 256 rows a `u8` index allows (`builtins/primitive.rs`'s
+  `MirrorPrimitive(u8)`), and the compile-time assert on `MIRROR.len()`
+  stops the build at the 257th. The step is `MirrorPrimitive(u16)`, its two
+  `as u8` casts and the assert, up to 65,536 rows; a row's index reaches no
+  artifact, so the image format is untouched. Tried on 2026-10-14 in a
+  release build: `Primitive` grows from 2 to 4 bytes, but every structure
+  holding one keeps its size in the padding it had (`Target` 16,
+  `CacheEntry` 24, `GlobalEntry` 32, `Resolved` 24, `MirrorEntry` 48), the
+  narrow `SendMirror` still fits the eight-byte `CompactInstruction`, and
+  the five release size tests pass. Not yet measured is the speed: time
+  the benchmarks on both sides under the `measuring-performance` protocol
+  when the step is taken (decided with the user on 2026-10-14 to take it
+  when a sub-project needs the 257th leaf).
+  [core-library.md](design/core-library.md), "The VM mirror is the whole
+  Rust boundary".
+
 - **A threaded run loop through `become`, measured.** A loop whose every
   instruction is a function ending in `become` (Rust's explicit tail call)
   would keep `program_counter`, the code and the register base in machine
