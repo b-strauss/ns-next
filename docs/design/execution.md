@@ -4067,8 +4067,8 @@ code of a send changed. What a release build runs that it did not run before:
   (`Heap::class_has_value_refusal`), once per instantiation. It does so only
   for a class whose application inherits `Value`, and reads the refusal
   itself only on the cold error path (`value_class_refusal_error`).
-- The kernel is `Object <: Value`, so bootstrap builds one applied level for
-  it.
+- The kernel was `Object <: Value` then, so bootstrap built one applied
+  level for it.
 - The image decoder has a second pass that recomputes each decoded class
   object's verdict. No source below loads an image.
 
@@ -4201,7 +4201,7 @@ instructions. Yet `bench_new2.ns` and `bench_newarg.ns`, which run the same
 function with one level more, are level or faster. A control that would
 separate the kernel's applied level from the Rust changes, the head with
 `Kernel.ns`'s root put back to `Object new`, does not bootstrap:
-`kernel.rs` asserts the kernel's root is `Object <: Value`. Nothing was
+`kernel.rs` then asserted the kernel's root was `Object <: Value`. Nothing was
 profiled.
 
 **Re-measured 2026-09-24 after the review's fix, `7b2af64`.** The final

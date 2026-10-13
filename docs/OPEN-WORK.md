@@ -1172,6 +1172,19 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
 
 ## Missing tests
 
+- **No shipped class applies a mixin, so the image's shipped levels have
+  no live example.** Every module root under `crates/ns-runtime/core-library/`
+  is `= Value` (decided with the user on 2026-10-13), so no shipped
+  declaration has a `<:` clause and `ShippedKind::Level` and
+  `LevelMetaclass` name nothing a boot builds. The code stays; the tests
+  in `image/shipped_names.rs` and `interpreter/shipped_world.rs` check
+  only that such a level is unknown. When the core library first applies
+  a mixin -- sub-project 5's sequence protocol shared by `Array`,
+  `ByteArray` and `TypedArray` is planned as one -- a test must again
+  resolve a shipped level to the boot's own object, find it by its class
+  object in `index_by_object`, and round-trip its identity hash.
+  [image-format.md](design/image-format.md), "Shipped names".
+
 - That a parenthesised literal block is still inlined (`true ifTrue:
   ([1])`) is pinned only by the printed answer of its golden, not by a
   `disasm`-level check that it lowers inline.

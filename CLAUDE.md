@@ -21,8 +21,9 @@ Rust 1.98.0, edition 2021, six crates:
   (`interpreter/`: inline caches in `inline_cache.rs` in front of the lookups
   in `resolve.rs`, the one unwinder in `unwind.rs`, the VM mirror in
   `mirror.rs` and its leaves in `builtins/`), the core library
-  (`core-library/Kernel.ns`, `PlatformFactory.ns`, `CollectionsFactory.ns`,
-  booted by `interpreter/kernel.rs` and `interpreter/core_library.rs`),
+  (`core-library/Kernel.ns`, `PlatformFactory.ns` and, under `platform/`,
+  `TranscriptFactory.ns`, `TimeFactory.ns` and `CollectionsFactory.ns`,
+  every root `= Value`, booted by `interpreter/kernel.rs` and `interpreter/core_library.rs`),
   `LargeInteger` arithmetic (`arbitrary_integer/`, adapted
   from `num-bigint` and `num-integer`), the heap (`heap.rs`, one object space
   of variably sized objects in `ns-memory`'s reservation (`heap/space.rs`),
@@ -248,8 +249,9 @@ shipped core-library modules reach it. Six locks keep it there; never loosen one
 and never add a way for a program to obtain the mirror, its class or a
 `MirrorSend` binding: (1) only `resolver::resolve_kernel` records
 `Binding::MirrorSend`, and only the shipped modules are resolved with it; (2)
-the bootstrap checks the mirror slots of `Kernel` and `PlatformFactory`, and no
-program reaches a shipped root (the factory pattern); (3) the encoder names a
+the bootstrap checks the mirror slot of `Kernel` and of every shipped module
+it hands the mirror (`PlatformFactory`, `TranscriptFactory`, `TimeFactory`),
+and no program reaches a shipped root (the factory pattern); (3) the encoder names a
 shipped object by its declaration and refuses one the rule of what may be
 named where does not allow (`image/shipped_names.rs`); (4) no program can name
 the mirror's class or `Top`: the VM mirror's class has no declaration and so no
@@ -326,8 +328,8 @@ Only a release build runs the size tests (`a_handle_and_an_optional_handle_are_o
 
 Every corpus module must parse; there is no list of exceptions. A module that
 runs end to end belongs in `corpus/runnable.toml` with the unary selector its
-generated application sends it (`send`) and its output. `PlatformFactory.ns`
-is widened only on demand: an accessor exists because a `runnable.toml`
+generated application sends it (`send`) and its output. `PlatformFactory.ns`,
+`TranscriptFactory.ns` and `TimeFactory.ns` are widened only on demand: an accessor exists because a `runnable.toml`
 module or a program under `benchmarks/` needs it, named in the accessor's
 comment; the kernel facet (`platform kernel`), which only hands out
 `Kernel.ns`'s classes, is exempt. `Kernel.ns` and `CollectionsFactory.ns` take Primordial Soup's whole
@@ -395,7 +397,8 @@ decision, made so far only for `num-bigint` and `num-integer`
 - Comments explain the decision — what a check prevents — not the mechanics.
 - **Every member of a shipped core-library module is documented** to the
   standard of Javadoc. Every method, slot and class of `Kernel.ns`,
-  `PlatformFactory.ns` and `CollectionsFactory.ns` -- public, protected and
+  `PlatformFactory.ns`, `TranscriptFactory.ns`, `TimeFactory.ns` and
+  `CollectionsFactory.ns` -- public, protected and
   private -- has a `///` comment directly above it that says what it
   does and what it answers, each argument and what it must be, every Error
   it signals and when, and what it guarantees about order, identity,

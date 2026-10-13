@@ -3004,7 +3004,7 @@ const FIXTURE_NAMES: &[(&str, &str, u8)] = &[
     ("Kernel", "Integer", 2),              // INTEGER_CLASS_NAME = 11
     ("Kernel", "Kernel", 0),               // KERNEL_INSTANCE_NAME = 12
     ("Kernel", "Kernel", 1),               // KERNEL_ROOT_NAME = 13
-    ("PlatformFactory", "Stopwatch", 1),   // STOPWATCH_NAME = 14
+    ("TimeFactory", "Stopwatch", 1),       // STOPWATCH_NAME = 14
     ("Kernel", "Behavior", 1),             // BEHAVIOR_NAME = 15
     ("Kernel", "Closure", 1),              // CLOSURE_NAME = 16
     ("Kernel", "Class", 1),                // CLASS_NAME = 17
@@ -12252,9 +12252,9 @@ fn a_platform_member_round_trips_as_a_record() {
     let bytes = snapshot_module(PLATFORM_MEMBERS, None, None);
     let report = image::inspect::inspect(&bytes).expect("inspect");
     for name in [
-        "PlatformFactory Transcript",
+        "TranscriptFactory Transcript",
         "CollectionsFactory Collections",
-        "PlatformFactory Time",
+        "TimeFactory Time",
         "PlatformFactory Platform",
     ] {
         assert!(
@@ -12377,7 +12377,7 @@ fn a_class_the_platform_hands_out_is_named_by_its_declaration() {
             "Kernel Metaclass".to_string(),
             "Kernel Object".to_string(),
             "CollectionsFactory List".to_string(),
-            "PlatformFactory Stopwatch".to_string()
+            "TimeFactory Stopwatch".to_string()
         ],
         "the names the graph uses, in the order it first reaches them"
     );
@@ -12583,7 +12583,7 @@ fn a_list_is_a_record_of_its_shipped_class() {
 }
 
 /// A `Stopwatch` is an ordinary instance of a shipped class, as a `List`
-/// is: written as a record of `PlatformFactory Stopwatch`, with its started
+/// is: written as a record of `TimeFactory Stopwatch`, with its started
 /// reading, and it reads on after a load -- the class and its code are the
 /// loading binary's. Snapshot and load run in one process, which shares the
 /// clock's origin, so a start that survived the load reads a strictly
@@ -12601,7 +12601,7 @@ fn a_stopwatch_is_a_record_of_its_shipped_class() {
     assert!(
         report
             .shipped_names
-            .contains(&"PlatformFactory Stopwatch".to_string()),
+            .contains(&"TimeFactory Stopwatch".to_string()),
         "the stopwatch's class is named by its declaration: {:?}",
         report.shipped_names
     );
@@ -12845,7 +12845,7 @@ fn a_record_of_top_is_refused() {
 }
 
 /// A shipped class that is no builtin has instance records only: an array,
-/// a string or a frame record under `PlatformFactory Stopwatch` is refused
+/// a string or a frame record under `TimeFactory Stopwatch` is refused
 /// before anything is allocated.
 #[test]
 fn a_record_of_a_shipped_class_with_another_body_is_refused() {

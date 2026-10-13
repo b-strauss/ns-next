@@ -32,7 +32,7 @@
 /// classes -- `platform collections List` is one class however many
 /// platforms a program makes -- and so that the platform, a value, may hold
 /// the facet in a slot.
-class CollectionsFactory usingKernel: kernel = Object <: Value (
+class CollectionsFactory usingKernel: kernel = Value (
   |
     /// The kernel's `ArgumentError`, which the classes here signal for an
     /// index or a capacity out of range.
@@ -46,7 +46,7 @@ class CollectionsFactory usingKernel: kernel = Object <: Value (
   /// module's classes, one accessor each, and the kernel's `Collection`;
   /// nothing else. Its own class is not among them, so a program makes
   /// no second namespace.
-  private class Collections = Value new () (
+  private class Collections = Value () (
     /// Answers the `List` class: `List new`, `List new: capacity` or
     /// `List withAll: collection`.
     ///
@@ -135,7 +135,7 @@ class CollectionsFactory usingKernel: kernel = Object <: Value (
   /// either end moves nothing; the representation is private, so that it
   /// can change without a subclass noticing, and `size_` alone is
   /// protected, as a subclass's view of the size.
-  private class List new: capacity = Collection new (
+  private class List new: capacity = Collection (
     |
       /// The number of elements.
       protected size_ ::= 0.
@@ -668,7 +668,7 @@ class CollectionsFactory usingKernel: kernel = Object <: Value (
   ///
   /// Without it a change inside `do:` would visit an element twice, skip
   /// one or end early, silently.
-  private class ConcurrentModification = Error new (
+  private class ConcurrentModification = Error (
     |
       /// The collection that was changed while it was iterated.
       public collection ::= nil.
@@ -691,7 +691,7 @@ class CollectionsFactory usingKernel: kernel = Object <: Value (
 
   /// The Error a collection signals when it is asked for an element or
   /// key it does not hold. Carries it in `element`.
-  private class NotFound = Error new (
+  private class NotFound = Error (
     |
       /// The element or key that was not found.
       public element ::= nil.
@@ -741,7 +741,7 @@ class CollectionsFactory usingKernel: kernel = Object <: Value (
   /// test has the mark as the receiver of `==`, so a key's own `==` is
   /// never sent the array; and a rebuild replaces `data_`, dropping
   /// exactly the entries it marked.
-  private class Map new: capacity = Collection new (
+  private class Map new: capacity = Collection (
     |
       /// The number of keys the map holds.
       private size_ ::= 0.
@@ -1342,7 +1342,7 @@ class CollectionsFactory usingKernel: kernel = Object <: Value (
   /// elements in `data_` in adding order, `hashtable_` of their indices,
   /// `data_` itself overwriting a removed element as the removed mark, for
   /// Map's reasons.
-  private class Set new: capacity = Collection new (
+  private class Set new: capacity = Collection (
     |
       /// The number of elements the set holds.
       private size_ ::= 0.

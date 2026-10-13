@@ -37,6 +37,7 @@ first.
 | Editing in the JetBrains plugin: Reformat Code reaching the server, one-line methods, the formatter's indentation and width, Enter, a message bundle | Complete | 2026-10-12 | — |
 | Shipped names in the image: every object the binary owns named by its declaration, under a rule of what may be named where, and the shipped world's fingerprint in the header | Complete | 2026-10-13 | [shipped-names-in-the-image](superpowers/plans/2026-10-12-2224-shipped-names-in-the-image.md) |
 | `class` and `Object`'s class accessors protected | Complete | 2026-10-13 | [protected-class](superpowers/plans/2026-10-13-1158-protected-class.md) |
+| The platform's modules: no class of theirs handed out, the transcript and the clock modules of their own under `core-library/platform/`, the factories keeping only the kernel classes they use, `build` in every factory, every root `= Value` | Complete | 2026-10-13 | — |
 | Road step 5 — mirrors and atomic installation, on `become:` as an eager bulk forward | Not started | — | — |
 | Road step 6 — inline allocation in the interpreter | Not started | — | — |
 | Road step 7 — an execution model for compiled code | Not started | — | — |
@@ -4993,7 +4994,7 @@ modules; only its fingerprint bytes changed.
 What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the
 reflective checks return as goldens with road step 5's mirrors.
 
-## The platform module hands out none of its classes (2026-10-13)
+## The platform's modules (2026-10-13)
 
 `Platform`'s class accessors -- `Platform`, `Transcript`,
 `KernelNamespace`, `Time` and `Stopwatch` -- and the collections facet's
@@ -5014,6 +5015,18 @@ The two factories keep of the kernel only the classes they use, one
 private slot each (`private Collection = kernel Collection`), not the
 kernel instance (decided with the user; the mirror stays whole), and
 `CollectionsFactory`'s two Errors name `Error` bare. The boot runs
-`PlatformFactory`'s twelve new slot initializers, so it leaves 31 inline
-cache sites and 20 global entries where it left 18 and 10
-(`tests/inline_caches.rs`).
+`PlatformFactory`'s twelve new slot initializers, which raise the inline
+cache sites it leaves from 18 to 31 (`tests/inline_caches.rs`).
+
+The transcript and the clock are shipped modules of their own,
+`core-library/platform/TranscriptFactory.ns` and `TimeFactory.ns` beside
+`CollectionsFactory.ns`, each given the mirror alone
+(`ShippedFactory::Mirror`), and `PlatformFactory`'s root reaches them as it
+reaches the collections module; every shipped factory's one public member
+is `build`. Every module root is `= Value` and every superclass clause that
+sends only `new` omits it (§6.1); the kernel's root is built by the root
+rule like any module's, so no shipped class applies a mixin and the image's
+shipped levels have no live example until one does
+([OPEN-WORK.md](OPEN-WORK.md)). The factories' mirror parameter is
+`mirror`. The boot leaves 31 inline-cache sites and 22 global entries, where
+it left 18 and 10 before this branch.

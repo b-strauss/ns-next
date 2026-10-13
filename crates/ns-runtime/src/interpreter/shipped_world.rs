@@ -506,9 +506,9 @@ mod tests {
             // instances, records of them, but never the classes.
             for (module, declaration) in [
                 ("PlatformFactory", "Platform"),
-                ("PlatformFactory", "Transcript"),
+                ("TranscriptFactory", "Transcript"),
                 ("PlatformFactory", "KernelNamespace"),
-                ("PlatformFactory", "Time"),
+                ("TimeFactory", "Time"),
                 ("CollectionsFactory", "Collections"),
             ] {
                 let positions = positions_of(world, name(module, declaration, ShippedKind::Class));
@@ -517,12 +517,20 @@ mod tests {
                     "{module} {declaration} is a record's class only"
                 );
             }
-            for root in ["Kernel", "PlatformFactory", "CollectionsFactory"] {
+            for root in [
+                "Kernel",
+                "PlatformFactory",
+                "TranscriptFactory",
+                "TimeFactory",
+                "CollectionsFactory",
+            ] {
                 let positions = positions_of(world, name(root, root, ShippedKind::Class));
                 assert!(!positions.value && !positions.header && positions.frame_class);
-                let level = positions_of(world, name(root, root, ShippedKind::Level(0)));
-                assert!(!level.value && !level.header && level.frame_class);
-                positions_of(world, name(root, root, ShippedKind::LevelMetaclass(0)));
+                // Every root is `= Value`, so it applies no mixin and adds
+                // no level to name.
+                assert!(world
+                    .index_of_name(&name(root, root, ShippedKind::Level(0)))
+                    .is_none());
                 let instance = positions_of(world, name(root, root, ShippedKind::ModuleInstance));
                 assert_eq!(
                     instance,
@@ -542,10 +550,9 @@ mod tests {
         let mut interpreter = crate::Interpreter::bootstrap();
         interpreter.enter(|mutator| {
             let world = &mutator.shipped_world;
-            for (module, declaration) in [
-                ("PlatformFactory", "Stopwatch"),
-                ("CollectionsFactory", "Map"),
-            ] {
+            for (module, declaration) in
+                [("TimeFactory", "Stopwatch"), ("CollectionsFactory", "Map")]
+            {
                 let positions = positions_of(world, name(module, declaration, ShippedKind::Class));
                 assert!(
                     positions.value && positions.superclass && positions.header,
@@ -658,8 +665,9 @@ mod tests {
     }
 
     /// An object and a class's mixin each lead back to the one entry that
-    /// names them: `Array` by its class object and by its mixin, and a
-    /// level by its class object alone.
+    /// names them: `Array` by its class object and by its mixin. A level
+    /// would lead back by its class object alone, but no shipped class
+    /// applies a mixin today (`docs/OPEN-WORK.md`).
     #[test]
     fn an_object_and_a_mixin_lead_back_to_their_entry() {
         let mut interpreter = crate::Interpreter::bootstrap();
@@ -681,15 +689,6 @@ mod tests {
                 .class_application(array_class)
                 .expect("Array is a class");
             assert_eq!(by_mixin.get(&mixin_key(&application.mixin)), Some(&array));
-            let level = world
-                .index_of_name(&name("Kernel", "Kernel", ShippedKind::Level(0)))
-                .expect("Kernel Kernel level 0 is named");
-            let level_object = world.entries()[level].object;
-            assert_eq!(
-                by_object.get(&heap.object_identity_key(level_object)),
-                Some(&level)
-            );
-            assert!(!by_mixin.values().any(|index| *index == level));
             assert_eq!(
                 name("Kernel", "Kernel", ShippedKind::LevelMetaclass(0)).describe(),
                 "Kernel Kernel level 0 class"

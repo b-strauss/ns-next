@@ -758,25 +758,26 @@ ns_runtime::for_each_lowering! {
 /// boot sends `PlatformFactory`'s `build`, `^Platform new`, whose
 /// family takes two sites and fills two global entries (the lexical
 /// `Platform`, and `new` to the class), and `Platform`'s superclass clause,
-/// `Value new`, whose family takes two more and whose lexical `Value` fills
+/// `Value`, whose family takes two more and whose lexical `Value` fills
 /// another. The boot builds every class the shipped roots declare, so the
 /// superclass clause of every one that is no builtin runs too --
-/// `Transcript`, `KernelNamespace`, `Time` and `Stopwatch` in
-/// `PlatformFactory`, and the seven classes of `CollectionsFactory`, whose
-/// two Errors name `Error` bare -- and their families take the remaining
-/// sites and fill the remaining global entries. Pinned so that the boot
+/// `KernelNamespace` in `PlatformFactory`, `Transcript` in
+/// `TranscriptFactory`, `Time` and `Stopwatch` in `TimeFactory`, and the
+/// seven classes of `CollectionsFactory`, whose two Errors name `Error` bare
+/// -- and their families take the remaining sites and fill the remaining
+/// global entries, a lexical send keyed by the module it is sent in. Pinned so that the boot
 /// growing -- more shipped code run at every start -- is noticed rather
 /// than absorbed by the tests that count from it. The cache stress mode
 /// vacates the caches at the boot's safepoints, which may empty the global
 /// entries, so those are counted only without it; the sites stay either
 /// way.
 #[test]
-fn a_fresh_bootstrap_leaves_thirty_one_sites_and_twenty_global_entries() {
+fn a_fresh_bootstrap_leaves_thirty_one_sites_and_twenty_two_global_entries() {
     let mut interpreter = Interpreter::bootstrap();
     let statistics = interpreter.cache_statistics();
     assert_eq!(statistics.site_entries, 31);
     let stress_caches = std::env::var("NS_NEXT_STRESS_CACHES").is_ok_and(|value| value == "1");
     if !stress_caches {
-        assert_eq!(statistics.filled_global_entries, 20);
+        assert_eq!(statistics.filled_global_entries, 22);
     }
 }

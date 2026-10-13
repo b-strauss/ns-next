@@ -664,10 +664,10 @@ fn the_platform_hands_out_none_of_its_modules_classes() {
     );
     for (receiver, module, name) in [
         (&platform, "PlatformFactory", "Platform"),
-        (&platform, "PlatformFactory", "Transcript"),
+        (&platform, "TranscriptFactory", "Transcript"),
         (&platform, "PlatformFactory", "KernelNamespace"),
-        (&platform, "PlatformFactory", "Time"),
-        (&platform, "PlatformFactory", "Stopwatch"),
+        (&platform, "TimeFactory", "Time"),
+        (&platform, "TimeFactory", "Stopwatch"),
         (&collections, "CollectionsFactory", "Collections"),
     ] {
         let message = refusal(

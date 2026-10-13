@@ -1257,7 +1257,7 @@ offsets, the symbol table, **the code table with every body named**, the
 mixin table, the module section, each module's origin, whether it carries
 source and its root's object id, and the count of shipped names — and
 `--full` prints everything, the shipped names among it, each as
-`ShippedName::describe` spells it (`Kernel Array`, `Kernel Kernel level 0`,
+`ShippedName::describe` spells it (`Kernel Array`, `Kernel Integer class`,
 `CollectionsFactory instance`):
 the mixin rows expanded to slot names and per-body code ids, then every body
 disassembled. The intent is `javap -v`'s: an artifact should be followable end

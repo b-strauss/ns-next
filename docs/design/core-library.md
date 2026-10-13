@@ -4,22 +4,26 @@
 > `Kernel.ns`, over one VM mirror, §3.2's `Behavior`, `Class` and
 > `Metaclass` and §8.6's exceptions included, and the platform is a facet
 > of the shipped module `PlatformFactory.ns` with lazy members, its
-> `collections` the facet of the shipped module `CollectionsFactory.ns`
-> with Newspeak `List`, `Map`, `IdentityMap` and `Set`; missing is part
+> transcript, its `time` and its `collections` the facets of the shipped
+> modules `TranscriptFactory.ns`, `TimeFactory.ns` and
+> `CollectionsFactory.ns`, the last with Newspeak `List`, `Map`,
+> `IdentityMap` and `Set`; missing is part
 > of Primordial Soup's core API, whose names and loops are aligned, whose
 > foundations -- the error classes, `Proxy` and a public `Future` --, whose
 > collections and strings and whose numbers -- `Fraction` and a symmetric
 > numeric tower among them ("The numeric tower") -- are built, and the
 > rest -- `ByteArray` and `StringBuilder`, weak references -- planned
 > ("Planned: the kernel completed to Primordial Soup's core API").
-> Every member of `Kernel.ns`, `PlatformFactory.ns` and
-> `CollectionsFactory.ns` -- public, protected and private -- is documented
+> Every member of `Kernel.ns`, `PlatformFactory.ns`, `TranscriptFactory.ns`,
+> `TimeFactory.ns` and `CollectionsFactory.ns` -- public, protected and
+> private -- is documented
 > in place to the standard of Javadoc, by a `///` comment directly above it,
 > which `crates/ns-runtime/tests/core_library_documentation.rs` checks.
 > **Code:** `crates/ns-runtime/core-library/Kernel.ns` (the library),
 > `crates/ns-runtime/core-library/PlatformFactory.ns` (the platform),
-> `crates/ns-runtime/core-library/CollectionsFactory.ns` (the collections
-> module), `crates/ns-runtime/core-library/Manifest.ns` (a project's
+> `crates/ns-runtime/core-library/platform/TranscriptFactory.ns`,
+> `TimeFactory.ns` and `CollectionsFactory.ns` (the transcript, the clock
+> and the collections modules), `crates/ns-runtime/core-library/Manifest.ns` (a project's
 > manifest, which is no shipped module: "The manifest"),
 > `interpreter/kernel.rs` (the bootstrap's kernel phase),
 > `interpreter/core_library.rs` (the table of shipped modules and their
@@ -513,10 +517,11 @@ one, the program does not.
 
 **So a value class lives in a value module.** A class declared in a module
 lives inside that module's instance (§3.3), so a value class's module has to
-be a value too: it declares itself one with §6.2's mixin application,
-`class M = Object <: Value (…)`, as SOMns's
+be a value too: it declares itself one, `class M = Value (…)` as every
+shipped module's root here does (decided with the user on 2026-10-13), or
+with §6.2's mixin application, `class M = Object <: Value (…)`, as SOMns's
 `class Kernel vmMirror: vmMirror = Object <: Value (`
-(`prior-art/somns/core-lib/Kernel.ns`) does and as `Kernel.ns` does here. A
+(`prior-art/somns/core-lib/Kernel.ns`) does. A
 value class nested in a module written `= Object new (…)` is refused on
 instantiation, and every golden that declares a value class declares its
 module a value.
@@ -596,35 +601,52 @@ core-library module beside `Kernel.ns` (decided with the user on
 2026-09-27):
 
 ```newspeak
-class PlatformFactory usingVmMirror: theMirror kernel: kernel = Object <: Value (
-    | private vmMirror = theMirror. private Exception = kernel Exception. ...
+class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
+    | private vmMirror = mirror. private Exception = kernel Exception. ...
       private Collection = kernel Collection. |
 ) (
     lazy private collectionsModule = vmMirror moduleInstanceNamed: #CollectionsFactory ifFail: [nil].
-    private class Platform = Value new () (
-        lazy public transcript = Transcript new.
+    lazy private transcriptModule = vmMirror moduleInstanceNamed: #TranscriptFactory ifFail: [nil].
+    lazy private timeModule = vmMirror moduleInstanceNamed: #TimeFactory ifFail: [nil].
+    private class Platform = Value () (
+        lazy public transcript = transcriptModule build.
         lazy public collections = collectionsModule build.
         lazy public kernel = KernelNamespace new.
-        lazy public time = Time new.
+        lazy public time = timeModule build.
     )
-    private class Transcript = Value new () ( show: and newLine, through vmMirror )
-    private class KernelNamespace = Value new () ( public Exception = ( ^outer PlatformFactory Exception ) ... )
-    private class Time = Value new () ( public Stopwatch = ( ^outer PlatformFactory Stopwatch ) )
-    private class Stopwatch = Object new ( | private cumulativeNanoseconds ::= 0. private startNanoseconds ::= nil. | ) (
-        elapsedNanoseconds, start, and the clock reading, through vmMirror )
+    private class KernelNamespace = Value () ( public Exception = ( ^outer PlatformFactory Exception ) ... )
     public build = ( ^Platform new )
 ) : ()
 ```
 
-and `platform collections` is the facet of a second shipped module,
-`crates/ns-runtime/core-library/CollectionsFactory.ns`, written the same
-way (2026-09-28, "The collections module (plan 2)" below):
+and the transcript, the clock and the collections are each a shipped module
+of its own under `crates/ns-runtime/core-library/platform/`, written the
+same way -- `TranscriptFactory.ns` and `TimeFactory.ns` given the mirror,
+since their leaves are reached through it (decided with the user on
+2026-10-13), `CollectionsFactory.ns` the kernel's classes (2026-09-28, "The
+collections module (plan 2)" below):
 
 ```newspeak
-class CollectionsFactory usingKernel: kernel = Object <: Value (
+class TranscriptFactory usingVmMirror: mirror = Value (
+    | private vmMirror = mirror. |
+) (
+    private class Transcript = Value () ( show: and newLine, through vmMirror )
+    public build = ( ^Transcript new )
+) : ()
+
+class TimeFactory usingVmMirror: mirror = Value (
+    | private vmMirror = mirror. |
+) (
+    private class Time = Value () ( public Stopwatch = ( ^outer TimeFactory Stopwatch ) )
+    private class Stopwatch = Object ( | private cumulativeNanoseconds ::= 0. private startNanoseconds ::= nil. | ) (
+        elapsedNanoseconds, start, and the clock reading, through vmMirror )
+    public build = ( ^Time new )
+) : ()
+
+class CollectionsFactory usingKernel: kernel = Value (
     | private ArgumentError = kernel ArgumentError. private Collection = kernel Collection. |
 ) (
-    private class Collections = Value new () (
+    private class Collections = Value () (
         public Collection = ( ^outer CollectionsFactory Collection )
         public ConcurrentModification = ( ^outer CollectionsFactory ConcurrentModification )
         public IdentityMap = ( ^outer CollectionsFactory IdentityMap )
@@ -633,18 +655,22 @@ class CollectionsFactory usingKernel: kernel = Object <: Value (
         public NotFound = ( ^outer CollectionsFactory NotFound )
         public Set = ( ^outer CollectionsFactory Set )
     )
-    private class List new: capacity = Collection new (
+    private class List new: capacity = Collection (
         | protected size_ ::= 0. private firstIndex ::= 1. private data ::= Array new: capacity.
           private modifications ::= 0. |
     ) ( ... ) : ( public new = ( ^self new: 3 ) )
-    private class Map new: capacity = Collection new ( ... ) ( private lazy hashtable_ ::= rehash. ... ) : ( ... )
+    private class Map new: capacity = Collection ( ... ) ( private lazy hashtable_ ::= rehash. ... ) : ( ... )
     private class IdentityMap new: capacity = Map new: capacity () ( ... ) : ( ... )
-    private class Set new: capacity = Collection new ( ... ) ( private lazy hashtable_ ::= rehash. ... ) : ( ... )
-    private class NotFound = Error new ( | public element ::= nil. | ) ( ... ) : ( ... )
-    private class ConcurrentModification = Error new ( | public collection ::= nil. | ) () : ( ... )
+    private class Set new: capacity = Collection ( ... ) ( private lazy hashtable_ ::= rehash. ... ) : ( ... )
+    private class NotFound = Error ( | public element ::= nil. | ) ( ... ) : ( ... )
+    private class ConcurrentModification = Error ( | public collection ::= nil. | ) () : ( ... )
     public build = ( ^Collections new )
 ) : ()
 ```
+
+A superclass clause that sends only `new` omits it, as §6.1 allows ("If
+omitted, *m* defaults to `new`"), and every module root is `= Value`
+(decided with the user on 2026-10-13).
 
 **The factory pattern.** Every shipped module is written this way: an
 `XFactory` root holds what is privileged -- here the VM mirror, and of the
@@ -817,7 +843,7 @@ unstarted stopwatch reads 0, and `start` on a running one changes nothing
 **A `Stopwatch` is an object, not a value.** It keeps its start and its
 accumulated time in mutable slots, which §3.1.1 forbids a value, so its
 class is `Object new`, as the collections module's `List` is, and it is
-the one class of `PlatformFactory.ns` that is not a value. So two
+the one class of the platform's modules that is not a value. So two
 stopwatches are two objects, and an image writes one as an ordinary record
 of `PlatformFactory Stopwatch`, readings included
 (`a_stopwatch_is_a_record_of_its_shipped_class`). Its slots hold no
@@ -1908,11 +1934,12 @@ with it). `Interpreter::bootstrap_with` runs it in six steps
 4. **The immediate dispatch-id table is refreshed**, because an immediate's
    ids are read off its class's application, which just changed.
 5. **The kernel class is built and instantiated** from the host, with the
-   mirror as its factory argument: `Kernel vmMirror: theMirror`. Its root is
-   `Object <: Value`, so its `Value` level is built first, over the filled
-   `Object`, with `nested::build_applied_levels`, as a user root's is. Before
-   the instantiation, every class object built so far — each builtin, the
-   `Value` level and the kernel's own class — gets its metaclass over the
+   mirror as its factory argument: `Kernel vmMirror: mirror`. Its root is
+   `= Value`, built by the root rule as a user root's is
+   (`resolver::root_shape`, `nested::build_applied_levels`), so its class
+   sits directly over the filled `Value`; a `<:` clause would add its level
+   the same way. Before the instantiation, every class object built so far
+   — each builtin and the kernel's own class — gets its metaclass over the
    filled `Class` (`Mutator::give_existing_class_objects_metaclasses`): until
    here each carried the builtin `Object` as a provisional class, and from
    here on `new_class_object` builds a metaclass with every class object
@@ -1948,8 +1975,8 @@ its own payload (`instantiate::decide_factory`).
 
 **`Kernel` is a value, and so is the mirror** (decided with the user on
 2026-09-23). `Kernel.ns` declares
-`class Kernel vmMirror: theMirror = Object <: Value (…)`, the header SOMns
-writes, so the kernel instance — the enclosing object of every builtin value
+`class Kernel vmMirror: mirror = Value (…)`, a value as the header SOMns
+writes, `Object <: Value`, makes its own, so the kernel instance — the enclosing object of every builtin value
 class — meets §3.1.1's enclosing-object condition, and every builtin value
 class with it. Its one slot holds the mirror, which a value's slot may hold
 because the mirror is a value by the ordinary rule: its class sits below
@@ -1977,7 +2004,10 @@ by `interpreter/kernel.rs`; every other shipped module is an entry of
 `interpreter/core_library.rs`'s `SHIPPED_MODULES`, a name and its source,
 embedded with `include_str!` from `crates/ns-runtime/core-library/` like
 the kernel. Today it has two entries, `PlatformFactory` and
-`CollectionsFactory`. The table parses and resolves an entry once per
+`CollectionsFactory`, whose source is `platform/CollectionsFactory.ns`: the
+modules the platform hands out a facet of live under `platform/`. Where a
+module's file lies decides nothing: the table names it, and `moduleInstanceNamed:`
+finds it by that name. The table parses and resolves an entry once per
 thread, on the first request for it, with `resolve_kernel`, because the
 entry is shipped source, and every boot asks for every entry: an image
 names the shipped world's objects and the loader runs nothing the image
@@ -2600,7 +2630,7 @@ the primary factory's formal parameters "are in scope in the instance
 initializer but not in the rest of the class body", and a lazy slot is
 declared in the class body. A class that needs one in a lazy slot copies
 it into an ordinary slot first, as `Kernel.ns` already does with
-`theMirror`. The resolver resolves a lazy initializer in a fresh
+`mirror`. The resolver resolves a lazy initializer in a fresh
 zero-local scope over the class chain, as a unary method's body, so a
 parameter's name there is an implicit-receiver send.
 
@@ -2644,8 +2674,9 @@ boot built. The design as decided:
 - **One module table, on the mirror** (the decision of 2026-09-21 in "Where
   the library source lives, and how modules are found"). The host fills a
   table of name to source at bootstrap; the shipped modules —
-  `PlatformFactory.ns` and `CollectionsFactory.ns` — sit beside `Kernel.ns` in
-  `crates/ns-runtime/core-library/` and are embedded the same way. **Loading
+  `PlatformFactory.ns` and `CollectionsFactory.ns` — sit in
+  `crates/ns-runtime/core-library/` with `Kernel.ns`, the collections module
+  in its subdirectory `platform/`, and are embedded the same way. **Loading
   is unified; trust and visibility are not:** every entry carries whether it
   is shipped core-library source, set by the host and never by the module, and
   only such an entry is resolved with `resolve_kernel`. The mirror leaf
@@ -2819,7 +2850,7 @@ a handle on, not a class the image needs a name for.
   it grows into.
 - **`CollectionsFactory.ns`, built**, in the factory pattern ("The
   platform" above): `class CollectionsFactory usingKernel: kernel =
-  Object <: Value`, a root that keeps the kernel's `ArgumentError` and
+  Value`, a root that keeps the kernel's `ArgumentError` and
   `Collection` in private slots and is never handed out, with the private nested classes a program reaches
   through the platform -- the `Collections` facet, `List`, `Map`,
   `IdentityMap`, `Set`, `NotFound` and `ConcurrentModification` -- as
@@ -3750,8 +3781,10 @@ code lives on the mixin and is shared by every application
 ([compiler.md](compiler.md)), and `List` could apply it later. **If the
 bootstrap cannot yet take a builtin whose superclass is a mixin
 application, the bootstrap is fixed**; there is no fallback to an abstract
-class. `Kernel` itself is `Object <: Value`, but it is no builtin, so the
-builtin case is the plan's first step to check.
+class. No shipped class applies a mixin today -- `Kernel` itself is
+`= Value` -- so a builtin over a mixin application is the plan's first step
+to check, and it brings back a live shipped level for the image's tests
+([OPEN-WORK.md](../OPEN-WORK.md)).
 
 #### `ByteArray`'s protocol
 
@@ -4175,8 +4208,9 @@ stands; the shipped-class naming the first item needs is built.
   after. It is independent of what the slow path looks like — the compiler
   emits the operation under a type guard and falls back to the ordinary send —
   so it was measured on its own and then cushioned the move.
-- **`Kernel` is `= Object <: Value`, and the mirror's class sits below
-  `Value`** (decided with the user on 2026-09-23), as in SOMns: §3.1.1's
+- **`Kernel` is a value, and the mirror's class sits below `Value`**
+  (decided with the user on 2026-09-23; written `= Value`, as every shipped
+  module's root, since 2026-10-13), as in SOMns: §3.1.1's
   enclosing-object condition, enforced strictly, needs the kernel instance to
   be a value for any builtin value class to have value instances, and the
   kernel's one slot holds the mirror ("The bootstrap: placeholders first,

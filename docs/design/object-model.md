@@ -730,8 +730,9 @@ for a level above `C`).
 
 **`Kernel` and the VM mirror are values, as in SOMns** (decided with the user
 on 2026-09-23). `Kernel.ns`'s module is declared
-`class Kernel vmMirror: theMirror = Object <: Value (…)`, the header
-`prior-art/somns/core-lib/Kernel.ns` writes, and its one slot is immutable.
+`class Kernel vmMirror: mirror = Value (…)`, a value as
+`prior-art/somns/core-lib/Kernel.ns`'s `Object <: Value` is, and its one
+slot is immutable.
 The mirror's class sits below `Value` (`interpreter/kernel.rs`,
 `superclass_of_kind`), so the mirror is a value by the ordinary rule — no
 slots, no `==` of its own, its class inherits `Value` — rather than by an

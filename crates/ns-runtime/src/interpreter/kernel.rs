@@ -255,32 +255,49 @@ impl<'gc> Mutator<'gc> {
                     .cloned()
             });
         self.refresh_immediate_dispatch_ids();
-        // `Object <: Value`: the level is built as a user root's is, from
-        // the filled `Value`, and its lexical context is set once the kernel
-        // instance exists (`wire_kernel_in`), as every builtin class's is.
-        assert!(
-            root_mixin.root_clause_defect.is_none() && root_mixin.mixin_applications.len() == 1,
-            "internal: Kernel.ns's root must be `Object <: Value`"
-        );
-        let object = self.builtin_class(BuiltinClass::Object);
-        let value = self.builtin_class(BuiltinClass::Value);
-        let object_application = self.heap.class_application(object);
-        let (level, level_application) = match super::nested::build_applied_levels(
+        // The root is built as a user root is, by the root rule's shape
+        // (`load_root_class`), from the filled `Object` and `Value`; its
+        // lexical context is set once the kernel instance exists
+        // (`wire_kernel_in`), as every builtin class's is. `Kernel.ns`'s root
+        // is `= Value`, so it adds no level, but a `<:` clause would be
+        // built here the same way.
+        let shape = crate::resolver::root_shape(&resolved.module.root_class)
+            .unwrap_or_else(|| panic!("internal: Kernel.ns's root breaks the root rule"));
+        let superclass_kind = if shape.over_value {
+            BuiltinClass::Value
+        } else {
+            BuiltinClass::Object
+        };
+        let superclass = self.builtin_class(superclass_kind);
+        let superclass_application = self.heap.class_application(superclass);
+        let applied: Vec<(usize, Value<'gc>)> = if shape.applies_value {
+            vec![(0, Value::object(self.builtin_class(BuiltinClass::Value)))]
+        } else {
+            Vec::new()
+        };
+        let top = match super::nested::build_applied_levels(
             self,
             &root_mixin,
-            object_application.map(|application| (object, application)),
-            &[(0, Value::object(value))],
+            superclass_application.map(|application| (superclass, application)),
+            &applied,
         ) {
-            Ok(Some(level)) => level,
-            Ok(None) | Err(_) => panic!("internal: the kernel's Value level is a class object"),
+            Ok(top) => top,
+            Err(_) => panic!("internal: the kernel root's superclass is a class object"),
         };
-        let application = self.apply_mixin(&root_mixin, Some(&level_application));
-        let kernel_class = self.new_class_object(application, None, None, Some(level));
+        let (superclass, super_application) = top.unzip();
+        let application = self.apply_mixin(&root_mixin, super_application.as_ref());
+        let kernel_class = self.new_class_object(application, None, None, superclass);
         // `Class` is filled, so every class object built so far -- each
         // builtin, the `Value` level and the kernel's own class -- can get
         // its metaclass now, and every one built from here on gets it with
         // the class object.
-        self.give_existing_class_objects_metaclasses(&[level, kernel_class]);
+        let mut built = vec![kernel_class];
+        if shape.applies_value {
+            if let Some(level) = superclass {
+                built.insert(0, level);
+            }
+        }
+        self.give_existing_class_objects_metaclasses(&built);
         kernel_class
     }
 
@@ -2094,30 +2111,24 @@ mod tests {
         });
     }
 
-    /// The kernel's `Value` level is an applied level like any other, and
-    /// it too is enclosed by the kernel instance: a method of `Value` run on
-    /// the kernel reaches `vmMirror` through it.
+    /// `Kernel.ns`'s root is `= Value`, built by the root rule as any
+    /// module's root: the kernel class's superclass is the builtin `Value`
+    /// itself, no applied level, and the kernel instance is a value.
     #[test]
-    fn the_kernels_value_level_is_enclosed_by_the_kernel() {
+    fn the_kernel_class_is_built_over_value() {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
             let Some(kernel) = mutator.kernel.and_then(|value| value.as_object()) else {
                 panic!("the kernel is instantiated at bootstrap");
             };
             let kernel_class = mutator.heap().object_class(kernel);
-            let level = mutator
+            let superclass = mutator
                 .heap()
                 .class_superclass(kernel_class)
-                .expect("the kernel class has its Value level");
-            assert!(mutator.heap().class_is_applied_level(level));
-            assert!(mutator
-                .heap()
-                .class_enclosing(level)
-                .is_some_and(|enclosing| enclosing.same(kernel)));
-            assert!(mutator
-                .heap()
-                .class_declaring(level)
-                .is_some_and(|declaring| declaring.same(kernel_class)));
+                .expect("the kernel class has a superclass");
+            assert!(superclass.same(mutator.builtin_class(BuiltinClass::Value)));
+            assert!(!mutator.heap().class_is_applied_level(superclass));
+            assert!(mutator.heap().class_inherits_value(kernel_class));
         });
     }
 
