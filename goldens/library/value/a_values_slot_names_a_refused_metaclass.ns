@@ -17,6 +17,7 @@
 class ValueSlotNamesARefusedMetaclass = Object <: Value () (
   public class Wrapper = Object new () (
     public class Plain = Object new () () : (
+      /// Answers Plain's metaclass, which only Plain's class side can ask for.
       public metaclass = (
         ^self class.
       )

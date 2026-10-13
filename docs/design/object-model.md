@@ -1404,8 +1404,8 @@ names lives in the kernel or the platform, where it names them directly.
 `interpreter/kernel.rs`'s accessor-set test pins the set.
 
 **Instantiation is refused.** The three are reachable anyway — a class
-side's `self class` is a metaclass, an error's payload can hand out a class
-object, and road step 5's mirrors will reach every one — so refusing to
+side's `self class` is a metaclass, a host can hand a program any of them,
+and road step 5's mirrors will reach every one — so refusing to
 instantiate them is needed whatever is nameable. `Mutator::apply_mixin` folds
 `InstantiationRefusal::ClassObject` into the `instantiation_refusal` of
 `Behavior`'s application — recognized by the mixin the kernel phase records
@@ -1532,9 +1532,10 @@ keeps a metaclass's identity across a round trip: the metaclass a slot holds
 is the one its class answers. `Behavior`, `Class` and `Metaclass` are
 refused wherever a class is made from them — a superclass, a `<:` clause's
 mixin — since a class over one of them could never be instantiated; as
-values in the graph they are accepted, since a program still reaches a
-metaclass (a class side's `self class`) and an error's payload can hand out
-a class object
+values in the graph they are accepted, since they carry no authority, a
+program still reaches a metaclass (a class side's `self class`) and a host
+can hand a program any of them, which a narrower rule would refuse to
+build
 ([image-format.md](image-format.md), "What is *not* serialized",
 "Verification").
 

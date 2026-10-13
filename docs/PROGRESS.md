@@ -4957,7 +4957,7 @@ value clause for a class the VM signals goes, with
 record of that class. A project module may now be named like one of
 `Object`'s accessors, `Array` say, and is reached through the manifest.
 
-**Goldens.** About 44 goldens and 38 Rust tests sent `class` to another
+**Goldens.** About 44 goldens and 33 Rust tests sent `class` to another
 object; each now checks what it checked through the public protocol
 (`isKindOf…`, the class a handler catches, a class-side `metaclass`
 answering `self class`, the platform's own class accessors), every

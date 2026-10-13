@@ -1809,10 +1809,11 @@ mod tests {
     /// program reaches through `platform kernel`, nor `Proxy` and `Future`,
     /// which it reaches there too, nor `Activation` and
     /// `FutureImplementation`, which it does not reach at all, nor
-    /// `LargeInteger`, which a
-    /// program meets only as an integer's class. `PlatformFactory.ns`'s class names are listed
-    /// too: `Object` must never grow an accessor for one of them, since a
-    /// program reaches them through the platform it is handed.
+    /// `LargeInteger`, which no program reaches either: `class` is
+    /// protected and `Object` declares no accessor for it.
+    /// `PlatformFactory.ns`'s class names are listed too: `Object` must
+    /// never grow an accessor for one of them, since a program reaches them
+    /// through the platform it is handed.
     #[test]
     fn objects_class_accessors_are_exactly_the_nameable_builtins() {
         let mut interpreter = Interpreter::bootstrap();

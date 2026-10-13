@@ -86,12 +86,12 @@ fn platform_transcript_show_and_new_line_round_trip() {
     );
 }
 
-/// A bare `Array` and the rest answer the builtin class through
-/// `Object`'s accessors (§3.2), which every object inherits, the platform
-/// too: it declares none of its own. The accessors answer only their
-/// receiver's own sends, so a module asks them of itself.
+/// A bare `Object`, `Array`, `String` and `Symbol` in a module's method
+/// answers the matching builtin class through `Object`'s accessors
+/// (§3.2), which the module inherits. The accessors are protected, so the
+/// module sends them to itself, as a bare name does.
 #[test]
-fn platform_class_accessors_return_the_matching_builtin_class() {
+fn a_bare_class_name_answers_the_matching_builtin_class() {
     let source = indoc! {"
         class Probe usingPlatform: platform = Object new () (
             public objectClass = ( ^Object )

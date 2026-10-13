@@ -534,9 +534,12 @@ fn the_platform_and_its_parts_are_instances_of_classes_of_their_own() {
     );
 }
 
-/// `goldens/library/object/a_proxy_forwards_every_message.ns`: a
-/// forwarder answers every message with its target's answer, yet is an
-/// instance of its own class, `Forwarder`, not of its target's, `Integer`.
+/// The check that replaced a dropped line of
+/// `goldens/library/object/a_proxy_forwards_every_message.ns`, which sent
+/// `forwarder class` and so printed its target's class, `Integer`: a
+/// forwarder answers every message with its target's answer, yet the host
+/// reads it as an instance of its own class, `Forwarder`, not of its
+/// target's.
 #[test]
 fn a_proxy_forwards_every_message_but_keeps_a_class_of_its_own() {
     let source = indoc! {"

@@ -1090,9 +1090,10 @@ and why:
 - **`Behavior`, `Class` and `Metaclass`** are no superclass and no mixin a
   level applies: a class object is made only by evaluating a declaration, so
   a class over one of them could never be instantiated. As a value they are
-  accepted: a program still reaches a metaclass as a class side's `self
-  class`, an error's payload can hand one of the three out, and either may
-  stand in a slot. An object record that is no class object but whose
+  accepted: they carry no authority, a program still reaches a metaclass
+  as a class side's `self class`, a host can hand a program any of them,
+  and a narrower rule would refuse to build such a graph; either may stand
+  in a slot. An object record that is no class object but whose
   class refuses instantiation as a class object — an instance of `Class`,
   `Metaclass` or a metaclass — is `InstanceOfAClassClass`, and a class record
   whose row is some row's class side is `ClassRecordAppliesAClassSide`: no

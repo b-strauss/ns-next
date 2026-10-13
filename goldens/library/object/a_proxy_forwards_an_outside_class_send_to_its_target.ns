@@ -2,7 +2,9 @@
 /// `class` send in `doesNotUnderstand:` and sends it on to its target as
 /// an ordinary public send. The target's `class` is protected too, so the
 /// forwarded send is not understood either: a proxy hands out no class
-/// its target does not.
+/// its target does not. The error names `class` as its selector and the
+/// target, not the proxy, as its receiver: compared from the target's
+/// side, since the proxy would forward a comparison sent to it.
 class AProxyForwardsAnOutsideClassSend = Object new (
   |
     Proxy ::= nil.
@@ -28,6 +30,11 @@ class AProxyForwardsAnOutsideClassSend = Object new (
     transcript
         show: ([forwarder class] on: platform kernel MessageNotUnderstood do: [:error |
           error message selector.
+        ]);
+        newLine.
+    transcript
+        show: ([forwarder class] on: platform kernel MessageNotUnderstood do: [:error |
+          (3 == error receiver) printString.
         ]);
         newLine.
     transcript

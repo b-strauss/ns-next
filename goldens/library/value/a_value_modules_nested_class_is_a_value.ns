@@ -19,6 +19,7 @@ class AValueModulesNestedClass = Object <: Value () (
     |
   ) (
     public class Point = Value new () () : (
+      /// Answers Point's metaclass, which only Point's class side can ask for.
       public metaclass = (
         ^self class.
       )

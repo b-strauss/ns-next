@@ -3376,13 +3376,14 @@ refused as a value like any private class without a public accessor
 `a_caught_non_boolean_receiver_round_trips_through_a_package` and
 `non_boolean_receiver_as_a_value_is_refused`). The metaclasses and
 `Behavior`, `Class` and `Metaclass` stay values: they carry no authority,
-an error's payload (`CannotInstantiate`'s behavior) can still hand one out,
-and a rule narrower than what a program reaches refuses to build a program
-that runs. `accessed_classes` counts public accessors only, and `Object`'s
-answer public kernel classes, which are values anyway, so the rest of the
-rule did not move.
+and a host can hand a program any of them -- it reaches every one, as
+`crates/ns-runtime/tests/representation.rs` sends `Metaclass new` from
+the host -- which a narrower rule would refuse to build.
+`accessed_classes` counts public accessors only, and `Object`'s answer
+public kernel classes, which are values anyway, so the rest of the rule
+did not move.
 
-**The tests kept what they check.** About 44 goldens and 38 Rust tests
+**The tests kept what they check.** About 44 goldens and 33 Rust tests
 sent `class` to another object. What a program can still observe, a golden
 checks through the public protocol: `isKindOfInteger` and its siblings for
 a result's kind, `printString` for a collection's, the class a handler

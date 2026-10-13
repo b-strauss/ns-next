@@ -82,8 +82,9 @@ fn a_metaclass_is_the_class_side_applied_to_class() {
     });
 }
 
-/// §3.2: `Foo class` is Foo's metaclass, whose class is `Metaclass`, and
-/// `Metaclass class class` is `Metaclass` again.
+/// §3.2: the class of a class object is its metaclass, whose class is
+/// `Metaclass`, and the class of `Metaclass`'s metaclass is `Metaclass`
+/// again; the host reads each class with `class_of`.
 #[test]
 fn the_class_of_a_class_is_its_metaclass() {
     let source = indoc! {"
@@ -105,12 +106,15 @@ fn the_class_of_a_class_is_its_metaclass() {
             .metaclass_of(class_object)
             .expect("every class object has a metaclass");
         let Some(answered) = mutator.fetch(&metaclass).as_object() else {
-            panic!("`Subject class` answers an object");
+            panic!("the class of `Subject` is an object");
         };
-        assert!(answered.same(expected), "`Subject class` is its metaclass");
+        assert!(
+            answered.same(expected),
+            "the class of `Subject` is its metaclass"
+        );
         let builtin_metaclass = mutator.builtin_class(BuiltinClass::Metaclass);
         let Some(answered) = mutator.fetch(&metaclass_class).as_object() else {
-            panic!("`Subject class class` answers an object");
+            panic!("the class of `Subject`'s metaclass is an object");
         };
         assert!(
             answered.same(builtin_metaclass),
@@ -120,18 +124,18 @@ fn the_class_of_a_class_is_its_metaclass() {
             .metaclass_of(builtin_metaclass)
             .expect("`Metaclass` has a metaclass");
         let Some(answered) = mutator.fetch(&metaclass_metaclass).as_object() else {
-            panic!("`Metaclass class` answers an object");
+            panic!("the class of `Metaclass` is an object");
         };
         assert!(
             answered.same(expected),
-            "`Metaclass class` is its metaclass"
+            "the class of `Metaclass` is its metaclass"
         );
         let Some(answered) = mutator.fetch(&metaclass_metaclass_class).as_object() else {
-            panic!("`Metaclass class class` answers an object");
+            panic!("the class of `Metaclass`'s metaclass is an object");
         };
         assert!(
             answered.same(builtin_metaclass),
-            "`Metaclass class class` is `Metaclass` again"
+            "the class of `Metaclass`'s metaclass is `Metaclass` again"
         );
     });
 }
