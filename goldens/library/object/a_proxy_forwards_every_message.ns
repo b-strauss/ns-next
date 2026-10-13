@@ -1,7 +1,9 @@
 /// A `Proxy` overrides every public member of `Object` as protected, so a
 /// subclass that implements only `doesNotUnderstand:` forwards every
 /// message a program sends it, `Object`'s included. A bare `Proxy`
-/// understands none of them.
+/// understands none of them. That the forwarder keeps a class of its own,
+/// which only the host can read, `crates/ns-runtime/tests/representation.rs`
+/// checks.
 class AProxyForwardsEveryMessage = Object new (
   |
     Proxy ::= nil.
@@ -40,13 +42,12 @@ class AProxyForwardsEveryMessage = Object new (
         show: (forwarder yourself == 3) printString;
         newLine.
     transcript
-        show: forwarder class printString;
-        newLine.
-    transcript
         show: (Forwarder on: nil) isNil printString;
         newLine.
     transcript
-        show: ([Proxy new printString] on: Error do: [:error | error class name]);
+        show: ([Proxy new printString] on: platform kernel MessageNotUnderstood do: [:error |
+          'MessageNotUnderstood'.
+        ]);
         newLine.
   )
 )

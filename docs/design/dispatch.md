@@ -206,7 +206,13 @@ member of that name therefore reaches its own, as §2.3.1 says
 `goldens/language/builtin-names/an_enclosing_member_named_like_a_builtin_is_the_superclass.ns`),
 and a class-side method reaches `Object`'s accessor through its class
 object's ordinary lookup — class side, `Class`, `Behavior`, `Object`
-(`goldens/language/class/class-side/a_class_side_method_names_a_builtin.ns`). `Object`
+(`goldens/language/class/class-side/a_class_side_method_names_a_builtin.ns`).
+The accessors and `Object>>class` are protected, so these self and
+implicit-receiver sends reach them and `other String` or `other class`
+from outside reaches `doesNotUnderstand:`
+(`goldens/language/send/an_outside_class_accessor_send_is_not_understood.ns`;
+[core-library.md](core-library.md), "`class` and the class accessors are
+protected"). `Object`
 declares no accessor for `Top`, the VM mirror's class or `Platform`, so
 `self Top`, like a bare `Top`, ends in `doesNotUnderstand:`
 (`goldens/language/builtin-names/top_is_not_a_name.ns`,
@@ -609,10 +615,7 @@ primitive entry never passes its level over any more: there is no pass-over,
 and `act`'s `Primitive` arm turns a `None` it can no longer receive into the
 unhandled-send error rather than a panic. The one observable consequence —
 a user subclass's own `doesNotUnderstand:` is passed by, per §5.10 — is
-[core-library.md](core-library.md), "The one observable difference". The
-platform objects keep their shared class: a class of their own each would be
-observable (`platform transcript class` answers `Platform`) and is not needed
-for correctness.
+[core-library.md](core-library.md), "The one observable difference".
 
 **Four rows serve `Value` rather than one builtin class**, and they are where
 the rule that a leaf may not send shows most plainly:

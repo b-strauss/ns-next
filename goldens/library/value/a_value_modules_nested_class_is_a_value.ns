@@ -18,7 +18,12 @@ class AValueModulesNestedClass = Object <: Value () (
       public x = anX.
     |
   ) (
-    public class Point = Value new () ()
+    public class Point = Value new () () : (
+      /// Answers Point's metaclass, which only Point's class side can ask for.
+      public metaclass = (
+        ^self class.
+      )
+    )
   )
 
   public class Holder of: aClass = Value new (
@@ -63,7 +68,7 @@ class AValueModulesNestedClass = Object <: Value () (
         show: ((Holder of: one Point) = (Holder of: another Point)) printString;
         newLine.
     transcript
-        show: (one Point class = another Point class) printString;
+        show: (one Point metaclass = another Point metaclass) printString;
         newLine.
   )
 )

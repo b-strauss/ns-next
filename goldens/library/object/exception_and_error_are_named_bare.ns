@@ -26,7 +26,7 @@ class ExceptionAndErrorAreNamedBare = () (
         show: ([Error signal: 'failed'] on: Exception do: [:error | error messageText]);
         newLine.
     transcript
-        show: ([nil zork] on: Error do: [:error | error class name]);
+        show: ([nil zork] on: kernel MessageNotUnderstood do: [:error | 'MessageNotUnderstood']);
         newLine.
     transcript
         show: Shadowing new report;

@@ -74,7 +74,7 @@ class AnIdentityMapComparesKeysByIdentity = Object new () (
         show: (identity atOrItself: first) printString;
         newLine.
     transcript
-        show: (identity collect: [:value | value]) class printString;
+        show: (identity collect: [:value | value]) isKindOfIdentityMap printString;
         newLine.
     transcript
         show: identity isKindOfIdentityMap printString;

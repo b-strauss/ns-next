@@ -1,0 +1,31 @@
+/// `Object>>class` is protected, so `other class` from outside finds
+/// nothing through §5.5's lookupPublic and falls to
+/// `doesNotUnderstand:`: holding an object does not hand out its class.
+/// `self class` still answers it.
+class AnOutsideClassSend = Object new () (
+  class Holder = Object new () (
+    /// Answers whether the receiver reaches its own class.
+    public reachesItsOwnClass = (
+      ^self class == Holder.
+    )
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        show: ([3 class] on: platform kernel MessageNotUnderstood do: [:error |
+          error message selector.
+        ]);
+        newLine.
+    transcript
+        show: ([Holder new class] on: platform kernel MessageNotUnderstood do: [:error |
+          error message selector.
+        ]);
+        newLine.
+    transcript
+        show: Holder new reachesItsOwnClass printString;
+        newLine.
+  )
+)

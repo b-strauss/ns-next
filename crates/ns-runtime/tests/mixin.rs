@@ -493,9 +493,10 @@ const SUPER_SOURCE: &str = indoc! {"
         )
         public class Applied = Object new <: Marker () (
             public level = ( ^super level + 10 )
+            public classIsApplied = ( ^self class == Applied )
         )
         public levelOfApplied = ( ^Applied new level )
-        public classOfAppliedIsApplied = ( ^Applied new class == Applied )
+        public classOfAppliedIsApplied = ( ^Applied new classIsApplied )
     )
 "};
 

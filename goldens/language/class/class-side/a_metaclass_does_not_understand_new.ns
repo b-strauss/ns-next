@@ -2,9 +2,14 @@
 /// and "may not be subclassed", and 6.3 puts the primary factory on the
 /// class's own metaclass only. A metaclass is no class a declaration
 /// evaluates to, so it has no metaclass of its own holding a factory:
-/// `Foo class new` is not understood.
+/// `Foo metaclass new` is not understood.
 class AMetaclassDoesNotUnderstandNew = Object new () (
-  class Foo = Object new () ()
+  class Foo = Object new () () : (
+    /// Answers Foo's metaclass, which only Foo's class side can ask for.
+    public metaclass = (
+      ^self class.
+    )
+  )
 
   public main: platform args: args = (
     |
@@ -13,7 +18,7 @@ class AMetaclassDoesNotUnderstandNew = Object new () (
     transcript
         show: 'before';
         newLine.
-    Foo class new.
+    Foo metaclass new.
     transcript
         show: 'not reached';
         newLine.

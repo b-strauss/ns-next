@@ -1,0 +1,40 @@
+/// A bare `Integer` is the implicit-receiver send of `Object`'s protected
+/// accessor (§5.7's lexical lookup finds no nearer declaration), so it
+/// answers the class in an instance method, in a block, in a nested
+/// class's method and in a class-side method alike.
+class ABareClassName = Object new () (
+  class Nested = Object new () (
+    /// Answers 7 parsed by a bare `Integer` in a nested class's method.
+    public parsed = (
+      ^Integer parse: '7'.
+    )
+  ) : (
+    /// Answers 7 parsed by a bare `Integer` in a class-side method.
+    public parsed = (
+      ^Integer parse: '7'.
+    )
+  )
+
+  /// Answers 7 parsed by a bare `Integer` in an instance method.
+  parsed = (
+    ^Integer parse: '7'.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        show: self parsed printString;
+        newLine.
+    transcript
+        show: [Integer parse: '7'] value printString;
+        newLine.
+    transcript
+        show: Nested new parsed printString;
+        newLine.
+    transcript
+        show: Nested parsed printString;
+        newLine.
+  )
+)

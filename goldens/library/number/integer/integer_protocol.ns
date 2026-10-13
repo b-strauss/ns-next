@@ -90,8 +90,6 @@ class IntegerProtocol = () (
         newLine.
     transcript
         print: (Integer parse: '18446744073709551616');
-        show: ' ';
-        print: (Integer parse: '18446744073709551616') class;
         newLine.
     transcript
         print: 7 floor;

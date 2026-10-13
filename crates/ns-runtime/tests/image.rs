@@ -363,6 +363,19 @@ fn class_reference<'gc>(mutator: &Mutator<'gc>, root: &Root) -> ClassReference<'
     }
 }
 
+/// `value` as text: a String's characters, or the name of the class of
+/// any other value, read on the host side, since `class` is answered only
+/// to its receiver's own sends.
+fn text_or_class_name<'gc>(mutator: &Mutator<'gc>, value: Value<'gc>) -> String {
+    if let Some(text) = value
+        .as_object()
+        .and_then(|object| mutator.heap().str_value(object))
+    {
+        return text;
+    }
+    mutator.heap().class_display_name(mutator.class_of(value))
+}
+
 /// A `symbols::Table` holding exactly `strings`, in order -- so `strings[i]`
 /// decodes from id `i`, matching the ids a hand-crafted test writes inline.
 /// Hostile-input tests that never reference a selector pass
@@ -1228,11 +1241,11 @@ fn a_large_integer_value_round_trips() {
           | large = 9223372036854775807 + 1. small = 0 - (9223372036854775807 + 1). edge = 1152921504606846976. |
         ) (
           public largeText = ( ^large printString )
-          public largeClass = ( ^large class printString )
+          public largeValue = ( ^large )
           public smallText = ( ^small printString )
-          public smallClass = ( ^small class printString )
+          public smallValue = ( ^small )
           public edgeText = ( ^edge printString )
-          public edgeClass = ( ^edge class printString )
+          public edgeValue = ( ^edge )
         ) : ()
     "};
     let (mut interpreter, class) = load(source);
@@ -1252,11 +1265,11 @@ fn a_large_integer_value_round_trips() {
     let mut loaded = image::load(&bytes).expect("load");
     for (selector, expected) in [
         ("largeText", "9223372036854775808"),
-        ("largeClass", "LargeInteger"),
+        ("largeValue", "LargeInteger"),
         ("smallText", "-9223372036854775808"),
-        ("smallClass", "LargeInteger"),
+        ("smallValue", "LargeInteger"),
         ("edgeText", "1152921504606846976"),
-        ("edgeClass", "LargeInteger"),
+        ("edgeValue", "LargeInteger"),
     ] {
         let answer = expect_ok(
             loaded
@@ -1265,12 +1278,9 @@ fn a_large_integer_value_round_trips() {
             selector,
         );
         loaded.interpreter.enter(|mutator| {
-            let Some(string) = mutator.fetch(&answer).as_object() else {
-                panic!("{selector}: expected a string")
-            };
             assert_eq!(
-                mutator.heap().str_value(string).as_deref(),
-                Some(expected),
+                text_or_class_name(mutator, mutator.fetch(&answer)),
+                expected,
                 "{selector}"
             );
         });
@@ -1441,7 +1451,7 @@ fn a_boxed_float_value_round_trips_without_a_record() {
           public notANumberText = ( ^notANumber printString )
           public infinityText = ( ^infinity printString )
           public hugeText = ( ^huge printString )
-          public hugeClass = ( ^huge class printString )
+          public hugeValue = ( ^huge )
         ) : ()
     "};
     let (mut interpreter, class) = load(source);
@@ -1489,7 +1499,7 @@ fn a_boxed_float_value_round_trips_without_a_record() {
         ("notANumberText", "NaN"),
         ("infinityText", "Infinity"),
         ("hugeText", "1e+300"),
-        ("hugeClass", "Float"),
+        ("hugeValue", "Float"),
     ] {
         let answer = expect_ok(
             loaded
@@ -1498,12 +1508,9 @@ fn a_boxed_float_value_round_trips_without_a_record() {
             selector,
         );
         loaded.interpreter.enter(|mutator| {
-            let Some(string) = mutator.fetch(&answer).as_object() else {
-                panic!("{selector}: expected a string")
-            };
             assert_eq!(
-                mutator.heap().str_value(string).as_deref(),
-                Some(expected),
+                text_or_class_name(mutator, mutator.fetch(&answer)),
+                expected,
                 "{selector}"
             );
         });
@@ -1554,7 +1561,6 @@ fn a_crafted_small_integer_literal_beyond_61_bits_loads_as_a_large_integer() {
         ) (
           public answer = ( ^1152921504606846975 )
           public answerText = ( ^answer printString )
-          public answerClass = ( ^answer class printString )
         ) : ()
     "};
     let (mut interpreter, class) = load(source);
@@ -1604,7 +1610,7 @@ fn a_crafted_small_integer_literal_beyond_61_bits_loads_as_a_large_integer() {
     });
     for (selector, expected) in [
         ("answerText", "9223372036854775807"),
-        ("answerClass", "LargeInteger"),
+        ("answer", "LargeInteger"),
     ] {
         let answer = expect_ok(
             loaded
@@ -1613,12 +1619,9 @@ fn a_crafted_small_integer_literal_beyond_61_bits_loads_as_a_large_integer() {
             selector,
         );
         loaded.interpreter.enter(|mutator| {
-            let Some(string) = mutator.fetch(&answer).as_object() else {
-                panic!("{selector}: expected a string")
-            };
             assert_eq!(
-                mutator.heap().str_value(string).as_deref(),
-                Some(expected),
+                text_or_class_name(mutator, mutator.fetch(&answer)),
+                expected,
                 "{selector}"
             );
         });
@@ -1763,7 +1766,8 @@ fn a_large_integer_is_a_value_not_a_record() {
 
 /// A module whose `fill:` puts four fractions in an `Array` -- parts that
 /// are `SmallInteger`s, a `LargeInteger` denominator and a `LargeInteger`
-/// numerator -- and whose `text` writes each with its parts' classes.
+/// numerator -- and whose `parts` answers, for each, its printed form, its
+/// numerator, its denominator and itself, whose classes the host reads.
 const FRACTIONS: &str = indoc! {"
     class X = Object new (
         | fractions |
@@ -1776,17 +1780,21 @@ const FRACTIONS: &str = indoc! {"
                 Fraction numerator: 1180591620717411303424 denominator: 3
             }
         )
-        public text = (
-            | result ::= ''. |
+        public parts = (
+            | result = Array new: fractions size * 4. index ::= 0. |
             fractions do: [:fraction |
-                result:: result, fraction printString, ' ', fraction numerator class printString,
-                    ' ', fraction denominator class printString, ' ', fraction class printString, ';'].
+                result at: index + 1 put: fraction printString.
+                result at: index + 2 put: fraction numerator.
+                result at: index + 3 put: fraction denominator.
+                result at: index + 4 put: fraction.
+                index:: index + 4].
             ^result
         )
     ) : ()
 "};
 
-/// The text `FRACTIONS`'s `text` answers once `fill:` has run.
+/// What `FRACTIONS`'s `parts` answers once `fill:` has run, each fraction's
+/// four parts written as text by `text_or_class_name`.
 const FRACTIONS_TEXT: &str = "(1/3) Integer Integer Fraction;\
     (-7/2) Integer Integer Fraction;\
     (1/1180591620717411303424) Integer LargeInteger Fraction;\
@@ -1827,17 +1835,33 @@ fn a_fraction_value_round_trips() {
     let answer = expect_ok(
         loaded
             .interpreter
-            .send(&loaded.roots[0], Symbol::intern("text"), &[]),
-        "text",
+            .send(&loaded.roots[0], Symbol::intern("parts"), &[]),
+        "parts",
     );
     loaded.interpreter.enter(|mutator| {
-        let Some(string) = mutator.fetch(&answer).as_object() else {
-            panic!("text: expected a string")
+        let Some(array) = mutator.fetch(&answer).as_object() else {
+            panic!("parts: expected an Array")
         };
-        assert_eq!(
-            mutator.heap().str_value(string).as_deref(),
-            Some(FRACTIONS_TEXT)
-        );
+        let parts = mutator
+            .heap()
+            .array_elements(array)
+            .expect("parts answers an Array");
+        let text: String = parts
+            .chunks(4)
+            .map(|fraction| {
+                let [printed, numerator, denominator, itself] = fraction else {
+                    panic!("each fraction has four parts")
+                };
+                format!(
+                    "{} {} {} {};",
+                    text_or_class_name(mutator, *printed),
+                    text_or_class_name(mutator, *numerator),
+                    text_or_class_name(mutator, *denominator),
+                    text_or_class_name(mutator, *itself)
+                )
+            })
+            .collect();
+        assert_eq!(text, FRACTIONS_TEXT);
     });
 }
 
@@ -2038,7 +2062,7 @@ fn a_large_integer_in_i64_travels_as_an_i64_and_loads_as_a_large_integer() {
         class X = Object new (
           | edge = 1152921504606846976. |
         ) (
-          public edgeClass = ( ^edge class printString )
+          public edgeValue = ( ^edge )
         ) : ()
     "};
     let (mut interpreter, class) = load(source);
@@ -2069,16 +2093,13 @@ fn a_large_integer_in_i64_travels_as_an_i64_and_loads_as_a_large_integer() {
     let answer = expect_ok(
         loaded
             .interpreter
-            .send(&loaded.roots[0], Symbol::intern("edgeClass"), &[]),
-        "edgeClass",
+            .send(&loaded.roots[0], Symbol::intern("edgeValue"), &[]),
+        "edgeValue",
     );
     loaded.interpreter.enter(|mutator| {
-        let Some(string) = mutator.fetch(&answer).as_object() else {
-            panic!("edgeClass: expected a string")
-        };
         assert_eq!(
-            mutator.heap().str_value(string).as_deref(),
-            Some("LargeInteger")
+            text_or_class_name(mutator, mutator.fetch(&answer)),
+            "LargeInteger"
         );
     });
 }
@@ -2989,6 +3010,7 @@ const FIXTURE_NAMES: &[(&str, &str, u8)] = &[
     ("Kernel", "Class", 1),                // CLASS_NAME = 17
     ("Kernel", "Activation", 2),           // ACTIVATION_CLASS_NAME = 18
     ("Kernel", "FutureImplementation", 2), // FUTURE_IMPLEMENTATION_CLASS_NAME = 19
+    ("Kernel", "NonBooleanReceiver", 1),   // NON_BOOLEAN_RECEIVER_NAME = 20
 ];
 const OBJECT_NAME: u32 = 0;
 const ARRAY_NAME: u32 = 1;
@@ -3010,6 +3032,7 @@ const CLOSURE_NAME: u32 = 16;
 const CLASS_NAME: u32 = 17;
 const ACTIVATION_CLASS_NAME: u32 = 18;
 const FUTURE_IMPLEMENTATION_CLASS_NAME: u32 = 19;
+const NON_BOOLEAN_RECEIVER_NAME: u32 = 20;
 
 /// A section entry's kind byte as the shipped name it stands for.
 fn fixture_kind(kind: u8) -> ShippedKind {
@@ -12146,6 +12169,15 @@ fn with_fixture_names(bytes: &[u8]) -> Vec<u8> {
     })
 }
 
+/// The class of `subject`, read on the host side, since `class` is
+/// answered only to its receiver's own sends.
+fn class_root_of(loaded: &mut image::LoadedImage, subject: &Root) -> Root {
+    loaded.interpreter.enter(|mutator| {
+        let class = mutator.class_of(mutator.fetch(subject));
+        mutator.stash(Value::object(class))
+    })
+}
+
 fn same_object(loaded: &mut image::LoadedImage, first: &Root, second: &Root) -> bool {
     loaded
         .interpreter
@@ -12288,7 +12320,7 @@ fn a_class_the_platform_hands_out_is_named_by_its_declaration() {
     let source = indoc! {"
         class Holder usingPlatform: platform = Object new (
             | public transcriptClass = platform Transcript.
-              public platformClass = platform class.
+              public platformClass = platform Platform.
               public collectionsClass = platform collections Collections.
               public listClass = platform collections List.
               public kernelNamespaceClass = platform KernelNamespace.
@@ -12342,18 +12374,49 @@ fn a_class_the_platform_hands_out_is_named_by_its_declaration() {
 /// A name resolves to the very object the loading boot built, never a twin:
 /// a builtin, a builtin's metaclass and a shipped class that is no builtin,
 /// held in slots, decode to the loading boot's own (a level is never a
-/// value; `shipped_names.rs`'s tests check that one).
+/// value; `shipped_names.rs`'s tests check that one). No program reaches
+/// a builtin's metaclass, so the host stores `Integer`'s.
 #[test]
 fn a_shipped_name_resolves_to_the_loading_boots_own_object() {
     let source = indoc! {"
         class Holder usingPlatform: platform = Object new (
             | public array = Array.
-              public integerClass = Integer class.
+              public integerClass ::= nil.
               public list = platform collections List. |
         ) (
         ) : ()
     "};
-    let bytes = snapshot_module(source, None, None);
+    let (mut interpreter, class) = load(source);
+    let platform = interpreter.platform();
+    let instance = expect_ok(
+        interpreter.instantiate(&class, std::slice::from_ref(&platform)),
+        "instantiate",
+    );
+    let integer_metaclass = interpreter.enter(|mutator| {
+        let integer = mutator.builtin_class(BuiltinClass::Integer);
+        let metaclass = mutator.metaclass_of(integer).expect("Integer's metaclass");
+        mutator.stash(Value::object(metaclass))
+    });
+    expect_ok(
+        interpreter.send(
+            &instance,
+            Symbol::intern("integerClass:"),
+            &[integer_metaclass],
+        ),
+        "integerClass:",
+    );
+    let bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let instance = mutator.fetch(&instance);
+        snapshot_one(
+            mutator,
+            None,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
     let report = image::inspect::inspect(&bytes).expect("inspect");
     assert_eq!(
         report.shipped_names,
@@ -12393,7 +12456,7 @@ fn a_shipped_name_resolves_to_the_loading_boots_own_object() {
 fn a_second_platform_is_a_record_of_its_shipped_class() {
     let source = indoc! {"
         class Holder usingPlatform: platform = Object new (
-            | public second = platform class new. |
+            | public second = platform Platform new. |
             second transcript.
         ) (
         ) : ()
@@ -12415,8 +12478,8 @@ fn a_second_platform_is_a_record_of_its_shipped_class() {
         !same_object(&mut loaded, &second, &platform),
         "the second platform is its own record, not the loading platform"
     );
-    let second_class = send_to(&mut loaded, &second, "class");
-    let platform_class = send_to(&mut loaded, &platform, "class");
+    let second_class = class_root_of(&mut loaded, &second);
+    let platform_class = class_root_of(&mut loaded, &platform);
     assert!(
         same_object(&mut loaded, &second_class, &platform_class),
         "the second platform is an instance of the loading platform's class"
@@ -12477,7 +12540,7 @@ fn a_list_is_a_record_of_its_shipped_class() {
     let platform = loaded.interpreter.platform();
     let collections = send_to(&mut loaded, &platform, "collections");
     let fresh_class = send_to(&mut loaded, &collections, "List");
-    let stored_class = send_to(&mut loaded, &list, "class");
+    let stored_class = class_root_of(&mut loaded, &list);
     assert!(
         same_object(&mut loaded, &stored_class, &fresh_class),
         "the loaded list is an instance of the loading platform's List"
@@ -12524,21 +12587,21 @@ fn a_stopwatch_is_a_record_of_its_shipped_class() {
     let platform = loaded.interpreter.platform();
     let time = send_to(&mut loaded, &platform, "time");
     let fresh_class = send_to(&mut loaded, &time, "Stopwatch");
-    let stored_class = send_to(&mut loaded, &stopwatch, "class");
+    let stored_class = class_root_of(&mut loaded, &stopwatch);
     assert!(
         same_object(&mut loaded, &stored_class, &fresh_class),
         "the loaded stopwatch is an instance of the loading platform's Stopwatch"
     );
 }
 
-/// A facet a program makes itself from `platform collections class` is an
+/// A facet a program makes itself from `platform collections Collections` is an
 /// ordinary record of `CollectionsFactory Collections`, and after a load it
 /// is equal to the loading platform's facet: a value.
 #[test]
 fn a_second_collections_facet_is_a_record_of_its_shipped_class() {
     let source = indoc! {"
         class Holder usingPlatform: platform = Object new (
-            | public facet = platform collections class new. |
+            | public facet = platform collections Collections new. |
         ) (
         ) : ()
     "};
@@ -12810,10 +12873,6 @@ fn a_module_instance_outside_a_frame_is_refused() {
         interpreter.send(&platform, Symbol::intern("collections"), &[]),
         "platform collections",
     );
-    let collections_class = expect_ok(
-        interpreter.send(&collections, Symbol::intern("class"), &[]),
-        "collections class",
-    );
     interpreter.enter(|mutator| {
         let root_class = class_reference(mutator, &class);
         let object = mutator.builtin_class(BuiltinClass::Object);
@@ -12822,7 +12881,7 @@ fn a_module_instance_outside_a_frame_is_refused() {
             .class_enclosing(object)
             .expect("the kernel instance encloses Object");
         let kernel_class = mutator.heap().object_class(kernel);
-        let collections_class = class_reference(mutator, &collections_class);
+        let collections_class = mutator.class_of(mutator.fetch(&collections));
         let collections_factory = mutator
             .heap()
             .class_enclosing(collections_class)
@@ -13090,14 +13149,14 @@ fn a_started_image_names_no_module_instance() {
 }
 
 /// A program that catches the error a non-Boolean loop condition signals
-/// and keeps its class builds and loads: the VM hands it the private
-/// `Kernel NonBooleanReceiver`, so the class is a value an image names, and
-/// the loaded slot holds the loading boot's own class.
+/// and keeps the error itself builds and loads: the error is a record of
+/// the private `Kernel NonBooleanReceiver`, which a record's class may be,
+/// and the loaded slot holds an instance of the loading boot's own class.
 #[test]
-fn a_caught_non_boolean_receivers_class_round_trips_through_a_package() {
+fn a_caught_non_boolean_receiver_round_trips_through_a_package() {
     let (mut interpreter, class) = load(indoc! {"
         class App = Object new (
-          | public held = [[4] whileFalse: [nil]] on: Error do: [:error | error class]. |
+          | public held = [[4] whileFalse: [nil]] on: Error do: [:error | error]. |
         ) (
           public main: platform args: arguments = ( ^held )
         ) : ()
@@ -13128,7 +13187,45 @@ fn a_caught_non_boolean_receivers_class_round_trips_through_a_package() {
     loaded.interpreter.enter(|mutator| {
         let held = mutator.fetch(&held);
         let signalled = mutator.builtin_class(BuiltinClass::NonBooleanReceiver);
-        assert!(object(held).same(signalled));
+        assert!(mutator.class_of(held).same(signalled));
+    });
+}
+
+/// No program reaches the private `Kernel NonBooleanReceiver` as a value:
+/// `class` is protected, so a caught instance does not hand it out. A
+/// crafted image naming it as a value is refused on load, and the encoder
+/// refuses a graph holding it as one rather than write an image nothing
+/// loads.
+#[test]
+fn non_boolean_receiver_as_a_value_is_refused() {
+    assert_eq!(
+        GraphFixture::new().decode_error(&shipped_class_value(NON_BOOLEAN_RECEIVER_NAME)),
+        decode::DecodeError::ShippedNameNotAllowed {
+            name: "Kernel NonBooleanReceiver".to_string(),
+            position: "a value",
+        }
+    );
+    let (mut interpreter, class) = load(indoc! {"
+        class Root = Object new () ()
+    "});
+    interpreter.enter(|mutator| {
+        let root_class = class_reference(mutator, &class);
+        let signalled = mutator.builtin_class(BuiltinClass::NonBooleanReceiver);
+        let refused = snapshot_one(
+            mutator,
+            None,
+            &Origin::File(PathBuf::from("t.ns")),
+            root_class,
+            &[Value::object(signalled)],
+        );
+        let Err(message) = refused else {
+            panic!("a graph holding Kernel NonBooleanReceiver as a value was encoded");
+        };
+        assert_eq!(
+            message,
+            "image encoding refuses Kernel NonBooleanReceiver as a value: no program may name \
+             it there, and the loader refuses an image that does"
+        );
     });
 }
 

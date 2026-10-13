@@ -88,7 +88,7 @@ class AMapHasTheWholeProtocol = Object new () (
     showMap value: (map select: [:value | value > 1]).
     showMap value: (map reject: [:value | value > 1]).
     transcript
-        show: (map select: [:value | true]) class printString;
+        show: (map select: [:value | true]) isKindOfMap printString;
         newLine.
     show value: map keys.
     show value: map values.

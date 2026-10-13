@@ -43,29 +43,53 @@ fn expect_error(result: HostResult, what: &str) -> String {
 
 /// §3.2: `Object` provides accessors for the predefined classes. An
 /// explicit `self String` reaches `Object`'s accessor and answers the very
-/// class a string literal has.
+/// class a string literal has, which the host reads.
 #[test]
 fn an_explicit_self_send_of_a_class_name_answers_the_builtin_class() {
     let source = indoc! {"
         class Probe = Object new () (
-            public same = ( ^(self String) == 'text' class )
+            public string = ( ^self String )
+            public text = ( ^'text' )
             public array = ( ^(self Array) new size )
         ) : ()
     "};
     let (mut interpreter, class, _resolved) = load(source);
     let probe = expect_ok(interpreter.instantiate(&class, &[]), "Probe new");
-    let same = expect_ok(
-        interpreter.send(&probe, Symbol::intern("same"), &[]),
-        "same",
-    );
+    let same = same_as_the_class_of(&mut interpreter, &probe, "string", "text");
     let size = expect_ok(
         interpreter.send(&probe, Symbol::intern("array"), &[]),
         "array",
     );
+    assert!(same);
     interpreter.enter(|mutator| {
-        assert_eq!(mutator.fetch(&same).as_boolean(), Some(true));
         assert_eq!(mutator.fetch(&size).as_small_integer(), Some(0));
     });
+}
+
+/// Whether the class `class_selector` answers, sent to `probe`, is the
+/// class of what `value_selector` answers, read on the host side, since
+/// `class` is answered only to its receiver's own sends.
+fn same_as_the_class_of(
+    interpreter: &mut Interpreter,
+    probe: &Root,
+    class_selector: &str,
+    value_selector: &str,
+) -> bool {
+    let class = expect_ok(
+        interpreter.send(probe, Symbol::intern(class_selector), &[]),
+        class_selector,
+    );
+    let value = expect_ok(
+        interpreter.send(probe, Symbol::intern(value_selector), &[]),
+        value_selector,
+    );
+    interpreter.enter(|mutator| {
+        let class_of_value = mutator.class_of(mutator.fetch(&value));
+        mutator
+            .fetch(&class)
+            .as_object()
+            .is_some_and(|class| class.same(class_of_value))
+    })
 }
 
 /// A class that declares a member of the same name reaches its own member:
@@ -119,12 +143,14 @@ ns_runtime::for_each_lowering! {
     /// `Object`'s accessor, and the kernel's own methods -- which reach a
     /// predefined class through the kernel's nested class, found lexically --
     /// keep running: `3 printString` answers `'3'`, and a bare `String` is the
-    /// class of a string literal, under both lowerings.
+    /// class of a string literal, read on the host side, under both
+    /// lowerings.
     fn a_bare_builtin_name_and_the_kernel_answer_alike_under_both_lowerings(lowering) {
         let source = indoc! {"
             class Probe = Object new () (
                 public printed = ( ^3 printString )
-                public same = ( ^String == 'text' class )
+                public string = ( ^String )
+                public text = ( ^'text' )
             ) : ()
         "};
         let module = ns_syntax::parse(source).expect("parse");
@@ -141,20 +167,14 @@ ns_runtime::for_each_lowering! {
             interpreter.send(&probe, Symbol::intern("printed"), &[]),
             "printed",
         );
-        let same = expect_ok(
-            interpreter.send(&probe, Symbol::intern("same"), &[]),
-            "same",
-        );
+        let same = same_as_the_class_of(&mut interpreter, &probe, "string", "text");
         interpreter.enter(|mutator| {
             assert_eq!(
                 as_string(mutator.heap(), mutator.fetch(&printed)),
                 "3",
                 "{lowering:?}"
             );
-            assert!(
-                mutator.fetch(&same).as_boolean() == Some(true),
-                "{lowering:?}"
-            );
         });
+        assert!(same, "{lowering:?}");
     }
 }

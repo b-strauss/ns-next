@@ -16,7 +16,7 @@ class DoubleQuoted = Object new () (
     t
         show: ("a" = 'a') printString;
         show: ' ';
-        show: ("a" class == String) printString;
+        show: "a" isKindOfString printString;
         newLine.
     t
         show: "it's";

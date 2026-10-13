@@ -2,6 +2,6 @@ status = 0
 stdout = '''
 0
 true
-String
+true
 '''
 stderr = ""

@@ -1,0 +1,23 @@
+/// On the class side `self class` is a self send of the protected
+/// `Object>>class` and answers the metaclass, one per class (§3.2): the
+/// one level of metaclass a program still reaches.
+class SelfClassOnTheClassSide = Object new () (
+  class Foo = Object new () () : (
+    /// Answers Foo's metaclass, which only Foo's class side can ask for.
+    public metaclass = (
+      ^self class.
+    )
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        show: Foo metaclass printString;
+        newLine.
+    transcript
+        show: (Foo metaclass == Foo metaclass) printString;
+        newLine.
+  )
+)

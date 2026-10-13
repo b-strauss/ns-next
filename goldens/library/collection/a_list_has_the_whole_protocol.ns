@@ -53,18 +53,18 @@ class AListHasTheWholeProtocol = Object new () (
     show value: list.
     show value: (list collect: [:each | each * 10]).
     transcript
-        show: (list collect: [:each | each]) class printString;
+        show: (list collect: [:each | each]) isKindOfList printString;
         newLine.
     show value: (list select: [:each | each > 0]).
     show value: (list reject: [:each | each > 0]).
     show value: list , {5. 6}.
     show value: (list copyFrom: 2 to: 3).
     transcript
-        show: (list copyFrom: 2 to: 3) class printString;
+        show: (list copyFrom: 2 to: 3) isKindOfList printString;
         newLine.
     show value: list asArray.
     transcript
-        show: list asArray class printString;
+        show: list asArray isKindOfArray printString;
         newLine.
     list keysAndValuesDo: [:index :each |
       transcript
@@ -85,7 +85,7 @@ class AListHasTheWholeProtocol = Object new () (
         newLine.
     list addAll: list.
     show value: list.
-    show value: (kernel Array withAll: list).
+    show value: (Array withAll: list).
     show value: {9} , list.
     show value: list , list.
     transcript

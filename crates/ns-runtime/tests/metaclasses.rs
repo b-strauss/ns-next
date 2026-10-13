@@ -33,6 +33,15 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
     }
 }
 
+/// The class of `subject`, read on the host side, since `class` is
+/// answered only to its receiver's own sends.
+fn class_of(interpreter: &mut Interpreter, subject: &Root) -> Root {
+    interpreter.enter(|mutator| {
+        let class = mutator.class_of(mutator.fetch(subject));
+        mutator.stash(Value::object(class))
+    })
+}
+
 /// §3.2 and §6: a class's metaclass is its class side applied to `Class`,
 /// so a class-side message it does not declare falls to `Class`, and a
 /// metaclass links back to the class it belongs to.
@@ -73,8 +82,9 @@ fn a_metaclass_is_the_class_side_applied_to_class() {
     });
 }
 
-/// §3.2: `Foo class` is Foo's metaclass, whose class is `Metaclass`, and
-/// `Metaclass class class` is `Metaclass` again.
+/// §3.2: the class of a class object is its metaclass, whose class is
+/// `Metaclass`, and the class of `Metaclass`'s metaclass is `Metaclass`
+/// again; the host reads each class with `class_of`.
 #[test]
 fn the_class_of_a_class_is_its_metaclass() {
     let source = indoc! {"
@@ -84,23 +94,10 @@ fn the_class_of_a_class_is_its_metaclass() {
         )
     "};
     let (mut interpreter, class) = load(source);
-    let class_selector = Symbol::intern("class");
-    let metaclass = expect_ok(
-        interpreter.send(&class, class_selector, &[]),
-        "Subject class",
-    );
-    let metaclass_class = expect_ok(
-        interpreter.send(&metaclass, class_selector, &[]),
-        "Subject class class",
-    );
-    let metaclass_metaclass = expect_ok(
-        interpreter.send(&metaclass_class, class_selector, &[]),
-        "Metaclass class",
-    );
-    let metaclass_metaclass_class = expect_ok(
-        interpreter.send(&metaclass_metaclass, class_selector, &[]),
-        "Metaclass class class",
-    );
+    let metaclass = class_of(&mut interpreter, &class);
+    let metaclass_class = class_of(&mut interpreter, &metaclass);
+    let metaclass_metaclass = class_of(&mut interpreter, &metaclass_class);
+    let metaclass_metaclass_class = class_of(&mut interpreter, &metaclass_metaclass);
     interpreter.enter(|mutator| {
         let Some(class_object) = mutator.fetch(&class).as_object() else {
             panic!("a loaded module is a class object");
@@ -109,12 +106,15 @@ fn the_class_of_a_class_is_its_metaclass() {
             .metaclass_of(class_object)
             .expect("every class object has a metaclass");
         let Some(answered) = mutator.fetch(&metaclass).as_object() else {
-            panic!("`Subject class` answers an object");
+            panic!("the class of `Subject` is an object");
         };
-        assert!(answered.same(expected), "`Subject class` is its metaclass");
+        assert!(
+            answered.same(expected),
+            "the class of `Subject` is its metaclass"
+        );
         let builtin_metaclass = mutator.builtin_class(BuiltinClass::Metaclass);
         let Some(answered) = mutator.fetch(&metaclass_class).as_object() else {
-            panic!("`Subject class class` answers an object");
+            panic!("the class of `Subject`'s metaclass is an object");
         };
         assert!(
             answered.same(builtin_metaclass),
@@ -124,18 +124,18 @@ fn the_class_of_a_class_is_its_metaclass() {
             .metaclass_of(builtin_metaclass)
             .expect("`Metaclass` has a metaclass");
         let Some(answered) = mutator.fetch(&metaclass_metaclass).as_object() else {
-            panic!("`Metaclass class` answers an object");
+            panic!("the class of `Metaclass` is an object");
         };
         assert!(
             answered.same(expected),
-            "`Metaclass class` is its metaclass"
+            "the class of `Metaclass` is its metaclass"
         );
         let Some(answered) = mutator.fetch(&metaclass_metaclass_class).as_object() else {
-            panic!("`Metaclass class class` answers an object");
+            panic!("the class of `Metaclass`'s metaclass is an object");
         };
         assert!(
             answered.same(builtin_metaclass),
-            "`Metaclass class class` is `Metaclass` again"
+            "the class of `Metaclass`'s metaclass is `Metaclass` again"
         );
     });
 }

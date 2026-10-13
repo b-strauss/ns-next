@@ -57,7 +57,7 @@ class AStringIndexErrorIsCaught = Object new () (
         show: ([String with: nil] on: Error do: [:error | error messageText]);
         newLine.
     transcript
-        show: (['abc' at: 4] on: Error do: [:error | error class name]);
+        show: (['abc' at: 4] on: ArgumentError do: [:error | 'ArgumentError']);
         newLine.
     transcript
         show: (['abc' copyFrom: 2 to: 4] on: ArgumentError do: [:error |

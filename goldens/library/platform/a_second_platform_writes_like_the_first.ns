@@ -2,15 +2,17 @@
 /// nested class of the `PlatformFactory` module, whose factory is `new`,
 /// and its members reach the module's classes lexically, so a second
 /// platform's transcript writes through the mirror the first one's does.
-/// The platform hands out the module's classes by methods, and each answers
-/// the class its own members are instances of; the collections facet hands
-/// out its module's classes as the platform hands out its own.
+/// The platform hands out the module's classes by methods, `Platform`
+/// among them, which makes the second; the collections facet hands out its
+/// module's classes as the platform hands out its own. That each answers
+/// the class its own members are instances of, which only another object's
+/// class would show, `crates/ns-runtime/tests/representation.rs` checks.
 class ASecondPlatformWritesLikeTheFirst = Object new () (
   public main: platform args: arguments = (
     |
       second
     |
-    second:: platform class new.
+    second:: platform Platform new.
     platform transcript
         show: 'first';
         newLine.
@@ -22,15 +24,6 @@ class ASecondPlatformWritesLikeTheFirst = Object new () (
         newLine.
     platform transcript
         show: (platform collections Collections new = second collections) printString;
-        newLine.
-    platform transcript
-        show: (platform Transcript == platform transcript class) printString;
-        newLine.
-    platform transcript
-        show: (platform Platform == platform class) printString;
-        newLine.
-    platform transcript
-        show: (second Platform == platform class) printString;
         newLine.
   )
 )

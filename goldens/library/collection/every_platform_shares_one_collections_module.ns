@@ -8,7 +8,7 @@ class EveryPlatformSharesOneCollectionsModule = Object new () (
       transcript = platform transcript.
       second
     |
-    second:: platform class new.
+    second:: platform Platform new.
     transcript
         show: (second collections == platform collections) printString;
         newLine.
@@ -17,9 +17,6 @@ class EveryPlatformSharesOneCollectionsModule = Object new () (
         newLine.
     transcript
         show: (platform collections Collections new = platform collections) printString;
-        newLine.
-    transcript
-        show: (platform collections Collections == platform collections class) printString;
         newLine.
   )
 )

@@ -9,7 +9,7 @@ class AFloatBeyondTheImmediateRangeBehavesAsAnyFloat = Object new () (
       tiny = 1.0 / 1.0e300 / 1.0e10.
     |
     transcript
-        show: big class name;
+        show: big isKindOfFloat printString;
         newLine.
     transcript
         show: (big + big = (big * 2.0)) printString;
@@ -25,9 +25,6 @@ class AFloatBeyondTheImmediateRangeBehavesAsAnyFloat = Object new () (
         newLine.
     transcript
         show: (big > 1.0e38) printString;
-        newLine.
-    transcript
-        show: (tiny class = big class) printString;
         newLine.
     transcript
         show: (tiny > 0.0) printString;

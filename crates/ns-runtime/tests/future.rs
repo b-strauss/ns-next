@@ -130,14 +130,15 @@ ns_runtime::for_each_lowering! {
 ns_runtime::for_each_lowering! {
     /// §5.5: every public member of `Object` is protected in `Proxy`, the
     /// future's superclass, so
-    /// even `class`, `==` and `printString` reach `doesNotUnderstand:` and
-    /// are answered by the value.
+    /// even `yourself`, `==` and `printString` reach `doesNotUnderstand:`
+    /// and are answered by the value: `yourself` answers the value itself,
+    /// whose class the host reads.
     fn a_future_answers_objects_own_messages_as_its_value(lowering) {
         let (mut interpreter, holder) = a_holder(lowering);
         let future = a_future(&mut interpreter, &holder, "three");
-        let class = expect_ok(
-            interpreter.send(&future, Symbol::intern("class"), &[]),
-            "future class",
+        let itself = expect_ok(
+            interpreter.send(&future, Symbol::intern("yourself"), &[]),
+            "future yourself",
         );
         let printed = expect_ok(
             interpreter.send(&future, Symbol::intern("printString"), &[]),
@@ -153,9 +154,7 @@ ns_runtime::for_each_lowering! {
             "future isNil",
         );
         interpreter.enter(|mutator| {
-            let Some(class) = mutator.fetch(&class).as_object() else {
-                panic!("a class")
-            };
+            let class = mutator.class_of(mutator.fetch(&itself));
             assert!(class.same(mutator.builtin_class(ns_runtime::BuiltinClass::Integer)));
             assert_eq!(
                 mutator.heap().describe(mutator.fetch(&printed)),

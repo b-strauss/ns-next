@@ -1,9 +1,10 @@
 /// `LargeInteger`'s arithmetic and ordering, with a `LargeInteger` on either
 /// side and an `Integer` on the other. `big` is built by arithmetic; `small`,
 /// `9223372036854775807`, lies beyond 61 bits and so is itself a
-/// `LargeInteger` literal (large literals have their own golden). A result
-/// that fits again is answered as an `Integer`, which `(big // big) class`
-/// shows.
+/// `LargeInteger` literal (large literals have their own golden). That a
+/// result that fits again is answered as an `Integer` only the
+/// representation shows, so `crates/ns-runtime/tests/representation.rs`
+/// checks it.
 class LargeArithmetic = Object new () (
   public main: p args: a = (
     |
@@ -85,19 +86,10 @@ class LargeArithmetic = Object new () (
         show: (back = small) printString;
         newLine.
     p transcript
-        show: back class printString;
-        newLine.
-    p transcript
-        show: (big // big) class printString;
-        newLine.
-    p transcript
         show: other negated printString;
         newLine.
     p transcript
         show: other abs printString;
-        newLine.
-    p transcript
-        show: (small + 1) negated class printString;
         newLine.
   )
 )

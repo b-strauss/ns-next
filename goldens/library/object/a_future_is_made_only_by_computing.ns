@@ -28,7 +28,9 @@ class AFutureIsMadeOnlyByComputing = Object new (
         show: ([Later new] on: kernel CannotInstantiate do: [:error | error behavior name]);
         newLine.
     transcript
-        show: ([Later computing: [1]] on: Error do: [:error | error class name]);
+        show: ([Later computing: [1]] on: kernel MessageNotUnderstood do: [:error |
+          'MessageNotUnderstood'.
+        ]);
         newLine.
   )
 )

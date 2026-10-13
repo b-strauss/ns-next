@@ -10,14 +10,14 @@ stdout = '''
 element not found: 5
 0 1 2
 0 10 20
-List
+true
 1 2
 0
 0 1 2 5 6
 1 2
-List
+true
 0 1 2
-Array
+true
 1=0 2=1 3=2 
 3
 true

@@ -488,11 +488,13 @@ kernel's.
   at bootstrap, never run, and the class object's `superclass` link is set to
   match its application's.
 - **A program reaches a builtin class through `Object`'s accessors** (§3.2):
-  `Kernel.ns`'s `Object` declares one public method per nameable builtin,
-  `public String = ( ^outer Kernel String )`, and a bare `String` is
+  `Kernel.ns`'s `Object` declares one protected method per nameable builtin,
+  `protected String = ( ^outer Kernel String )`, and a bare `String` is
   `self String` by §5.7, so a class that declares or inherits a member of
-  that name reaches its own ([core-library.md](core-library.md), "The
-  predefined classes are accessors on `Object`").
+  that name reaches its own, and `other String` from outside reaches
+  `doesNotUnderstand:` ([core-library.md](core-library.md), "The
+  predefined classes are accessors on `Object`", "`class` and the class
+  accessors are protected").
 - **`Top` is not nameable.** It is declared private in `Kernel.ns`, as
   only `Activation`, `NonBooleanReceiver` and `FutureImplementation` are
   besides it, so §6.3.1 keeps it out of every other module's reach; `Object`
@@ -853,9 +855,10 @@ an `ifCurtailed:` around every simultaneous clause.
 **The future.** `Kernel.ns`'s private `FutureImplementation`, which no
 program can name (as `Activation`), is a subclass of the public `Proxy`,
 after Primordial Soup's: `Proxy` overrides every public member of `Object`
-— `class`, `==`, `=`, `hash`, `yourself`, `identityHash`, `printString`,
-the class accessors, the nil protocol, `halt` — as protected, so every
-message from outside reaches `doesNotUnderstand:`, and
+— `==`, `=`, `hash`, `yourself`, `identityHash`, `printString`, the nil
+protocol, `halt` — as protected, and `Object` itself declares `class` and
+the class accessors protected, so every message from outside reaches
+`doesNotUnderstand:`, and
 `FutureImplementation`'s forces the future through the mirror row
 `futureValue:ifFail:` (`builtins/future.rs`) and forwards the message to
 the value with `Message>>sendTo:`. A member added to `Object` without its
@@ -1306,8 +1309,11 @@ metaclass declares a factory.
 an instance of its metaclass, and the metaclass an instance of `Metaclass`.
 `Metaclass` is a kernel class with a metaclass of its own, whose class is
 `Metaclass` again, which closes the loop without a regress
-(`goldens/language/class/class-side/the_class_of_a_class_is_its_metaclass.ns`:
-`Foo class class == Foo class class class class`). There is no separate
+(`goldens/language/class/class-side/the_class_of_a_class_is_its_metaclass.ns`
+for the one level a program sees, a class side's `self class`;
+`crates/ns-runtime/tests/representation.rs`,
+`the_class_of_a_class_is_its_metaclass_and_every_metaclass_is_a_metaclass`,
+for the chain, which only the host reads, since `class` is protected). There is no separate
 metaclass field: `Heap::class_metaclass` and `Mutator::metaclass_of` read the
 header, and answer `None` for a metaclass, whose class is `Metaclass`. A
 metaclass never gets a metaclass of its own, which `attach_metaclass`
@@ -1388,15 +1394,18 @@ through the leaf `className:ifFail:` and `Class>>printString` answers `name`;
 through the leaf `metaclassThisClass:ifFail:`, and `Metaclass>>printString`
 answers `name` (`builtins/behavior.rs`;
 `goldens/language/class/class-side/a_class_and_its_metaclass_print_their_names.ns`:
-`Foo`, `Foo class`, `Metaclass`, `Metaclass class`). `Object` has **no
+`Foo`, `Foo class`; `representation.rs`'s
+`a_class_and_its_metaclass_print_their_names_along_the_chain`: `Metaclass`,
+`Metaclass class`). `Object` has **no
 accessor** for `Behavior`, `Class` or `Metaclass`: none of the three
 references declares one, §3.2's accessors are for the classes of the built-in
 literals and the array factories, and the mirror code that will need the
 names lives in the kernel or the platform, where it names them directly.
 `interpreter/kernel.rs`'s accessor-set test pins the set.
 
-**Instantiation is refused.** The three are reachable anyway —
-`3 class class` is a metaclass and its `class` is `Metaclass` — so refusing to
+**Instantiation is refused.** The three are reachable anyway — a class
+side's `self class` is a metaclass, a host can hand a program any of them,
+and road step 5's mirrors will reach every one — so refusing to
 instantiate them is needed whatever is nameable. `Mutator::apply_mixin` folds
 `InstantiationRefusal::ClassObject` into the `instantiation_refusal` of
 `Behavior`'s application — recognized by the mixin the kernel phase records
@@ -1406,9 +1415,10 @@ application below it inherits the refusal from its superclass, so
 subclass of them a program manages to declare with an ordinary Newspeak error
 under its factory selector: "cannot instantiate `C`: a class object is made
 only by evaluating its declaration" (`interpreter/instantiate.rs`;
-`goldens/language/class/class-side/a_class_object_cannot_be_made_by_instantiation.ns`, which
-sends `3 class class class new`). A metaclass itself declares no factory, so
-`Foo class new` is not understood
+`representation.rs`'s `a_class_object_cannot_be_made_by_instantiation`, which
+sends `Metaclass` `new` from the host). A metaclass itself declares no
+factory, so `Foo metaclass new`, a class-side `metaclass` answering `self
+class`, is not understood
 (`goldens/language/class/class-side/a_metaclass_does_not_understand_new.ns`).
 
 **A class object is a value exactly when its enclosing object is**, as SOMns
@@ -1469,7 +1479,8 @@ consequences:
   `==` again, with its own fallback. **`==` is the same forwarder as `=`**,
   to the same leaf (`value:sameAs:ifFail:`), rather than a method that sends
   `=`: it answers what `=` answers, as §3.1.1 asks of a value's identity
-  method, and costs no activation, so the common `self class == other class`
+  method, and costs no activation, so `Value>>valueEquals:`'s comparison of
+  `self class` with the other object's class, read through the mirror,
   stays one leaf. For a class object that is no value the leaf answers
   identity.
 
@@ -1521,8 +1532,10 @@ keeps a metaclass's identity across a round trip: the metaclass a slot holds
 is the one its class answers. `Behavior`, `Class` and `Metaclass` are
 refused wherever a class is made from them — a superclass, a `<:` clause's
 mixin — since a class over one of them could never be instantiated; as
-values in the graph they are accepted, since `3 class class class` reaches
-`Metaclass`
+values in the graph they are accepted, since they carry no authority, a
+program still reaches a metaclass (a class side's `self class`) and a host
+can hand a program any of them, which a narrower rule would refuse to
+build
 ([image-format.md](image-format.md), "What is *not* serialized",
 "Verification").
 

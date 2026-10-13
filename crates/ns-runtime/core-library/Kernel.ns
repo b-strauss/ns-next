@@ -44,12 +44,19 @@ class Kernel vmMirror: theMirror = Object <: Value (
   private class Top = () ()
 
   /// The root of every class a program declares: the protocol every object
-  /// answers -- its class, identity, equality, hash and printed form, the
-  /// class accessors, the nil protocol, `halt` and `doesNotUnderstand:`.
+  /// answers -- its identity, equality, hash and printed form, the nil
+  /// protocol, `halt` and `doesNotUnderstand:` -- and, to itself alone, its
+  /// class and the class accessors.
   public class Object = Top new () (
     /// Answers the receiver's class: the class object it was
     /// instantiated from, a value class's per enclosing object.
-    public class = (
+    ///
+    /// Protected, so that holding an instance does not hand out its
+    /// class -- its factory, its class side's state, a subclass in the
+    /// instance's environment: `self class` and `super class` reach it,
+    /// `other class` falls to `doesNotUnderstand:`. On the class side
+    /// `self class` answers the metaclass.
+    protected class = (
       ^vmMirror objectClass: self ifFail: [^super class].
     )
 
@@ -128,73 +135,79 @@ class Kernel vmMirror: theMirror = Object <: Value (
     /// the kernel explicitly: inside Object, §5.7's innermost
     /// declaration of `String` is this very method. `Top` and the VM
     /// mirror's class have no accessor.
-    public Object = (
+    ///
+    /// Protected, as every accessor here, so that an object hands out no
+    /// class through another's accessor: a bare name is an
+    /// implicit-receiver send and reaches them from a subclass, a block
+    /// and the class side alike; `other Integer` falls to
+    /// `doesNotUnderstand:`.
+    protected Object = (
       ^outer Kernel Object.
     )
 
     /// Answers the kernel's class `Value`.
-    public Value = (
+    protected Value = (
       ^outer Kernel Value.
     )
 
     /// Answers the kernel's class `Boolean`.
-    public Boolean = (
+    protected Boolean = (
       ^outer Kernel Boolean.
     )
 
     /// Answers the kernel's class `True`.
-    public True = (
+    protected True = (
       ^outer Kernel True.
     )
 
     /// Answers the kernel's class `False`.
-    public False = (
+    protected False = (
       ^outer Kernel False.
     )
 
     /// Answers the kernel's class `Number`.
-    public Number = (
+    protected Number = (
       ^outer Kernel Number.
     )
 
     /// Answers the kernel's class `Integer`.
-    public Integer = (
+    protected Integer = (
       ^outer Kernel Integer.
     )
 
     /// Answers the kernel's class `Float`.
-    public Float = (
+    protected Float = (
       ^outer Kernel Float.
     )
 
     /// Answers the kernel's class `Fraction`, whose class side makes an
     /// exact quotient of two integers.
-    public Fraction = (
+    protected Fraction = (
       ^outer Kernel Fraction.
     )
 
     /// Answers the kernel's class `String`.
-    public String = (
+    protected String = (
       ^outer Kernel String.
     )
 
     /// Answers the kernel's class `Symbol`.
-    public Symbol = (
+    protected Symbol = (
       ^outer Kernel Symbol.
     )
 
     /// Answers the kernel's class `UndefinedObject`, nil's class.
-    public UndefinedObject = (
+    protected UndefinedObject = (
       ^outer Kernel UndefinedObject.
     )
 
     /// Answers the kernel's class `Array`.
-    public Array = (
+    protected Array = (
       ^outer Kernel Array.
     )
 
     /// Answers the kernel's class `Closure`.
-    public Closure = (
+    protected Closure = (
       ^outer Kernel Closure.
     )
 
@@ -204,14 +217,14 @@ class Kernel vmMirror: theMirror = Object <: Value (
     /// `Exception` and `Error` are the two roots a program signals or
     /// catches most; they reach no host, so every object may name them.
     /// The other exception classes stay with `platform kernel`.
-    public Exception = (
+    protected Exception = (
       ^outer Kernel Exception.
     )
 
     /// Answers the kernel's class `Error`, the exception a handler can
     /// only end, never resume: `Error signal: 'text'` signals a new
     /// one.
-    public Error = (
+    protected Error = (
       ^outer Kernel Error.
     )
 
@@ -339,8 +352,8 @@ class Kernel vmMirror: theMirror = Object <: Value (
     /// that is no value; it declines only where an enclosing object's
     /// class brings its own `=`. `==` answers what `=` does, as §3.1.1
     /// asks of a value's identity method, and forwards to the same leaf
-    /// rather than sending `=`, so that `self class == other class`
-    /// costs no activation.
+    /// rather than sending `=`, so that comparing two class objects
+    /// with `==` costs no activation.
     public = other = (
       ^vmMirror value: self sameAs: other ifFail: [^self behaviorEquals: other].
     )
@@ -1168,13 +1181,10 @@ class Kernel vmMirror: theMirror = Object <: Value (
   /// the proxy, a self send still reaches each of them. A member added to
   /// `Object` without its override here fails
   /// `a_proxy_overrides_every_public_member_of_object_as_protected`.
+  /// `class` and the class accessors need none: `Object` already
+  /// declares them protected, and a bare `Integer` or `self class` inside
+  /// a proxy keeps the accessor's direct answer.
   public class Proxy = Object new () (
-    /// As `Object>>class`, for a send from inside the proxy only: from
-    /// outside, the message reaches `doesNotUnderstand:`.
-    protected class = (
-      ^super class.
-    )
-
     /// As `Object>>==`, for a send from inside the proxy only.
     protected == other = (
       ^super == other.
@@ -1205,87 +1215,6 @@ class Kernel vmMirror: theMirror = Object <: Value (
     /// only.
     protected printString = (
       ^super printString.
-    )
-
-    /// As `Object>>Object`, for a send from inside the proxy only.
-    protected Object = (
-      ^super Object.
-    )
-
-    /// As `Object>>Value`, for a send from inside the proxy only.
-    protected Value = (
-      ^super Value.
-    )
-
-    /// As `Object>>Boolean`, for a send from inside the proxy only.
-    protected Boolean = (
-      ^super Boolean.
-    )
-
-    /// As `Object>>True`, for a send from inside the proxy only.
-    protected True = (
-      ^super True.
-    )
-
-    /// As `Object>>False`, for a send from inside the proxy only.
-    protected False = (
-      ^super False.
-    )
-
-    /// As `Object>>Number`, for a send from inside the proxy only.
-    protected Number = (
-      ^super Number.
-    )
-
-    /// As `Object>>Integer`, for a send from inside the proxy only.
-    protected Integer = (
-      ^super Integer.
-    )
-
-    /// As `Object>>Float`, for a send from inside the proxy only.
-    protected Float = (
-      ^super Float.
-    )
-
-    /// As `Object>>Fraction`, for a send from inside the proxy only.
-    protected Fraction = (
-      ^super Fraction.
-    )
-
-    /// As `Object>>String`, for a send from inside the proxy only.
-    protected String = (
-      ^super String.
-    )
-
-    /// As `Object>>Symbol`, for a send from inside the proxy only.
-    protected Symbol = (
-      ^super Symbol.
-    )
-
-    /// As `Object>>UndefinedObject`, for a send from inside the proxy
-    /// only.
-    protected UndefinedObject = (
-      ^super UndefinedObject.
-    )
-
-    /// As `Object>>Array`, for a send from inside the proxy only.
-    protected Array = (
-      ^super Array.
-    )
-
-    /// As `Object>>Closure`, for a send from inside the proxy only.
-    protected Closure = (
-      ^super Closure.
-    )
-
-    /// As `Object>>Exception`, for a send from inside the proxy only.
-    protected Exception = (
-      ^super Exception.
-    )
-
-    /// As `Object>>Error`, for a send from inside the proxy only.
-    protected Error = (
-      ^super Error.
     )
 
     /// As `Object>>isNil`, for a send from inside the proxy only.
@@ -1450,13 +1379,15 @@ class Kernel vmMirror: theMirror = Object <: Value (
 
     /// The equality `=` leaves to Newspeak: whether `other`'s class is
     /// `==` the receiver's and each of its slots is `=` the receiver's
-    /// slot at the same position, from the first.
+    /// slot at the same position, from the first. It reads `other`'s class
+    /// through the mirror, since `class` is answered only to its
+    /// receiver's own sends.
     private valueEquals: other = (
       |
         index
         count
       |
-      (self class == other class) ifFalse: [^false].
+      (self class == (vmMirror objectClass: other ifFail: [^false])) ifFalse: [^false].
       count:: self valueSlotCountOf: self.
       (count = (self valueSlotCountOf: other)) ifFalse: [^false].
       index:: 1.

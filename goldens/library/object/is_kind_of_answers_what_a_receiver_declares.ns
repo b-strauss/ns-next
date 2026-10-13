@@ -79,7 +79,9 @@ class IsKindOfAnswersWhatAReceiverDeclares = Object new () (
         show: 3 isKindOf printString;
         newLine.
     transcript
-        show: ([3 isKindOf: 4] on: Error do: [:error | error class name]);
+        show: ([3 isKindOf: 4] on: platform kernel MessageNotUnderstood do: [:error |
+          'MessageNotUnderstood'.
+        ]);
         newLine.
   )
 )

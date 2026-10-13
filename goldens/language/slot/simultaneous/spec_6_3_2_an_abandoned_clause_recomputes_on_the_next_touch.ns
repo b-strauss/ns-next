@@ -25,7 +25,7 @@ class Spec632AnAbandonedClause = Object new (
         show: ([
           Probe keep: self.
           'no error'.
-        ] on: Error do: [:error | error class name]);
+        ] on: platform kernel MessageNotUnderstood do: [:error | 'MessageNotUnderstood']);
         newLine.
     t
         show: (escaped + 1) printString;

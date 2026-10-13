@@ -30,7 +30,7 @@ class AnArrayCopiesSearchesAndSorts = Object new () (
     show value: (array select: [:each | each > 3]).
     show value: (array reject: [:each | each > 3]).
     transcript
-        show: (array select: [:each | true]) class printString;
+        show: (array select: [:each | true]) isKindOfArray printString;
         newLine.
     transcript
         show: array first printString;

@@ -204,8 +204,13 @@ and `prior-art/newspeak-benchmarks`.
   edited mixins in the image"). Left to its plan: how removing a slot
   recompiles a mixin whose declaration is absent, as a decoded one's is,
   and the questions "Planned: edited mixins in the image" leaves open.
-  Whether `class` and `Object`'s class accessors become protected waits
-  on it ("Open design questions").
+  The reflective checks no golden can make while `class` and `Object`'s
+  class accessors are protected -- the boundary between `Integer` and
+  `LargeInteger`, chains of metaclasses, that `Metaclass` refuses
+  instantiation, the identity of class objects -- return as goldens through
+  its mirrors; meanwhile `crates/ns-runtime/tests/representation.rs` checks
+  them from the host ([core-library.md](design/core-library.md), "`class`
+  and the class accessors are protected").
   Deferred beyond it: a shape-changing `setClass:`, a superclass change,
   edits of nested classes, `installAtomically:` over several builders,
   editing kernel methods, `ActivationMirror` and edit-and-continue, scoped
@@ -638,33 +643,6 @@ activation.
 
 ## Open design questions
 
-- **Whether `class` and `Object`'s class accessors become protected.**
-  Both are public here, so whoever holds an object holds its class: every
-  public message of its class side, the factory included, mints new
-  instances that run in the same enclosing object, with its capabilities
-  (a module that hands out one `File path:` hands out every file);
-  `class Sub = (x class) ()` subclasses it, reaching its protected members
-  in that environment; and public class-side state is shared with every
-  holder. The specification says nothing on `class`, but §8.2 makes
-  reflection a capability held through mirrors, and the object-capability
-  argument of `newspeak.pdf` and `newspeak-modules.pdf` (a `File` whose
-  constructor takes any name is the standard ambient authority) applies.
-  Both Newspeak kernels make it protected:
-  `prior-art/newspeak/squeak/KernelForSqueak.ns`, line 1193, with an
-  `:openquestion:` weighing the separation of an instance's authority from
-  its class's against patterns such as `species`, and Primordial Soup's
-  `KernelForPrimordialSoup.ns`, "to separate the authority of an instance
-  from the authority of its class", its class accessors on `Object` too.
-  SOMns's root classes declare no `class`. `self class` stays a self send
-  either way, and so does a bare name: an implicit-receiver send reaches a
-  protected member, which is how Primordial Soup's protected accessors
-  still let any method write `Integer`; what would change is `other class`
-  and `other Integer`: two sends in
-  `CollectionsFactory.ns` (`index class == Integer`, which
-  `isKindOfInteger` replaces) and about 166 goldens that print a class to
-  check a result's type, which need a mirror instead. Recommended, to be
-  done with road step 5, when mirrors exist to replace those sends
-  (raised with the user on 2026-10-11).
 - **The resolver as a crate of its own.** It lives in `ns-runtime`
   (`resolver/`). A crate of its own would separate the front end from the VM
   and let a tool that needs only bindings — a lighter language server —
@@ -937,11 +915,12 @@ activation.
 
 None of these changes a correct program's output; each is wrong but safe, or
 reachable only from a crafted artifact, except the first three, which a
-program can reach and which end the process, and five a program meets as a
+program can reach and which end the process, and six a program meets as a
 gap: `ns-next run`'s panic on a closed pipe, `Object>>printString`'s one
 text, `to:by:do:`'s zero step, `String withAll:`'s nil for an argument
-that only answers `isKindOfArray` or `isKindOfString`, and the error of a
-`hash` that is no Integer.
+that only answers `isKindOfArray` or `isKindOfString`, the error of a
+`hash` that is no Integer, and the text of a send that stops at a
+protected member.
 
 - **`<<` and `Array new:` reserve a program-chosen size with
   `try_reserve_exact`, which refuses an impossible size on Windows but on a
@@ -1088,6 +1067,17 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
   cost of a check on every probe. Found by the collections and strings
   sub-project's review, 2026-10-10. [core-library.md](design/core-library.md),
   "The collections module (plan 2)".
+- **A public send that stops at a protected or private member reads as
+  any message not understood.** When the lookup of an outside send finds
+  the selector's member but not public, the send falls to
+  `doesNotUnderstand:`, and uncaught it ends the run with "an object does
+  not understand #class", as for a selector nothing declares. A program
+  written for the time `x class` was public meets exactly this; a text
+  that says the member is protected (or private), and that `self class`
+  still reaches it, would tell it what changed. Found by the protected
+  class branch's review, 2026-10-13.
+  [core-library.md](design/core-library.md), "`class` and the class
+  accessors are protected".
 - **Two corners of the tower's `Float` rounding divisions.** A `Float`'s
   floored `\\` corrects C's `fmod` by adding the divisor, and that sum can
   round to the divisor itself: `-1.0e-20 \\ 1.0` answers `1.0`, outside

@@ -1468,11 +1468,10 @@ mod tests {
         let time = class_named("Time");
         let stopwatch = class_named("Stopwatch");
         let collections = class_named("collections");
-        let collections = match interpreter.send(&collections, crate::Symbol::intern("class"), &[])
-        {
-            Ok(class) => class,
-            Err(_) => panic!("platform collections class failed"),
-        };
+        let collections = interpreter.enter(|mutator| {
+            let class = mutator.class_of(mutator.fetch(&collections));
+            mutator.stash(crate::Value::object(class))
+        });
         interpreter.enter(|mutator| {
             let fast_path = |class: &crate::Root, selector: &str| {
                 let Some(class) = mutator.fetch(class).as_object() else {
@@ -1575,15 +1574,8 @@ mod tests {
                 Ok(collections) => collections,
                 Err(_) => panic!("platform collections failed"),
             };
-        let collections_class =
-            match interpreter.send(&collections, crate::Symbol::intern("class"), &[]) {
-                Ok(class) => class,
-                Err(_) => panic!("platform collections class failed"),
-            };
         interpreter.enter(|mutator| {
-            let Some(collections_class) = mutator.fetch(&collections_class).as_object() else {
-                panic!("the facet's class is an object");
-            };
+            let collections_class = mutator.class_of(mutator.fetch(&collections));
             let facet_application = mutator
                 .heap()
                 .class_application(collections_class)
@@ -1817,10 +1809,11 @@ mod tests {
     /// program reaches through `platform kernel`, nor `Proxy` and `Future`,
     /// which it reaches there too, nor `Activation` and
     /// `FutureImplementation`, which it does not reach at all, nor
-    /// `LargeInteger`, which a
-    /// program meets only as an integer's class. `PlatformFactory.ns`'s class names are listed
-    /// too: `Object` must never grow an accessor for one of them, since a
-    /// program reaches them through the platform it is handed.
+    /// `LargeInteger`, which no program reaches either: `class` is
+    /// protected and `Object` declares no accessor for it.
+    /// `PlatformFactory.ns`'s class names are listed too: `Object` must
+    /// never grow an accessor for one of them, since a program reaches them
+    /// through the platform it is handed.
     #[test]
     fn objects_class_accessors_are_exactly_the_nameable_builtins() {
         let mut interpreter = Interpreter::bootstrap();
@@ -1840,6 +1833,11 @@ mod tests {
                     method.fast_path,
                     Some(crate::mixin::MethodFastPath::BuiltinClass(kind)),
                     "{kind:?}"
+                );
+                assert_eq!(
+                    method.access,
+                    ns_syntax::ast::AccessModifier::Protected,
+                    "{kind:?}: an object hands out no class through another's accessor"
                 );
             }
             for absent in [

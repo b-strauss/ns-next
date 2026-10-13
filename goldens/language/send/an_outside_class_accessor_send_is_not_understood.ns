@@ -1,0 +1,26 @@
+/// `Object`'s class accessors are protected, so `other Integer` from
+/// outside falls to `doesNotUnderstand:`: an object hands out no class
+/// through another's accessor. A bare `Integer` is the implicit-receiver
+/// send and still answers the class.
+class AnOutsideClassAccessorSend = Object new () (
+  class Holder = Object new () ()
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        show: ([3 Integer] on: platform kernel MessageNotUnderstood do: [:error |
+          error message selector.
+        ]);
+        newLine.
+    transcript
+        show: ([Holder new Error] on: platform kernel MessageNotUnderstood do: [:error |
+          error message selector.
+        ]);
+        newLine.
+    transcript
+        show: (Integer parse: '7') printString;
+        newLine.
+  )
+)

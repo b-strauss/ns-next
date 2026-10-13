@@ -191,7 +191,7 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
     /// The check is written out, since every `at:` pays for it; an
     /// index that is no Integer is out of range too.
     public at: index = (
-      ((index class == Integer) and: [(1 <= index) and: [index <= size_]]) ifFalse: [
+      (index isKindOfInteger and: [(1 <= index) and: [index <= size_]]) ifFalse: [
         ^self indexOutOfRange: index.
       ].
       ^data at: firstIndex + index - 1.
@@ -206,7 +206,7 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
     ///
     /// Signals the ArgumentError `at:` signals for any other index.
     public at: index put: value = (
-      ((index class == Integer) and: [(1 <= index) and: [index <= size_]]) ifFalse: [
+      (index isKindOfInteger and: [(1 <= index) and: [index <= size_]]) ifFalse: [
         ^self indexOutOfRange: index.
       ].
       data at: firstIndex + index - 1 put: value.

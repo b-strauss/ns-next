@@ -385,6 +385,9 @@ fn a_missing_module_file_is_refused() {
     assert!(stderr.contains("Nowhere.ns"), "stderr: {stderr}");
 }
 
+/// A module named after a public member of `Object` -- `yourself` --
+/// could never be reached: the manifest answers the member itself before
+/// its `doesNotUnderstand:` looks the module up. The project is refused.
 #[test]
 fn a_module_shadowed_by_an_object_member_is_refused() {
     let directory = ScratchDirectory::new("project-shadowed");
@@ -398,9 +401,51 @@ fn a_module_shadowed_by_an_object_member_is_refused() {
     )
     .unwrap();
     std::fs::write(
+        directory.join("yourself.ns"),
+        indoc! {"
+            class yourself = Object new () () : ()
+        "},
+    )
+    .unwrap();
+    let project = directory.join("newspeak.json");
+    std::fs::write(
+        &project,
+        r#"{ "main": "App.ns", "modules": ["yourself.ns"] }"#,
+    )
+    .unwrap();
+
+    let out = run(&project);
+    assert!(!out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("`yourself`"), "stderr: {stderr}");
+    assert!(stderr.contains("public member"), "stderr: {stderr}");
+}
+
+/// `Object`'s class accessors are protected, so the manifest does not
+/// answer `Array` itself: a module named `Array` is reached through it.
+#[test]
+fn a_module_named_like_a_class_accessor_is_reached_through_the_manifest() {
+    let directory = ScratchDirectory::new("project-named-like-an-accessor");
+    std::fs::write(
+        directory.join("App.ns"),
+        indoc! {"
+            class App packageUsing: manifest = Object new (
+                | module = manifest Array. |
+            ) (
+                public main: platform args: arguments = (
+                    platform transcript show: module greeting; newLine
+                )
+            ) : ()
+        "},
+    )
+    .unwrap();
+    std::fs::write(
         directory.join("Array.ns"),
         indoc! {"
-            class Array = Object new () () : ()
+            class Array = Object new () () : (
+                public greeting = ( ^'from the module' )
+            )
         "},
     )
     .unwrap();
@@ -408,11 +453,9 @@ fn a_module_shadowed_by_an_object_member_is_refused() {
     std::fs::write(&project, r#"{ "main": "App.ns", "modules": ["Array.ns"] }"#).unwrap();
 
     let out = run(&project);
-    assert!(!out.status.success());
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("`Array`"), "stderr: {stderr}");
-    assert!(stderr.contains("public member"), "stderr: {stderr}");
+    assert!(out.status.success(), "stderr: {stderr}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "from the module\n");
 }
 
 /// The root rule is a resolve error for every module root, so a project

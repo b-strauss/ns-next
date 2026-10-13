@@ -26,7 +26,7 @@ class AListIndexErrorIsCaughtAsAnError = Object new () (
         show: ([list at: 'one'] on: Error do: [:e | e messageText]);
         newLine.
     transcript
-        show: ([list at: 3] on: Error do: [:e | e class name]);
+        show: ([list at: 3] on: platform kernel ArgumentError do: [:error | 'ArgumentError']);
         newLine.
     transcript
         show: ([List new at: 1] on: Error do: [:e | e messageText]);

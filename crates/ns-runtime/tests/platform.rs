@@ -21,6 +21,15 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
     }
 }
 
+/// The class of `subject`, read on the host side, since `class` is
+/// answered only to its receiver's own sends.
+fn class_of(interpreter: &mut Interpreter, subject: &Root) -> Root {
+    interpreter.enter(|mutator| {
+        let class = mutator.class_of(mutator.fetch(subject));
+        mutator.stash(Value::object(class))
+    })
+}
+
 #[test]
 fn platform_is_memoized_across_calls() {
     let mut interpreter = Interpreter::bootstrap();
@@ -77,28 +86,46 @@ fn platform_transcript_show_and_new_line_round_trip() {
     );
 }
 
-/// `platform Array` and the rest answer the builtin class through
-/// `Object`'s accessors (§3.2), which the platform inherits like every
-/// object: it declares none of its own.
+/// A bare `Object`, `Array`, `String` and `Symbol` in a module's method
+/// answers the matching builtin class through `Object`'s accessors
+/// (§3.2), which the module inherits. The accessors are protected, so the
+/// module sends them to itself, as a bare name does.
 #[test]
-fn platform_class_accessors_return_the_matching_builtin_class() {
+fn a_bare_class_name_answers_the_matching_builtin_class() {
+    let source = indoc! {"
+        class Probe usingPlatform: platform = Object new () (
+            public objectClass = ( ^Object )
+            public arrayClass = ( ^Array )
+            public stringClass = ( ^String )
+            public symbolClass = ( ^Symbol )
+        ) : ()
+    "};
+    let module = ns_syntax::parse(source).expect("parse");
+    let resolved = ns_runtime::resolve(
+        module,
+        source.into(),
+        ns_runtime::SourceOrigin::File("test.ns".into()),
+    )
+    .expect("resolve");
     let mut interpreter = Interpreter::bootstrap();
+    let class = interpreter.load_module(&resolved);
     let platform = interpreter.platform();
+    let probe = expect_ok(
+        interpreter.send(&class, Symbol::intern("usingPlatform:"), &[platform]),
+        "usingPlatform:",
+    );
 
     for (name, kind) in [
-        ("Object", BuiltinClass::Object),
-        ("Array", BuiltinClass::Array),
-        ("String", BuiltinClass::String),
-        ("Symbol", BuiltinClass::Symbol),
+        ("objectClass", BuiltinClass::Object),
+        ("arrayClass", BuiltinClass::Array),
+        ("stringClass", BuiltinClass::String),
+        ("symbolClass", BuiltinClass::Symbol),
     ] {
-        let got = expect_ok(
-            interpreter.send(&platform, Symbol::intern(name), &[]),
-            &format!("platform {name}"),
-        );
+        let got = expect_ok(interpreter.send(&probe, Symbol::intern(name), &[]), name);
         interpreter.enter(|mutator| {
             let expected = mutator.builtin_class(kind);
             match mutator.fetch(&got).kind() {
-                ValueKind::Object(object) => assert!(object.same(expected), "platform {name}"),
+                ValueKind::Object(object) => assert!(object.same(expected), "{name}"),
                 _ => panic!(
                     "expected an object, got {}",
                     mutator.heap().describe(mutator.fetch(&got))
@@ -132,14 +159,8 @@ fn platform_collections_answers_the_collections_modules_list() {
         interpreter.send(&collections, Symbol::intern("Collections"), &[]),
         "platform collections Collections",
     );
-    let collections_class = expect_ok(
-        interpreter.send(&collections, Symbol::intern("class"), &[]),
-        "platform collections class",
-    );
-    let platform_class = expect_ok(
-        interpreter.send(&platform, Symbol::intern("class"), &[]),
-        "platform class",
-    );
+    let collections_class = class_of(&mut interpreter, &collections);
+    let platform_class = class_of(&mut interpreter, &platform);
     let second = expect_ok(
         interpreter.send(&platform_class, Symbol::NEW, &[]),
         "platform class new",
@@ -204,10 +225,7 @@ fn the_collections_module_is_built_once_at_boot() {
         interpreter.send(&platform, Symbol::intern("collections"), &[]),
         "platform collections",
     );
-    let second_platform = expect_ok(
-        interpreter.send(&platform, Symbol::intern("class"), &[]),
-        "platform class",
-    );
+    let second_platform = class_of(&mut interpreter, &platform);
     let second_platform = expect_ok(
         interpreter.send(&second_platform, Symbol::intern("new"), &[]),
         "platform class new",
@@ -288,10 +306,7 @@ fn the_collections_namespace_is_not_a_transcript() {
 fn the_platform_is_an_instance_of_the_shipped_platform_module() {
     let mut interpreter = Interpreter::bootstrap();
     let platform = interpreter.platform();
-    let platform_class = expect_ok(
-        interpreter.send(&platform, Symbol::intern("class"), &[]),
-        "platform class",
-    );
+    let platform_class = class_of(&mut interpreter, &platform);
     let platform_class_name = expect_ok(
         interpreter.send(&platform_class, Symbol::intern("name"), &[]),
         "platform class name",
@@ -300,10 +315,7 @@ fn the_platform_is_an_instance_of_the_shipped_platform_module() {
         interpreter.send(&platform, Symbol::intern("transcript"), &[]),
         "platform transcript",
     );
-    let transcript_class = expect_ok(
-        interpreter.send(&transcript, Symbol::intern("class"), &[]),
-        "platform transcript class",
-    );
+    let transcript_class = class_of(&mut interpreter, &transcript);
     let transcript_class_name = expect_ok(
         interpreter.send(&transcript_class, Symbol::intern("name"), &[]),
         "platform transcript class name",
@@ -426,10 +438,7 @@ fn refusal(result: HostResult, what: &str) -> String {
 fn the_platform_class_takes_no_mirror() {
     let mut interpreter = Interpreter::bootstrap();
     let platform = interpreter.platform();
-    let platform_class = expect_ok(
-        interpreter.send(&platform, Symbol::intern("class"), &[]),
-        "platform class",
-    );
+    let platform_class = class_of(&mut interpreter, &platform);
     let not_the_mirror = interpreter.stash(Value::small_integer(42));
     let not_the_kernel = interpreter.stash(Value::small_integer(7));
     let message = refusal(
@@ -480,7 +489,7 @@ fn a_subclass_of_the_platform_class_writes_too() {
         class Copier usingPlatform: platform = Object <: Value (
             | private thePlatform = platform. |
         ) (
-            private PlatformClass = ( ^thePlatform class )
+            private PlatformClass = ( ^thePlatform Platform )
             class Copied = PlatformClass new () ()
             public speak = ( ^Copied new transcript show: '' )
             public speakAgain = ( ^PlatformClass new transcript show: '' )
