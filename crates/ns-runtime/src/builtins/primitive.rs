@@ -1801,6 +1801,188 @@ pub const MIRROR: &[MirrorEntry] = &[
         "at:put:",
         Primitive::Element(ElementAccess::new(ElementKind::Float64, false, false, true)),
     ),
+    // `DataView`'s accessors at a 1-based byte position: a single byte
+    // has no order, every wider kind a row for each.
+    mirror(
+        "byteArray:int8At:ifFail:",
+        "int8At:",
+        Primitive::Element(ElementAccess::new(ElementKind::Int8, false, true, false)),
+    ),
+    mirror(
+        "byteArray:int8At:put:ifFail:",
+        "int8At:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Int8, false, true, true)),
+    ),
+    mirror(
+        "byteArray:uint8At:ifFail:",
+        "uint8At:",
+        Primitive::Element(ElementAccess::new(ElementKind::Uint8, false, true, false)),
+    ),
+    mirror(
+        "byteArray:uint8At:put:ifFail:",
+        "uint8At:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Uint8, false, true, true)),
+    ),
+    mirror(
+        "byteArray:littleEndianInt16At:ifFail:",
+        "int16At:",
+        Primitive::Element(ElementAccess::new(ElementKind::Int16, false, true, false)),
+    ),
+    mirror(
+        "byteArray:littleEndianInt16At:put:ifFail:",
+        "int16At:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Int16, false, true, true)),
+    ),
+    mirror(
+        "byteArray:littleEndianUint16At:ifFail:",
+        "uint16At:",
+        Primitive::Element(ElementAccess::new(ElementKind::Uint16, false, true, false)),
+    ),
+    mirror(
+        "byteArray:littleEndianUint16At:put:ifFail:",
+        "uint16At:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Uint16, false, true, true)),
+    ),
+    mirror(
+        "byteArray:littleEndianInt32At:ifFail:",
+        "int32At:",
+        Primitive::Element(ElementAccess::new(ElementKind::Int32, false, true, false)),
+    ),
+    mirror(
+        "byteArray:littleEndianInt32At:put:ifFail:",
+        "int32At:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Int32, false, true, true)),
+    ),
+    mirror(
+        "byteArray:littleEndianUint32At:ifFail:",
+        "uint32At:",
+        Primitive::Element(ElementAccess::new(ElementKind::Uint32, false, true, false)),
+    ),
+    mirror(
+        "byteArray:littleEndianUint32At:put:ifFail:",
+        "uint32At:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Uint32, false, true, true)),
+    ),
+    mirror(
+        "byteArray:littleEndianInt64At:ifFail:",
+        "int64At:",
+        Primitive::Element(ElementAccess::new(ElementKind::Int64, false, true, false)),
+    ),
+    mirror(
+        "byteArray:littleEndianInt64At:put:ifFail:",
+        "int64At:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Int64, false, true, true)),
+    ),
+    mirror(
+        "byteArray:littleEndianUint64At:ifFail:",
+        "uint64At:",
+        Primitive::Element(ElementAccess::new(ElementKind::Uint64, false, true, false)),
+    ),
+    mirror(
+        "byteArray:littleEndianUint64At:put:ifFail:",
+        "uint64At:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Uint64, false, true, true)),
+    ),
+    mirror(
+        "byteArray:littleEndianFloat32At:ifFail:",
+        "float32At:",
+        Primitive::Element(ElementAccess::new(ElementKind::Float32, false, true, false)),
+    ),
+    mirror(
+        "byteArray:littleEndianFloat32At:put:ifFail:",
+        "float32At:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Float32, false, true, true)),
+    ),
+    mirror(
+        "byteArray:littleEndianFloat64At:ifFail:",
+        "float64At:",
+        Primitive::Element(ElementAccess::new(ElementKind::Float64, false, true, false)),
+    ),
+    mirror(
+        "byteArray:littleEndianFloat64At:put:ifFail:",
+        "float64At:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Float64, false, true, true)),
+    ),
+    mirror(
+        "byteArray:bigEndianInt16At:ifFail:",
+        "int16At:",
+        Primitive::Element(ElementAccess::new(ElementKind::Int16, true, true, false)),
+    ),
+    mirror(
+        "byteArray:bigEndianInt16At:put:ifFail:",
+        "int16At:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Int16, true, true, true)),
+    ),
+    mirror(
+        "byteArray:bigEndianUint16At:ifFail:",
+        "uint16At:",
+        Primitive::Element(ElementAccess::new(ElementKind::Uint16, true, true, false)),
+    ),
+    mirror(
+        "byteArray:bigEndianUint16At:put:ifFail:",
+        "uint16At:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Uint16, true, true, true)),
+    ),
+    mirror(
+        "byteArray:bigEndianInt32At:ifFail:",
+        "int32At:",
+        Primitive::Element(ElementAccess::new(ElementKind::Int32, true, true, false)),
+    ),
+    mirror(
+        "byteArray:bigEndianInt32At:put:ifFail:",
+        "int32At:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Int32, true, true, true)),
+    ),
+    mirror(
+        "byteArray:bigEndianUint32At:ifFail:",
+        "uint32At:",
+        Primitive::Element(ElementAccess::new(ElementKind::Uint32, true, true, false)),
+    ),
+    mirror(
+        "byteArray:bigEndianUint32At:put:ifFail:",
+        "uint32At:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Uint32, true, true, true)),
+    ),
+    mirror(
+        "byteArray:bigEndianInt64At:ifFail:",
+        "int64At:",
+        Primitive::Element(ElementAccess::new(ElementKind::Int64, true, true, false)),
+    ),
+    mirror(
+        "byteArray:bigEndianInt64At:put:ifFail:",
+        "int64At:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Int64, true, true, true)),
+    ),
+    mirror(
+        "byteArray:bigEndianUint64At:ifFail:",
+        "uint64At:",
+        Primitive::Element(ElementAccess::new(ElementKind::Uint64, true, true, false)),
+    ),
+    mirror(
+        "byteArray:bigEndianUint64At:put:ifFail:",
+        "uint64At:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Uint64, true, true, true)),
+    ),
+    mirror(
+        "byteArray:bigEndianFloat32At:ifFail:",
+        "float32At:",
+        Primitive::Element(ElementAccess::new(ElementKind::Float32, true, true, false)),
+    ),
+    mirror(
+        "byteArray:bigEndianFloat32At:put:ifFail:",
+        "float32At:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Float32, true, true, true)),
+    ),
+    mirror(
+        "byteArray:bigEndianFloat64At:ifFail:",
+        "float64At:",
+        Primitive::Element(ElementAccess::new(ElementKind::Float64, true, true, false)),
+    ),
+    mirror(
+        "byteArray:bigEndianFloat64At:put:ifFail:",
+        "float64At:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Float64, true, true, true)),
+    ),
 ];
 
 const _: () = assert!(MIRROR.len() <= u8::MAX as usize + 1);

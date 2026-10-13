@@ -1296,6 +1296,13 @@ mod tests {
         "withAll:",
     ];
 
+    /// `DataView` and its two byte orders, none of whose members is a
+    /// forwarder but `isKindOfDataView`, a quick method: the accessors send
+    /// to the mirror with the `bytes` slot as the subject, not `self`, so a
+    /// view stays an ordinary object over its ByteArray, and the rest is
+    /// Newspeak around them.
+    const DATA_VIEWS: &[&str] = &["DataView", "LittleEndianDataView", "BigEndianDataView"];
+
     /// The kernel forwarders whose row is reported under a selector other
     /// than their own, each with that row's reported selector. `Behavior>>==`
     /// and `Metaclass>>==` forward to `value:sameAs:ifFail:`, reported `=`,
@@ -1612,6 +1619,11 @@ mod tests {
             "isKindOfTypedArray",
             MethodFastPath::Constant(QuickConstant::True),
         ),
+        (
+            "DataView",
+            "isKindOfDataView",
+            MethodFastPath::Constant(QuickConstant::True),
+        ),
     ];
 
     /// §3.2's accessors for the predefined classes, which `Object` declares:
@@ -1683,7 +1695,11 @@ mod tests {
                     let selector = method.selector.as_str();
                     let typed_array_member = TYPED_ARRAYS.contains(&class_name)
                         && TYPED_ARRAY_MEMBERS.contains(&selector);
-                    if typed_array_member || NOT_FORWARDERS.contains(&(class_name, selector)) {
+                    let data_view_member =
+                        DATA_VIEWS.contains(&class_name) && selector != "isKindOfDataView";
+                    if typed_array_member
+                        || data_view_member
+                        || NOT_FORWARDERS.contains(&(class_name, selector)) {
                         assert!(
                             method.fast_path.is_none(),
                             "{class_name}>>{selector} reaches a leaf after all; take it off NOT_FORWARDERS"
@@ -1849,6 +1865,7 @@ mod tests {
                 "Proxy",
                 "StringBuilder",
                 "TypedArray",
+                "DataView",
             ]
             .into_iter()
             .chain(TYPED_ARRAYS.iter().copied())
@@ -2273,6 +2290,8 @@ mod tests {
         "FutureImplementation",
         "NonBooleanReceiver",
         "IndexedCollection",
+        "LittleEndianDataView",
+        "BigEndianDataView",
     ];
 
     /// §6.3.1 defaults an undeclared member to protected, and a protected

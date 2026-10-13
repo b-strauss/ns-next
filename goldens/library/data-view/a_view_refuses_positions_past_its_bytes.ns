@@ -1,0 +1,66 @@
+/// A DataView refuses, with an ArgumentError carrying the position, a byte
+/// position below 1 or one whose last byte lies past the ByteArray, and says
+/// which positions are valid; fewer bytes than the width leaves none. It
+/// refuses a value outside its width's range or no Number, naming the value,
+/// and a refused write leaves the bytes as they were.
+class AViewRefusesPositionsPastItsBytes = Object new (
+  |
+    transcript ::= nil.
+    ArgumentError ::= nil.
+  |
+) (
+  refusal: action = (
+    transcript
+        show: (action on: ArgumentError do: [:error | error messageText]);
+        newLine.
+  )
+
+  public main: platform args: arguments = (
+    |
+      bytes
+      little
+      big
+      short
+      roomy
+      bigRoomy
+    |
+    transcript:: platform transcript.
+    ArgumentError:: platform kernel ArgumentError.
+    bytes:: ByteArray new: 6.
+    little:: platform kernel DataView on: bytes byteOrder: #littleEndian.
+    big:: platform kernel DataView on: bytes byteOrder: #bigEndian.
+    refusal: [little int32At: 0].
+    refusal: [little int32At: 4].
+    refusal: [big int32At: 4].
+    refusal: [big uint16At: 6].
+    refusal: [little float64At: 1].
+    refusal: [little uint8At: 7].
+    refusal: [little int8At: 0].
+    refusal: [little uint8At: -3].
+    refusal: [little int32At: 4 put: 1].
+    refusal: [big float32At: 4 put: 1.0].
+    refusal: [little uint16At: 'one'].
+    roomy:: platform kernel DataView on: (ByteArray new: 8) byteOrder: #littleEndian.
+    bigRoomy:: platform kernel DataView on: (ByteArray new: 8) byteOrder: #bigEndian.
+    refusal: [roomy int8At: 1 put: 128].
+    refusal: [roomy uint16At: 1 put: -1].
+    refusal: [bigRoomy int32At: 1 put: 2147483648].
+    refusal: [bigRoomy uint64At: 1 put: 18446744073709551616].
+    refusal: [roomy int16At: 1 put: 1.5].
+    refusal: [roomy float64At: 1 put: 'x'].
+    refusal: [bigRoomy float32At: 1 put: nil].
+    short:: platform kernel DataView on: (ByteArray new: 3) byteOrder: #bigEndian.
+    refusal: [short int64At: 1].
+    refusal: [short uint32At: 1 put: 0].
+    transcript
+        print: ([little int32At: 5] on: ArgumentError do: [:error | error argument]);
+        show: ' ';
+        print: ([little int8At: 1 put: 128] on: ArgumentError do: [:error | error argument]);
+        newLine.
+    transcript
+        print: (little uint32At: 3);
+        show: ' ';
+        print: (big uint16At: 5);
+        newLine.
+  )
+)

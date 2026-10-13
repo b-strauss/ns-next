@@ -750,8 +750,8 @@ ns_runtime::for_each_lowering! {
 }
 
 /// What the bootstrap leaves in the caches. `PlatformFactory`'s
-/// instantiation runs its twenty-four eager slot initializers, `kernel
-/// Exception` to `kernel Float64Array`, each a send to the kernel instance
+/// instantiation runs its twenty-five eager slot initializers, `kernel
+/// Exception` to `kernel DataView`, each a send to the kernel instance
 /// that takes a site and fills a global entry, but for `ArgumentError` and
 /// `Collection`, whose entries `CollectionsFactory`'s two initializers,
 /// `kernel ArgumentError` and `kernel Collection`, fill too; the platform's
@@ -763,7 +763,8 @@ ns_runtime::for_each_lowering! {
 /// superclass clause of every one that is no builtin runs too --
 /// `StringBuilder` in the kernel, `TypedArray`'s `Collection <:
 /// IndexedCollection` and the ten typed arrays' `TypedArray`, whose ten
-/// sites share one global entry,
+/// sites share one global entry, `DataView`'s `Object` and its two byte
+/// orders' `DataView`,
 /// `KernelNamespace` in `PlatformFactory`, `Transcript` in
 /// `TranscriptFactory`, `Time` and `Stopwatch` in `TimeFactory`, and the
 /// seven classes of `CollectionsFactory`, whose two Errors name `Error` bare
@@ -775,12 +776,12 @@ ns_runtime::for_each_lowering! {
 /// entries, so those are counted only without it; the sites stay either
 /// way.
 #[test]
-fn a_fresh_bootstrap_leaves_fifty_six_sites_and_thirty_eight_global_entries() {
+fn a_fresh_bootstrap_leaves_sixty_sites_and_forty_global_entries() {
     let mut interpreter = Interpreter::bootstrap();
     let statistics = interpreter.cache_statistics();
-    assert_eq!(statistics.site_entries, 56);
+    assert_eq!(statistics.site_entries, 60);
     let stress_caches = std::env::var("NS_NEXT_STRESS_CACHES").is_ok_and(|value| value == "1");
     if !stress_caches {
-        assert_eq!(statistics.filled_global_entries, 38);
+        assert_eq!(statistics.filled_global_entries, 40);
     }
 }

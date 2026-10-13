@@ -1,0 +1,51 @@
+/// A DataView is made with a byte order, #littleEndian or #bigEndian, decided
+/// by identity with those two Symbols: any other Symbol, and a String
+/// spelling the same letters, are refused with an ArgumentError carrying
+/// what was given, as is a source that is no ByteArray. `new:byteOrder:`
+/// checks the order before it allocates.
+class AViewRefusesAnUnknownByteOrder = Object new (
+  |
+    transcript ::= nil.
+    ArgumentError ::= nil.
+  |
+) (
+  refusal: action = (
+    transcript
+        show: (action on: ArgumentError do: [:error | error messageText]);
+        newLine.
+  )
+
+  carried: action = (
+    transcript
+        print: (action on: ArgumentError do: [:error | error argument]);
+        newLine.
+  )
+
+  public main: platform args: arguments = (
+    |
+      DataView
+      bytes
+    |
+    transcript:: platform transcript.
+    ArgumentError:: platform kernel ArgumentError.
+    DataView:: platform kernel DataView.
+    bytes:: ByteArray new: 4.
+    refusal: [DataView on: bytes byteOrder: #middleEndian].
+    refusal: [DataView on: bytes byteOrder: 'littleEndian'].
+    refusal: [DataView on: bytes byteOrder: nil].
+    refusal: [DataView new: 4 byteOrder: #LittleEndian].
+    refusal: [DataView new: 4 byteOrder: 'bigEndian'].
+    refusal: [DataView on: 'abc' byteOrder: #bigEndian].
+    refusal: [DataView on: nil byteOrder: #littleEndian].
+    refusal: [DataView over: 'abc'].
+    carried: [DataView on: bytes byteOrder: #middleEndian].
+    carried: [DataView on: bytes byteOrder: 'littleEndian'].
+    carried: [DataView on: 'abc' byteOrder: #bigEndian].
+    refusal: [DataView new: -1 byteOrder: #littleEndian].
+    transcript
+        print: (DataView on: bytes byteOrder: #littleEndian) byteOrder;
+        show: ' ';
+        print: (DataView new: 0 byteOrder: #bigEndian) byteOrder;
+        newLine.
+  )
+)

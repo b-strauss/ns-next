@@ -1,0 +1,70 @@
+/// A DataView counts its byte positions from 1, as `at:` does, and an access
+/// need not be aligned to its width: `uint32At: 3` reads the bytes 3 to 6.
+/// The last position of a width is the one whose last byte is the last of the
+/// ByteArray, and a write at an unaligned position touches only its own
+/// bytes.
+class AViewReadsAtUnalignedPositions = Object new (
+  |
+    transcript ::= nil.
+    DataView ::= nil.
+  |
+) (
+  shown: bytes = (
+    1 to: bytes size do: [:index |
+      index > 1 ifTrue: [transcript show: ' '].
+      transcript print: (bytes at: index).
+    ].
+    transcript newLine.
+  )
+
+  numbered: size = (
+    |
+      bytes
+    |
+    bytes:: ByteArray new: size.
+    1 to: size do: [:index | bytes at: index put: index].
+    ^bytes.
+  )
+
+  public main: platform args: arguments = (
+    |
+      bytes
+      little
+      big
+    |
+    transcript:: platform transcript.
+    DataView:: platform kernel DataView.
+    bytes:: numbered: 9.
+    little:: DataView on: bytes byteOrder: #littleEndian.
+    big:: DataView on: bytes byteOrder: #bigEndian.
+    transcript
+        print: (little uint32At: 3);
+        show: ' ';
+        print: (big uint32At: 3);
+        newLine;
+        print: (little uint16At: 2);
+        show: ' ';
+        print: (big uint16At: 2);
+        newLine;
+        print: (little uint64At: 2);
+        show: ' ';
+        print: (big uint64At: 2);
+        newLine;
+        print: (little uint16At: 8);
+        show: ' ';
+        print: (big uint16At: 8);
+        newLine.
+    bytes:: numbered: 6.
+    (DataView on: bytes byteOrder: #littleEndian) uint32At: 2 put: 2864434397.
+    shown: bytes.
+    bytes:: numbered: 6.
+    (DataView on: bytes byteOrder: #bigEndian) uint32At: 2 put: 2864434397.
+    shown: bytes.
+    bytes:: ByteArray new: 9.
+    (DataView on: bytes byteOrder: #bigEndian) float64At: 2 put: 2.0.
+    shown: bytes.
+    bytes:: ByteArray new: 9.
+    (DataView on: bytes byteOrder: #littleEndian) float64At: 2 put: 2.0.
+    shown: bytes.
+  )
+)

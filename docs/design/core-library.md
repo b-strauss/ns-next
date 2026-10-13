@@ -3964,6 +3964,11 @@ accessors on `ByteArray`:
   their range, floats taking any number, `put:` answering the value.
 - `bytes` answers the `ByteArray`, `size` its size; `=` and `hash` are
   identity; `isKindOfDataView` answers `true`.
+  The byte order is decided by identity with `#littleEndian` and
+  `#bigEndian`, so a `String` of the same letters is refused. `over:`, the
+  class's own factory, checks only the `ByteArray`; it has no byte order, so
+  its wider accessors do not exist. A program names the class as `platform
+  kernel DataView`; the two subclasses are private.
 - **The leaves**: 36 selectors on the `ByteArray`, eight widths in two
   orders, read and write, and four for one byte, all one generic Rust
   function over width, kind and order, which the typed arrays share with an

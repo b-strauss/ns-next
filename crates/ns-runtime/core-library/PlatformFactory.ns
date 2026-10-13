@@ -100,6 +100,8 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
     private Float32Array = kernel Float32Array.
     /// The kernel's `Float64Array`, which `KernelNamespace` hands out.
     private Float64Array = kernel Float64Array.
+    /// The kernel's `DataView`, which `KernelNamespace` hands out.
+    private DataView = kernel DataView.
   |
 ) (
   /// The one collections module, the instance the boot built over the
@@ -292,6 +294,12 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
     /// with `new:`, `withAll:` or `on:` a ByteArray.
     public Float64Array = (
       ^outer PlatformFactory Float64Array.
+    )
+
+    /// Answers the kernel's class `DataView`, which a program instantiates
+    /// with `on:byteOrder:` a ByteArray or `new:byteOrder:`.
+    public DataView = (
+      ^outer PlatformFactory DataView.
     )
   )
 

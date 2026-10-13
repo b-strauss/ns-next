@@ -5545,6 +5545,829 @@ class Kernel vmMirror: mirror = Value (
     )
   )
 
+  /// A view of a ByteArray that reads and writes numbers of one to eight
+  /// bytes in a byte order given when it is made, at any byte position:
+  /// `DataView on: bytes byteOrder: #bigEndian` and `DataView new: size
+  /// byteOrder: #littleEndian` answer an instance of a subclass fixed to
+  /// that order, so that no access branches on it. A program makes one with
+  /// those two class-side messages and not with `over:`, whose view has no
+  /// byte order to read the wider numbers in. The view holds the ByteArray
+  /// itself and not a copy, so views over one ByteArray, typed arrays among
+  /// them, see each other's writes.
+  ///
+  /// The accessors are `int8At:` and `uint8At:` -- a single byte has no
+  /// order -- here, and `int16At:`, `uint16At:`, `int32At:`, `uint32At:`,
+  /// `int64At:`, `uint64At:`, `float32At:` and `float64At:` in each
+  /// subclass, every one with a `put:` form. A position counts from 1, as
+  /// `at:` does, and need not be a multiple of the width: `uint32At: 3`
+  /// reads the bytes 3 to 6. The values follow the typed arrays' rules: an
+  /// Integer is checked against its width's range, a float accessor takes
+  /// any Number, and `put:` answers the value given. No value: `=` and
+  /// `hash` are identity.
+  ///
+  /// aByteArray: the ByteArray to view.
+  ///
+  /// Signals an ArgumentError carrying `aByteArray`: 'over: requires a
+  /// ByteArray, got …' and its `printString` for anything that is no
+  /// ByteArray.
+  public class DataView over: aByteArray = Object (
+    |
+      /// The ByteArray the view reads and writes: the one it was made over,
+      /// never a copy.
+      public bytes = viewable: aByteArray.
+    |
+  ) (
+    /// Answers true: the receiver is a DataView.
+    public isKindOfDataView = (
+      ^true.
+    )
+
+    /// Answers the byte order the view reads and writes in, the Symbol
+    /// #littleEndian or #bigEndian.
+    ///
+    /// Here, signals the Error of `subclassResponsibility`: the two
+    /// subclasses define it.
+    public byteOrder = (
+      ^self subclassResponsibility.
+    )
+
+    /// Answers the number of bytes of `bytes`.
+    ///
+    /// Signals the ArgumentError of `noByteArray:` when `bytes` holds no
+    /// ByteArray.
+    public size = (
+      bytes isKindOfByteArray ifFalse: [^self noByteArray: #size].
+      ^bytes size.
+    )
+
+    /// Answers the Integer from -128 to 127 at byte position `position`.
+    ///
+    /// position: an Integer from 1 to `size`.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'int8At: position … out of
+    /// range: valid positions are 1..… (size …)' for an Integer outside 1 to
+    /// `size`, a LargeInteger included, and 'int8At: requires an Integer index,
+    /// got …' for a position that is no Integer; and the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray.
+    public int8At: position = (
+      ^vmMirror byteArray: bytes int8At: position ifFail: [^self noByteArray: #int8At:].
+    )
+
+    /// Stores `value` at byte position `position` and answers `value` itself.
+    ///
+    /// position: an Integer from 1 to `size`.
+    /// value: an Integer from -128 to 127.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'int8At:put: position …
+    /// out of range: valid positions are 1..… (size …)' for an Integer outside
+    /// 1 to `size`, a LargeInteger included, and 'int8At:put: requires an
+    /// Integer index, got …' for a position that is no Integer; the
+    /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray; and an
+    /// ArgumentError carrying `value`, 'int8At:put: requires an Integer from
+    /// -128 to 127, got …', for a value outside that range or no Integer. A
+    /// refused store leaves the bytes as they were.
+    public int8At: position put: value = (
+      ^vmMirror byteArray: bytes int8At: position put: value ifFail: [
+        ^self noByteArray: #int8At:put:.
+      ].
+    )
+
+    /// Answers the Integer from 0 to 255 at byte position `position`.
+    ///
+    /// position: an Integer from 1 to `size`.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'uint8At: position … out
+    /// of range: valid positions are 1..… (size …)' for an Integer outside 1 to
+    /// `size`, a LargeInteger included, and 'uint8At: requires an Integer
+    /// index, got …' for a position that is no Integer; and the ArgumentError
+    /// of `noByteArray:` when `bytes` holds no ByteArray.
+    public uint8At: position = (
+      ^vmMirror byteArray: bytes uint8At: position ifFail: [^self noByteArray: #uint8At:].
+    )
+
+    /// Stores `value` at byte position `position` and answers `value` itself.
+    ///
+    /// position: an Integer from 1 to `size`.
+    /// value: an Integer from 0 to 255.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'uint8At:put: position …
+    /// out of range: valid positions are 1..… (size …)' for an Integer outside
+    /// 1 to `size`, a LargeInteger included, and 'uint8At:put: requires an
+    /// Integer index, got …' for a position that is no Integer; the
+    /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray; and an
+    /// ArgumentError carrying `value`, 'uint8At:put: requires an Integer from 0
+    /// to 255, got …', for a value outside that range or no Integer. A refused
+    /// store leaves the bytes as they were.
+    public uint8At: position put: value = (
+      ^vmMirror byteArray: bytes uint8At: position put: value ifFail: [
+        ^self noByteArray: #uint8At:put:.
+      ].
+    )
+
+    /// Signals an ArgumentError carrying `bytes`, '<selector> found no
+    /// ByteArray under the view, got …' and its `printString`: what an
+    /// access signals when `bytes` holds anything else, which only a
+    /// crafted image can make.
+    ///
+    /// selector: the Symbol of the message the program sent.
+    ///
+    /// Protected rather than private, since each subclass's accessors
+    /// signal it.
+    protected noByteArray: selector = (
+      ^(outer Kernel ArgumentError value: bytes) signal: selector asString
+          , ' found no ByteArray under the view, got '
+          , bytes printString.
+    )
+
+    /// Answers `aByteArray` when the view can read it: a ByteArray.
+    ///
+    /// Signals an ArgumentError carrying `aByteArray`: 'over: requires a
+    /// ByteArray, got …' and its `printString` for anything else.
+    private viewable: aByteArray = (
+      aByteArray isKindOfByteArray ifFalse: [
+        ^(outer Kernel ArgumentError value: aByteArray) signal: 'over: requires a ByteArray, got '
+            , aByteArray printString.
+      ].
+      ^aByteArray.
+    )
+  ) : (
+    /// Answers a new view of `bytes` reading and writing in the byte order
+    /// `order`: an instance of a subclass fixed to it.
+    ///
+    /// bytes: a ByteArray, viewed itself and not copied.
+    /// order: the Symbol #littleEndian or #bigEndian, decided by identity,
+    ///     so that a String of the same letters is refused.
+    ///
+    /// Signals an ArgumentError carrying `bytes`: 'on:byteOrder: requires
+    /// a ByteArray, got …' and its `printString` for anything that is no
+    /// ByteArray; and one carrying `order`: 'on:byteOrder: requires
+    /// #littleEndian or #bigEndian, got …' and its `printString` for
+    /// anything else.
+    public on: bytes byteOrder: order = (
+      bytes isKindOfByteArray ifFalse: [
+        ^(outer
+            Kernel
+            ArgumentError value: bytes) signal: 'on:byteOrder: requires a ByteArray, got '
+            , bytes printString.
+      ].
+      self checkByteOrder: order selector: #on:byteOrder:.
+      order == #littleEndian ifTrue: [^outer Kernel LittleEndianDataView over: bytes].
+      ^outer Kernel BigEndianDataView over: bytes.
+    )
+
+    /// Answers a new view of a new ByteArray of `size` bytes, each 0, in
+    /// the byte order `order`.
+    ///
+    /// size: an Integer, at least 0.
+    /// order: the Symbol #littleEndian or #bigEndian.
+    ///
+    /// Signals the ArgumentError of `on:byteOrder:` for `order`, with the
+    /// selector 'new:byteOrder:', before it allocates anything; and the
+    /// ArgumentErrors of `TypedArray bytesFor:width:` for a `size` that is
+    /// negative, no Integer or too large to allocate.
+    public new: size byteOrder: order = (
+      self checkByteOrder: order selector: #new:byteOrder:.
+      ^self on: (outer Kernel TypedArray bytesFor: size width: 1) byteOrder: order.
+    )
+
+    /// Answers the receiver when `order` is #littleEndian or #bigEndian and
+    /// signals otherwise: what `on:byteOrder:` and `new:byteOrder:` check
+    /// before they make anything.
+    ///
+    /// order: the argument given as the byte order.
+    /// selector: the Symbol of the message the program sent.
+    ///
+    /// Signals an ArgumentError carrying `order`: '<selector> requires
+    /// #littleEndian or #bigEndian, got …' and its `printString`.
+    private checkByteOrder: order selector: selector = (
+      (order == #littleEndian or: [order == #bigEndian]) ifFalse: [
+        ^(outer Kernel ArgumentError value: order) signal: selector asString
+            , ' requires #littleEndian or #bigEndian, got '
+            , order printString.
+      ].
+    )
+  )
+
+  /// A DataView that reads and writes little-endian: the least significant byte
+  /// of a value at the lowest position. `DataView` describes the rest of the
+  /// protocol.
+  ///
+  /// aByteArray: the ByteArray to view; `DataView on:byteOrder:` has checked
+  ///     it.
+  private class LittleEndianDataView over: aByteArray = DataView over: aByteArray () (
+    /// Answers #littleEndian.
+    public byteOrder = (
+      ^#littleEndian.
+    )
+
+    /// Answers the Integer from -32768 to 32767 at byte position `position`,
+    /// little-endian.
+    ///
+    /// position: an Integer from 1 to `size` - 1.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'int16At: position … out
+    /// of range: valid positions are 1..… (size …)' for an Integer outside 1 to
+    /// `size` - 1, a LargeInteger included, and 'int16At: requires an Integer
+    /// index, got …' for a position that is no Integer; and the ArgumentError
+    /// of `noByteArray:` when `bytes` holds no ByteArray.
+    public int16At: position = (
+      ^vmMirror byteArray: bytes littleEndianInt16At: position ifFail: [
+        ^self noByteArray: #int16At:.
+      ].
+    )
+
+    /// Stores `value` at byte position `position`, little-endian and answers
+    /// `value` itself.
+    ///
+    /// position: an Integer from 1 to `size` - 1.
+    /// value: an Integer from -32768 to 32767.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'int16At:put: position …
+    /// out of range: valid positions are 1..… (size …)' for an Integer outside
+    /// 1 to `size` - 1, a LargeInteger included, and 'int16At:put: requires an
+    /// Integer index, got …' for a position that is no Integer; the
+    /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray; and an
+    /// ArgumentError carrying `value`, 'int16At:put: requires an Integer from
+    /// -32768 to 32767, got …', for a value outside that range or no Integer. A
+    /// refused store leaves the bytes as they were.
+    public int16At: position put: value = (
+      ^vmMirror byteArray: bytes littleEndianInt16At: position put: value ifFail: [
+        ^self noByteArray: #int16At:put:.
+      ].
+    )
+
+    /// Answers the Integer from 0 to 65535 at byte position `position`, little-
+    /// endian.
+    ///
+    /// position: an Integer from 1 to `size` - 1.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'uint16At: position … out
+    /// of range: valid positions are 1..… (size …)' for an Integer outside 1 to
+    /// `size` - 1, a LargeInteger included, and 'uint16At: requires an Integer
+    /// index, got …' for a position that is no Integer; and the ArgumentError
+    /// of `noByteArray:` when `bytes` holds no ByteArray.
+    public uint16At: position = (
+      ^vmMirror byteArray: bytes littleEndianUint16At: position ifFail: [
+        ^self noByteArray: #uint16At:.
+      ].
+    )
+
+    /// Stores `value` at byte position `position`, little-endian and answers
+    /// `value` itself.
+    ///
+    /// position: an Integer from 1 to `size` - 1.
+    /// value: an Integer from 0 to 65535.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'uint16At:put: position …
+    /// out of range: valid positions are 1..… (size …)' for an Integer outside
+    /// 1 to `size` - 1, a LargeInteger included, and 'uint16At:put: requires an
+    /// Integer index, got …' for a position that is no Integer; the
+    /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray; and an
+    /// ArgumentError carrying `value`, 'uint16At:put: requires an Integer from
+    /// 0 to 65535, got …', for a value outside that range or no Integer. A
+    /// refused store leaves the bytes as they were.
+    public uint16At: position put: value = (
+      ^vmMirror byteArray: bytes littleEndianUint16At: position put: value ifFail: [
+        ^self noByteArray: #uint16At:put:.
+      ].
+    )
+
+    /// Answers the Integer from -2147483648 to 2147483647 at byte position
+    /// `position`, little-endian.
+    ///
+    /// position: an Integer from 1 to `size` - 3.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'int32At: position … out
+    /// of range: valid positions are 1..… (size …)' for an Integer outside 1 to
+    /// `size` - 3, a LargeInteger included, and 'int32At: requires an Integer
+    /// index, got …' for a position that is no Integer; and the ArgumentError
+    /// of `noByteArray:` when `bytes` holds no ByteArray.
+    public int32At: position = (
+      ^vmMirror byteArray: bytes littleEndianInt32At: position ifFail: [
+        ^self noByteArray: #int32At:.
+      ].
+    )
+
+    /// Stores `value` at byte position `position`, little-endian and answers
+    /// `value` itself.
+    ///
+    /// position: an Integer from 1 to `size` - 3.
+    /// value: an Integer from -2147483648 to 2147483647.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'int32At:put: position …
+    /// out of range: valid positions are 1..… (size …)' for an Integer outside
+    /// 1 to `size` - 3, a LargeInteger included, and 'int32At:put: requires an
+    /// Integer index, got …' for a position that is no Integer; the
+    /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray; and an
+    /// ArgumentError carrying `value`, 'int32At:put: requires an Integer from
+    /// -2147483648 to 2147483647, got …', for a value outside that range or no
+    /// Integer. A refused store leaves the bytes as they were.
+    public int32At: position put: value = (
+      ^vmMirror byteArray: bytes littleEndianInt32At: position put: value ifFail: [
+        ^self noByteArray: #int32At:put:.
+      ].
+    )
+
+    /// Answers the Integer from 0 to 4294967295 at byte position `position`,
+    /// little-endian.
+    ///
+    /// position: an Integer from 1 to `size` - 3.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'uint32At: position … out
+    /// of range: valid positions are 1..… (size …)' for an Integer outside 1 to
+    /// `size` - 3, a LargeInteger included, and 'uint32At: requires an Integer
+    /// index, got …' for a position that is no Integer; and the ArgumentError
+    /// of `noByteArray:` when `bytes` holds no ByteArray.
+    public uint32At: position = (
+      ^vmMirror byteArray: bytes littleEndianUint32At: position ifFail: [
+        ^self noByteArray: #uint32At:.
+      ].
+    )
+
+    /// Stores `value` at byte position `position`, little-endian and answers
+    /// `value` itself.
+    ///
+    /// position: an Integer from 1 to `size` - 3.
+    /// value: an Integer from 0 to 4294967295.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'uint32At:put: position …
+    /// out of range: valid positions are 1..… (size …)' for an Integer outside
+    /// 1 to `size` - 3, a LargeInteger included, and 'uint32At:put: requires an
+    /// Integer index, got …' for a position that is no Integer; the
+    /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray; and an
+    /// ArgumentError carrying `value`, 'uint32At:put: requires an Integer from
+    /// 0 to 4294967295, got …', for a value outside that range or no Integer. A
+    /// refused store leaves the bytes as they were.
+    public uint32At: position put: value = (
+      ^vmMirror byteArray: bytes littleEndianUint32At: position put: value ifFail: [
+        ^self noByteArray: #uint32At:put:.
+      ].
+    )
+
+    /// Answers the Integer from -9223372036854775808 to 9223372036854775807 at
+    /// byte position `position`, little-endian.
+    ///
+    /// position: an Integer from 1 to `size` - 7.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'int64At: position … out
+    /// of range: valid positions are 1..… (size …)' for an Integer outside 1 to
+    /// `size` - 7, a LargeInteger included, and 'int64At: requires an Integer
+    /// index, got …' for a position that is no Integer; and the ArgumentError
+    /// of `noByteArray:` when `bytes` holds no ByteArray.
+    public int64At: position = (
+      ^vmMirror byteArray: bytes littleEndianInt64At: position ifFail: [
+        ^self noByteArray: #int64At:.
+      ].
+    )
+
+    /// Stores `value` at byte position `position`, little-endian and answers
+    /// `value` itself.
+    ///
+    /// position: an Integer from 1 to `size` - 7.
+    /// value: an Integer from -9223372036854775808 to 9223372036854775807.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'int64At:put: position …
+    /// out of range: valid positions are 1..… (size …)' for an Integer outside
+    /// 1 to `size` - 7, a LargeInteger included, and 'int64At:put: requires an
+    /// Integer index, got …' for a position that is no Integer; the
+    /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray; and an
+    /// ArgumentError carrying `value`, 'int64At:put: requires an Integer from
+    /// -9223372036854775808 to 9223372036854775807, got …', for a value outside
+    /// that range or no Integer. A refused store leaves the bytes as they were.
+    public int64At: position put: value = (
+      ^vmMirror byteArray: bytes littleEndianInt64At: position put: value ifFail: [
+        ^self noByteArray: #int64At:put:.
+      ].
+    )
+
+    /// Answers the Integer from 0 to 18446744073709551615 at byte position
+    /// `position`, little-endian.
+    ///
+    /// position: an Integer from 1 to `size` - 7.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'uint64At: position … out
+    /// of range: valid positions are 1..… (size …)' for an Integer outside 1 to
+    /// `size` - 7, a LargeInteger included, and 'uint64At: requires an Integer
+    /// index, got …' for a position that is no Integer; and the ArgumentError
+    /// of `noByteArray:` when `bytes` holds no ByteArray.
+    public uint64At: position = (
+      ^vmMirror byteArray: bytes littleEndianUint64At: position ifFail: [
+        ^self noByteArray: #uint64At:.
+      ].
+    )
+
+    /// Stores `value` at byte position `position`, little-endian and answers
+    /// `value` itself.
+    ///
+    /// position: an Integer from 1 to `size` - 7.
+    /// value: an Integer from 0 to 18446744073709551615.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'uint64At:put: position …
+    /// out of range: valid positions are 1..… (size …)' for an Integer outside
+    /// 1 to `size` - 7, a LargeInteger included, and 'uint64At:put: requires an
+    /// Integer index, got …' for a position that is no Integer; the
+    /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray; and an
+    /// ArgumentError carrying `value`, 'uint64At:put: requires an Integer from
+    /// 0 to 18446744073709551615, got …', for a value outside that range or no
+    /// Integer. A refused store leaves the bytes as they were.
+    public uint64At: position put: value = (
+      ^vmMirror byteArray: bytes littleEndianUint64At: position put: value ifFail: [
+        ^self noByteArray: #uint64At:put:.
+      ].
+    )
+
+    /// Answers the Float at byte position `position`, little-endian, the
+    /// binary32 there widened exactly.
+    ///
+    /// position: an Integer from 1 to `size` - 3.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'float32At: position … out
+    /// of range: valid positions are 1..… (size …)' for an Integer outside 1 to
+    /// `size` - 3, a LargeInteger included, and 'float32At: requires an Integer
+    /// index, got …' for a position that is no Integer; and the ArgumentError
+    /// of `noByteArray:` when `bytes` holds no ByteArray.
+    public float32At: position = (
+      ^vmMirror byteArray: bytes littleEndianFloat32At: position ifFail: [
+        ^self noByteArray: #float32At:.
+      ].
+    )
+
+    /// Stores `value` at byte position `position`, little-endian, converted as
+    /// `asFloat` converts it and rounded to binary32, and answers `value`
+    /// itself.
+    ///
+    /// position: an Integer from 1 to `size` - 3.
+    /// value: a Number.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'float32At:put: position …
+    /// out of range: valid positions are 1..… (size …)' for an Integer outside
+    /// 1 to `size` - 3, a LargeInteger included, and 'float32At:put: requires
+    /// an Integer index, got …' for a position that is no Integer; the
+    /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray; and an
+    /// ArgumentError carrying `value`, 'float32At:put: requires a Number, got
+    /// …', for a value that is no Number. A refused store leaves the bytes as
+    /// they were.
+    ///
+    /// The leaf takes only a Float, so the conversion happens here; a value
+    /// that is no Number reaches the leaf as it is, so that the position is
+    /// checked first and the refusal names the value given.
+    public float32At: position put: value = (
+      vmMirror byteArray: bytes
+          littleEndianFloat32At: position
+          put: (value isKindOfNumber ifTrue: [value asFloat] ifFalse: [value])
+          ifFail: [^self noByteArray: #float32At:put:].
+      ^value.
+    )
+
+    /// Answers the Float at byte position `position`, little-endian.
+    ///
+    /// position: an Integer from 1 to `size` - 7.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'float64At: position … out
+    /// of range: valid positions are 1..… (size …)' for an Integer outside 1 to
+    /// `size` - 7, a LargeInteger included, and 'float64At: requires an Integer
+    /// index, got …' for a position that is no Integer; and the ArgumentError
+    /// of `noByteArray:` when `bytes` holds no ByteArray.
+    public float64At: position = (
+      ^vmMirror byteArray: bytes littleEndianFloat64At: position ifFail: [
+        ^self noByteArray: #float64At:.
+      ].
+    )
+
+    /// Stores `value` at byte position `position`, little-endian, converted as
+    /// `asFloat` converts it, and answers `value` itself.
+    ///
+    /// position: an Integer from 1 to `size` - 7.
+    /// value: a Number.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'float64At:put: position …
+    /// out of range: valid positions are 1..… (size …)' for an Integer outside
+    /// 1 to `size` - 7, a LargeInteger included, and 'float64At:put: requires
+    /// an Integer index, got …' for a position that is no Integer; the
+    /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray; and an
+    /// ArgumentError carrying `value`, 'float64At:put: requires a Number, got
+    /// …', for a value that is no Number. A refused store leaves the bytes as
+    /// they were.
+    ///
+    /// The leaf takes only a Float, so the conversion happens here; a value
+    /// that is no Number reaches the leaf as it is, so that the position is
+    /// checked first and the refusal names the value given.
+    public float64At: position put: value = (
+      vmMirror byteArray: bytes
+          littleEndianFloat64At: position
+          put: (value isKindOfNumber ifTrue: [value asFloat] ifFalse: [value])
+          ifFail: [^self noByteArray: #float64At:put:].
+      ^value.
+    )
+  )
+
+  /// A DataView that reads and writes big-endian: the least significant byte of
+  /// a value at the lowest position. `DataView` describes the rest of the
+  /// protocol.
+  ///
+  /// aByteArray: the ByteArray to view; `DataView on:byteOrder:` has checked
+  ///     it.
+  private class BigEndianDataView over: aByteArray = DataView over: aByteArray () (
+    /// Answers #bigEndian.
+    public byteOrder = (
+      ^#bigEndian.
+    )
+
+    /// Answers the Integer from -32768 to 32767 at byte position `position`,
+    /// big-endian.
+    ///
+    /// position: an Integer from 1 to `size` - 1.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'int16At: position … out
+    /// of range: valid positions are 1..… (size …)' for an Integer outside 1 to
+    /// `size` - 1, a LargeInteger included, and 'int16At: requires an Integer
+    /// index, got …' for a position that is no Integer; and the ArgumentError
+    /// of `noByteArray:` when `bytes` holds no ByteArray.
+    public int16At: position = (
+      ^vmMirror byteArray: bytes bigEndianInt16At: position ifFail: [^self noByteArray: #int16At:].
+    )
+
+    /// Stores `value` at byte position `position`, big-endian and answers
+    /// `value` itself.
+    ///
+    /// position: an Integer from 1 to `size` - 1.
+    /// value: an Integer from -32768 to 32767.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'int16At:put: position …
+    /// out of range: valid positions are 1..… (size …)' for an Integer outside
+    /// 1 to `size` - 1, a LargeInteger included, and 'int16At:put: requires an
+    /// Integer index, got …' for a position that is no Integer; the
+    /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray; and an
+    /// ArgumentError carrying `value`, 'int16At:put: requires an Integer from
+    /// -32768 to 32767, got …', for a value outside that range or no Integer. A
+    /// refused store leaves the bytes as they were.
+    public int16At: position put: value = (
+      ^vmMirror byteArray: bytes bigEndianInt16At: position put: value ifFail: [
+        ^self noByteArray: #int16At:put:.
+      ].
+    )
+
+    /// Answers the Integer from 0 to 65535 at byte position `position`, big-
+    /// endian.
+    ///
+    /// position: an Integer from 1 to `size` - 1.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'uint16At: position … out
+    /// of range: valid positions are 1..… (size …)' for an Integer outside 1 to
+    /// `size` - 1, a LargeInteger included, and 'uint16At: requires an Integer
+    /// index, got …' for a position that is no Integer; and the ArgumentError
+    /// of `noByteArray:` when `bytes` holds no ByteArray.
+    public uint16At: position = (
+      ^vmMirror byteArray: bytes bigEndianUint16At: position ifFail: [
+        ^self noByteArray: #uint16At:.
+      ].
+    )
+
+    /// Stores `value` at byte position `position`, big-endian and answers
+    /// `value` itself.
+    ///
+    /// position: an Integer from 1 to `size` - 1.
+    /// value: an Integer from 0 to 65535.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'uint16At:put: position …
+    /// out of range: valid positions are 1..… (size …)' for an Integer outside
+    /// 1 to `size` - 1, a LargeInteger included, and 'uint16At:put: requires an
+    /// Integer index, got …' for a position that is no Integer; the
+    /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray; and an
+    /// ArgumentError carrying `value`, 'uint16At:put: requires an Integer from
+    /// 0 to 65535, got …', for a value outside that range or no Integer. A
+    /// refused store leaves the bytes as they were.
+    public uint16At: position put: value = (
+      ^vmMirror byteArray: bytes bigEndianUint16At: position put: value ifFail: [
+        ^self noByteArray: #uint16At:put:.
+      ].
+    )
+
+    /// Answers the Integer from -2147483648 to 2147483647 at byte position
+    /// `position`, big-endian.
+    ///
+    /// position: an Integer from 1 to `size` - 3.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'int32At: position … out
+    /// of range: valid positions are 1..… (size …)' for an Integer outside 1 to
+    /// `size` - 3, a LargeInteger included, and 'int32At: requires an Integer
+    /// index, got …' for a position that is no Integer; and the ArgumentError
+    /// of `noByteArray:` when `bytes` holds no ByteArray.
+    public int32At: position = (
+      ^vmMirror byteArray: bytes bigEndianInt32At: position ifFail: [^self noByteArray: #int32At:].
+    )
+
+    /// Stores `value` at byte position `position`, big-endian and answers
+    /// `value` itself.
+    ///
+    /// position: an Integer from 1 to `size` - 3.
+    /// value: an Integer from -2147483648 to 2147483647.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'int32At:put: position …
+    /// out of range: valid positions are 1..… (size …)' for an Integer outside
+    /// 1 to `size` - 3, a LargeInteger included, and 'int32At:put: requires an
+    /// Integer index, got …' for a position that is no Integer; the
+    /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray; and an
+    /// ArgumentError carrying `value`, 'int32At:put: requires an Integer from
+    /// -2147483648 to 2147483647, got …', for a value outside that range or no
+    /// Integer. A refused store leaves the bytes as they were.
+    public int32At: position put: value = (
+      ^vmMirror byteArray: bytes bigEndianInt32At: position put: value ifFail: [
+        ^self noByteArray: #int32At:put:.
+      ].
+    )
+
+    /// Answers the Integer from 0 to 4294967295 at byte position `position`,
+    /// big-endian.
+    ///
+    /// position: an Integer from 1 to `size` - 3.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'uint32At: position … out
+    /// of range: valid positions are 1..… (size …)' for an Integer outside 1 to
+    /// `size` - 3, a LargeInteger included, and 'uint32At: requires an Integer
+    /// index, got …' for a position that is no Integer; and the ArgumentError
+    /// of `noByteArray:` when `bytes` holds no ByteArray.
+    public uint32At: position = (
+      ^vmMirror byteArray: bytes bigEndianUint32At: position ifFail: [
+        ^self noByteArray: #uint32At:.
+      ].
+    )
+
+    /// Stores `value` at byte position `position`, big-endian and answers
+    /// `value` itself.
+    ///
+    /// position: an Integer from 1 to `size` - 3.
+    /// value: an Integer from 0 to 4294967295.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'uint32At:put: position …
+    /// out of range: valid positions are 1..… (size …)' for an Integer outside
+    /// 1 to `size` - 3, a LargeInteger included, and 'uint32At:put: requires an
+    /// Integer index, got …' for a position that is no Integer; the
+    /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray; and an
+    /// ArgumentError carrying `value`, 'uint32At:put: requires an Integer from
+    /// 0 to 4294967295, got …', for a value outside that range or no Integer. A
+    /// refused store leaves the bytes as they were.
+    public uint32At: position put: value = (
+      ^vmMirror byteArray: bytes bigEndianUint32At: position put: value ifFail: [
+        ^self noByteArray: #uint32At:put:.
+      ].
+    )
+
+    /// Answers the Integer from -9223372036854775808 to 9223372036854775807 at
+    /// byte position `position`, big-endian.
+    ///
+    /// position: an Integer from 1 to `size` - 7.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'int64At: position … out
+    /// of range: valid positions are 1..… (size …)' for an Integer outside 1 to
+    /// `size` - 7, a LargeInteger included, and 'int64At: requires an Integer
+    /// index, got …' for a position that is no Integer; and the ArgumentError
+    /// of `noByteArray:` when `bytes` holds no ByteArray.
+    public int64At: position = (
+      ^vmMirror byteArray: bytes bigEndianInt64At: position ifFail: [^self noByteArray: #int64At:].
+    )
+
+    /// Stores `value` at byte position `position`, big-endian and answers
+    /// `value` itself.
+    ///
+    /// position: an Integer from 1 to `size` - 7.
+    /// value: an Integer from -9223372036854775808 to 9223372036854775807.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'int64At:put: position …
+    /// out of range: valid positions are 1..… (size …)' for an Integer outside
+    /// 1 to `size` - 7, a LargeInteger included, and 'int64At:put: requires an
+    /// Integer index, got …' for a position that is no Integer; the
+    /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray; and an
+    /// ArgumentError carrying `value`, 'int64At:put: requires an Integer from
+    /// -9223372036854775808 to 9223372036854775807, got …', for a value outside
+    /// that range or no Integer. A refused store leaves the bytes as they were.
+    public int64At: position put: value = (
+      ^vmMirror byteArray: bytes bigEndianInt64At: position put: value ifFail: [
+        ^self noByteArray: #int64At:put:.
+      ].
+    )
+
+    /// Answers the Integer from 0 to 18446744073709551615 at byte position
+    /// `position`, big-endian.
+    ///
+    /// position: an Integer from 1 to `size` - 7.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'uint64At: position … out
+    /// of range: valid positions are 1..… (size …)' for an Integer outside 1 to
+    /// `size` - 7, a LargeInteger included, and 'uint64At: requires an Integer
+    /// index, got …' for a position that is no Integer; and the ArgumentError
+    /// of `noByteArray:` when `bytes` holds no ByteArray.
+    public uint64At: position = (
+      ^vmMirror byteArray: bytes bigEndianUint64At: position ifFail: [
+        ^self noByteArray: #uint64At:.
+      ].
+    )
+
+    /// Stores `value` at byte position `position`, big-endian and answers
+    /// `value` itself.
+    ///
+    /// position: an Integer from 1 to `size` - 7.
+    /// value: an Integer from 0 to 18446744073709551615.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'uint64At:put: position …
+    /// out of range: valid positions are 1..… (size …)' for an Integer outside
+    /// 1 to `size` - 7, a LargeInteger included, and 'uint64At:put: requires an
+    /// Integer index, got …' for a position that is no Integer; the
+    /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray; and an
+    /// ArgumentError carrying `value`, 'uint64At:put: requires an Integer from
+    /// 0 to 18446744073709551615, got …', for a value outside that range or no
+    /// Integer. A refused store leaves the bytes as they were.
+    public uint64At: position put: value = (
+      ^vmMirror byteArray: bytes bigEndianUint64At: position put: value ifFail: [
+        ^self noByteArray: #uint64At:put:.
+      ].
+    )
+
+    /// Answers the Float at byte position `position`, big-endian, the binary32
+    /// there widened exactly.
+    ///
+    /// position: an Integer from 1 to `size` - 3.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'float32At: position … out
+    /// of range: valid positions are 1..… (size …)' for an Integer outside 1 to
+    /// `size` - 3, a LargeInteger included, and 'float32At: requires an Integer
+    /// index, got …' for a position that is no Integer; and the ArgumentError
+    /// of `noByteArray:` when `bytes` holds no ByteArray.
+    public float32At: position = (
+      ^vmMirror byteArray: bytes bigEndianFloat32At: position ifFail: [
+        ^self noByteArray: #float32At:.
+      ].
+    )
+
+    /// Stores `value` at byte position `position`, big-endian, converted as
+    /// `asFloat` converts it and rounded to binary32, and answers `value`
+    /// itself.
+    ///
+    /// position: an Integer from 1 to `size` - 3.
+    /// value: a Number.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'float32At:put: position …
+    /// out of range: valid positions are 1..… (size …)' for an Integer outside
+    /// 1 to `size` - 3, a LargeInteger included, and 'float32At:put: requires
+    /// an Integer index, got …' for a position that is no Integer; the
+    /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray; and an
+    /// ArgumentError carrying `value`, 'float32At:put: requires a Number, got
+    /// …', for a value that is no Number. A refused store leaves the bytes as
+    /// they were.
+    ///
+    /// The leaf takes only a Float, so the conversion happens here; a value
+    /// that is no Number reaches the leaf as it is, so that the position is
+    /// checked first and the refusal names the value given.
+    public float32At: position put: value = (
+      vmMirror byteArray: bytes
+          bigEndianFloat32At: position
+          put: (value isKindOfNumber ifTrue: [value asFloat] ifFalse: [value])
+          ifFail: [^self noByteArray: #float32At:put:].
+      ^value.
+    )
+
+    /// Answers the Float at byte position `position`, big-endian.
+    ///
+    /// position: an Integer from 1 to `size` - 7.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'float64At: position … out
+    /// of range: valid positions are 1..… (size …)' for an Integer outside 1 to
+    /// `size` - 7, a LargeInteger included, and 'float64At: requires an Integer
+    /// index, got …' for a position that is no Integer; and the ArgumentError
+    /// of `noByteArray:` when `bytes` holds no ByteArray.
+    public float64At: position = (
+      ^vmMirror byteArray: bytes bigEndianFloat64At: position ifFail: [
+        ^self noByteArray: #float64At:.
+      ].
+    )
+
+    /// Stores `value` at byte position `position`, big-endian, converted as
+    /// `asFloat` converts it, and answers `value` itself.
+    ///
+    /// position: an Integer from 1 to `size` - 7.
+    /// value: a Number.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'float64At:put: position …
+    /// out of range: valid positions are 1..… (size …)' for an Integer outside
+    /// 1 to `size` - 7, a LargeInteger included, and 'float64At:put: requires
+    /// an Integer index, got …' for a position that is no Integer; the
+    /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray; and an
+    /// ArgumentError carrying `value`, 'float64At:put: requires a Number, got
+    /// …', for a value that is no Number. A refused store leaves the bytes as
+    /// they were.
+    ///
+    /// The leaf takes only a Float, so the conversion happens here; a value
+    /// that is no Number reaches the leaf as it is, so that the position is
+    /// checked first and the refusal names the value given.
+    public float64At: position put: value = (
+      vmMirror byteArray: bytes
+          bigEndianFloat64At: position
+          put: (value isKindOfNumber ifTrue: [value asFloat] ifFalse: [value])
+          ifFail: [^self noByteArray: #float64At:put:].
+      ^value.
+    )
+  )
+
   /// The class of `nil`.
   ///
   /// §5.1.3: `nil` is the unique instance of `UndefinedObject`, which
