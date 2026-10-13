@@ -496,6 +496,44 @@ mod tests {
                     "{meta} is no superclass"
                 );
             }
+            // The byte storage, its builder and its views are public
+            // classes a program names, subclasses and keeps instances of.
+            for public in [
+                "ByteArray",
+                "StringBuilder",
+                "TypedArray",
+                "Int16Array",
+                "DataView",
+            ] {
+                let positions = positions_of(world, name("Kernel", public, ShippedKind::Class));
+                assert!(
+                    positions.value && positions.superclass && positions.header,
+                    "{public} is a value, a superclass and a record's class"
+                );
+            }
+            // `DataView on:byteOrder:` answers instances of the two byte
+            // orders and `IndexedCollection` is only mixed in: no public
+            // accessor answers the classes, so a record's class only.
+            for private in [
+                "LittleEndianDataView",
+                "BigEndianDataView",
+                "IndexedCollection",
+            ] {
+                let positions = positions_of(world, name("Kernel", private, ShippedKind::Class));
+                assert!(
+                    !positions.value && !positions.superclass && positions.header,
+                    "{private} is a record's class only"
+                );
+            }
+            // The level `<: IndexedCollection` adds is where a frame of its
+            // methods runs, and nothing else.
+            for applying in ["TypedArray", "ByteArray"] {
+                assert_eq!(
+                    positions_of(world, name("Kernel", applying, ShippedKind::Level(0))),
+                    Positions::FRAME_CLASS_ONLY,
+                    "{applying} level 0 is a frame's class only"
+                );
+            }
             let list = positions_of(
                 world,
                 name("CollectionsFactory", "List", ShippedKind::Class),

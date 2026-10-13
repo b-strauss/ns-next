@@ -506,17 +506,20 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   started image, is undesigned. [image-format.md](design/image-format.md),
   "Shipped names".
 - **The cost of building the shipped world at boot** (measured
-  2026-10-12): every boot compiles and instantiates every shipped module
+  2026-10-13): every boot compiles and instantiates every shipped module
   and builds every class its root declares, since an image names them and
   the loader runs nothing the image chooses. A hello program's median
-  start in a release build went from about 12.3 ms to about 16.0 ms on the
-  measuring workstation (Windows 11), +3.7 ms, almost all of it compiling
-  `CollectionsFactory.ns`'s 1,710 lines; building the classes and naming
-  the world add nothing measurable. Two ways back exist, neither touching
-  the format: building a shipped module on first demand, when the mirror's
-  `moduleInstanceNamed:` or a load first names it, and a base image of the
-  shipped world embedded at build time and decoded at boot, names kept on
-  the wire. Which, if either, is open, for the user to decide.
+  start in a release build is about 20.1 ms on the measuring workstation
+  (Windows 11), against about 15.4 ms at `b9149044`, before `ByteArray`,
+  `StringBuilder`, the typed arrays and `DataView` grew `Kernel.ns` from
+  4,089 lines to 6,586: +4.6 ms. Compiling `CollectionsFactory.ns`'s 1,710
+  lines had added about 3.7 ms before that (2026-10-12); building the
+  classes and naming the world add nothing measurable. Two ways back
+  exist, neither touching the format: building a shipped module on first
+  demand, when the mirror's `moduleInstanceNamed:` or a load first names
+  it, and a base image of the shipped world embedded at build time and
+  decoded at boot, names kept on the wire. Which, if either, is open, for
+  the user to decide.
   [execution.md](design/execution.md), "What the collections module cost";
   [image-format.md](design/image-format.md), "Shipped names".
 - **A second class record applying a module's root row** (2026-10-13),

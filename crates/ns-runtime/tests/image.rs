@@ -2828,6 +2828,222 @@ fn inspect_shows_a_byte_array_by_its_size_and_first_bytes() {
     );
 }
 
+/// Three typed arrays over one `ByteArray`, a big-endian `DataView` over
+/// another, and a `StringBuilder` holding code points of two, three and
+/// four bytes, each in a slot; `report` prints what they answer.
+const VIEWS_AND_A_BUILDER: &str = indoc! {"
+    class X = Object new (
+      |
+        public halves
+        public floats
+        public octets
+        public view
+        public builder
+      |
+    ) (
+      public fill: platform = (
+        |
+          kernel = platform kernel.
+          bytes = ByteArray new: 8.
+          other = ByteArray new: 8.
+        |
+        halves:: kernel Int16Array on: bytes.
+        floats:: kernel Float32Array on: bytes.
+        octets:: kernel Uint8Array on: bytes.
+        view:: kernel DataView on: other byteOrder: #bigEndian.
+        builder:: kernel StringBuilder new: 2.
+        halves at: 1 put: -2.
+        floats at: 2 put: 1.5.
+        view int32At: 1 put: -123456789.
+        view int32At: 5 put: 16909060.
+        builder add: 'grüße '.
+        builder addCodePoint: 8364.
+        builder addCodePoint: 128512.
+      )
+
+      public report = (
+        |
+          text ::= ''.
+        |
+        {
+          halves at: 1.
+          halves size.
+          floats at: 2.
+          floats size.
+          octets at: 1.
+          octets at: 8.
+          octets size.
+          view int32At: 1.
+          view int32At: 5.
+          view uint8At: 5.
+          view size.
+          view byteOrder.
+          builder asString.
+          builder size.
+        } do: [:each | text:: text , each printString , ' '].
+        ^text
+      )
+    ) : ()
+"};
+
+/// What `VIEWS_AND_A_BUILDER`'s `report` answers once `fill:` has run: -2
+/// is the bytes 254 255, 1.5 in single precision ends in the byte 63, and
+/// 16909060 is the bytes 1 2 3 4 in big-endian order.
+const VIEWS_AND_A_BUILDER_REPORT: &str = "-2 4 1.5 2 254 63 8 -123456789 16909060 1 8 #bigEndian \
+    'grüße €😀' 8 ";
+
+/// The `printString` of what `selector` answers when sent to `receiver`
+/// with `arguments`.
+fn printed(
+    interpreter: &mut Interpreter,
+    receiver: &Root,
+    selector: &str,
+    arguments: &[Root],
+) -> String {
+    let answer = expect_ok(
+        interpreter.send(receiver, Symbol::intern(selector), arguments),
+        selector,
+    );
+    let text = expect_ok(
+        interpreter.send(&answer, Symbol::intern("printString"), &[]),
+        "printString",
+    );
+    interpreter.enter(|mutator| text_or_class_name(mutator, mutator.fetch(&text)))
+}
+
+/// What `receiver`'s unary `selector` answers, rooted.
+fn answer_of(interpreter: &mut Interpreter, receiver: &Root, selector: &str) -> Root {
+    expect_ok(
+        interpreter.send(receiver, Symbol::intern(selector), &[]),
+        selector,
+    )
+}
+
+/// The integer `integer`, rooted, as an argument of a host's send.
+fn integer_root(interpreter: &mut Interpreter, integer: i64) -> Root {
+    interpreter.enter(|mutator| mutator.stash(Value::small_integer(integer)))
+}
+
+/// A new String of `text`, rooted, as an argument of a host's send.
+fn string_root(interpreter: &mut Interpreter, text: &str) -> Root {
+    interpreter.enter(|mutator| {
+        let string = mutator.new_string(text.to_string());
+        mutator.stash(Value::object(string))
+    })
+}
+
+/// A view keeps the very `ByteArray` it was made over, and a builder its
+/// bytes and counts, as plain slots: a snapshot carries them as records of
+/// the shipped classes, and the loaded views still share their storage.
+#[test]
+fn a_view_and_a_builder_round_trip_through_a_package() {
+    let (mut interpreter, class) = load(VIEWS_AND_A_BUILDER);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let platform = interpreter.platform();
+    expect_ok(
+        interpreter.send(
+            &instance,
+            Symbol::intern("fill:"),
+            std::slice::from_ref(&platform),
+        ),
+        "fill:",
+    );
+    let before = answer_of(&mut interpreter, &instance, "report");
+    let before = interpreter.enter(|mutator| text_or_class_name(mutator, mutator.fetch(&before)));
+    assert_eq!(before, VIEWS_AND_A_BUILDER_REPORT);
+    let bytes = interpreter.enter(|mutator| {
+        let instance = mutator.fetch(&instance);
+        let class = class_reference(mutator, &class);
+        snapshot_one(
+            mutator,
+            Some(VIEWS_AND_A_BUILDER),
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
+
+    let mut loaded = image::load(&bytes).expect("load");
+    let root = loaded.roots[0].clone();
+    let interpreter = &mut loaded.interpreter;
+    let after = answer_of(interpreter, &root, "report");
+    let after = interpreter.enter(|mutator| text_or_class_name(mutator, mutator.fetch(&after)));
+    assert_eq!(after, before);
+
+    let halves = answer_of(interpreter, &root, "halves");
+    let floats = answer_of(interpreter, &root, "floats");
+    let octets = answer_of(interpreter, &root, "octets");
+    let view = answer_of(interpreter, &root, "view");
+    let builder = answer_of(interpreter, &root, "builder");
+    let one = integer_root(interpreter, 1);
+    let two = integer_root(interpreter, 2);
+    let five = integer_root(interpreter, 5);
+    assert_eq!(
+        printed(interpreter, &halves, "at:", std::slice::from_ref(&one)),
+        "-2"
+    );
+    assert_eq!(printed(interpreter, &halves, "size", &[]), "4");
+    assert_eq!(
+        printed(interpreter, &view, "int32At:", std::slice::from_ref(&one)),
+        "-123456789"
+    );
+    assert_eq!(
+        printed(interpreter, &view, "int32At:", std::slice::from_ref(&five)),
+        "16909060"
+    );
+    assert_eq!(printed(interpreter, &view, "size", &[]), "8");
+    assert_eq!(
+        printed(interpreter, &builder, "asString", &[]),
+        "'grüße €😀'"
+    );
+    assert_eq!(printed(interpreter, &builder, "size", &[]), "8");
+
+    // A write through one decoded view is a write to the one ByteArray the
+    // others read: 258 is the bytes 2 1, and 64 as the last byte makes the
+    // second float 6.0.
+    let two_hundred_fifty_eight = integer_root(interpreter, 258);
+    printed(
+        interpreter,
+        &halves,
+        "at:put:",
+        &[one.clone(), two_hundred_fifty_eight],
+    );
+    assert_eq!(
+        printed(interpreter, &octets, "at:", std::slice::from_ref(&one)),
+        "2"
+    );
+    assert_eq!(
+        printed(interpreter, &octets, "at:", std::slice::from_ref(&two)),
+        "1"
+    );
+    let eight = integer_root(interpreter, 8);
+    let sixty_four = integer_root(interpreter, 64);
+    printed(interpreter, &octets, "at:put:", &[eight, sixty_four]);
+    assert_eq!(
+        printed(interpreter, &floats, "at:", std::slice::from_ref(&two)),
+        "6.0"
+    );
+    let under_halves = answer_of(interpreter, &halves, "bytes");
+    let under_octets = answer_of(interpreter, &octets, "bytes");
+    let under_floats = answer_of(interpreter, &floats, "bytes");
+    let shared = interpreter.enter(|mutator| {
+        let under_halves = object(mutator.fetch(&under_halves));
+        object(mutator.fetch(&under_octets)).same(under_halves)
+            && object(mutator.fetch(&under_floats)).same(under_halves)
+    });
+    assert!(shared, "the three views share one decoded ByteArray");
+
+    // The decoded builder carries on where it stopped.
+    let more = string_root(interpreter, "ö");
+    printed(interpreter, &builder, "add:", std::slice::from_ref(&more));
+    assert_eq!(
+        printed(interpreter, &builder, "asString", &[]),
+        "'grüße €😀ö'"
+    );
+    assert_eq!(printed(interpreter, &builder, "size", &[]), "9");
+}
+
 #[test]
 fn identity_hashes_are_preserved_and_the_maximum_is_reported() {
     // Two objects, the higher hash first: the object table is walked in
@@ -3148,6 +3364,9 @@ const FIXTURE_NAMES: &[(&str, &str, u8)] = &[
     ("Kernel", "FutureImplementation", 2), // FUTURE_IMPLEMENTATION_CLASS_NAME = 19
     ("Kernel", "NonBooleanReceiver", 1),   // NON_BOOLEAN_RECEIVER_NAME = 20
     ("Kernel", "ByteArray", 1),            // BYTE_ARRAY_NAME = 21
+    ("Kernel", "Int16Array", 1),           // INT16_ARRAY_NAME = 22
+    ("Kernel", "BigEndianDataView", 1),    // BIG_ENDIAN_DATA_VIEW_NAME = 23
+    ("Kernel", "StringBuilder", 1),        // STRING_BUILDER_NAME = 24
 ];
 const OBJECT_NAME: u32 = 0;
 const ARRAY_NAME: u32 = 1;
@@ -3171,6 +3390,9 @@ const ACTIVATION_CLASS_NAME: u32 = 18;
 const FUTURE_IMPLEMENTATION_CLASS_NAME: u32 = 19;
 const NON_BOOLEAN_RECEIVER_NAME: u32 = 20;
 const BYTE_ARRAY_NAME: u32 = 21;
+const INT16_ARRAY_NAME: u32 = 22;
+const BIG_ENDIAN_DATA_VIEW_NAME: u32 = 23;
+const STRING_BUILDER_NAME: u32 = 24;
 
 /// A section entry's kind byte as the shipped name it stands for.
 fn fixture_kind(kind: u8) -> ShippedKind {
@@ -3609,6 +3831,199 @@ fn a_byte_array_record_and_the_byte_array_class_go_together() {
             "nothing was allocated"
         );
     }
+}
+
+/// The root class of the images below: each probe sends a view or a
+/// builder the messages a program would and answers, for each, the
+/// `description` of the `ArgumentError` it signalled -- of any other
+/// Error, after 'not an ArgumentError: ', and what it answered, after
+/// 'answered ', so that a refusal of the wrong class shows as one.
+const REFUSALS_PROBE: &str = indoc! {"
+    class X usingPlatform: platform = Object new (
+      |
+        ArgumentError = platform kernel ArgumentError.
+      |
+    ) (
+      refused: action = (
+        ^[
+          [
+            'answered ' , action value printString.
+          ] on: ArgumentError do: [:error | error description].
+        ] on: Error do: [:error | 'not an ArgumentError: ' , error description].
+      )
+
+      public typedArray: view = (
+        ^{refused: [view at: 1]. refused: [view at: 1 put: 2]. refused: [view size]}
+      )
+
+      public dataView: view = (
+        ^{refused: [view int32At: 1]. refused: [view int32At: 1 put: 2]. refused: [view size]}
+      )
+
+      public builder: builder = (
+        ^{refused: [builder asString]. refused: [builder add: 'x']}
+      )
+    ) : ()
+"};
+
+/// A complete image of `REFUSALS_PROBE` whose graph is the `records` that
+/// `write` writes, then the probe's class: its roots are record 0 and the
+/// class.
+fn probe_image(records: u32, write: impl FnOnce(&mut encode::Writer)) -> Vec<u8> {
+    let mut writer = encode::Writer::new();
+    graph_counts(&mut writer, records + 2);
+    write(&mut writer);
+    root_class_records(&mut writer, records);
+    writer.write_u32(2); // two roots
+    writer.write_u8(VALUE_OBJECT_ID);
+    writer.write_u32(0);
+    writer.write_u8(VALUE_OBJECT_ID);
+    writer.write_u32(records);
+    writer.write_u32(0); // no tag-named hashes
+    image_with_graph_section_of(REFUSALS_PROBE, &writer.into_bytes(), records)
+}
+
+/// Loads `image`, a `probe_image`, and answers what its probe `selector`
+/// answers for the image's first root, each element as text.
+fn refusals(image: &[u8], selector: &str) -> Vec<String> {
+    let mut loaded = image::load(image).expect("load");
+    let subject = loaded.roots[0].clone();
+    let class = loaded.roots[1].clone();
+    let interpreter = &mut loaded.interpreter;
+    let platform = interpreter.platform();
+    let probe = expect_ok(
+        interpreter.instantiate(&class, std::slice::from_ref(&platform)),
+        "instantiate",
+    );
+    let answer = expect_ok(
+        interpreter.send(&probe, Symbol::intern(selector), &[subject]),
+        selector,
+    );
+    interpreter.enter(|mutator| {
+        let answer = object(mutator.fetch(&answer));
+        mutator
+            .heap()
+            .array_elements(answer)
+            .expect("a probe answers an Array")
+            .into_iter()
+            .map(|element| text_or_class_name(mutator, element))
+            .collect()
+    })
+}
+
+/// An instance record of a shipped class, its identity hash `hash` and its
+/// fields written by `fields`, which writes `count` of them.
+fn shipped_instance(
+    writer: &mut encode::Writer,
+    header: u32,
+    hash: u32,
+    count: u32,
+    fields: impl FnOnce(&mut encode::Writer),
+) {
+    writer.write_shipped(header);
+    writer.write_u32(hash);
+    writer.write_u8(OBJECT_INSTANCE);
+    writer.write_u32(count);
+    fields(writer);
+}
+
+/// A String record of `text`.
+fn string_record(writer: &mut encode::Writer, hash: u32, text: &str) {
+    writer.write_shipped(STRING_NAME);
+    writer.write_u32(hash);
+    writer.write_u8(OBJECT_STRING);
+    writer.write_str(text);
+}
+
+/// A ByteArray record of `bytes`.
+fn byte_array_record(writer: &mut encode::Writer, hash: u32, bytes: &[u8]) {
+    writer.write_shipped(BYTE_ARRAY_NAME);
+    writer.write_u32(hash);
+    writer.write_u8(OBJECT_BYTE_ARRAY);
+    writer.write_u32(u32::try_from(bytes.len()).expect("a length fits a u32"));
+    for byte in bytes {
+        writer.write_u8(*byte);
+    }
+}
+
+/// A view's `bytes` is an ordinary slot, so an image can put anything in
+/// it, and nothing about the record's structure is wrong: the image loads,
+/// and every access of the view refuses with an `ArgumentError` that names
+/// the selector sent, never reading through what is no ByteArray.
+#[test]
+fn a_view_over_what_is_no_byte_array_loads_and_refuses_every_access() {
+    let typed_array = probe_image(1, |writer| {
+        shipped_instance(writer, INT16_ARRAY_NAME, 3, 1, |writer| {
+            writer.write_u8(VALUE_SMALL_INTEGER); // bytes
+            writer.write_i64(7);
+        });
+    });
+    assert_eq!(
+        refusals(&typed_array, "typedArray:"),
+        ["at:", "at:put:", "size"]
+            .map(|selector| format!("{selector} found no ByteArray under the view, got 7"))
+    );
+    let data_view = probe_image(2, |writer| {
+        shipped_instance(writer, BIG_ENDIAN_DATA_VIEW_NAME, 3, 1, |writer| {
+            writer.write_u8(VALUE_OBJECT_ID); // bytes
+            writer.write_u32(1);
+        });
+        string_record(writer, 4, "not bytes");
+    });
+    assert_eq!(
+        refusals(&data_view, "dataView:"),
+        ["int32At:", "int32At:put:", "size"].map(|selector| format!(
+            "{selector} found no ByteArray under the view, got 'not bytes'"
+        ))
+    );
+}
+
+/// A builder's count is an ordinary slot too: one past its data, or no
+/// Integer at all, loads, and reading or appending refuses rather than
+/// reading past the bytes the builder has.
+#[test]
+fn a_builder_whose_count_its_data_does_not_hold_loads_and_refuses() {
+    let past_its_data = probe_image(2, |writer| {
+        shipped_instance(writer, STRING_BUILDER_NAME, 3, 3, |writer| {
+            writer.write_u8(VALUE_OBJECT_ID); // data
+            writer.write_u32(1);
+            writer.write_u8(VALUE_SMALL_INTEGER); // byteCount
+            writer.write_i64(5);
+            writer.write_u8(VALUE_SMALL_INTEGER); // codePointCount
+            writer.write_i64(5);
+        });
+        byte_array_record(writer, 4, b"ab");
+    });
+    assert_eq!(
+        refusals(&past_its_data, "builder:"),
+        [
+            "from: 1 to: 5 out of range: valid ranges lie within 1..2, an empty range ends just \
+             before it starts (size 2)",
+            "startingAt: 1 out of range: the source holds 2 elements, the range needs 5 from 1",
+        ]
+    );
+    let a_string = probe_image(3, |writer| {
+        shipped_instance(writer, STRING_BUILDER_NAME, 3, 3, |writer| {
+            writer.write_u8(VALUE_OBJECT_ID); // data
+            writer.write_u32(1);
+            writer.write_u8(VALUE_OBJECT_ID); // byteCount
+            writer.write_u32(2);
+            writer.write_u8(VALUE_SMALL_INTEGER); // codePointCount
+            writer.write_i64(0);
+        });
+        byte_array_record(writer, 4, b"abcd");
+        string_record(writer, 5, "two");
+    });
+    // `add:` adds to the count before it touches the data, and a String
+    // understands no `+`: the builder checks none of its private slots, so
+    // what refuses is the first send the wrong object cannot answer.
+    assert_eq!(
+        refusals(&a_string, "builder:"),
+        [
+            "fromUtf8:from:to: requires an Integer index, got the String \"two\"",
+            "not an ArgumentError: an object does not understand #+",
+        ]
+    );
 }
 
 #[test]
@@ -8943,7 +9358,13 @@ fn instance_chain_depth<'gc>(heap: &Heap<'gc>, head: Value<'gc>) -> u32 {
 /// the fixture's indices. The splice point is found by structure, where
 /// `inspect` says the graph section starts, not by a hardcoded offset.
 fn image_with_graph_section(graph: &[u8], root: u32) -> Vec<u8> {
-    let mut bytes = with_fixture_names(&snapshot_of(EMPTY));
+    image_with_graph_section_of(EMPTY, graph, root)
+}
+
+/// `image_with_graph_section` for a module of `source`'s one declaration,
+/// so that the graph's root class has its methods.
+fn image_with_graph_section_of(source: &str, graph: &[u8], root: u32) -> Vec<u8> {
+    let mut bytes = with_fixture_names(&snapshot_of(source));
     let root_id_at = module_root_id_at(&bytes, 0);
     bytes[root_id_at..root_id_at + 4].copy_from_slice(&root.to_le_bytes());
     bytes.truncate(graph_section_start(&bytes));
