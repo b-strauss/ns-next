@@ -34,6 +34,7 @@ pub(crate) fn execute<'gc>(
         BytePrimitive::LastIndexOf => search(mutator, receiver, selector, arguments, true),
         BytePrimitive::StartsWith => affix(mutator, receiver, selector, arguments, false),
         BytePrimitive::EndsWith => affix(mutator, receiver, selector, arguments, true),
+        BytePrimitive::WriteCodePoint => write_code_point(mutator, receiver, arguments),
     }
 }
 
@@ -476,6 +477,65 @@ fn element_at_put<'gc>(
     };
     mutator.heap.byte_array_set(object, position, byte);
     Some(Ok(value))
+}
+
+/// `at:putCodePoint:`: stores the UTF-8 bytes of one code point from the
+/// index on and answers how many it stored, 1 to 4. The index is checked
+/// first, then the code point, then that its last byte lies inside the
+/// ByteArray -- refused with the index of that byte, the first the
+/// ByteArray lacks -- and nothing is written until all three pass, so a
+/// refused store leaves the bytes as they were.
+///
+/// Its errors name `addCodePoint:`, the message of `StringBuilder`, for
+/// which the leaf is made, however it is reached: run as the primitive
+/// method `ByteArray>>at:putCodePoint:` a leaf is handed the send's own
+/// selector, and through the mirror send the row's reported one, and a
+/// text that depended on which would change with the lowering.
+fn write_code_point<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
+    arguments: &[Value<'gc>],
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
+    let (object, size) = byte_array(mutator, receiver)?;
+    let selector = Symbol::intern("addCodePoint:");
+    let position = match position(mutator, receiver, selector, arguments, size) {
+        Ok(position) => position,
+        Err(error) => return Some(Err(error)),
+    };
+    let value = arguments.get(1).copied().unwrap_or(Value::nil());
+    let Some(character) = value
+        .as_small_integer()
+        .and_then(|number| u32::try_from(number).ok())
+        .and_then(char::from_u32)
+    else {
+        return Some(Err(NewspeakError::argument_error(
+            selector,
+            receiver,
+            value,
+            format!(
+                "{selector} requires a Unicode scalar value, got {}",
+                mutator.heap.describe(value)
+            ),
+        )));
+    };
+    let mut buffer = [0u8; 4];
+    let encoded = character.encode_utf8(&mut buffer).as_bytes();
+    // `position` is below `size`, so the sum cannot overflow.
+    let end = position + encoded.len();
+    if end > size {
+        return Some(Err(out_of_range(
+            receiver,
+            selector,
+            end,
+            first_argument(arguments),
+            size,
+        )));
+    }
+    let written = mutator
+        .heap
+        .with_byte_array_mut(object, |mut data| data.write(position, encoded));
+    debug_assert_eq!(written, Some(true), "the range was checked");
+    Some(Ok(Value::small_integer(encoded.len() as i64)))
 }
 
 /// `ByteArray new: size`: a `ByteArray` of `size` zero bytes. Its subject

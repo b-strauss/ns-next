@@ -307,6 +307,96 @@ fn copy_range<'gc>(
     )))
 }
 
+/// `String fromUtf8: bytes from: start to: stop`: a new String of the
+/// code points the bytes in the range encode, decoded strictly
+/// (`CodePoints::from_utf8_strict`). A `bytes` that is no ByteArray is
+/// refused before the range, which `copyFrom:to:`'s texts check, its
+/// keyword `from:`; invalid UTF-8 is refused naming the first byte of the
+/// bad sequence by its 1-based index in the ByteArray, not in the range,
+/// so that `bytes at: position` is the bad byte. Declines for a subject
+/// other than `String` itself, as `String with:` does.
+fn from_utf8<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
+    selector: Symbol,
+    arguments: &[Value<'gc>],
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
+    let class = receiver.as_object()?;
+    if mutator.heap.class_builtin(class) != Some(BuiltinClass::String) {
+        return None;
+    }
+    let heap = &mutator.heap;
+    let source = arguments.first().copied();
+    let Some((bytes, size)) = source
+        .and_then(|value| value.as_object())
+        .and_then(|object| Some((object, heap.byte_array_size(object)?)))
+    else {
+        return Some(Err(NewspeakError::argument_error(
+            selector,
+            receiver,
+            first_argument(arguments),
+            format!(
+                "{selector} requires a ByteArray, got {}",
+                heap.describe_argument(source)
+            ),
+        )));
+    };
+    let range = match collections::checked_range(
+        heap,
+        receiver,
+        selector,
+        "from:",
+        arguments.get(1).copied(),
+        arguments.get(2).copied(),
+        size,
+    ) {
+        Ok(range) => range,
+        Err(error) => return Some(Err(error)),
+    };
+    let start = range.start;
+    let decoded = heap
+        .with_byte_array(bytes, |data| {
+            data.bytes(range)
+                .map(|slice| crate::CodePoints::from_utf8_strict(&slice))
+        })
+        .flatten()?;
+    Some(match decoded {
+        Ok(code_points) => Ok(Value::object(
+            mutator.new_string_from_code_points(code_points),
+        )),
+        Err(offset) => Err(NewspeakError::argument_error(
+            selector,
+            receiver,
+            first_argument(arguments),
+            format!("fromUtf8: invalid UTF-8 at byte {}", start + offset + 1),
+        )),
+    })
+}
+
+/// `asUtf8`: a new ByteArray of the receiver's UTF-8 bytes. Encoding a
+/// String never fails; only a ByteArray the heap cannot commit is refused,
+/// before anything is allocated, as `,` refuses one, since a failed
+/// allocation would abort the process.
+fn as_utf8<'gc>(
+    mutator: &mut Mutator<'gc>,
+    object: ObjectReference<'gc>,
+    receiver: Value<'gc>,
+    selector: Symbol,
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
+    let code_points = mutator.heap.string_code_points(object)?;
+    let size = code_points.utf8_size();
+    if !mutator.heap.byte_array_fits(size) {
+        return Some(Err(NewspeakError::argument_error(
+            selector,
+            receiver,
+            receiver,
+            format!("{selector} cannot allocate a ByteArray of {size} bytes"),
+        )));
+    }
+    let bytes = code_points.to_utf8().into_bytes();
+    Some(Ok(Value::object(mutator.new_byte_array(&bytes))))
+}
+
 pub(crate) fn execute_string<'gc>(
     mutator: &mut Mutator<'gc>,
     primitive: StringPrimitive,
@@ -322,6 +412,7 @@ pub(crate) fn execute_string<'gc>(
         StringPrimitive::FromCodePoints => {
             return from_code_points(mutator, receiver, selector, arguments)
         }
+        StringPrimitive::FromUtf8 => return from_utf8(mutator, receiver, selector, arguments),
         _ => {}
     }
     let object = receiver.as_object()?;
@@ -330,7 +421,16 @@ pub(crate) fn execute_string<'gc>(
     match primitive {
         // Unreachable: the early return above handles them; the arm keeps
         // the match exhaustive.
-        StringPrimitive::FromCodePoint | StringPrimitive::FromCodePoints => None,
+        StringPrimitive::FromCodePoint
+        | StringPrimitive::FromCodePoints
+        | StringPrimitive::FromUtf8 => None,
+        StringPrimitive::AsUtf8 => as_utf8(mutator, object, receiver, selector),
+        // Counted in place, as a String argument's bytes are, so that a
+        // `StringBuilder`'s append copies nothing out to measure it.
+        StringPrimitive::Utf8Size => {
+            crate::builtins::bytes::argument_bytes(&mutator.heap, receiver)
+                .map(|bytes| Ok(Value::small_integer(bytes.size() as i64)))
+        }
         StringPrimitive::IndexOf | StringPrimitive::LastIndexOf => Some(search(
             mutator,
             object,

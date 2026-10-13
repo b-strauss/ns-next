@@ -3059,6 +3059,27 @@ class Kernel vmMirror: mirror = Value (
       ^self.
     )
 
+    /// Answers a new ByteArray of the receiver's code points encoded as
+    /// UTF-8, in order: one byte for a code point below 128, up to four
+    /// for one past 65535. `String fromUtf8:` decodes it back to an equal
+    /// String. The receiver is unchanged, and each send answers a new
+    /// ByteArray.
+    ///
+    /// Signals an ArgumentError carrying the receiver, 'asUtf8 cannot
+    /// allocate a ByteArray of … bytes', only for a String whose bytes
+    /// the heap cannot hold.
+    public asUtf8 = (
+      ^vmMirror stringAsUtf8: self ifFail: [^super asUtf8].
+    )
+
+    /// Answers the number of bytes the receiver takes as UTF-8, the size
+    /// of `asUtf8`'s answer, counted without making it; never signals.
+    ///
+    /// `StringBuilder` asks it before it appends a String.
+    public utf8Size = (
+      ^vmMirror stringUtf8Size: self ifFail: [^super utf8Size].
+    )
+
     /// Evaluates `action` with each code point, an Integer, from the
     /// first. Answers the receiver.
     ///
@@ -3240,6 +3261,57 @@ class Kernel vmMirror: mirror = Value (
           self withAll: (outer Kernel Array withAll: codePoints).
         ].
       ].
+    )
+
+    /// Answers a new String of the code points the UTF-8 bytes of `bytes`
+    /// encode: `fromUtf8: bytes from: 1 to: bytes size`.
+    ///
+    /// bytes: a ByteArray.
+    ///
+    /// Signals an ArgumentError carrying `bytes`, 'fromUtf8: requires a
+    /// ByteArray, got …' and its `printString`, for any other argument,
+    /// and the one `fromUtf8:from:to:` signals for bytes that are no
+    /// UTF-8.
+    ///
+    /// The argument is checked first, since `bytes size` of anything else
+    /// could answer anything, or nothing.
+    public fromUtf8: bytes = (
+      bytes isKindOfByteArray ifFalse: [
+        ^(outer Kernel ArgumentError value: bytes) signal: 'fromUtf8: requires a ByteArray, got '
+            , bytes printString.
+      ].
+      ^self fromUtf8: bytes from: 1 to: bytes size.
+    )
+
+    /// Answers a new String of the code points the UTF-8 bytes of `bytes`
+    /// from `start` to `stop`, both included, encode; `bytes` is
+    /// unchanged. A `stop` of `start - 1` answers an empty String.
+    ///
+    /// bytes: a ByteArray.
+    /// start: an Integer from 1 to `bytes size + 1`.
+    /// stop: an Integer from `start - 1` to `bytes size`.
+    ///
+    /// Decodes strictly: a truncated sequence, a range that ends inside a
+    /// character among them, a stray continuation byte, an overlong
+    /// encoding, a surrogate and a code point past 1114111 are an
+    /// ArgumentError carrying `bytes`, 'fromUtf8: invalid UTF-8 at byte
+    /// …', which names the first byte of the bad sequence by its index in
+    /// `bytes`, not in the range. A byte-order mark is kept, as the code
+    /// point 65279.
+    ///
+    /// Signals, besides, an ArgumentError carrying `bytes`,
+    /// 'fromUtf8:from:to: requires a ByteArray, got …', for a `bytes`
+    /// that is no ByteArray; and for a range `bytes` does not hold the
+    /// ArgumentError `copyFrom:to:` signals, its text beginning 'from: …
+    /// to: …' and the bound that is no Integer named by
+    /// 'fromUtf8:from:to:'.
+    ///
+    /// Strict rather than a replacement character for each bad sequence,
+    /// so that nothing is lost silently. The leaf declines only a subject
+    /// that is not `String` itself, which a flat class side cannot be sent
+    /// from.
+    public fromUtf8: bytes from: start to: stop = (
+      ^vmMirror stringClass: self fromUtf8: bytes from: start to: stop ifFail: [nil].
     )
   )
 
@@ -4128,6 +4200,30 @@ class Kernel vmMirror: mirror = Value (
       ^vmMirror byteArray: self at: index ifFail: [^super at: index].
     )
 
+    /// Stores the UTF-8 bytes of the code point `codePoint` from `index`
+    /// on, and answers how many it stored, an Integer from 1 to 4.
+    ///
+    /// index: an Integer from 1 to `size`, with room from it to the end
+    ///     for every byte of `codePoint`.
+    /// codePoint: an Integer from 0 to 1114111 outside 55296 to 57343.
+    ///
+    /// Signals an ArgumentError carrying `index`: 'index … out of
+    /// range: valid indices are 1..size (size …)' for an index outside 1
+    /// to `size`, a LargeInteger included, or one whose last byte would
+    /// pass the end, naming that byte's index; and 'addCodePoint:
+    /// requires an Integer index, got …' for an index that is no
+    /// Integer. Signals an ArgumentError carrying `codePoint`,
+    /// 'addCodePoint: requires a Unicode scalar value, got …', for any
+    /// other code point. A refused store leaves every byte as it was.
+    ///
+    /// `StringBuilder>>addCodePoint:` writes through it, and its errors
+    /// name that message.
+    public at: index putCodePoint: codePoint = (
+      ^vmMirror byteArray: self at: index putCodePoint: codePoint ifFail: [
+        ^super at: index putCodePoint: codePoint.
+      ].
+    )
+
     /// Answers the receiver itself: a ByteArray is its own ByteArray.
     public asByteArray = (
       ^self.
@@ -4306,12 +4402,12 @@ class Kernel vmMirror: mirror = Value (
     )
 
     /// Answers a new ByteArray of `collection`'s elements: a copy of a
-    /// ByteArray, and otherwise the elements in `collection`'s `do:`
-    /// order.
+    /// ByteArray, a String's UTF-8 bytes (`asUtf8`), and otherwise the
+    /// elements in `collection`'s `do:` order.
     ///
-    /// collection: a ByteArray, or anything answering `size` and `do:`
-    ///     whose elements are Integers from 0 to 255 -- an Array, a List,
-    ///     a String whose code points are all below 256.
+    /// collection: a ByteArray, a String, or anything answering `size`
+    ///     and `do:` whose elements are Integers from 0 to 255 -- an
+    ///     Array, a List.
     ///
     /// Signals an ArgumentError carrying the first element that is no
     /// byte, 'withAll: requires an Integer from 0 to 255, got …' and its
@@ -4325,6 +4421,7 @@ class Kernel vmMirror: mirror = Value (
         index
       |
       collection isKindOfByteArray ifTrue: [^collection copyFrom: 1 to: collection size].
+      collection isKindOfString ifTrue: [^collection asUtf8].
       result:: self new: collection size.
       index:: 0.
       collection do: [:element |

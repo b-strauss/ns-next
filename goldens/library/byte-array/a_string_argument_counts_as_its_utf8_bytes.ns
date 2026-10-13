@@ -1,7 +1,8 @@
 /// A String given to a ByteArray counts as its UTF-8 bytes -- a code point
 /// below 128 is one byte, `é` the two bytes 195 169 -- wherever it stands
-/// for bytes: in a search, `startsWith:` and `endsWith:`, `,` and as the
-/// source of `replaceFrom:to:with:startingAt:`, whose start counts bytes.
+/// for bytes: in a search, `startsWith:` and `endsWith:`, `,`, as the
+/// source of `replaceFrom:to:with:startingAt:`, whose start counts bytes,
+/// and in `ByteArray withAll:`.
 /// A Symbol is a String. A String's own methods still take only Strings:
 /// a ByteArray given to one is refused, since its bytes need not decode.
 class AStringArgumentCountsAsItsUtf8Bytes = Object new () (
@@ -48,6 +49,8 @@ class AStringArgumentCountsAsItsUtf8Bytes = Object new () (
     }.
     show value: gif , 'é'.
     show value: {(gif , 'é') isKindOfByteArray}.
+    show value: (ByteArray withAll: 'é').
+    show value: {(ByteArray withAll: 'GIF89a') startsWith: 'GIF'}.
     show value: ((ByteArray new: 4) replaceFrom: 1 to: 3 with: 'aéb' startingAt: 2).
     refusal value: [(ByteArray new: 3) replaceFrom: 1 to: 3 with: 'é' startingAt: 1].
     refusal value: ['abc' indexOf: (ByteArray withAll: 'b')].

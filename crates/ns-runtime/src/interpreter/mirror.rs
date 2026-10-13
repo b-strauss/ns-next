@@ -316,6 +316,13 @@ mod tests {
         }
     }
 
+    /// The rows whose reported selector names the message of the one
+    /// sender the leaf is made for, which takes other arguments than the
+    /// leaf: `StringBuilder>>addCodePoint:` writes through
+    /// `ByteArray>>at:putCodePoint:`, and its refusals name what the
+    /// program sent.
+    const REPORTED_FOR_A_SENDER_OF_ANOTHER_SHAPE: &[&str] = &["byteArray:at:putCodePoint:ifFail:"];
+
     #[test]
     fn every_mirror_selector_is_unique_ends_in_if_fail_and_takes_two_more_arguments() {
         let mut seen = std::collections::HashSet::new();
@@ -333,6 +340,18 @@ mod tests {
                 "{} must take the subject, the leaf's arguments and the failure block",
                 entry.selector
             );
+            // A reported selector of another arity is one only a row made
+            // for a sender of another shape may have; any other is a typo
+            // that would name the wrong message in every error.
+            if !REPORTED_FOR_A_SENDER_OF_ANOTHER_SHAPE.contains(&entry.selector) {
+                assert_eq!(
+                    crate::builtins::primitive::selector_arity(entry.reported),
+                    entry.leaf_arity(),
+                    "{} reports {}, which takes another number of arguments",
+                    entry.selector,
+                    entry.reported
+                );
+            }
             assert!(
                 !matches!(
                     entry.primitive,
