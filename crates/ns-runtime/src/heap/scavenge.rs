@@ -16,7 +16,7 @@
 use std::num::NonZeroU64;
 
 use crate::heap::header::{Format, Header, MAX_AGE};
-use crate::heap::object::{pointer_ranges, CLASS};
+use crate::heap::object::{self, pointer_ranges, CLASS};
 use crate::heap::space::{allocation_range, block_range, is_young, object_at, RegionName, Space};
 use crate::heap::{header_index, FrameReference, ObjectReference, Word};
 use crate::trace::Tracer;
@@ -132,6 +132,11 @@ impl<'space> Scavenger<'space> {
         words.copy_within(source, destination);
         let moved = destination + header_within;
         let copied = Header(words[moved]);
+        // A ByteArray's data sit at its own address's alignment; left at the
+        // old block's offset, every read would answer wrong bytes.
+        if copied.format() == Format::AlignedBytes {
+            object::realign(words, header, moved);
+        }
         words[moved] = if promoted {
             copied.with_age(0)
         } else {

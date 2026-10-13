@@ -42,8 +42,9 @@ pub(super) const POISON: u64 = ((Format::Free as u64) << FORMAT_SHIFT) | 0xBAD;
 
 /// What an object's words after the header hold, and so how the collector
 /// walks them and how many units the last word leaves unused.
-/// `ThirtyTwoBit` and `Bytes` take a range of codes: the low bits of the
-/// code are the unused units of the last word (`Header::unused`).
+/// `ThirtyTwoBit`, `Bytes` and `AlignedBytes` take a range of codes: the
+/// low bits of the code are the unused units of the last word
+/// (`Header::unused`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Format {
     FixedPointers = 0,
@@ -61,6 +62,10 @@ pub(super) enum Format {
     ThirtyTwoBit = 8,
     /// 16..=23: the low three bits are the number of unused units.
     Bytes = 16,
+    /// 24..=31: a `ByteArray`'s bytes, its data at a 32-byte address; the
+    /// low three bits are the unused bytes of the last word. Its own
+    /// format rather than `Bytes`, which every reader takes for a string.
+    AlignedBytes = 24,
 }
 
 impl Format {
@@ -78,6 +83,7 @@ impl Format {
             7 => Format::Class,
             8..=9 => Format::ThirtyTwoBit,
             16..=23 => Format::Bytes,
+            24..=31 => Format::AlignedBytes,
             _ => Format::Free,
         }
     }
@@ -86,7 +92,7 @@ impl Format {
     fn unused_limit(self) -> u8 {
         match self {
             Format::ThirtyTwoBit => 1,
-            Format::Bytes => 7,
+            Format::Bytes | Format::AlignedBytes => 7,
             _ => 0,
         }
     }
@@ -129,7 +135,7 @@ impl Header {
     }
 
     /// The units the last word leaves unused: 0 unless the format is
-    /// `ThirtyTwoBit` or `Bytes`.
+    /// `ThirtyTwoBit`, `Bytes` or `AlignedBytes`.
     pub(super) fn unused(self) -> u8 {
         let format = self.format();
         (self.format_code() - format as u64) as u8 & format.unused_limit()
@@ -247,6 +253,10 @@ mod tests {
         assert_eq!(header.word_count(), 254);
         assert_eq!(header.identity_hash(), IDENTITY_HASH_LIMIT - 1);
         assert!(header.negative());
+        let aligned = Header::new(guard, Format::AlignedBytes, 7, 12);
+        assert_eq!(aligned.format(), Format::AlignedBytes);
+        assert_eq!(aligned.unused(), 7);
+        assert_eq!(aligned.word_count(), 12);
     }
 
     #[test]

@@ -18,6 +18,11 @@
 //! `ThirtyTwoBit`, a String's or a Symbol's code points packed
 //! little-endian, eight or two to a word (`pack_code_points`,
 //! `PackedString`), the class's builtin again telling the two apart;
+//! `AlignedBytes`, a `ByteArray`'s bytes, little-endian within each word,
+//! after `ALIGNMENT_RESERVE` words that let the data begin at a 32-byte
+//! address wherever the block lies -- an offset computed from the header's
+//! index, never stored, so that every mover moves the data within the new
+//! block to its alignment (`realign`);
 //! `Frame`, a reified activation (`frame_field`); `Closure`, a block closure
 //! (`closure_field`); `Class`, a class object (`class_field`). Each
 //! allocation in `Heap` writes its object's header, class word and fields
@@ -62,8 +67,9 @@ pub(in crate::heap) const POINTER_RANGES: usize = 1 + class_field::POINTERS.len(
 /// alone: the class word always; every field of `FixedPointers` and
 /// `IndexablePointers`; a class object's object fields; a closure's captured
 /// frame and copied values; a frame's fixed fields, and its registers once
-/// it is no longer married; nothing of `SixtyFourBit`, `Bytes` and
-/// `ThirtyTwoBit`, whose digits and code points would read as handles.
+/// it is no longer married; nothing of `SixtyFourBit`, `Bytes`,
+/// `ThirtyTwoBit` and `AlignedBytes`, whose digits, code points and bytes
+/// would read as handles.
 ///
 /// The one enumeration of an object's pointer words: marking reads the
 /// words through it and forwarding rewrites them through `trace_block`, so
@@ -109,11 +115,12 @@ pub(in crate::heap) fn pointer_ranges(block: &[u64]) -> [std::ops::Range<usize>;
                 *range = clamped(FIELDS + field, FIELDS + field + 1);
             }
         }
-        // Digits and code points, no stored words; and no object in the
-        // space is forwarded or free.
+        // Digits, code points and bytes, no stored words; and no object in
+        // the space is forwarded or free.
         Format::SixtyFourBit
         | Format::Bytes
         | Format::ThirtyTwoBit
+        | Format::AlignedBytes
         | Format::Forwarded
         | Format::Free => {}
     }
@@ -302,6 +309,176 @@ impl<'a> PackedString<'a> {
     }
 }
 
+/// The words an `AlignedBytes` object holds ahead of its data, so that the
+/// data can begin at any of the four word positions of a 32-byte line.
+pub(in crate::heap) const ALIGNMENT_RESERVE: usize = 3;
+/// The data's alignment in words: 32 bytes, AVX2's width.
+pub(in crate::heap) const ALIGNMENT_WORDS: usize = 4;
+
+/// The field count of a `ByteArray` of `size` bytes: the reserve and the
+/// data words.
+pub(in crate::heap) fn byte_array_field_count(size: usize) -> usize {
+    ALIGNMENT_RESERVE + size.div_ceil(BYTES_PER_WORD)
+}
+
+/// The absolute index of the first data word of the `AlignedBytes` object
+/// whose header is at `header`: the first multiple of four at or after its
+/// first field word. Computed, never stored: the space's base is
+/// page-aligned, so a word index that is a multiple of four is a 32-byte
+/// address, and the object's size stays the same wherever it moves.
+pub(in crate::heap) fn aligned_data_start(header: usize) -> usize {
+    (header + FIELDS).next_multiple_of(ALIGNMENT_WORDS)
+}
+
+/// Moves the data of the `AlignedBytes` object just copied, header and all,
+/// from header index `old_header` to `new_header`, from the old block's
+/// alignment to the new block's, within the new block. Without it the data
+/// stay at the old block's offset and every read answers wrong bytes. The
+/// reserve words are never read, so they are left as they are.
+pub(in crate::heap) fn realign(words: &mut [u64], old_header: usize, new_header: usize) {
+    // The header and every word after it: its length is the header, the
+    // class word and the fields.
+    let block = super::space::block_range(words, new_header);
+    let data_words = block.len().saturating_sub(FIELDS + ALIGNMENT_RESERVE);
+    let old_offset = aligned_data_start(old_header) - (old_header + FIELDS);
+    let new_offset = aligned_data_start(new_header) - (new_header + FIELDS);
+    if old_offset != new_offset {
+        let source = new_header + FIELDS + old_offset;
+        words.copy_within(
+            source..source + data_words,
+            new_header + FIELDS + new_offset,
+        );
+    }
+}
+
+/// Byte `index` of a run of data words, little-endian within each word.
+pub(in crate::heap) fn data_byte(data: &[u64], index: usize) -> u8 {
+    data[index / BYTES_PER_WORD].to_le_bytes()[index % BYTES_PER_WORD]
+}
+
+/// Writes byte `index` of a run of data words, as `data_byte` reads it.
+pub(in crate::heap) fn set_data_byte(data: &mut [u64], index: usize, byte: u8) {
+    let word = &mut data[index / BYTES_PER_WORD];
+    let mut bytes = word.to_le_bytes();
+    bytes[index % BYTES_PER_WORD] = byte;
+    *word = u64::from_le_bytes(bytes);
+}
+
+/// Whether `range` lies inside a run of `size` bytes.
+fn is_within(range: &std::ops::Range<usize>, size: usize) -> bool {
+    range.start <= range.end && range.end <= size
+}
+
+/// A `ByteArray`'s data words and size, lent to a leaf that reads in place.
+/// Every access is checked against the size, so that no index reaches the
+/// unused bytes of the last word or past it.
+#[derive(Clone, Copy)]
+pub(crate) struct ByteArrayData<'a> {
+    words: &'a [u64],
+    size: usize,
+}
+
+impl<'a> ByteArrayData<'a> {
+    pub(in crate::heap) fn new(words: &'a [u64], size: usize) -> ByteArrayData<'a> {
+        debug_assert!(size <= words.len() * BYTES_PER_WORD);
+        ByteArrayData { words, size }
+    }
+
+    /// The number of bytes.
+    pub(crate) fn size(self) -> usize {
+        self.size
+    }
+
+    /// The byte at the 0-based `index`; `None` past the end.
+    pub(crate) fn byte(self, index: usize) -> Option<u8> {
+        (index < self.size).then(|| data_byte(self.words, index))
+    }
+
+    /// The bytes in the 0-based, half-open `range`, copied out; `None` when
+    /// the range is not inside the data.
+    pub(crate) fn bytes(self, range: std::ops::Range<usize>) -> Option<Vec<u8>> {
+        is_within(&range, self.size)
+            .then(|| range.map(|index| data_byte(self.words, index)).collect())
+    }
+}
+
+/// A `ByteArray`'s data words and size, lent to a leaf that writes in
+/// place. Bytes are no handles, so no write goes through the barrier; every
+/// write is checked against the size and writes nothing when it fails, so
+/// that the unused bytes of the last word stay zero.
+pub(crate) struct ByteArrayDataMut<'a> {
+    words: &'a mut [u64],
+    size: usize,
+}
+
+impl<'a> ByteArrayDataMut<'a> {
+    pub(in crate::heap) fn new(words: &'a mut [u64], size: usize) -> ByteArrayDataMut<'a> {
+        debug_assert!(size <= words.len() * BYTES_PER_WORD);
+        ByteArrayDataMut { words, size }
+    }
+
+    /// Writes `byte` at the 0-based `index`; answers whether it was inside
+    /// the data.
+    pub(crate) fn set_byte(&mut self, index: usize, byte: u8) -> bool {
+        if index >= self.size {
+            return false;
+        }
+        set_data_byte(self.words, index, byte);
+        true
+    }
+
+    /// Copies the bytes in `source` to those starting at `destination`, as
+    /// `memmove` does: right when the two overlap. Answers whether both lay
+    /// inside the data; writes nothing when either does not.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "no leaf copies within a ByteArray yet; the tests do"
+        )
+    )]
+    pub(crate) fn copy_within(
+        &mut self,
+        source: std::ops::Range<usize>,
+        destination: usize,
+    ) -> bool {
+        let Some(end) = destination.checked_add(source.len()) else {
+            return false;
+        };
+        if !is_within(&source, self.size) || end > self.size {
+            return false;
+        }
+        // Forward when the destination lies below the source, backward
+        // otherwise, so that no byte is overwritten before it is read.
+        if destination <= source.start {
+            for (offset, index) in source.enumerate() {
+                let byte = data_byte(self.words, index);
+                set_data_byte(self.words, destination + offset, byte);
+            }
+        } else {
+            for (offset, index) in source.enumerate().rev() {
+                let byte = data_byte(self.words, index);
+                set_data_byte(self.words, destination + offset, byte);
+            }
+        }
+        true
+    }
+
+    /// Writes `bytes` starting at the 0-based `destination`; answers whether
+    /// they fit inside the data, and writes nothing when they do not.
+    pub(crate) fn write(&mut self, destination: usize, bytes: &[u8]) -> bool {
+        match destination.checked_add(bytes.len()) {
+            Some(end) if end <= self.size => {
+                for (offset, byte) in bytes.iter().enumerate() {
+                    set_data_byte(self.words, destination + offset, *byte);
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
 /// The units of a string's element width one word holds.
 const BYTES_PER_WORD: usize = 8;
 const THIRTY_TWO_BIT_UNITS_PER_WORD: usize = 2;
@@ -447,6 +624,11 @@ mod tests {
             |words: &[u64]| -> Vec<usize> { pointer_ranges(words).into_iter().flatten().collect() };
         assert_eq!(covered(&block(Format::FixedPointers, 2)), vec![CLASS, 2, 3]);
         assert_eq!(covered(&block(Format::SixtyFourBit, 2)), vec![CLASS]);
+        // A ByteArray's reserve and data are bytes, never handles.
+        assert_eq!(
+            covered(&block(Format::AlignedBytes, byte_array_field_count(9))),
+            vec![CLASS]
+        );
         assert_eq!(
             covered(&block(Format::Closure, closure_field::COUNT + 1)),
             vec![
