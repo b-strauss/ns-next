@@ -274,9 +274,10 @@ class TypedArraysFactory usingVmMirror: mirror kernel: kernel = Value (
     /// for a negative one, and 'new: cannot allocate a ByteArray of …
     /// bytes', counting the bytes, for one too large to allocate. Each is
     /// signalled before anything is allocated. A `width` that is no
-    /// positive Integer, which no typed array gives, makes a count the VM
-    /// does not size; that count is handed to `ByteArray new:`, which
-    /// signals its own ArgumentErrors for it.
+    /// positive Integer, which no typed array gives, is refused by `*` or
+    /// by `ByteArray new:`, with their own ArgumentErrors; so is a `size`
+    /// that answers true to `isKindOfInteger` but is no Integer the VM
+    /// sizes.
     ///
     /// Whether the bytes can be allocated is asked of the VM before
     /// allocating, the same decision `ByteArray new:` makes, so that the

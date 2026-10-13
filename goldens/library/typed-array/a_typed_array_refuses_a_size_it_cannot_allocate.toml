@@ -31,6 +31,7 @@ new: requires a size of at least 0, got -1
 new: cannot allocate a ByteArray of 36893488147419103232 bytes
 new: cannot allocate a ByteArray of 36893488147419103232 bytes
 new: cannot allocate a ByteArray of 9007199254740992 bytes
+new: requires an Integer size, got an instance of PretendedSize
 'four'
 -1
 4611686018427387904

@@ -4,6 +4,7 @@ new:byteOrder: requires a size of at least 0, got -1
 new:byteOrder: cannot allocate a ByteArray of 4611686018427387904 bytes
 new:byteOrder: cannot allocate a ByteArray of 18446744073709551616 bytes
 new:byteOrder: cannot allocate a ByteArray of 1125899906842624 bytes
+new: requires an Integer size, got an instance of PretendedSize
 'four'
 4611686018427387904
 '''
