@@ -2030,9 +2030,10 @@ accessors on `ByteArray`:
 ### Errors and tests
 
 Every error is an `ArgumentError` carrying what was wrong -- the index, the
-position, the value, the argument, the size, or the byte position of
-invalid UTF-8 -- in the texts of `Array`'s and `String`'s existing errors
-but for the size refusals of `new:byteOrder:` and a typed array's `new:`,
+position, the value, the argument, the size, the element width, or the
+byte position of invalid UTF-8 -- in the texts of `Array`'s and `String`'s
+existing errors but for the size refusals of `new:byteOrder:` and a typed
+array's `new:` and the width refusal of `TypedArray bytesFor:width:`,
 which have texts of their own ("Size refusals are the view's own" above),
 and none leaves a half-changed state: `at:put:`, `add:` and
 `addCodePoint:` check before they write. **A refusal written in Newspeak renders the argument with its
