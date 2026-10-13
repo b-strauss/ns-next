@@ -596,3 +596,30 @@ fn a_symbol_copied_or_concatenated_answers_a_string() {
         );
     }
 }
+
+/// `goldens/runtime/depth-limit/the_depth_limit_is_caught.ns`: the error
+/// the depth limit signals is an instance of `Error` itself, no subclass.
+#[test]
+fn the_depth_limit_is_caught_as_an_instance_of_error_itself() {
+    let source = indoc! {"
+        class Probe usingPlatform: platform = () (
+          recurse = (
+            ^self recurse.
+          )
+
+          public answer = (
+            ^[self recurse] on: Error do: [:error | error].
+          )
+        )
+    "};
+    let (mut interpreter, instance) = instantiate(source);
+    let error = answer(&mut interpreter, &instance, "answer");
+    interpreter.enter(|mutator| {
+        let class = mutator.class_of(mutator.fetch(&error));
+        assert!(
+            class.same(mutator.builtin_class(BuiltinClass::Error)),
+            "the depth limit's error is an `Error`, not {}",
+            mutator.heap().class_display_name(class)
+        );
+    });
+}

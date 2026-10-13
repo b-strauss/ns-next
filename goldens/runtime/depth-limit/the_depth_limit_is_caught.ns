@@ -2,7 +2,9 @@
 /// `on: Error do:`: its `signal` runs in a reserve above the limit
 /// (docs/design/execution.md, "The depth limit"). The second recursion is
 /// caught the same way, because the reserve is given back once the first
-/// signal is over: were it not, the second would overrun it.
+/// signal is over: were it not, the second would overrun it. That the
+/// error is an instance of `Error` itself, no subclass,
+/// `crates/ns-runtime/tests/representation.rs` checks.
 class TheDepthLimitIsCaught = Object new () (
   recurse = (
     ^self recurse.
