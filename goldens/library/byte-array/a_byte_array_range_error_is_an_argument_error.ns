@@ -1,0 +1,47 @@
+/// A range a ByteArray does not hold is an ArgumentError carrying the
+/// bound out of range, in an Array's words; a source too short for
+/// `replaceFrom:to:with:startingAt:` refuses its start and leaves the
+/// receiver as it was; a search's start outside 1 to `size + 1` is
+/// refused as a String's is; and `withAll:` refuses an element that is no
+/// byte, carrying it.
+class AByteArrayRangeErrorIsAnArgumentError = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      kernel = platform kernel.
+      bytes
+      refusal
+    |
+    refusal:: [:action |
+      transcript
+          show: (action on: kernel ArgumentError do: [:error | error argument]) printString;
+          show: ' / ';
+          show: (action on: kernel ArgumentError do: [:error | error messageText]);
+          newLine.
+    ].
+    bytes:: ByteArray withAll: {5. 3. 8}.
+    refusal value: [bytes copyFrom: 0 to: 2].
+    refusal value: [bytes copyFrom: 2 to: 9].
+    refusal value: [bytes copyFrom: #a to: 2].
+    refusal value: [bytes indexOf: 3 startingAt: 5].
+    refusal value: [bytes lastIndexOf: 3 startingAt: 0].
+    refusal value: [bytes indexOf: (ByteArray new: 0) startingAt: 5].
+    refusal value: [bytes lastIndexOf: 'a' startingAt: (2 raisedTo: 70)].
+    refusal value: [bytes indexOf: nil startingAt: 0].
+    refusal value: [bytes indexOf: 3 startingAt: 'x'].
+    refusal value: [bytes replaceFrom: 3 to: 4 with: bytes startingAt: 1].
+    refusal value: [bytes replaceFrom: 1 to: 2 with: (ByteArray withAll: {1}) startingAt: 1].
+    refusal value: [bytes replaceFrom: 1 to: 2 with: bytes startingAt: 3].
+    refusal value: [bytes replaceFrom: 1 to: 2 with: 'abc' startingAt: 3].
+    transcript
+        show: (bytes at: 1) printString;
+        show: ' ';
+        show: (bytes at: 2) printString;
+        show: ' ';
+        show: (bytes at: 3) printString;
+        newLine.
+    refusal value: [ByteArray withAll: {1. 300}].
+    refusal value: [ByteArray withAll: {-1}].
+    refusal value: [ByteArray withAll: {1. 'x'}].
+  )
+)

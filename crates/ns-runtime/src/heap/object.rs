@@ -430,13 +430,6 @@ impl<'a> ByteArrayDataMut<'a> {
     /// Copies the bytes in `source` to those starting at `destination`, as
     /// `memmove` does: right when the two overlap. Answers whether both lay
     /// inside the data; writes nothing when either does not.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "no leaf copies within a ByteArray yet; the tests do"
-        )
-    )]
     pub(crate) fn copy_within(
         &mut self,
         source: std::ops::Range<usize>,

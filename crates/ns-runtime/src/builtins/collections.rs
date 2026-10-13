@@ -125,7 +125,7 @@ pub(crate) fn checked_range<'gc>(
 /// that is no Integer, or "startingAt: … out of range: the source holds …
 /// elements, the range needs … from …". An empty range takes any start
 /// from 1 to one past the source's end.
-fn source_start<'gc>(
+pub(crate) fn source_start<'gc>(
     heap: &Heap<'gc>,
     receiver: Value<'gc>,
     selector: Symbol,

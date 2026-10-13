@@ -4144,6 +4144,145 @@ class Kernel vmMirror: mirror = Value (
     protected newOfSize: size = (
       ^outer Kernel ByteArray new: size.
     )
+
+    /// Answers a new ByteArray of the bytes from `start` to `stop`; empty
+    /// when `stop` is `start - 1`. The receiver is unchanged.
+    ///
+    /// start, stop: Integers with 1 <= start <= stop + 1 and
+    ///     stop <= size.
+    ///
+    /// Signals an ArgumentError carrying the bound out of range,
+    /// 'copyFrom: … to: … out of range: valid ranges lie within
+    /// 1..size, an empty range ends just before it starts (size …)', or
+    /// 'copyFrom:to: requires an Integer index, got …' for a bound that
+    /// is no Integer.
+    public copyFrom: start to: stop = (
+      ^vmMirror byteArray: self copyFrom: start to: stop ifFail: [^super copyFrom: start to: stop].
+    )
+
+    /// Stores the bytes of `source` from `sourceStart` on into the
+    /// receiver's positions `start` to `stop`, and answers the receiver.
+    /// Correct when `source` is the receiver and the ranges overlap, in
+    /// either direction.
+    ///
+    /// start, stop: a range of the receiver, as for `copyFrom:to:`.
+    /// source: a ByteArray; a String, which counts as its UTF-8 bytes, so
+    ///     that `sourceStart` counts bytes, not code points; or anything
+    ///     answering `size` and `at:` with Integers from 0 to 255.
+    /// sourceStart: an Integer with 1 <= sourceStart and
+    ///     sourceStart + (stop - start) <= the source's size in bytes.
+    ///
+    /// Signals, before it stores any byte, the ArgumentError
+    /// `copyFrom:to:` signals, its text beginning 'replaceFrom: … to: …',
+    /// for a range the receiver does not hold;
+    /// 'replaceFrom:to:with:startingAt: requires an Integer index, got
+    /// …' for a bound or a `sourceStart` that is no Integer; and an
+    /// ArgumentError carrying `sourceStart`, 'startingAt: … out of range:
+    /// the source holds … elements, the range needs … from …', for a
+    /// source too short. From any other source, signals then what
+    /// `at:put:` signals for an element that is no byte.
+    ///
+    /// The leaf takes a ByteArray or a String source; any other source
+    /// falls to `IndexedCollection`'s, which copies it into an Array
+    /// first.
+    public replaceFrom: start to: stop with: source startingAt: sourceStart = (
+      ^vmMirror byteArray: self
+          replaceFrom: start
+          to: stop
+          with: source
+          startingAt: sourceStart
+          ifFail: [^super replaceFrom: start to: stop with: source startingAt: sourceStart].
+    )
+
+    /// Answers a new ByteArray of the receiver's bytes followed by those
+    /// of `collection`. The receiver is unchanged.
+    ///
+    /// collection: a ByteArray; a String, which counts as its UTF-8
+    ///     bytes; or anything answering `size` and `at:` with Integers
+    ///     from 0 to 255.
+    ///
+    /// Signals an ArgumentError carrying `collection`, ', cannot
+    /// allocate a ByteArray of … bytes', for a result too large to
+    /// allocate, and, for any other `collection`, what `at:put:` signals
+    /// for an element that is no byte.
+    public , collection = (
+      ^vmMirror byteArray: self concatenate: collection ifFail: [^super , collection].
+    )
+
+    /// Answers the index of the first occurrence of `element`, or 0;
+    /// `indexOf: element startingAt: 1`.
+    public indexOf: element = (
+      ^self indexOf: element startingAt: 1.
+    )
+
+    /// Answers the index at which the first occurrence of `element` that
+    /// starts at or after `start` begins, or 0 when there is none.
+    ///
+    /// element: an Integer, looked for as one byte -- one outside 0 to
+    ///     255 is never found; a ByteArray, or a String, which counts as
+    ///     its UTF-8 bytes, looked for as a run of bytes, an empty one
+    ///     found at `start`; or any other object, looked for as an
+    ///     element, each byte from `start` on sent `=` with it.
+    /// start: an Integer from 1 to `size + 1`.
+    ///
+    /// Signals an ArgumentError carrying `start`, 'indexOf:startingAt: …
+    /// out of range: valid starts are 1..… (size …)', for a `start`
+    /// outside 1 to `size + 1`, or 'indexOf:startingAt: requires an
+    /// Integer index, got …'.
+    public indexOf: element startingAt: start = (
+      ^vmMirror byteArray: self indexOf: element startingAt: start ifFail: [
+        start to: self size do: [:index | (self at: index) = element ifTrue: [^index]].
+        0.
+      ].
+    )
+
+    /// Answers the index of the last occurrence of `element`, or 0;
+    /// `lastIndexOf: element startingAt: size + 1`.
+    public lastIndexOf: element = (
+      ^self lastIndexOf: element startingAt: self size + 1.
+    )
+
+    /// Answers the index at which the last occurrence of `element` that
+    /// starts at or before `start` begins, or 0 when there is none.
+    ///
+    /// element: as for `indexOf:startingAt:`; an empty run of bytes is
+    ///     found at `start`.
+    /// start: an Integer from 1 to `size + 1`.
+    ///
+    /// Signals the ArgumentErrors `indexOf:startingAt:` signals, their
+    /// texts naming 'lastIndexOf:startingAt:'.
+    public lastIndexOf: element startingAt: start = (
+      ^vmMirror byteArray: self lastIndexOf: element startingAt: start ifFail: [
+        (start min: self size) to: 1 by: -1 do: [:index |
+          (self at: index) = element ifTrue: [^index].
+        ].
+        0.
+      ].
+    )
+
+    /// Answers whether the receiver begins with `prefix`; true for an
+    /// empty ByteArray or String.
+    ///
+    /// prefix: an Integer, compared with the first byte; a ByteArray, or
+    ///     a String, which counts as its UTF-8 bytes, compared with the
+    ///     first bytes; or any other object, sent `=` by the first byte.
+    public startsWith: prefix = (
+      ^vmMirror byteArray: self startsWith: prefix ifFail: [
+        self size > 0 and: [(self at: 1) = prefix].
+      ].
+    )
+
+    /// Answers whether the receiver ends with `suffix`; true for an
+    /// empty ByteArray or String.
+    ///
+    /// suffix: an Integer, compared with the last byte; a ByteArray, or
+    ///     a String, which counts as its UTF-8 bytes, compared with the
+    ///     last bytes; or any other object, sent `=` by the last byte.
+    public endsWith: suffix = (
+      ^vmMirror byteArray: self endsWith: suffix ifFail: [
+        self size > 0 and: [(self at: self size) = suffix].
+      ].
+    )
   ) : (
     /// Answers a new ByteArray of `size` bytes, each 0.
     ///
@@ -4159,6 +4298,41 @@ class Kernel vmMirror: mirror = Value (
     /// which a flat class side cannot be sent from.
     public new: size = (
       ^vmMirror byteArrayClass: self new: size ifFail: [nil].
+    )
+
+    /// Answers a new ByteArray of `collection`'s elements: a copy of a
+    /// ByteArray, and otherwise the elements in `collection`'s `do:`
+    /// order.
+    ///
+    /// collection: a ByteArray, or anything answering `size` and `do:`
+    ///     whose elements are Integers from 0 to 255 -- an Array, a List,
+    ///     a String whose code points are all below 256.
+    ///
+    /// Signals an ArgumentError carrying the first element that is no
+    /// byte, 'withAll: requires an Integer from 0 to 255, got …' and its
+    /// `printString`.
+    ///
+    /// Each element is checked before it is stored, so that the error
+    /// names the message the program sent rather than `at:put:`.
+    public withAll: collection = (
+      |
+        result
+        index
+      |
+      collection isKindOfByteArray ifTrue: [^collection copyFrom: 1 to: collection size].
+      result:: self new: collection size.
+      index:: 0.
+      collection do: [:element |
+        (element isKindOfInteger and: [element >= 0 and: [element <= 255]]) ifFalse: [
+          ^(outer
+              Kernel
+              ArgumentError value: element) signal: 'withAll: requires an Integer from 0 to 255, got '
+              , element printString.
+        ].
+        index:: index + 1.
+        result at: index put: element.
+      ].
+      ^result.
     )
   )
 

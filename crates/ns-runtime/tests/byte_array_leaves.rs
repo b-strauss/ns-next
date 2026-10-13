@@ -144,3 +144,111 @@ fn new_byte_array_holds_its_bytes() {
         );
     });
 }
+
+/// The bytes of the `ByteArray` `selector` answers.
+fn answered_bytes(source: &str, selector: &str) -> Vec<u8> {
+    let (mut interpreter, result) = answer(source, selector);
+    interpreter.enter(|mutator| {
+        let value = mutator.fetch(&result);
+        let byte_array = mutator.builtin_class(BuiltinClass::ByteArray);
+        assert!(
+            mutator.class_of(value).same(byte_array),
+            "{selector} answers a ByteArray"
+        );
+        let object = value.as_object().expect("an object");
+        mutator
+            .heap()
+            .byte_array_bytes(object)
+            .expect("a ByteArray")
+    })
+}
+
+/// `copyFrom:to:` and `,` answer new ByteArrays of the kernel's class, a
+/// String argument counting as its UTF-8 bytes, and leave the receiver as
+/// it was.
+#[test]
+fn a_copy_and_a_concatenation_are_new_byte_arrays() {
+    let source = indoc! {"
+        class Foo = Object new (
+            | bytes = ByteArray withAll: {1. 2. 3}. |
+        ) (
+            public copied = ( ^bytes copyFrom: 2 to: 3 )
+            public joined = ( ^bytes , 'aé' )
+            public joinedBytes = ( ^bytes , bytes )
+            public unchanged = ( bytes copyFrom: 1 to: 2. bytes , 'x'. ^bytes )
+        ) : ()
+    "};
+    assert_eq!(answered_bytes(source, "copied"), vec![2, 3]);
+    assert_eq!(
+        answered_bytes(source, "joined"),
+        vec![1, 2, 3, 97, 195, 169]
+    );
+    assert_eq!(
+        answered_bytes(source, "joinedBytes"),
+        vec![1, 2, 3, 1, 2, 3]
+    );
+    assert_eq!(answered_bytes(source, "unchanged"), vec![1, 2, 3]);
+}
+
+/// `replaceFrom:to:with:startingAt:` from the receiver itself is right
+/// whichever way the ranges overlap, and from a String reads its UTF-8
+/// bytes, the start counted in bytes.
+#[test]
+fn a_replacement_moves_overlapping_bytes_and_encodes_a_string() {
+    let source = indoc! {"
+        class Foo = Object new () (
+            public up = (
+                | bytes = ByteArray withAll: {1. 2. 3. 4. 5. 6. 7. 8. 9}. |
+                ^bytes replaceFrom: 3 to: 9 with: bytes startingAt: 1
+            )
+            public down = (
+                | bytes = ByteArray withAll: {1. 2. 3. 4. 5. 6. 7. 8. 9}. |
+                ^bytes replaceFrom: 1 to: 7 with: bytes startingAt: 3
+            )
+            public fromText = ( ^(ByteArray new: 5) replaceFrom: 2 to: 5 with: 'zé€' startingAt: 2 )
+        ) : ()
+    "};
+    assert_eq!(
+        answered_bytes(source, "up"),
+        vec![1, 2, 1, 2, 3, 4, 5, 6, 7]
+    );
+    assert_eq!(
+        answered_bytes(source, "down"),
+        vec![3, 4, 5, 6, 7, 8, 9, 8, 9]
+    );
+    assert_eq!(
+        answered_bytes(source, "fromText"),
+        vec![0, 195, 169, 226, 130]
+    );
+}
+
+/// A refused replacement writes nothing: every operand is checked before
+/// the first byte is stored.
+#[test]
+fn a_refused_replacement_leaves_the_receiver_as_it_was() {
+    let source = indoc! {"
+        class Foo = Object new (
+            | bytes = ByteArray withAll: {1. 2. 3}. |
+        ) (
+            public shortSource = (
+                [bytes replaceFrom: 1 to: 3 with: 'é' startingAt: 1] on: Error do: [:error | nil].
+                ^bytes
+            )
+            public shortSelf = (
+                [bytes replaceFrom: 1 to: 2 with: bytes startingAt: 3] on: Error do: [:error | nil].
+                ^bytes
+            )
+            public badRange = (
+                [bytes replaceFrom: 2 to: 4 with: bytes startingAt: 1] on: Error do: [:error | nil].
+                ^bytes
+            )
+        ) : ()
+    "};
+    for selector in ["shortSource", "shortSelf", "badRange"] {
+        assert_eq!(
+            answered_bytes(source, selector),
+            vec![1, 2, 3],
+            "{selector}"
+        );
+    }
+}

@@ -228,7 +228,14 @@ impl Primitive {
                 BytePrimitive::Allocate
                 | BytePrimitive::Size
                 | BytePrimitive::ElementAt
-                | BytePrimitive::ElementAtPut,
+                | BytePrimitive::ElementAtPut
+                | BytePrimitive::CopyRange
+                | BytePrimitive::Replace
+                | BytePrimitive::Concatenate
+                | BytePrimitive::IndexOf
+                | BytePrimitive::LastIndexOf
+                | BytePrimitive::StartsWith
+                | BytePrimitive::EndsWith,
             ) => false,
             Primitive::Block(
                 BlockPrimitive::Value
@@ -498,6 +505,19 @@ pub enum BytePrimitive {
     Size,
     ElementAt,
     ElementAtPut,
+    /// `copyFrom:to:`: a new ByteArray of a range.
+    CopyRange,
+    /// `replaceFrom:to:with:startingAt:` from a ByteArray, the same one
+    /// included, or a String's UTF-8 bytes.
+    Replace,
+    /// `,` with a ByteArray or a String's UTF-8 bytes.
+    Concatenate,
+    /// `indexOf:startingAt:` of a byte or a subsequence.
+    IndexOf,
+    /// `lastIndexOf:startingAt:` of a byte or a subsequence.
+    LastIndexOf,
+    StartsWith,
+    EndsWith,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1488,6 +1508,41 @@ pub const MIRROR: &[MirrorEntry] = &[
         "byteArray:at:put:ifFail:",
         "at:put:",
         Primitive::Bytes(BytePrimitive::ElementAtPut),
+    ),
+    mirror(
+        "byteArray:copyFrom:to:ifFail:",
+        "copyFrom:to:",
+        Primitive::Bytes(BytePrimitive::CopyRange),
+    ),
+    mirror(
+        "byteArray:replaceFrom:to:with:startingAt:ifFail:",
+        "replaceFrom:to:with:startingAt:",
+        Primitive::Bytes(BytePrimitive::Replace),
+    ),
+    mirror(
+        "byteArray:concatenate:ifFail:",
+        ",",
+        Primitive::Bytes(BytePrimitive::Concatenate),
+    ),
+    mirror(
+        "byteArray:indexOf:startingAt:ifFail:",
+        "indexOf:startingAt:",
+        Primitive::Bytes(BytePrimitive::IndexOf),
+    ),
+    mirror(
+        "byteArray:lastIndexOf:startingAt:ifFail:",
+        "lastIndexOf:startingAt:",
+        Primitive::Bytes(BytePrimitive::LastIndexOf),
+    ),
+    mirror(
+        "byteArray:startsWith:ifFail:",
+        "startsWith:",
+        Primitive::Bytes(BytePrimitive::StartsWith),
+    ),
+    mirror(
+        "byteArray:endsWith:ifFail:",
+        "endsWith:",
+        Primitive::Bytes(BytePrimitive::EndsWith),
     ),
 ];
 

@@ -1,0 +1,10 @@
+stdout = '''
+true true false false true true
+2 5 5 4 1 0 true
+71 73 70 56 57 97 195 169
+true
+195 169 98 0
+startingAt: 1 out of range: the source holds 2 elements, the range needs 3 from 1
+indexOf:startingAt: requires a String argument, got a ByteArray of 1
+String concatenation (,) requires a String argument, got a ByteArray of 1
+'''

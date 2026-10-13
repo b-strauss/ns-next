@@ -1153,10 +1153,15 @@ mod tests {
         // `withAll:`: sends, no leaf.
         ("Array", "newOfSize:"),
         ("Array", "withAll:"),
-        // `ByteArray`'s new instance of its own kind, and its `do:`, a
-        // loop over the size leaf's answer that sends `value:`.
+        // `ByteArray`'s new instance of its own kind, its `do:`, a loop
+        // over the size leaf's answer that sends `value:`, the two searches
+        // from the first and the last start, and its class side's
+        // `withAll:`: sends, no leaf.
         ("ByteArray", "newOfSize:"),
         ("ByteArray", "do:"),
+        ("ByteArray", "indexOf:"),
+        ("ByteArray", "lastIndexOf:"),
+        ("ByteArray", "withAll:"),
         // `String`'s code-point protocol is Newspeak over its leaves --
         // `size`, `at:`, `copyFrom:to:` and the two searches: every method
         // sends, none forwards to a leaf.

@@ -1,0 +1,19 @@
+stdout = '''
+0 / copyFrom: 0 to: 2 out of range: valid ranges lie within 1..3, an empty range ends just before it starts (size 3)
+9 / copyFrom: 2 to: 9 out of range: valid ranges lie within 1..3, an empty range ends just before it starts (size 3)
+#a / copyFrom:to: requires an Integer index, got the Symbol #a
+5 / indexOf:startingAt: 5 out of range: valid starts are 1..4 (size 3)
+0 / lastIndexOf:startingAt: 0 out of range: valid starts are 1..4 (size 3)
+5 / indexOf:startingAt: 5 out of range: valid starts are 1..4 (size 3)
+1180591620717411303424 / lastIndexOf:startingAt: 1180591620717411303424 out of range: valid starts are 1..4 (size 3)
+0 / indexOf:startingAt: 0 out of range: valid starts are 1..4 (size 3)
+'x' / indexOf:startingAt: requires an Integer index, got the String "x"
+4 / replaceFrom: 3 to: 4 out of range: valid ranges lie within 1..3, an empty range ends just before it starts (size 3)
+1 / startingAt: 1 out of range: the source holds 1 element, the range needs 2 from 1
+3 / startingAt: 3 out of range: the source holds 3 elements, the range needs 2 from 3
+3 / startingAt: 3 out of range: the source holds 3 elements, the range needs 2 from 3
+5 3 8
+300 / withAll: requires an Integer from 0 to 255, got 300
+-1 / withAll: requires an Integer from 0 to 255, got -1
+'x' / withAll: requires an Integer from 0 to 255, got 'x'
+'''

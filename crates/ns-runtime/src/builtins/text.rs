@@ -177,6 +177,52 @@ fn from_code_points<'gc>(
     )))
 }
 
+/// The zero-based position a search's `startingAt:` argument names in a
+/// sequence of `size` elements -- a String's code points, a ByteArray's
+/// bytes -- or the `ArgumentError` carrying it: the start must lie in
+/// 1..size + 1, one past the end being where only an empty argument is
+/// found.
+pub(crate) fn search_start<'gc>(
+    heap: &Heap<'gc>,
+    receiver: Value<'gc>,
+    selector: Symbol,
+    start_argument: Option<Value<'gc>>,
+    size: usize,
+) -> Result<usize, NewspeakError<'gc>> {
+    // A `LargeInteger` start lies outside every sequence, so it takes the
+    // out-of-range error, described as it is written.
+    let start = match collections::integer_argument(heap, start_argument) {
+        Some(IntegerArgument::Small(start)) => Some(start),
+        Some(IntegerArgument::Large { .. }) => None,
+        None => {
+            return Err(collections::not_an_integer(
+                heap,
+                receiver,
+                selector,
+                start_argument,
+            ))
+        }
+    };
+    match start.map(usize::try_from) {
+        Some(Ok(start)) if (1..=size + 1).contains(&start) => Ok(start - 1),
+        _ => {
+            let described = match start {
+                Some(number) => number.to_string(),
+                None => heap.describe_argument(start_argument),
+            };
+            Err(NewspeakError::argument_error(
+                selector,
+                receiver,
+                start_argument.unwrap_or(Value::nil()),
+                format!(
+                    "{selector} {described} out of range: valid starts are 1..{} (size {size})",
+                    size + 1
+                ),
+            ))
+        }
+    }
+}
+
 /// `indexOf:startingAt:` and `lastIndexOf:startingAt:` over code points:
 /// the 1-based index of the first occurrence of the argument that starts
 /// at or after the start, or of the last that starts at or before it, or
@@ -207,39 +253,7 @@ fn search<'gc>(
             ),
         ));
     };
-    let start_argument = arguments.get(1).copied();
-    // A `LargeInteger` start lies outside every string, so it takes the
-    // out-of-range error, described as it is written.
-    let start = match collections::integer_argument(heap, start_argument) {
-        Some(IntegerArgument::Small(start)) => Some(start),
-        Some(IntegerArgument::Large { .. }) => None,
-        None => {
-            return Err(collections::not_an_integer(
-                heap,
-                receiver,
-                selector,
-                start_argument,
-            ))
-        }
-    };
-    let position = match start.map(usize::try_from) {
-        Some(Ok(start)) if (1..=size + 1).contains(&start) => start - 1,
-        _ => {
-            let described = match start {
-                Some(number) => number.to_string(),
-                None => heap.describe_argument(start_argument),
-            };
-            return Err(NewspeakError::argument_error(
-                selector,
-                receiver,
-                start_argument.unwrap_or(Value::nil()),
-                format!(
-                    "{selector} {described} out of range: valid starts are 1..{} (size {size})",
-                    size + 1
-                ),
-            ));
-        }
-    };
+    let position = search_start(heap, receiver, selector, arguments.get(1).copied(), size)?;
     let needle: Vec<u32> = needle.elements().collect();
     let Some(last_position) = size.checked_sub(needle.len()) else {
         return Ok(Value::small_integer(0));
