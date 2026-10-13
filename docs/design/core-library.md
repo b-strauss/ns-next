@@ -603,7 +603,7 @@ class PlatformFactory usingVmMirror: theMirror kernel: kernel = Object <: Value 
     lazy private collectionsModule = vmMirror moduleInstanceNamed: #CollectionsFactory ifFail: [nil].
     private class Platform = Value new () (
         lazy public transcript = Transcript new.
-        lazy public collections = collectionsModule newCollections.
+        lazy public collections = collectionsModule build.
         lazy public kernel = KernelNamespace new.
         lazy public time = Time new.
     )
@@ -612,7 +612,7 @@ class PlatformFactory usingVmMirror: theMirror kernel: kernel = Object <: Value 
     private class Time = Value new () ( public Stopwatch = ( ^outer PlatformFactory Stopwatch ) )
     private class Stopwatch = Object new ( | private cumulativeNanoseconds ::= 0. private startNanoseconds ::= nil. | ) (
         elapsedNanoseconds, start, and the clock reading, through vmMirror )
-    public newPlatform = ( ^Platform new )
+    public build = ( ^Platform new )
 ) : ()
 ```
 
@@ -642,7 +642,7 @@ class CollectionsFactory usingKernel: kernel = Object <: Value (
     private class Set new: capacity = Collection new ( ... ) ( private lazy hashtable_ ::= rehash. ... ) : ( ... )
     private class NotFound = Error new ( | public element ::= nil. | ) ( ... ) : ( ... )
     private class ConcurrentModification = Error new ( | public collection ::= nil. | ) () : ( ... )
-    public newCollections = ( ^Collections new )
+    public build = ( ^Collections new )
 ) : ()
 ```
 
@@ -677,23 +677,23 @@ is made by how the shipped classes are arranged, not by a check in the VM
 this shape, not from the prior-art one in which the root is the namespace
 handed out.
 
-**The factory's nested classes are private, and its one public member
-makes the facet.** A class accessor and a lazy slot's initializer reach a
+**The factory's nested classes are private, and its one public member,
+`build` in every shipped factory, makes the facet.** A class accessor and a lazy slot's initializer reach a
 private class of the root by a lexical send, which may find a private
 member (§5.9), so a program still gets every facet and class it is meant
 to have; but a public send to the root instance finds nothing
-but `newPlatform`, `^Platform new`, which the host sends at boot. That is
+but `build`, `^Platform new`, which the host sends at boot. That is
 a second line of defence behind the root instance being unreachable ("No
 program reaches a shipped module's root" below): even a holder of the
 root could make only another platform from it, never name a class that
 reaches the mirror (`tests/platform.rs`,
-`the_platform_factory_answers_only_new_platform`,
+`the_platform_factory_answers_only_build`,
 `the_platform_hands_out_none_of_its_modules_classes`).
-`CollectionsFactory.ns` follows the same pattern: its root holds the kernel
-instance, every nested class -- `Collections`, `List`, `Map`, `IdentityMap`,
+`CollectionsFactory.ns` follows the same pattern: its root holds the
+kernel's `ArgumentError` and `Collection`, every nested class -- `Collections`, `List`, `Map`, `IdentityMap`,
 `Set`, `NotFound` and `ConcurrentModification` -- is private, and its one
-public member, `newCollections`, answers the facet `platform collections`
-is (`the_collections_factory_answers_only_new_collections`).
+public member, `build`, answers the facet `platform collections`
+is (`the_collections_factory_answers_only_build`).
 
 **The members are lazy slots** (§6.3.3, "Lazy slots first" below): each is
 built on its first use, so a program pays only for the members it asks for,
@@ -705,7 +705,7 @@ and the boot" below), and `PlatformFactory`'s root keeps it in its private
 lazy slot `collectionsModule`, which asks the mirror's
 `moduleInstanceNamed:` for it on the first `platform collections` of any
 platform; `Platform`'s `collections` answers that instance's
-`newCollections`. So every platform's facet comes from one factory and
+`build`. So every platform's facet comes from one factory and
 hands out one class of each name, and the facets, values, are all equal
 (`tests/platform.rs`, `the_platform_and_its_parts_are_values`,
 `the_collections_module_is_built_once_at_boot`). The facet hands out each
@@ -731,7 +731,7 @@ kernel's), and records each instance as its module's one instance
 (`interpreter/shipped_world.rs`). `complete_shipped_world` then builds every
 class the three roots declare and records every shipped object under its
 name, which is what an image names ("Shipped names in the image" below).
-Last, it sends `PlatformFactory`'s instance `newPlatform` as an ordinary
+Last, it sends `PlatformFactory`'s instance `build` as an ordinary
 host send and keeps the answer as the platform
 (`Mutator::platform_singleton`, traced like every root). Each step is a run
 entered from the outside, as the kernel's instantiation is, so the stress
@@ -739,7 +739,7 @@ modes see it. `Mutator::platform_value` only reads the platform, so asking
 for it runs no Newspeak. The boot runs shipped code -- the superclass
 clauses of every shipped class, the factories' eager slots, which take the
 kernel's classes they need (`kernel Collection` and its siblings), and
-`newPlatform` -- whose
+`build` -- whose
 sends take room in the inline caches, so a freshly bootstrapped interpreter
 does not start with an empty cache table (`tests/inline_caches.rs` pins
 what it leaves). It draws no identity hash, so every hash a run draws is
@@ -868,14 +868,15 @@ must never become the answer to anything a program sees, and the one place
 the runtime hands a receiver to a program is a `MessageNotUnderstood`,
 whose `receiver` slot is public. So no code whose receiver is the factory
 instance may ever send it a message it does not understand -- today the
-only sends to it are the host's `newPlatform` at boot, `newPlatform`'s own
-`Platform`, the class accessors' `outer PlatformFactory <Name>`, each
-naming a nested class it declares, the nested classes' superclass
+only sends to it are the host's `build` at boot, `build`'s own
+`Platform`, the sends `outer PlatformFactory <Name>` of `Time`'s class
+accessor and `KernelNamespace`'s members, each naming a nested class or a
+slot it declares, the nested classes' superclass
 clauses, run with it as receiver, and the lazy `collectionsModule`
 initializer's own. `CollectionsFactory`'s instance is held the same way:
 only `PlatformFactory`'s private `collectionsModule` slot keeps it, and the
 facet's classes have it as their enclosing object; the sends to it are
-`newCollections` from `Platform`'s `collections` initializer, the facet's
+`build` from `Platform`'s `collections` initializer, the facet's
 class accessors' `outer CollectionsFactory <Name>`, and its nested classes'
 superclass clauses. Whoever edits either module (or writes another
 `XFactory` root) keeps it that way: a send to the root that
@@ -2674,7 +2675,7 @@ boot built. The design as decided:
   and so is given no mirror -- each an ordinary run, as the kernel's
   instantiation is, so the stress modes see it; builds every class the roots
   declare (`complete_shipped_world`); and sends `PlatformFactory`'s instance
-  `newPlatform`, keeping the answer as a root ("The platform" above).
+  `build`, keeping the answer as a root ("The platform" above).
   `Mutator::platform_value` reads that root instead of building the platform
   in Rust. The second parameter is
   Primordial Soup's (`Platform internalKernel: ik`), chosen over a mirror
@@ -2829,7 +2830,7 @@ a handle on, not a class the image needs a name for.
   moduleInstanceNamed: #CollectionsFactory ifFail: [nil]`) in its lazy
   `collectionsModule`, so every platform shares one module instance and one
   class of each; the platform's lazy
-  `collections` slot answers that instance's `newCollections`, its one
+  `collections` slot answers that instance's `build`, its one
   public member, and plan 1's `Collections` class has left
   `PlatformFactory.ns`. The facet hands out none of its own class, as the
   platform none of its module's: an image names the facet by its

@@ -13,10 +13,11 @@
 /// of the kernel only the two classes it needs, never the kernel instance,
 /// and nothing hands its
 /// instance to a program: the host builds it once, at boot, and the
-/// platform's root reaches it through the mirror's `moduleInstanceNamed:`,
-/// sends it `newCollections`, its one public member, and keeps it in a
-/// private lazy slot. What a program gets is the `Collections` facet
-/// `newCollections` answers, which hands out this module's classes by
+/// platform's root reaches it through the mirror's `moduleInstanceNamed:`
+/// and keeps it in a private lazy slot, and each platform's `collections`
+/// getter sends it `build`, its one public member. What a program gets is
+/// the `Collections` facet
+/// `build` answers, which hands out this module's classes by
 /// class accessors, each exactly `^outer CollectionsFactory <Name>` -- a
 /// lexical send, which reaches the root's private classes (§5.9), and
 /// which lets an image name the class by its declaration
@@ -1689,8 +1690,9 @@ class CollectionsFactory usingKernel: kernel = Object <: Value (
   )
 
   /// Answers a new `Collections` namespace: the facet `platform
-  /// collections` answers, and the one public member of the module.
-  public newCollections = (
+  /// collections` answers, and the one public member of the module, named
+  /// `build` like every shipped factory's.
+  public build = (
     ^Collections new.
   )
 )

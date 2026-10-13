@@ -138,7 +138,7 @@ impl crate::interpreter::Interpreter {
     /// every class the roots declare and records every shipped object
     /// under its name.
     ///
-    /// Last, `PlatformFactory`'s instance is sent `newPlatform`, its one
+    /// Last, `PlatformFactory`'s instance is sent `build`, its one
     /// public member, as an ordinary host send -- runs like the kernel's
     /// own, entered from the outside, so the stress modes see them -- and
     /// the answer kept as the platform every program is handed. The
@@ -196,8 +196,8 @@ impl crate::interpreter::Interpreter {
             mutator.stash(Value::object(factory))
         });
         let platform = booted(
-            self.send(&platform_factory, Symbol::intern("newPlatform"), &[]),
-            "PlatformFactory newPlatform",
+            self.send(&platform_factory, Symbol::intern("build"), &[]),
+            "PlatformFactory build",
         );
         self.enter(|mutator| {
             let platform = mutator.fetch(&platform);

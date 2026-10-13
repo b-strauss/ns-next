@@ -755,7 +755,7 @@ ns_runtime::for_each_lowering! {
 /// that takes a site and fills a global entry, but for `ArgumentError` and
 /// `Collection`, whose entries `CollectionsFactory`'s two initializers,
 /// `kernel ArgumentError` and `kernel Collection`, fill too; the platform's
-/// boot sends `PlatformFactory`'s `newPlatform`, `^Platform new`, whose
+/// boot sends `PlatformFactory`'s `build`, `^Platform new`, whose
 /// family takes two sites and fills two global entries (the lexical
 /// `Platform`, and `new` to the class), and `Platform`'s superclass clause,
 /// `Value new`, whose family takes two more and whose lexical `Value` fills

@@ -552,12 +552,12 @@ fn the_platform_factory(interpreter: &mut Interpreter) -> Root {
 }
 
 /// `PlatformFactory`'s nested classes are private, and its one public
-/// member is `newPlatform`: a public send of a class's name to the factory
-/// instance finds nothing, even for a host that holds it, while `newPlatform`
+/// member is `build`: a public send of a class's name to the factory
+/// instance finds nothing, even for a host that holds it, while `build`
 /// makes a platform. A second line of defence behind the factory instance
 /// being unreachable.
 #[test]
-fn the_platform_factory_answers_only_new_platform() {
+fn the_platform_factory_answers_only_build() {
     let mut interpreter = Interpreter::bootstrap();
     let factory = the_platform_factory(&mut interpreter);
     for name in [
@@ -577,12 +577,12 @@ fn the_platform_factory_answers_only_new_platform() {
         );
     }
     let platform = expect_ok(
-        interpreter.send(&factory, Symbol::intern("newPlatform"), &[]),
-        "factory newPlatform",
+        interpreter.send(&factory, Symbol::intern("build"), &[]),
+        "factory build",
     );
     let transcript = expect_ok(
         interpreter.send(&platform, Symbol::intern("transcript"), &[]),
-        "newPlatform transcript",
+        "build transcript",
     );
     let text = interpreter.enter(|mutator| {
         let text = Value::object(mutator.new_string(String::new()));
@@ -590,19 +590,19 @@ fn the_platform_factory_answers_only_new_platform() {
     });
     expect_ok(
         interpreter.send(&transcript, Symbol::intern("show:"), &[text]),
-        "newPlatform transcript show: ''",
+        "build transcript show: ''",
     );
 }
 
 /// `CollectionsFactory` is written in the same factory pattern: its nested
-/// classes are private and its one public member is `newCollections`. A
+/// classes are private and its one public member is `build`. A
 /// host reaches its instance only as the enclosing object of the facet's
 /// class, which no program can walk; even then the classes' names find
-/// nothing, while `newCollections` makes a facet whose `List` answers a
+/// nothing, while `build` makes a facet whose `List` answers a
 /// class. A second line of defence behind the factory instance being
 /// unreachable, as for `PlatformFactory`.
 #[test]
-fn the_collections_factory_answers_only_new_collections() {
+fn the_collections_factory_answers_only_build() {
     let mut interpreter = Interpreter::bootstrap();
     let platform = interpreter.platform();
     let collections = expect_ok(
@@ -634,22 +634,19 @@ fn the_collections_factory_answers_only_new_collections() {
         );
     }
     let facet = expect_ok(
-        interpreter.send(&factory, Symbol::intern("newCollections"), &[]),
-        "collections factory newCollections",
+        interpreter.send(&factory, Symbol::intern("build"), &[]),
+        "collections factory build",
     );
     let list = expect_ok(
         interpreter.send(&facet, Symbol::intern("List"), &[]),
-        "newCollections List",
+        "build List",
     );
     interpreter.enter(|mutator| {
         let value = mutator.fetch(&list);
         let Some(list) = value.as_object() else {
             panic!("expected a class, got {}", mutator.heap().describe(value));
         };
-        assert!(
-            mutator.heap().is_class(list),
-            "newCollections List is a class"
-        );
+        assert!(mutator.heap().is_class(list), "build List is a class");
     });
 }
 

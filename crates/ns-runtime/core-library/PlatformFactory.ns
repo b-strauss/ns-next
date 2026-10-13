@@ -1,4 +1,4 @@
-/// The platform's module: answers, to `newPlatform`, the platform the
+/// The platform's module: answers, to `build`, the platform the
 /// host hands every program, whose members are the program's standard
 /// output, the collections, the kernel classes a program may name and a
 /// stopwatch. The host instantiates it once, at boot.
@@ -15,7 +15,7 @@
 /// The factory pattern: this root holds what is privileged -- the mirror,
 /// and the kernel's classes `KernelNamespace` hands out, never the kernel
 /// instance -- and the host never hands its instance to anyone. It
-/// instantiates the root once, sends it `newPlatform`, its one public
+/// instantiates the root once, sends it `build`, its one public
 /// member, and hands every program that platform, an instance of the
 /// nested class `Platform`, whose factory is a harmless `new`. What a
 /// program receives are instances of the nested classes, the facets,
@@ -24,7 +24,7 @@
 /// own, so every one of them writes through the one mirror. The nested
 /// classes are private, so even
 /// a holder of this root's instance could send it nothing but
-/// `newPlatform`: a second line of defence behind the instance being
+/// `build`: a second line of defence behind the instance being
 /// unreachable. The collections module is another such root
 /// (`CollectionsFactory.ns`), whose one instance the host builds at boot
 /// and this root reaches through the mirror's `moduleInstanceNamed:`,
@@ -85,7 +85,7 @@ class PlatformFactory usingVmMirror: theMirror kernel: kernel = Object <: Value 
   /// The host builds every shipped module once, at boot, and the mirror
   /// answers that instance, so every platform's facet comes from one
   /// factory and hands out one `List` class. Its instance is as private
-  /// as this one: only its `newCollections` facet leaves this module.
+  /// as this one: only the facets its `build` answers leave this module.
   lazy private collectionsModule = vmMirror moduleInstanceNamed: #CollectionsFactory ifFail: [nil].
 
   /// The platform a program is handed: the namespace of what it may use
@@ -108,7 +108,7 @@ class PlatformFactory usingVmMirror: theMirror kernel: kernel = Object <: Value 
     /// `Map`, `IdentityMap`, `Set` and the Errors `NotFound` and
     /// `ConcurrentModification` -- and of the kernel's `Collection`.
     /// Built on first use; every later send answers the same one.
-    lazy public collections = collectionsModule newCollections.
+    lazy public collections = collectionsModule build.
 
     /// The namespace of the kernel classes a program may name, a
     /// `KernelNamespace`. Built on first use; every later send answers
@@ -282,8 +282,9 @@ class PlatformFactory usingVmMirror: theMirror kernel: kernel = Object <: Value 
   )
 
   /// Answers a new `Platform`: what the host hands every program. The
-  /// one public member of the module.
-  public newPlatform = (
+  /// one public member of the module, named `build` like every shipped
+  /// factory's.
+  public build = (
     ^Platform new.
   )
 )

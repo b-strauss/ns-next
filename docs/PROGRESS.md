@@ -3216,7 +3216,7 @@ lazy slots. The table of shipped modules (`interpreter/core_library.rs`'s
 Its root holds the mirror and the kernel and is never handed out; the host
 instantiates it through the ordinary `Interpreter::instantiate`, checks its
 `vmMirror`, and hands every program what the factory's one public member,
-`newPlatform`, answers: an instance of the private nested `Platform`, whose
+`build`, answers: an instance of the private nested `Platform`, whose
 factory is `new` and whose class accessors (`public Transcript = ( ^outer
 PlatformFactory Transcript )`, lexical sends that reach the root's private
 classes) hand out the module's classes -- the factory pattern, plain
@@ -3231,7 +3231,7 @@ accessor, recognized by the compiler in shipped source
 (`MixinMethod::class_accessor`, read only by the image code, no fast path),
 resolved before the rest of a graph decodes; a second platform is an
 ordinary record of the class the path `Platform` names. The boot runs
-`newPlatform` and `Platform`'s superclass clause, so a freshly bootstrapped
+`build` and `Platform`'s superclass clause, so a freshly bootstrapped
 interpreter's caches are not empty (four sites, three global entries, pinned
 by a test).
 
