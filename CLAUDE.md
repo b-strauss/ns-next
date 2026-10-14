@@ -310,10 +310,12 @@ This table is the one place that says which gate runs when;
 `docs/design/README.md`, "Gates", follows it. Each row is a group of
 `cargo xtask gates <group>` (`xtask/src/main.rs`), which says what the group
 runs; several groups run in one call, one after another, and the first that
-fails stops it. Every `cargo xtask gates` call first runs
-`cargo xtask shipped-code`, which writes the embedded shipped code
+fails stops it. Every `cargo xtask gates` call runs `cargo xtask shipped-code`
+once, which writes the embedded shipped code
 (`crates/ns-runtime/core-library/shipped-code.bin`, gitignored;
-`docs/design/core-library.md`, "The embedded shipped code"). "Every commit"
+`docs/design/core-library.md`, "The embedded shipped code"): right after
+`cargo fmt --all` in the `commit` group, which is the only step that rewrites
+sources, and otherwise first. "Every commit"
 is every commit that changes more than Markdown (check `git diff --stat`): a change to Rust, a test, a fixture, a
 golden, a `.ns` or a `Cargo.toml` runs its gates however small. The nextest
 profiles are `.config/nextest.toml`'s; every one runs on 18 threads.

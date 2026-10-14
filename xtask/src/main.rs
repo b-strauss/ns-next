@@ -1,7 +1,9 @@
 //! The repository's own tasks, run as `cargo xtask <task>` (the alias is in
-//! `.cargo/config.toml`). Today the one task is `gates`: each group of
+//! `.cargo/config.toml`). Its main task is `gates`: each group of
 //! `CLAUDE.md`'s table "The gates" is a group here, so that the table says
-//! when a group runs and this says what it runs. Written in Rust rather than
+//! when a group runs and this says what it runs. The other task is
+//! `shipped-code`, which writes the shipped modules' compiled code that the
+//! gates build and test against. Written in Rust rather than
 //! a shell script so that it runs alike on every platform and can grow the
 //! logic a script would make fragile -- choosing the groups from what a
 //! change touched, for one.
@@ -88,40 +90,67 @@ enum Part {
     /// of a few depth-limit tests that leaves most cores idle, and the tails
     /// overlap.
     StressSuites,
+    /// `cargo xtask shipped-code`. The shipped code's fingerprint covers
+    /// Rust sources, so it runs after the one step that rewrites them,
+    /// `cargo fmt --all`, or else formatting would leave it stale.
+    ShippedCode,
+}
+
+/// `cargo xtask shipped-code`, run as a fresh process built in a target
+/// directory of its own: the fingerprint is compiled into this binary, so
+/// after `cargo fmt --all` rewrote sources only a rebuilt xtask knows the new
+/// one, and the running executable cannot be rebuilt in place on Windows.
+fn shipped_code_step() -> Step {
+    Step::cargo(
+        "shipped code",
+        &[
+            "run",
+            "--quiet",
+            "--package",
+            "xtask",
+            "--target-dir",
+            "target/shipped-code",
+            "--",
+            "shipped-code",
+        ],
+    )
 }
 
 /// The parts of `group`, or `None` for a name that is no group.
 fn group(name: &str) -> Option<Vec<Part>> {
     let steps = |steps: Vec<Step>| vec![Part::Steps(steps)];
     Some(match name {
-        "commit" => steps(vec![
-            Step::cargo("format", &["fmt", "--all"]),
-            Step::cargo(
-                "lint",
-                &[
-                    "clippy",
-                    "--workspace",
-                    "--all-targets",
-                    "--",
-                    "-D",
-                    "warnings",
-                ],
-            ),
-            Step::cargo("suite", &["nextest", "run", "--workspace"]),
-            Step::cargo("doctests", &["test", "--workspace", "--doc"]),
-            Step::cargo(
-                "corpus parse",
-                &[
-                    "run",
-                    "-p",
-                    "ns-analyzer",
-                    "--",
-                    "parse-corpus",
-                    "corpus/modules",
-                ],
-            ),
-            Step::gradle("plugin", &["-p", "editors/jetbrains", "check"]),
-        ]),
+        "commit" => vec![
+            Part::Steps(vec![Step::cargo("format", &["fmt", "--all"])]),
+            Part::ShippedCode,
+            Part::Steps(vec![
+                Step::cargo(
+                    "lint",
+                    &[
+                        "clippy",
+                        "--workspace",
+                        "--all-targets",
+                        "--",
+                        "-D",
+                        "warnings",
+                    ],
+                ),
+                Step::cargo("suite", &["nextest", "run", "--workspace"]),
+                Step::cargo("doctests", &["test", "--workspace", "--doc"]),
+                Step::cargo(
+                    "corpus parse",
+                    &[
+                        "run",
+                        "-p",
+                        "ns-analyzer",
+                        "--",
+                        "parse-corpus",
+                        "corpus/modules",
+                    ],
+                ),
+                Step::gradle("plugin", &["-p", "editors/jetbrains", "check"]),
+            ]),
+        ],
         "analyzer" => steps(vec![Step::cargo(
             "hints oracle",
             &["nextest", "run", "-p", "ns-analyzer", "--profile", "hints"],
@@ -221,25 +250,19 @@ fn main() -> ExitCode {
             }
         }
     }
+    // The gates build and test against the embedded shipped code, so it must
+    // be current before anything builds; once per call, wherever a group
+    // places it, else first.
+    let mut placed = false;
+    parts.retain(|part| *part != Part::ShippedCode || !std::mem::replace(&mut placed, true));
+    if !placed {
+        parts.insert(0, Part::ShippedCode);
+    }
     let root = repository_root();
     let mut times = Vec::new();
-    // The gates build and test against the embedded shipped code, so it must
-    // be current before the first group runs.
-    let started = Instant::now();
-    println!(
-        "
-==> shipped code"
-    );
-    if shipped_code(&root, false) != ExitCode::SUCCESS {
-        eprintln!(
-            "
-FAILED: shipped code"
-        );
-        return ExitCode::FAILURE;
-    }
-    times.push(("shipped code".to_string(), started.elapsed()));
     for part in &parts {
         let outcome = match part {
+            Part::ShippedCode => run(&shipped_code_step(), &root, &mut times),
             Part::Steps(steps) => steps
                 .iter()
                 .try_for_each(|step| run(step, &root, &mut times)),
@@ -415,7 +438,7 @@ mod tests {
             .iter()
             .filter_map(|part| match part {
                 Part::Steps(steps) => Some(steps.iter().map(|step| step.label.as_str())),
-                Part::StressSuites => None,
+                Part::StressSuites | Part::ShippedCode => None,
             })
             .flatten()
             .collect();
