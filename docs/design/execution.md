@@ -5159,6 +5159,76 @@ embedded base image of the shipped world -- are open
 ([OPEN-WORK.md](../OPEN-WORK.md), "The cost of building the shipped world
 at boot").
 
+### What the precompiled shipped code moved
+
+The shipped modules' compiled code is generated ahead of time by `cargo xtask
+shipped-code` and embedded in the binary; an optimized boot decodes it
+instead of parsing, resolving and compiling the roughly 9,000 lines of the
+six modules (`shipped_code/`, `interpreter/core_library.rs`). The world is
+still built by running the binary's own code on the decoded mixins, so the
+instantiations and `complete_shipped_world` are what they were.
+
+**Measured 2026-10-14, `eb2716b8` against `f60f6782`**, the head of this
+branch against the head of `master` it repeats the start-up measurement of
+the same day at, on the measuring workstation (Windows 11). Both are release
+builds with the pinned `RUSTFLAGS` of the protocol above, each in its own
+target directory, `f60f6782` in a throwaway worktree under `.temp/`; the
+branch's artifact was generated first, and the temporary marks (below) show
+its decode phases where `master`'s show parse, resolve and compile, which
+confirms the artifact is used. One build per side: the effect is a boot of
+some 13.6 ms against some 1.6 ms, far above the build-to-build spread of
+percent-level run-loop timings the protocol guards against. The program is a
+hello (`main:args:` showing `'hello'` on the transcript). The marks are
+`Instant` readings at the start of `bootstrap_with` and around each module's
+parse, resolve, compile (decode on the branch), class, instantiation,
+`complete_shipped_world` and the platform's `build`, printed to `stderr`;
+they were in both trees, are not committed, and cost a few microseconds
+each. 30 runs, the median per label; the whole process is 40 runs of the
+same binaries with the marks switched off, timed from outside.
+
+| Module | Parse | Resolve | Compile | Class and instance | Sum, `f60f6782` | Decode | Class and instance | Sum, `eb2716b8` |
+|---|---|---|---|---|---|---|---|---|
+| `Kernel` | 3.44 | 0.67 | 4.51 | 0.17 | 8.9 ms | 0.90 | 0.08 | 0.98 ms |
+| `CollectionsFactory` | 0.93 | 0.20 | 1.57 | 0.02 | 2.7 ms | 0.27 | 0.01 | 0.29 ms |
+| `TypedArraysFactory` | 0.58 | 0.10 | 0.63 | 0.02 | 1.3 ms | 0.11 | 0.02 | 0.14 ms |
+| `PlatformFactory`, `TranscriptFactory`, `TimeFactory` | | | | | 0.55 ms | | | 0.14 ms |
+| `complete_shipped_world`, the platform's `build` | | | | | 0.09 ms | | | 0.08 ms |
+| **The boot** | | | | | **13.6 ms** | | | **1.6 ms** |
+
+The module sums include a few microseconds of set-up between marks (0.1 ms
+for the kernel's). They repeat the 2026-10-14 table of the design: parse 5.2 ms, resolve 1.0 ms,
+compile 7.0 ms there, 13.7 ms the boot.
+
+| Process | `f60f6782` | `eb2716b8` |
+|---|---|---|
+| The boot, summed medians of the marks | 13.6 ms | 1.6 ms |
+| `ns-next run` of the hello, median of 40 | 20.8 ms | 5.2 ms |
+| `ns-next --version`, median of 40 | 2.6 ms | 2.5 ms |
+
+**The boot is 12 ms shorter and the whole process 15.5 ms shorter.** The
+boot is an eighth of what it was; the process, with the 2.5 ms a process
+that boots nothing costs, a quarter. The whole process fell by more than the
+boot (15.5 ms against 12.0 ms) and this measurement does not decompose the
+remaining 3.5 ms; it lies outside the marks.
+
+**Decoding costs 1.3 ms in all**: the kernel's 0.90 ms, `CollectionsFactory`'s
+0.27 ms, `TypedArraysFactory`'s 0.11 ms and 10 to 24 microseconds for each of
+the other three. That is about a ninth of the 12 ms the source path spent on
+the same modules, and the kernel alone is more than half of it. What remains
+of the boot beyond decoding is the instantiations and the class building,
+0.2 ms.
+
+**The second stage does not pay at this size.** Loading a module on its
+first demand could save only what the boot spends on modules a program may
+never touch: `CollectionsFactory` and `TypedArraysFactory`, decoded and
+instantiated, cost 0.27 + 0.01 and 0.11 + 0.02 ms, 0.40 ms together, below
+the 0.5 ms the stage has to exceed to be worth the machinery, and an image
+names the shipped world's objects, so the loader would still have to build
+the modules an image refers to. The kernel's 0.90 ms is not a candidate: it
+is always needed. The item stays in [OPEN-WORK.md](../OPEN-WORK.md) with
+these numbers, to be measured again if the shipped modules grow by an order
+of magnitude.
+
 ### What simultaneous slots cost
 
 Simultaneous slots ([object-model.md](object-model.md), "Simultaneous
