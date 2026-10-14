@@ -315,9 +315,10 @@ once, which writes the embedded shipped code
 (`crates/ns-runtime/core-library/shipped-code.bin`, gitignored;
 `docs/design/core-library.md`, "The embedded shipped code"): right after
 `cargo fmt --all` in the `commit` group, which is the only step that rewrites
-sources, and otherwise first. "Every commit"
-is every commit that changes more than Markdown (check `git diff --stat`): a change to Rust, a test, a fixture, a
-golden, a `.ns` or a `Cargo.toml` runs its gates however small. The nextest
+sources, and otherwise before the first group. "Every commit" is every commit
+that changes more than Markdown (check `git diff --stat`): a change to Rust, a
+test, a fixture, a golden, a `.ns` or a `Cargo.toml` runs its gates however
+small. The nextest
 profiles are `.config/nextest.toml`'s; every one runs on 18 threads.
 
 | Group | Runs | When |

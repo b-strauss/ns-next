@@ -99,7 +99,10 @@ enum Part {
 /// `cargo xtask shipped-code`, run as a fresh process built in a target
 /// directory of its own: the fingerprint is compiled into this binary, so
 /// after `cargo fmt --all` rewrote sources only a rebuilt xtask knows the new
-/// one, and the running executable cannot be rebuilt in place on Windows.
+/// one, and the running executable cannot be rebuilt in place on Windows. It
+/// builds `ns-runtime`, `ns-syntax` and their dependencies a second time in
+/// `target/shipped-code` (under the gitignored `/target`), cold on the first
+/// run and incrementally again whenever the sources changed.
 fn shipped_code_step() -> Step {
     Step::cargo(
         "shipped code",
@@ -250,9 +253,10 @@ fn main() -> ExitCode {
             }
         }
     }
-    // The gates build and test against the embedded shipped code, so it must
-    // be current before anything builds; once per call, wherever a group
-    // places it, else first.
+    // The gates build and test against the embedded shipped code, so it runs
+    // once per call: right after `cargo fmt --all` when the run includes
+    // `commit` (a group listed before `commit` then sees the artifact as it
+    // was before formatting), else before the first group.
     let mut placed = false;
     parts.retain(|part| *part != Part::ShippedCode || !std::mem::replace(&mut placed, true));
     if !placed {
