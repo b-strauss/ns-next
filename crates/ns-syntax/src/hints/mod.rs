@@ -85,7 +85,7 @@ struct Collector<'text> {
 impl<'tree> walk::Visitor<'tree> for Collector<'_> {
     fn section(&mut self, section: &Section<'tree>, scope: &Scope<'tree>) {
         initialize::hints(section, scope, self.text, &mut self.hints);
-        if section.kind == SectionKind::Body {
+        if section.kind != SectionKind::Header {
             read_only::local_hints(section, self.text, &mut self.hints);
         }
     }
@@ -327,7 +327,7 @@ mod tests {
         let text = indoc! {"
             class Module = (
               |
-                count
+                private count
               |
               count:: 1.
             ) (
@@ -341,7 +341,7 @@ mod tests {
             indoc! {"
                 class Module = (
                   |
-                    count ::= 1.
+                    private count ::= 1.
                   |
                 ) (
                   public run = (
@@ -358,8 +358,8 @@ mod tests {
         let text = indoc! {"
             class Module = (
               |
-                count
-                total ::= 0.
+                private count
+                private total ::= 0.
               |
               count:: 1.
             ) ()
@@ -451,6 +451,224 @@ mod tests {
             assert!(
                 !names_of(&text, HintKind::InitializeInDeclaration).contains(&"count".to_string()),
                 "{statement}"
+            );
+        }
+    }
+
+    /// In a header `count:: 1` sends the setter `count:`, which a subclass
+    /// may override; an initializer stores directly. Only a private send
+    /// is never overridden.
+    #[test]
+    fn a_protected_or_public_header_slot_gets_no_hint() {
+        let text = indoc! {"
+            class Module = (
+              |
+                count
+                protected limit
+                public total
+              |
+              count:: 1.
+              limit:: 2.
+              total:: 3.
+            ) ()
+        "};
+        assert!(names_of(text, HintKind::InitializeInDeclaration).is_empty());
+    }
+
+    /// A bare slot may end in its optional `.`: the initializer goes before
+    /// it, so the declaration keeps one period.
+    #[test]
+    fn a_bare_local_written_with_its_period_takes_the_initializer_before_it() {
+        let text = indoc! {"
+            class Module = () (
+              public run = (
+                |
+                  count.
+                |
+                count:: 1.
+                ^count
+              )
+            )
+        "};
+        assert_eq!(
+            fixed(text, HintKind::InitializeInDeclaration, "count"),
+            indoc! {"
+                class Module = () (
+                  public run = (
+                    |
+                      count ::= 1.
+                    |
+                    ^count
+                  )
+                )
+            "}
+        );
+    }
+
+    #[test]
+    fn a_local_written_with_its_period_moves_without_it() {
+        let text = indoc! {"
+            class Module = () (
+              public run = (
+                |
+                  count.
+                  total ::= 0.
+                |
+                count:: 1.
+                ^count + total
+              )
+            )
+        "};
+        assert_eq!(
+            fixed(text, HintKind::InitializeInDeclaration, "count"),
+            indoc! {"
+                class Module = () (
+                  public run = (
+                    |
+                      total ::= 0.
+                      count ::= 1.
+                    |
+                    ^count + total
+                  )
+                )
+            "}
+        );
+    }
+
+    /// A previous bare slot keeps its own period when the one after it
+    /// moves.
+    #[test]
+    fn a_moved_local_leaves_the_period_of_the_one_before_it() {
+        let text = indoc! {"
+            class Module = () (
+              public run = (
+                |
+                  first.
+                  count.
+                  total ::= 0.
+                |
+                count:: 1.
+                ^count + total + first
+              )
+            )
+        "};
+        assert_eq!(
+            fixed(text, HintKind::InitializeInDeclaration, "count"),
+            indoc! {"
+                class Module = () (
+                  public run = (
+                    |
+                      first.
+                      total ::= 0.
+                      count ::= 1.
+                    |
+                    ^count + total + first
+                  )
+                )
+            "}
+        );
+    }
+
+    /// A closure answers the value of its last statement; an initializer
+    /// has none.
+    #[test]
+    fn the_last_statement_of_a_closure_keeps_its_place() {
+        let text = indoc! {"
+            class Module = () (
+              public run = (
+                ^[
+                  |
+                    count
+                  |
+                  count:: 5
+                ] value
+              )
+            )
+        "};
+        assert!(names_of(text, HintKind::InitializeInDeclaration).is_empty());
+    }
+
+    #[test]
+    fn a_closure_statement_followed_by_another_moves() {
+        let text = indoc! {"
+            class Module = () (
+              public run = (
+                ^[
+                  |
+                    count
+                  |
+                  count:: 5.
+                  count + 1
+                ] value
+              )
+            )
+        "};
+        assert_eq!(names_of(text, HintKind::InitializeInDeclaration), ["count"]);
+    }
+
+    /// A method answers `self` without `^`, so its last statement may move.
+    #[test]
+    fn the_last_statement_of_a_method_moves() {
+        let text = indoc! {"
+            class Module = () (
+              public run = (
+                |
+                  count
+                |
+                count:: 5
+              )
+            )
+        "};
+        assert_eq!(names_of(text, HintKind::InitializeInDeclaration), ["count"]);
+    }
+
+    /// A comment stays beside the code it was written beside: none moves or
+    /// is copied with a reordered declaration, and none is left describing
+    /// the statement after a deleted one.
+    #[test]
+    fn a_comment_beside_a_reordered_declaration_or_on_the_statement_keeps_the_code() {
+        let separator = indoc! {"
+            class Module = () (
+              public run = (
+                |
+                  first
+                  count
+                  /// running total
+                  total ::= 0.
+                |
+                count:: 1.
+                ^count + total + first
+              )
+            )
+        "};
+        let destination = indoc! {"
+            class Module = () (
+              public run = (
+                |
+                  count
+                  total ::= 0. /// the sum
+                |
+                count:: 1.
+                ^count + total
+              )
+            )
+        "};
+        let attached = indoc! {"
+            class Module = () (
+              public run = (
+                |
+                  count
+                |
+                /// set the count
+                count:: 1.
+                ^count
+              )
+            )
+        "};
+        for text in [separator, destination, attached] {
+            assert!(
+                !names_of(text, HintKind::InitializeInDeclaration).contains(&"count".to_string()),
+                "{text}"
             );
         }
     }

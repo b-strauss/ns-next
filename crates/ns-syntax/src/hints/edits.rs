@@ -74,6 +74,30 @@ pub(super) fn declaration_end(slot: &SlotDeclaration) -> u32 {
         .map_or(slot.name.span.end, |annotation| annotation.span.end)
 }
 
+/// The `.` a bare slot is written with, which the grammar makes optional
+/// (§6.3.2). Lexed, not searched: a comment after the name may spell one.
+pub(super) fn bare_period(text: &str, slot: &SlotDeclaration) -> Option<Span> {
+    if slot.initializer.is_some() {
+        return None;
+    }
+    let from = declaration_end(slot) as usize;
+    let (tokens, _) = crate::lexer::Lexer::new(&text[from..slot.span.end as usize]).run();
+    let period = tokens.iter().find(|token| token.kind == TokenKind::Dot)?;
+    let start = from as u32 + period.span.start;
+    Some(Span::new(start, start + 1))
+}
+
+/// Where a slot's text ends, its `.` included: what moving it takes along.
+pub(super) fn written_end(text: &str, slot: &SlotDeclaration) -> u32 {
+    bare_period(text, slot).map_or_else(|| declaration_end(slot), |period| period.end)
+}
+
+/// The text after `offset` up to the end of its line.
+pub(super) fn rest_of_line(text: &str, offset: u32) -> &str {
+    let offset = offset as usize;
+    &text[offset..line_end(text, offset)]
+}
+
 /// ` ::= value.`, the value as written. Its continuation lines move right
 /// by as many columns as the declaration stands right of the statement
 /// (left when it stands left of it), so they keep their place relative to

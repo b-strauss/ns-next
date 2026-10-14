@@ -7,7 +7,8 @@
 //! on its own: once the first statement has moved, the next one is first.
 
 use crate::ast::{
-    Expression, ExpressionKind, SlotDeclaration, SlotMutability, Statement, StatementKind,
+    AccessModifier, Expression, ExpressionKind, SlotDeclaration, SlotMutability, Statement,
+    StatementKind,
 };
 use crate::span::Span;
 
@@ -31,7 +32,21 @@ pub(super) fn hints(section: &Section<'_>, scope: &Scope<'_>, text: &str, hints:
         let Some(position) = bare_slot(section.slots, target) else {
             continue;
         };
-        if names::expression_mentions(value, target) {
+        // In a header `x:: e` sends the setter `x:`, which a subclass may
+        // override, where an initializer stores directly; a private send
+        // is never overridden (§5.9).
+        if section.kind == SectionKind::Header
+            && section.slots[position].access != Some(AccessModifier::Private)
+        {
+            continue;
+        }
+        // A closure answers its last statement's value; an initializer has
+        // none.
+        if section.kind == SectionKind::Closure && index + 1 == section.statements.len() {
+            continue;
+        }
+        // A comment attached to the statement would describe the next one.
+        if !statement.comments.is_empty() || names::expression_mentions(value, target) {
             continue;
         }
         let movable = index == 0
@@ -47,7 +62,7 @@ pub(super) fn hints(section: &Section<'_>, scope: &Scope<'_>, text: &str, hints:
         };
         let placed = match last_initialized {
             Some(last) if position < last => {
-                if section.kind != SectionKind::Body {
+                if section.kind == SectionKind::Header {
                     continue;
                 }
                 reordered(text, section.slots, position, last, statement, value)
@@ -105,16 +120,29 @@ fn in_place(
     statement: &Statement,
     value: &Expression,
 ) -> Vec<Edit> {
-    let end = edits::declaration_end(slot);
+    let initializer = edits::initializer(text, value, statement.span.start, slot.span.start);
+    // A slot written with its optional `.` keeps it, the initializer going
+    // before it.
+    let (end, initializer) = match edits::bare_period(text, slot) {
+        Some(period) => (
+            period.start,
+            initializer
+                .strip_suffix('.')
+                .unwrap_or_default()
+                .to_string(),
+        ),
+        None => (edits::declaration_end(slot), initializer),
+    };
     vec![Edit {
         span: Span::new(end, end),
-        text: edits::initializer(text, value, statement.span.start, slot.span.start),
+        text: initializer,
     }]
 }
 
 /// The slot at `position` moved, with its initializer, after the slot at
 /// `last`, the last initialized one; `None` when a comment stands in what
-/// the move deletes.
+/// the move deletes or copies, or after the declaration it moves behind:
+/// a comment stays beside the code it was written beside.
 fn reordered(
     text: &str,
     slots: &[SlotDeclaration],
@@ -125,19 +153,24 @@ fn reordered(
 ) -> Option<Vec<Edit>> {
     let slot = &slots[position];
     let following = &slots[position + 1];
-    let separator = &text[edits::declaration_end(slot) as usize..following.span.start as usize];
+    // The slot's own `.` goes with the removal; the moved declaration gets
+    // the initializer's.
+    let separator = &text[edits::written_end(text, slot) as usize..following.span.start as usize];
     let removal = if position == 0 {
         Span::new(slot.span.start, following.span.start)
     } else {
         Span::new(
-            edits::declaration_end(&slots[position - 1]),
-            edits::declaration_end(slot),
+            edits::written_end(text, &slots[position - 1]),
+            edits::written_end(text, slot),
         )
     };
-    if edits::holds_a_comment(&text[removal.start as usize..removal.end as usize]) {
+    let destination = slots[last].span.end;
+    if edits::holds_a_comment(&text[removal.start as usize..removal.end as usize])
+        || edits::holds_a_comment(separator)
+        || edits::holds_a_comment(edits::rest_of_line(text, destination))
+    {
         return None;
     }
-    let destination = slots[last].span.end;
     let declaration = format!(
         "{separator}{}{}",
         &text[slot.span.start as usize..edits::declaration_end(slot) as usize],

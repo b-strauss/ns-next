@@ -9,8 +9,12 @@ use crate::span::Span;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SectionKind {
-    /// A method's or a closure's code: its temporaries and statements.
-    Body,
+    /// A method's code: its temporaries and statements. It answers `self`
+    /// unless a `^` says otherwise.
+    Method,
+    /// A closure's code: its temporaries and statements. It answers the
+    /// value of its last statement.
+    Closure,
     /// A class's instance-side header: its slots and initializer
     /// expressions.
     Header,
@@ -146,6 +150,7 @@ fn class<'tree>(declaration: &'tree ClassDeclaration, visitor: &mut impl Visitor
                     }
                 }
                 Member::Method(method) => body(
+                    SectionKind::Method,
                     &method.body,
                     parameters_of(&method.pattern),
                     &mut Scope::default(),
@@ -157,6 +162,7 @@ fn class<'tree>(declaration: &'tree ClassDeclaration, visitor: &mut impl Visitor
 }
 
 fn body<'tree>(
+    kind: SectionKind,
     code: &'tree CodeBody,
     parameters: Vec<&'tree str>,
     scope: &mut Scope<'tree>,
@@ -173,7 +179,7 @@ fn body<'tree>(
     }
     visitor.section(
         &Section {
-            kind: SectionKind::Body,
+            kind,
             slots: &code.temporaries,
             statements: &code.statements,
             span: code.span,
@@ -228,7 +234,13 @@ fn expression<'tree>(
                 .iter()
                 .map(|parameter| parameter.name.name.as_str())
                 .collect();
-            body(&block.body, parameters, scope, visitor);
+            body(
+                SectionKind::Closure,
+                &block.body,
+                parameters,
+                scope,
+                visitor,
+            );
         }
         ExpressionKind::DynamicArray { elements, .. } => {
             for element in elements {

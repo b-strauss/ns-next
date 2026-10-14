@@ -29,16 +29,25 @@ gets no hint A.
 ### Hint A
 
 A slot `x` is a candidate when it is declared bare (`x`, no initializer, not
-`lazy`) and a statement `x:: e.` of its own section assigns it. The statement
+`lazy`) and a statement `x:: e.` of its own section assigns it. A header slot
+is a candidate only when it is `private`: in a header `x:: e` sends the
+setter `x:`, which a subclass may override, where an initializer stores
+directly; a private send is never overridden (§5.9). The statement
 qualifies when no comment stands in it, in the text a fix deletes or on the
-rest of its line, it is not parenthesized and is not a chain (`x:: y:: e`),
-and one of these holds:
+rest of its line, no comment is attached to it (it would then describe the
+next statement), it is not parenthesized and is not a chain (`x:: y:: e`),
+it is not the last statement of a closure body (a closure answers its last
+statement's value, which an initializer does not have; a method answers
+`self` without `^`, and a header's statements have no value), and one of
+these holds:
 
 1. **At the start.** It is the section's first statement, and `e` does not
    mention `x`. Moving it must keep the order of evaluation: every
    existing initializer of the section first, then `e`. A local may be
    reordered for that -- its declaration moves after the last initialized
-   one; a header slot is never reordered, since the order of header slots
+   one, unless a comment stands between it and the next slot or after the
+   last initialized one on its line (the move would copy the one or leave
+   the other behind the moved declaration); a header slot is never reordered, since the order of header slots
    is the class's layout, so a header slot declared before an initialized
    one gets no hint. Each fix stands alone: once the first statement has
    moved, the next one is first, which is how "apply all" moves a whole
@@ -98,11 +107,12 @@ Only a module that parses without error gets hints.
   every round preserves behaviour. It answers one edit over the smallest
   range covering every change.
 - **The edits are minimal**, so a file keeps its layout:
-  - A appends ` ::= <value>.` to the declaration, the value copied verbatim
+  - A appends ` ::= <value>.` to the declaration (` ::= <value>` before the
+    `.` a bare slot may be written with), the value copied verbatim
     from the source, its continuation lines shifted by the difference in
     indentation; deletes the statement and its period, and its line when
     that leaves the line blank; and, when a local is reordered, moves its
-    declaration.
+    declaration, its own `.` removed with it.
   - B replaces `::=` by `=`.
   - Every fix's result parses: the rules promise it, "apply all" checks it
     with a `debug_assert!`, and the behaviour oracle holds every golden to
