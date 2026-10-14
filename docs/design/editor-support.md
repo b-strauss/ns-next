@@ -517,6 +517,9 @@ formatted is not reformatted by a quick fix (`hints/edits.rs`):
   either.
 - Every fix's result parses: the rules promise it, `apply_all` checks it
   with a `debug_assert!`, and the behaviour oracle holds every golden to it.
+  Should a round of `apply_all` still not parse -- a defect in a rule --
+  a release build answers the last round's text that did, so the editor
+  is never offered a text that no longer parses.
   Parsing each fix's result while hints are computed would cost a parse per
   hint on every keystroke, so it is not done there.
 
@@ -548,7 +551,8 @@ when a code-action request first needs it and then kept with the document
 version (`code_actions::whole_file_edit`, in `server.rs`'s `Document`). Its
 later rounds parse and edit texts the analysis never saw, so it runs under
 `catch_unwind`, as the analysis does ("Robustness"): a panic there answers
-no whole-file action, and the quick fixes are still offered.
+no whole-file action and is reported on the server's standard error, and
+the quick fixes are still offered.
 
 **The plugin needs no code for it.** The platform shows a diagnostic of
 severity `HINT` as a weak warning (`LspDiagnosticsSupport.getHighlightSeverity`)
@@ -563,16 +567,22 @@ titles say; after the first, the editor offers "Make `count` read-only".
 
 - The unit tests in `hints/mod.rs`, on `indoc!` modules: each rule above
   with its positive and negative cases -- a closure's own `x::`, a comment
-  spelling `::=`, header slots getting no hint of either kind, a guard
-  before the statement, a value that may fail or change, a guard or an
-  initializer's closure mentioning the local, the reordering and the
-  comments that prevent it, a comment in, beside or attached to the
-  statement, a chain, a parenthesized assignment, the last statement of a
-  closure and of a method, a bare local written with its `.` -- each fix
+  spelling `::=`, header slots getting no hint of either kind, a local its
+  own or an earlier initializer captures (a self-referential closure among
+  them) and one a later initializer captures, a guard before the
+  statement, a value that may fail or change, a guard or an initializer's
+  closure mentioning the local, the reordering and the comments that
+  prevent it, a comment in, beside or attached to the statement, a chain,
+  a parenthesized assignment, the last statement of a closure and of a
+  method, a bare local written with its `.` -- each fix
   applied, parsed and compared with the expected text, CRLF lines and
-  continued values included; "apply all" over a run of assignments, into a
-  moved closure, and a second time changing nothing. `code_actions.rs`'s
-  unit test covers the smallest changed range on character boundaries.
+  continued values included, a multi-line string or symbol moved right and
+  left and a reordered value following its declaration's new column;
+  "apply all" over a run of assignments, into a moved closure, past a local
+  an earlier initializer captures, and a second time changing nothing.
+  `code_actions.rs`'s unit tests cover the smallest changed range on
+  character boundaries and a panic while applying every hint answering no
+  whole-file edit.
 - **The behaviour oracle**, `crates/ns-analyzer/tests/hinted_goldens.rs`:
   "apply all" over every golden program's sources (for a project, every
   source its `newspeak.json` names, outside its directory too, and every

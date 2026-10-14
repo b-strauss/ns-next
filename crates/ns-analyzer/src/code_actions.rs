@@ -118,13 +118,28 @@ pub fn actions(
 /// changes or applying panics. Later rounds of `apply_all` parse and edit
 /// texts the analysis never saw, so a defect there is possible; like a panic
 /// in the analysis (`analysis::guarded`) it must not take the server, and
-/// the editor's support for every other file, down with it. The per-hint
-/// quick fixes are then still offered.
+/// the editor's support for every other file, down with it. The panic is
+/// reported on the server's standard error, where `server.rs`'s
+/// `report_malformed` writes too (a request handler holds no connection for
+/// a `window/logMessage`), and the per-hint quick fixes are still offered.
 pub fn whole_file_edit(text: &str) -> Option<(Span, String)> {
-    let applied = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        crate::hints::apply_all(text)
-    }))
-    .ok()?;
+    whole_file_edit_guarded(text, crate::hints::apply_all)
+}
+
+fn whole_file_edit_guarded(
+    text: &str,
+    apply_all: impl FnOnce(&str) -> String,
+) -> Option<(Span, String)> {
+    let applied = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| apply_all(text))) {
+        Ok(applied) => applied,
+        Err(payload) => {
+            eprintln!(
+                "internal error in ns-next-analyzer while applying every hint: {}; this is an ns-next defect, please report it",
+                crate::analysis::panic_detail(payload.as_ref())
+            );
+            return None;
+        }
+    };
     let changed = changed_span(text, &applied);
     (applied != text).then_some(changed)
 }
@@ -160,8 +175,21 @@ fn changed_span(before: &str, after: &str) -> (Span, String) {
 
 #[cfg(test)]
 mod tests {
-    use super::changed_span;
+    use super::{changed_span, whole_file_edit_guarded};
     use ns_syntax::Span;
+
+    #[test]
+    fn a_panic_while_applying_every_hint_answers_no_whole_file_edit() {
+        assert_eq!(
+            whole_file_edit_guarded("text", |_| panic!("a rule broke")),
+            None
+        );
+        assert_eq!(
+            whole_file_edit_guarded("text", |text| format!("{text}!")),
+            Some((Span::new(4, 4), "!".to_string()))
+        );
+        assert_eq!(whole_file_edit_guarded("text", str::to_string), None);
+    }
 
     #[test]
     fn the_changed_span_leaves_out_the_common_prefix_and_suffix() {

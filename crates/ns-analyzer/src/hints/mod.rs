@@ -118,7 +118,8 @@ pub fn hints_of(text: &str) -> Vec<Hint> {
 /// closure with hints of its own, whose edits the move would carry along
 /// -- then finds the hints of the result. Every fix is valid on its own,
 /// so every round keeps the behaviour, and each removes an assignment or
-/// a `::=`, so the rounds end.
+/// a `::=`, so the rounds end. A round whose result does not parse ends
+/// them, answering the text before it.
 pub fn apply_all(text: &str) -> String {
     let mut current = text.to_string();
     loop {
@@ -144,11 +145,16 @@ pub fn apply_all(text: &str) -> String {
             .flat_map(|hint| hint.edits.iter().cloned())
             .collect();
         let next = apply(&current, &round);
-        debug_assert!(
-            ns_syntax::parse(&next).is_ok(),
-            "a round of fixes does not parse:
-{next}"
-        );
+        // The rules promise that every round parses; a round that does not
+        // is a defect in a rule. The tests and the oracle must see it, while
+        // an editor must never be offered a text that no longer parses, so
+        // it gets the last round that did. Only a defective rule reaches
+        // this, so no test does.
+        let parses = ns_syntax::parse(&next).is_ok();
+        debug_assert!(parses, "a round of fixes does not parse:\n{next}");
+        if !parses {
+            return current;
+        }
         current = next;
     }
 }

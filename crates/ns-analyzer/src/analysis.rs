@@ -52,11 +52,7 @@ pub(crate) fn guarded(text: &str, analyzer: impl FnOnce(&str) -> Analysis) -> An
     match catch_unwind(AssertUnwindSafe(|| analyzer(text))) {
         Ok(analysis) => analysis,
         Err(payload) => {
-            let detail = payload
-                .downcast_ref::<&str>()
-                .map(|message| (*message).to_string())
-                .or_else(|| payload.downcast_ref::<String>().cloned())
-                .unwrap_or_else(|| "no message".to_string());
+            let detail = panic_detail(payload.as_ref());
             Analysis {
                 findings: vec![Finding {
                     span: Span::new(0, 0),
@@ -72,6 +68,15 @@ pub(crate) fn guarded(text: &str, analyzer: impl FnOnce(&str) -> Analysis) -> An
             }
         }
     }
+}
+
+/// The message a panic carried, or "no message".
+pub(crate) fn panic_detail(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|message| (*message).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "no message".to_string())
 }
 
 fn analyze_unguarded(text: &str) -> Analysis {
