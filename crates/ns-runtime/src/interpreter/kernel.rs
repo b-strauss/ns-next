@@ -20,8 +20,8 @@ pub(crate) const KERNEL_SOURCE: &str = include_str!("../../core-library/Kernel.n
 thread_local! {
     /// The kernel, parsed and resolved once per thread: the AST and its
     /// bindings are immutable, and the test suite bootstraps well over a
-    /// hundred interpreters. Each interpreter still compiles it, because
-    /// compiled code is numbered against one heap's inline caches.
+    /// hundred interpreters. Each interpreter still compiles it: compiling
+    /// needs no heap, but the boot builds its world from its own mixins.
     static RESOLVED_KERNEL: Rc<ResolvedModule> = Rc::new(resolve_kernel_source());
 }
 
@@ -113,14 +113,8 @@ impl Interpreter {
     /// like any other, entered from the outside (`Interpreter::instantiate`),
     /// so the stress modes see it too.
     pub(crate) fn install_kernel(&mut self) {
-        let resolved = resolved_kernel();
         let (kernel_class, applied_classes, mirror) = self.enter(|mutator| {
-            let root_mixin = mutator.build_root_mixin(
-                &resolved.module.root_class,
-                &resolved.bindings,
-                super::instantiate::ModuleSource::Kernel,
-            );
-            check_kernel_shape(&root_mixin, &resolved);
+            let root_mixin = mutator.shipped_root_mixin_from_source("Kernel");
             let (kernel_class, applied_classes) = mutator.fill_builtin_classes(&root_mixin);
             let applied_classes: Vec<(Rc<Mixin>, Root)> = applied_classes
                 .into_iter()
@@ -638,7 +632,7 @@ pub(crate) fn kernel_kind_named(name: &str) -> Option<BuiltinClass> {
 /// an ordinary class, unchecked here: its accessor builds it, running its
 /// clause, as any class's does. And every mirror send passes a literal
 /// block only as its failure block (`check_mirror_send_arguments`).
-fn check_kernel_shape(root: &Rc<Mixin>, resolved: &ResolvedModule) {
+pub(super) fn check_kernel_shape(root: &Rc<Mixin>, resolved: &ResolvedModule) {
     check_mirror_send_arguments(resolved, "Kernel");
     let kinds: Vec<BuiltinClass> = BuiltinClass::ALL
         .into_iter()

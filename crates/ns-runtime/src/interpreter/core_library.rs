@@ -8,6 +8,7 @@ use std::cell::OnceCell;
 use std::rc::Rc;
 
 use crate::interpreter::{HostResult, HostSignal, Mutator, Root};
+use crate::mixin::Mixin;
 use crate::types::{ResolvedModule, SourceOrigin, Value};
 use crate::Symbol;
 
@@ -93,8 +94,8 @@ thread_local! {
     /// is pure -- a parse and `resolve_kernel`, no
     /// heap and no handle -- and never asks for another module, so filling
     /// a cell cannot re-enter it. Each interpreter still compiles every
-    /// module, because compiled code is numbered against one heap's inline
-    /// caches.
+    /// module: compiling needs no heap, but the boot builds its world from
+    /// its own mixins.
     static RESOLVED_SHIPPED_MODULES: Vec<OnceCell<Rc<ResolvedModule>>> =
         SHIPPED_MODULES.iter().map(|_| OnceCell::new()).collect();
 }
@@ -194,8 +195,11 @@ impl crate::interpreter::Interpreter {
         });
         for shipped in SHIPPED_MODULES {
             let name = shipped.name;
-            let resolved = resolved_shipped_module(name);
-            let factory_class = self.load_module(&resolved);
+            let factory_class = self.enter(|mutator| {
+                let mixin = mutator.shipped_root_mixin_from_source(name);
+                let class = mutator.root_class_of_mixin(&mixin);
+                mutator.stash(Value::object(class))
+            });
             let instance = match shipped.factory {
                 ShippedFactory::MirrorAndKernel => booted(
                     self.instantiate(&factory_class, &[mirror.clone(), kernel.clone()]),
@@ -239,6 +243,56 @@ impl crate::interpreter::Interpreter {
             let platform = mutator.fetch(&platform);
             mutator.platform_singleton = Some(platform);
         });
+    }
+}
+
+impl<'gc> Mutator<'gc> {
+    /// The root mixin of `Kernel` or of the `SHIPPED_MODULES` entry `name`,
+    /// compiled from its source, which is parsed, resolved and checked
+    /// (the mirror sends, and for the kernel its shape) on the way. A name
+    /// that is neither is a defect in the binary, so it panics.
+    pub(crate) fn shipped_root_mixin_from_source(&mut self, name: &str) -> Rc<Mixin> {
+        if name == "Kernel" {
+            let resolved = super::kernel::resolved_kernel();
+            let root_mixin = self.build_root_mixin(
+                &resolved.module.root_class,
+                &resolved.bindings,
+                super::instantiate::ModuleSource::Kernel,
+            );
+            super::kernel::check_kernel_shape(&root_mixin, &resolved);
+            root_mixin
+        } else {
+            let resolved = resolved_shipped_module(name);
+            self.compile_root_mixin(&resolved)
+        }
+    }
+}
+
+impl crate::interpreter::Interpreter {
+    /// The root mixin of every shipped module after a boot, `Kernel` first
+    /// and then the `SHIPPED_MODULES` in order: the one each module
+    /// instance's class applies.
+    // Read by the tests now, and by the precompiling step that follows.
+    #[cfg_attr(not(test), expect(dead_code))]
+    pub(crate) fn shipped_root_mixins(&mut self) -> Vec<(&'static str, Rc<Mixin>)> {
+        self.enter(|mutator| {
+            let names =
+                std::iter::once("Kernel").chain(SHIPPED_MODULES.iter().map(|shipped| shipped.name));
+            names
+                .map(|name| {
+                    let instance = mutator
+                        .shipped_world
+                        .module_instance(Symbol::intern(name))
+                        .unwrap_or_else(|| panic!("internal: {name} has no module instance"));
+                    let class = mutator.class_of(Value::object(instance));
+                    let application = mutator
+                        .heap()
+                        .class_application(class)
+                        .unwrap_or_else(|| panic!("internal: {name}'s class is a class object"));
+                    (name, Rc::clone(&application.mixin))
+                })
+                .collect()
+        })
     }
 }
 
@@ -304,6 +358,22 @@ mod tests {
             crate::builtins::primitive::ModulePrimitive::InstanceNamed,
             subject,
         )
+    }
+
+    #[test]
+    fn the_boot_keeps_every_shipped_root_mixin_in_table_order() {
+        let mut interpreter = crate::Interpreter::bootstrap();
+        let names: Vec<&str> = interpreter
+            .shipped_root_mixins()
+            .iter()
+            .map(|(name, mixin)| {
+                assert_eq!(mixin.name.as_str(), *name);
+                *name
+            })
+            .collect();
+        let mut expected = vec!["Kernel"];
+        expected.extend(SHIPPED_MODULES.iter().map(|shipped| shipped.name));
+        assert_eq!(names, expected);
     }
 
     /// Every table entry parses and resolves to something, panicking on the

@@ -222,6 +222,13 @@ impl<'gc> Mutator<'gc> {
     /// compiled, for `load_module` to root.
     pub(crate) fn load_root_class(&mut self, resolved: &ResolvedModule) -> ClassReference<'gc> {
         let mixin = self.compile_root_mixin(resolved);
+        self.root_class_of_mixin(&mixin)
+    }
+
+    /// The root class of a finished root mixin, however the mixin came to
+    /// be: compiled from source here, or (for the shipped modules) handed
+    /// in by the boot.
+    pub(crate) fn root_class_of_mixin(&mut self, mixin: &Rc<Mixin>) -> ClassReference<'gc> {
         // Whatever the spelling, the rule leaves three class shapes to build:
         // over `Object`, over `Value`, or a `Value` level over `Object`.
         // `resolve` refuses every other root, so a defect reaches here only
@@ -247,7 +254,7 @@ impl<'gc> Mutator<'gc> {
         } else {
             Vec::new()
         };
-        let top = match super::nested::build_applied_levels(self, &mixin, superclass, &applied) {
+        let top = match super::nested::build_applied_levels(self, mixin, superclass, &applied) {
             Ok(top) => top,
             Err(_) => panic!("internal: every builtin class is a class object"),
         };
@@ -256,7 +263,7 @@ impl<'gc> Mutator<'gc> {
         // one (`own_slot_base`), so a class object never computes -- or can
         // disagree about -- an instance's shape.
         let (superclass, super_application) = top.unzip();
-        let application = self.apply_mixin(&mixin, super_application.as_ref());
+        let application = self.apply_mixin(mixin, super_application.as_ref());
         // `enclosing`/`declaring_class` are both `None` -- the module's root
         // class is the outermost level, so no object encloses it and no
         // declaration contains it. Every other class object in the system
@@ -297,7 +304,7 @@ impl<'gc> Mutator<'gc> {
 
     /// A module's root mixin, every body compiled, for `load_root_class` and
     /// `Interpreter::compile_module`.
-    fn compile_root_mixin(&mut self, resolved: &ResolvedModule) -> Rc<Mixin> {
+    pub(super) fn compile_root_mixin(&mut self, resolved: &ResolvedModule) -> Rc<Mixin> {
         let source = if resolved.kernel {
             ModuleSource::CoreLibrary
         } else {
