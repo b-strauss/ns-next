@@ -173,7 +173,6 @@ pub(super) fn assigned_in<'tree>(
 /// The names `declaration` assigns with `name::` or sends `name:` to,
 /// anywhere in it, whatever the receiver: everything that could write a
 /// private slot of the class.
-#[expect(dead_code, reason = "used by Task 4")]
 pub(super) fn written_in_class(declaration: &ClassDeclaration) -> HashSet<&str> {
     let mut written = HashSet::new();
     each_node_in_class(declaration, &mut |node| match node {
