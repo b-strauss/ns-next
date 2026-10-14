@@ -98,7 +98,7 @@ else. The decoder is `pub(crate)` and called only by the boot.
 order, the kernel first: the section's byte length (so a section can be
 skipped and later decoded on its own), its symbol table (strings, in order
 of first use) and the root mixin, recursively with every nested one. Numbers
-are LEB128, as in the image.
+are little-endian and fixed-width, as in the image.
 
 **Per mixin:** name, access, slots (name, `mutable`, access, `lazy`), the
 factory, the superclass clause and every `<:` clause each with its receiver
