@@ -40,8 +40,9 @@ pub(super) fn hints(section: &Section<'_>, scope: &Scope<'_>, text: &str, hints:
         if !statement.comments.is_empty() || names::expression_mentions(value, target) {
             continue;
         }
-        // After other statements only when none of them mentions the local:
-        // an initializer's closure may read it too.
+        // After other statements only for a settled value, and when neither
+        // they nor an initializer mention the local: an initializer's
+        // closure may read it too.
         let movable = index == 0
             || (settled(value, scope)
                 && !section.statements[..index]

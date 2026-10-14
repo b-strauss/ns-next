@@ -1,6 +1,7 @@
 //! Hints: what the editor points at that a fix can change without changing
-//! what the program does -- a slot whose first value a statement assigns
-//! (`initialize.rs`), and a slot nothing assigns again (`read_only.rs`).
+//! what the program does -- a local whose first value a statement assigns
+//! (`initialize.rs`), and a local nothing assigns again (`read_only.rs`),
+//! in the code of methods and closures; a class's header slots get none.
 //! Each hint carries its fix as text edits; `apply_all` applies every hint
 //! of a source. Syntactic on purpose: everything a rule needs is in the
 //! tree, so the hints need neither the resolver nor a running program. See
@@ -20,10 +21,10 @@ use walk::{Scope, Section};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HintKind {
-    /// A bare slot whose first value a statement assigns can take it in
+    /// A bare local whose first value a statement assigns can take it in
     /// its declaration.
     InitializeInDeclaration,
-    /// A slot declared with `::=` that nothing assigns again can be
+    /// A local declared with `::=` that nothing assigns again can be
     /// declared with `=`.
     ReadOnly,
 }
@@ -31,9 +32,9 @@ pub enum HintKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hint {
     pub kind: HintKind,
-    /// The slot's name.
+    /// The local's name.
     pub name: String,
-    /// The slot's name in the source, where the editor shows the hint.
+    /// The local's name in the source, where the editor shows the hint.
     pub span: Span,
     /// The method's or closure's code the local is declared in. Two hints
     /// of one section are never applied in the same round of `apply_all`.
