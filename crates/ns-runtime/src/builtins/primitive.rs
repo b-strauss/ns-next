@@ -738,8 +738,6 @@ impl MirrorPrimitive {
 
     /// The row at `index` of `MIRROR`, for the embedded shipped code, whose
     /// bytes are the binary's own.
-    // Read by the tests now, and by the boot from the next step on.
-    #[cfg_attr(not(test), expect(dead_code))]
     pub(crate) fn from_index(index: u8) -> MirrorPrimitive {
         assert!(
             usize::from(index) < MIRROR.len(),

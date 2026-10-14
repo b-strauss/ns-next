@@ -27,8 +27,6 @@ use crate::interpreter::Interpreter;
 use crate::mixin::Mixin;
 
 mod bytes;
-// Read by the tests now, and by the boot from the next step on.
-#[cfg_attr(not(test), expect(dead_code))]
 mod decode;
 mod encode;
 
@@ -46,8 +44,6 @@ include!(concat!(env!("OUT_DIR"), "/fingerprints.rs"));
 
 /// The artifact `cargo xtask shipped-code` wrote, embedded when the crate
 /// was built; empty when the tree had none.
-// The boot reads it in a later task.
-#[expect(dead_code)]
 pub(crate) fn embedded() -> &'static [u8] {
     include_bytes!(concat!(env!("OUT_DIR"), "/shipped-code.bin"))
 }
@@ -56,10 +52,40 @@ pub(crate) fn embedded() -> &'static [u8] {
 /// artifact the binary embeds, or their source, compiled and checked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ShippedCodePath {
-    // The boot chooses it from the next step of the precompiled shipped code on.
-    #[expect(dead_code)]
     Embedded,
     Source,
+}
+
+/// Whether `bytes` is an artifact this binary may decode: one written for
+/// exactly the sources it was built from.
+pub(crate) fn usable(bytes: &[u8]) -> bool {
+    let header_length = MAGIC.len() + 2 + 8;
+    if bytes.len() < header_length {
+        return false;
+    }
+    let mut reader = ByteReader::new(bytes);
+    reader.raw(MAGIC.len()) == MAGIC
+        && reader.u16() == FORMAT_VERSION
+        && reader.u64() == SHIPPED_CODE_FINGERPRINT
+}
+
+/// Where a boot takes the shipped modules' mixins from. Only the optimized
+/// lowering's code is embedded, and primitive methods are decided when a
+/// body is compiled, so the reference lowering and a boot without them
+/// compile from source -- the reference lowering stays an oracle that
+/// compiles everything afresh. A missing or stale artifact falls back
+/// silently: a warning would change every golden's `stderr`, and the gates
+/// regenerate the artifact before they test.
+pub(crate) fn path_for(
+    lowering: Lowering,
+    primitive_methods_disabled: bool,
+    bytes: &[u8],
+) -> ShippedCodePath {
+    if lowering == Lowering::Optimized && !primitive_methods_disabled && usable(bytes) {
+        ShippedCodePath::Embedded
+    } else {
+        ShippedCodePath::Source
+    }
 }
 
 /// The shipped modules' names, in the artifact's order: `Kernel`, then
@@ -78,8 +104,6 @@ pub fn generate() -> Vec<u8> {
 }
 
 /// The root mixin of the module `name` in the artifact `bytes`.
-// Read by the tests now, and by the boot from the next step on.
-#[cfg_attr(not(test), expect(dead_code))]
 pub(crate) fn decode_module(bytes: &[u8], name: &str) -> Rc<Mixin> {
     let mut reader = ByteReader::new(bytes);
     assert!(
@@ -113,6 +137,75 @@ mod tests {
         module_names()
             .map(|name| (name, decode_module(bytes, name)))
             .collect()
+    }
+
+    fn header(fingerprint: u64) -> Vec<u8> {
+        let mut writer = bytes::ByteWriter::new();
+        writer.raw(&MAGIC);
+        writer.u16(FORMAT_VERSION);
+        writer.u64(fingerprint);
+        writer.u32(0);
+        writer.into_bytes()
+    }
+
+    #[test]
+    fn an_empty_artifact_is_not_used() {
+        assert_eq!(
+            path_for(Lowering::Optimized, false, &[]),
+            ShippedCodePath::Source
+        );
+    }
+
+    #[test]
+    fn an_artifact_with_another_fingerprint_is_not_used() {
+        let stale = header(SHIPPED_CODE_FINGERPRINT ^ 1);
+        assert_eq!(
+            path_for(Lowering::Optimized, false, &stale),
+            ShippedCodePath::Source
+        );
+    }
+
+    #[test]
+    fn only_the_optimized_lowering_with_primitive_methods_uses_the_artifact() {
+        let current = header(SHIPPED_CODE_FINGERPRINT);
+        assert_eq!(
+            path_for(Lowering::Optimized, false, &current),
+            ShippedCodePath::Embedded
+        );
+        assert_eq!(
+            path_for(Lowering::Reference, false, &current),
+            ShippedCodePath::Source
+        );
+        assert_eq!(
+            path_for(Lowering::Optimized, true, &current),
+            ShippedCodePath::Source
+        );
+    }
+
+    #[test]
+    fn the_optimized_boot_decodes_the_embedded_code() {
+        assert!(
+            usable(embedded()),
+            "the embedded shipped code is missing or stale: run `cargo xtask shipped-code`"
+        );
+        let mut interpreter = Interpreter::bootstrap();
+        let path = interpreter.enter(|mutator| mutator.shipped_code_path);
+        assert_eq!(path, ShippedCodePath::Embedded);
+    }
+
+    #[test]
+    fn the_reference_boot_compiles_from_source() {
+        let mut interpreter = Interpreter::bootstrap_with(Lowering::Reference);
+        let path = interpreter.enter(|mutator| mutator.shipped_code_path);
+        assert_eq!(path, ShippedCodePath::Source);
+    }
+
+    #[test]
+    fn the_embedded_shipped_code_round_trips() {
+        let bytes = embedded();
+        assert!(usable(bytes), "run `cargo xtask shipped-code`");
+        let decoded = decoded_modules(bytes);
+        assert_eq!(encode(&decoded, SHIPPED_CODE_FINGERPRINT), bytes);
     }
 
     #[test]

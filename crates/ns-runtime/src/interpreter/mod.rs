@@ -364,8 +364,6 @@ pub struct Mutator<'gc> {
     pub(crate) lowering: Lowering,
     /// Where the boot takes the shipped modules' compiled mixins from. Fixed
     /// at construction, as `lowering` is.
-    // The boot reads it from the next step of the precompiled shipped code on.
-    #[expect(dead_code)]
     pub(crate) shipped_code_path: ShippedCodePath,
     /// The reusable argument buffer the run loop gathers a send's arguments
     /// into (`vm::send`). Taken while a send is decided and pushed and given
@@ -459,7 +457,12 @@ impl Interpreter {
     /// reference lowering is for checking the optimized one against it; an
     /// artifact decoded into either runs the code it carries.
     pub fn bootstrap_with(lowering: Lowering) -> Interpreter {
-        Interpreter::bootstrap_on(lowering, ShippedCodePath::Source)
+        let path = crate::shipped_code::path_for(
+            lowering,
+            crate::compiler::primitive_method::disabled(),
+            crate::shipped_code::embedded(),
+        );
+        Interpreter::bootstrap_on(lowering, path)
     }
 
     /// `bootstrap_with`, taking the shipped modules' compiled mixins from

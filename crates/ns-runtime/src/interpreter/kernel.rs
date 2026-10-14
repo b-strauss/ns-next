@@ -114,7 +114,7 @@ impl Interpreter {
     /// so the stress modes see it too.
     pub(crate) fn install_kernel(&mut self) {
         let (kernel_class, applied_classes, mirror) = self.enter(|mutator| {
-            let root_mixin = mutator.shipped_root_mixin_from_source("Kernel");
+            let root_mixin = mutator.shipped_root_mixin("Kernel");
             let (kernel_class, applied_classes) = mutator.fill_builtin_classes(&root_mixin);
             let applied_classes: Vec<(Rc<Mixin>, Root)> = applied_classes
                 .into_iter()
@@ -1016,7 +1016,11 @@ mod tests {
     /// Every builtin class but the mirror's is the kernel class of its name.
     #[test]
     fn every_builtin_class_is_filled_from_the_kernel() {
-        let mut interpreter = Interpreter::bootstrap();
+        // The source path: only a compiled mixin keeps its declaration.
+        let mut interpreter = Interpreter::bootstrap_on(
+            crate::compiler::Lowering::Optimized,
+            crate::shipped_code::ShippedCodePath::Source,
+        );
         interpreter.enter(|mutator| {
             for kind in BuiltinClass::ALL {
                 if kind == BuiltinClass::VmMirror {

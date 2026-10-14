@@ -9,6 +9,7 @@ use std::rc::Rc;
 
 use crate::interpreter::{HostResult, HostSignal, Mutator, Root};
 use crate::mixin::Mixin;
+use crate::shipped_code::ShippedCodePath;
 use crate::types::{ResolvedModule, SourceOrigin, Value};
 use crate::Symbol;
 
@@ -196,7 +197,7 @@ impl crate::interpreter::Interpreter {
         for shipped in SHIPPED_MODULES {
             let name = shipped.name;
             let factory_class = self.enter(|mutator| {
-                let mixin = mutator.shipped_root_mixin_from_source(name);
+                let mixin = mutator.shipped_root_mixin(name);
                 let class = mutator.root_class_of_mixin(&mixin);
                 mutator.stash(Value::object(class))
             });
@@ -247,6 +248,19 @@ impl crate::interpreter::Interpreter {
 }
 
 impl<'gc> Mutator<'gc> {
+    /// The root mixin of `Kernel` or of the `SHIPPED_MODULES` entry `name`,
+    /// taken from where this interpreter's boot takes the shipped code
+    /// (`shipped_code_path`). Each boot decodes its own, as the source path
+    /// compiles its own: no interpreter shares a mixin with another.
+    pub(crate) fn shipped_root_mixin(&mut self, name: &str) -> Rc<Mixin> {
+        match self.shipped_code_path {
+            ShippedCodePath::Embedded => {
+                crate::shipped_code::decode_module(crate::shipped_code::embedded(), name)
+            }
+            ShippedCodePath::Source => self.shipped_root_mixin_from_source(name),
+        }
+    }
+
     /// The root mixin of `Kernel` or of the `SHIPPED_MODULES` entry `name`,
     /// compiled from its source, which is parsed, resolved and checked
     /// (the mirror sends, and for the kernel its shape) on the way. A name

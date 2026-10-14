@@ -40,14 +40,11 @@ impl ByteWriter {
     }
 }
 
-// Read by the tests now, and by the boot from the next step on.
-#[cfg_attr(not(test), expect(dead_code))]
 pub(crate) struct ByteReader<'bytes> {
     bytes: &'bytes [u8],
     position: usize,
 }
 
-#[cfg_attr(not(test), expect(dead_code))]
 impl<'bytes> ByteReader<'bytes> {
     pub(crate) fn new(bytes: &'bytes [u8]) -> ByteReader<'bytes> {
         ByteReader { bytes, position: 0 }
