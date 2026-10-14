@@ -31,6 +31,7 @@ pub struct Analysis {
     pub classified: Vec<Classified>,
     pub folds: Vec<Fold>,
     pub symbols: Vec<Symbol>,
+    pub hints: Vec<ns_syntax::hints::Hint>,
 }
 
 /// Every error `ns-next run` would refuse `text` for before running it --
@@ -67,6 +68,7 @@ pub(crate) fn guarded(text: &str, analyzer: impl FnOnce(&str) -> Analysis) -> An
                 classified: Vec::new(),
                 folds: Vec::new(),
                 symbols: Vec::new(),
+                hints: Vec::new(),
             }
         }
     }
@@ -87,6 +89,9 @@ fn analyze_unguarded(text: &str) -> Analysis {
     let classified = semantic_tokens::classify(&resolution.module, &resolution.bindings, &tokens);
     let folds = folding::folds(&resolution.module, &comments, text);
     let symbols = document_symbols::symbols(&resolution.module, &resolution.bindings);
+    // Only a source that parses without error gets hints: their fixes are
+    // made against the tree `parse` answers.
+    let hints = ns_syntax::hints::hints_of(text);
     let mut findings: Vec<Finding> = diagnostics.into_iter().map(Finding::from).collect();
     findings.extend(resolution.errors.into_iter().map(|error| Finding {
         span: error.span,
@@ -98,6 +103,7 @@ fn analyze_unguarded(text: &str) -> Analysis {
         classified,
         folds,
         symbols,
+        hints,
     }
 }
 

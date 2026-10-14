@@ -13,19 +13,21 @@ use lsp_types::notification::{
     Notification as NotificationKind, PublishDiagnostics,
 };
 use lsp_types::request::{
-    DocumentSymbolRequest, FoldingRangeRequest, Formatting, Request as RequestKind,
-    SemanticTokensFullRequest,
+    CodeActionRequest, DocumentSymbolRequest, FoldingRangeRequest, Formatting,
+    Request as RequestKind, SemanticTokensFullRequest,
 };
 use lsp_types::{
-    Diagnostic, DiagnosticSeverity, DocumentFormattingParams, DocumentSymbolParams,
-    DocumentSymbolResponse, FoldingRangeParams, FoldingRangeProviderCapability, LogMessageParams,
-    MessageType, OneOf, PublishDiagnosticsParams, Range, SemanticTokens, SemanticTokensFullOptions,
-    SemanticTokensOptions, SemanticTokensParams, SemanticTokensServerCapabilities,
-    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
+    CodeActionParams, CodeActionProviderCapability, Diagnostic, DiagnosticSeverity,
+    DocumentFormattingParams, DocumentSymbolParams, DocumentSymbolResponse, FoldingRangeParams,
+    FoldingRangeProviderCapability, LogMessageParams, MessageType, OneOf, PublishDiagnosticsParams,
+    Range, SemanticTokens, SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
+    SemanticTokensServerCapabilities, ServerCapabilities, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextEdit, Uri,
 };
 use ns_syntax::Severity;
 
 use crate::analysis::{analyze, Analysis};
+use crate::code_actions;
 use crate::document_symbols;
 use crate::documents::LineIndex;
 use crate::file_uri::file_path_of;
@@ -67,6 +69,7 @@ fn capabilities() -> ServerCapabilities {
         folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
         document_symbol_provider: Some(OneOf::Left(true)),
         document_formatting_provider: Some(OneOf::Left(true)),
+        code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
         ..ServerCapabilities::default()
     }
 }
@@ -114,6 +117,7 @@ fn answer(documents: &HashMap<String, Document>, request: Request) -> Response {
         FoldingRangeRequest::METHOD => folding_ranges_of(documents, request),
         DocumentSymbolRequest::METHOD => document_symbols_of(documents, request),
         Formatting::METHOD => formatting_of(documents, request),
+        CodeActionRequest::METHOD => code_actions_of(documents, request),
         _ => Response::new_err(
             request.id,
             ErrorCode::MethodNotFound as i32,
@@ -382,37 +386,75 @@ fn report_malformed(connection: &Connection, message: String) -> ServerResult<()
     Ok(())
 }
 
-/// The diagnostics to publish for `uri`: its findings, or none once closed.
+/// The diagnostics to publish for `uri`: its findings and its hints, or
+/// none once closed.
 fn diagnostics_of(uri: &Uri, document: Option<&Document>) -> PublishDiagnosticsParams {
-    let diagnostics = document.map_or_else(Vec::new, |document| {
-        document
-            .analysis
-            .findings
-            .iter()
-            .map(|finding| Diagnostic {
-                range: Range::new(
-                    document
-                        .line_index
-                        .position(&document.text, finding.span.start),
-                    document
-                        .line_index
-                        .position(&document.text, finding.span.end),
-                ),
-                severity: Some(match finding.severity {
-                    Severity::Error => DiagnosticSeverity::ERROR,
-                    Severity::Warning => DiagnosticSeverity::WARNING,
+    let diagnostics =
+        document.map_or_else(Vec::new, |document| {
+            let mut diagnostics: Vec<Diagnostic> = document
+                .analysis
+                .findings
+                .iter()
+                .map(|finding| Diagnostic {
+                    range: Range::new(
+                        document
+                            .line_index
+                            .position(&document.text, finding.span.start),
+                        document
+                            .line_index
+                            .position(&document.text, finding.span.end),
+                    ),
+                    severity: Some(match finding.severity {
+                        Severity::Error => DiagnosticSeverity::ERROR,
+                        Severity::Warning => DiagnosticSeverity::WARNING,
+                    }),
+                    source: Some("ns-next".to_string()),
+                    message: finding.message.clone(),
+                    ..Diagnostic::default()
+                })
+                .collect();
+            diagnostics.extend(
+                document.analysis.hints.iter().map(|hint| {
+                    code_actions::diagnostic(hint, &document.text, &document.line_index)
                 }),
-                source: Some("ns-next".to_string()),
-                message: finding.message.clone(),
-                ..Diagnostic::default()
-            })
-            .collect()
-    });
+            );
+            diagnostics
+        });
     PublishDiagnosticsParams {
         uri: uri.clone(),
         diagnostics,
         version: None,
     }
+}
+
+/// The code actions at a range of an open document: its hints' quick fixes
+/// and the fix for the whole file. None for a document never opened, as
+/// for its folds.
+fn code_actions_of(documents: &HashMap<String, Document>, request: Request) -> Response {
+    let params: CodeActionParams = match serde_json::from_value(request.params) {
+        Ok(params) => params,
+        Err(error) => {
+            return Response::new_err(
+                request.id,
+                ErrorCode::InvalidParams as i32,
+                error.to_string(),
+            )
+        }
+    };
+    let uri = &params.text_document.uri;
+    let actions = documents
+        .get(uri.as_str())
+        .map(|document| {
+            code_actions::actions(
+                uri,
+                &document.analysis.hints,
+                &document.text,
+                &document.line_index,
+                params.range,
+            )
+        })
+        .unwrap_or_default();
+    Response::new_ok(request.id, actions)
 }
 
 #[cfg(test)]

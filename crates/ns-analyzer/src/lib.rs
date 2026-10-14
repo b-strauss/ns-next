@@ -15,6 +15,7 @@
 //! other commands live with the binary. See `docs/design/editor-support.md`.
 
 pub mod analysis;
+pub mod code_actions;
 pub mod document_symbols;
 pub mod documents;
 pub mod file_uri;

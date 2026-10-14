@@ -91,6 +91,7 @@ fn an_editor_session() {
         capabilities["capabilities"]["documentFormattingProvider"],
         true
     );
+    assert_eq!(capabilities["capabilities"]["codeActionProvider"], true);
     notify(&client, "initialized", json!({}));
 
     // Non-ASCII text before the error on its line, so a position counted in
@@ -630,5 +631,80 @@ fn formatting_an_unopened_document_answers_no_edit() {
         ),
         json!([])
     );
+    shut_down(&client, server_thread);
+}
+
+#[test]
+fn a_hint_is_published_with_its_quick_fix_and_the_fix_for_the_file() {
+    let text = indoc! {"
+        class Module = () (
+          public run = (
+            |
+              count
+            |
+            count:: 1.
+            ^count
+          )
+        )
+    "};
+    let (client, server_thread) = initialized_server();
+    notify(
+        &client,
+        "textDocument/didOpen",
+        json!({ "textDocument": { "uri": URI, "languageId": "newspeak", "version": 1, "text": text } }),
+    );
+    let published = next_diagnostics(&client);
+    let diagnostics = published["diagnostics"].as_array().expect("an array");
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert_eq!(diagnostics[0]["severity"], 4, "a hint");
+    assert_eq!(diagnostics[0]["code"], "initialize-in-declaration");
+    assert_eq!(diagnostics[0]["source"], "ns-next");
+    assert_eq!(
+        diagnostics[0]["range"],
+        json!({ "start": { "line": 3, "character": 6 }, "end": { "line": 3, "character": 11 } })
+    );
+
+    let actions = request(
+        &client,
+        2,
+        "textDocument/codeAction",
+        json!({
+            "textDocument": { "uri": URI },
+            "range": { "start": { "line": 3, "character": 7 }, "end": { "line": 3, "character": 7 } },
+            "context": { "diagnostics": diagnostics },
+        }),
+    );
+    let actions = actions.as_array().expect("an array of actions");
+    let titles: Vec<&str> = actions
+        .iter()
+        .map(|action| action["title"].as_str().expect("a title"))
+        .collect();
+    assert_eq!(
+        titles,
+        [
+            "Initialize `count` in its declaration",
+            "Apply all hints in this file"
+        ]
+    );
+    assert_eq!(actions[0]["kind"], "quickfix");
+    let edits = actions[0]["edit"]["changes"][URI]
+        .as_array()
+        .expect("edits for the document");
+    assert!(
+        edits.iter().any(|edit| edit["newText"] == " ::= 1."),
+        "{edits:?}"
+    );
+
+    let elsewhere = request(
+        &client,
+        3,
+        "textDocument/codeAction",
+        json!({
+            "textDocument": { "uri": URI },
+            "range": { "start": { "line": 6, "character": 4 }, "end": { "line": 6, "character": 4 } },
+            "context": { "diagnostics": [] },
+        }),
+    );
+    assert_eq!(elsewhere, json!([]), "no action away from a hint");
     shut_down(&client, server_thread);
 }
