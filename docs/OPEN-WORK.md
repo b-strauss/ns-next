@@ -974,6 +974,23 @@ activation.
   `{:?}`; both are safe only because no fixture holds such a chain.
   Hand-written impls that take the chain link by link would close it.
   Noted 2026-10-04.
+- **A read-only local a closure captures before its initializer runs reads
+  nil under the optimized lowering.** The optimized lowering never puts an
+  immutable (`=`) local in the indirection vector, so a closure made before
+  the local's initializer has run copies its register when it is made, while
+  it is still nil: `| t = platform transcript. f = [x]. x = 1. |  t show: f
+  value printString` prints `nil` optimized and `1` under the reference
+  lowering, and a self-referential `fib = [:n | ... fib value: n - 1 ...]`
+  raises "does not understand #value:" where `fib ::= [...]` answers. The
+  argument of [compiler.md](design/compiler.md)'s "A read-only local is
+  never copied" -- its register is written by its initialization and by
+  nothing after it -- overlooks a capture that precedes the initialization.
+  The fix belongs in the closure conversion
+  (`crates/ns-runtime/src/compiler/capture.rs`): putting a read-only local
+  that such a closure captures in the vector, as a written one is, would
+  close it. The editor's hint B stays conservative regardless, never making
+  such a local `=` ([editor-support.md](design/editor-support.md), "Hints").
+  Noted 2026-10-14.
 
 ## Known defects and gaps
 

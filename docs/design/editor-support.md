@@ -467,9 +467,9 @@ and one of these holds:
    one. A comment in what the move removes, between the local and the next
    one, or after the last initialized one on its line would be deleted or
    copied by the move, or left behind the moved declaration; when a comment
-   stands there, no hint is given. Each fix stands alone: once the first statement has
-   moved, the next one is first, which is how "apply all" moves a whole run
-   of them.
+   stands there, no hint is given. Each fix stands alone: once the first
+   statement has moved, the next one is first, which is how "apply all"
+   moves a whole run of them.
 2. **After other statements.** `e` is a literal (`nil`, `true` and `false`
    among them), `self`, or an identifier whose innermost declaration in
    scope is a parameter (of a method, a closure or a factory) or a local

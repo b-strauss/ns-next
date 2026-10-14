@@ -11,7 +11,7 @@
 //! and cargo hands a test only its own package's binaries, so this one
 //! builds `ns-next` itself, once per test process, when the first trial
 //! that runs a program needs it. It runs only in its own nextest profile,
-//! when the hint code changes:
+//! for every commit that touches `crates/ns-analyzer`:
 //!
 //!     cargo nextest run -p ns-analyzer --profile hints
 
