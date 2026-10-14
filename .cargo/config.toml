@@ -1,3 +1,8 @@
+# The repository's own tasks: `cargo xtask gates <group>` runs a group of
+# CLAUDE.md's table "The gates" (`xtask/src/main.rs`).
+[alias]
+xtask = "run --quiet --package xtask --"
+
 # Link the C runtime statically on Windows, so `target/release/ns-next.exe` is a single
 # file that runs on a bare Windows installation. Without this it imports
 # VCRUNTIME140.dll from the VC++ redistributable, which is present on almost every

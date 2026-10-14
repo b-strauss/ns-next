@@ -1595,21 +1595,15 @@ language server's, they are the tests of `disasm` and `inspect`, which guard
 the compiler's output (the disassembly snapshots) and the image format (an
 image decoded and listed, its bodies matching the source's); under the wide
 stress mode the analyzer's subprocess compiles every instruction wide, so they
-also check that disassembly and decoding do not depend on the form. The
-plugin's own gate joins this:
-
-- **Before every commit** that touches `editors/jetbrains/`, `crates/ns-analyzer/`
-  or `crates/ns-syntax/` — `./gradlew -p editors/jetbrains check`, besides the
-  usual `fmt` and `clippy`. A change to `crates/ns-syntax/src/lexer.rs` must be
-  mirrored in `NewspeakLexer.kt` in the same commit, or the comparison fails.
-- **Before every commit** that touches `crates/ns-analyzer/` — the hints'
-  behaviour oracle, `cargo nextest run -p ns-analyzer --profile hints`
-  ("Hints"), which the default profile leaves out.
-- **Once at the end of a batch**, whether runtime or editor work, the full
-  suite under the five stress modes; and, for a batch that touched
-  `editors/jetbrains/`, `./gradlew -p editors/jetbrains verifyPlugin buildPlugin`
-  — which downloads several IDEs, and so is not a per-commit gate. A resolver
-  change that shifts the semantic tokens is then noticed within one batch.
+also check that disassembly and decoding do not depend on the form. Which
+gate runs when is the table "The gates" in `CLAUDE.md`: for the editor, the
+plugin's `check` on every commit (Gradle reruns its tests only when the
+plugin, the analyzer binary or a source its lexer comparison reads changed),
+the hints' behaviour oracle for a commit touching `crates/ns-analyzer/`
+("Hints"), and `verifyPlugin buildPlugin`, which downloads several IDEs, at
+the end of a batch that touched `editors/jetbrains/`. A change to
+`crates/ns-syntax/src/lexer.rs` must be mirrored in `NewspeakLexer.kt` in the
+same commit, or the comparison fails.
 
 ## Known gaps
 

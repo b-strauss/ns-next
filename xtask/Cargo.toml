@@ -1,0 +1,11 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The repository's own tasks, run as `cargo xtask <task>`: the gates of CLAUDE.md's table, grouped"
+publish = false
+
+[lints]
+workspace = true

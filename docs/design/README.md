@@ -358,33 +358,22 @@ runs one by one from that `.toml`.
 ## Gates
 
 These are non-regression gates, not suggestions. Each has caught a real
-regression.
+regression. Which gate runs when -- every commit, a commit touching a given
+part, the end of a batch -- is the table "The gates" in `CLAUDE.md`, the one
+place it is kept; the suite there is every crate's, ns-analyzer's included,
+whose `disasm` and `inspect` tests guard the compiler's output and the image
+format. The stress modes run the whole suite again, each with one of the
+runtime's own stress switches set:
 
 ```bash
-cargo nextest run --workspace            # includes every golden, under both lowerings
-cargo test --workspace --doc             # the doctests, which nextest does not run
-NS_NEXT_STRESS_MOVES=1 cargo nextest run --workspace   # the same, moving everything at the run loop's safepoints
-NS_NEXT_STRESS_CACHES=1 cargo nextest run --workspace  # the same, vacating every inline cache at every safepoint
-NS_NEXT_STRESS_COLLECT=1 cargo nextest run --workspace # the same, collecting at every safepoint
-NS_NEXT_STRESS_SCAVENGE=1 cargo nextest run --workspace # the same, scavenging at every safepoint after a check of the remembered set
-NS_NEXT_STRESS_WIDE=1 cargo nextest run --workspace    # the same, every instruction in its wide form
-# (the finishing-a-batch skill runs the five stress modes at once, each into its own log)
-# the suite above is every crate's, ns-analyzer's included: its disasm and inspect tests guard the compiler's output and the image format
-cargo nextest run -p ns-analyzer --profile hints   # the hints' behaviour oracle, which the suite leaves out, per commit that touches ns-analyzer
-cargo nextest run -p ns-cli --profile images       # every golden through build then load, per commit that touches the image format or the instruction encoding, and at the end of a batch
-cargo nextest run -p ns-cli --profile caches       # every golden with a two-entry global cache, per commit that touches the caches, and at the end of a batch
-cargo nextest run --workspace --profile benchmarks-verify # the benchmark programs at full size, verified, the hints' oracle over them included: when benchmarking, and at the end of a branch
-cargo clippy --workspace --all-targets   # must be warning-free, the naming lint included
-cargo fmt --all                          # before every commit
-cargo run -p ns-analyzer -- parse-corpus corpus/modules   # parsed 211, failed 0
-cargo run -p ns-cli -- run-corpus corpus/modules          # ran 6, failed 0, skipped 205 -- every row under both lowerings
-NS_NEXT_STRESS_MOVES=1 cargo run -p ns-cli -- run-corpus corpus/modules   # the same report
-NS_NEXT_STRESS_CACHES=1 cargo run -p ns-cli -- run-corpus corpus/modules  # the same report
-NS_NEXT_STRESS_COLLECT=1 cargo run -p ns-cli -- run-corpus corpus/modules # the same report
-NS_NEXT_STRESS_SCAVENGE=1 cargo run -p ns-cli -- run-corpus corpus/modules # the same report
-NS_NEXT_STRESS_WIDE=1 cargo run -p ns-cli -- run-corpus corpus/modules    # the same report
-./editors/jetbrains/gradlew -p editors/jetbrains check   # the plugin's own gate, per commit that touches it
-./editors/jetbrains/gradlew -p editors/jetbrains verifyPlugin buildPlugin   # once at the end of a batch that touched the plugin: downloads several IDEs
+NS_NEXT_STRESS_MOVES=1 cargo nextest run --workspace    # moving everything at the run loop's safepoints
+NS_NEXT_STRESS_CACHES=1 cargo nextest run --workspace   # vacating every inline cache at every safepoint
+NS_NEXT_STRESS_COLLECT=1 cargo nextest run --workspace  # collecting at every safepoint
+NS_NEXT_STRESS_SCAVENGE=1 cargo nextest run --workspace # scavenging at every safepoint after a check of the remembered set
+NS_NEXT_STRESS_WIDE=1 cargo nextest run --workspace     # every instruction in its wide form
+# and `cargo run -p ns-cli -- run-corpus corpus/modules` under each, as plain:
+# "ran 6, failed 0, skipped 205" -- every row under both lowerings
+# `cargo xtask gates stress` runs the five at once, each into its own log
 ```
 
 A check that runs over many inputs is split into trials that nextest runs

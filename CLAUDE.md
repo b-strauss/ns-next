@@ -76,6 +76,9 @@ Rust 1.98.0, edition 2021, six crates:
   The heap's object space is its user (`docs/design/memory.md`, "The memory
   layer", "The object space").
 
+`xtask/` — the repository's own tasks, run as `cargo xtask <task>`: the gates
+of "The gates" below, grouped.
+
 `editors/jetbrains/` — the JetBrains plugin (Kotlin, Gradle wrapper inside): a
 lexer mirroring `ns-syntax`'s, compared against it token by token over every
 module (`LexerComparisonTest`), the connection to `ns-next-analyzer` (Reformat
@@ -299,51 +302,37 @@ still recurses (`OPEN-WORK.md`) (`frontend.md`, "Recovery", rule 7).
 ## Working in this repository
 
 The suites run under `cargo-nextest` (`cargo install cargo-nextest --locked`).
-Before every commit:
 
-```bash
-cargo fmt --all
-cargo clippy --workspace --all-targets          # must be warning-free
-cargo nextest run --workspace                   # every golden, both lowerings
-cargo test --workspace --doc                    # nextest runs no doctests
-cargo run -p ns-analyzer -- parse-corpus corpus/modules   # "parsed 211, failed 0"
-```
+### The gates
 
-Plus, per commit touching them:
+This table is the one place that says which gate runs when;
+`docs/design/README.md`, "Gates", follows it. Each row is a group of
+`cargo xtask gates <group>` (`xtask/src/main.rs`), which says what the group
+runs; several groups run in one call, one after another, and the first that
+fails stops it. "Every commit" is every commit that changes more than
+Markdown (check `git diff --stat`): a change to Rust, a test, a fixture, a
+golden, a `.ns` or a `Cargo.toml` runs its gates however small. The nextest
+profiles are `.config/nextest.toml`'s; every one runs on 18 threads.
 
-- `crates/ns-memory` → `cargo clippy -p ns-memory --all-targets --target x86_64-unknown-linux-gnu`
-  and the same for `aarch64-apple-darwin`
-- `editors/jetbrains`, `crates/ns-analyzer`, `crates/ns-syntax` or `schemas/` →
-  `./editors/jetbrains/gradlew -p editors/jetbrains check` (the plugin bundles
-  `schemas/newspeak.schema.json`, so a change to it reaches the plugin; when
-  unsure whether a change reaches the plugin, run it)
-- `crates/ns-analyzer` → `cargo nextest run -p ns-analyzer --profile hints`,
-  the hints' behaviour oracle
-- the image format (`crates/ns-runtime/src/image/`), the instruction encoding
-  (`crates/ns-runtime/src/bytecode.rs`, `bytecode/`) or `ns-next build`/`load`
-  → `cargo nextest run -p ns-cli --profile images`, every golden through
-  `build` then `load`
-- the inline or global caches (`crates/ns-runtime/src/interpreter/inline_cache.rs`)
-  → `cargo nextest run -p ns-cli --profile caches`, every golden with a
-  two-entry global cache
+| Group | Runs | When |
+|---|---|---|
+| `commit` | `cargo fmt --all`; `cargo clippy --workspace --all-targets`, warning-free; `cargo nextest run --workspace`, the default profile, every golden under both lowerings; `cargo test --workspace --doc`, since nextest runs no doctest; `parse-corpus corpus/modules`, "parsed 211, failed 0"; the plugin's `gradlew check`, whose tests Gradle reruns only when the plugin, the analyzer binary or a `.ns` its lexer comparison reads (`corpus/modules`, `goldens/`, the core library, `benchmarks/`) changed, up to date in about a second otherwise | every commit |
+| `analyzer` | the hints' behaviour oracle, profile `hints` | a commit touching `crates/ns-analyzer` |
+| `images` | every golden through `build` then `load`, profile `images` | a commit touching the image format (`crates/ns-runtime/src/image/`), the instruction encoding (`crates/ns-runtime/src/bytecode.rs`, `bytecode/`) or `ns-next build`/`load`; the end of a batch that changed the runtime |
+| `caches` | every golden with a two-entry global cache, profile `caches` | a commit touching the caches (`crates/ns-runtime/src/interpreter/inline_cache.rs`); the end of a batch that changed the runtime |
+| `memory` | `ns-memory`'s clippy for `x86_64-unknown-linux-gnu` and `aarch64-apple-darwin` | a commit touching `crates/ns-memory` |
+| `benchmarks` | the benchmark programs verified at full size, profile `benchmarks-verify`; it measures nothing and never runs under a stress mode (`execution.md`, "The Are We Fast Yet benchmarks") | when benchmarking; the end of a batch that changed the runtime |
+| `stress` | the suite under the five stress modes at once, each into `.temp/stress-<MODE>.log`, then `run-corpus` plain and under each (`docs/design/README.md`, "Gates") | the end of a batch that changed the runtime |
+| `plugin-verification` | `gradlew verifyPlugin buildPlugin`, which downloads several IDEs | the end of a batch that changed `editors/jetbrains/` |
 
-`.config/nextest.toml`'s default profile is the per-commit gate and leaves
-those profiles out, and the tests that run the Are We Fast Yet benchmarks at
-full size; those run only on demand, when benchmarking, and once at the end
-of a branch, never under a stress mode:
-`cargo nextest run --workspace --profile benchmarks-verify` (`execution.md`,
-"The Are We Fast Yet benchmarks").
-
-The end-of-batch gates (the five stress modes: moves, caches, collection,
-scavenges and every instruction wide; `run-corpus` plain and under
-stress; the images, caches and benchmarks-verify profiles; `verifyPlugin`) are in
-the `finishing-a-batch` skill. A commit that
-never saw them is work in progress, not finished work; a subagent implementing
-part of a batch is told this staggering explicitly.
-
-A commit that changes only Markdown (check `git diff --stat`) runs no gates. A
-change to Rust, a test, a fixture, a golden or `Cargo.toml` runs them however
-small.
+`end-of-batch` is `images`, `caches`, `benchmarks` and `stress` together.
+"The runtime" is `crates/ns-runtime`, `ns-syntax`, `ns-tooling`, `ns-cli` or
+`ns-memory`; a batch that changed only `crates/ns-analyzer`, the plugin or
+Markdown runs no stress mode, no `run-corpus` and no benchmark programs, since
+the stress modes test the runtime's behaviour and cannot reach the analyzer
+otherwise than the plain suite does. A commit that never saw the gates of the
+end of its batch is work in progress, not finished work; a subagent
+implementing part of a batch is told this staggering explicitly.
 
 A change to `crates/ns-syntax/src/lexer.rs` is mirrored in
 `editors/jetbrains/src/main/kotlin/io/github/bstrauss/newspeak/lexer/NewspeakLexer.kt`

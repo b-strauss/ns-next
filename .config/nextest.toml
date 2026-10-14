@@ -37,10 +37,9 @@
 # its runs of the benchmarks left to the benchmarks-verify profile.
 
 [profile.default]
-# Half of this machine's 24 cores, so that a run leaves the other half to
-# the rest of the machine; every other profile inherits it. nextest counts a
-# negative number back from the cores it finds.
-test-threads = -12
+# Eighteen of this machine's 24 cores, so that a run leaves the rest to the
+# rest of the machine; every other profile inherits it.
+test-threads = 18
 default-filter = "not (binary(run_benchmarks) | binary(hinted_goldens) | binary(golden_round_trips) | test(/^golden_with_a_two_entry_global_cache::/))"
 
 [profile.benchmarks-verify]

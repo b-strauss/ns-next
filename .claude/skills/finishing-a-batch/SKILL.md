@@ -16,56 +16,24 @@ hold, the work is in progress.
 
 Create a todo for each item.
 
-1. **Decide which gates apply**, from `git diff --stat master...HEAD` (or the
-   batch's commits):
-   - Only Markdown changed → no gates; go to step 3.
-   - Only `editors/jetbrains/` (and Markdown) changed → no Rust gate; only
-     `./editors/jetbrains/gradlew -p editors/jetbrains check verifyPlugin buildPlugin`.
-   - `crates/ns-analyzer/` changed, but none of `ns-runtime`, `ns-syntax`,
-     `ns-tooling`, `ns-cli` or `ns-memory` → `cargo nextest run --workspace`
-     once, plain, and `cargo run -p ns-analyzer -- parse-corpus corpus/modules`;
-     no stress mode, no `run-corpus`, no benchmarks. The stress modes test the
-     runtime's behaviour, and with the runtime unchanged they cannot reach the
-     analyzer otherwise than the plain run does.
-   - `ns-runtime`, `ns-syntax`, `ns-tooling`, `ns-cli` or `ns-memory` changed →
-     every end-of-batch gate below.
-   - `editors/jetbrains/` changed, in any of these cases → additionally
-     `./editors/jetbrains/gradlew -p editors/jetbrains verifyPlugin buildPlugin`
-     (downloads several IDEs). Otherwise skip it.
-2. **Run the gates** exactly as listed (Git Bash syntax; the stress modes act
-   only in debug builds). MOVES moves every object at the run loop's
-   safepoints, CACHES vacates every inline cache at every safepoint, COLLECT
-   collects at every safepoint, SCAVENGE verifies the remembered set and
-   scavenges at every safepoint, WIDE encodes every instruction in its wide
-   form. The five run at once because each ends in a long tail of a few
-   depth-limit tests that leaves most cores idle, and the tails overlap
-   (measured 2026-10-01 for the first three: 277 s, MOVES the longest,
-   against 703 s, the sum of the three per-mode times, one after another). The stress
-   runs use nextest's default profile, which leaves out the Are We Fast Yet
-   benchmarks; they run once, plain, at the end of the list:
-
-   ```bash
-   mkdir -p .temp && for mode in MOVES CACHES COLLECT SCAVENGE WIDE; do
-     (env NS_NEXT_STRESS_$mode=1 cargo nextest run --workspace      > .temp/stress-$mode.log 2>&1 || echo "stress $mode FAILED: .temp/stress-$mode.log") &
-   done; wait; grep -h Summary .temp/stress-*.log
-   # each must report "ran 6, failed 0, skipped 205"
-   cargo run -p ns-cli -- run-corpus corpus/modules
-   NS_NEXT_STRESS_MOVES=1 cargo run -p ns-cli -- run-corpus corpus/modules
-   NS_NEXT_STRESS_CACHES=1 cargo run -p ns-cli -- run-corpus corpus/modules
-   NS_NEXT_STRESS_COLLECT=1 cargo run -p ns-cli -- run-corpus corpus/modules
-   NS_NEXT_STRESS_SCAVENGE=1 cargo run -p ns-cli -- run-corpus corpus/modules
-   NS_NEXT_STRESS_WIDE=1 cargo run -p ns-cli -- run-corpus corpus/modules
-   cargo build --workspace
-   # every golden through build then load, and with a two-entry global
-   # cache: plain, since the stress runs use the default profile
-   cargo nextest run -p ns-cli --profile images
-   cargo nextest run -p ns-cli --profile caches
-   # the Are We Fast Yet benchmarks at full size, plain, never under stress
-   cargo nextest run --workspace --profile benchmarks-verify
-   ```
-
-   Read every summary line; a mode that failed is named at the end of the
-   stress run. Report failures with their output.
+1. **Decide which gates apply** from `CLAUDE.md`'s table "The gates", the
+   rows for the end of a batch, against `git diff --stat master...HEAD` (or the
+   batch's commits). Only Markdown changed → no gates; go to step 3.
+2. **Run the gates** the table names: for a batch that changed the runtime
+   `cargo xtask gates end-of-batch` (`images`, `caches`, `benchmarks` and
+   `stress`), and `plugin-verification` beside it for one that changed the
+   plugin. The stress modes act only in debug builds: MOVES moves every object
+   at the run loop's safepoints, CACHES vacates every inline cache at every
+   safepoint, COLLECT collects at every safepoint, SCAVENGE verifies the
+   remembered set and scavenges at every safepoint, WIDE encodes every
+   instruction in its wide form. `stress` runs the five suites at once,
+   because each ends in a long tail of a few depth-limit tests that leaves
+   most cores idle and the tails overlap (measured 2026-10-01 for the first
+   three: 277 s, MOVES the longest, against 703 s, the sum of the three
+   per-mode times, one after another), each into `.temp/stress-<MODE>.log`,
+   and prints each summary line; each must report every test passed, and
+   `run-corpus` "ran 6, failed 0, skipped 205". Report failures with their
+   output.
 3. **Open work.** Remove from `docs/OPEN-WORK.md` every item the batch closed;
    add every item a review, measurement or design discussion left open, with a
    pointer to where it is explained.
