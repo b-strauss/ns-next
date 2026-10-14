@@ -30,17 +30,19 @@ gets no hint A.
 
 A slot `x` is a candidate when it is declared bare (`x`, no initializer, not
 `lazy`) and a statement `x:: e.` of its own section assigns it. The statement
-qualifies when it has no comment attached, is not parenthesized and is not a
-chain (`x:: y:: e`), and one of these holds:
+qualifies when no comment stands in it, in the text a fix deletes or on the
+rest of its line, it is not parenthesized and is not a chain (`x:: y:: e`),
+and one of these holds:
 
-1. **At the start.** Every statement before it is itself a qualifying
-   assignment of this kind to a different bare slot of the section (the
-   *prefix*). Moving the prefix must keep the order of evaluation: every
-   existing initializer of the section first, then the prefix in its
-   order. Locals may be reordered for that -- the moved ones go after the
-   last initialized one, in prefix order; header slots are never
-   reordered, since their order is the class's layout, so a header prefix
-   out of declaration order gets no hint.
+1. **At the start.** It is the section's first statement, and `e` does not
+   mention `x`. Moving it must keep the order of evaluation: every
+   existing initializer of the section first, then `e`. A local may be
+   reordered for that -- its declaration moves after the last initialized
+   one; a header slot is never reordered, since the order of header slots
+   is the class's layout, so a header slot declared before an initialized
+   one gets no hint. Each fix stands alone: once the first statement has
+   moved, the next one is first, which is how "apply all" moves a whole
+   run of them.
 2. **After other statements.** `e` is a literal, `self`, `nil`, `true`,
    `false`, or an identifier whose innermost declaration in scope is a
    parameter (of a method, a closure, or, in a header, the factory) or a
@@ -77,9 +79,13 @@ Only a module that parses without error gets hints.
 
 ## The server
 
-- `crates/ns-analyzer/src/hints.rs` computes the hints from the AST, as
-  `folding.rs` computes folds: for each hint its kind, the span of the slot's
-  name, its message and its text edits in byte offsets. It holds no LSP type.
+- `crates/ns-syntax/src/hints/` computes the hints from the AST, as the
+  printer reprints it: for each hint its kind, the span of the slot's name,
+  its section, its message and its text edits in byte offsets, and "apply
+  all". It holds no LSP type. It lives in `ns-syntax`, not `ns-analyzer`,
+  because the behaviour oracle in `ns-cli`'s tests uses it, and `ns-cli`
+  never depends on `ns-analyzer`; the analysis is syntactic, so `ns-syntax`
+  is all it needs.
 - They are computed once per document version with the rest of the analysis
   (`analysis.rs`) and cached.
 - `publishDiagnostics` carries them beside the errors: severity `HINT`, `code`
@@ -87,11 +93,15 @@ Only a module that parses without error gets hints.
 - The server announces `codeActionProvider`. `textDocument/codeAction`
   answers, for each hint the range touches, a `quickfix` action naming its
   diagnostic and carrying its edit; and, when the file has any hint, one
-  action "Apply all hints in this file". A request for a stale version is
-  answered with no actions.
-- **Apply all** applies every hint A in memory, analyses the result again,
-  applies every hint B, and repeats until nothing is left; it answers one
-  edit over the smallest range covering every change.
+  action "Apply all hints in this file" beside them. The edits are plain
+  `changes`: with full synchronisation the server always holds the text
+  the client asks about.
+- **Apply all** works in rounds until no hint is left: each round applies,
+  in memory, at most one hint per section and none whose edits overlap
+  another's (a moved statement may hold a closure with hints of its own),
+  then analyses the result again. Every fix is valid on its own, so
+  every round preserves behaviour. It answers one edit over the smallest
+  range covering every change.
 - **The edits are minimal**, so a file keeps its layout:
   - A appends ` ::= <value>.` to the declaration, the value copied verbatim
     from the source, its continuation lines shifted by the difference in
@@ -99,8 +109,10 @@ Only a module that parses without error gets hints.
     that leaves the line blank; and, when a local is reordered, moves its
     declaration.
   - B replaces `::=` by `=`.
-  - A fix whose result does not parse is dropped (and is a `debug_assert!`
-    failure: the rules promise it parses).
+  - Every fix's result parses: the rules promise it, "apply all" checks it
+    with a `debug_assert!`, and the behaviour oracle holds every golden to
+    it. Parsing each fix's result while hints are computed would cost a
+    parse per hint on every keystroke, so it is not done there.
 - The plugin needs no code: the platform shows a `HINT` as a weak warning
   (`LspDiagnosticsSupport.getHighlightSeverity`) and offers its quick fixes
   (`LspCodeActionsSupport`). Checked by hand under `runIde` and recorded in
