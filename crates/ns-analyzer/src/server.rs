@@ -3,6 +3,7 @@
 //! pool would buy anything, and one thread is what the thread-local symbol
 //! interner needs anyway.
 
+use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::error::Error;
 use std::io::Read;
@@ -24,7 +25,7 @@ use lsp_types::{
     SemanticTokensServerCapabilities, ServerCapabilities, TextDocumentSyncCapability,
     TextDocumentSyncKind, TextEdit, Uri,
 };
-use ns_syntax::Severity;
+use ns_syntax::{Severity, Span};
 
 use crate::analysis::{analyze, Analysis};
 use crate::code_actions;
@@ -41,6 +42,9 @@ struct Document {
     text: String,
     line_index: LineIndex,
     analysis: Analysis,
+    /// The edit applying every hint, computed by the first code-action
+    /// request that needs it: each round of it parses the text afresh.
+    whole_file_edit: OnceCell<Option<(Span, String)>>,
 }
 
 impl Document {
@@ -49,6 +53,7 @@ impl Document {
         let analysis = analyze(&text);
         Document {
             text,
+            whole_file_edit: OnceCell::new(),
             line_index,
             analysis,
         }
@@ -451,6 +456,12 @@ fn code_actions_of(documents: &HashMap<String, Document>, request: Request) -> R
                 &document.text,
                 &document.line_index,
                 params.range,
+                || {
+                    document
+                        .whole_file_edit
+                        .get_or_init(|| code_actions::whole_file_edit(&document.text))
+                        .clone()
+                },
             )
         })
         .unwrap_or_default();

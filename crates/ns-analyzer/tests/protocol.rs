@@ -687,6 +687,30 @@ fn a_hint_is_published_with_its_quick_fix_and_the_fix_for_the_file() {
         ]
     );
     assert_eq!(actions[0]["kind"], "quickfix");
+    let all = actions[1]["edit"]["changes"][URI]
+        .as_array()
+        .expect("one edit");
+    assert_eq!(all.len(), 1);
+    let offset = |position: &Value| -> usize {
+        let line = position["line"].as_u64().expect("a line") as usize;
+        let character = position["character"].as_u64().expect("a character") as usize;
+        text.split_inclusive('\n')
+            .take(line)
+            .map(str::len)
+            .sum::<usize>()
+            + character
+    };
+    let (start, end) = (
+        offset(&all[0]["range"]["start"]),
+        offset(&all[0]["range"]["end"]),
+    );
+    let applied = format!(
+        "{}{}{}",
+        &text[..start],
+        all[0]["newText"].as_str().expect("text"),
+        &text[end..]
+    );
+    assert_eq!(applied, ns_syntax::hints::apply_all(text));
     let edits = actions[0]["edit"]["changes"][URI]
         .as_array()
         .expect("edits for the document");

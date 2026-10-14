@@ -51,13 +51,16 @@ fn workspace_edit(uri: &Uri, edits: Vec<TextEdit>) -> WorkspaceEdit {
 }
 
 /// The quick fixes of the hints `range` touches, then the fix for the
-/// whole file; nothing when `range` touches no hint.
+/// whole file, which `whole_file` produces only when a hint is touched (and
+/// which is left out when it answers `None`); nothing when `range` touches
+/// no hint.
 pub fn actions(
     uri: &Uri,
     hints: &[Hint],
     text: &str,
     line_index: &LineIndex,
     range: Range,
+    whole_file: impl FnOnce() -> Option<(Span, String)>,
 ) -> Vec<CodeActionOrCommand> {
     let touched: Vec<&Hint> = hints
         .iter()
@@ -87,8 +90,9 @@ pub fn actions(
             })
         })
         .collect();
-    let applied = ns_syntax::hints::apply_all(text);
-    let changed = changed_span(text, &applied);
+    let Some(changed) = whole_file() else {
+        return actions;
+    };
     actions.push(CodeActionOrCommand::CodeAction(CodeAction {
         title: "Apply all hints in this file".to_string(),
         kind: Some(CodeActionKind::QUICKFIX),
@@ -108,6 +112,21 @@ pub fn actions(
         ..CodeAction::default()
     }));
     actions
+}
+
+/// The one edit that applies every hint of `text`, or `None` when nothing
+/// changes or applying panics. Later rounds of `apply_all` parse and edit
+/// texts the analysis never saw, so a defect there is possible; like a panic
+/// in the analysis (`analysis::guarded`) it must not take the server, and
+/// the editor's support for every other file, down with it. The per-hint
+/// quick fixes are then still offered.
+pub fn whole_file_edit(text: &str) -> Option<(Span, String)> {
+    let applied = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        ns_syntax::hints::apply_all(text)
+    }))
+    .ok()?;
+    let changed = changed_span(text, &applied);
+    (applied != text).then_some(changed)
 }
 
 /// The smallest span of `before` whose replacement gives `after`, and that
