@@ -6,8 +6,8 @@
 use std::collections::HashSet;
 
 use crate::ast::{
-    ClassDeclaration, CodeBody, Expression, ExpressionKind, Member, MessageSend, Selector,
-    SlotDeclaration, Statement, StatementKind,
+    CodeBody, Expression, ExpressionKind, MessageSend, Selector, SlotDeclaration, Statement,
+    StatementKind,
 };
 
 /// One node `each_node` hands over.
@@ -74,44 +74,6 @@ fn each_node_in_body<'tree>(code: &'tree CodeBody, visit: &mut dyn FnMut(Node<'t
     }
 }
 
-/// Every node of `declaration`: its superclass clauses, its header, its
-/// members -- nested classes included -- and its class side.
-fn each_node_in_class<'tree>(
-    declaration: &'tree ClassDeclaration,
-    visit: &mut dyn FnMut(Node<'tree>),
-) {
-    for clause in declaration
-        .superclass
-        .iter()
-        .chain(&declaration.mixin_applications)
-    {
-        for message in &clause.messages {
-            visit(Node::Message(message));
-            for argument in &message.arguments {
-                each_node(argument, visit);
-            }
-        }
-    }
-    let instance = &declaration.instance_side;
-    each_node_in_slots(&instance.header_slots, visit);
-    for statement in &instance.initializer_expressions {
-        each_node_in_statement(statement, visit);
-    }
-    for side in std::iter::once(instance).chain(declaration.class_side.as_ref()) {
-        for member in &side.members {
-            match member {
-                Member::Class(nested) => each_node_in_class(nested, visit),
-                Member::LazySlot(slot) => {
-                    if let Some(initializer) = &slot.initializer {
-                        each_node(initializer, visit);
-                    }
-                }
-                Member::Method(method) => each_node_in_body(&method.body, visit),
-            }
-        }
-    }
-}
-
 /// Whether `message` is the setter of `name`: the one-keyword selector
 /// `name:`.
 fn is_setter_of(message: &MessageSend, name: &str) -> bool {
@@ -166,28 +128,4 @@ pub(super) fn assigned_in<'tree>(
         each_node_in_statement(statement, &mut visit);
     }
     assigned
-}
-
-/// The names `declaration` assigns with `name::` or sends `name:` to,
-/// anywhere in it, whatever the receiver: everything that could write a
-/// private slot of the class.
-pub(super) fn written_in_class(declaration: &ClassDeclaration) -> HashSet<&str> {
-    let mut written = HashSet::new();
-    each_node_in_class(declaration, &mut |node| match node {
-        Node::Expression(expression) => {
-            if let ExpressionKind::Assign { target, .. } = &expression.kind {
-                written.insert(target.name.as_str());
-            }
-        }
-        Node::Message(message) => {
-            if let Selector::Keyword(selector) = &message.selector {
-                if let Some(name) = selector.strip_suffix(':') {
-                    if !name.contains(':') {
-                        written.insert(name);
-                    }
-                }
-            }
-        }
-    });
-    written
 }

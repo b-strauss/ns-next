@@ -12,7 +12,7 @@ whole file:
 
 - **A, initialize in the declaration**: a slot declared bare whose first
   value a statement assigns can take that value in its declaration.
-- **B, read-only**: a slot declared with `::=` that nothing ever assigns
+- **B, read-only**: a local declared with `::=` that nothing ever assigns
   again can be declared with `=`.
 
 Every fix preserves behaviour; where that cannot be proved from the source
@@ -56,21 +56,16 @@ and one of these holds:
 
 ### Hint B
 
-A slot `x` declared with `::=` is a candidate when nothing can assign it:
+A local `x` declared with `::=` is a candidate when nothing can assign it:
 
 - **A local** (a temporary of a method or closure): no `x::` anywhere in the
   body, nested closures included. Only `x::` writes a local: an
   implicit-receiver send `x: v` is resolved through the classes, never the
   locals (`resolver/mod.rs`).
-- **A private header slot**: no `x::` and no send of `x:` -- implicit
-  receiver, `self`, `super` or `outer` -- anywhere in the class declaration,
-  nested classes and the class side included. A private member is reached
-  only by sends from within the declaring class (`newspeak-spec.pdf`
-  §5.8, §5.9, §6.3.1); `Message>>sendTo:` is an ordinary public send
-  (§5.5); no program has a reflective slot write -- only the VM mirror,
-  which the shipped modules alone hold.
-- **A public or protected header slot**: never; `=` would remove a setter
-  code outside the class may send.
+- **A header slot**: never. A public or protected slot's setter may be sent
+  from anywhere; a private slot's fix could lift a value object's refusal of
+  a mutable slot (`MutableValueSlot`), and whether a class's instances are
+  values is not in its declaration -- `Value` can be mixed in above it later.
 
 The name test is conservative: an `x::` or `x:` that resolves to something
 else (a shadowing closure local, another class's slot) still counts.
@@ -121,8 +116,8 @@ Only a module that parses without error gets hints.
 ## Tests
 
 - **`hints.rs` unit tests**: each rule above, its positive and negative
-  cases -- guards, reordering, a header prefix out of order, private against
-  protected header slots, a shadowing closure local, a commented statement,
+  cases -- guards, reordering, a header prefix out of order, a header slot
+  getting no hint B, a shadowing closure local, a commented statement,
   a chain -- each fix applied and compared with the expected text
   (`indoc!` modules).
 - **The behaviour oracle**: "apply all" over every `goldens/**/*.ns`, each

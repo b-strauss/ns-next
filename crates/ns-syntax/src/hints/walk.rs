@@ -78,7 +78,6 @@ impl<'tree> Scope<'tree> {
 }
 
 pub(super) trait Visitor<'tree> {
-    fn class(&mut self, declaration: &'tree ClassDeclaration);
     fn section(&mut self, section: &Section<'tree>, scope: &Scope<'tree>);
 }
 
@@ -98,7 +97,6 @@ fn parameters_of(pattern: &MessagePattern) -> Vec<&str> {
 }
 
 fn class<'tree>(declaration: &'tree ClassDeclaration, visitor: &mut impl Visitor<'tree>) {
-    visitor.class(declaration);
     let instance = &declaration.instance_side;
     // The superclass clauses and the header see the factory's parameters
     // (§6.1); the members do not.

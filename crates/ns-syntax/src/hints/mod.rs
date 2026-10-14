@@ -14,7 +14,7 @@ mod walk;
 
 pub use edits::{apply, Edit};
 
-use crate::ast::{ClassDeclaration, Module};
+use crate::ast::Module;
 use crate::span::Span;
 use walk::{Scope, Section, SectionKind};
 
@@ -83,10 +83,6 @@ struct Collector<'text> {
 }
 
 impl<'tree> walk::Visitor<'tree> for Collector<'_> {
-    fn class(&mut self, declaration: &'tree ClassDeclaration) {
-        read_only::header_hints(declaration, self.text, &mut self.hints);
-    }
-
     fn section(&mut self, section: &Section<'tree>, scope: &Scope<'tree>) {
         initialize::hints(section, scope, self.text, &mut self.hints);
         if section.kind == SectionKind::Body {
@@ -223,48 +219,21 @@ mod tests {
         assert!(names_of(text, HintKind::ReadOnly).is_empty());
     }
 
+    /// A public or protected slot's setter may be sent from anywhere, and a
+    /// private slot's fix could lift a value object's refusal of a mutable
+    /// slot: a header slot never gets hint B.
     #[test]
-    fn a_private_header_slot_nothing_writes_can_be_read_only() {
+    fn a_header_slot_gets_no_hint_b() {
         let text = indoc! {"
             class Module = (
               |
                 private limit ::= 10.
-                private used ::= 0.
                 protected shown ::= 1.
                 public total ::= 2.
               |
             ) (
               public take = (
-                used:: used + 1.
-                ^limit - used + shown + total
-              )
-            )
-        "};
-        assert_eq!(names_of(text, HintKind::ReadOnly), ["limit"]);
-        assert_eq!(
-            fixed(text, HintKind::ReadOnly, "limit"),
-            text.replace("private limit ::= 10.", "private limit = 10.")
-        );
-    }
-
-    /// A private slot is written by a send of its setter as much as by
-    /// `name::`, from a nested class as much as from the class itself.
-    #[test]
-    fn a_setter_send_or_a_nested_class_keeps_a_private_slot_mutable() {
-        let text = indoc! {"
-            class Module = (
-              |
-                private limit ::= 10.
-                private used ::= 0.
-              |
-            ) (
-              public reset = (
-                self limit: 5.
-              )
-              class Inner = () (
-                public clear = (
-                  used:: 0.
-                )
+                ^limit + shown + total
               )
             )
         "};
