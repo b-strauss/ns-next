@@ -70,7 +70,6 @@ impl<'tree> Scope<'tree> {
 
     /// What `name` is bound to, the innermost declaration deciding; `None`
     /// for a name no enclosing code declares, which is a send.
-    #[expect(dead_code, reason = "used by Task 3")]
     pub(super) fn binding(&self, name: &str) -> Option<Binding> {
         self.frames.iter().rev().find_map(|frame| {
             frame

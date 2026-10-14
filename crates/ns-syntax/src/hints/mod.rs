@@ -672,4 +672,85 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn a_settled_value_after_a_guard_moves_into_its_declaration() {
+        let text = indoc! {"
+            class Module = () (
+              public run: limit = (
+                |
+                  count
+                  index
+                  start = 1.
+                  step
+                |
+                limit < 0 ifTrue: [^nil].
+                count:: 0.
+                index:: limit.
+                step:: start.
+                ^count + index + step
+              )
+            )
+        "};
+        assert_eq!(
+            names_of(text, HintKind::InitializeInDeclaration),
+            ["count", "index", "step"]
+        );
+        let result = fixed(text, HintKind::InitializeInDeclaration, "count");
+        assert!(result.contains("      count ::= 0.\n"), "{result}");
+        assert!(!result.contains("    count:: 0.\n"), "{result}");
+    }
+
+    #[test]
+    fn a_value_that_may_fail_or_change_stays_after_the_guard() {
+        let text = indoc! {"
+            class Module = () (
+              public run: limit = (
+                |
+                  count
+                  index
+                  total ::= 0.
+                |
+                limit < 0 ifTrue: [^nil].
+                count:: self size.
+                index:: total.
+                ^count + index
+              )
+            )
+        "};
+        assert!(names_of(text, HintKind::InitializeInDeclaration).is_empty());
+    }
+
+    /// A guard that reads the slot would see the value instead of nil.
+    #[test]
+    fn a_guard_that_mentions_the_slot_keeps_its_assignment() {
+        let text = indoc! {"
+            class Module = () (
+              public run = (
+                |
+                  count
+                |
+                count isNil ifFalse: [^count].
+                count:: 0.
+                ^count
+              )
+            )
+        "};
+        assert!(names_of(text, HintKind::InitializeInDeclaration).is_empty());
+    }
+
+    #[test]
+    fn a_factory_parameter_is_settled_in_a_header() {
+        let text = indoc! {"
+            class Module withLimit: limit = (
+              |
+                used ::= 0.
+                private cap
+              |
+              used printString.
+              cap:: limit.
+            ) ()
+        "};
+        assert_eq!(names_of(text, HintKind::InitializeInDeclaration), ["cap"]);
+    }
 }

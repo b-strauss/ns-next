@@ -14,7 +14,7 @@ use crate::span::Span;
 
 use super::edits::{self, Edit};
 use super::names;
-use super::walk::{Scope, Section, SectionKind};
+use super::walk::{Binding, Scope, Section, SectionKind};
 use super::{Hint, HintKind};
 
 pub(super) fn hints(section: &Section<'_>, scope: &Scope<'_>, text: &str, hints: &mut Vec<Hint>) {
@@ -108,10 +108,22 @@ fn bare_slot(slots: &[SlotDeclaration], name: &str) -> Option<usize> {
 }
 
 /// Whether `value` can be evaluated earlier than where it stands without
-/// anyone seeing the difference. Task 4 widens it; at the first statement
-/// nothing is evaluated earlier, so no value needs it there.
-fn settled(_value: &Expression, _scope: &Scope<'_>) -> bool {
-    false
+/// anyone seeing the difference: a literal, `self`, or a name bound to a
+/// parameter or a read-only local, none of which can fail or change. A
+/// read-only local of the same section is initialized before the moved
+/// slot, since the slot then stands after the last initialized one.
+fn settled(value: &Expression, scope: &Scope<'_>) -> bool {
+    match &value.kind {
+        ExpressionKind::Literal(_) => true,
+        ExpressionKind::Identifier(identifier) => {
+            identifier.name == "self"
+                || matches!(
+                    scope.binding(&identifier.name),
+                    Some(Binding::Parameter | Binding::ReadOnlyLocal)
+                )
+        }
+        _ => false,
+    }
 }
 
 fn in_place(
