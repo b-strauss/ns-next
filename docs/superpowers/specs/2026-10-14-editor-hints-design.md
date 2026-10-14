@@ -54,9 +54,9 @@ statement's value, which an initializer does not have; a method answers
    parameter (of a method or a closure) or a read-only local (`=`); no
    statement before it and no initializer of the section mentions the
    name `x` anywhere, nested closures included (a closure made by an
-   initializer could read `x` before the statement runs); and, as in 1, every existing initializer of the section still
-   runs before it -- the local's declaration moves after the last
-   initialized one when needed. Such an `e` can neither fail nor observe
+   initializer could read `x` before the statement runs); and, as in 1,
+   every existing initializer of the section still runs before it -- the
+   local's declaration moves after the last initialized one when needed. Such an `e` can neither fail nor observe
    anything those statements change, and neither they nor any initializer
    can observe `x` before it, so evaluating `e` earlier is unobservable.
 

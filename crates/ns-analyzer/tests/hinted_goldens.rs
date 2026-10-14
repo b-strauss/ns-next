@@ -9,11 +9,15 @@
 //! programs run on `ns-next`, `ns-cli`'s binary. `ns-cli` never depends on
 //! `ns-analyzer` -- the runtime's binary must not carry the editor's code --
 //! and cargo hands a test only its own package's binaries, so this one
-//! builds `ns-next` itself, once, before the trials run. It runs only in its own nextest profile, when the
-//! hint code changes: `cargo nextest run -p ns-analyzer --profile hints`.
+//! builds `ns-next` itself, once per test process, when the first trial
+//! that runs a program needs it. It runs only in its own nextest profile,
+//! when the hint code changes:
+//!
+//!     cargo nextest run -p ns-analyzer --profile hints
 
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
 use libtest_mimic::{Arguments, Failed, Trial};
 
@@ -98,43 +102,47 @@ fn sources_of(program: &Path) -> Result<Vec<PathBuf>, String> {
 }
 
 /// Builds `ns-next` in the profile this test was built in and answers
-/// where it lies: beside this test's own `deps/` directory. A failed build
-/// fails the whole run with cargo's output.
+/// the path cargo reports for it, so that a target directory, a target or
+/// a profile of the caller's choosing never leaves a stale binary in its
+/// place. A failed build fails loudly with cargo's output.
 fn built_ns_next() -> PathBuf {
     let mut build = Command::new(env!("CARGO"));
-    build.args(["build", "-p", "ns-cli", "--bin", "ns-next"]);
+    build.args([
+        "build",
+        "-p",
+        "ns-cli",
+        "--bin",
+        "ns-next",
+        "--message-format=json-render-diagnostics",
+    ]);
     if !cfg!(debug_assertions) {
         build.arg("--release");
     }
     let output = build.output().expect("run cargo to build ns-next");
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "building ns-next failed:
-{}",
-        String::from_utf8_lossy(&output.stderr)
+        "building ns-next failed:\n{stderr}"
     );
-    let test = std::env::current_exe().expect("the test's own path");
-    let profile = test
-        .parent()
-        .and_then(Path::parent)
-        .expect("the test lies in target/<profile>/deps");
-    let binary = profile.join(format!("ns-next{}", std::env::consts::EXE_SUFFIX));
-    assert!(
-        binary.is_file(),
-        "cargo built ns-next, but it is not at {}",
-        binary.display()
-    );
-    binary
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|message| {
+            message["reason"] == "compiler-artifact" && message["target"]["name"] == "ns-next"
+        })
+        .and_then(|message| message["executable"].as_str().map(PathBuf::from))
+        .unwrap_or_else(|| panic!("cargo built no ns-next executable:\n{stderr}"))
+}
+
+/// The `ns-next` every program runs on, built on first use: only the trials
+/// that run a program pay for the build.
+fn ns_next() -> &'static Path {
+    static BINARY: OnceLock<PathBuf> = OnceLock::new();
+    BINARY.get_or_init(built_ns_next)
 }
 
 fn main() {
     let arguments = Arguments::from_args();
-    // Listing the trials runs none, so it needs no binary.
-    let ns_next = if arguments.list {
-        PathBuf::new()
-    } else {
-        built_ns_next()
-    };
     let mut trials = Vec::new();
     for program in common::golden_programs() {
         let name = common::golden_name(&program);
@@ -161,13 +169,20 @@ fn main() {
         for lowering in LOWERINGS {
             let program = program.clone();
             let sources = sources.clone();
-            let ns_next = ns_next.clone();
             trials.push(Trial::test(
                 format!("hinted::{lowering}::{name}"),
-                move || runs_alike(&ns_next, &program, &sources, lowering),
+                move || runs_alike(&program, &sources, lowering),
             ));
         }
     }
+    // With no program the hints change, the oracle would shrink to the
+    // fixed-point checks without anyone noticing.
+    assert!(
+        trials
+            .iter()
+            .any(|trial| trial.name().starts_with("hinted::")),
+        "the hints change no golden program, so no program is run hinted"
+    );
     libtest_mimic::run(&arguments, trials).exit();
 }
 
@@ -203,15 +218,9 @@ fn reaches_a_fixed_point(sources: &[PathBuf]) -> Result<(), Failed> {
 /// Copies `program` and every source it names into a scratch directory at
 /// their places relative to the repository root, so that each relative path
 /// a project file holds still resolves; applies every hint to the copied
-/// sources; runs the copy under `lowering` with the `ns-next` at `ns_next`;
-/// and compares with the recorded
+/// sources; runs the copy under `lowering`; and compares with the recorded
 /// outcome.
-fn runs_alike(
-    ns_next: &Path,
-    program: &Path,
-    sources: &[PathBuf],
-    lowering: &str,
-) -> Result<(), Failed> {
+fn runs_alike(program: &Path, sources: &[PathBuf], lowering: &str) -> Result<(), Failed> {
     let scratch = common::ScratchDirectory::new("hinted");
     let root = repository_root();
     let in_scratch = |path: &Path| -> PathBuf {
@@ -237,7 +246,7 @@ fn runs_alike(
             .expect("write the hinted source");
     }
     let expectation = common::expectation_of(&program);
-    let output = Command::new(ns_next)
+    let output = Command::new(ns_next())
         .arg("run")
         .arg(&copy)
         .arg("--lowering")

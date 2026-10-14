@@ -19,7 +19,7 @@
 default-filter = "not (test(~tool/awfy/all_benchmarks_verify) | test(=a_timed_run_prints_a_score_for_every_benchmark) | binary(hinted_goldens))"
 
 [profile.benchmarks]
-default-filter = "test(~tool/awfy/all_benchmarks_verify) | test(=a_timed_run_prints_a_score_for_every_benchmark)"
+default-filter = "(test(~tool/awfy/all_benchmarks_verify) | test(=a_timed_run_prints_a_score_for_every_benchmark)) and not binary(hinted_goldens)"
 
 [profile.hints]
 default-filter = "binary(hinted_goldens)"
