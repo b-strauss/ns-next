@@ -184,9 +184,17 @@ fn reordered(
     {
         return None;
     }
-    // The moved declaration stands where the separator ends.
+    // The moved declaration stands where the separator ends, in the text
+    // the removal leaves: on one line the removal stands before it.
     let declaration_column = separator.rfind('\n').map_or_else(
-        || edits::column(text, destination) + separator.len(),
+        || {
+            let kept = format!(
+                "{}{}",
+                &text[..removal.start as usize],
+                &text[removal.end as usize..destination as usize]
+            );
+            edits::column(&kept, kept.len() as u32) + separator.len()
+        },
         |index| separator.len() - index - 1,
     );
     let declaration = format!(

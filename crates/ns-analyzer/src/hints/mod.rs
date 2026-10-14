@@ -572,6 +572,36 @@ mod tests {
         );
     }
 
+    /// On one line the removal stands before the destination: the moved
+    /// declaration's column counts the text the removal leaves.
+    #[test]
+    fn a_value_reordered_on_one_line_follows_the_column_it_moves_to() {
+        let text = indoc! {"
+            class Module = () (
+              public sum: values = ( | result total ::= 0. |
+                result:: values
+                    inject: 0
+                    into: [:sum :each | sum + each].
+                ^result + total
+              )
+            )
+        "};
+        // The declaration moves to column 40, 36 right of the statement:
+        // the continuation lines move from column 8 to 44.
+        assert_eq!(
+            fixed(text, HintKind::InitializeInDeclaration, "result"),
+            indoc! {"
+                class Module = () (
+                  public sum: values = ( | total ::= 0. result ::= values
+                                                            inject: 0
+                                                            into: [:sum :each | sum + each]. |
+                    ^result + total
+                  )
+                )
+            "}
+        );
+    }
+
     #[test]
     fn a_one_line_section_takes_the_initializer_inline() {
         let text = "class Module = () ( public run = ( | count | count:: 1. ^count ) )\n";

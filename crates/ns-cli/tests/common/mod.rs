@@ -219,9 +219,9 @@ impl Expectation {
 
 /// The recorded outcome beside `source`, with its line endings normalized.
 ///
-/// `.gitattributes` covers only `corpus/**` and `core.autocrlf` is true, so a
-/// fresh Windows checkout really does write a CRLF `.toml`, while the CLI
-/// always writes `\n`. TOML's multi-line literal string is specified as taken
+/// No golden `.toml` is covered by `.gitattributes` and `core.autocrlf` is
+/// true, so a fresh Windows checkout really does write a CRLF `.toml`, while
+/// the CLI always writes `\n`. TOML's multi-line literal string is specified as taken
 /// as-is, so nothing in the format promises the `\r` is dropped -- today's
 /// parser drops it, but that is its choice, not the format's. Normalizing here
 /// makes every reader of a recorded answer right by construction instead of by
