@@ -1385,13 +1385,12 @@ class Kernel vmMirror: mirror = Value (
     /// receiver's own sends.
     private valueEquals: other = (
       |
-        index
+        index ::= 1.
         count
       |
       (self class == (vmMirror objectClass: other ifFail: [^false])) ifFalse: [^false].
       count:: self valueSlotCountOf: self.
       (count = (self valueSlotCountOf: other)) ifFalse: [^false].
-      index:: 1.
       [index <= count] whileTrue: [
         ((self valueSlotOf: self at: index) = (self valueSlotOf: other at: index)) ifFalse: [
           ^false.
@@ -2210,14 +2209,13 @@ class Kernel vmMirror: mirror = Value (
       |
         result
         base
-        remaining
+        remaining ::= exponent.
       |
       exponent < 0 ifTrue: [
         ^(self reciprocalModulo: modulus) raisedTo: exponent negated modulo: modulus.
       ].
       result:: 1 \\ modulus.
       base:: self \\ modulus.
-      remaining:: exponent.
       [remaining > 0] whileTrue: [
         (remaining bitAnd: 1) = 1 ifTrue: [result:: result * base \\ modulus].
         base:: base * base \\ modulus.

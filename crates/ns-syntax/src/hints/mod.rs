@@ -113,6 +113,47 @@ pub fn hints_of(text: &str) -> Vec<Hint> {
     }
 }
 
+/// `text` with every hint applied, or `text` itself when it does not
+/// parse. It works in rounds: each applies at most one hint per section,
+/// and none whose edits overlap another's -- a moved statement may hold a
+/// closure with hints of its own, whose edits the move would carry along
+/// -- then finds the hints of the result. Every fix is valid on its own,
+/// so every round keeps the behaviour, and each removes an assignment or
+/// a `::=`, so the rounds end.
+pub fn apply_all(text: &str) -> String {
+    let mut current = text.to_string();
+    loop {
+        let found = hints_of(&current);
+        if found.is_empty() {
+            return current;
+        }
+        let mut taken: Vec<&Hint> = Vec::new();
+        for hint in &found {
+            let clashes = taken.iter().any(|other| {
+                other.section == hint.section
+                    || other
+                        .edits
+                        .iter()
+                        .any(|edit| hint.edits.iter().any(|mine| edits::overlap(edit, mine)))
+            });
+            if !clashes {
+                taken.push(hint);
+            }
+        }
+        let round: Vec<Edit> = taken
+            .iter()
+            .flat_map(|hint| hint.edits.iter().cloned())
+            .collect();
+        let next = apply(&current, &round);
+        debug_assert!(
+            crate::parse(&next).is_ok(),
+            "a round of fixes does not parse:
+{next}"
+        );
+        current = next;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -825,5 +866,76 @@ mod tests {
             )
         "};
         assert!(names_of(text, HintKind::InitializeInDeclaration).is_empty());
+    }
+
+    #[test]
+    fn apply_all_moves_a_run_of_assignments_and_then_makes_them_read_only() {
+        let text = indoc! {"
+            class Module = () (
+              public run = (
+                |
+                  activation
+                  count
+                  handlers
+                |
+                count:: 0.
+                activation:: self start.
+                ^count + activation
+              )
+            )
+        "};
+        let result = apply_all(text);
+        assert_eq!(
+            result,
+            indoc! {"
+                class Module = () (
+                  public run = (
+                    |
+                      count = 0.
+                      activation = self start.
+                      handlers
+                    |
+                    ^count + activation
+                  )
+                )
+            "}
+        );
+        assert_eq!(apply_all(&result), result, "a second pass changes nothing");
+    }
+
+    /// The outer statement moves first; the closure's own hint, whose
+    /// edits it would carry along, waits for the next round.
+    #[test]
+    fn apply_all_reaches_the_hints_inside_a_moved_value() {
+        let text = indoc! {"
+            class Module = () (
+              public run = (
+                |
+                  action
+                |
+                action:: [
+                  |
+                    count
+                  |
+                  count:: 1.
+                  count
+                ].
+                ^action value
+              )
+            )
+        "};
+        let result = apply_all(text);
+        assert!(crate::parse(&result).is_ok(), "{result}");
+        assert!(hints_of(&result).is_empty(), "{result}");
+        assert!(result.contains("count = 1."), "{result}");
+        assert!(result.contains("action = ["), "{result}");
+    }
+
+    #[test]
+    fn apply_all_leaves_a_source_without_hints_alone() {
+        let text = "class Module = () ( public run = ( ^1 ) )
+";
+        assert_eq!(apply_all(text), text);
+        assert_eq!(apply_all("class Module = ("), "class Module = (");
     }
 }

@@ -33,7 +33,6 @@ pub fn apply(text: &str, edits: &[Edit]) -> String {
 
 /// Whether two edits touch the same text or insert at the same place:
 /// two such edits cannot be applied together.
-#[expect(dead_code, reason = "used by Task 5")]
 pub(super) fn overlap(first: &Edit, second: &Edit) -> bool {
     (first.span.start < second.span.end && second.span.start < first.span.end)
         || first.span.start == second.span.start
