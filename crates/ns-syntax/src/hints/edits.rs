@@ -5,6 +5,7 @@
 
 use crate::ast::{Expression, SlotDeclaration, Statement};
 use crate::span::Span;
+use crate::token::TokenKind;
 
 /// The text of `span` replaced by `text`; an empty span inserts.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,7 +143,12 @@ pub(super) fn assignment_operator(text: &str, slot: &SlotDeclaration) -> Option<
         .type_annotation
         .as_ref()
         .map_or(slot.name.span.end, |annotation| annotation.span.end) as usize;
-    let index = text[from..initializer.span.start as usize].find("::=")?;
-    let start = (from + index) as u32;
+    // Lexed, not searched: a comment between the name and the initializer
+    // may spell `::=` itself.
+    let (tokens, _) = crate::lexer::Lexer::new(&text[from..initializer.span.start as usize]).run();
+    let operator = tokens
+        .iter()
+        .find(|token| token.kind == TokenKind::ColonColonEquals)?;
+    let start = from as u32 + operator.span.start;
     Some(Span::new(start, start + 3))
 }

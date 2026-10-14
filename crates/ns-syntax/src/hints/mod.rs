@@ -184,6 +184,27 @@ mod tests {
         assert!(names_of(text, HintKind::ReadOnly).is_empty());
     }
 
+    /// A comment between the name and the initializer may spell `::=`:
+    /// the fix rewrites the operator, never the comment.
+    #[test]
+    fn a_comment_spelling_the_operator_is_left_alone() {
+        let text = indoc! {"
+            class Module = () (
+              public run = (
+                |
+                  count (* was ::= *) ::= 1.
+                |
+                ^count
+              )
+            )
+        "};
+        assert_eq!(names_of(text, HintKind::ReadOnly), ["count"]);
+        assert_eq!(
+            fixed(text, HintKind::ReadOnly, "count"),
+            text.replace("*) ::= 1.", "*) = 1.")
+        );
+    }
+
     #[test]
     fn a_bare_local_and_a_read_only_one_get_no_hint_b() {
         let text = indoc! {"
