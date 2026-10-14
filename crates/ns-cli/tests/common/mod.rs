@@ -46,6 +46,83 @@ pub fn benchmark_programs() -> Vec<PathBuf> {
     programs
 }
 
+/// One run of a benchmark program: the program, the arguments it is run
+/// with, and the outcome it must give.
+pub struct BenchmarkRun {
+    /// `benchmarks/micro/bench_loop`, or for one benchmark of the Are We
+    /// Fast Yet harness `benchmarks/are-we-fast-yet/Havlak`.
+    pub name: String,
+    pub program: PathBuf,
+    pub arguments: Vec<String>,
+    pub expectation: Expectation,
+}
+
+/// Every run the profile `benchmarks-verify` holds to its outcome: each
+/// micro benchmark as its `.toml` records it, and the Are We Fast Yet
+/// harness once per benchmark its `.toml` lists -- `<Name>: ok` for the
+/// harness run with that name -- so that the benchmarks run in parallel
+/// rather than one after another in a single process.
+pub fn benchmark_runs() -> Vec<BenchmarkRun> {
+    let mut runs = Vec::new();
+    for program in benchmark_programs() {
+        let expectation = expectation_of(&program);
+        if !program.is_dir() {
+            runs.push(BenchmarkRun {
+                name: benchmark_name(&program),
+                arguments: expectation.arguments.clone(),
+                program,
+                expectation,
+            });
+            continue;
+        }
+        for name in benchmark_names(&expectation) {
+            runs.push(BenchmarkRun {
+                name: format!("{}/{name}", benchmark_name(&program)),
+                program: program.clone(),
+                arguments: vec![name.clone()],
+                expectation: Expectation {
+                    status: 0,
+                    stdout: format!("{name}: ok\n"),
+                    stderr: String::new(),
+                    skipped: None,
+                    arguments: vec![name],
+                },
+            });
+        }
+    }
+    runs
+}
+
+/// The benchmarks the Are We Fast Yet harness's recorded outcome lists, one
+/// `<Name>: ok` line each, in its order.
+pub fn benchmark_names(expectation: &Expectation) -> Vec<String> {
+    let names: Vec<String> = expectation
+        .stdout
+        .lines()
+        .map(|line| {
+            line.strip_suffix(": ok")
+                .unwrap_or_else(|| panic!("`{line}` is no `<Name>: ok` line"))
+                .to_string()
+        })
+        .collect();
+    assert!(
+        !names.is_empty(),
+        "the harness's outcome lists no benchmark"
+    );
+    names
+}
+
+/// The `-- argument ...` a command that sends a program's entry is given:
+/// nothing when there are no `arguments`.
+pub fn after_the_separator(arguments: &[String]) -> Vec<std::ffi::OsString> {
+    if arguments.is_empty() {
+        return Vec::new();
+    }
+    std::iter::once("--".into())
+        .chain(arguments.iter().map(Into::into))
+        .collect()
+}
+
 /// A benchmark program's path below the repository root without its
 /// extension, `/`-separated on every platform: `benchmarks/micro/bench_loop`.
 pub fn benchmark_name(program: &Path) -> String {

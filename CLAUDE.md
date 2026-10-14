@@ -86,8 +86,9 @@ own over the server's document symbols.
 Primordial Soup's Ton80 Richards and DeltaBlue, and their harness, one
 project; `benchmarks/micro/` — the microbenchmarks `ns-next bench` times.
 Both are held to the outcomes recorded beside them by
-`crates/ns-cli/tests/run_benchmarks.rs`, in the nextest profile `benchmarks`
-only (`docs/design/execution.md`, "The Are We Fast Yet benchmarks").
+`crates/ns-cli/tests/run_benchmarks.rs`, in the nextest profile
+`benchmarks-verify` only, which verifies them and measures nothing
+(`docs/design/execution.md`, "The Are We Fast Yet benchmarks").
 
 Read `docs/design/README.md` first — it maps the living design documents and says
 how much of each aspect exists. `docs/PROGRESS.md` is the milestone chronology.
@@ -330,12 +331,12 @@ Plus, per commit touching them:
 those profiles out, and the tests that run the Are We Fast Yet benchmarks at
 full size; those run only on demand, when benchmarking, and once at the end
 of a branch, never under a stress mode:
-`cargo nextest run --workspace --profile benchmarks` (`execution.md`, "The Are
-We Fast Yet benchmarks").
+`cargo nextest run --workspace --profile benchmarks-verify` (`execution.md`,
+"The Are We Fast Yet benchmarks").
 
 The end-of-batch gates (the five stress modes: moves, caches, collection,
 scavenges and every instruction wide; `run-corpus` plain and under
-stress; the images, caches and benchmarks profiles; `verifyPlugin`) are in
+stress; the images, caches and benchmarks-verify profiles; `verifyPlugin`) are in
 the `finishing-a-batch` skill. A commit that
 never saw them is work in progress, not finished work; a subagent implementing
 part of a batch is told this staggering explicitly.

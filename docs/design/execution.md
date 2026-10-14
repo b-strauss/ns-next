@@ -698,24 +698,27 @@ one ulp down, the Windows C library's values and a Taylor series off by up
 to 557 ulps all gave 10830 (checked on 2026-10-01, while planning stage 3).
 
 So the tests that run every benchmark are not part of the suite.
-`crates/ns-cli/tests/run_benchmarks.rs` runs the harness over every
-benchmark at full size, under both lowerings, against
-`benchmarks/are-we-fast-yet.toml` -- every benchmark's `<Name>: ok` -- and
-so does the hints' behaviour oracle, every hint applied; the microbenchmarks
-under `benchmarks/micro/` go the same way against the `.toml` beside each.
-With Havlak and CD, the slowest of stage 3, all sixteen programs took 57 s
-under the optimized lowering and 136 s under the reference lowering (timed
-on 2026-10-01); `a_timed_run_prints_a_score_for_every_benchmark` runs each
-at least twice and took 115 s in the debug build. The whole
-`--profile benchmarks` run, every one of these in parallel, took 146 s
-(2026-10-14); under the stress modes the gate took 37 minutes with them
-(MOVES, 2026-10-01). `.config/nextest.toml`'s default profile leaves them
-out, so neither the per-commit gate nor a stress run reaches them. They run on demand, when benchmarking, and once at the end of a
+`crates/ns-cli/tests/run_benchmarks.rs` runs the harness on each benchmark
+by name, at full size, under both lowerings, each run a test of its own,
+and holds it to its line of `benchmarks/are-we-fast-yet.toml`,
+`<Name>: ok`; the hints' behaviour oracle does the same, every hint
+applied; the microbenchmarks under `benchmarks/micro/` go the same way
+against the `.toml` beside each; and `timed::<Name>` runs each benchmark
+with `--timed` and checks its score's shape. The tests verify; they measure
+nothing, since a debug build's times say nothing. With Havlak and CD, the
+slowest of stage 3, all sixteen programs took 57 s under the optimized
+lowering and 136 s under the reference lowering one after another (timed
+on 2026-10-01); run one by one in parallel, the whole
+`--profile benchmarks-verify` run takes about 47 s, the longest single run
+Havlak's under the reference lowering (2026-10-14). Under the stress modes
+the gate took 37 minutes with them (MOVES, 2026-10-01).
+`.config/nextest.toml`'s default profile leaves them out, so neither the
+per-commit gate nor a stress run reaches them. They run on demand, when benchmarking, and once at the end of a
 branch, in a plain run without a stress mode (decided with the user on
 2026-10-01):
 
 ```bash
-cargo nextest run --workspace --profile benchmarks
+cargo nextest run --workspace --profile benchmarks-verify
 ```
 
 There are two ways to measure, and they report different things:
@@ -744,8 +747,7 @@ There are two ways to measure, and they report different things:
   `<Name>: <runs per second>` with one fraction digit (`asStringFixed: 1`).
   That score is a throughput after warm-up, comparable with Primordial
   Soup's own; it varies from run to run, so only its shape is checked
-  (`crates/ns-cli/tests/run.rs`,
-  `a_timed_run_prints_a_score_for_every_benchmark`).
+  (`crates/ns-cli/tests/run_benchmarks.rs`, `timed::<Name>`).
 
 Either way the protocol of the `measuring-performance` skill applies, as it
 does to every figure in this section: release builds only, and every binary

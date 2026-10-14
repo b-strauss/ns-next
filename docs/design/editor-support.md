@@ -600,8 +600,8 @@ titles say; after the first, the editor offers "Make `count` read-only".
   golden twice more, so it runs only in its own nextest profile, `hints`,
   for every commit that touches `crates/ns-analyzer`: `cargo nextest run -p
   ns-analyzer --profile hints` (`.config/nextest.toml`; the default profile
-  leaves it out). Its trials over the full-size Are We Fast Yet benchmarks,
-  which take minutes, run in the benchmarks profile instead.
+  leaves it out). Its trials over the benchmark programs, which take up to a
+  minute each, run in the profile `benchmarks-verify` instead.
 - **The protocol test** (`tests/protocol.rs`): a hint published with its
   severity, code, source and range; its quick fix and the fix for the file
   answered, the latter's one edit giving what `apply_all` gives; no action

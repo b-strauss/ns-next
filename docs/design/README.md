@@ -97,8 +97,8 @@ Primordial Soup's Ton80 Richards and DeltaBlue, and their harness, which
 Every benchmark program is held to the outcome recorded beside it --
 `benchmarks/micro/<name>.toml`, `benchmarks/are-we-fast-yet.toml` -- by
 `crates/ns-cli/tests/run_benchmarks.rs`, under both lowerings, in the nextest
-profile `benchmarks` only: a benchmark is sized to be measured, not to run
-on every commit.
+profile `benchmarks-verify` only: a benchmark is sized to be measured, not to
+run on every commit. The profile verifies; it measures nothing.
 
 ## Architecture
 
@@ -255,7 +255,8 @@ The editor hints have a second runner of the goldens, the behaviour oracle
 "Hints"): it applies every hint to a golden's sources, runs the changed
 program under both lowerings and holds it to the same recorded outcome. It
 runs the full-size benchmarks too, so it has a nextest profile of its own,
-`hints`, which the default and benchmarks profiles leave out.
+`hints`, which the default profile leaves out; its runs of the benchmarks
+are in the profile `benchmarks-verify`.
 
 A golden's root class is instantiated with `new`, and a project golden's
 root with `packageUsing:` its manifest; either reaches the platform only as
@@ -349,10 +350,10 @@ specification section it comes from — is a `///` comment at the top of
 the `.ns`, so that it sits with the program it
 explains rather than beside it; for a project golden, the `.ns` is its root
 module. The `.toml` holds the recorded answer and nothing else. A new Are
-We Fast Yet benchmark is added to the harness tuple, its project file,
-`benchmarks/are-we-fast-yet.toml` and the name list in
-`crates/ns-cli/tests/run.rs`'s `a_timed_run_prints_a_score_for_every_benchmark`,
-because the harness names each benchmark when it is instantiated.
+We Fast Yet benchmark is added to the harness tuple, its project file and
+`benchmarks/are-we-fast-yet.toml`, because the harness names each benchmark
+when it is instantiated; `run_benchmarks` takes the list of benchmarks it
+runs one by one from that `.toml`.
 
 ## Gates
 
@@ -372,7 +373,7 @@ NS_NEXT_STRESS_WIDE=1 cargo nextest run --workspace    # the same, every instruc
 cargo nextest run -p ns-analyzer --profile hints   # the hints' behaviour oracle, which the suite leaves out, per commit that touches ns-analyzer
 cargo nextest run -p ns-cli --profile images       # every golden through build then load, per commit that touches the image format or the instruction encoding, and at the end of a batch
 cargo nextest run -p ns-cli --profile caches       # every golden with a two-entry global cache, per commit that touches the caches, and at the end of a batch
-cargo nextest run --workspace --profile benchmarks # the full-size Are We Fast Yet benchmarks, the hints' oracle over them included: when measuring, and at the end of a branch
+cargo nextest run --workspace --profile benchmarks-verify # the benchmark programs at full size, verified, the hints' oracle over them included: when benchmarking, and at the end of a branch
 cargo clippy --workspace --all-targets   # must be warning-free, the naming lint included
 cargo fmt --all                          # before every commit
 cargo run -p ns-analyzer -- parse-corpus corpus/modules   # parsed 211, failed 0

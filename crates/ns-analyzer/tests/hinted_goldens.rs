@@ -12,7 +12,7 @@
 //! builds `ns-next` itself, once per test process, when the first trial
 //! that runs a program needs it. It runs only in its own nextest profile,
 //! for every commit that touches `crates/ns-analyzer`, its trials over the
-//! full-size Are We Fast Yet benchmarks only in the benchmarks profile:
+//! benchmark programs only in the profile `benchmarks-verify`:
 //!
 //!     cargo nextest run -p ns-analyzer --profile hints
 
@@ -154,14 +154,37 @@ fn main() {
     let arguments = Arguments::from_args();
     let mut trials = Vec::new();
     // The benchmarks too: they are the largest programs the repository
-    // holds, and they are held to their recorded outcomes as goldens are.
-    let goldens = common::golden_programs()
+    // holds, and they are held to their recorded outcomes as goldens are --
+    // the Are We Fast Yet harness once per benchmark, as `run_benchmarks`
+    // runs it, so that the benchmarks run in parallel.
+    let mut programs: Vec<(String, PathBuf, Vec<Run>)> = common::golden_programs()
         .into_iter()
-        .map(|program| (common::golden_name(&program), program));
-    let benchmarks = common::benchmark_programs()
-        .into_iter()
-        .map(|program| (common::benchmark_name(&program), program));
-    for (name, program) in goldens.chain(benchmarks) {
+        .map(|program| {
+            let expectation = common::expectation_of(&program);
+            let run = Run {
+                name: common::golden_name(&program),
+                arguments: expectation.arguments.clone(),
+                expectation,
+            };
+            (run.name.clone(), program, vec![run])
+        })
+        .collect();
+    for run in common::benchmark_runs() {
+        let name = common::benchmark_name(&run.program);
+        let run_of_it = Run {
+            name: run.name,
+            arguments: run.arguments,
+            expectation: run.expectation,
+        };
+        match programs
+            .iter_mut()
+            .find(|(_, program, _)| *program == run.program)
+        {
+            Some((_, _, runs)) => runs.push(run_of_it),
+            None => programs.push((name, run.program, vec![run_of_it])),
+        }
+    }
+    for (name, program, runs) in programs {
         let sources = match sources_of(&program) {
             Ok(sources) => sources,
             Err(problem) => {
@@ -179,16 +202,23 @@ fn main() {
         trials.push(Trial::test(format!("fixed_point::{name}"), move || {
             reaches_a_fixed_point(&checked)
         }));
-        if !changed || common::expectation_of(&program).skipped().is_some() {
+        if !changed {
             continue;
         }
-        for lowering in LOWERINGS {
-            let program = program.clone();
-            let sources = sources.clone();
-            trials.push(Trial::test(
-                format!("hinted::{lowering}::{name}"),
-                move || runs_alike(&program, &sources, lowering),
-            ));
+        for run in runs {
+            if run.expectation.skipped().is_some() {
+                continue;
+            }
+            let run = std::sync::Arc::new(run);
+            for lowering in LOWERINGS {
+                let program = program.clone();
+                let sources = sources.clone();
+                let run = run.clone();
+                trials.push(Trial::test(
+                    format!("hinted::{lowering}::{}", run.name),
+                    move || runs_alike(&program, &sources, &run, lowering),
+                ));
+            }
         }
     }
     // With no program the hints change, the oracle would shrink to the
@@ -236,7 +266,12 @@ fn reaches_a_fixed_point(sources: &[PathBuf]) -> Result<(), Failed> {
 /// a project file holds still resolves; applies every hint to the copied
 /// sources; runs the copy under `lowering`; and compares with the recorded
 /// outcome.
-fn runs_alike(program: &Path, sources: &[PathBuf], lowering: &str) -> Result<(), Failed> {
+fn runs_alike(
+    program: &Path,
+    sources: &[PathBuf],
+    run: &Run,
+    lowering: &str,
+) -> Result<(), Failed> {
     let scratch = common::ScratchDirectory::new("hinted");
     let root = repository_root();
     let in_scratch = |path: &Path| -> PathBuf {
@@ -261,21 +296,28 @@ fn runs_alike(program: &Path, sources: &[PathBuf], lowering: &str) -> Result<(),
         std::fs::write(&copied, ns_analyzer::hints::apply_all(&text))
             .expect("write the hinted source");
     }
-    let expectation = common::expectation_of(&program);
     let output = Command::new(ns_next())
         .arg("run")
         .arg(&copy)
         .arg("--lowering")
         .arg(lowering)
-        .args(common::program_arguments(&program))
+        .args(common::after_the_separator(&run.arguments))
         .output()
         .map_err(|error| format!("run ns-next: {error}"))?;
     common::compare(
         &output,
-        &expectation,
+        &run.expectation,
         &format!("hinted, under the {lowering} lowering"),
     )
     .map_err(Failed::from)
+}
+
+/// One run of a program the oracle makes: its name, the arguments it is
+/// run with and the outcome it must give.
+struct Run {
+    name: String,
+    arguments: Vec<String>,
+    expectation: common::Expectation,
 }
 
 fn copy_directory(original: &Path, copy: &Path) {
