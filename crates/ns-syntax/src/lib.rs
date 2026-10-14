@@ -114,6 +114,7 @@ fn empty_module() -> Module {
         initializer_expressions: Vec::new(),
         members: Vec::new(),
         delimiters: None,
+        members_delimiters: None,
         slot_delimiters: None,
         comments: Vec::new(),
         span,

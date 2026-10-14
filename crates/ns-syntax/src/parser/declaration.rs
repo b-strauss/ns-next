@@ -920,6 +920,7 @@ impl<'a> Parser<'a> {
                     initializer_expressions: Vec::new(),
                     members: Vec::new(),
                     delimiters: None,
+                    members_delimiters: None,
                     slot_delimiters: None,
                     comments: Vec::new(),
                     span,
@@ -940,19 +941,24 @@ impl<'a> Parser<'a> {
         // --- G2: sideDecl body `( ( classDecl | lazySlotDecl | methodDecl )* )` ---
         // §6.3's `classBody → classHeader sideDecl [classSideDecl]`: the
         // instance side is not optional, however empty.
-        let (members, g2_end, instance_close) = if self.at(TokenKind::LeftParenthesis) {
-            self.bump(); // `(`
-            let members = self.parse_side_body();
-            let end = self.end_of_group();
-            let close = self.expect(TokenKind::RightParenthesis);
-            (members, end, close)
-        } else {
-            self.push_error(
-                self.current().span,
-                "expected the instance side's `( ... )` after the class header (§6.3)",
-            );
-            (Vec::new(), g1_end, None)
-        };
+        let (members, g2_end, members_delimiters, instance_close) =
+            if self.at(TokenKind::LeftParenthesis) {
+                let open = self.bump();
+                let members = self.parse_side_body();
+                let end = self.end_of_group();
+                let close = self.expect(TokenKind::RightParenthesis);
+                let delimiters = Delimiters {
+                    open: open.span,
+                    close: close.map(|token| token.span),
+                };
+                (members, end, Some(delimiters), close)
+            } else {
+                self.push_error(
+                    self.current().span,
+                    "expected the instance side's `( ... )` after the class header (§6.3)",
+                );
+                (Vec::new(), g1_end, None, None)
+            };
 
         let instance_side = ClassBody {
             header_slots,
@@ -962,6 +968,7 @@ impl<'a> Parser<'a> {
                 open: open.span,
                 close: instance_close.map(|token| token.span),
             }),
+            members_delimiters,
             slot_delimiters,
             comments: Vec::new(),
             span: g1_span.merge(g2_end),
@@ -1301,6 +1308,7 @@ impl<'a> Parser<'a> {
             initializer_expressions: Vec::new(),
             members,
             delimiters: None,
+            members_delimiters: None,
             slot_delimiters: None,
             comments: Vec::new(),
             span: start.merge(end),

@@ -435,10 +435,12 @@ instruction, so nothing at run time consults a span to find a binding.
 **`Delimiters { open, close }` records a bracketed construct's opening and
 closing token**, for an editor's folds ([editor-support.md](editor-support.md),
 "Folding"): `close` is `None` where recovery ended the construct without one,
-which then ends where its node's span does. Five fields carry it:
+which then ends where its node's span does. Six fields carry it:
 `ClassBody::delimiters` (the instance side's first `(`, the header's, and its
 last `)`, the members'; a class side's `( )`; `None` for a mixin application
-ended by `.`), `ClassBody::slot_delimiters` (the header's `| |` or `|| ||`),
+ended by `.`), `ClassBody::members_delimiters` (the instance side's members'
+`( )`; `None` on a class side, for a mixin application ended by `.`, and
+where recovery found no `(`), `ClassBody::slot_delimiters` (the header's `| |` or `|| ||`),
 `MethodDeclaration::body_delimiters` (the body's `( )`),
 `CodeBody::temporaries_delimiters` (the temporaries' `| |`) and
 `BlockExpression::delimiters` (the `[ ]`; `None` for a block the compiler

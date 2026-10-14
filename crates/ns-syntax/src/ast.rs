@@ -134,6 +134,10 @@ pub struct ClassBody {
     /// members'), or the class side's `( )`; `None` for a mixin
     /// application ended by `.`.
     pub delimiters: Option<Delimiters>,
+    /// The instance side's members' `( )`, after the header's; `None` on a
+    /// class side, for a mixin application ended by `.`, and when recovery
+    /// found no `(` there.
+    pub members_delimiters: Option<Delimiters>,
     /// The header's slot section, `| |` or `|| ||`; `None` without one and
     /// on a class side.
     pub slot_delimiters: Option<Delimiters>,

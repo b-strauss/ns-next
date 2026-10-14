@@ -1,5 +1,6 @@
 ---
 source: crates/ns-syntax/tests/parse_snapshot.rs
+assertion_line: 13
 expression: module
 ---
 Module {
@@ -280,6 +281,20 @@ Module {
                     ),
                 },
             ),
+            members_delimiters: Some(
+                Delimiters {
+                    open: Span {
+                        start: 92,
+                        end: 93,
+                    },
+                    close: Some(
+                        Span {
+                            start: 155,
+                            end: 156,
+                        },
+                    ),
+                },
+            ),
             slot_delimiters: Some(
                 Delimiters {
                     open: Span {
@@ -319,6 +334,7 @@ Module {
                         ),
                     },
                 ),
+                members_delimiters: None,
                 slot_delimiters: None,
                 comments: [],
                 span: Span {

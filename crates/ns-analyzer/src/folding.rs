@@ -1,7 +1,7 @@
 //! The fold ranges of one document: what an editor can collapse. They come
-//! from the AST, so they name what they fold -- a class body, a class
-//! side, a method body, a closure, a slot section -- and from the comments
-//! beside it. See `docs/design/editor-support.md`, "Folding".
+//! from the AST, so they name what they fold -- a class, its instance
+//! side, its class side, a method body, a closure, a slot section -- and
+//! from the comments beside it. See `docs/design/editor-support.md`, "Folding".
 
 use lsp_types::{FoldingRange, FoldingRangeKind};
 use ns_syntax::ast::{self, Delimiters};
@@ -112,7 +112,21 @@ impl Collector<'_> {
 
     fn class(&mut self, class: &ast::ClassDeclaration) {
         let instance = &class.instance_side;
-        self.bracketed(instance.delimiters, instance.span.end, "(...)");
+        let class_side = class
+            .class_side
+            .as_ref()
+            .and_then(|class_side| class_side.delimiters);
+        // The whole class, from the header's `(` to its last `)`.
+        let whole = instance.delimiters.map(|delimiters| Delimiters {
+            open: delimiters.open,
+            close: class_side.map_or(delimiters.close, |class_side| class_side.close),
+        });
+        self.bracketed(whole, class.span.end, "(...)");
+        let class_side_folds = class_side.filter(|class_side| {
+            let end = class_side.close.map_or(class.span.end, |close| close.end);
+            !self.on_one_line(class_side.open.start, end)
+        });
+        self.members(instance, class_side_folds);
         self.slot_section(instance.slot_delimiters, &instance.header_slots);
         for slot in instance.slots() {
             self.slot(slot);
@@ -140,6 +154,44 @@ impl Collector<'_> {
                 self.method(method);
             }
         }
+    }
+
+    /// The instance side's members, `(` to `)`. An editor shows one fold
+    /// marker a line, the smaller fold's, so the members have no fold after
+    /// a header of one line, whose line is the whole class's; and before a
+    /// class side that folds and opens on the `)`'s line they end with the
+    /// line before, whose line is the class side's.
+    fn members(&mut self, instance: &ast::ClassBody, class_side: Option<Delimiters>) {
+        let Some(members) = instance.members_delimiters else {
+            return;
+        };
+        let header_open = instance
+            .delimiters
+            .map_or(members.open, |header| header.open);
+        if self.on_one_line(header_open.start, members.open.start) {
+            return;
+        }
+        let closer_shares_its_line = members.close.zip(class_side).and_then(|(close, side)| {
+            let line_start = self.text[..close.start as usize].rfind('\n')? + 1;
+            let alone = self.text[line_start..close.start as usize]
+                .trim()
+                .is_empty();
+            (alone && self.on_one_line(close.end, side.open.start)).then_some(line_start)
+        });
+        match closer_shares_its_line {
+            Some(line_start) => {
+                let end = self.text[..line_start].trim_end().len() as u32;
+                let span = Span::new(members.open.start, end.max(members.open.end));
+                self.push(span, "(...".to_string(), false);
+            }
+            None => self.bracketed(Some(members), instance.span.end, "(...)"),
+        }
+    }
+
+    fn on_one_line(&self, start: u32, end: u32) -> bool {
+        self.text
+            .get(start as usize..end as usize)
+            .is_some_and(|between| !between.contains('\n'))
     }
 
     fn slot_section(&mut self, delimiters: Option<Delimiters>, slots: &[ast::SlotDeclaration]) {
@@ -253,8 +305,10 @@ mod tests {
         (first, last, collapsed.to_string(), false)
     }
 
+    /// The members end on the line before `) : (`, so that line is the
+    /// class side's alone: an editor shows one fold marker a line.
     #[test]
-    fn a_class_body_and_a_class_side_fold() {
+    fn a_class_its_instance_side_and_its_class_side_fold() {
         let text = indoc! {"
             class Module = (
                 | first |
@@ -264,7 +318,70 @@ mod tests {
                 make = ( ^self new )
             )
         "};
-        assert_eq!(lines_of(text), [fold(0, 4, "(...)"), fold(4, 6, "(...)")]);
+        assert_eq!(
+            lines_of(text),
+            [fold(0, 6, "(...)"), fold(2, 3, "(..."), fold(4, 6, "(...)")]
+        );
+    }
+
+    #[test]
+    fn the_members_after_a_header_of_several_lines_fold_to_their_closer() {
+        let text = indoc! {"
+            class Module = (
+                | first |
+            ) (
+                run = ( ^first )
+            )
+        "};
+        assert_eq!(lines_of(text), [fold(0, 4, "(...)"), fold(2, 4, "(...)")]);
+    }
+
+    /// A header of one line leaves its line to the whole class, which
+    /// takes the editor's one marker there.
+    #[test]
+    fn the_members_after_a_header_of_one_line_do_not_fold() {
+        let without = indoc! {"
+            class Module = () (
+                run = ( ^1 )
+            )
+        "};
+        assert_eq!(lines_of(without), [fold(0, 2, "(...)")]);
+        let one_line = indoc! {"
+            class Module = () (
+                run = ( ^1 )
+            ) : ( make = ( ^self new ) )
+        "};
+        assert_eq!(lines_of(one_line), [fold(0, 2, "(...)")]);
+        let with = indoc! {"
+            class Module = () (
+                run = ( ^1 )
+            ) : (
+                make = ( ^self new )
+            )
+        "};
+        assert_eq!(lines_of(with), [fold(0, 4, "(...)"), fold(2, 4, "(...)")]);
+    }
+
+    /// A member that ends on the `)`'s line would be cut by a fold that
+    /// stops on the line before.
+    #[test]
+    fn members_closed_after_a_member_on_its_line_fold_to_their_closer() {
+        let text = indoc! {"
+            class Module = (
+                | first |
+            ) (
+                run = ( ^1 ) ) : (
+                make = ( ^self new )
+            )
+        "};
+        assert_eq!(
+            lines_of(text),
+            [
+                fold(0, 5, "(...)"),
+                fold(2, 3, "(...)"),
+                fold(3, 5, "(...)")
+            ]
+        );
     }
 
     #[test]
@@ -445,7 +562,7 @@ mod tests {
         assert_eq!(
             lines_of(text),
             [
-                fold(0, 6, "(...)"),
+                fold(0, 10, "(...)"),
                 fold(1, 2, "(...)"),
                 fold(3, 5, "(...)"),
                 fold(6, 10, "(...)"),

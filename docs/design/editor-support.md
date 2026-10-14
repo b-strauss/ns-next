@@ -39,7 +39,7 @@ runs a single module from its `main:args:`.
    method, `self` / `super` / `outer`.
 2. **Errors as you type** — every lexer, parser and resolver diagnostic, with
    the message `ns-next` itself produces.
-3. **Folding** — comments, class bodies, class sides, method bodies, closures
+3. **Folding** — comments, classes, instance sides, class sides, method bodies, closures
    and slot sections collapse and expand, from fold ranges the server
    computes from the AST; a method whose body is one line shows on one line,
    as Java's one-line methods do ("Folding").
@@ -325,7 +325,8 @@ it folds:
 
 | Range | From — to | Collapsed text | `kind` |
 |---|---|---|---|
-| Class body (instance side) | the header's `(` to the instance side's last `)`, header and members together | `(...)` | none |
+| Class | the header's `(` to the class's last `)`, the class side's when it has one | `(...)` | none |
+| Instance side | the members' `(` to their `)`; to the end of the line before when that `)` stands first on a line the class side opens on, as in `) : (`, and the class side folds; none after a header of one line | `(...)`, or `(...` when it ends with the line before | none |
 | Class side | the `(` after `:` to its `)` | `(...)` | none |
 | Method body | `(` to `)` | `(...)` | none |
 | Closure | `[` to `]` | `[...]`, or `[:x :y \| ...]` with its parameters | none |
@@ -337,6 +338,15 @@ it folds:
   editor's own.
 - **Only a range over more than one line** is answered: a fold on one line
   hides nothing.
+- **One fold marker a line.** The IDE's gutter shows a single marker on
+  each line, the smaller fold's when one ends where another starts
+  (`FoldingAnchorsOverlayStrategy` in 2026.2.3). A class's three folds are
+  laid out so that each has its top marker: the class's on the header's
+  line, the instance side's on `) (`, the class side's on `) : (`, which
+  the instance side therefore leaves before. The whole class always keeps
+  its marker: after a header of one line the instance side would start on
+  the header's line and, the smaller fold, take it, so it has no fold
+  there; the class side keeps its own.
 - **A construct recovery closed without its closing token** folds to where
   its node ends, the last token recovery gave it; a slot section without its
   closing bar, to its last slot.
@@ -357,7 +367,10 @@ it folds:
 hand under `runIde` (2026-10-04): fold markers on comments, class bodies,
 class sides, methods, closures and slot sections; a folded method shows
 `(...)`, in the editor's own font; and typing an unclosed `foo = (` inside a class keeps the folds of
-the methods after it. Were the platform ever to need folding enabled for a
+the methods after it. That each of a class's folds keeps its marker is
+checked against the platform's own folding pass and gutter in a throwaway
+test over `Kernel.ns` (2026-10-14): every class line, `) (` and `) : (`
+shows a marker, and no range of the server's is dropped as conflicting. Were the platform ever to need folding enabled for a
 language with a parser definition of its own, as semantic tokens do
 (`shouldAskServerForSemanticTokens`, below), it would go into
 `NewspeakLspClientDescriptor`'s `lspCustomization`.
@@ -696,8 +709,9 @@ tests of the commands `parse`, `parse-corpus`, `disasm` (with its snapshots) and
   error, checking range and message; a lexer error's findings come first, the
   parser's after them, and a syntax error keeps the names around it
   classified;
-- folding — a class body and a class side, a method with its temporaries and
-  a closure, a comment folded to its first line, an unterminated comment to
+- folding — a class, its instance side and its class side, no instance
+  side fold after a header of one line, the instance side's fold before a
+  class side on its `)`'s line, a method with its temporaries and a closure, a comment folded to its first line, an unterminated comment to
   the end of the file, single-line constructs answering no range, the folds
   after a half-typed method, and a fold's UTF-16 encoding on CRLF lines;
 - document symbols — the flat tree of a class with a factory, a nested

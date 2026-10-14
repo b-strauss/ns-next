@@ -222,6 +222,7 @@ fn erase_side<'tree>(side: &'tree mut ClassBody, pending: &mut Vec<Pending<'tree
         initializer_expressions,
         members,
         delimiters,
+        members_delimiters,
         slot_delimiters,
         comments,
         span,
@@ -230,6 +231,7 @@ fn erase_side<'tree>(side: &'tree mut ClassBody, pending: &mut Vec<Pending<'tree
         *slot_delimiters = None;
     }
     erase_delimiters(delimiters);
+    erase_delimiters(members_delimiters);
     erase_delimiters(slot_delimiters);
     erase_comments(comments);
     *span = NOWHERE;
