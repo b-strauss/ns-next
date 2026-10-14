@@ -71,12 +71,17 @@ tasks.test {
     )
     // The tests read these through the system properties above, which Gradle
     // sees only as strings. Declared as inputs, a change to the Rust lexer
-    // (through the rebuilt server), the kernel, a corpus module or a golden
-    // reruns the lexer comparison instead of leaving `check` up to date.
+    // (through the rebuilt server), the kernel, or a corpus module's or a
+    // golden's source reruns the lexer comparison instead of leaving `check`
+    // up to date.
     inputs.file(repositoryRoot.resolve("target/debug/ns-next-analyzer$executableSuffix"))
         .withPropertyName("languageServer")
-    inputs.dir(repositoryRoot.resolve("corpus/modules")).withPropertyName("corpusModules")
-    inputs.dir(repositoryRoot.resolve("goldens")).withPropertyName("goldens")
+    // Only the sources the comparison lexes: a golden's recorded outcome
+    // (`.toml`) is nothing it reads.
+    inputs.files(fileTree(repositoryRoot.resolve("corpus/modules")) { include("**/*.ns") })
+        .withPropertyName("corpusModules")
+    inputs.files(fileTree(repositoryRoot.resolve("goldens")) { include("**/*.ns") })
+        .withPropertyName("goldenSources")
     inputs.file(repositoryRoot.resolve("crates/ns-runtime/core-library/Kernel.ns"))
         .withPropertyName("kernel")
 }
