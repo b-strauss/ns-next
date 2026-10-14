@@ -39,6 +39,7 @@ first.
 | `class` and `Object`'s class accessors protected | Complete | 2026-10-13 | [protected-class](superpowers/plans/2026-10-13-1158-protected-class.md) |
 | The platform's modules: no class of theirs handed out, the transcript and the clock modules of their own under `core-library/platform/`, the factories keeping only the kernel classes they use, `build` in every factory, every root `= Value` | Complete | 2026-10-13 | — |
 | Editor support: hints for initializing a local in its declaration and for a read-only local, with their quick fixes and "Apply all hints in this file" | Complete | 2026-10-14 | [editor-hints](superpowers/plans/2026-10-14-1204-ns-next-editor-hints.md) |
+| The gates: the suite's longest loops split into parallel trials, the round trips, the two-entry cache, the hints' oracle and the benchmark programs in nextest profiles of their own, the benchmarks out of the goldens, one table of which gate runs when, run as `cargo xtask gates <group>` | Complete | 2026-10-14 | — |
 | Road step 5 — mirrors and atomic installation, on `become:` as an eager bulk forward | Not started | — | — |
 | Road step 6 — inline allocation in the interpreter | Not started | — | — |
 | Road step 7 — an execution model for compiled code | Not started | — | — |
@@ -5151,8 +5152,9 @@ plugin shows them as weak warnings; the batch was checked by hand under
 `crates/ns-analyzer/tests/hinted_goldens.rs`, applies every hint to every
 golden's sources, runs each changed program under both lowerings and holds
 it to the recorded outcome, and requires the result to parse and a second
-"apply all" to change nothing. It runs in its own nextest profile, `hints`,
-because it includes the full-size benchmarks; its 628 trials pass. Four new
+"apply all" to change nothing. It runs every golden twice more, so it runs
+in its own nextest profile, `hints`, its runs of the benchmark programs in
+the profile `benchmarks-verify`. Four new
 goldens under `goldens/language/slot/local/` were written for it. The
 core-library gate `crates/ns-analyzer/tests/hint_gate.rs` holds the shipped
 core library free of hints: two locals of `Kernel.ns` were initialized in
@@ -5194,3 +5196,66 @@ lowering.
 What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): hints for a
 class's header slots, and the compiler defect above ("Defects that change
 a correct program's output").
+
+## The gates (2026-10-14)
+
+No plan; done in conversation with the user. The per-commit suite took
+104 s in a debug build on 24 cores, most of it waiting at its end for a few
+tests that each ran one check over many inputs while the other cores idled;
+and which gate ran when stood in five places that had drifted apart.
+
+- **The longest loops split into parallel trials.** The analysis over every
+  cut of every module (`crates/ns-analyzer/tests/corpus.rs`; 90, 31 and
+  27 s as three tests, the kernel most of it), every truncation of three
+  images (`crates/ns-runtime/tests/image_truncations.rs`, 19.5 s) and the
+  corruption sweep of a built image (`crates/ns-cli/tests/image_corruptions.rs`,
+  12.8 s) are `libtest-mimic` binaries: the kernel in windows of its bytes,
+  the other modules in groups, the images and the sweep in parts. The
+  checks are the same; the sweep's guard against passing vacuously now
+  holds for each part. The suite went to 40 s.
+- **Profiles of their own.** Every golden through `build` and `load`
+  (`images`) and with a two-entry global cache (`caches`) left the default
+  profile, as had the hints' oracle (`hints`); the suite went to 26 s.
+- **The benchmarks out of the goldens.** The microbenchmarks moved from
+  `goldens/tool/bench/` to `benchmarks/micro/`, the Are We Fast Yet
+  verification to `benchmarks/are-we-fast-yet.toml`, and the three other
+  `awfy` goldens, which tested the harness's argument handling, are gone. A
+  runner, `crates/ns-cli/tests/run_benchmarks.rs`, holds every benchmark
+  program to its outcome, each Are We Fast Yet benchmark on its own, and
+  times each, in the profile `benchmarks-verify`, which verifies them and
+  measures nothing: 47 s against 146 s run as one process each. The hints'
+  oracle builds its `ns-next` into a target directory of its own, since a
+  build of `ns-cli` alone relinked the binary `ns-cli`'s own tests were
+  running, which Windows refuses.
+- **The plugin's tests.** Gradle reruns them only for a `.ns` the lexer
+  comparison reads, not for a golden's `.toml`, and the comparison now
+  reads the whole core library and `benchmarks/` too, 630 sources; up to
+  date, `gradlew check` takes about a second.
+- **One table, one runner.** `CLAUDE.md`'s table "The gates" says which
+  group runs when; `cargo xtask gates <group>` (`xtask/`, behind the alias
+  in `.cargo/config.toml`) runs it: `commit`, `analyzer`, `images`,
+  `caches`, `memory`, `benchmarks`, `stress` (the five stress suites at
+  once), `plugin-verification` and `end-of-batch`. The design notes and
+  the batch skill point at the table. Every profile runs on 18 of the 24
+  cores.
+
+**Measured** (debug, 24 cores, 18 test threads): `cargo xtask gates commit`
+takes about 55 s, the suite 31 s of it; `hints` about 20 s, `images` 11 s,
+`caches` 3 s.
+
+- `6928207c` -- the longest loops split into parallel trials.
+- `12a8db84` -- the round trips, the two-entry cache and the oracle's
+  benchmarks in profiles of their own.
+- `2343be55` -- the benchmarks out of the goldens, `run_benchmarks`.
+- `8c817c5a`, `949c9812` -- the plugin's tests rerun only for a source the
+  lexer comparison reads, and the comparison over the whole core library
+  and the benchmarks.
+- `63758ec8` -- each benchmark verified on its own, the profile
+  `benchmarks-verify`.
+- `4bf6d135` -- the table of the gates and `cargo xtask gates`.
+- This commit -- the documents.
+
+What it leaves open: choosing the gates from what a change touched, which
+`xtask` is the place for; the longest single tests the suite cannot split,
+the compilations of a body past the register ceiling, now bound its wall
+time.

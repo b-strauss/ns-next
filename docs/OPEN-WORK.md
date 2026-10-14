@@ -1387,6 +1387,13 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
 
 Small, deliberately left, none affecting an outcome.
 
+- **The gates chosen from what a change touched** (noted 2026-10-14, with
+  the user): `cargo xtask gates <group>` runs the groups `CLAUDE.md`'s table
+  "The gates" names, but which groups a commit or a batch needs is still
+  read off the table by hand. `xtask` is the place to choose them from
+  `git diff --name-only` against the table's paths, one group, say
+  `changed`, so that a gate the table asks for cannot be forgotten.
+
 - Leftovers of the `ByteArray` sub-project's reviews (noted 2026-10-13):
   `Heap::byte_array_words` and `byte_array_words_mut` repeat the format
   check and the size computation; a string's UTF-8 size is computed twice,
