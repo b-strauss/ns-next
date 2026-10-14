@@ -615,6 +615,9 @@ dependencies = [
 [[package]]
 name = "xtask"
 version = "0.1.0"
+dependencies = [
+ "ns-runtime",
+]
 
 [[package]]
 name = "zmij"

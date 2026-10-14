@@ -77,7 +77,8 @@ Rust 1.98.0, edition 2021, six crates:
   layer", "The object space").
 
 `xtask/` — the repository's own tasks, run as `cargo xtask <task>`: the gates
-of "The gates" below, grouped.
+of "The gates" below, grouped, and `shipped-code`, which writes that
+artifact (`--check` only says whether it is current).
 
 `editors/jetbrains/` — the JetBrains plugin (Kotlin, Gradle wrapper inside): a
 lexer mirroring `ns-syntax`'s, compared against it token by token over every
@@ -309,8 +310,11 @@ This table is the one place that says which gate runs when;
 `docs/design/README.md`, "Gates", follows it. Each row is a group of
 `cargo xtask gates <group>` (`xtask/src/main.rs`), which says what the group
 runs; several groups run in one call, one after another, and the first that
-fails stops it. "Every commit" is every commit that changes more than
-Markdown (check `git diff --stat`): a change to Rust, a test, a fixture, a
+fails stops it. Every `cargo xtask gates` call first runs
+`cargo xtask shipped-code`, which writes the embedded shipped code
+(`crates/ns-runtime/core-library/shipped-code.bin`, gitignored;
+`docs/design/core-library.md`, "The embedded shipped code"). "Every commit"
+is every commit that changes more than Markdown (check `git diff --stat`): a change to Rust, a test, a fixture, a
 golden, a `.ns` or a `Cargo.toml` runs its gates however small. The nextest
 profiles are `.config/nextest.toml`'s; every one runs on 18 threads.
 

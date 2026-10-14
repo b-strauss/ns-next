@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 const USAGE: &str = "\
 usage: cargo xtask gates <group>...
+       cargo xtask shipped-code [--check]
 
 groups (CLAUDE.md, \"The gates\", says when each runs):
   commit               fmt, clippy, the suite, the doctests, parse-corpus, the plugin's check
@@ -29,6 +30,10 @@ groups (CLAUDE.md, \"The gates\", says when each runs):
 /// The stress switches the runtime reads in a debug build
 /// (`docs/design/README.md`, "Gates").
 const STRESS_MODES: [&str; 5] = ["MOVES", "CACHES", "COLLECT", "SCAVENGE", "WIDE"];
+
+/// Where `ns-runtime`'s `build.rs` looks for the shipped modules' compiled
+/// mixins, relative to the repository root.
+const SHIPPED_CODE: &str = "crates/ns-runtime/core-library/shipped-code.bin";
 
 /// What runs a step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -192,6 +197,16 @@ fn main() -> ExitCode {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
     };
+    if task == "shipped-code" {
+        return match groups {
+            [] => shipped_code(&repository_root(), false),
+            [flag] if flag == "--check" => shipped_code(&repository_root(), true),
+            _ => {
+                eprintln!("{USAGE}");
+                ExitCode::from(2)
+            }
+        };
+    }
     if task != "gates" || groups.is_empty() {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
@@ -208,6 +223,21 @@ fn main() -> ExitCode {
     }
     let root = repository_root();
     let mut times = Vec::new();
+    // The gates build and test against the embedded shipped code, so it must
+    // be current before the first group runs.
+    let started = Instant::now();
+    println!(
+        "
+==> shipped code"
+    );
+    if shipped_code(&root, false) != ExitCode::SUCCESS {
+        eprintln!(
+            "
+FAILED: shipped code"
+        );
+        return ExitCode::FAILURE;
+    }
+    times.push(("shipped code".to_string(), started.elapsed()));
     for part in &parts {
         let outcome = match part {
             Part::Steps(steps) => steps
@@ -223,6 +253,30 @@ fn main() -> ExitCode {
     }
     report(&times);
     println!("\nevery gate passed");
+    ExitCode::SUCCESS
+}
+
+/// Writes the shipped modules' compiled mixins where `ns-runtime`'s
+/// `build.rs` embeds them; with `check`, only says whether the file there
+/// is current.
+fn shipped_code(root: &Path, check: bool) -> ExitCode {
+    let generated = ns_runtime::shipped_code::generate();
+    let path = root.join(SHIPPED_CODE);
+    let current = std::fs::read(&path).is_ok_and(|existing| existing == generated);
+    if check {
+        if current {
+            println!("{SHIPPED_CODE} is current");
+            return ExitCode::SUCCESS;
+        }
+        println!("{SHIPPED_CODE} is missing or stale: run `cargo xtask shipped-code`");
+        return ExitCode::FAILURE;
+    }
+    // Writing only a changed file keeps `build.rs` from rebuilding
+    // `ns-runtime` after an unchanged run.
+    if !current {
+        std::fs::write(&path, &generated).expect("the core library directory is writable");
+    }
+    println!("{SHIPPED_CODE}: {} bytes", generated.len());
     ExitCode::SUCCESS
 }
 
