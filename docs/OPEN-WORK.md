@@ -1356,7 +1356,7 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
   only some carry source (`modules::encode_modules`); a back-reference into
   an earlier tree, or a child shared between trees, in the mixin forest; a
   load of an empty mixin table, which answers `ModuleCountMismatch` 1 against
-  0; the version word in `build_load.rs`'s corruption sweep;
+  0; the version word in `image_corruptions.rs`'s corruption sweep;
   `load --print-source` of an image `image::snapshot` wrote; and `run-corpus`
   refusing a row whose `send` is not unary.
   `a_module_shadowed_by_an_object_member_is_refused`

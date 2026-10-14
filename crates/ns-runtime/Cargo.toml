@@ -11,6 +11,13 @@ ns-syntax = { path = "../ns-syntax" }
 
 [dev-dependencies]
 indoc.workspace = true
+libtest-mimic.workspace = true
+
+# One trial per image and part of its lengths (`libtest-mimic`): as one
+# test, the loads of every truncation ran alone at the end of the suite.
+[[test]]
+name = "image_truncations"
+harness = false
 
 [lints]
 workspace = true

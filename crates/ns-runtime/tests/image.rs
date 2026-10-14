@@ -5501,46 +5501,6 @@ fn an_invalid_source_origin_tag_is_a_decode_error_not_a_panic() {
     }
 }
 
-#[test]
-fn every_truncation_of_an_image_is_reported_rather_than_panicking() {
-    let source = indoc! {"
-        class X = Object new (
-          | blk = [ 2 ]. |
-        ) (
-          public run = ( ^blk value )
-        ) : ()
-    "};
-    let (mut interpreter, class) = load(source);
-    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-    let origin = Origin::File(PathBuf::from("t.ns"));
-    let (snapshot, packaged) = interpreter.enter(|mutator| {
-        let class = class_reference(mutator, &class);
-        let instance = mutator.fetch(&instance);
-        let byte_array = mutator.new_byte_array(&byte_array_contents(13));
-        let modules = [image::ModuleSource {
-            class,
-            origin: &origin,
-            source: Some(source),
-        }];
-        (
-            image::snapshot(mutator, &modules, &[instance, Value::object(byte_array)])
-                .expect("snapshot"),
-            image::package(mutator, &modules, instance).expect("package"),
-        )
-    });
-    for bytes in [snapshot, packaged, packaged_application()] {
-        for cut in 0..bytes.len() {
-            // Never `{:?}` the `Ok` side: `LoadedImage` has no `Debug` impl at
-            // all (its `Interpreter` field has none either).
-            assert!(
-                image::load(&bytes[..cut]).is_err(),
-                "a truncated image must never load"
-            );
-        }
-        image::load(&bytes).expect("the untruncated image still loads");
-    }
-}
-
 // ---------------------------------------------------------------------------
 // `verify_code_table` -- decoding is byte-safe, but a decoded body
 // is not yet *coherent*. Every case below decodes cleanly and would panic

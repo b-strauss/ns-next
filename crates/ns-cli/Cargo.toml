@@ -34,5 +34,11 @@ harness = false
 name = "golden_round_trips"
 harness = false
 
+# One trial per part of the corruption sweep (`libtest-mimic`): as one test,
+# its processes ran one after another at the end of the suite.
+[[test]]
+name = "image_corruptions"
+harness = false
+
 [lints]
 workspace = true

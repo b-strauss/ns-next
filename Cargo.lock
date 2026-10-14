@@ -360,6 +360,7 @@ name = "ns-runtime"
 version = "0.1.0"
 dependencies = [
  "indoc",
+ "libtest-mimic",
  "ns-memory",
  "ns-syntax",
 ]

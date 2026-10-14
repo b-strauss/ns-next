@@ -42,5 +42,12 @@ toml.workspace = true
 name = "hinted_goldens"
 harness = false
 
+# One trial per check and module (`libtest-mimic`): as one test per check,
+# the checks over every module's cuts each ran alone at the end of the
+# suite.
+[[test]]
+name = "corpus"
+harness = false
+
 [lints]
 workspace = true

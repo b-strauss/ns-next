@@ -208,55 +208,6 @@ fn a_load_reports_an_uncaught_error_exactly_as_run_does() {
     );
 }
 
-/// A version-matching image whose body has been corrupted is a reported
-/// error, never a panic and never a stack trace. Most flips are answered by
-/// the decoder or by one of the two verification passes before anything
-/// runs; a flip that leaves the image self-consistent (a literal's value, an
-/// identity hash, a selector) starts the application, which then either
-/// runs or raises the way any program can.
-#[test]
-fn no_corruption_of_a_version_matching_image_reaches_a_panic() {
-    let directory = ScratchDirectory::new("corruption");
-    let image = directory.join("app.nsi");
-    let source = golden("language/block/blocks_and_return");
-    let (ok, _out, error) = ns_next(&["build".as_ref(), source.as_os_str(), image.as_os_str()]);
-    assert!(ok, "{error}");
-    let original = std::fs::read(&image).expect("read image");
-    // Past the 17-byte header (magic, version, flags, the shipped world's
-    // fingerprint), which the loader refuses outright, every 7th byte, each flipped
-    // two ways: enough coverage to sweep every section without turning one
-    // test into thousands of processes.
-    let (mut swept, mut rejected) = (0, 0);
-    for offset in (17..original.len()).step_by(7) {
-        for delta in [1u8, 0x80] {
-            let mut bytes = original.clone();
-            bytes[offset] ^= delta;
-            std::fs::write(&image, &bytes).expect("write image");
-            let (ok, _out, error) = ns_next(&["load".as_ref(), image.as_os_str()]);
-            assert!(
-                !error.contains("panicked") && !error.contains("RUST_BACKTRACE"),
-                "byte {offset} ^ {delta:#x} panicked the loader: {error}"
-            );
-            let refused = error.starts_with("error: ");
-            let raised = error.starts_with("Uncaught Newspeak error: ")
-                || error.starts_with("internal: non-local return escaped the entry send");
-            assert!(
-                ok || refused || raised,
-                "byte {offset} ^ {delta:#x} failed without an error message: {error}"
-            );
-            swept += 1;
-            rejected += usize::from(refused);
-        }
-    }
-    // Many flips land in a field that is still self-consistent, so most of
-    // the sweep is expected to load; this only pins that the sweep is really
-    // reaching the checks rather than passing vacuously.
-    assert!(
-        swept > 100 && rejected * 4 >= swept,
-        "{rejected} of {swept} corrupted images were rejected"
-    );
-}
-
 /// The image `build` writes by default carries no program text, and the
 /// application in it still runs. `--debug-source` opts the source back in,
 /// and `load --print-source` is what reads it out again -- which is how an

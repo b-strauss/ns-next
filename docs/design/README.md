@@ -386,6 +386,19 @@ NS_NEXT_STRESS_WIDE=1 cargo run -p ns-cli -- run-corpus corpus/modules    # the 
 ./editors/jetbrains/gradlew -p editors/jetbrains verifyPlugin buildPlugin   # once at the end of a batch that touched the plugin: downloads several IDEs
 ```
 
+A check that runs over many inputs is split into trials that nextest runs
+in parallel, not kept as one test that runs alone at the end of the suite
+while the other cores idle: each is a `harness = false` binary on
+`libtest-mimic`, as the golden runners are --
+`crates/ns-analyzer/tests/corpus.rs` (the analysis over every module and
+every cut of one, the kernel in windows of its bytes, the other modules in
+groups), `crates/ns-runtime/tests/image_truncations.rs` (every truncation
+of three images, in parts) and `crates/ns-cli/tests/image_corruptions.rs`
+(the corruption sweep of a built image, in parts). A trial is a process of
+its own, so cheap inputs share one. What bounds the suite's wall time is
+the longest test that cannot be split: the compilations of a body past the
+register ceiling, a few seconds each in a debug build.
+
 The five stress modes, ten gate invocations, are Git Bash syntax and do
 anything only in a debug build ([memory.md](memory.md), "The move stress
 mode", "The gates the collector needs", "Generations";
