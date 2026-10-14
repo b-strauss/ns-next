@@ -5168,9 +5168,10 @@ six modules (`shipped_code/`, `interpreter/core_library.rs`). The world is
 still built by running the binary's own code on the decoded mixins, so the
 instantiations and `complete_shipped_world` are what they were.
 
-**Measured 2026-10-14, `eb2716b8` against `f60f6782`**, the head of this
-branch against the head of `master` it repeats the start-up measurement of
-the same day at, on the measuring workstation (Windows 11). Both are release
+**Measured 2026-10-14, `eb2716b8` against `f60f6782`**, this branch's head
+against the head of `master`, at which the start-up was measured the same day
+before the branch began, on the same machine, the measuring workstation
+(Windows 11). Both are release
 builds with the pinned `RUSTFLAGS` of the protocol above, each in its own
 target directory, `f60f6782` in a throwaway worktree under `.temp/`; the
 branch's artifact was generated first, and the temporary marks (below) show
@@ -5191,13 +5192,16 @@ same binaries with the marks switched off, timed from outside.
 | `Kernel` | 3.44 | 0.67 | 4.51 | 0.17 | 8.9 ms | 0.90 | 0.08 | 0.98 ms |
 | `CollectionsFactory` | 0.93 | 0.20 | 1.57 | 0.02 | 2.7 ms | 0.27 | 0.01 | 0.29 ms |
 | `TypedArraysFactory` | 0.58 | 0.10 | 0.63 | 0.02 | 1.3 ms | 0.11 | 0.02 | 0.14 ms |
-| `PlatformFactory`, `TranscriptFactory`, `TimeFactory` | | | | | 0.55 ms | | | 0.14 ms |
+| `PlatformFactory`, `TranscriptFactory`, `TimeFactory` | | | | | 0.52 ms | | | 0.14 ms |
 | `complete_shipped_world`, the platform's `build` | | | | | 0.09 ms | | | 0.08 ms |
 | **The boot** | | | | | **13.6 ms** | | | **1.6 ms** |
 
 The module sums include a few microseconds of set-up between marks (0.1 ms
-for the kernel's). They repeat the 2026-10-14 table of the design: parse 5.2 ms, resolve 1.0 ms,
-compile 7.0 ms there, 13.7 ms the boot.
+for the kernel's). The baseline repeats the measurement of `f60f6782` made
+earlier the same day, on the same machine, with the same marks: parsing
+5.26 ms, resolving 0.98 ms, compiling 6.98 ms, building classes,
+instantiating, `complete_shipped_world` and the platform 0.33 ms, the boot
+13.7 ms; the whole process 20.0 ms, `ns-next --version` 2.5 ms.
 
 | Process | `f60f6782` | `eb2716b8` |
 |---|---|---|
@@ -5209,7 +5213,9 @@ compile 7.0 ms there, 13.7 ms the boot.
 boot is an eighth of what it was; the process, with the 2.5 ms a process
 that boots nothing costs, a quarter. The whole process fell by more than the
 boot (15.5 ms against 12.0 ms) and this measurement does not decompose the
-remaining 3.5 ms; it lies outside the marks.
+remaining 3.5 ms: it falls outside what the marks cover, and its cause is
+not established. The measurement did not decompose that difference, took one
+build per side, one program and one machine.
 
 **Decoding costs 1.3 ms in all**: the kernel's 0.90 ms, `CollectionsFactory`'s
 0.27 ms, `TypedArraysFactory`'s 0.11 ms and 10 to 24 microseconds for each of
@@ -5222,9 +5228,7 @@ of the boot beyond decoding is the instantiations and the class building,
 first demand could save only what the boot spends on modules a program may
 never touch: `CollectionsFactory` and `TypedArraysFactory`, decoded and
 instantiated, cost 0.27 + 0.01 and 0.11 + 0.02 ms, 0.40 ms together, below
-the 0.5 ms the stage has to exceed to be worth the machinery, and an image
-names the shipped world's objects, so the loader would still have to build
-the modules an image refers to. The kernel's 0.90 ms is not a candidate: it
+the 0.5 ms the stage has to exceed to be worth the machinery. The kernel's 0.90 ms is not a candidate: it
 is always needed. The item stays in [OPEN-WORK.md](../OPEN-WORK.md) with
 these numbers, to be measured again if the shipped modules grow by an order
 of magnitude.
