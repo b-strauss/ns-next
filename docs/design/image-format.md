@@ -163,11 +163,15 @@ surface is.
   decoded ("Shipped names" below). The bootstrap builds that world whole
   and is the fixed root/special-objects table. So is the core library: a
   shipped class's methods are the loading process's own `Kernel.ns`,
-  `PlatformFactory.ns` and the four modules under `platform/`, compiled at
-  its bootstrap ([core-library.md](core-library.md)), and no image carries their
-  code or the VM mirror — which is also why `Instruction::SendMirror`,
-  emitted only into shipped core-library source, has no wire tag
-  ([compiler.md](compiler.md), "Mirror sends").
+  `PlatformFactory.ns` and the four modules under `platform/`, built at
+  its bootstrap -- decoded from the code the binary embeds, or compiled
+  from source ([core-library.md](core-library.md), "The embedded shipped
+  code") -- and no image carries their code or the VM mirror — which is
+  also why `Instruction::SendMirror`, emitted only into shipped
+  core-library source, has no wire tag ([compiler.md](compiler.md),
+  "Mirror sends"). The embedded shipped code carries the kernel's
+  `SendMirror`s in a codec of its own that the image decoder never
+  reaches, so no image byte sequence decodes into one.
 - **`nil`, `true` and `false`** are unboxed `Value` scalars with no heap identity
   to preserve, encoded as scalar tags.
 - **The platform is a record, not a reference to the loading one.** It is an
@@ -1761,15 +1765,15 @@ level's metaclass (`ShippedKind`) -- with the positions it may stand in
 comparison by identity in Rust changes. The bootstrap draws no identity
 hash while it builds them, so every hash a run draws is the same under
 `run` and `load` (`goldens/library/object/identity_hash.ns`). Building the
-whole world costs every process start several milliseconds on the
-measuring workstation, almost all of it compiling the shipped source:
-about 3.7 ms for `CollectionsFactory.ns` ([execution.md](execution.md),
-"What the collections module cost"), and about 4.6 ms more for the
-kernel's `ByteArray`, `StringBuilder` and views and the typed arrays (all of
-them then in `Kernel.ns`; the typed arrays are now a module of their own),
-measured at `1906a81d`;
-the two ways back, neither touching the format, are open
-([OPEN-WORK.md](../OPEN-WORK.md)).
+whole world costs a process start little: an optimized boot decodes the
+shipped modules' compiled code, which `cargo xtask shipped-code` generates
+and the binary embeds, and builds the world from it, 1.6 ms for a hello
+program's boot on the measuring workstation, about 1.3 ms of it decoding,
+where compiling the shipped source took 13.6 ms
+([execution.md](execution.md), "What the precompiled shipped code moved";
+[core-library.md](core-library.md), "The embedded shipped code"). The
+format is untouched by it: the embedded code is the boot's, never the
+image's.
 
 **The section.** A `u32` count, then per entry the module's symbol, the
 declaration's symbol (for the root, the module's own name), the kind as a
@@ -1818,12 +1822,15 @@ layout", "Verification" above). The program's module roots and the levels
 their clauses add are class records ("Module section" above).
 
 **The header carries the shipped world's fingerprint**, a `u64` after the
-flag byte (`fingerprint::shipped_world_fingerprint`): FNV-1a over the
-kernel's and the shipped modules' sources, the names in `BuiltinClass::ALL`
-and the mirror's selectors, each part preceded by its length. The lowering
-is not in it: `load` always compiles the shipped code with the optimized
-lowering, and an application built under the reference lowering carries its
-own code. A load whose binary computes another refuses the image before it
+flag byte (`fingerprint::shipped_world_fingerprint`): FNV-1a over the core
+library's fingerprint, which `crates/ns-runtime/build.rs` takes over every
+`.ns` file of the core library (`CORE_LIBRARY_FINGERPRINT`), the names in
+`BuiltinClass::ALL` and the mirror's selectors, each part preceded by its
+length. It covers the core library's sources and not the Rust ones, so an
+image stays loadable across a Rust edit that leaves the shipped world as it
+was. The lowering is not in it: `load` always builds the shipped world with
+the optimized lowering, and an application built under the reference
+lowering carries its own code. A load whose binary computes another refuses the image before it
 reads anything else (`ShippedWorldMismatch`,
 `an_image_of_another_shipped_world_is_refused`). It replaced retiring a
 builtin tag per removed class, and it closes a coupling nothing else

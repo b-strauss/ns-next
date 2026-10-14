@@ -649,7 +649,9 @@ builtin class among them, by its declaration, and the bootstrap of the
 loading process supplies it ([image-format.md](image-format.md), "What is
 *not* serialized"). A tag would be a wire form nothing legitimate writes, and
 a decoder that accepted one would hand an artifact a way to run any leaf with
-no lookup.
+no lookup. The embedded shipped code carries the kernel's `SendMirror`s in a
+codec of its own, which only the boot reaches with the binary's own bytes
+([core-library.md](core-library.md), "The embedded shipped code").
 
 **The reference lowering emits the ordinary send**, with a real closure for
 the block, and marks it `SendInlinable` when `recognize_mirror_send` accepts

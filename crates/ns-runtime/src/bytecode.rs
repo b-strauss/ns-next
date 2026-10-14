@@ -443,8 +443,9 @@ pub struct CompiledCode {
     /// `ifCurtailed:`, and where its parameters and locals live: recognized
     /// only when the kernel is compiled (`compiler::unwind_marker`), so no
     /// other body carries one. The unwinder reads it off each activation's
-    /// code as it pops (`interpreter::unwind`). Never on the wire: a decoded
-    /// body carries none.
+    /// code as it pops (`interpreter::unwind`). Not on an image's wire, so a
+    /// body an image decodes carries none; the embedded shipped code stores
+    /// it, so a kernel body decoded from there carries its marker.
     pub unwind_marker: Option<UnwindMarker>,
     pub source: Span,
 }

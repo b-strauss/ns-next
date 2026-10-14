@@ -15,6 +15,13 @@ the re-entries moved", has the full measurement protocol and its history.
 ## Protocol
 
 1. **Release builds only.** Never judge performance from a debug build.
+   **Run `cargo xtask shipped-code` in the tree before every build that is
+   measured**, or the binary embeds no current shipped code, boots from
+   source -- about 13.6 ms against 1.6 ms for a hello program -- and the
+   measurement measures that (`docs/design/core-library.md`, "The embedded
+   shipped code"). `cargo xtask shipped-code --check` says whether the
+   artifact is current. A tree from before the embedded shipped code has
+   no such task and always boots from source.
 2. **Pin function alignment on every binary compared, the current tree
    included.** In PowerShell:
 

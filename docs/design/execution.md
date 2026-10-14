@@ -5154,10 +5154,8 @@ at every boot, and the median start went from about 15.4 ms to about
 `StringBuilder` and the views"). `cc2aaebe`, after it, added 53 lines
 of `StringBuilder` state checks, unmeasured.
 
-The two ways back -- building a shipped module on first demand, or an
-embedded base image of the shipped world -- are open
-([OPEN-WORK.md](../OPEN-WORK.md), "The cost of building the shipped world
-at boot").
+The embedded shipped code took the cost back ("What the precompiled
+shipped code moved" below).
 
 ### What the precompiled shipped code moved
 

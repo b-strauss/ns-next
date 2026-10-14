@@ -42,7 +42,12 @@ Rust 1.98.0, edition 2021, six crates:
   tagged word, Spur's, and `Word`, the bare word a heap object stores; the
   step state `Mutator` in `interpreter/mod.rs`, held at rest by `World` in
   `heap/world.rs` and reached only through `Interpreter::enter`) and the image
-  format (`image/`).
+  format (`image/`). `shipped_code/` encodes and decodes the shipped modules'
+  compiled mixins; `build.rs` embeds the artifact `cargo xtask shipped-code`
+  writes (`core-library/shipped-code.bin`, gitignored) with a fingerprint of
+  the sources that compile to it, and an optimized boot decodes it -- every
+  other boot, and a stale or missing artifact, compiles the shipped source
+  (`core-library.md`, "The embedded shipped code").
   `docs/design/README.md`, "The map", says which document covers each part.
 - `crates/ns-cli` — the `ns-next` binary, which runs programs: `run`, `run-corpus`,
   `load`, `bench`, `build`. A program is one `.ns` file or a project of several
@@ -318,8 +323,8 @@ once, which writes the embedded shipped code
 sources, and otherwise before the first group. "Every commit" is every commit
 that changes more than Markdown (check `git diff --stat`): a change to Rust, a
 test, a fixture, a golden, a `.ns` or a `Cargo.toml` runs its gates however
-small. The nextest
-profiles are `.config/nextest.toml`'s; every one runs on 18 threads.
+small. The nextest profiles are `.config/nextest.toml`'s; every one runs on
+18 threads.
 
 | Group | Runs | When |
 |---|---|---|

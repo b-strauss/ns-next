@@ -1,5 +1,5 @@
 //! The shipped core-library modules' compiled mixins, as bytes the binary
-//! embeds (`docs/superpowers/specs/2026-10-14-precompiled-shipped-code-design.md`).
+//! embeds (`docs/design/core-library.md`, "The embedded shipped code").
 //! A codec of its own rather than the image's: the image decoder reads
 //! untrusted input and refuses a mirror send (the VM mirror's lock (6):
 //! `SendMirror` has no wire tag), while these bytes are the binary's own

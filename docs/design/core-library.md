@@ -46,13 +46,14 @@
 
 The core library is Newspeak source the runtime ships:
 `crates/ns-runtime/core-library/Kernel.ns`, compiled into the binary
-(`include_str!`) and compiled again at every bootstrap, never carried in an
-artifact. Its methods reach Rust through exactly one object, the VM mirror,
+(`include_str!`) and, compiled ahead of time, embedded as the code an
+optimized boot decodes ("The embedded shipped code" below); no image ever
+carries it. Its methods reach Rust through exactly one object, the VM mirror,
 as §8.3.1 requires, and the leaves — the arithmetic, the comparisons,
 `size`, `at:put:`, `printString`, `show:` — stay Rust. Keeping the library
-out of the artifact is what lets an image stay small and keeps a hostile
+out of the image is what lets an image stay small and keeps a hostile
 image from replacing a builtin class; it also means a modified library is a
-different `ns-next` binary rather than a different artifact. See the
+different `ns-next` binary rather than a different image. See the
 comparison in [image-format.md](image-format.md).
 
 ## What exists
@@ -2104,9 +2105,9 @@ refuses a view or a builder whose slots an image crafted with an
   `IndexedCollection`, `StringBuilder`, `DataView` and its two orders in
   the kernel, `TypedArray` and its ten in `TypedArraysFactory.ns` --
   builtins was rejected: a builtin is a class Rust needs a handle on, not a
-  class the image needs a name for. Building them at every boot costs
-  every start time ([OPEN-WORK.md](../OPEN-WORK.md), "The cost of building
-  the shipped world at boot").
+  class the image needs a name for. Every boot builds them, from the
+  embedded shipped code on an optimized boot ("The embedded shipped
+  code" below).
 - **`Primitive` stays two bytes** (`resolve.rs`'s
   `a_resolution_stays_the_size_the_hot_path_was_measured_at`), so the
   generic element access of the typed arrays and `DataView`,
@@ -2287,7 +2288,10 @@ and loosening any one of them lets a program claim every primitive:
   class, `Top` or their metaclasses, and `decide_factory` refuses to
   instantiate the mirror's class, so there is never a second mirror.
 - `SendMirror`, the instruction that runs a leaf with no lookup, is emitted
-  only for a `MirrorSend` and has no wire tag, so no artifact can carry one.
+  only for a `MirrorSend` and has no wire tag, so no image can carry one.
+  The embedded shipped code carries the kernel's, in a codec of its own
+  that only the boot reaches with the binary's own bytes, so this lock
+  stays structural ("The embedded shipped code" below).
 
 The activation objects the exceptions are built on are a capability of the
 same kind — one reads another frame's registers and unwinds the stack — and
@@ -2524,7 +2528,10 @@ with it). `Interpreter::bootstrap_with` runs it in six steps
    other nested class -- `StringBuilder`, the views, `IndexedCollection` --
    is an ordinary class, unchecked, which its accessor builds as any
    class's builds it. A kernel that breaks it is a defect in the binary,
-   and panics.
+   and panics. An optimized boot decodes the same root mixin from the
+   embedded shipped code instead, compiled and checked this way when
+   `cargo xtask shipped-code` generated it ("The embedded shipped code"
+   below); from here on the two are one path.
 3. **Each placeholder gets its kernel application**, in `fill_order`, which
    sorts the kinds by how many superclass links separate them from `Top`, so a
    superclass is always filled before its subclasses. `BuiltinClass::ALL` is
@@ -2582,9 +2589,9 @@ with it). `Interpreter::bootstrap_with` runs it in six steps
 
 The resolved kernel is parsed and resolved once per thread and kept
 (`thread_local!`): the test suite bootstraps an interpreter well over a
-hundred times, and the AST and bindings are immutable. Each interpreter still
-compiles it, because compiled code is numbered against one heap's inline
-caches.
+hundred times, and the AST and bindings are immutable. Each interpreter that
+boots from source still compiles it, because compiled code is numbered
+against one heap's inline caches, and each optimized boot decodes its own.
 
 **A builtin mixin carries the factory `new`, with no arguments.** A kernel
 class declares no factory, so its mixin has §6's default, and
@@ -2611,10 +2618,165 @@ ns-next has none of yet
 exist; the boundary they cross does not"); they are enforced anyway, because
 the specification requires them of every value.
 
+### The embedded shipped code
+
+The shipped modules' compiled code is produced ahead of time and embedded
+in the binary (decided with the user on 2026-10-14). `cargo xtask
+shipped-code` (`xtask/src/main.rs`) boots an interpreter from source with
+the optimized lowering and writes the root mixin of every shipped module,
+encoded (`shipped_code::generate`), to
+`crates/ns-runtime/core-library/shipped-code.bin`, which is gitignored;
+`crates/ns-runtime/build.rs` copies that file into `OUT_DIR`, an empty one
+when the tree has none, and `shipped_code::embedded` includes the copy
+(`include_bytes!`). An optimized boot decodes each module's root mixin from
+it instead of parsing, resolving and compiling the roughly 9,000 lines of
+the six modules (`crates/ns-runtime/src/shipped_code/`). From the root
+mixins on, the boot is one path: `fill_builtin_classes`, each root class
+built from its finished mixin, the instantiations, `complete_shipped_world`
+and the platform run the binary's own code on the mixins in the same order
+whichever path produced them, so the boot draws no identity hash on either
+and the stress modes see the same instantiations. Decoding allocates
+nothing in the heap. The boot went from 13.6 ms to 1.6 ms and a hello
+program's whole process from 20.8 ms to 5.2 ms (release, the measuring
+workstation, Windows 11); decoding is about 1.3 ms of it, the kernel's
+0.90 ms ([execution.md](execution.md), "What the precompiled shipped code
+moved").
+
+**What it holds.** A header -- the magic `NSSC`, a `u16` format version,
+the `u64` fingerprint, the module count -- and then per module, `Kernel`
+first and the `SHIPPED_MODULES` in order, its name, its section's byte
+length and the section: a symbol table in order of first use and the root
+mixin with every nested one, each mixin with everything the run time reads
+-- name, access, slots, the factory, the superclass clause and every `<:`
+clause with their receiver names and code, the initializer code, the root
+shape, `shipped`, the class side, the nested mixins, the span -- and its
+methods, sorted by selector name so the bytes do not depend on a
+`HashMap`'s order. A method is compiled, a slot accessor or a factory; a
+primitive method occurs only on the mirror's class, which Rust builds, and
+the encoder panics on one. A body carries its kind, its counts, its
+statement position, its unwind marker, its span and every instruction
+whole, `SendMirror` and the call sites included; `family_size` and
+`outer_reach` are derived from the instructions through
+`CompiledCode::from_builder`, as the compiler derives them, so
+`outer_reach_of`'s invariant holds by construction. The layout is
+`shipped_code/mod.rs`'s doc comment. The encoder (`shipped_code/encode.rs`)
+destructures every type without `..` and matches every enum without `_`,
+so a new field or instruction does not compile until its treatment in the
+artifact is decided; a field left out says why where it is left out.
+
+**What it leaves out** is what only the compiler and the source path's
+checks read: a mixin's, a slot's and a method's `declaration` and the
+initializer expressions. A decoded mixin has none, and nothing at run time
+reads them. So the kernel phase reads the clauses' receiver names and the
+root shape off the mixin rather than the AST, the checks against the AST
+-- `check_kernel_shape`, `check_mirror_send_arguments` -- run on the source
+path, which is the path `cargo xtask shipped-code` compiles through, and a
+test that inspects a declaration boots from source
+(`every_builtin_class_is_filled_from_the_kernel`).
+
+**Two paths, chosen once per boot** (`shipped_code::path_for`, kept as the
+mutator's `shipped_code_path`; `Mutator::shipped_root_mixin`). The boot
+decodes the embedded code when the lowering is the optimized one,
+`NS_NEXT_NO_PRIMITIVE_METHODS` is unset and the embedded bytes carry the
+magic, the format version and the fingerprint the binary was built with.
+Every other boot compiles the shipped source, parsed, resolved with
+`resolve_kernel` and checked as "The bootstrap: placeholders first, kernel
+second" above and "Where the library source lives, and how modules are
+found" below describe. A missing or stale artifact falls
+back silently -- a slow boot, correct behaviour -- because a warning would
+change every golden's `stderr`, and the gates regenerate the artifact
+before they test. Each interpreter decodes its own mixins, as the source
+path compiles its own: no interpreter shares a mixin with another.
+
+**Only the optimized lowering is embedded.** The reference lowering
+compiles the shipped modules from source at every boot, so it stays an
+oracle that compiles everything afresh, and the goldens, run under both
+lowerings, hold the two paths to the same behaviour as well as the two
+lowerings. `NS_NEXT_NO_PRIMITIVE_METHODS` is read when a body is compiled,
+so code compiled with primitive methods cannot serve a boot without them.
+
+**The fingerprint.** `build.rs` computes two, FNV-1a over each file's
+workspace-relative path and its bytes. `SHIPPED_CODE_FINGERPRINT` covers
+everything that can change what the shipped modules compile to: the core
+library's `.ns` files, `ns-runtime`'s and `ns-syntax`'s Rust sources and
+both `Cargo.toml`s. An artifact a compiler change made stale is therefore
+never decoded; the fingerprint invalidates more often than necessary --
+any edit in those crates -- and that is safe, since the boot then compiles
+from source until the artifact is regenerated. `CORE_LIBRARY_FINGERPRINT`,
+over the core library's `.ns` files alone, goes into an image's
+fingerprint instead of the sources themselves, so an image does not become
+unloadable with every Rust edit ([image-format.md](image-format.md),
+"Shipped names"); `the_two_fingerprints_differ` keeps the second from
+standing in for the first. `build.rs` names directories, not the artifact,
+in `cargo:rerun-if-changed`: Cargo reruns a script whose named file is
+missing on every build, and a directory's scan sees the artifact appear.
+
+**Generated, never checked in.** `cargo xtask shipped-code` writes the
+file only when its bytes changed, which keeps `build.rs` from rebuilding
+`ns-runtime` after an unchanged run, and `--check` writes nothing and says
+whether the file is missing or stale. The bytes are reproducible --
+symbols in order of first use, methods sorted, no `HashMap` iteration
+(`generated_shipped_code_is_reproducible`). Its fingerprint covers the
+Rust sources, so a checked-in artifact would be stale after nearly every
+commit, and a tree without one, a fresh clone, builds and runs from
+source. The gates run the task once per call (`CLAUDE.md`, "The gates";
+`xtask/src/main.rs`'s `shipped_code_step` says why it runs as a build of
+its own). A release binary built without the artifact boots from source
+too, which a later packaging has to rule out
+([OPEN-WORK.md](../OPEN-WORK.md), "A release binary without the embedded
+shipped code boots from source"). The tests in `shipped_code/mod.rs` run
+in the `commit` gate: `the_optimized_boot_decodes_the_embedded_code` fails
+when the artifact is missing or stale, saying to run `cargo xtask
+shipped-code` -- a bare `cargo nextest run` without it is red, the gate
+green, since skipping would leave the embedded path silently untested --
+`the_reference_boot_compiles_from_source` is its counterpart, and
+`the_embedded_shipped_code_round_trips` re-encodes the decoded bytes, which
+with the exhaustive encoder holds the decoder to every field.
+
+**A codec of its own, with no verification.** The artifact's decoder
+(`shipped_code/decode.rs`) shares nothing with the image's, and only the
+boot reaches it, with the embedded bytes. So the image decoder still has
+no arm for `SendMirror`, and the mirror's lock (6) stays structural: no
+image byte sequence decodes into one ("The VM mirror is the whole Rust
+boundary" above). The other locks hold as they did: the kernel's
+`Binding::MirrorSend`s were recorded by `resolve_kernel` when the artifact
+was generated, the check of the mirror slots after the instantiations runs
+on both paths, and the image's locks never see the embedded code. The
+bytes are the binary's own, so bytes that do not decode are a defect of the
+binary and panic, as a shipped module that does not parse does; the
+decoder has no error type and verifies nothing. Embedding compiled code
+does not conflict with [image-format.md](image-format.md)'s "never for the
+builtins", which is about what an artifact arriving from outside may
+carry; bytes compiled into the binary are as trustworthy as the Rust
+beside them.
+
+**Rejected:**
+
+- **Compiling each method on its first call.** It touches only the half of
+  the boot that compiling took, leaves parsing at every start, and puts a
+  "not yet compiled" state into the lookup, the image, road step 5's
+  atomic install and a later JIT; a large application reaches much of the
+  kernel anyway.
+- **An embedded heap snapshot of the shipped world**, as Primordial Soup
+  boots from one. It would also spare the instantiations, 0.2 ms, but holds
+  the mirror and needs a second, trusted path through a heap decoder.
+- **Generating Rust source that builds the mixins**: tens of thousands of
+  generated lines, and the compile times with them.
+- **A `build.rs` in the binary crates with `ns-runtime` as a build
+  dependency**, which builds `ns-runtime` twice and leaves its own tests
+  without the artifact, or **a compiler crate of its own** that
+  `ns-runtime`'s `build.rs` could use, which restructures the interpreter,
+  resolver, mixins and bytecode for a build step.
+- **A dialect of the image codec**, one encoding per instruction: lock (6)
+  would become a check -- the image decoder would have a `SendMirror` arm
+  and refuse it by mode -- and the verification an untrusted image needs
+  would be switched off for the artifact or paid at every boot.
+
 ### Where the library source lives, and how modules are found
 
-The library is source the runtime ships, compiled at bootstrap as the Rust
-bootstrap used to be built, so running a program from source is unchanged:
+The library is source the runtime ships, built at bootstrap as the Rust
+bootstrap used to be built -- from its compiled code, embedded ahead of time,
+on an optimized boot ("The embedded shipped code" above) -- so running a program from source is unchanged:
 the bootstrap gained a phase in front of it and nothing above that changed.
 A program of several *user* modules does not go through this table: the
 host compiles a project's modules in module order and hands them to the
@@ -2630,18 +2792,20 @@ Today it has five entries, `PlatformFactory`, `TranscriptFactory`,
 under `platform/`: the modules the platform hands out a facet of live
 there. Where a
 module's file lies decides nothing: the table names it, and `moduleInstanceNamed:`
-finds it by that name. The table parses and resolves an entry once per
-thread, on the first request for it, with `resolve_kernel`, because the
+finds it by that name. On a boot from source the table parses and
+resolves an entry once per thread, on the first request for it, with
+`resolve_kernel`, because the
 entry is shipped source, and every boot asks for every entry: an image
 names the shipped world's objects and the loader runs nothing the image
-chooses, so every shipped module is compiled and instantiated at every boot
+chooses, so every shipped module is built and instantiated at every boot
 ("The module table and the boot" below). It panics for an entry that does
 not parse or resolve, or whose mirror sends pass a literal block anywhere
 but as the final `ifFail:` (the rule of "The shape of a kernel method" above,
 which `Kernel.ns` is held to likewise), as the kernel's does: that is a
 defect in the binary, not in a program, and the unit test `every_shipped_module_resolves` checks
-every entry. Every interpreter compiles each module itself, since compiled
-code is numbered against one heap's inline caches. Every entry is
+every entry. Every interpreter that boots from source compiles each module
+itself, since compiled code is numbered against one heap's inline caches,
+and an optimized boot decodes its own. Every entry is
 shipped source; a user module would join the table, marked as such by the
 host and resolved with `resolve`, only with the module namespace on the
 mirror (below). The mirror's `moduleInstanceNamed:` (below) is the leaf
@@ -2663,24 +2827,19 @@ the boot built from the table the binary carries. The table itself is
 still the host's rather than the mirror's, and the fallback to the file
 system comes with user modules.
 
-**Start-up was measured, not assumed: the kernel costs about 0.5 ms** —
-`ns-next run` of a module that answers at once, 4.07 ms against 3.56 ms
-before the move ([execution.md](execution.md), "What the core library's move
-cost"). Adding `Top`, `Value` and `Number` and `Value`'s seven methods to it
-did not move that measurably, which is the figure to watch as the library
-grows ([execution.md](execution.md), "What `Top`, `Value` and `Number`
-cost"). That does not call for embedding the compiled kernel as an image,
-which stays the next step if the kernel grows until it does, and the
-comparison must then include what `image::load`'s two verification passes
-cost, since loading is not obviously cheaper than compiling. If it is
-embedded, it is generated at build time into the build script's output
-directory and included from there, never checked in: a checked-in image that
-nobody regenerated decodes into a different, perfectly valid kernel and runs
-it silently, which is the failure mode the wire-tag rule exists to prevent.
-Embedding does not conflict with [image-format.md](image-format.md)'s "never
-for the builtins", because that decision is about what an artifact arriving
-from outside may carry; bytes compiled into the binary are as trustworthy as
-the Rust beside them.
+**Start-up is measured, not assumed.** Compiling the shipped source cost
+a hello program's boot 13.6 ms on the measuring workstation once the
+library had grown to six modules of some 9,000 lines, almost all of it
+parsing, resolving and compiling; decoding the embedded shipped code costs
+1.6 ms for the whole boot ([execution.md](execution.md), "What the
+precompiled shipped code moved"). Embedded compiled code is decoded by a
+codec of its own rather than as an image, so neither `image::load`'s two
+verification passes nor lock (6) are touched, and it is generated into a
+gitignored file and included through the build script's output directory,
+never checked in, and refused unless its fingerprint is the binary's: an
+artifact nobody regenerated would decode into a different, perfectly valid
+kernel and run it silently, which is the failure mode the wire-tag rule
+exists to prevent ("The embedded shipped code" above).
 
 ### The manifest
 
@@ -3213,9 +3372,7 @@ make every program pay for all of them. SOMns builds every member eagerly;
 this runtime deliberately does not. The shipped modules behind the members
 are built at every boot since an image names them ("Shipped names in the
 image" below), so a lazy member saves its facet and whatever its
-initializer does, not its module; building a module on first demand is
-open ([OPEN-WORK.md](../OPEN-WORK.md), "The cost of building the shipped
-world at boot"). Lazy slots are also what lets an image write the platform
+initializer does, not its module. Lazy slots are also what lets an image write the platform
 as a record whose empty members fill on demand, and §6.3.3 states
 the intent directly: "Lazy slots themselves need never be persisted or
 synchronized".
@@ -3443,10 +3600,12 @@ image can carry:
 - **A change to shipped source refuses older images.** The header's
   fingerprint covers every shipped module's source, so an image another
   binary wrote is refused before anything is read; images are disposable.
-- **A module costs its compilation at every start**, since every shipped
-  module is built at boot ([execution.md](execution.md), "What the
-  collections module cost"; [OPEN-WORK.md](../OPEN-WORK.md), "The cost of
-  building the shipped world at boot").
+- **A module costs its decoding and instantiation at every start**, since
+  every shipped module is built at boot: `CollectionsFactory` 0.29 ms and
+  the kernel 0.98 ms on an optimized boot from the embedded
+  shipped code, and its whole compilation on a boot from source
+  ([execution.md](execution.md), "What the precompiled shipped code
+  moved"; "The embedded shipped code" above).
 
 **Rejected, and why the reasons stand.** **Serializing the modules** (as
 Primordial Soup's `Serialization.ns` writes a fresh runtime into the
@@ -3764,9 +3923,11 @@ the measuring workstation. Building the declared classes and naming the
 world adds nothing measurable beside it. The kernel's `ByteArray`,
 `StringBuilder` and views added about 4.6 ms more, measured at
 `1906a81d`: `Kernel.ns` grew from 4,089 lines to 6,586, and the median
-start from about 15.4 ms to about 20.1 ms. How to take it back is open
-([OPEN-WORK.md](../OPEN-WORK.md), "The cost of building the shipped world
-at boot").
+start from about 15.4 ms to about 20.1 ms. The embedded shipped code took
+it back: an optimized boot decodes the six modules' compiled code, and a
+hello program's boot went from 13.6 ms to 1.6 ms ([execution.md](execution.md),
+"What the precompiled shipped code moved"; "The embedded shipped code"
+above).
 
 **The collections written here, measured 2026-10-10** (sub-project 3 of
 "Planned: the kernel completed to Primordial Soup's core API" below), the
