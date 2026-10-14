@@ -6,6 +6,7 @@ pub mod ast;
 mod attach;
 pub mod comment;
 pub mod diagnostic;
+pub mod hints;
 pub mod lexer;
 mod parser;
 mod positions;
