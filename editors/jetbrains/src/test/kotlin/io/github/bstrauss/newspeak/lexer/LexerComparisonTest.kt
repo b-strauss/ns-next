@@ -26,19 +26,18 @@ class LexerComparisonTest {
 
     private fun modules(): List<Path> {
         val files = mutableListOf<Path>()
-        for (directory in listOf("corpus/modules", "goldens")) {
+        for (directory in MODULE_DIRECTORIES) {
             Files.walk(repositoryRoot.resolve(directory)).use { paths ->
                 paths.filter { path -> path.isRegularFile() && path.extension == "ns" }.forEach { path -> files.add(path) }
             }
         }
-        files.add(repositoryRoot.resolve("crates/ns-runtime/core-library/Kernel.ns"))
         return files.sorted()
     }
 
     /**
      * `dump-tokens` for one batch of files, in a single process. Splitting into
      * batches is what keeps the whole run under Windows' command-line length
-     * limit -- the repository holds close to 400 `.ns` files, well past the
+     * limit -- the repository holds more than 600 `.ns` files, well past the
      * couple of hundred a single command line can safely carry.
      */
     private fun rustTokensBatch(files: List<Path>): Map<String, Pair<List<ComparedToken>, Int>> {
@@ -113,5 +112,12 @@ class LexerComparisonTest {
     companion object {
         /** Files per `dump-tokens` invocation; see [rustTokens]. */
         private const val BATCH_SIZE = 100
+
+        /**
+         * Every directory of the repository's own Newspeak sources, walked for
+         * `.ns` files. The build declares the same `.ns` files as the test's
+         * inputs (`build.gradle.kts`), so a change to any of them reruns it.
+         */
+        private val MODULE_DIRECTORIES = listOf("corpus/modules", "goldens", "crates/ns-runtime/core-library", "benchmarks")
     }
 }
