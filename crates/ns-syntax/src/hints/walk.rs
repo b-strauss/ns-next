@@ -1,5 +1,7 @@
 //! The walk over a module that hands every section to the hints, with the
-//! names its code sees.
+//! names its code sees. A section is a method's or a closure's code; a
+//! class's header is walked for the closures in it but is no section, as
+//! its slots get no hint.
 
 use crate::ast::{
     ClassDeclaration, CodeBody, Expression, ExpressionKind, Member, MessagePattern, Module,
@@ -15,12 +17,10 @@ pub(super) enum SectionKind {
     /// A closure's code: its temporaries and statements. It answers the
     /// value of its last statement.
     Closure,
-    /// A class's instance-side header: its slots and initializer
-    /// expressions.
-    Header,
 }
 
-/// Slots and the statements that run after their initializers.
+/// A code body's temporaries and the statements that run after their
+/// initializers.
 pub(super) struct Section<'tree> {
     pub(super) kind: SectionKind,
     pub(super) slots: &'tree [SlotDeclaration],
@@ -130,15 +130,6 @@ fn class<'tree>(declaration: &'tree ClassDeclaration, visitor: &mut impl Visitor
     for statement in &instance.initializer_expressions {
         self::statement(statement, &mut scope, visitor);
     }
-    visitor.section(
-        &Section {
-            kind: SectionKind::Header,
-            slots: &instance.header_slots,
-            statements: &instance.initializer_expressions,
-            span: instance.span,
-        },
-        &scope,
-    );
     for side in std::iter::once(instance).chain(declaration.class_side.as_ref()) {
         for member in &side.members {
             match member {

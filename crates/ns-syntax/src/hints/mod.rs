@@ -16,7 +16,7 @@ pub use edits::{apply, Edit};
 
 use crate::ast::Module;
 use crate::span::Span;
-use walk::{Scope, Section, SectionKind};
+use walk::{Scope, Section};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HintKind {
@@ -35,8 +35,8 @@ pub struct Hint {
     pub name: String,
     /// The slot's name in the source, where the editor shows the hint.
     pub span: Span,
-    /// The code body or class header the slot is declared in. Two hints of
-    /// one section are never applied in the same round of `apply_all`.
+    /// The method's or closure's code the local is declared in. Two hints
+    /// of one section are never applied in the same round of `apply_all`.
     pub section: Span,
     /// The fix, valid on its own against the source the hint was found in.
     pub edits: Vec<Edit>,
@@ -85,9 +85,7 @@ struct Collector<'text> {
 impl<'tree> walk::Visitor<'tree> for Collector<'_> {
     fn section(&mut self, section: &Section<'tree>, scope: &Scope<'tree>) {
         initialize::hints(section, scope, self.text, &mut self.hints);
-        if section.kind != SectionKind::Header {
-            read_only::local_hints(section, self.text, &mut self.hints);
-        }
+        read_only::hints(section, self.text, &mut self.hints);
     }
 }
 
@@ -260,25 +258,31 @@ mod tests {
         assert!(names_of(text, HintKind::ReadOnly).is_empty());
     }
 
-    /// A public or protected slot's setter may be sent from anywhere, and a
-    /// private slot's fix could lift a value object's refusal of a mutable
-    /// slot: a header slot never gets hint B.
+    /// Hints are given for the locals of methods and closures only: a
+    /// class's header slots, private ones included, get none of either
+    /// kind.
     #[test]
-    fn a_header_slot_gets_no_hint_b() {
+    fn a_header_slot_gets_no_hint() {
         let text = indoc! {"
-            class Module = (
+            class Module withLimit: limit = (
               |
-                private limit ::= 10.
+                private count
+                private cap
+                private total ::= 0.
                 protected shown ::= 1.
-                public total ::= 2.
+                public used ::= 2.
+                first
               |
+              count:: 1.
+              cap:: limit.
+              first:: 3.
             ) (
-              public take = (
-                ^limit + shown + total
+              public run = (
+                ^count + cap + total + shown + used + first
               )
             )
         "};
-        assert!(names_of(text, HintKind::ReadOnly).is_empty());
+        assert!(hints_of(text).is_empty(), "{:?}", hints_of(text));
     }
 
     #[test]
@@ -361,51 +365,6 @@ mod tests {
                 )
             "}
         );
-    }
-
-    #[test]
-    fn a_header_slot_takes_the_first_initializer_expression() {
-        let text = indoc! {"
-            class Module = (
-              |
-                private count
-              |
-              count:: 1.
-            ) (
-              public run = (
-                ^count
-              )
-            )
-        "};
-        assert_eq!(
-            fixed(text, HintKind::InitializeInDeclaration, "count"),
-            indoc! {"
-                class Module = (
-                  |
-                    private count ::= 1.
-                  |
-                ) (
-                  public run = (
-                    ^count
-                  )
-                )
-            "}
-        );
-    }
-
-    /// Header slots are the class's layout, so they are never reordered.
-    #[test]
-    fn a_header_slot_declared_before_an_initialized_one_gets_no_hint() {
-        let text = indoc! {"
-            class Module = (
-              |
-                private count
-                private total ::= 0.
-              |
-              count:: 1.
-            ) ()
-        "};
-        assert!(names_of(text, HintKind::InitializeInDeclaration).is_empty());
     }
 
     #[test]
@@ -494,26 +453,6 @@ mod tests {
                 "{statement}"
             );
         }
-    }
-
-    /// In a header `count:: 1` sends the setter `count:`, which a subclass
-    /// may override; an initializer stores directly. Only a private send
-    /// is never overridden.
-    #[test]
-    fn a_protected_or_public_header_slot_gets_no_hint() {
-        let text = indoc! {"
-            class Module = (
-              |
-                count
-                protected limit
-                public total
-              |
-              count:: 1.
-              limit:: 2.
-              total:: 3.
-            ) ()
-        "};
-        assert!(names_of(text, HintKind::InitializeInDeclaration).is_empty());
     }
 
     /// A bare slot may end in its optional `.`: the initializer goes before
@@ -818,35 +757,6 @@ mod tests {
             )
         "};
         assert!(names_of(text, HintKind::InitializeInDeclaration).is_empty());
-    }
-
-    #[test]
-    fn a_header_slot_after_another_statement_gets_no_hint() {
-        let text = indoc! {"
-            class Module withLimit: limit = (
-              |
-                used ::= 0.
-                private cap
-              |
-              used printString.
-              cap:: limit.
-            ) ()
-        "};
-        assert!(names_of(text, HintKind::InitializeInDeclaration).is_empty());
-    }
-
-    #[test]
-    fn a_factory_parameter_as_the_first_header_statement_moves() {
-        let text = indoc! {"
-            class Module withLimit: limit = (
-              |
-                used ::= 0.
-                private cap
-              |
-              cap:: limit.
-            ) ()
-        "};
-        assert_eq!(names_of(text, HintKind::InitializeInDeclaration), ["cap"]);
     }
 
     /// A closure an initializer made would read the slot before the statement.

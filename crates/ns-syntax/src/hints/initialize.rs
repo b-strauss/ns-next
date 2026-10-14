@@ -1,4 +1,4 @@
-//! Hint A: a bare slot whose first value a statement assigns can take that
+//! Hint A: a bare local whose first value a statement assigns can take that
 //! value in its declaration. A fix must keep the order of evaluation:
 //! every initializer of the section first, then the moved value, as when
 //! it was a statement. At the section's first statement that holds
@@ -7,8 +7,7 @@
 //! on its own: once the first statement has moved, the next one is first.
 
 use crate::ast::{
-    AccessModifier, Expression, ExpressionKind, SlotDeclaration, SlotMutability, Statement,
-    StatementKind,
+    Expression, ExpressionKind, SlotDeclaration, SlotMutability, Statement, StatementKind,
 };
 use crate::span::Span;
 
@@ -32,14 +31,6 @@ pub(super) fn hints(section: &Section<'_>, scope: &Scope<'_>, text: &str, hints:
         let Some(position) = bare_slot(section.slots, target) else {
             continue;
         };
-        // In a header `x:: e` sends the setter `x:`, which a subclass may
-        // override, where an initializer stores directly; a private send
-        // is never overridden (§5.9).
-        if section.kind == SectionKind::Header
-            && section.slots[position].access != Some(AccessModifier::Private)
-        {
-            continue;
-        }
         // A closure answers its last statement's value; an initializer has
         // none.
         if section.kind == SectionKind::Closure && index + 1 == section.statements.len() {
@@ -49,12 +40,10 @@ pub(super) fn hints(section: &Section<'_>, scope: &Scope<'_>, text: &str, hints:
         if !statement.comments.is_empty() || names::expression_mentions(value, target) {
             continue;
         }
-        // After other statements only in a method or a closure: in a header
-        // an earlier statement can reach the slot through a send, which no
-        // name test sees. An initializer's closure may read the slot too.
+        // After other statements only when none of them mentions the local:
+        // an initializer's closure may read it too.
         let movable = index == 0
-            || (section.kind != SectionKind::Header
-                && settled(value, scope)
+            || (settled(value, scope)
                 && !section.statements[..index]
                     .iter()
                     .any(|earlier| names::mentions(earlier, target))
@@ -71,9 +60,6 @@ pub(super) fn hints(section: &Section<'_>, scope: &Scope<'_>, text: &str, hints:
         };
         let placed = match last_initialized {
             Some(last) if position < last => {
-                if section.kind == SectionKind::Header {
-                    continue;
-                }
                 reordered(text, section.slots, position, last, statement, value)
             }
             _ => Some(in_place(text, &section.slots[position], statement, value)),
