@@ -321,12 +321,15 @@ dependencies = [
  "fluent-uri",
  "indoc",
  "insta",
+ "libtest-mimic",
  "lsp-server",
  "lsp-types",
  "ns-runtime",
  "ns-syntax",
  "ns-tooling",
+ "serde",
  "serde_json",
+ "toml",
 ]
 
 [[package]]

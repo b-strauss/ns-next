@@ -1,4 +1,5 @@
-//! Shared helpers for the CLI integration tests.
+//! Shared helpers for the CLI integration tests, and for `ns-analyzer`'s
+//! behaviour oracle of the hints, which includes this file by its path.
 //!
 //! Each test binary that needs these declares `mod common;`, so this file is
 //! compiled once per binary rather than linked once -- which is why the
@@ -350,12 +351,12 @@ impl ScratchDirectory {
     }
 }
 
-/// `.temp/` at the repository root, two levels above this crate.
+/// `.temp/` at the repository root, two levels above the crate.
 fn scratch_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
         .nth(2)
-        .expect("crates/ns-cli is two levels below the repository root")
+        .expect("the crate is two levels below the repository root")
         .join(".temp")
 }
 
@@ -370,8 +371,13 @@ impl Drop for ScratchDirectory {
 
 /// Runs the `ns-next` binary and returns `(success, stdout, stderr)`, with
 /// line endings normalized so an assertion reads the same on every platform.
+/// Only `ns-cli`'s own tests have it from cargo; the module still compiles
+/// where they do not.
 pub fn ns_next(arguments: &[&std::ffi::OsStr]) -> (bool, String, String) {
-    let output = Command::new(env!("CARGO_BIN_EXE_ns-next"))
+    let Some(binary) = option_env!("CARGO_BIN_EXE_ns-next") else {
+        panic!("cargo hands the ns-next binary only to ns-cli's own tests");
+    };
+    let output = Command::new(binary)
         .args(arguments)
         .output()
         .expect("run ns-next");

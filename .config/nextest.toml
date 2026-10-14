@@ -7,9 +7,19 @@
 #
 # The other awfy goldens stay in every run: they exercise the harness on Sieve
 # alone or on no benchmark at all.
+#
+# The hints' behaviour oracle (`ns-analyzer`'s `hinted_goldens`) checks that
+# applying every hint keeps every golden's outcome, the full-size awfy
+# benchmarks included. It runs every golden twice more, so it runs only when
+# the hint code changes, in a profile of its own:
+#
+#     cargo nextest run -p ns-analyzer --profile hints
 
 [profile.default]
-default-filter = "not (test(~tool/awfy/all_benchmarks_verify) | test(=a_timed_run_prints_a_score_for_every_benchmark))"
+default-filter = "not (test(~tool/awfy/all_benchmarks_verify) | test(=a_timed_run_prints_a_score_for_every_benchmark) | binary(hinted_goldens))"
 
 [profile.benchmarks]
 default-filter = "test(~tool/awfy/all_benchmarks_verify) | test(=a_timed_run_prints_a_score_for_every_benchmark)"
+
+[profile.hints]
+default-filter = "binary(hinted_goldens)"

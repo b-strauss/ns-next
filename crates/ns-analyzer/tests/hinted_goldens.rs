@@ -4,12 +4,21 @@
 //! themselves stay as they are written; the rewritten program runs from a
 //! scratch copy. Every golden's sources also reach a fixed point: the
 //! result parses and a second pass changes nothing.
+//!
+//! The hints are the analyzer's, so the oracle lives here, while the
+//! programs run on `ns-next`, `ns-cli`'s binary. `ns-cli` never depends on
+//! `ns-analyzer` -- the runtime's binary must not carry the editor's code --
+//! and cargo hands a test only its own package's binaries, so this one
+//! builds `ns-next` itself, once, before the trials run. It runs only in its own nextest profile, when the
+//! hint code changes: `cargo nextest run -p ns-analyzer --profile hints`.
 
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 use libtest_mimic::{Arguments, Failed, Trial};
 
+// The golden helpers are `ns-cli`'s, shared rather than copied.
+#[path = "../../ns-cli/tests/common/mod.rs"]
 mod common;
 
 const LOWERINGS: [&str; 2] = ["optimized", "reference"];
@@ -88,8 +97,44 @@ fn sources_of(program: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(files)
 }
 
+/// Builds `ns-next` in the profile this test was built in and answers
+/// where it lies: beside this test's own `deps/` directory. A failed build
+/// fails the whole run with cargo's output.
+fn built_ns_next() -> PathBuf {
+    let mut build = Command::new(env!("CARGO"));
+    build.args(["build", "-p", "ns-cli", "--bin", "ns-next"]);
+    if !cfg!(debug_assertions) {
+        build.arg("--release");
+    }
+    let output = build.output().expect("run cargo to build ns-next");
+    assert!(
+        output.status.success(),
+        "building ns-next failed:
+{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let test = std::env::current_exe().expect("the test's own path");
+    let profile = test
+        .parent()
+        .and_then(Path::parent)
+        .expect("the test lies in target/<profile>/deps");
+    let binary = profile.join(format!("ns-next{}", std::env::consts::EXE_SUFFIX));
+    assert!(
+        binary.is_file(),
+        "cargo built ns-next, but it is not at {}",
+        binary.display()
+    );
+    binary
+}
+
 fn main() {
     let arguments = Arguments::from_args();
+    // Listing the trials runs none, so it needs no binary.
+    let ns_next = if arguments.list {
+        PathBuf::new()
+    } else {
+        built_ns_next()
+    };
     let mut trials = Vec::new();
     for program in common::golden_programs() {
         let name = common::golden_name(&program);
@@ -116,9 +161,10 @@ fn main() {
         for lowering in LOWERINGS {
             let program = program.clone();
             let sources = sources.clone();
+            let ns_next = ns_next.clone();
             trials.push(Trial::test(
                 format!("hinted::{lowering}::{name}"),
-                move || runs_alike(&program, &sources, lowering),
+                move || runs_alike(&ns_next, &program, &sources, lowering),
             ));
         }
     }
@@ -157,9 +203,15 @@ fn reaches_a_fixed_point(sources: &[PathBuf]) -> Result<(), Failed> {
 /// Copies `program` and every source it names into a scratch directory at
 /// their places relative to the repository root, so that each relative path
 /// a project file holds still resolves; applies every hint to the copied
-/// sources; runs the copy under `lowering`; and compares with the recorded
+/// sources; runs the copy under `lowering` with the `ns-next` at `ns_next`;
+/// and compares with the recorded
 /// outcome.
-fn runs_alike(program: &Path, sources: &[PathBuf], lowering: &str) -> Result<(), Failed> {
+fn runs_alike(
+    ns_next: &Path,
+    program: &Path,
+    sources: &[PathBuf],
+    lowering: &str,
+) -> Result<(), Failed> {
     let scratch = common::ScratchDirectory::new("hinted");
     let root = repository_root();
     let in_scratch = |path: &Path| -> PathBuf {
@@ -185,7 +237,7 @@ fn runs_alike(program: &Path, sources: &[PathBuf], lowering: &str) -> Result<(),
             .expect("write the hinted source");
     }
     let expectation = common::expectation_of(&program);
-    let output = Command::new(env!("CARGO_BIN_EXE_ns-next"))
+    let output = Command::new(ns_next)
         .arg("run")
         .arg(&copy)
         .arg("--lowering")
