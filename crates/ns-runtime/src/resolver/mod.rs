@@ -6,6 +6,7 @@ mod scope;
 pub(crate) mod sends;
 
 pub use classes::root_class_is_value;
+pub use classes::RootShape;
 pub(crate) use classes::{root_clause_defect, root_shape};
 
 use std::collections::HashMap;

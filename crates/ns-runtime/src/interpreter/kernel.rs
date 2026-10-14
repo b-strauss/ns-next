@@ -115,7 +115,13 @@ impl Interpreter {
     pub(crate) fn install_kernel(&mut self) {
         let resolved = resolved_kernel();
         let (kernel_class, applied_classes, mirror) = self.enter(|mutator| {
-            let (kernel_class, applied_classes) = mutator.fill_builtin_classes(&resolved);
+            let root_mixin = mutator.build_root_mixin(
+                &resolved.module.root_class,
+                &resolved.bindings,
+                super::instantiate::ModuleSource::Kernel,
+            );
+            check_kernel_shape(&root_mixin, &resolved);
+            let (kernel_class, applied_classes) = mutator.fill_builtin_classes(&root_mixin);
             let applied_classes: Vec<(Rc<Mixin>, Root)> = applied_classes
                 .into_iter()
                 .map(|(mixin, class)| (mixin, mutator.stash(Value::object(class))))
@@ -196,18 +202,12 @@ impl<'gc> Mutator<'gc> {
     /// this phase can still hold a placeholder application.
     fn fill_builtin_classes(
         &mut self,
-        resolved: &ResolvedModule,
+        root_mixin: &Rc<Mixin>,
     ) -> (ClassReference<'gc>, Vec<(Rc<Mixin>, ClassReference<'gc>)>) {
-        let declaration = &resolved.module.root_class;
-        let root_mixin = self.build_root_mixin(
-            declaration,
-            &resolved.bindings,
-            super::instantiate::ModuleSource::Kernel,
-        );
-        check_kernel_shape(&root_mixin, resolved);
         let mut applied_classes: Vec<(Rc<Mixin>, ClassReference<'gc>)> = Vec::new();
         let mut levels: Vec<ClassReference<'gc>> = Vec::new();
-        for kind in fill_order(&root_mixin) {
+        let mut filled: Vec<BuiltinClass> = Vec::new();
+        for kind in fill_order(root_mixin) {
             let class = self.builtin_class(kind);
             let mixin = if kind == BuiltinClass::VmMirror {
                 self.heap
@@ -215,9 +215,9 @@ impl<'gc> Mutator<'gc> {
                     .map(|application| application.mixin.clone())
                     .expect("internal: the mirror's class has its placeholder application")
             } else {
-                nested_named(&root_mixin, kernel_class_name(kind)).clone()
+                nested_named(root_mixin, kernel_class_name(kind)).clone()
             };
-            let superclass = superclass_of_kind(&root_mixin, kind)
+            let superclass = superclass_of_kind(root_mixin, kind)
                 .map(|superclass| self.builtin_class(superclass));
             let super_application =
                 superclass.and_then(|superclass| self.heap.class_application(superclass));
@@ -248,14 +248,17 @@ impl<'gc> Mutator<'gc> {
             // class it names is a kernel class built here from builtins
             // alone, which `check_kernel_shape` has made sure of.
             let applied: Vec<(usize, Value<'gc>)> = mixin
-                .declaration
+                .mixin_applications
                 .iter()
-                .flat_map(|declaration| declaration.mixin_applications.iter())
                 .enumerate()
                 .map(|(index, clause)| {
+                    let receiver = clause.receiver.unwrap_or_else(|| {
+                        panic!("internal: Kernel.ns's {kind:?} applies a clause with no receiver")
+                    });
                     let named = self.applied_kernel_class(
-                        &root_mixin,
-                        &clause.receiver.name,
+                        root_mixin,
+                        receiver.as_str(),
+                        &filled,
                         &mut applied_classes,
                     );
                     (index, Value::object(named))
@@ -293,6 +296,7 @@ impl<'gc> Mutator<'gc> {
             if !linked {
                 unreachable!("internal: a builtin class is a class object");
             }
+            filled.push(kind);
         }
         // Recorded once the classes are filled, because it is read off
         // `Value`'s own filled application: `builtins::value` tells an
@@ -315,7 +319,8 @@ impl<'gc> Mutator<'gc> {
         // (`wire_kernel_in`), as every builtin class's is. `Kernel.ns`'s root
         // is `= Value`, so it adds no level, but a `<:` clause would be
         // built here the same way.
-        let shape = crate::resolver::root_shape(&resolved.module.root_class)
+        let shape = root_mixin
+            .root_shape
             .unwrap_or_else(|| panic!("internal: Kernel.ns's root breaks the root rule"));
         let superclass_kind = if shape.over_value {
             BuiltinClass::Value
@@ -331,7 +336,7 @@ impl<'gc> Mutator<'gc> {
         };
         let top = match super::nested::build_applied_levels(
             self,
-            &root_mixin,
+            root_mixin,
             superclass_application.map(|application| (superclass, application)),
             &applied,
         ) {
@@ -339,7 +344,7 @@ impl<'gc> Mutator<'gc> {
             Err(_) => panic!("internal: the kernel root's superclass is a class object"),
         };
         let (superclass, super_application) = top.unzip();
-        let application = self.apply_mixin(&root_mixin, super_application.as_ref());
+        let application = self.apply_mixin(root_mixin, super_application.as_ref());
         let kernel_class = self.new_class_object(application, None, None, superclass);
         // `Class` is filled, so every class object built so far -- each
         // builtin, each applied kernel class and the levels it adds, the
@@ -373,6 +378,7 @@ impl<'gc> Mutator<'gc> {
         &mut self,
         root_mixin: &Rc<Mixin>,
         name: &str,
+        filled: &[BuiltinClass],
         built: &mut Vec<(Rc<Mixin>, ClassReference<'gc>)>,
     ) -> ClassReference<'gc> {
         if let Some((_, class)) = built.iter().find(|(mixin, _)| mixin.name.as_str() == name) {
@@ -391,7 +397,7 @@ impl<'gc> Mutator<'gc> {
         // ranks builtins only, so this is where a kernel that applies a
         // class before its superclass is filled is caught.
         assert!(
-            super_application.mixin.declaration.is_some(),
+            filled.contains(&superclass_kind),
             "internal: Kernel.ns's {name} is applied before its superclass {superclass_kind:?} is filled"
         );
         let application = self.apply_mixin(&mixin, Some(&super_application));
@@ -601,12 +607,11 @@ fn superclass_of_kind(root: &Rc<Mixin>, kind: BuiltinClass) -> Option<BuiltinCla
     superclass_kind(nested_named(root, kernel_class_name(kind)))
 }
 
-/// The builtin a kernel class's clause names, read off the declaration and
-/// never run; `None` for `Top`.
+/// The builtin a kernel class's clause names, read off its mixin and never
+/// run; `None` for `Top`.
 fn superclass_kind(nested: &Rc<Mixin>) -> Option<BuiltinClass> {
-    let declaration = nested.declaration.as_ref()?;
-    let clause = declaration.superclass.as_ref()?;
-    Some(kernel_kind_named(&clause.receiver.name).unwrap_or_else(|| {
+    let receiver = nested.superclass_receiver?;
+    Some(kernel_kind_named(receiver.as_str()).unwrap_or_else(|| {
         panic!(
             "internal: Kernel.ns's {} names no kernel class",
             nested.name
@@ -962,7 +967,57 @@ mod tests {
     use crate::builtins::primitive::mirror_entry;
     use crate::bytecode::UnwindMarker;
     use crate::mixin::{MethodFastPath, QuickConstant};
-    use crate::{BuiltinClass, Interpreter};
+    use crate::{BuiltinClass, Interpreter, Symbol};
+
+    #[test]
+    fn every_kernel_class_records_the_receiver_its_clauses_name() {
+        let resolved = super::resolved_kernel();
+        let mut interpreter = Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let root = mutator.build_root_mixin(
+                &resolved.module.root_class,
+                &resolved.bindings,
+                crate::interpreter::instantiate::ModuleSource::Kernel,
+            );
+            for nested in &root.nested {
+                let declaration = nested.declaration.as_ref().expect("built from source");
+                let written = declaration
+                    .superclass
+                    .as_ref()
+                    .map(|clause| Symbol::intern(&clause.receiver.name));
+                assert_eq!(nested.superclass_receiver, written, "{}", nested.name);
+                let applied: Vec<Option<Symbol>> = declaration
+                    .mixin_applications
+                    .iter()
+                    .map(|clause| Some(Symbol::intern(&clause.receiver.name)))
+                    .collect();
+                let recorded: Vec<Option<Symbol>> = nested
+                    .mixin_applications
+                    .iter()
+                    .map(|clause| clause.receiver)
+                    .collect();
+                assert_eq!(recorded, applied, "{}", nested.name);
+            }
+        });
+    }
+
+    #[test]
+    fn the_kernel_root_records_its_shape() {
+        let resolved = super::resolved_kernel();
+        let mut interpreter = Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let root = mutator.build_root_mixin(
+                &resolved.module.root_class,
+                &resolved.bindings,
+                crate::interpreter::instantiate::ModuleSource::Kernel,
+            );
+            assert_eq!(
+                root.root_shape,
+                crate::resolver::root_shape(&resolved.module.root_class)
+            );
+            assert!(root.root_shape.is_some());
+        });
+    }
 
     /// Every builtin class but the mirror's is the kernel class of its name.
     #[test]

@@ -498,6 +498,10 @@ pub struct ClauseMessage {
 pub struct MixinApplicationClause {
     /// The factory message the clause sends the class it names.
     pub message: ClauseMessage,
+    /// The identifier the clause's receiver names, for the kernel phase,
+    /// which reads the class a kernel class applies without running the
+    /// clause. `None` for a clause decoded from an image.
+    pub receiver: Option<Symbol>,
     /// The message's arguments as one body, compiled exactly as
     /// `Mixin::superclass_message_code` is -- with the applying declaration's
     /// own factory parameters in scope, since §6.2 evaluates the message in
@@ -600,6 +604,14 @@ pub struct Mixin {
     /// The superclass clause's message; `None` for a mixin with no
     /// superclass clause of its own -- a builtin's, and a class side's.
     pub superclass: Option<ClauseMessage>,
+    /// The identifier the superclass clause's receiver names, after any
+    /// prefix. The kernel phase reads a kernel class's superclass from it
+    /// without running the clause, which it may not run before the kernel
+    /// exists; recorded here so that a mixin decoded from the embedded
+    /// shipped code, which has no declaration, answers it too. `None` with
+    /// no clause, and for a mixin decoded from an image, whose mixins the
+    /// kernel phase never reads.
+    pub superclass_receiver: Option<Symbol>,
     /// §6.2's `<:` clauses, in declaration order: each one adds a level
     /// between this declaration's own class and its superclass, the first
     /// clause's level lowest. Empty for a declaration that applies no mixin,
@@ -649,6 +661,11 @@ pub struct Mixin {
     /// the encoder never writes one. `Mutator::apply_mixin` turns it into
     /// `InstantiationRefusal::RootClause` on the application.
     pub root_clause_defect: Option<RootClauseDefect>,
+    /// How a module's root is built (`resolver::root_shape`), recorded on
+    /// a root mixin built from source so that building its class needs no
+    /// declaration. `None` for every other mixin, for a root with a defect,
+    /// and for a mixin decoded from an image.
+    pub root_shape: Option<crate::resolver::RootShape>,
     /// Compiled from shipped core-library source (`ResolvedModule.kernel`):
     /// set on the declaration's mixin, on every nested mixin and on its class
     /// side. The image encoder refuses a class object of a shipped mixin
@@ -672,6 +689,7 @@ impl Mixin {
             slots: Vec::new(),
             factory: None,
             superclass: None,
+            superclass_receiver: None,
             mixin_applications: Vec::new(),
             has_initializer_expressions: false,
             initializer_expressions: Vec::new(),
@@ -683,6 +701,7 @@ impl Mixin {
             superclass_clause_code: None,
             superclass_message_code: None,
             root_clause_defect: None,
+            root_shape: None,
             shipped: false,
         }
     }

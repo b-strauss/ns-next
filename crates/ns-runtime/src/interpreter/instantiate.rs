@@ -128,6 +128,7 @@ fn clause_message_of(clause: &ast::SuperclassClause) -> ClauseMessage {
 fn mixin_application_clause_of(clause: &ast::SuperclassClause) -> MixinApplicationClause {
     MixinApplicationClause {
         message: clause_message_of(clause),
+        receiver: Some(Symbol::intern(&clause.receiver.name)),
         message_code: None,
     }
 }
@@ -220,7 +221,6 @@ impl<'gc> Mutator<'gc> {
     /// `load_module`'s work, inside its entry: the root class, built and
     /// compiled, for `load_module` to root.
     pub(crate) fn load_root_class(&mut self, resolved: &ResolvedModule) -> ClassReference<'gc> {
-        let declaration = &resolved.module.root_class;
         let mixin = self.compile_root_mixin(resolved);
         // Whatever the spelling, the rule leaves three class shapes to build:
         // over `Object`, over `Value`, or a `Value` level over `Object`.
@@ -229,7 +229,7 @@ impl<'gc> Mutator<'gc> {
         // over `Object` so that its class exists and can be inspected, and only
         // an instance is refused (`apply_mixin` carries the defect into the
         // application).
-        let shape = crate::resolver::root_shape(declaration);
+        let shape = mixin.root_shape;
         // The mixin's verdict was read from the same declaration.
         debug_assert_eq!(shape.is_none(), mixin.root_clause_defect.is_some());
         let (superclass_kind, applies_value) = match shape {
@@ -317,6 +317,7 @@ impl<'gc> Mutator<'gc> {
         let mut mixin = self.mixin_of(declaration, declaration, bindings, source);
         mixin.root_clause_defect =
             crate::resolver::root_clause_defect(declaration).map(|(defect, _)| defect);
+        mixin.root_shape = crate::resolver::root_shape(declaration);
         Rc::new(mixin)
     }
 
@@ -384,6 +385,10 @@ impl<'gc> Mutator<'gc> {
             slots,
             factory: Some(factory),
             superclass: declaration.superclass.as_ref().map(clause_message_of),
+            superclass_receiver: declaration
+                .superclass
+                .as_ref()
+                .map(|clause| Symbol::intern(&clause.receiver.name)),
             mixin_applications: declaration
                 .mixin_applications
                 .iter()
@@ -405,6 +410,7 @@ impl<'gc> Mutator<'gc> {
             superclass_clause_code: None,
             superclass_message_code: None,
             root_clause_defect: None,
+            root_shape: None,
             shipped: kernel,
         };
         crate::compiler::compile_mixin_bodies(&mut mixin, bindings, self.lowering);

@@ -878,11 +878,13 @@ fn build(raw: Vec<RawRow>, codes: &[Rc<CompiledCode>], module_rows: Vec<u32>) ->
             slots,
             factory: row.factory,
             superclass: row.superclass,
+            superclass_receiver: None,
             mixin_applications: row
                 .mixin_applications
                 .iter()
                 .map(|clause| MixinApplicationClause {
                     message: clause.message,
+                    receiver: None,
                     message_code: clause.message_code.map(code_at),
                 })
                 .collect(),
@@ -898,6 +900,7 @@ fn build(raw: Vec<RawRow>, codes: &[Rc<CompiledCode>], module_rows: Vec<u32>) ->
             // The loader refuses a root class record the root rule forbids
             // (`modules::root_record_defect`), so no decoded mixin has one.
             root_clause_defect: None,
+            root_shape: None,
             // An image carries only its own module, never shipped source.
             shipped: false,
         });

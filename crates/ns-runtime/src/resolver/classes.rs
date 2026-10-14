@@ -220,9 +220,9 @@ pub(crate) fn root_clause_defect(
 /// over `Value` rather than `Object`, and with a `Value` level applied by a
 /// `<:` clause over it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct RootShape {
-    pub(crate) over_value: bool,
-    pub(crate) applies_value: bool,
+pub struct RootShape {
+    pub over_value: bool,
+    pub applies_value: bool,
 }
 
 /// How a root class is built, read from the clauses `root_clause_defect`
