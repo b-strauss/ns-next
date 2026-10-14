@@ -489,7 +489,15 @@ closures included. Only `x::` writes a local: an implicit-receiver send
 `x: v` is resolved through the classes, never the locals
 (`ns-runtime`'s `resolver/mod.rs`). The test is by name and conservative:
 an `x::` that writes something else, a shadowing closure local, still
-counts, which costs a hint at worst, never correctness.
+counts, which costs a hint at worst, never correctness. Nor may a closure
+read `x` before its initializer has run: no initializer of `x` itself or of
+a local declared before it in the section may mention `x`, nested closures
+included. The optimized lowering copies a read-only local into a closure
+when the closure is made ([compiler.md](compiler.md)), so a closure made
+before the initializer ran -- `| f = [x]. x ::= 1. |`, or the
+self-referential `fib ::= [:n | ... fib value: n - 1 ...]` -- would read nil
+where the `::=` local it shares reads the value. Any mention counts, a
+closure's or not, so the rule stays conservative.
 
 **The edits are minimal**, so a file keeps its layout and a file never
 formatted is not reformatted by a quick fix (`hints/edits.rs`):

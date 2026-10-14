@@ -246,6 +246,95 @@ mod tests {
         );
     }
 
+    /// A closure an earlier initializer makes can run before the local's
+    /// own initializer, and must then see the local's later value.
+    #[test]
+    fn a_local_an_earlier_initializer_captures_stays_mutable() {
+        let text = indoc! {"
+            class Module = () (
+              public run = (
+                |
+                  reader = [count].
+                  count ::= 1.
+                  total ::= 2.
+                |
+                ^reader value + total
+              )
+            )
+        "};
+        assert_eq!(names_of(text, HintKind::ReadOnly), ["total"]);
+    }
+
+    /// A closure that names the local it initializes reads it after the
+    /// initializer has run.
+    #[test]
+    fn a_self_referential_closure_local_stays_mutable() {
+        let text = indoc! {"
+            class Module = () (
+              public run = (
+                |
+                  fib ::= [:number |
+                    number < 2
+                      ifTrue: [number]
+                      ifFalse: [(fib value: number - 1) + (fib value: number - 2)]].
+                |
+                ^fib value: 10
+              )
+            )
+        "};
+        assert!(names_of(text, HintKind::ReadOnly).is_empty());
+    }
+
+    /// A later initializer's closure sees the local initialized: it stays a
+    /// candidate.
+    #[test]
+    fn a_local_a_later_initializer_captures_can_be_read_only() {
+        let text = indoc! {"
+            class Module = () (
+              public run = (
+                |
+                  count ::= 1.
+                  reader = [count].
+                |
+                ^reader value
+              )
+            )
+        "};
+        assert_eq!(names_of(text, HintKind::ReadOnly), ["count"]);
+    }
+
+    /// Hint A moves the value into the declaration; hint B must not then
+    /// make it `=` while the earlier initializer's closure captures it.
+    #[test]
+    fn apply_all_keeps_a_local_an_earlier_initializer_captures_mutable() {
+        let text = indoc! {"
+            class Module = () (
+              public run = (
+                |
+                  reader = [count].
+                  count
+                |
+                count:: 1.
+                ^reader value
+              )
+            )
+        "};
+        assert_eq!(
+            apply_all(text),
+            indoc! {"
+                class Module = () (
+                  public run = (
+                    |
+                      reader = [count].
+                      count ::= 1.
+                    |
+                    ^reader value
+                  )
+                )
+            "}
+        );
+    }
+
     #[test]
     fn a_bare_local_and_a_read_only_one_get_no_hint_b() {
         let text = indoc! {"
