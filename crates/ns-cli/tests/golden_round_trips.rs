@@ -4,7 +4,10 @@
 //! `run_goldens.rs`, so the sweep runs in parallel, reports every golden that
 //! differs, and filters by name (`cargo nextest run -p ns-cli --test
 //! golden_round_trips lazy`); run as one loop, it was most of the suite's
-//! time, and almost all of it under the stress modes.
+//! time, and almost all of it under the stress modes. It doubles the
+//! goldens' cost, so it runs in a nextest profile of its own, for a commit
+//! that touches the image format or the instruction encoding and at the
+//! end of a batch: `cargo nextest run -p ns-cli --profile images`.
 
 use std::path::Path;
 

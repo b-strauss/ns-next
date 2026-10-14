@@ -83,7 +83,9 @@ fn matches_under_one_lowering(source: &Path, lowering: &str) -> Result<(), Faile
 
 /// A golden answers alike when the global cache is one two-slot group, so
 /// that every insert contends for the same group
-/// (`NS_NEXT_GLOBAL_CACHE_ENTRIES`, read by debug builds only).
+/// (`NS_NEXT_GLOBAL_CACHE_ENTRIES`, read by debug builds only). Only the
+/// nextest profile `caches` runs these trials, for a commit that touches
+/// the caches and at the end of a batch.
 fn matches_with_a_two_entry_global_cache(source: &Path) -> Result<(), Failed> {
     let expectation = common::expectation_of(source);
     let output = Command::new(env!("CARGO_BIN_EXE_ns-next"))

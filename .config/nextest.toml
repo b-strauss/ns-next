@@ -1,25 +1,50 @@
+# The default profile is the per-commit gate: what every change can break.
+# The rest of the suite runs in profiles of its own, each when the code it
+# guards changes and once at the end of a batch that touched the runtime
+# (`CLAUDE.md`, "Working in this repository"):
+#
+#     cargo nextest run --workspace --profile benchmarks
+#
 # The Are We Fast Yet benchmarks at their full sizes take minutes in a debug
-# build and much longer under the stress modes, so the per-commit gate and the
-# stress runs leave them out. They run on demand, when benchmarking, and once
-# at the end of a branch, in a plain run without a stress mode:
+# build and much longer under the stress modes. They run on demand, when
+# benchmarking, and once at the end of a branch, in a plain run without a
+# stress mode -- the hints' behaviour oracle over them included. The other
+# awfy goldens stay in every run: they exercise the harness on Sieve alone or
+# on no benchmark at all.
 #
-#     cargo nextest run -p ns-cli --profile benchmarks
+#     cargo nextest run -p ns-cli --profile images
 #
-# The other awfy goldens stay in every run: they exercise the harness on Sieve
-# alone or on no benchmark at all.
+# Every golden through `build` then `load` (`ns-cli`'s `golden_round_trips`),
+# under both lowerings, against what `run` answers: the image format's
+# round trip. It doubles the goldens' cost, so it runs for a commit that
+# touches the image format or the instruction encoding, and at the end of a
+# batch.
 #
-# The hints' behaviour oracle (`ns-analyzer`'s `hinted_goldens`) checks that
-# applying every hint keeps every golden's outcome, the full-size awfy
-# benchmarks included. It runs every golden twice more, so it runs in a
-# profile of its own, for every commit that touches `crates/ns-analyzer`:
+#     cargo nextest run -p ns-cli --profile caches
+#
+# Every golden with the global cache cut to one two-entry group
+# (`run_goldens`' `golden_with_a_two_entry_global_cache::`), so that every
+# insert contends: for a commit that touches the inline or global caches,
+# and at the end of a batch.
 #
 #     cargo nextest run -p ns-analyzer --profile hints
+#
+# The hints' behaviour oracle (`ns-analyzer`'s `hinted_goldens`) checks that
+# applying every hint keeps every golden's outcome; it runs every golden
+# twice more, so it runs for every commit that touches `crates/ns-analyzer`,
+# the full-size benchmarks left to the benchmarks profile.
 
 [profile.default]
-default-filter = "not (test(~tool/awfy/all_benchmarks_verify) | test(=a_timed_run_prints_a_score_for_every_benchmark) | binary(hinted_goldens))"
+default-filter = "not (test(~tool/awfy/all_benchmarks_verify) | test(=a_timed_run_prints_a_score_for_every_benchmark) | binary(hinted_goldens) | binary(golden_round_trips) | test(/^golden_with_a_two_entry_global_cache::/))"
 
 [profile.benchmarks]
-default-filter = "(test(~tool/awfy/all_benchmarks_verify) | test(=a_timed_run_prints_a_score_for_every_benchmark)) and not binary(hinted_goldens)"
+default-filter = "test(~tool/awfy/all_benchmarks_verify) | test(=a_timed_run_prints_a_score_for_every_benchmark)"
+
+[profile.images]
+default-filter = "binary(golden_round_trips) and not test(~tool/awfy/all_benchmarks_verify)"
+
+[profile.caches]
+default-filter = "test(/^golden_with_a_two_entry_global_cache::/) and not test(~tool/awfy/all_benchmarks_verify)"
 
 [profile.hints]
-default-filter = "binary(hinted_goldens)"
+default-filter = "binary(hinted_goldens) and not test(~tool/awfy/all_benchmarks_verify)"

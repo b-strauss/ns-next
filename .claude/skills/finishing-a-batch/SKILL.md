@@ -56,8 +56,12 @@ Create a todo for each item.
    NS_NEXT_STRESS_SCAVENGE=1 cargo run -p ns-cli -- run-corpus corpus/modules
    NS_NEXT_STRESS_WIDE=1 cargo run -p ns-cli -- run-corpus corpus/modules
    cargo build --workspace
+   # every golden through build then load, and with a two-entry global
+   # cache: plain, since the stress runs use the default profile
+   cargo nextest run -p ns-cli --profile images
+   cargo nextest run -p ns-cli --profile caches
    # the Are We Fast Yet benchmarks at full size, plain, never under stress
-   cargo nextest run -p ns-cli --profile benchmarks
+   cargo nextest run --workspace --profile benchmarks
    ```
 
    Read every summary line; a mode that failed is named at the end of the

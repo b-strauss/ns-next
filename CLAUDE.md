@@ -316,18 +316,26 @@ Plus, per commit touching them:
   `schemas/newspeak.schema.json`, so a change to it reaches the plugin; when
   unsure whether a change reaches the plugin, run it)
 - `crates/ns-analyzer` → `cargo nextest run -p ns-analyzer --profile hints`,
-  the hints' behaviour oracle, which the default profile leaves out
+  the hints' behaviour oracle
+- the image format (`crates/ns-runtime/src/image/`), the instruction encoding
+  (`crates/ns-runtime/src/bytecode.rs`, `bytecode/`) or `ns-next build`/`load`
+  → `cargo nextest run -p ns-cli --profile images`, every golden through
+  `build` then `load`
+- the inline or global caches (`crates/ns-runtime/src/interpreter/inline_cache.rs`)
+  → `cargo nextest run -p ns-cli --profile caches`, every golden with a
+  two-entry global cache
 
-`.config/nextest.toml`'s default profile leaves out the tests that run the Are
-We Fast Yet benchmarks at full size; they run only on demand, when
-benchmarking, and once at the end of a branch, never under a stress mode:
-`cargo nextest run -p ns-cli --profile benchmarks` (`execution.md`, "The Are
+`.config/nextest.toml`'s default profile is the per-commit gate and leaves
+those profiles out, and the tests that run the Are We Fast Yet benchmarks at
+full size; those run only on demand, when benchmarking, and once at the end
+of a branch, never under a stress mode:
+`cargo nextest run --workspace --profile benchmarks` (`execution.md`, "The Are
 We Fast Yet benchmarks").
 
 The end-of-batch gates (the five stress modes: moves, caches, collection,
 scavenges and every instruction wide; `run-corpus` plain and under
-stress, the benchmarks profile, `verifyPlugin`) are in the `finishing-a-batch`
-skill. A commit that
+stress; the images, caches and benchmarks profiles; `verifyPlugin`) are in
+the `finishing-a-batch` skill. A commit that
 never saw them is work in progress, not finished work; a subagent implementing
 part of a batch is told this staggering explicitly.
 

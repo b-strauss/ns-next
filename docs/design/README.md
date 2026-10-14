@@ -234,12 +234,13 @@ golden per lowering named by its path below `goldens/` --
 such as `language/block/blocks_and_return`, so nextest runs the two lowerings
 of a golden in parallel rather than one trial running both in sequence -- and
 in a debug build `golden_with_a_two_entry_global_cache::<path>` as
-well -- so the suite lists each golden, reports every failure with the expected
+well, which only the nextest profile `caches` runs -- so the suite lists each golden, reports every failure with the expected
 and actual stream, runs them in parallel, and runs one or a family by name
 (`cargo nextest run -p ns-cli --test run_goldens lazy`); a skipped golden is
 listed as skipped, and `--run-ignored all` runs it. The build/load round
 trip is the same, one test per golden
-(`crates/ns-cli/tests/golden_round_trips.rs`).
+(`crates/ns-cli/tests/golden_round_trips.rs`), in the nextest profile
+`images` rather than the per-commit suite.
 Every golden that is not skipped, the ones recorded as raising included, also
 goes through the round trip, `build` then `load`, which holds the started
 image's three streams against what `run` answers on the source; a golden
@@ -373,6 +374,9 @@ NS_NEXT_STRESS_WIDE=1 cargo nextest run --workspace    # the same, every instruc
 # (the finishing-a-batch skill runs the five stress modes at once, each into its own log)
 # the suite above is every crate's, ns-analyzer's included: its disasm and inspect tests guard the compiler's output and the image format
 cargo nextest run -p ns-analyzer --profile hints   # the hints' behaviour oracle, which the suite leaves out, per commit that touches ns-analyzer
+cargo nextest run -p ns-cli --profile images       # every golden through build then load, per commit that touches the image format or the instruction encoding, and at the end of a batch
+cargo nextest run -p ns-cli --profile caches       # every golden with a two-entry global cache, per commit that touches the caches, and at the end of a batch
+cargo nextest run --workspace --profile benchmarks # the full-size Are We Fast Yet benchmarks, the hints' oracle over them included: when measuring, and at the end of a branch
 cargo clippy --workspace --all-targets   # must be warning-free, the naming lint included
 cargo fmt --all                          # before every commit
 cargo run -p ns-analyzer -- parse-corpus corpus/modules   # parsed 211, failed 0
