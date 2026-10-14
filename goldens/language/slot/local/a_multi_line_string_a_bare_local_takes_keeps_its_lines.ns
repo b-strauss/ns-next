@@ -1,0 +1,23 @@
+/// A string literal written over two lines holds the line break and the
+/// second line exactly as written: `first`, a line feed and `second`, 12
+/// characters (`.gitattributes` keeps this file's line feeds on every
+/// platform). The editor hints' behaviour oracle (`ns-analyzer`'s
+/// `hinted_goldens`) depends on this golden: "apply all" moves the
+/// assignment into `text`'s declaration, two columns right of the
+/// statement, and must copy the literal's second line as it is.
+class MultiLineStringLocal = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      text
+    |
+    text:: 'first
+second'.
+    transcript
+        show: text size printString;
+        newLine.
+    transcript
+        show: text;
+        newLine.
+  )
+)

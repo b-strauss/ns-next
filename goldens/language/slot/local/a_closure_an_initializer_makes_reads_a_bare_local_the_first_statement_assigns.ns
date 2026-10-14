@@ -1,0 +1,20 @@
+/// A closure an initializer makes captures a bare local declared after it,
+/// and reads the value the first statement assigns (newspeak-spec.pdf 3.6).
+/// The editor hints' behaviour oracle (`ns-analyzer`'s `hinted_goldens`)
+/// depends on this golden: "apply all" moves the assignment into
+/// `count`'s declaration, and must then leave `count` mutable, as a
+/// read-only `count` would let the optimized lowering copy its nil into
+/// the closure.
+class BareLocalCapturedBeforeItsAssignment = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      reader = [count].
+      count
+    |
+    count:: 1.
+    transcript
+        show: reader value printString;
+        newLine.
+  )
+)

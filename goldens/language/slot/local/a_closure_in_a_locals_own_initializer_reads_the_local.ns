@@ -1,0 +1,19 @@
+/// A closure a local's own initializer makes captures the local itself, so
+/// a closure stored in a local can call itself through it: by the time it
+/// runs, the initializer has stored it (newspeak-spec.pdf 3.6). The editor
+/// hints' behaviour oracle (`ns-analyzer`'s `hinted_goldens`) depends on
+/// this golden: making `fib` read-only here would let the optimized
+/// lowering copy its nil into the closure.
+class SelfReferentialClosureLocal = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      fib ::= [:number |
+        number < 2 ifTrue: [number] ifFalse: [(fib value: number - 1) + (fib value: number - 2)].
+      ].
+    |
+    transcript
+        show: (fib value: 10) printString;
+        newLine.
+  )
+)

@@ -288,6 +288,7 @@ summary; `cargo nextest list -p ns-cli --run-ignored only` names them.
 | `language/slot/` | slots |
 | `language/slot/accessor/` | slot accessors and setters, an immutable slot, and §6.3.3's lazy slots |
 | `language/slot/simultaneous/` | §6.3.2's simultaneous slots and temporaries: futures, data cycles, ill-founded recursion and an abandoned clause |
+| `language/slot/local/` | a method's locals and the closures that capture them: a closure made before a local is initialized or assigned, a closure in a local's own initializer, a multi-line string a local takes -- the shapes the editor hints' behaviour oracle depends on |
 | `language/method/` | a method body: its answer without a return, its parameters and its temporaries (§3.5, §3.6, §5.1.8) |
 | `language/send/` | sends and lookup: `doesNotUnderstand:`, a native declining to `Object`'s method, public, protected and private access (§5.5, §6.3.1), an outside `class` or class accessor send not understood and a bare class name answering everywhere, lexical before inherited (§5.7), `self` and `super` sends |
 | `language/block/` | blocks and closures: what a block captures -- copied variables, indirection vectors, the fallback closures of an inlined conditional --, a closure outliving its method, non-local return and its `cannotReturn:`, an immutable block parameter |

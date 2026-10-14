@@ -589,15 +589,19 @@ titles say; after the first, the editor offers "Make `count` read-only".
   one inside it), each changed program run from a scratch copy under both
   lowerings and held to the `status`, `stdout` and `stderr` its `.toml`
   records; each result parses, and a second "apply all" changes nothing.
-  The goldens themselves are not rewritten. The programs run on `ns-next`,
-  which `ns-analyzer` does not depend on and cargo does not hand a test of
+  The goldens themselves are not rewritten. `goldens/language/slot/local/`
+  holds goldens written for the oracle, with the shapes a defect in a fix
+  would show in: a closure made before its local is initialized or
+  assigned, a closure in its local's own initializer, a multi-line string
+  a moved value carries. The programs run on `ns-next`, which
+  `ns-analyzer` does not depend on and cargo does not hand a test of
   another package, so the oracle builds it itself through cargo on first
   use; it shares `ns-cli`'s golden helpers by `#[path]`. It runs every
   golden twice more, the full-size Are We Fast Yet benchmarks included, so
-  it runs only in its own nextest profile, `hints`, when analyzer code
-  changes: `cargo nextest run -p ns-analyzer --profile hints`
-  (`.config/nextest.toml`; the default and benchmarks profiles leave it
-  out).
+  it runs only in its own nextest profile, `hints`, for every commit that
+  touches `crates/ns-analyzer`: `cargo nextest run -p ns-analyzer --profile
+  hints` (`.config/nextest.toml`; the default and benchmarks profiles leave
+  it out).
 - **The protocol test** (`tests/protocol.rs`): a hint published with its
   severity, code, source and range; its quick fix and the fix for the file
   answered, the latter's one edit giving what `apply_all` gives; no action

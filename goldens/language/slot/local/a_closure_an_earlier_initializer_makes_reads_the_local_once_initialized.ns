@@ -1,0 +1,23 @@
+/// A closure captures a local, not its value: one an earlier local's
+/// initializer makes reads nil while the local's own initializer has not
+/// run, and the value once it has (newspeak-spec.pdf 3.6: every local slot
+/// starts as nil and is initialized according to its declaration, in
+/// order). The editor hints' behaviour oracle (`ns-analyzer`'s
+/// `hinted_goldens`) depends on this golden: making `count` read-only here
+/// would let the optimized lowering copy its nil into the closure.
+class LocalCapturedBeforeItsInitializer = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      reader = [count].
+      early = reader value.
+      count ::= 1.
+    |
+    transcript
+        show: early printString;
+        newLine.
+    transcript
+        show: reader value printString;
+        newLine.
+  )
+)

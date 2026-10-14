@@ -5,3 +5,6 @@ corpus/** -text
 # byte-for-byte as committed, so its spans and every image built from it are
 # the same on every platform.
 crates/ns-runtime/core-library/** -text
+# A golden whose string literal spans two lines counts the line break in its
+# recorded size: keep its line feeds as committed on every platform.
+goldens/language/slot/local/a_multi_line_string_a_bare_local_takes_keeps_its_lines.ns -text
