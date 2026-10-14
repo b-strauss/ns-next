@@ -5,15 +5,6 @@ use libtest_mimic::{Arguments, Failed, Trial};
 
 mod common;
 
-/// Normalizes the line endings of what the process wrote. The recorded side
-/// is already normalized by `common::expectation_of`, which explains why;
-/// this is the same normalization applied to the other side, so that a
-/// platform's own line endings can never be mistaken for a difference in
-/// program behaviour.
-fn normalize_newlines(text: &str) -> String {
-    text.replace("\r\n", "\n")
-}
-
 /// Both lowerings: the optimized one every program runs under, and the
 /// reference lowering it is checked against (`docs/design/compiler.md`, "The
 /// reference lowering"). Each must produce the recorded answer.
@@ -82,11 +73,12 @@ fn matches_under_one_lowering(source: &Path, lowering: &str) -> Result<(), Faile
         .args(common::program_arguments(source))
         .output()
         .map_err(|error| format!("run ns-next: {error}"))?;
-    compare(
+    common::compare(
         &output,
         &expectation,
         &format!("under the {lowering} lowering"),
     )
+    .map_err(Failed::from)
 }
 
 /// A golden answers alike when the global cache is one two-slot group, so
@@ -101,50 +93,7 @@ fn matches_with_a_two_entry_global_cache(source: &Path) -> Result<(), Failed> {
         .env("NS_NEXT_GLOBAL_CACHE_ENTRIES", "2")
         .output()
         .map_err(|error| format!("run ns-next: {error}"))?;
-    compare(&output, &expectation, "with a two-entry global cache")
-}
-
-/// The one comparison both runs make, reporting which of the three parts
-/// differs and how.
-fn compare(
-    output: &std::process::Output,
-    expectation: &common::Expectation,
-    condition: &str,
-) -> Result<(), Failed> {
-    if output.status.code() != Some(expectation.status) {
-        return Err(format!(
-            "exit status {condition}: expected {}, got {:?}
-stderr:
-{}",
-            expectation.status,
-            output.status.code(),
-            normalize_newlines(&String::from_utf8_lossy(&output.stderr))
-        )
-        .into());
-    }
-    let stdout = normalize_newlines(&String::from_utf8_lossy(&output.stdout));
-    if stdout != expectation.stdout {
-        return Err(format!(
-            "stdout {condition}:
---- expected
-{}--- got
-{stdout}",
-            expectation.stdout
-        )
-        .into());
-    }
-    let stderr = normalize_newlines(&String::from_utf8_lossy(&output.stderr));
-    if stderr != expectation.stderr {
-        return Err(format!(
-            "stderr {condition}:
---- expected
-{}--- got
-{stderr}",
-            expectation.stderr
-        )
-        .into());
-    }
-    Ok(())
+    common::compare(&output, &expectation, "with a two-entry global cache").map_err(Failed::from)
 }
 
 /// The two guards on `skipped` itself, which nothing else exercises. Either

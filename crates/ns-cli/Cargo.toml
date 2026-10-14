@@ -34,5 +34,10 @@ harness = false
 name = "golden_round_trips"
 harness = false
 
+# One test per golden whose source the hints change, as `run_goldens`.
+[[test]]
+name = "hinted_goldens"
+harness = false
+
 [lints]
 workspace = true

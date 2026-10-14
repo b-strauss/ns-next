@@ -263,6 +263,55 @@ pub fn program_arguments(source: &Path) -> Vec<std::ffi::OsString> {
         .collect()
 }
 
+/// Normalizes the line endings of what the process wrote. The recorded side
+/// is already normalized by `expectation_of`, which explains why;
+/// this is the same normalization applied to the other side, so that a
+/// platform's own line endings can never be mistaken for a difference in
+/// program behaviour.
+pub fn normalize_newlines(text: &str) -> String {
+    text.replace("\r\n", "\n")
+}
+
+/// The one comparison every golden run makes, reporting which of the three parts
+/// differs and how.
+pub fn compare(
+    output: &std::process::Output,
+    expectation: &Expectation,
+    condition: &str,
+) -> Result<(), String> {
+    if output.status.code() != Some(expectation.status) {
+        return Err(format!(
+            "exit status {condition}: expected {}, got {:?}
+stderr:
+{}",
+            expectation.status,
+            output.status.code(),
+            normalize_newlines(&String::from_utf8_lossy(&output.stderr))
+        ));
+    }
+    let stdout = normalize_newlines(&String::from_utf8_lossy(&output.stdout));
+    if stdout != expectation.stdout {
+        return Err(format!(
+            "stdout {condition}:
+--- expected
+{}--- got
+{stdout}",
+            expectation.stdout
+        ));
+    }
+    let stderr = normalize_newlines(&String::from_utf8_lossy(&output.stderr));
+    if stderr != expectation.stderr {
+        return Err(format!(
+            "stderr {condition}:
+--- expected
+{}--- got
+{stderr}",
+            expectation.stderr
+        ));
+    }
+    Ok(())
+}
+
 /// A temporary directory that removes itself, under the repository's own
 /// `.temp/` (git-ignored) rather than the system temporary folder.
 ///
