@@ -119,12 +119,10 @@ class Kernel vmMirror: mirror = Value (
     /// kernel reaches: a program sees the Error, never the activation.
     protected subclassResponsibility = (
       |
-        current
-        method
+        current = vmMirror currentActivation: self ifFail: [nil].
+        method = vmMirror activationMethodName: (vmMirror activationSender: current ifFail: [nil])
+            ifFail: [nil].
       |
-      current:: vmMirror currentActivation: self ifFail: [nil].
-      method:: vmMirror activationMethodName: (vmMirror activationSender: current ifFail: [nil])
-          ifFail: [nil].
       ^(outer Kernel Error new) signal: (method isNil ifTrue: ['a method'] ifFalse: [method])
           , ' is abstract: '
           , self class name
@@ -632,9 +630,8 @@ class Kernel vmMirror: mirror = Value (
     /// returned already.
     public return: value = (
       |
-        target
+        target = handlerActivation.
       |
-      target:: handlerActivation.
       (target isNil or: [target == signalActivation]) ifTrue: [^self notInAHandler: #return:].
       signalActivation:: nil.
       handlerActivation:: nil.
@@ -656,9 +653,8 @@ class Kernel vmMirror: mirror = Value (
     /// returned', when its `on:do:` has returned already.
     public retry = (
       |
-        target
+        target = handlerActivation.
       |
-      target:: handlerActivation.
       (target isNil or: [target == signalActivation]) ifTrue: [^self notInAHandler: #retry].
       signalActivation:: nil.
       handlerActivation:: nil.
@@ -711,11 +707,9 @@ class Kernel vmMirror: mirror = Value (
     /// an unhandled exception cannot carry on.
     public defaultAction = (
       |
-        selector
-        receiver
+        selector = self hostSelector.
+        receiver = self hostReceiver.
       |
-      selector:: self hostSelector.
-      receiver:: self hostReceiver.
       ^vmMirror terminate: self
           selector: selector
           receiver: receiver
@@ -760,13 +754,11 @@ class Kernel vmMirror: mirror = Value (
     /// counted in activations.
     private invokeNextHandler = (
       |
-        activation
-        count
         handlers
         index
+        count ::= 0.
+        activation ::= vmMirror activationSender: handlerActivation ifFail: [nil].
       |
-      count:: 0.
-      activation:: vmMirror activationSender: handlerActivation ifFail: [nil].
       [activation isNil] whileFalse: [
         (vmMirror activationIsActiveHandler: activation ifFail: [false]) ifTrue: [
           count:: count + 1.
@@ -810,9 +802,8 @@ class Kernel vmMirror: mirror = Value (
     /// the candidate on the stack.
     private isHandledAt: activation = (
       |
-        exceptionClass
+        exceptionClass = vmMirror activationHandlerClass: activation ifFail: [nil].
       |
-      exceptionClass:: vmMirror activationHandlerClass: activation ifFail: [nil].
       vmMirror activation: activation handlerActive: false ifFail: [nil].
       ^[exceptionClass handles: self] ensure: [
         vmMirror activation: activation handlerActive: true ifFail: [nil].
@@ -1414,13 +1405,10 @@ class Kernel vmMirror: mirror = Value (
     /// `hash` of every slot.
     private valueHashOfSlots = (
       |
-        index
-        count
-        result
+        count = self valueSlotCountOf: self.
+        result ::= count.
+        index ::= 1.
       |
-      count:: self valueSlotCountOf: self.
-      result:: count.
-      index:: 1.
       [index <= count] whileTrue: [
         result:: result + (self valueSlotOf: self at: index) hash.
         index:: index + 1.
@@ -1645,15 +1633,12 @@ class Kernel vmMirror: mirror = Value (
     /// `Float>>raisedTo:`'s for an `exponent` that is no number.
     public raisedTo: exponent = (
       |
-        result
-        base
-        remaining
+        result ::= 1.
+        base ::= self.
+        remaining ::= exponent.
       |
       exponent isKindOfInteger ifFalse: [^self asFloat raisedTo: exponent].
       exponent < 0 ifTrue: [^1 / (self raisedTo: exponent negated)].
-      result:: 1.
-      base:: self.
-      remaining:: exponent.
       [remaining > 0] whileTrue: [
         (remaining bitAnd: 1) = 1 ifTrue: [result:: result * base].
         remaining:: remaining >> 1.
@@ -1677,9 +1662,8 @@ class Kernel vmMirror: mirror = Value (
     /// receiver is at most `stop`.
     public to: stop do: action = (
       |
-        current
+        current ::= self.
       |
-      current:: self.
       [current <= stop] whileTrue: [
         action value: current.
         current:: current + 1.
@@ -1703,9 +1687,8 @@ class Kernel vmMirror: mirror = Value (
     /// step.
     public to: stop by: step do: action = (
       |
-        current
+        current ::= self.
       |
-      current:: self.
       step < 0 ifTrue: [
         [current >= stop] whileTrue: [
           action value: current.
@@ -2256,23 +2239,17 @@ class Kernel vmMirror: mirror = Value (
     /// fail, so `//` never sees it).
     public reciprocalModulo: modulus = (
       |
-        remainder
-        nextRemainder
-        coefficient
-        nextCoefficient
+        remainder ::= modulus.
+        nextRemainder ::= self \\ modulus.
+        coefficient ::= 0.
+        nextCoefficient ::= 1.
       |
-      remainder:: modulus.
-      nextRemainder:: self \\ modulus.
-      coefficient:: 0.
-      nextCoefficient:: 1.
       [nextRemainder = 0] whileFalse: [
         |
-          quotient
-          previousRemainder
+          quotient = remainder // nextRemainder.
+          previousRemainder = remainder.
           previousCoefficient
         |
-        quotient:: remainder // nextRemainder.
-        previousRemainder:: remainder.
         remainder:: nextRemainder.
         nextRemainder:: previousRemainder - (quotient * nextRemainder).
         previousCoefficient:: coefficient.
@@ -2914,9 +2891,8 @@ class Kernel vmMirror: mirror = Value (
     /// from zero.
     public rounded = (
       |
-        nearest
+        nearest = (self numerator abs * 2 + self denominator) // (self denominator * 2).
       |
-      nearest:: (self numerator abs * 2 + self denominator) // (self denominator * 2).
       ^self numerator < 0 ifTrue: [nearest negated] ifFalse: [nearest].
     )
 
@@ -3717,9 +3693,8 @@ class Kernel vmMirror: mirror = Value (
     /// does not define it.
     public collect: transform = (
       |
-        result
+        result = self newForCollectUsingAdd: self size.
       |
-      result:: self newForCollectUsingAdd: self size.
       self do: [:element | result add: (transform value: element)].
       ^result.
     )
@@ -3734,9 +3709,8 @@ class Kernel vmMirror: mirror = Value (
     /// does not define it.
     public select: predicate = (
       |
-        result
+        result = self newForCollectUsingAdd: self size.
       |
-      result:: self newForCollectUsingAdd: self size.
       self do: [:element | (predicate value: element) ifTrue: [result add: element]].
       ^result.
     )
@@ -3751,9 +3725,8 @@ class Kernel vmMirror: mirror = Value (
     /// does not define it.
     public reject: predicate = (
       |
-        result
+        result = self newForCollectUsingAdd: self size.
       |
-      result:: self newForCollectUsingAdd: self size.
       self do: [:element | (predicate value: element) ifFalse: [result add: element]].
       ^result.
     )
@@ -3981,9 +3954,8 @@ class Kernel vmMirror: mirror = Value (
     /// receiver's kind cannot hold.
     public , collection = (
       |
-        result
+        result = self newOfSize: self size + collection size.
       |
-      result:: self newOfSize: self size + collection size.
       result replaceFrom: 1 to: self size with: self startingAt: 1.
       result replaceFrom: self size + 1 to: result size with: collection startingAt: 1.
       ^result.
@@ -3996,9 +3968,8 @@ class Kernel vmMirror: mirror = Value (
     /// kind cannot hold.
     public copyWith: element = (
       |
-        result
+        result = self copyWithSize: self size + 1.
       |
-      result:: self copyWithSize: self size + 1.
       result at: result size put: element.
       ^result.
     )
@@ -4015,11 +3986,9 @@ class Kernel vmMirror: mirror = Value (
     /// or no Integer: for an Array, the ArgumentError of `Array new:`.
     public copyWithSize: newSize = (
       |
-        result
-        kept
+        result = self newOfSize: newSize.
+        kept = newSize < self size ifTrue: [newSize] ifFalse: [self size].
       |
-      result:: self newOfSize: newSize.
-      kept:: newSize < self size ifTrue: [newSize] ifFalse: [self size].
       result replaceFrom: 1 to: kept with: self startingAt: 1.
       ^result.
     )
@@ -4031,9 +4000,8 @@ class Kernel vmMirror: mirror = Value (
     /// transform: a one-argument block.
     public collect: transform = (
       |
-        result
+        result = outer Kernel Array new: self size.
       |
-      result:: outer Kernel Array new: self size.
       1 to: self size do: [:index | result at: index put: (transform value: (self at: index))].
       ^result.
     )
@@ -4045,12 +4013,10 @@ class Kernel vmMirror: mirror = Value (
     /// predicate: a one-argument block answering a Boolean.
     public select: predicate = (
       |
-        result
-        count
+        result = self newOfSize: self size.
+        count ::= 0.
         element
       |
-      result:: self newOfSize: self size.
-      count:: 0.
       1 to: self size do: [:index |
         element:: self at: index.
         (predicate value: element) ifTrue: [
@@ -4099,18 +4065,15 @@ class Kernel vmMirror: mirror = Value (
     /// it stable.
     public sortFrom: start to: stop by: lessOrEqual = (
       |
-        source
+        source ::= self copyFrom: start to: stop.
         target
-        count
-        width
+        count = source size.
+        width ::= 1.
         left
         swap
       |
-      source:: self copyFrom: start to: stop.
-      count:: source size.
       count < 2 ifTrue: [^self].
       target:: self newOfSize: count.
-      width:: 1.
       [width < count] whileTrue: [
         left:: 1.
         [left <= count] whileTrue: [
@@ -4132,19 +4095,16 @@ class Kernel vmMirror: mirror = Value (
     /// second's.
     private merge: source into: target from: left width: width count: count by: lessOrEqual = (
       |
-        middle
+        middle ::= left + width - 1.
         right
-        leftCursor
+        leftCursor ::= left.
         rightCursor
-        targetCursor
+        targetCursor ::= left.
       |
-      middle:: left + width - 1.
       middle > count ifTrue: [middle:: count].
       right:: middle + width.
       right > count ifTrue: [right:: count].
-      leftCursor:: left.
       rightCursor:: middle + 1.
-      targetCursor:: left.
       [targetCursor <= right] whileTrue: [
         ((rightCursor > right) or: [
           (leftCursor <= middle) and: [
@@ -4166,9 +4126,8 @@ class Kernel vmMirror: mirror = Value (
     /// the other.
     public asArray = (
       |
-        result
+        result = outer Kernel Array new: self size.
       |
-      result:: outer Kernel Array new: self size.
       1 to: self size do: [:index | result at: index put: (self at: index)].
       ^result.
     )
@@ -4312,11 +4271,9 @@ class Kernel vmMirror: mirror = Value (
     ///     `do:` -- a String, whose elements are its code points.
     public withAll: collection = (
       |
-        result
-        index
+        result = self new: collection size.
+        index ::= 0.
       |
-      result:: self new: collection size.
-      index:: 0.
       collection do: [:element |
         index:: index + 1.
         result at: index put: element.
@@ -4352,9 +4309,8 @@ class Kernel vmMirror: mirror = Value (
     /// to Collection's `do:` instead.
     public do: action = (
       |
-        count
+        count = vmMirror byteArraySize: self ifFail: [^super do: action].
       |
-      count:: vmMirror byteArraySize: self ifFail: [^super do: action].
       1 to: count do: [:index | action value: (self at: index)].
     )
 
@@ -4608,12 +4564,11 @@ class Kernel vmMirror: mirror = Value (
     public withAll: collection = (
       |
         result
-        index
+        index ::= 0.
       |
       collection isKindOfByteArray ifTrue: [^collection copyFrom: 1 to: collection size].
       collection isKindOfString ifTrue: [^collection asUtf8].
       result:: self new: collection size.
-      index:: 0.
       collection do: [:element |
         (element isKindOfInteger and: [element >= 0 and: [element <= 255]]) ifFalse: [
           ^(outer
@@ -5705,7 +5660,7 @@ class Kernel vmMirror: mirror = Value (
     /// must never skip (docs/design/execution.md, "Planned: tail calls").
     public on: exceptionClass do: handler = (
       |
-        handlerActive ::= true.
+        handlerActive = true.
       |
       ^self value.
     )
@@ -5724,9 +5679,8 @@ class Kernel vmMirror: mirror = Value (
     public ensure: onUnwind = (
       |
         complete ::= nil.
-        result
+        result = self value.
       |
-      result:: self value.
       complete isNil ifTrue: [
         complete:: true.
         onUnwind value.
@@ -5740,7 +5694,7 @@ class Kernel vmMirror: mirror = Value (
     /// onUnwind: as `ensure:`'s.
     public ifCurtailed: onUnwind = (
       |
-        complete ::= nil.
+        complete = nil.
       |
       ^self value.
     )

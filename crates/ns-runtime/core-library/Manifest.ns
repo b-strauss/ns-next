@@ -12,9 +12,8 @@ class Manifest names: moduleNames definitions: moduleDefinitions = (
 ) (
   protected doesNotUnderstand: message = (
     |
-      index
+      index ::= 1.
     |
-    index:: 1.
     [index <= names size] whileTrue: [
       ((names at: index) = message selector) ifTrue: [^definitions at: index].
       index:: index + 1.

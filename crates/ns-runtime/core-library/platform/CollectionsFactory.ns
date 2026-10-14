@@ -222,9 +222,8 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// answers it.
     public add: element = (
       |
-        end
+        end ::= firstIndex + size_.
       |
-      end:: firstIndex + size_.
       end > data size ifTrue: [end:: makeRoomAtEnd].
       data at: end put: element.
       size_:: size_ + 1.
@@ -271,13 +270,10 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// `action` that added or removed an element.
     public do: action = (
       |
-        expected
-        end
-        index
+        expected = modifications.
+        end = size_.
+        index ::= 0.
       |
-      expected:: modifications.
-      end:: size_.
-      index:: 0.
       [index < end] whileTrue: [
         action value: (data at: firstIndex + index).
         expected = modifications ifFalse: [^signalModificationOf: self].
@@ -293,13 +289,10 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// Signals a ConcurrentModification as `do:` does.
     public keysAndValuesDo: action = (
       |
-        expected
-        end
-        index
+        expected = modifications.
+        end = size_.
+        index ::= 0.
       |
-      expected:: modifications.
-      end:: size_.
-      index:: 0.
       [index < end] whileTrue: [
         action value: index + 1 value: (data at: firstIndex + index).
         expected = modifications ifFalse: [^signalModificationOf: self].
@@ -318,13 +311,10 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// block, and the benchmarks ask it of their work lists.
     public anySatisfy: predicate = (
       |
-        expected
-        end
-        index
+        expected = modifications.
+        end = size_.
+        index ::= 0.
       |
-      expected:: modifications.
-      end:: size_.
-      index:: 0.
       [index < end] whileTrue: [
         (predicate value: (data at: firstIndex + index)) ifTrue: [^true].
         expected = modifications ifFalse: [^signalModificationOf: self].
@@ -338,9 +328,8 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// from the first, until one answers true.
     public indexOf: element = (
       |
-        index
+        index ::= 0.
       |
-      index:: 0.
       [index < size_] whileTrue: [
         (data at: firstIndex + index) = element ifTrue: [^index + 1].
         index:: index + 1.
@@ -365,11 +354,9 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// onAbsent: anything understanding `value`.
     public remove: element ifAbsent: onAbsent = (
       |
-        position
-        end
+        position ::= firstIndex.
+        end = firstIndex + size_.
       |
-      position:: firstIndex.
-      end:: firstIndex + size_.
       [position < end] whileTrue: [
         (data at: position) = element ifTrue: [
           removeAtDataIndex: position.
@@ -439,19 +426,14 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// `predicate` that added or removed an element.
     public removeAllSuchThat: predicate = (
       |
-        elements
-        expected
-        keep
-        count
-        position
+        elements = self asArray.
+        expected = modifications.
+        keep = Array new: elements size.
+        count ::= 0.
+        position ::= 0.
         kept
-        target
+        target ::= 0.
       |
-      elements:: self asArray.
-      expected:: modifications.
-      keep:: Array new: elements size.
-      count:: 0.
-      position:: 0.
       elements do: [:element |
         position:: position + 1.
         (predicate value: element) ifFalse: [
@@ -464,7 +446,6 @@ class CollectionsFactory usingKernel: kernel = Value (
       /// The kept elements are read now, not from the snapshot, so a
       /// store the predicate made at a kept position is kept.
       kept:: Array new: count.
-      target:: 0.
       1 to: size_ do: [:index |
         (keep at: index) == true ifTrue: [
           target:: target + 1.
@@ -521,9 +502,8 @@ class CollectionsFactory usingKernel: kernel = Value (
     ///     `do:`.
     public , collection = (
       |
-        result
+        result = List new: size_ + collection size.
       |
-      result:: List new: size_ + collection size.
       result
           addAll: self;
           addAll: collection.
@@ -565,9 +545,8 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// and counts the change.
     private removeAtDataIndex: position = (
       |
-        last
+        last = firstIndex + size_ - 1.
       |
-      last:: firstIndex + size_ - 1.
       position - firstIndex < (last - position) ifTrue: [
         data replaceFrom: firstIndex + 1 to: position with: data startingAt: firstIndex.
         data at: firstIndex put: nil.
@@ -614,11 +593,10 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// of a list rotated at its full size.
     private makeRoomAtFront = (
       |
-        free
+        free = data size - size_.
         shift
         target
       |
-      free:: data size - size_.
       ((free > 0) and: [free >= size_]) ifTrue: [
         shift:: free + 1 // 2.
         target:: data.
@@ -783,9 +761,8 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// key's `printString`, when the map holds no such key.
     public at: key = (
       |
-        keyIndex
+        keyIndex = scanFor: key in: hashtable_.
       |
-      keyIndex:: scanFor: key in: hashtable_.
       keyIndex < 0 ifTrue: [^(NotFound element: key) signal: 'key not found: ' , key printString].
       ^data_ at: keyIndex + 1.
     )
@@ -797,9 +774,8 @@ class CollectionsFactory usingKernel: kernel = Value (
     ///     key is absent.
     public at: key ifAbsent: onAbsent = (
       |
-        keyIndex
+        keyIndex = scanFor: key in: hashtable_.
       |
-      keyIndex:: scanFor: key in: hashtable_.
       keyIndex < 0 ifTrue: [^onAbsent value].
       ^data_ at: keyIndex + 1.
     )
@@ -818,11 +794,9 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// running meanwhile; an existing key keeps its place and does not.
     public at: key put: value = (
       |
-        table
-        keyIndex
+        table = hashtable_.
+        keyIndex = scanFor: key in: table.
       |
-      table:: hashtable_.
-      keyIndex:: scanFor: key in: table.
       keyIndex < 0 ifTrue: [^insert: key value: value at: 0 - keyIndex in: table].
       data_ at: keyIndex + 1 put: value.
       ^value.
@@ -850,10 +824,9 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// onAbsent: anything understanding `value`.
     public removeKey: key ifAbsent: onAbsent = (
       |
-        keyIndex
+        keyIndex = scanFor: key in: hashtable_.
         value
       |
-      keyIndex:: scanFor: key in: hashtable_.
       keyIndex < 0 ifTrue: [^onAbsent value].
       value:: data_ at: keyIndex + 1.
       data_ at: keyIndex put: data_.
@@ -892,15 +865,11 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// `action` that added or removed a key.
     public do: action = (
       |
-        data
-        end
-        expected
-        keyIndex
+        data = data_.
+        end = used_ * 2.
+        expected = modifications.
+        keyIndex ::= 1.
       |
-      data:: data_.
-      end:: used_ * 2.
-      expected:: modifications.
-      keyIndex:: 1.
       [keyIndex < end] whileTrue: [
         data == (data at: keyIndex) ifFalse: [
           action value: (data at: keyIndex + 1).
@@ -918,15 +887,11 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// Signals a ConcurrentModification as `do:` does.
     public keysAndValuesDo: action = (
       |
-        data
-        end
-        expected
-        keyIndex
+        data = data_.
+        end = used_ * 2.
+        expected = modifications.
+        keyIndex ::= 1.
       |
-      data:: data_.
-      end:: used_ * 2.
-      expected:: modifications.
-      keyIndex:: 1.
       [keyIndex < end] whileTrue: [
         data == (data at: keyIndex) ifFalse: [
           action value: (data at: keyIndex) value: (data at: keyIndex + 1).
@@ -955,9 +920,8 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// Signals a ConcurrentModification as `keysAndValuesDo:` does.
     public collect: transform = (
       |
-        result
+        result = self newForCollectUsingAdd: size_.
       |
-      result:: self newForCollectUsingAdd: size_.
       self keysAndValuesDo: [:key :value | result at: key put: (transform value: value)].
       ^result.
     )
@@ -972,9 +936,8 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// Signals a ConcurrentModification as `keysAndValuesDo:` does.
     public select: predicate = (
       |
-        result
+        result = self newForCollectUsingAdd: size_.
       |
-      result:: self newForCollectUsingAdd: size_.
       self keysAndValuesDo: [:key :value |
         (predicate value: value) ifTrue: [result at: key put: value].
       ].
@@ -1012,17 +975,12 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// values (`offset` 1), in storing order.
     private entriesAt: offset = (
       |
-        result
-        data
-        end
-        count
-        keyIndex
+        result = Array new: size_.
+        data = data_.
+        end = used_ * 2.
+        count ::= 0.
+        keyIndex ::= 1.
       |
-      result:: Array new: size_.
-      data:: data_.
-      end:: used_ * 2.
-      count:: 0.
-      keyIndex:: 1.
       [keyIndex < end] whileTrue: [
         data == (data at: keyIndex) ifFalse: [
           count:: count + 1.
@@ -1079,9 +1037,8 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// map when `data_` is full, and answers `value`.
     private insert: key value: value at: bucketIndex in: table = (
       |
-        keyIndex
+        keyIndex = used_ * 2 + 1.
       |
-      keyIndex:: used_ * 2 + 1.
       data_ at: keyIndex put: key.
       data_ at: keyIndex + 1 put: value.
       table at: bucketIndex put: keyIndex.
@@ -1098,17 +1055,13 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// table slot is nil.
     private rehash = (
       |
-        oldData
-        oldEnd
-        table
-        keyIndex
+        oldData = data_.
+        oldEnd = used_ * 2.
+        table = createTable: size_ * 2.
+        keyIndex ::= 1.
         key
         newIndex
       |
-      oldData:: data_.
-      oldEnd:: used_ * 2.
-      table:: createTable: size_ * 2.
-      keyIndex:: 1.
       [keyIndex < oldEnd] whileTrue: [
         key:: oldData at: keyIndex.
         oldData == key ifFalse: [
@@ -1145,15 +1098,12 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// send and an activation on every lookup.
     protected scanFor: key in: table = (
       |
-        data
-        tableSize
-        bucketIndex
+        data = data_.
+        tableSize = table size.
+        bucketIndex ::= key hash \\ tableSize + 1.
         keyIndex
         stored
       |
-      data:: data_.
-      tableSize:: table size.
-      bucketIndex:: key hash \\ tableSize + 1.
       [true] whileTrue: [
         keyIndex:: table at: bucketIndex.
         0 = keyIndex ifTrue: [^0 - bucketIndex].
@@ -1175,11 +1125,9 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// Written out again in IdentityMap, as `scanFor:in:` is.
     protected emptyBucketFor: key in: table = (
       |
-        tableSize
-        bucketIndex
+        tableSize = table size.
+        bucketIndex ::= key hash \\ tableSize + 1.
       |
-      tableSize:: table size.
-      bucketIndex:: key hash \\ tableSize + 1.
       [0 = (table at: bucketIndex)] whileFalse: [
         bucketIndex = tableSize ifTrue: [bucketIndex:: 1] ifFalse: [bucketIndex:: bucketIndex + 1].
       ].
@@ -1232,15 +1180,12 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// receiver, so `key`'s own `==` is never sent the data array.
     protected scanFor: key in: table = (
       |
-        data
-        tableSize
-        bucketIndex
+        data = self dataForScan.
+        tableSize = table size.
+        bucketIndex ::= key identityHash \\ tableSize + 1.
         keyIndex
         stored
       |
-      data:: self dataForScan.
-      tableSize:: table size.
-      bucketIndex:: key identityHash \\ tableSize + 1.
       [true] whileTrue: [
         keyIndex:: table at: bucketIndex.
         0 = keyIndex ifTrue: [^0 - bucketIndex].
@@ -1261,11 +1206,9 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// `scanFor:in:` gives.
     protected emptyBucketFor: key in: table = (
       |
-        tableSize
-        bucketIndex
+        tableSize = table size.
+        bucketIndex ::= key identityHash \\ tableSize + 1.
       |
-      tableSize:: table size.
-      bucketIndex:: key identityHash \\ tableSize + 1.
       [0 = (table at: bucketIndex)] whileFalse: [
         bucketIndex = tableSize ifTrue: [bucketIndex:: 1] ifFalse: [bucketIndex:: bucketIndex + 1].
       ].
@@ -1384,11 +1327,9 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// meanwhile.
     public add: element = (
       |
-        table
-        index
+        table = hashtable_.
+        index = scanFor: element in: table.
       |
-      table:: hashtable_.
-      index:: scanFor: element in: table.
       index < 0 ifTrue: [^insert: element at: 0 - index in: table].
       data_ at: index put: element.
       ^element.
@@ -1429,9 +1370,8 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// onAbsent: anything understanding `value`.
     public remove: element ifAbsent: onAbsent = (
       |
-        index
+        index = scanFor: element in: hashtable_.
       |
-      index:: scanFor: element in: hashtable_.
       index < 0 ifTrue: [^onAbsent value].
       data_ at: index put: data_.
       size_:: size_ - 1.
@@ -1462,15 +1402,11 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// `predicate` that added or removed an element.
     public removeAllSuchThat: predicate = (
       |
-        elements
-        expected
-        doomed
-        count
+        elements = self asArray.
+        expected = modifications.
+        doomed = Array new: elements size.
+        count ::= 0.
       |
-      elements:: self asArray.
-      expected:: modifications.
-      doomed:: Array new: elements size.
-      count:: 0.
       elements do: [:element |
         (predicate value: element) ifTrue: [
           count:: count + 1.
@@ -1498,16 +1434,12 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// `action` that added or removed an element.
     public do: action = (
       |
-        data
-        end
-        expected
-        index
+        data = data_.
+        end = used_.
+        expected = modifications.
+        index ::= 1.
         element
       |
-      data:: data_.
-      end:: used_.
-      expected:: modifications.
-      index:: 1.
       [index <= end] whileTrue: [
         element:: data at: index.
         data == element ifFalse: [
@@ -1521,13 +1453,10 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// Answers a new Array of the elements, in adding order.
     public asArray = (
       |
-        result
-        data
-        count
+        result = Array new: size_.
+        data = data_.
+        count ::= 0.
       |
-      result:: Array new: size_.
-      data:: data_.
-      count:: 0.
       1 to: used_ do: [:index |
         data == (data at: index) ifFalse: [
           count:: count + 1.
@@ -1584,9 +1513,8 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// set when `data_` is full, and answers `element`.
     private insert: element at: bucketIndex in: table = (
       |
-        index
+        index = used_ + 1.
       |
-      index:: used_ + 1.
       data_ at: index put: element.
       table at: bucketIndex put: index.
       used_:: index.
@@ -1605,16 +1533,12 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// `createTable:` gives: it runs once per element on every growth.
     private rehash = (
       |
-        oldData
-        oldEnd
-        table
+        oldData = data_.
+        oldEnd = used_.
+        table = createTable: size_ * 2.
         element
-        index
+        index ::= 1.
       |
-      oldData:: data_.
-      oldEnd:: used_.
-      table:: createTable: size_ * 2.
-      index:: 1.
       [index <= oldEnd] whileTrue: [
         element:: oldData at: index.
         oldData == element ifFalse: [
@@ -1638,15 +1562,12 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// answering no Integer what Map's `scanFor:in:` signals for one.
     private scanFor: element in: table = (
       |
-        data
-        tableSize
-        bucketIndex
+        data = data_.
+        tableSize = table size.
+        bucketIndex ::= element hash \\ tableSize + 1.
         index
         stored
       |
-      data:: data_.
-      tableSize:: table size.
-      bucketIndex:: element hash \\ tableSize + 1.
       [true] whileTrue: [
         index:: table at: bucketIndex.
         0 = index ifTrue: [^0 - bucketIndex].
@@ -1661,11 +1582,9 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// goes.
     private emptyBucketFor: element in: table = (
       |
-        tableSize
-        bucketIndex
+        tableSize = table size.
+        bucketIndex ::= element hash \\ tableSize + 1.
       |
-      tableSize:: table size.
-      bucketIndex:: element hash \\ tableSize + 1.
       [0 = (table at: bucketIndex)] whileFalse: [
         bucketIndex = tableSize ifTrue: [bucketIndex:: 1] ifFalse: [bucketIndex:: bucketIndex + 1].
       ].
