@@ -5,7 +5,7 @@
 
 use std::collections::HashSet;
 
-use crate::ast::{
+use ns_syntax::ast::{
     CodeBody, Expression, ExpressionKind, MessageSend, Selector, SlotDeclaration, Statement,
     StatementKind,
 };

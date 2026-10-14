@@ -3,9 +3,9 @@
 //! as it was, so a file that was never formatted is not reformatted by a
 //! quick fix.
 
-use crate::ast::{Expression, SlotDeclaration, Statement};
-use crate::span::Span;
-use crate::token::TokenKind;
+use ns_syntax::ast::{Expression, SlotDeclaration, Statement};
+use ns_syntax::token::TokenKind;
+use ns_syntax::Span;
 
 /// The text of `span` replaced by `text`; an empty span inserts.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,7 +80,7 @@ pub(super) fn bare_period(text: &str, slot: &SlotDeclaration) -> Option<Span> {
         return None;
     }
     let from = declaration_end(slot) as usize;
-    let (tokens, _) = crate::lexer::Lexer::new(&text[from..slot.span.end as usize]).run();
+    let (tokens, _) = ns_syntax::lexer::Lexer::new(&text[from..slot.span.end as usize]).run();
     let period = tokens.iter().find(|token| token.kind == TokenKind::Dot)?;
     let start = from as u32 + period.span.start;
     Some(Span::new(start, start + 1))
@@ -165,7 +165,8 @@ pub(super) fn assignment_operator(text: &str, slot: &SlotDeclaration) -> Option<
         .map_or(slot.name.span.end, |annotation| annotation.span.end) as usize;
     // Lexed, not searched: a comment between the name and the initializer
     // may spell `::=` itself.
-    let (tokens, _) = crate::lexer::Lexer::new(&text[from..initializer.span.start as usize]).run();
+    let (tokens, _) =
+        ns_syntax::lexer::Lexer::new(&text[from..initializer.span.start as usize]).run();
     let operator = tokens
         .iter()
         .find(|token| token.kind == TokenKind::ColonColonEquals)?;

@@ -24,7 +24,7 @@ fn the_core_library_has_no_hint() {
     let mut hinted = Vec::new();
     for file in core_library_sources() {
         let source = std::fs::read_to_string(&file).expect("a readable source");
-        for hint in ns_syntax::hints::hints_of(&source) {
+        for hint in ns_analyzer::hints::hints_of(&source) {
             let line = source[..hint.span.start as usize].matches('\n').count() + 1;
             hinted.push(format!("{}:{line}: {}", file.display(), hint.message()));
         }
@@ -44,7 +44,7 @@ fn the_core_library_has_no_hint() {
 fn apply_every_hint_to_the_core_library() {
     for file in core_library_sources() {
         let source = std::fs::read_to_string(&file).expect("a readable source");
-        let applied = ns_syntax::hints::apply_all(&source);
+        let applied = ns_analyzer::hints::apply_all(&source);
         let formatted = ns_syntax::format(&applied).unwrap_or(applied);
         if formatted != source {
             std::fs::write(&file, formatted).expect("write the source");

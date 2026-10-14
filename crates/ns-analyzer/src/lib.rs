@@ -11,8 +11,9 @@
 //! of them runs a program's code: a module is compiled and an image
 //! decoded, never instantiated or sent anything. Only `disasm` bootstraps
 //! an interpreter, which instantiates the shipped core library and nothing
-//! else. This library holds the language server and the token dump; the
-//! other commands live with the binary. See `docs/design/editor-support.md`.
+//! else. This library holds the language server, its hints and the token
+//! dump; the other commands live with the binary. See
+//! `docs/design/editor-support.md`.
 
 pub mod analysis;
 pub mod code_actions;
@@ -20,6 +21,7 @@ pub mod document_symbols;
 pub mod documents;
 pub mod file_uri;
 pub mod folding;
+pub mod hints;
 pub mod semantic_tokens;
 pub mod server;
 pub mod token_dump;

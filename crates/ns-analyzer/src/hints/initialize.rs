@@ -6,10 +6,10 @@
 //! can neither fail nor see what they change (`settled`). Every fix stands
 //! on its own: once the first statement has moved, the next one is first.
 
-use crate::ast::{
+use ns_syntax::ast::{
     Expression, ExpressionKind, SlotDeclaration, SlotMutability, Statement, StatementKind,
 };
-use crate::span::Span;
+use ns_syntax::Span;
 
 use super::edits::{self, Edit};
 use super::names;

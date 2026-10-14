@@ -31,7 +31,7 @@ pub struct Analysis {
     pub classified: Vec<Classified>,
     pub folds: Vec<Fold>,
     pub symbols: Vec<Symbol>,
-    pub hints: Vec<ns_syntax::hints::Hint>,
+    pub hints: Vec<crate::hints::Hint>,
 }
 
 /// Every error `ns-next run` would refuse `text` for before running it --
@@ -91,7 +91,7 @@ fn analyze_unguarded(text: &str) -> Analysis {
     let symbols = document_symbols::symbols(&resolution.module, &resolution.bindings);
     // Only a source that parses without error gets hints: their fixes are
     // made against the tree `parse` answers.
-    let hints = ns_syntax::hints::hints_of(text);
+    let hints = crate::hints::hints_of(text);
     let mut findings: Vec<Finding> = diagnostics.into_iter().map(Finding::from).collect();
     findings.extend(resolution.errors.into_iter().map(|error| Finding {
         span: error.span,

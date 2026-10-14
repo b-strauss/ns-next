@@ -6,11 +6,11 @@
 
 use std::collections::HashMap;
 
+use crate::hints::Hint;
 use lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, Diagnostic, DiagnosticSeverity,
     NumberOrString, Position, Range, TextEdit, Uri, WorkspaceEdit,
 };
-use ns_syntax::hints::Hint;
 use ns_syntax::Span;
 
 use crate::documents::LineIndex;
@@ -122,7 +122,7 @@ pub fn actions(
 /// quick fixes are then still offered.
 pub fn whole_file_edit(text: &str) -> Option<(Span, String)> {
     let applied = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        ns_syntax::hints::apply_all(text)
+        crate::hints::apply_all(text)
     }))
     .ok()?;
     let changed = changed_span(text, &applied);

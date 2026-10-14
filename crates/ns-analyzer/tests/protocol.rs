@@ -710,7 +710,7 @@ fn a_hint_is_published_with_its_quick_fix_and_the_fix_for_the_file() {
         all[0]["newText"].as_str().expect("text"),
         &text[end..]
     );
-    assert_eq!(applied, ns_syntax::hints::apply_all(text));
+    assert_eq!(applied, ns_analyzer::hints::apply_all(text));
     let edits = actions[0]["edit"]["changes"][URI]
         .as_array()
         .expect("edits for the document");

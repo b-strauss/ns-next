@@ -74,13 +74,11 @@ Only a module that parses without error gets hints.
 
 ## The server
 
-- `crates/ns-syntax/src/hints/` computes the hints from the AST, as the
+- `crates/ns-analyzer/src/hints/` computes the hints from the AST, as the
   printer reprints it: for each hint its kind, the span of the local's name,
   its section, its message and its text edits in byte offsets, and "apply
-  all". It holds no LSP type. It lives in `ns-syntax`, not `ns-analyzer`,
-  because the behaviour oracle in `ns-cli`'s tests uses it, and `ns-cli`
-  never depends on `ns-analyzer`; the analysis is syntactic, so `ns-syntax`
-  is all it needs.
+  all". It holds no LSP type; the analysis is syntactic, so `ns-syntax`'s
+  tree is all it needs.
 - They are computed once per document version with the rest of the analysis
   (`analysis.rs`) and cached.
 - `publishDiagnostics` carries them beside the errors: severity `HINT`, `code`
@@ -125,6 +123,9 @@ Only a module that parses without error gets hints.
   result run under both lowerings and held to the `status`, `stdout` and
   `stderr` in the `.toml` beside it; each result parses, and a second
   "apply all" changes nothing. The goldens themselves are not rewritten.
+  It is `ns-analyzer`'s `tests/hinted_goldens.rs`, which builds `ns-next`
+  itself, and runs only in its own nextest profile, when the hint code
+  changes: `cargo nextest run -p ns-analyzer --profile hints`.
 - **The protocol test** (`tests/protocol.rs`): hint diagnostics are
   published, code actions answered, "apply all" among them.
 - **The core-library gate**: a test, beside the formatting gate, that no

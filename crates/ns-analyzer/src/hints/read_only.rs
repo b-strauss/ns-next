@@ -4,8 +4,8 @@
 //! (`ns-runtime`'s `resolver/mod.rs`) -- so a local is read-only when no
 //! `name::` stands in its body.
 
-use crate::ast::SlotMutability;
-use crate::span::Span;
+use ns_syntax::ast::SlotMutability;
+use ns_syntax::Span;
 
 use super::edits::{self, Edit};
 use super::names;
@@ -28,7 +28,7 @@ pub(super) fn hints(section: &Section<'_>, text: &str, hints: &mut Vec<Hint>) {
     }
 }
 
-fn push(slot: &crate::ast::SlotDeclaration, section: Span, text: &str, hints: &mut Vec<Hint>) {
+fn push(slot: &ns_syntax::ast::SlotDeclaration, section: Span, text: &str, hints: &mut Vec<Hint>) {
     let Some(operator) = edits::assignment_operator(text, slot) else {
         return;
     };

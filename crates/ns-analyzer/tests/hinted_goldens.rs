@@ -149,7 +149,7 @@ fn main() {
         };
         let changed = sources.iter().any(|source| {
             let text = std::fs::read_to_string(source).expect("a readable source");
-            ns_syntax::hints::apply_all(&text) != text
+            ns_analyzer::hints::apply_all(&text) != text
         });
         let checked = sources.clone();
         trials.push(Trial::test(format!("fixed_point::{name}"), move || {
@@ -179,7 +179,7 @@ fn reaches_a_fixed_point(sources: &[PathBuf]) -> Result<(), Failed> {
         if ns_syntax::parse(&text).is_err() {
             continue;
         }
-        let applied = ns_syntax::hints::apply_all(&text);
+        let applied = ns_analyzer::hints::apply_all(&text);
         if ns_syntax::parse(&applied).is_err() {
             return Err(format!(
                 "{}: the hinted source does not parse:\n{applied}",
@@ -187,7 +187,7 @@ fn reaches_a_fixed_point(sources: &[PathBuf]) -> Result<(), Failed> {
             )
             .into());
         }
-        let again = ns_syntax::hints::apply_all(&applied);
+        let again = ns_analyzer::hints::apply_all(&applied);
         if again != applied {
             return Err(format!(
                 "{}: applying every hint a second time changes the source:\n\
@@ -233,7 +233,7 @@ fn runs_alike(
             std::fs::copy(source, &copied).expect("copy a source");
         }
         let text = std::fs::read_to_string(&copied).expect("a readable source");
-        std::fs::write(&copied, ns_syntax::hints::apply_all(&text))
+        std::fs::write(&copied, ns_analyzer::hints::apply_all(&text))
             .expect("write the hinted source");
     }
     let expectation = common::expectation_of(&program);

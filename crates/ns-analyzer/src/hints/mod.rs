@@ -3,8 +3,8 @@
 //! (`initialize.rs`), and a slot nothing assigns again (`read_only.rs`).
 //! Each hint carries its fix as text edits; `apply_all` applies every hint
 //! of a source. Syntactic on purpose: everything a rule needs is in the
-//! tree, and the behaviour oracle in `ns-cli`'s tests uses it without the
-//! language server. See `docs/design/editor-support.md`, "Hints".
+//! tree, so the hints need neither the resolver nor a running program. See
+//! `docs/design/editor-support.md`, "Hints".
 
 mod edits;
 mod initialize;
@@ -14,8 +14,8 @@ mod walk;
 
 pub use edits::{apply, Edit};
 
-use crate::ast::Module;
-use crate::span::Span;
+use ns_syntax::ast::Module;
+use ns_syntax::Span;
 use walk::{Scope, Section};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,7 +105,7 @@ pub fn hints(module: &Module, text: &str) -> Vec<Hint> {
 
 /// Every hint of `text`; none when it does not parse.
 pub fn hints_of(text: &str) -> Vec<Hint> {
-    match crate::parse(text) {
+    match ns_syntax::parse(text) {
         Ok(module) => hints(&module, text),
         Err(_) => Vec::new(),
     }
@@ -144,7 +144,7 @@ pub fn apply_all(text: &str) -> String {
             .collect();
         let next = apply(&current, &round);
         debug_assert!(
-            crate::parse(&next).is_ok(),
+            ns_syntax::parse(&next).is_ok(),
             "a round of fixes does not parse:
 {next}"
         );
@@ -173,7 +173,10 @@ mod tests {
             .find(|hint| hint.kind == kind && hint.name == name)
             .unwrap_or_else(|| panic!("no hint for `{name}`"));
         let result = apply(text, &hint.edits);
-        assert!(crate::parse(&result).is_ok(), "the fix parses:\n{result}");
+        assert!(
+            ns_syntax::parse(&result).is_ok(),
+            "the fix parses:\n{result}"
+        );
         result
     }
 
@@ -835,7 +838,7 @@ mod tests {
             )
         "};
         let result = apply_all(text);
-        assert!(crate::parse(&result).is_ok(), "{result}");
+        assert!(ns_syntax::parse(&result).is_ok(), "{result}");
         assert!(hints_of(&result).is_empty(), "{result}");
         assert!(result.contains("count = 1."), "{result}");
         assert!(result.contains("action = ["), "{result}");
