@@ -505,10 +505,13 @@ formatted is not reformatted by a quick fix (`hints/edits.rs`):
 - A appends ` ::= <value>.` to the declaration (` ::= <value>` before the
   `.` a bare local may be written with, §6.3.2), the value copied verbatim
   from the source, its continuation lines shifted by the difference in
-  indentation between the statement and the declaration; deletes the
-  statement and its period, and its line when that leaves the line blank;
-  and, when the local is reordered, moves its declaration, its own `.`
-  removed with it.
+  indentation between the statement and the declaration -- for a reordered
+  local, the column its declaration moves to. A line that starts inside a
+  string or a symbol literal is part of the literal's value and is copied
+  as it is; the lexer finds the literals, so a quote in a comment opens
+  none. A deletes the statement and its period, and its line when that
+  leaves the line blank; and, when the local is reordered, moves its
+  declaration, its own `.` removed with it.
 - B replaces `::=` by `=`. The operator and a bare local's `.` are found by
   the lexer, not by searching the text: a comment beside them may spell
   either.

@@ -128,7 +128,12 @@ fn in_place(
     statement: &Statement,
     value: &Expression,
 ) -> Vec<Edit> {
-    let initializer = edits::initializer(text, value, statement.span.start, slot.span.start);
+    let initializer = edits::initializer(
+        text,
+        value,
+        edits::column(text, statement.span.start),
+        edits::column(text, slot.span.start),
+    );
     // A slot written with its optional `.` keeps it, the initializer going
     // before it.
     let (end, initializer) = match edits::bare_period(text, slot) {
@@ -179,10 +184,20 @@ fn reordered(
     {
         return None;
     }
+    // The moved declaration stands where the separator ends.
+    let declaration_column = separator.rfind('\n').map_or_else(
+        || edits::column(text, destination) + separator.len(),
+        |index| separator.len() - index - 1,
+    );
     let declaration = format!(
         "{separator}{}{}",
         &text[slot.span.start as usize..edits::declaration_end(slot) as usize],
-        edits::initializer(text, value, statement.span.start, slots[last].span.start)
+        edits::initializer(
+            text,
+            value,
+            edits::column(text, statement.span.start),
+            declaration_column
+        )
     );
     Some(vec![
         Edit {

@@ -486,6 +486,86 @@ mod tests {
         );
     }
 
+    /// A line break inside a string or a symbol is part of its value: the
+    /// lines it continues on are copied as they are, while the value's
+    /// other continuation lines still move.
+    #[test]
+    fn a_multi_line_literal_keeps_its_value_when_the_declaration_stands_right() {
+        let text = indoc! {"
+            class Module = () (
+              public run = (
+                |
+                  text
+                |
+                text:: (Array
+                    with: 'a
+            b'
+                    with: #'c
+              d').
+                ^text
+              )
+            )
+        "};
+        let result = fixed(text, HintKind::InitializeInDeclaration, "text");
+        assert!(
+            result.contains(
+                "      text ::= (Array\n          with: 'a\nb'\n          with: #'c\n  d').\n    |\n"
+            ),
+            "{result}"
+        );
+    }
+
+    #[test]
+    fn a_multi_line_string_keeps_its_value_when_the_declaration_stands_left() {
+        let text = indoc! {"
+            class Module = () (
+              public run = (
+                |
+              text
+                |
+                    text:: 'a
+                    b'.
+                    ^text
+              )
+            )
+        "};
+        let result = fixed(text, HintKind::InitializeInDeclaration, "text");
+        assert!(
+            result.contains("  text ::= 'a\n        b'.\n    |\n"),
+            "{result}"
+        );
+    }
+
+    /// The continuation lines follow the moved declaration's own column, not
+    /// that of the declaration it moves behind.
+    #[test]
+    fn a_reordered_value_follows_the_column_the_declaration_moves_to() {
+        let text = indoc! {"
+            class Module = () (
+              public sum: values = (
+                |
+                  result
+                    first ::= 1.
+                  total ::= 0.
+                |
+                result:: values
+                    inject: first
+                    into: [:sum :each | sum + each].
+                ^result + total
+              )
+            )
+        "};
+        // The statement stood at column 4, the moved declaration stands at
+        // 8: the continuation lines move from column 8 to 12.
+        let result = fixed(text, HintKind::InitializeInDeclaration, "result");
+        assert!(
+            result.contains(
+                "      total ::= 0.\n        result ::= values\n            inject: first\n            into: [:sum :each | sum + each].\n    |\n"
+            ),
+            "{result}"
+        );
+    }
+
     #[test]
     fn a_one_line_section_takes_the_initializer_inline() {
         let text = "class Module = () ( public run = ( | count | count:: 1. ^count ) )\n";

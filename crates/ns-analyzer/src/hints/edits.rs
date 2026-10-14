@@ -57,7 +57,9 @@ fn line_end(text: &str, offset: usize) -> usize {
         .map_or(text.len(), |index| offset + index)
 }
 
-fn column(text: &str, offset: usize) -> usize {
+/// The column of `offset`, in bytes from its line's start.
+pub(super) fn column(text: &str, offset: u32) -> usize {
+    let offset = offset as usize;
     offset - line_start(text, offset)
 }
 
@@ -100,21 +102,33 @@ pub(super) fn rest_of_line(text: &str, offset: u32) -> &str {
 /// ` ::= value.`, the value as written. Its continuation lines move right
 /// by as many columns as the declaration stands right of the statement
 /// (left when it stands left of it), so they keep their place relative to
-/// the code they continue.
+/// the code they continue. A line that starts inside a string or a symbol
+/// is part of the literal's value and is copied as it is.
 pub(super) fn initializer(
     text: &str,
     value: &Expression,
-    statement_start: u32,
-    declaration_start: u32,
+    statement_column: usize,
+    declaration_column: usize,
 ) -> String {
-    let declaration_column = column(text, declaration_start as usize);
-    let statement_column = column(text, statement_start as usize);
     let written = &text[value.span.start as usize..value.span.end as usize];
-    let mut lines = written.split('\n');
-    let mut moved = lines.next().unwrap_or_default().to_string();
-    for line in lines {
-        moved.push('\n');
-        if declaration_column >= statement_column {
+    // Lexed, not searched: a quote in a comment opens no literal.
+    let (tokens, _) = ns_syntax::lexer::Lexer::new(written).run();
+    let in_a_literal = |offset: usize| {
+        tokens.iter().any(|token| {
+            matches!(token.kind, TokenKind::String | TokenKind::Symbol)
+                && (token.span.start as usize) < offset
+                && offset < token.span.end as usize
+        })
+    };
+    let mut moved = String::with_capacity(written.len());
+    let mut line_start = 0;
+    for (index, line) in written.split('\n').enumerate() {
+        if index > 0 {
+            moved.push('\n');
+        }
+        if index == 0 || in_a_literal(line_start) {
+            moved.push_str(line);
+        } else if declaration_column >= statement_column {
             moved.push_str(&" ".repeat(declaration_column - statement_column));
             moved.push_str(line);
         } else {
@@ -122,6 +136,7 @@ pub(super) fn initializer(
             let removed = blanks.min(statement_column - declaration_column);
             moved.push_str(&line[removed..]);
         }
+        line_start += line.len() + 1;
     }
     format!(" ::= {moved}.")
 }
