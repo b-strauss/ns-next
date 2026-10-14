@@ -646,6 +646,15 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   comment above a declaration on it (`Before`); what is missing is the
   request in the server ([frontend.md](design/frontend.md), "Comments";
   [editor-support.md](design/editor-support.md)).
+- **Hints for a class's header slots**, deferred (decided with the user on
+  2026-10-14): the hints are given for the locals of methods and closures
+  only. A header slot needs more than its class's text to prove a fix
+  behaviour-preserving: a non-private `::=` slot has a setter its clients
+  and subclasses can send; a header's `x:: e` is a setter send a subclass
+  can override, which an initializer does not send; and a private slot's
+  read-only fix could lift a value object's refusal of a mutable slot,
+  while whether a class's instances are values is not in its declaration
+  ([editor-support.md](design/editor-support.md), "Hints").
 - **More platforms**: a CI build for the other five `bin/<os>-<arch>/`
   binaries of the language server; the repository has no CI.
 - Publication on the JetBrains Marketplace stays possible and is not done.

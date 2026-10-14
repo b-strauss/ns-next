@@ -52,7 +52,8 @@ Rust 1.98.0, edition 2021, six crates:
   holds the reader to and the JetBrains plugin bundles.
 - `crates/ns-analyzer` — the `ns-next-analyzer` binary, everything that looks at
   Newspeak without running it: `lsp`, a language server for `.ns` files
-  (diagnostics, semantic tokens, fold ranges, document symbols, formatting);
+  (diagnostics, semantic tokens, fold ranges, document symbols, formatting,
+  hints and their quick fixes);
   `dump-tokens`, which the JetBrains plugin's lexer is checked against;
   `parse`, `parse-corpus`, `disasm` and `inspect`; and `fmt`, the one command
   that writes, which rewrites `.ns` files in the formatter's layout
@@ -62,7 +63,10 @@ Rust 1.98.0, edition 2021, six crates:
   shipped core library). Its server dependencies
   (`lsp-server`, `lsp-types`) stay in this crate and never reach `ns-runtime` or
   `ns-next`; `serde_json` is shared by `ns-analyzer` and `ns-cli` (the project
-  file is JSON) (`docs/design/editor-support.md`).
+  file is JSON) (`docs/design/editor-support.md`). `hints/` holds the hints:
+  a local that can take its first value in its declaration, a local that
+  can be read-only, each with its fix, and `apply_all`
+  (`docs/design/editor-support.md`, "Hints").
 - `crates/ns-tooling` — what `ns-next` and `ns-next-analyzer` share: loading and
   resolving a source file, collecting `.ns` files, printing diagnostics. It is a crate
   of its own so the analyzer's server dependencies never reach `ns-next`; it depends
@@ -311,6 +315,8 @@ Plus, per commit touching them:
   `./editors/jetbrains/gradlew -p editors/jetbrains check` (the plugin bundles
   `schemas/newspeak.schema.json`, so a change to it reaches the plugin; when
   unsure whether a change reaches the plugin, run it)
+- `crates/ns-analyzer` → `cargo nextest run -p ns-analyzer --profile hints`,
+  the hints' behaviour oracle, which the default profile leaves out
 
 `.config/nextest.toml`'s default profile leaves out the tests that run the Are
 We Fast Yet benchmarks at full size; they run only on demand, when

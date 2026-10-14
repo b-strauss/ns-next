@@ -1,8 +1,8 @@
 # Editor support — the language server and the JetBrains plugin
 
 > **Status:** **Built:** the language server (`crates/ns-analyzer/`: `analysis.rs`,
-> `semantic_tokens.rs`, `folding.rs`, `document_symbols.rs`, the formatting
-> answer in `server.rs`; on
+> `semantic_tokens.rs`, `folding.rs`, `document_symbols.rs`, `hints/`,
+> `code_actions.rs`, the formatting answer in `server.rs`; on
 > `ns_syntax::parse_for_editor` and `resolve_for_editor` in
 > `crates/ns-runtime/src/resolver/mod.rs`) and the JetBrains plugin
 > (`editors/jetbrains/`, its structure view in the `structure` package and
@@ -10,8 +10,8 @@
 > the run markers share in `lsp/DocumentSymbolCache.kt`, the editing aids in
 > the `editor` package, every text in `messages/NewspeakBundle.properties`)
 > both exist: highlighting, errors as you type, code folding with one-line
-> methods shown on one line, a structure view with breadcrumbs, Reformat
-> Code, and typing in the formatter's indentation and width,
+> methods shown on one line, hints with their quick fixes, a structure view
+> with breadcrumbs, Reformat Code, and typing in the formatter's indentation and width,
 > in every commercial JetBrains IDE from 2026.1.4, kept while a file has
 > syntax errors (Reformat Code leaves such a file alone). For a project's
 > `newspeak.json`, completion and validation from the project file's schema, and play buttons that run or benchmark the
@@ -24,14 +24,15 @@
 Without a plugin, editing `.ns` files in a JetBrains IDE means editing plain
 text. This document describes the editor support that replaces it: syntax
 highlighting as you type, the errors `ns-next` would report before running a
-module, shown in the editor at the place they occur, code folding, a
-structure view of each file's classes and members, and Reformat Code.
+module, shown in the editor at the place they occur, code folding, hints
+with their quick fixes, a structure view of each file's classes and members,
+and Reformat Code.
 Beside the `.ns` files, it knows a project's `newspeak.json`: its schema, and how to run it; and it
 runs a single module from its `main:args:`.
 
 ## Scope
 
-**In scope.** Five capabilities, in every commercial JetBrains IDE:
+**In scope.** Six capabilities, in every commercial JetBrains IDE:
 
 1. **Highlighting** — keywords, strings, symbols, numbers, comments,
    selectors, and, once the server has analysed the file, what the resolver
@@ -43,11 +44,14 @@ runs a single module from its `main:args:`.
    and slot sections collapse and expand, from fold ranges the server
    computes from the AST; a method whose body is one line shows on one line,
    as Java's one-line methods do ("Folding").
-4. **Structure** — the Structure tool window, the File Structure popup, the
+4. **Hints** — a local whose first value a statement assigns, and a local
+   nothing assigns again, marked as weak warnings, each with a quick fix
+   and one fix for the whole file ("Hints").
+5. **Structure** — the Structure tool window, the File Structure popup, the
    breadcrumbs and the sticky lines show a file's classes and their members,
    each with its access, from document symbols the server computes from the
    AST ("Structure").
-5. **Formatting** — Reformat Code rewrites the file in the formatter's one
+6. **Formatting** — Reformat Code rewrites the file in the formatter's one
    layout ("Formatting"; [formatting.md](formatting.md)).
 
 Beside them, for a project's `newspeak.json`: completion and validation from
@@ -72,7 +76,8 @@ completion, and formatting a range or as you type. Each is described under
 ```
 crates/ns-analyzer/     binary `ns-next-analyzer`: its `lsp` command serves
                         diagnostics, semantic tokens, fold ranges, document
-                        symbols and formatting over LSP; `dump-tokens` is for
+                        symbols, hints with their quick fixes and formatting
+                        over LSP; `dump-tokens` is for
                         the lexer comparison; `parse`, `parse-corpus`, `disasm`
                         and `inspect` look at a module or an image from the
                         shell; `fmt` formats sources
@@ -98,9 +103,9 @@ Colour comes in two layers:
    slot, a nested class — its colour wins.
 
 Errors travel separately, pushed by the server as `publishDiagnostics` after
-every change. The IDE asks for fold ranges and document symbols, as it asks
-for semantic tokens, and for the formatting edit when the user runs Reformat
-Code.
+every change, and the hints with them. The IDE asks for fold ranges and
+document symbols, as it asks for semantic tokens, for the code actions at
+the caret, and for the formatting edit when the user runs Reformat Code.
 
 ### Why a Kotlin lexer, when the rest avoids a second implementation
 
@@ -202,12 +207,18 @@ Modules:
 - `analysis.rs` — run once per document version and cached:
   `ns_syntax::parse_for_editor`, then the resolver entry below on its module
   whether or not it was recovered, then the classification over the editor
-  parse's tokens and the folds over its module and comments. Its
+  parse's tokens and the folds over its module and comments, and the hints
+  of a source that parses without error ("Hints"). Its
   findings are every diagnostic together -- the lexer's, then the parser's,
   then the resolver's -- so a lexer error does not hide a parser error after
   it.
 - `semantic_tokens.rs` — classification and the LSP encoding.
 - `folding.rs` — the fold ranges and their LSP encoding ("Folding").
+- `hints/` — the hints and their fixes as byte-offset text edits, and
+  `apply_all`, which applies every hint of a source; no LSP type
+  ("Hints").
+- `code_actions.rs` — the hints as diagnostics and code actions, and the
+  whole-file edit ("Hints").
 - `document_symbols.rs` — the document symbols and their LSP encoding
   ("Structure").
 
@@ -219,7 +230,8 @@ announced as `true`), `textDocument/documentSymbol` (the
 `documentSymbolProvider` capability, announced as `true`; answered also for a
 `file` URI never opened, read from disk), `textDocument/formatting` (the
 `documentFormattingProvider` capability, announced as `true`; "Formatting"),
-`shutdown` and `exit`. Nothing
+`textDocument/codeAction` (the `codeActionProvider` capability, announced
+as `true`; "Hints"), `shutdown` and `exit`. Nothing
 else. A request the server does not implement is answered
 `MethodNotFound`. A document notification whose params do not match the
 schema has no response to carry an error, so the server writes it to stderr
@@ -398,6 +410,183 @@ by its `.`; a `)` that does not end its line is therefore no method's. A
 body with a `///` (it would hide the `)` shown after it), a body that is
 only a comment, one whose brackets do not balance, and one longer folded
 than the formatter's 100 columns stay open.
+
+### Hints
+
+The server points at two things in any `.ns` file, as a hint the editor
+shows as a weak warning, each with a quick fix and one fix for the whole
+file:
+
+- **A, initialize in the declaration** (`initialize-in-declaration`): a
+  local declared bare whose first value a statement assigns can take that
+  value in its declaration -- `| count | count:: 1.` becomes
+  `| count ::= 1. |`.
+- **B, read-only** (`read-only`): a local declared with `::=` that nothing
+  ever assigns again can be declared with `=`.
+
+Every fix preserves behaviour; where that cannot be proved from the source
+alone, no hint is given. The hints are syntactic: everything a rule needs is
+in the tree, so they need neither the resolver nor a running program, and
+only a module that parses without error gets them. The formatter stays as it
+is: it changes layout only, and these hints change code.
+
+**Sections.** A *section* is a code body, a method's or a closure's, with
+its temporaries and statements; the hints are given for the locals of
+sections only. A class's header is no section: its slots get no hint of
+either kind, private ones included, but the closures in its expressions are
+sections like any other. A local is reachable from its own code body alone,
+so what the body says about it is all there is; a header slot is not. A
+`::=` slot has a setter, which the class's clients and subclasses can send
+unless the slot is private; a header's `x:: e` is a setter send a subclass
+can override, which an initializer does not send; and a private slot's B
+fix could lift a value object's refusal of a mutable slot
+([core-library.md](core-library.md)), a change of behaviour, while whether a
+class's instances are values is not in its declaration. A section with a
+simultaneous slot clause (`|| ||`) gets no hint.
+
+**Hint A.** A local `x` is a candidate when it is declared bare (`x`, no
+initializer) and a statement `x:: e.` of its own section assigns it. The
+statement qualifies when:
+
+- no comment stands in it, in the text a fix deletes or on the rest of its
+  line, and no comment is attached to it -- an attached comment describes
+  the statement it stands above, and deleting the statement would leave it
+  describing the next;
+- it is not parenthesized and is not a chain (`x:: y:: e`), and `e` does
+  not mention `x`;
+- it is not the last statement of a closure body: a closure answers its
+  last statement's value, which an initializer does not have. A method
+  answers `self` without `^`, so a method's last statement may move;
+
+and one of these holds:
+
+1. **At the start.** It is the section's first statement. Whatever `e` is,
+   moving it keeps the order of evaluation as long as every existing
+   initializer of the section still runs first, then `e`. The local is
+   reordered for that: its declaration moves after the last initialized
+   one, unless a comment stands in what the move removes, between the
+   local and the next one, or after the last initialized one on its line --
+   the move would delete or copy the one or leave the other behind the
+   moved declaration. Each fix stands alone: once the first statement has
+   moved, the next one is first, which is how "apply all" moves a whole run
+   of them.
+2. **After other statements.** `e` is a literal (`nil`, `true` and `false`
+   among them), `self`, or an identifier whose innermost declaration in
+   scope is a parameter (of a method, a closure or a factory) or a local
+   declared with `=`; no statement before it and no initializer of the
+   section mentions the name `x` anywhere -- read, assigned or sent as `x`
+   or `x:` -- nested closures included (a closure an initializer makes
+   could read `x` before the statement runs); and, as in 1, every existing
+   initializer of the section still runs before it, the local's declaration
+   moving after the last initialized one when needed. Such an `e` can
+   neither fail nor observe anything those statements change, and neither
+   they nor any initializer can observe `x` before it, so evaluating `e`
+   earlier is unobservable.
+
+**Hint B.** A local `x` declared with `::=` is a candidate when nothing can
+assign it: no `x::` anywhere in its section, its initializers and nested
+closures included. Only `x::` writes a local: an implicit-receiver send
+`x: v` is resolved through the classes, never the locals
+(`ns-runtime`'s `resolver/mod.rs`). The test is by name and conservative:
+an `x::` that writes something else, a shadowing closure local, still
+counts, which costs a hint at worst, never correctness.
+
+**The edits are minimal**, so a file keeps its layout and a file never
+formatted is not reformatted by a quick fix (`hints/edits.rs`):
+
+- A appends ` ::= <value>.` to the declaration (` ::= <value>` before the
+  `.` a bare local may be written with, §6.3.2), the value copied verbatim
+  from the source, its continuation lines shifted by the difference in
+  indentation between the statement and the declaration; deletes the
+  statement and its period, and its line when that leaves the line blank;
+  and, when the local is reordered, moves its declaration, its own `.`
+  removed with it.
+- B replaces `::=` by `=`. The operator and a bare local's `.` are found by
+  the lexer, not by searching the text: a comment beside them may spell
+  either.
+- Every fix's result parses: the rules promise it, `apply_all` checks it
+  with a `debug_assert!`, and the behaviour oracle holds every golden to it.
+  Parsing each fix's result while hints are computed would cost a parse per
+  hint on every keystroke, so it is not done there.
+
+**Apply all** (`hints::apply_all`) works in rounds until no hint is left:
+each round applies at most one hint per section and none whose edits
+overlap another's -- a moved statement may hold a closure with hints of its
+own, whose edits the move would carry along -- then finds the hints of the
+result. Every fix is valid on its own, so every round preserves behaviour,
+and each removes an assignment or a `::=`, so the rounds end.
+
+**The server.** `hints/` computes the hints from the AST: for each its kind,
+the local's name and the span of it, its section, and its edits in byte
+offsets; it holds no LSP type. They are computed once per document version
+with the rest of the analysis (`analysis.rs`) and cached.
+`publishDiagnostics` carries them beside the errors: severity `HINT`, `code`
+`initialize-in-declaration` or `read-only`, `source` `ns-next`, at the
+local's name, with the message "`x` can be initialized in its declaration"
+or "`x` is never assigned again and can be read-only". The server announces
+`codeActionProvider`; `textDocument/codeAction` answers, for each hint the
+requested range touches, a `quickfix` action ("Initialize `x` in its
+declaration", "Make `x` read-only") naming its diagnostic and carrying its
+edit, and beside them one action, "Apply all hints in this file", whose one
+edit replaces the smallest range covering every change. A range that
+touches no hint, and a document the server has not opened, answer no
+action. The edits are plain `changes`: with full synchronisation the server
+always holds the text the client asks about. The whole-file edit runs every
+round of `apply_all`, each parsing the text afresh, so it is computed only
+when a code-action request first needs it and then kept with the document
+version (`code_actions::whole_file_edit`, in `server.rs`'s `Document`). Its
+later rounds parse and edit texts the analysis never saw, so it runs under
+`catch_unwind`, as the analysis does ("Robustness"): a panic there answers
+no whole-file action, and the quick fixes are still offered.
+
+**The plugin needs no code for it.** The platform shows a diagnostic of
+severity `HINT` as a weak warning (`LspDiagnosticsSupport.getHighlightSeverity`)
+and offers its quick fixes and the whole-file action on Alt+Enter
+(`LspCodeActionsSupport`).
+
+**Tests.**
+
+- The unit tests in `hints/mod.rs`, on `indoc!` modules: each rule above
+  with its positive and negative cases -- a closure's own `x::`, a comment
+  spelling `::=`, header slots getting no hint of either kind, a guard
+  before the statement, a value that may fail or change, a guard or an
+  initializer's closure mentioning the local, the reordering and the
+  comments that prevent it, a comment in, beside or attached to the
+  statement, a chain, a parenthesized assignment, the last statement of a
+  closure and of a method, a bare local written with its `.` -- each fix
+  applied, parsed and compared with the expected text, CRLF lines and
+  continued values included; "apply all" over a run of assignments, into a
+  moved closure, and a second time changing nothing. `code_actions.rs`'s
+  unit test covers the smallest changed range on character boundaries.
+- **The behaviour oracle**, `crates/ns-analyzer/tests/hinted_goldens.rs`:
+  "apply all" over every golden program's sources (for a project, every
+  source its `newspeak.json` names, outside its directory too, and every
+  one inside it), each changed program run from a scratch copy under both
+  lowerings and held to the `status`, `stdout` and `stderr` its `.toml`
+  records; each result parses, and a second "apply all" changes nothing.
+  The goldens themselves are not rewritten. The programs run on `ns-next`,
+  which `ns-analyzer` does not depend on and cargo does not hand a test of
+  another package, so the oracle builds it itself through cargo on first
+  use; it shares `ns-cli`'s golden helpers by `#[path]`. It runs every
+  golden twice more, the full-size Are We Fast Yet benchmarks included, so
+  it runs only in its own nextest profile, `hints`, when analyzer code
+  changes: `cargo nextest run -p ns-analyzer --profile hints`
+  (`.config/nextest.toml`; the default and benchmarks profiles leave it
+  out).
+- **The protocol test** (`tests/protocol.rs`): a hint published with its
+  severity, code, source and range; its quick fix and the fix for the file
+  answered, the latter's one edit giving what `apply_all` gives; no action
+  away from a hint.
+- **The core-library gate**, `crates/ns-analyzer/tests/hint_gate.rs`, beside
+  the formatting gate and in the default profile: no shipped core-library
+  module (`crates/ns-runtime/core-library/`) has a hint. Its failure lists
+  each hint and names the ignored test that applies every hint to the core
+  library in the formatter's layout (`apply_every_hint_to_the_core_library`,
+  run deliberately; the image fixture is regenerated after it, its header
+  carrying the sources' fingerprint). Only the core library is held to it:
+  the goldens pin a program's form along with its behaviour, the benchmarks
+  stay close to the programs they adapt, and `corpus/` stays upstream's
+  verbatim copy.
 
 ### Structure
 
@@ -692,12 +881,15 @@ malformed source produces diagnostics, not a panic; the server nonetheless runs
 each analysis under `catch_unwind`, turns a panic into one "internal error"
 diagnostic at the start of the file, and keeps running. A panic there is an
 ns-next defect and must be visible, but must not take the editor's server down
-with it. The release profile unwinds (`Cargo.toml` deliberately does not set
+with it. The whole-file hint edit runs under `catch_unwind` too ("Hints").
+The release profile unwinds (`Cargo.toml` deliberately does not set
 `panic = "abort"`), which this relies on.
 
 ### Testing
 
-`cargo nextest run -p ns-analyzer`. Besides the language server's tests, the
+`cargo nextest run -p ns-analyzer`, and for the hints' behaviour oracle
+`cargo nextest run -p ns-analyzer --profile hints` ("Hints"). Besides the
+language server's tests, the
 crate's suite holds the command-line tests (`command_line.rs`: the usage, exit
 status 2 for no command or an unknown one, `lsp` taking no argument) and the
 tests of the commands `parse`, `parse-corpus`, `disasm` (with its snapshots) and
@@ -714,6 +906,9 @@ tests of the commands `parse`, `parse-corpus`, `disasm` (with its snapshots) and
   class side on its `)`'s line, a method with its temporaries and a closure, a comment folded to its first line, an unterminated comment to
   the end of the file, single-line constructs answering no range, the folds
   after a half-typed method, and a fold's UTF-16 encoding on CRLF lines;
+- hints — the unit tests of `hints/` and `code_actions.rs`, the behaviour
+  oracle `hinted_goldens.rs` in its own profile, and the core-library gate
+  `hint_gate.rs` ("Hints", "Tests");
 - document symbols — the flat tree of a class with a factory, a nested
   class, slots, methods and class-side methods, the instance side's members
   before the class side's, each in source order; a class-side method's
@@ -761,7 +956,8 @@ tests of the commands `parse`, `parse-corpus`, `disasm` (with its snapshots) and
   keeps ([frontend.md](frontend.md), "Recovery");
 - protocol — one end-to-end test over an in-memory `lsp-server` connection:
   `initialize` and its announced capabilities, `foldingRangeProvider`,
-  `documentSymbolProvider` and `documentFormattingProvider` included,
+  `documentSymbolProvider`, `documentFormattingProvider` and
+  `codeActionProvider` included,
   `didOpen`, the expected `publishDiagnostics`, `semanticTokens/full`, `textDocument/foldingRange`,
   `textDocument/documentSymbol` (the class, its three children, and `[]` for
   a document never opened and no file on disk), `shutdown`; a malformed
@@ -776,7 +972,9 @@ tests of the commands `parse`, `parse-corpus`, `disasm` (with its snapshots) and
   `untitled:` and an `https:` URI (`[]`), and on POSIX for a FIFO (`[]`,
   without blocking); `textDocument/formatting` answering one edit over the
   whole document whatever options it is sent, and no edit for a formatted
-  document, a document with a syntax error and one never opened;
+  document, a document with a syntax error and one never opened; a hint
+  published with its quick fix and the fix for the file, and no action away
+  from a hint;
 - `server.rs`'s unit test — only a regular file no longer than a source may
   be is read, tested on the predicate the metadata feeds, since no test
   writes a four-gigabyte file;
@@ -1360,7 +1558,7 @@ The server's own tests are described under its section, above ("Testing").
   the server itself). No test starts `ns-next`.
 
 **Gates.** There is one suite: `cargo nextest run --workspace` runs
-`ns-analyzer`'s tests before every commit and under every stress mode, like
+`ns-analyzer`'s tests, the hints' behaviour oracle aside ("Hints"), before every commit and under every stress mode, like
 every other crate's (`CLAUDE.md`, "Working in this repository"). Besides the
 language server's, they are the tests of `disasm` and `inspect`, which guard
 the compiler's output (the disassembly snapshots) and the image format (an
@@ -1373,6 +1571,9 @@ plugin's own gate joins this:
   or `crates/ns-syntax/` — `./gradlew -p editors/jetbrains check`, besides the
   usual `fmt` and `clippy`. A change to `crates/ns-syntax/src/lexer.rs` must be
   mirrored in `NewspeakLexer.kt` in the same commit, or the comparison fails.
+- **Before every commit** that touches `crates/ns-analyzer/` — the hints'
+  behaviour oracle, `cargo nextest run -p ns-analyzer --profile hints`
+  ("Hints"), which the default profile leaves out.
 - **Once at the end of a batch**, whether runtime or editor work, the full
   suite under the five stress modes; and, for a batch that touched
   `editors/jetbrains/`, `./gradlew -p editors/jetbrains verifyPlugin buildPlugin`
@@ -1392,7 +1593,8 @@ and resolves cleanly in a JetBrains IDE today.
   view against a running server: its asking again until the server has
   opened the file, navigation, the breadcrumbs and the sticky lines
   ("Structure"), and Reformat Code reaching the server's formatting and
-  applying its edit ("Formatting"). The sandbox
+  applying its edit ("Formatting"). No automated test covers the hints
+  reaching the IDE as weak warnings with their quick fixes ("Hints"). The sandbox
   also disables the ultimate marker plugin for `runIde`, not only for tests.
 - **Untested paths:** `dump-tokens` on an unreadable file (exit status 1); a
   block comment over a whole-line selection; TODO markers through the
