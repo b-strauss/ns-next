@@ -39,9 +39,18 @@ use bytes::ByteReader;
 pub(crate) const MAGIC: [u8; 4] = *b"NSSC";
 pub(crate) const FORMAT_VERSION: u16 = 1;
 
-/// The fingerprint of the sources and the compiler the artifact was
-/// generated from; the boot compares it against the binary's own.
-pub(crate) const SHIPPED_CODE_FINGERPRINT: u64 = 0;
+// `SHIPPED_CODE_FINGERPRINT` is the fingerprint of the sources and the
+// compiler the artifact was generated from, which the boot compares against
+// the binary's own; `CORE_LIBRARY_FINGERPRINT` covers the core library alone.
+include!(concat!(env!("OUT_DIR"), "/fingerprints.rs"));
+
+/// The artifact `cargo xtask shipped-code` wrote, embedded when the crate
+/// was built; empty when the tree had none.
+// The boot reads it in a later task.
+#[expect(dead_code)]
+pub(crate) fn embedded() -> &'static [u8] {
+    include_bytes!(concat!(env!("OUT_DIR"), "/shipped-code.bin"))
+}
 
 /// Where a boot takes the shipped modules' compiled mixins from: the
 /// artifact the binary embeds, or their source, compiled and checked.
@@ -104,6 +113,14 @@ mod tests {
         module_names()
             .map(|name| (name, decode_module(bytes, name)))
             .collect()
+    }
+
+    #[test]
+    fn the_two_fingerprints_differ() {
+        // The code's covers the Rust sources too; equal, it would cover the
+        // core library alone and a compiler change would leave a stale
+        // artifact in use.
+        assert_ne!(SHIPPED_CODE_FINGERPRINT, CORE_LIBRARY_FINGERPRINT);
     }
 
     #[test]

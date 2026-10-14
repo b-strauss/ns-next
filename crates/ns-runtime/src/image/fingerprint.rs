@@ -6,24 +6,19 @@
 use std::sync::OnceLock;
 
 use crate::builtins::primitive::MIRROR;
-use crate::interpreter::core_library::SHIPPED_MODULES;
-use crate::interpreter::kernel::KERNEL_SOURCE;
 use crate::types::BuiltinClass;
 
-/// FNV-1a over the shipped modules' sources, the builtin classes' names
-/// and the mirror's selectors, each preceded by its length so that no two
-/// sequences of parts hash alike by running together. The lowering is not
-/// in it: `load` always compiles the shipped code with the optimized
-/// lowering, and an application carries its own code.
+/// FNV-1a over the core library's fingerprint, which `build.rs` takes over
+/// its sources, the builtin classes' names and the mirror's selectors, each
+/// preceded by its length so that no two sequences of parts hash alike by
+/// running together. The lowering is not in it: `load` always compiles the
+/// shipped code with the optimized lowering, and an application carries its
+/// own code.
 pub fn shipped_world_fingerprint() -> u64 {
     static FINGERPRINT: OnceLock<u64> = OnceLock::new();
     *FINGERPRINT.get_or_init(|| {
         let mut hasher = Fnv::new();
-        hasher.part(KERNEL_SOURCE.as_bytes());
-        for shipped in SHIPPED_MODULES {
-            hasher.part(shipped.name.as_bytes());
-            hasher.part(shipped.source.as_bytes());
-        }
+        hasher.part(&crate::shipped_code::CORE_LIBRARY_FINGERPRINT.to_le_bytes());
         for kind in BuiltinClass::ALL {
             hasher.part(format!("{kind:?}").as_bytes());
         }

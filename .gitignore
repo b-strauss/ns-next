@@ -7,3 +7,4 @@ Cargo.lock.orig
 *.img
 *.nsb
 /.temp
+/crates/ns-runtime/core-library/shipped-code.bin
