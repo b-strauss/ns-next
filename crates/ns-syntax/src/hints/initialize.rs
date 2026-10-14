@@ -49,11 +49,20 @@ pub(super) fn hints(section: &Section<'_>, scope: &Scope<'_>, text: &str, hints:
         if !statement.comments.is_empty() || names::expression_mentions(value, target) {
             continue;
         }
+        // After other statements only in a method or a closure: in a header
+        // an earlier statement can reach the slot through a send, which no
+        // name test sees. An initializer's closure may read the slot too.
         let movable = index == 0
-            || (settled(value, scope)
+            || (section.kind != SectionKind::Header
+                && settled(value, scope)
                 && !section.statements[..index]
                     .iter()
-                    .any(|earlier| names::mentions(earlier, target)));
+                    .any(|earlier| names::mentions(earlier, target))
+                && !section.slots.iter().any(|slot| {
+                    slot.initializer
+                        .as_ref()
+                        .is_some_and(|initializer| names::expression_mentions(initializer, target))
+                }));
         if !movable {
             continue;
         }

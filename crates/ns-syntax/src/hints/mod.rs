@@ -699,6 +699,46 @@ mod tests {
         let result = fixed(text, HintKind::InitializeInDeclaration, "count");
         assert!(result.contains("      count ::= 0.\n"), "{result}");
         assert!(!result.contains("    count:: 0.\n"), "{result}");
+        let index = fixed(text, HintKind::InitializeInDeclaration, "index");
+        assert_eq!(
+            index,
+            indoc! {"
+                class Module = () (
+                  public run: limit = (
+                    |
+                      count
+                      start = 1.
+                      index ::= limit.
+                      step
+                    |
+                    limit < 0 ifTrue: [^nil].
+                    count:: 0.
+                    step:: start.
+                    ^count + index + step
+                  )
+                )
+            "}
+        );
+        let step = fixed(text, HintKind::InitializeInDeclaration, "step");
+        assert_eq!(
+            step,
+            indoc! {"
+                class Module = () (
+                  public run: limit = (
+                    |
+                      count
+                      index
+                      start = 1.
+                      step ::= start.
+                    |
+                    limit < 0 ifTrue: [^nil].
+                    count:: 0.
+                    index:: limit.
+                    ^count + index + step
+                  )
+                )
+            "}
+        );
     }
 
     #[test]
@@ -740,7 +780,7 @@ mod tests {
     }
 
     #[test]
-    fn a_factory_parameter_is_settled_in_a_header() {
+    fn a_header_slot_after_another_statement_gets_no_hint() {
         let text = indoc! {"
             class Module withLimit: limit = (
               |
@@ -751,6 +791,39 @@ mod tests {
               cap:: limit.
             ) ()
         "};
+        assert!(names_of(text, HintKind::InitializeInDeclaration).is_empty());
+    }
+
+    #[test]
+    fn a_factory_parameter_as_the_first_header_statement_moves() {
+        let text = indoc! {"
+            class Module withLimit: limit = (
+              |
+                used ::= 0.
+                private cap
+              |
+              cap:: limit.
+            ) ()
+        "};
         assert_eq!(names_of(text, HintKind::InitializeInDeclaration), ["cap"]);
+    }
+
+    /// A closure an initializer made would read the slot before the statement.
+    #[test]
+    fn an_initializer_closure_that_mentions_the_slot_keeps_the_assignment() {
+        let text = indoc! {"
+            class Module = () (
+              public run = (
+                |
+                  count
+                  reader = [count].
+                |
+                reader value printString.
+                count:: 0.
+                ^count
+              )
+            )
+        "};
+        assert!(names_of(text, HintKind::InitializeInDeclaration).is_empty());
     }
 }

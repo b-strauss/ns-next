@@ -52,14 +52,17 @@ these holds:
    one gets no hint. Each fix stands alone: once the first statement has
    moved, the next one is first, which is how "apply all" moves a whole
    run of them.
-2. **After other statements.** `e` is a literal, `self`, `nil`, `true`,
-   `false`, or an identifier whose innermost declaration in scope is a
-   parameter (of a method, a closure, or, in a header, the factory) or a
-   read-only local (`=`); no statement before it mentions the name `x`
-   anywhere, nested closures included; and, as in 1, every existing
-   initializer of the section still runs before it -- a local's declaration
-   moves after the last initialized one when needed, a header slot must
-   stand after it already. Such an `e` can neither fail nor observe
+2. **After other statements.** Only in a method's or a closure's body,
+   never in a header: there an earlier statement can reach the slot through
+   a send (a method that reads it), which no test of names sees. `e` is a
+   literal, `self`, `nil`, `true`, `false`, or an identifier whose innermost
+   declaration in scope is a parameter (of a method or a closure) or a
+   read-only local (`=`); no statement before it and no initializer of the
+   section mentions the name `x` anywhere, nested closures included (a
+   closure made by an initializer could read `x` before the statement
+   runs); and, as in 1, every existing initializer of the section still
+   runs before it -- the local's declaration moves after the last
+   initialized one when needed. Such an `e` can neither fail nor observe
    anything those statements change, and neither they nor any initializer
    can observe `x` before it, so evaluating `e` earlier is unobservable.
 
