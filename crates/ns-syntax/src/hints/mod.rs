@@ -291,4 +291,198 @@ mod tests {
         ];
         assert_eq!(apply("abcdef", &edits), "YbcdXf");
     }
+
+    #[test]
+    fn the_first_assignment_of_a_bare_local_moves_into_its_declaration() {
+        let text = indoc! {"
+            class Module = () (
+              public run = (
+                |
+                  count
+                |
+                count:: 1.
+                ^count
+              )
+            )
+        "};
+        assert_eq!(names_of(text, HintKind::InitializeInDeclaration), ["count"]);
+        assert_eq!(
+            fixed(text, HintKind::InitializeInDeclaration, "count"),
+            indoc! {"
+                class Module = () (
+                  public run = (
+                    |
+                      count ::= 1.
+                    |
+                    ^count
+                  )
+                )
+            "}
+        );
+    }
+
+    /// Every existing initializer runs before the moved value, as it did
+    /// before the statement: the local moves after the last initialized one.
+    #[test]
+    fn a_local_declared_before_an_initialized_one_moves_after_it() {
+        let text = indoc! {"
+            class Module = () (
+              public run = (
+                |
+                  count
+                  total ::= 0.
+                |
+                count:: 1.
+                ^count + total
+              )
+            )
+        "};
+        assert_eq!(
+            fixed(text, HintKind::InitializeInDeclaration, "count"),
+            indoc! {"
+                class Module = () (
+                  public run = (
+                    |
+                      total ::= 0.
+                      count ::= 1.
+                    |
+                    ^count + total
+                  )
+                )
+            "}
+        );
+    }
+
+    #[test]
+    fn a_header_slot_takes_the_first_initializer_expression() {
+        let text = indoc! {"
+            class Module = (
+              |
+                count
+              |
+              count:: 1.
+            ) (
+              public run = (
+                ^count
+              )
+            )
+        "};
+        assert_eq!(
+            fixed(text, HintKind::InitializeInDeclaration, "count"),
+            indoc! {"
+                class Module = (
+                  |
+                    count ::= 1.
+                  |
+                ) (
+                  public run = (
+                    ^count
+                  )
+                )
+            "}
+        );
+    }
+
+    /// Header slots are the class's layout, so they are never reordered.
+    #[test]
+    fn a_header_slot_declared_before_an_initialized_one_gets_no_hint() {
+        let text = indoc! {"
+            class Module = (
+              |
+                count
+                total ::= 0.
+              |
+              count:: 1.
+            ) ()
+        "};
+        assert!(names_of(text, HintKind::InitializeInDeclaration).is_empty());
+    }
+
+    #[test]
+    fn a_continued_value_keeps_its_place_under_the_declaration() {
+        let text = indoc! {"
+            class Module = () (
+              public sum: values = (
+                |
+                  result
+                |
+                result:: values
+                    inject: 0
+                    into: [:total :each | total + each].
+                ^result
+              )
+            )
+        "};
+        // The statement stood at column 4, the declaration stands at 6: the
+        // continuation lines move from column 8 to 10.
+        let result = fixed(text, HintKind::InitializeInDeclaration, "result");
+        assert!(
+            result.contains(
+                "      result ::= values\n          inject: 0\n          into: [:total :each | total + each].\n    |\n"
+            ),
+            "{result}"
+        );
+    }
+
+    #[test]
+    fn a_one_line_section_takes_the_initializer_inline() {
+        let text = "class Module = () ( public run = ( | count | count:: 1. ^count ) )\n";
+        assert_eq!(
+            fixed(text, HintKind::InitializeInDeclaration, "count"),
+            "class Module = () ( public run = ( | count ::= 1. | ^count ) )\n"
+        );
+    }
+
+    #[test]
+    fn carriage_returns_survive_a_fix() {
+        let text = "class Module = () (\r\n  public run = (\r\n    |\r\n      count\r\n    |\r\n    count:: 1.\r\n    ^count\r\n  )\r\n)\r\n";
+        assert_eq!(
+            fixed(text, HintKind::InitializeInDeclaration, "count"),
+            "class Module = () (\r\n  public run = (\r\n    |\r\n      count ::= 1.\r\n    |\r\n    ^count\r\n  )\r\n)\r\n"
+        );
+    }
+
+    #[test]
+    fn a_comment_in_or_beside_the_statement_keeps_it_where_it_is() {
+        for statement in ["count:: 1. /// the first", "count:: (* one *) 1."] {
+            let text = format!(
+                "class Module = () (\n  public run = (\n    |\n      count\n    |\n    {statement}\n    ^count\n  )\n)\n"
+            );
+            assert!(
+                names_of(&text, HintKind::InitializeInDeclaration).is_empty(),
+                "{statement}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_the_first_statement_moves_when_its_value_is_a_send() {
+        let text = indoc! {"
+            class Module = () (
+              public run = (
+                |
+                  count
+                  index
+                |
+                count:: self size.
+                index:: self start.
+                ^count + index
+              )
+            )
+        "};
+        assert_eq!(names_of(text, HintKind::InitializeInDeclaration), ["count"]);
+    }
+
+    #[test]
+    fn a_chain_a_parenthesized_assignment_or_a_value_naming_the_slot_gets_no_hint() {
+        for statement in ["count:: index:: 1.", "(count:: 1).", "count:: count."] {
+            let text = format!(
+                "class Module = () (\n  public run = (\n    |\n      count\n      index\n    |\n    {statement}\n    ^count\n  )\n)\n"
+            );
+            assert!(
+                !names_of(&text, HintKind::InitializeInDeclaration).contains(&"count".to_string()),
+                "{statement}"
+            );
+        }
+    }
 }

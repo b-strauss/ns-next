@@ -134,7 +134,6 @@ fn names(node: &Node<'_>, name: &str) -> bool {
 }
 
 /// Whether `name` appears anywhere in `statement`.
-#[expect(dead_code, reason = "used by Task 3")]
 pub(super) fn mentions(statement: &Statement, name: &str) -> bool {
     let mut found = false;
     each_node_in_statement(statement, &mut |node| found |= names(&node, name));
@@ -142,7 +141,6 @@ pub(super) fn mentions(statement: &Statement, name: &str) -> bool {
 }
 
 /// Whether `name` appears anywhere in `expression`.
-#[expect(dead_code, reason = "used by Task 3")]
 pub(super) fn expression_mentions(expression: &Expression, name: &str) -> bool {
     let mut found = false;
     each_node(expression, &mut |node| found |= names(&node, name));

@@ -1,13 +1,156 @@
 //! Hint A: a bare slot whose first value a statement assigns can take that
-//! value in its declaration.
+//! value in its declaration. A fix must keep the order of evaluation:
+//! every initializer of the section first, then the moved value, as when
+//! it was a statement. At the section's first statement that holds
+//! whatever the value is; after other statements only for a value that
+//! can neither fail nor see what they change (`settled`). Every fix stands
+//! on its own: once the first statement has moved, the next one is first.
 
-use super::walk::{Scope, Section};
-use super::Hint;
+use crate::ast::{
+    Expression, ExpressionKind, SlotDeclaration, SlotMutability, Statement, StatementKind,
+};
+use crate::span::Span;
 
-pub(super) fn hints(
-    _section: &Section<'_>,
-    _scope: &Scope<'_>,
-    _text: &str,
-    _hints: &mut Vec<Hint>,
-) {
+use super::edits::{self, Edit};
+use super::names;
+use super::walk::{Scope, Section, SectionKind};
+use super::{Hint, HintKind};
+
+pub(super) fn hints(section: &Section<'_>, scope: &Scope<'_>, text: &str, hints: &mut Vec<Hint>) {
+    if section.slots.iter().any(|slot| slot.simultaneous) {
+        return;
+    }
+    let last_initialized = section
+        .slots
+        .iter()
+        .rposition(|slot| slot.initializer.is_some());
+    for (index, statement) in section.statements.iter().enumerate() {
+        let Some((target, value)) = assignment(statement) else {
+            continue;
+        };
+        let Some(position) = bare_slot(section.slots, target) else {
+            continue;
+        };
+        if names::expression_mentions(value, target) {
+            continue;
+        }
+        let movable = index == 0
+            || (settled(value, scope)
+                && !section.statements[..index]
+                    .iter()
+                    .any(|earlier| names::mentions(earlier, target)));
+        if !movable {
+            continue;
+        }
+        let Some(deletion) = edits::delete_statement(text, statement) else {
+            continue;
+        };
+        let placed = match last_initialized {
+            Some(last) if position < last => {
+                if section.kind != SectionKind::Body {
+                    continue;
+                }
+                reordered(text, section.slots, position, last, statement, value)
+            }
+            _ => Some(in_place(text, &section.slots[position], statement, value)),
+        };
+        let Some(mut fix) = placed else {
+            continue;
+        };
+        fix.push(deletion);
+        hints.push(Hint {
+            kind: HintKind::InitializeInDeclaration,
+            name: target.to_string(),
+            span: section.slots[position].name.span,
+            section: section.span,
+            edits: fix,
+        });
+    }
+}
+
+/// The target and value of a statement that is one assignment `x:: e`, not
+/// parenthesized and not a chain.
+fn assignment(statement: &Statement) -> Option<(&str, &Expression)> {
+    let StatementKind::Expression(expression) = &statement.kind else {
+        return None;
+    };
+    let ExpressionKind::Assign { target, value, .. } = &expression.kind else {
+        return None;
+    };
+    if !expression.parentheses.is_empty() || matches!(value.kind, ExpressionKind::Assign { .. }) {
+        return None;
+    }
+    Some((target.name.as_str(), value))
+}
+
+/// The position of the bare slot `name` in `slots`.
+fn bare_slot(slots: &[SlotDeclaration], name: &str) -> Option<usize> {
+    slots.iter().position(|slot| {
+        slot.name.name == name
+            && slot.initializer.is_none()
+            && slot.mutability == SlotMutability::MutableBare
+    })
+}
+
+/// Whether `value` can be evaluated earlier than where it stands without
+/// anyone seeing the difference. Task 4 widens it; at the first statement
+/// nothing is evaluated earlier, so no value needs it there.
+fn settled(_value: &Expression, _scope: &Scope<'_>) -> bool {
+    false
+}
+
+fn in_place(
+    text: &str,
+    slot: &SlotDeclaration,
+    statement: &Statement,
+    value: &Expression,
+) -> Vec<Edit> {
+    let end = edits::declaration_end(slot);
+    vec![Edit {
+        span: Span::new(end, end),
+        text: edits::initializer(text, value, statement.span.start, slot.span.start),
+    }]
+}
+
+/// The slot at `position` moved, with its initializer, after the slot at
+/// `last`, the last initialized one; `None` when a comment stands in what
+/// the move deletes.
+fn reordered(
+    text: &str,
+    slots: &[SlotDeclaration],
+    position: usize,
+    last: usize,
+    statement: &Statement,
+    value: &Expression,
+) -> Option<Vec<Edit>> {
+    let slot = &slots[position];
+    let following = &slots[position + 1];
+    let separator = &text[edits::declaration_end(slot) as usize..following.span.start as usize];
+    let removal = if position == 0 {
+        Span::new(slot.span.start, following.span.start)
+    } else {
+        Span::new(
+            edits::declaration_end(&slots[position - 1]),
+            edits::declaration_end(slot),
+        )
+    };
+    if edits::holds_a_comment(&text[removal.start as usize..removal.end as usize]) {
+        return None;
+    }
+    let destination = slots[last].span.end;
+    let declaration = format!(
+        "{separator}{}{}",
+        &text[slot.span.start as usize..edits::declaration_end(slot) as usize],
+        edits::initializer(text, value, statement.span.start, slots[last].span.start)
+    );
+    Some(vec![
+        Edit {
+            span: removal,
+            text: String::new(),
+        },
+        Edit {
+            span: Span::new(destination, destination),
+            text: declaration,
+        },
+    ])
 }

@@ -65,7 +65,6 @@ fn column(text: &str, offset: usize) -> usize {
 /// Where a slot's declaration ends: after its `.` when it has an
 /// initializer, else after its name or its type. A bare slot's span runs
 /// on to the token after it (`parser/declaration.rs`), so it cannot say.
-#[expect(dead_code, reason = "used by Task 3")]
 pub(super) fn declaration_end(slot: &SlotDeclaration) -> u32 {
     if slot.initializer.is_some() {
         return slot.span.end;
@@ -79,7 +78,6 @@ pub(super) fn declaration_end(slot: &SlotDeclaration) -> u32 {
 /// by as many columns as the declaration stands right of the statement
 /// (left when it stands left of it), so they keep their place relative to
 /// the code they continue.
-#[expect(dead_code, reason = "used by Task 3")]
 pub(super) fn initializer(
     text: &str,
     value: &Expression,
@@ -110,7 +108,6 @@ pub(super) fn initializer(
 /// the blanks after it. `None` when a comment stands in the statement or
 /// on the rest of its line: deleting the one or leaving the other behind
 /// would change what the comment is about.
-#[expect(dead_code, reason = "used by Task 3")]
 pub(super) fn delete_statement(text: &str, statement: &Statement) -> Option<Edit> {
     let start = statement.span.start as usize;
     let mut end = statement.span.end as usize;
