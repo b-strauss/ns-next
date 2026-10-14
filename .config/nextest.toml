@@ -10,8 +10,8 @@
 #
 # The hints' behaviour oracle (`ns-analyzer`'s `hinted_goldens`) checks that
 # applying every hint keeps every golden's outcome, the full-size awfy
-# benchmarks included. It runs every golden twice more, so it runs only when
-# the hint code changes, in a profile of its own:
+# benchmarks included. It runs every golden twice more, so it runs in a
+# profile of its own, for every commit that touches `crates/ns-analyzer`:
 #
 #     cargo nextest run -p ns-analyzer --profile hints
 

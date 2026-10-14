@@ -11,8 +11,8 @@
 > the `editor` package, every text in `messages/NewspeakBundle.properties`)
 > both exist: highlighting, errors as you type, code folding with one-line
 > methods shown on one line, hints with their quick fixes, a structure view
-> with breadcrumbs, Reformat Code, and typing in the formatter's indentation and width,
-> in every commercial JetBrains IDE from 2026.1.4, kept while a file has
+> with breadcrumbs, Reformat Code, and typing in the formatter's
+> indentation and width, in every commercial JetBrains IDE from 2026.1.4, kept while a file has
 > syntax errors (Reformat Code leaves such a file alone). For a project's
 > `newspeak.json`, completion and validation from the project file's schema, and play buttons that run or benchmark the
 > project with the `ns-next` the settings name; for a module `ns-next` can
@@ -464,10 +464,10 @@ and one of these holds:
    moving it keeps the order of evaluation as long as every existing
    initializer of the section still runs first, then `e`. The local is
    reordered for that: its declaration moves after the last initialized
-   one, unless a comment stands in what the move removes, between the
-   local and the next one, or after the last initialized one on its line --
-   the move would delete or copy the one or leave the other behind the
-   moved declaration. Each fix stands alone: once the first statement has
+   one. A comment in what the move removes, between the local and the next
+   one, or after the last initialized one on its line would be deleted or
+   copied by the move, or left behind the moved declaration; when a comment
+   stands there, no hint is given. Each fix stands alone: once the first statement has
    moved, the next one is first, which is how "apply all" moves a whole run
    of them.
 2. **After other statements.** `e` is a literal (`nil`, `true` and `false`
@@ -542,7 +542,11 @@ no whole-file action, and the quick fixes are still offered.
 **The plugin needs no code for it.** The platform shows a diagnostic of
 severity `HINT` as a weak warning (`LspDiagnosticsSupport.getHighlightSeverity`)
 and offers its quick fixes and the whole-file action on Alt+Enter
-(`LspCodeActionsSupport`).
+(`LspCodeActionsSupport`). Checked by hand under `runIde` (2026-10-14): a
+method local `count` declared bare and assigned by the first statement
+shows a weak warning; Alt+Enter offers "Initialize `count` in its
+declaration" and "Apply all hints in this file", and both do what their
+titles say; after the first, the editor offers "Make `count` read-only".
 
 **Tests.**
 
@@ -1558,8 +1562,8 @@ The server's own tests are described under its section, above ("Testing").
   the server itself). No test starts `ns-next`.
 
 **Gates.** There is one suite: `cargo nextest run --workspace` runs
-`ns-analyzer`'s tests, the hints' behaviour oracle aside ("Hints"), before every commit and under every stress mode, like
-every other crate's (`CLAUDE.md`, "Working in this repository"). Besides the
+`ns-analyzer`'s tests, the hints' behaviour oracle aside ("Hints"), before
+every commit and under every stress mode, like every other crate's (`CLAUDE.md`, "Working in this repository"). Besides the
 language server's, they are the tests of `disasm` and `inspect`, which guard
 the compiler's output (the disassembly snapshots) and the image format (an
 image decoded and listed, its bodies matching the source's); under the wide
@@ -1593,9 +1597,11 @@ and resolves cleanly in a JetBrains IDE today.
   view against a running server: its asking again until the server has
   opened the file, navigation, the breadcrumbs and the sticky lines
   ("Structure"), and Reformat Code reaching the server's formatting and
-  applying its edit ("Formatting"). No automated test covers the hints
-  reaching the IDE as weak warnings with their quick fixes ("Hints"). The sandbox
+  applying its edit ("Formatting"). The sandbox
   also disables the ultimate marker plugin for `runIde`, not only for tests.
+- **The hints' path into the IDE** -- a hint shown as a weak warning, its
+  quick fixes and the whole-file action on Alt+Enter -- is covered by the
+  check by hand under `runIde` ("Hints") and by no automated test.
 - **Untested paths:** `dump-tokens` on an unreadable file (exit status 1); a
   block comment over a whole-line selection; TODO markers through the
   project-wide TODO index rather than a single open file; a Newspeak run
