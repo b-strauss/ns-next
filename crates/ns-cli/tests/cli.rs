@@ -345,7 +345,7 @@ fn benchmark_rejects_zero_iterations() {
 fn benchmark_collector_statistics_reports_to_stderr() {
     let out = ns_next()
         .arg("bench")
-        .arg(common::golden("tool/bench/bench_block"))
+        .arg(common::repository_root().join("benchmarks/micro/bench_block.ns"))
         .arg("--iterations")
         .arg("1")
         .arg("--collector-statistics")

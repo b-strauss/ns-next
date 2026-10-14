@@ -40,5 +40,11 @@ harness = false
 name = "image_corruptions"
 harness = false
 
+# One test per benchmark program and lowering, as `run_goldens`; only the
+# nextest profile `benchmarks` runs it.
+[[test]]
+name = "run_benchmarks"
+harness = false
+
 [lints]
 workspace = true

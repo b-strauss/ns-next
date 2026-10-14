@@ -1,4 +1,0 @@
-arguments = ["Sieve"]
-stdout = '''
-Sieve: ok
-'''

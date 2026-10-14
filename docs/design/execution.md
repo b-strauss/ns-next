@@ -643,7 +643,7 @@ about the code.
 ### The Are We Fast Yet benchmarks
 
 `benchmarks/are-we-fast-yet/` holds real programs to measure on, beside the
-microbenchmarks under `goldens/tool/bench/`: all fourteen Are We Fast Yet
+microbenchmarks under `benchmarks/micro/`: all fourteen Are We Fast Yet
 benchmarks -- Bounce, CD, DeltaBlue, Havlak, Json, List, Mandelbrot,
 NBody, Permute, Queens, Richards, Sieve, Storage and Towers -- and
 Primordial Soup's own Richards and DeltaBlue, `RichardsTon80`, derived from
@@ -698,29 +698,25 @@ one ulp down, the Windows C library's values and a Taylor series off by up
 to 557 ulps all gave 10830 (checked on 2026-10-01, while planning stage 3).
 
 So the tests that run every benchmark are not part of the suite.
-`goldens/tool/awfy/all_benchmarks_verify` runs every benchmark at full size in
-five variants (both lowerings, a two-entry global cache, `build` and
-`load`), and the hints' behaviour oracle runs it twice more, every hint
-applied. With Havlak and CD, the slowest of stage 3, all sixteen programs
-took 57 s under the optimized lowering, 136 s under the reference lowering
-and 228 s for the `build`/`load` variant under the reference lowering
-(timed on 2026-10-01). `a_timed_run_prints_a_score_for_every_benchmark` runs
-each at least twice and took 115 s in the debug build. The whole
-`--profile benchmarks` run of those six tests, in parallel, took 228 s; under
-the stress modes the gate took 37 minutes
-with them (MOVES, 2026-10-01). `.config/nextest.toml`'s default profile
-leaves these tests out -- the round trip and the two-entry cache run in the
-profiles `images` and `caches` -- so neither the per-commit gate nor a stress
-run reaches them. They run on demand, when benchmarking, and once at the end of a
+`crates/ns-cli/tests/run_benchmarks.rs` runs the harness over every
+benchmark at full size, under both lowerings, against
+`benchmarks/are-we-fast-yet.toml` -- every benchmark's `<Name>: ok` -- and
+so does the hints' behaviour oracle, every hint applied; the microbenchmarks
+under `benchmarks/micro/` go the same way against the `.toml` beside each.
+With Havlak and CD, the slowest of stage 3, all sixteen programs took 57 s
+under the optimized lowering and 136 s under the reference lowering (timed
+on 2026-10-01); `a_timed_run_prints_a_score_for_every_benchmark` runs each
+at least twice and took 115 s in the debug build. The whole
+`--profile benchmarks` run, every one of these in parallel, took 146 s
+(2026-10-14); under the stress modes the gate took 37 minutes with them
+(MOVES, 2026-10-01). `.config/nextest.toml`'s default profile leaves them
+out, so neither the per-commit gate nor a stress run reaches them. They run on demand, when benchmarking, and once at the end of a
 branch, in a plain run without a stress mode (decided with the user on
 2026-10-01):
 
 ```bash
 cargo nextest run --workspace --profile benchmarks
 ```
-
-The other `awfy` goldens stay in every run; they exercise the harness on Sieve
-alone or on no benchmark at all.
 
 There are two ways to measure, and they report different things:
 
@@ -739,7 +735,7 @@ There are two ways to measure, and they report different things:
   compiling are. What carries over from the discarded run is what one
   interpreter keeps between sends: the inline caches and the platform's
   lazy members. The untimed run does the same work every time, which is
-  what lets `goldens/tool/awfy/` pin its output and `bench` time it.
+  what lets `benchmarks/are-we-fast-yet.toml` pin its output and `bench` time it.
 - **`ns-next run benchmarks/are-we-fast-yet -- --timed [<Name>]`**
   lets the
   harness measure itself, as Primordial Soup's does: for each benchmark, or
@@ -825,7 +821,7 @@ apart by `-C metadata=alpha`, `beta` and `gamma`, each checked to import no
 Three rounds, the six binaries' order rotated by one from round to round; in
 each round every binary ran `bench --iterations 10 -- <Name>` for each of
 the sixteen programs, `bench --iterations 30` for the eight microbenchmark
-sources (the four fixtures under `goldens/tool/bench/` and the four of
+sources (the four fixtures under `benchmarks/micro/` and the four of
 "What spec-conformant lookup moved"), and the harness's `--timed` over all
 sixteen. Each figure below is the median of a tree's nine values (three
 builds times three rounds), with their range.
@@ -1442,7 +1438,7 @@ Replacing `Rc<RefCell<_>>` with an arena of 32-bit handles, for objects and
 activations together (`docs/design/memory.md`, "The representation"), was
 measured before and after in one sitting: the pre-arena binary was built from
 this branch's merge-base into a throwaway worktree, and both binaries ran the
-same `ns-next bench goldens/tool/bench/bench_loop.ns` — ten timed runs after a
+same `ns-next bench benchmarks/micro/bench_loop.ns` — ten timed runs after a
 discarded warm-up — three times each, alternating.
 
 | Run | Before, bytecode | After, bytecode |
@@ -2799,7 +2795,7 @@ the earlier commits in throwaway worktrees; no binary imports
 every source first; `ns-next bench <source> --iterations 30`, five rounds,
 the order of the six binaries rotating from round to round; two whole
 sittings, nothing else running. An eighth source joins the seven:
-`goldens/tool/bench/bench_megamorphic.ns`, added with the least-recently-used
+`benchmarks/micro/bench_megamorphic.ns`, added with the least-recently-used
 groups, whose `value` site sees five receiver classes in turn and is the only
 source that drives a megamorphic site — 50,000 iterations, the count the
 other fixtures use.
@@ -4087,7 +4083,7 @@ imports `VCRUNTIME140.dll` (`dumpbin -dependents`), and each was checked to
 print the expected answer for every source first. The timing is
 `ns-next bench <source> --iterations 30`, five rounds a sitting, the six
 binaries rotating by one position from round to round. The sources are the four
-fixtures under `goldens/tool/bench/` and the throwaway `bench_do.ns`,
+fixtures under `benchmarks/micro/` and the throwaway `bench_do.ns`,
 `bench_new.ns`, `bench_new2.ns` and `bench_newarg.ns` of that protocol, and one
 more throwaway source, `bench_newvalue.ns`. Its module is `Object <: Value`, and
 its loop makes 20,000 instantiations of `class Cell = Value new ( | public v =
@@ -4285,7 +4281,7 @@ without an activation. A nested superclass clause such as `= Object new` sends
 arm is gone from `vm::run`. What every send now pays is one more arm in `act`'s
 test of `method.fast_path`, which was a test of `primitive` before.
 
-**Which sources can move.** None of the four fixtures under `goldens/tool/bench/`
+**Which sources can move.** None of the four fixtures under `benchmarks/micro/`
 names a builtin class in its loop. Each names `Object` only in its module's
 superclass clause, which runs once when the module is instantiated, and
 `bench_megamorphic.ns` also in its five nested classes' `= Object new`
@@ -4402,7 +4398,7 @@ instructions and is still one function, with no `vm::run::closure` of its
 own (`dumpbin -disasm` on a release build with debug information, both
 trees).
 
-**Which sources can move.** The four fixtures under `goldens/tool/bench/` send
+**Which sources can move.** The four fixtures under `benchmarks/micro/` send
 no Boolean method in their loops: their conditionals and loops take literal
 blocks and are inlined. One throwaway source exercises the change,
 `bench_boolean.ns`, a 200,000-iteration `whileTrue:` loop whose body is
@@ -4449,7 +4445,7 @@ class-side chains are gone. Every class object is created with its metaclass
 instance costs two class objects where it cost one. A class object's `==` and
 `=` go through `Behavior`'s forwarders to the `value:sameAs:ifFail:` leaf.
 
-**Which sources can move.** The four fixtures under `goldens/tool/bench/` create
+**Which sources can move.** The four fixtures under `benchmarks/micro/` create
 no class object in their loops and send no class-side message there. One
 throwaway source exercises the change, `bench_metaclass.ns`: a
 100,000-iteration `whileTrue:` loop whose body is `Outer new Inner make`,
@@ -4586,7 +4582,7 @@ a signalled VM error resume with; and a `doesNotUnderstand:` now runs
 `Object>>doesNotUnderstand:`, which builds a `MessageNotUnderstood` and a
 `Message`, where a mirror row answered it in Rust.
 
-**The sources.** The four fixtures under `goldens/tool/bench/` use no exception.
+**The sources.** The four fixtures under `benchmarks/micro/` use no exception.
 Four throwaway sources, not fixtures, each printing what it accumulates:
 
 - `bench_ensure.ns`: 100,000 iterations of
@@ -4833,7 +4829,7 @@ far below what this protocol resolves, consistent with the line count
 above — the platform's classes moved out of `Kernel.ns` rather than being
 added on top of it.
 
-**The four `goldens/tool/bench/` fixtures.** `ns-next bench <source>
+**The four `benchmarks/micro/` fixtures.** `ns-next bench <source>
 --iterations 30`, five rounds a sitting, the four binaries rotating by one
 position from round to round, two whole sittings, nothing else running.
 Means of the five rounds:
@@ -5074,7 +5070,7 @@ builtin class that was there anyway. That first-use cost was what plan 2
 expected to pay: parsing and resolving `CollectionsFactory.ns`, compiling it,
 building its root class, and instantiating it and its facet.
 
-**The four `goldens/tool/bench/` fixtures, measured 2026-09-28, `f9d953a`
+**The four `benchmarks/micro/` fixtures, measured 2026-09-28, `f9d953a`
 against `6d9974b`**, three builds of each by the same protocol; what the
 branch changed after `f9d953a` runs only at boot and on the first request
 for a shipped module, never inside a timed loop. `ns-next bench <source>

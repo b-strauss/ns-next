@@ -1,6 +1,6 @@
 mod common;
 
-use common::{goldens_root, ScratchDirectory};
+use common::{repository_root, ScratchDirectory};
 use indoc::indoc;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -522,10 +522,9 @@ fn a_program_without_main_is_an_uncaught_does_not_understand() {
     );
 }
 
-/// The Are We Fast Yet harness's project directory, reached from `goldens/`'s
-/// sibling so that no second way of finding the repository root exists.
+/// The Are We Fast Yet harness's project directory.
 fn harness_project() -> std::path::PathBuf {
-    goldens_root().join("../benchmarks/are-we-fast-yet")
+    repository_root().join("benchmarks/are-we-fast-yet")
 }
 
 /// `--timed` prints `<Name>: <runs per second>` with one fraction digit,

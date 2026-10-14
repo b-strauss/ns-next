@@ -90,11 +90,15 @@ guarantee it gives up or the complexity it adds.
 | Editor support and the analyzer: the language server, the JetBrains plugin, `ns-next-analyzer` | [editor-support.md](editor-support.md) | Built — highlighting, errors as you type, code folding, hints with their quick fixes and a structure view with breadcrumbs in every commercial JetBrains IDE from 2026.1.4, kept through syntax errors; the server bundled for Windows x64. For `newspeak.json`, the schema from `schemas/`, and a "Newspeak" run configuration with play buttons that run or benchmark the project with the `ns-next` the settings name; a module `ns-next` can run from its source gets a play button beside its `main:args:` and "Run" in its context menu, from the document symbols the structure view shares. The server is `ns-next-analyzer lsp`; the same binary parses (`parse`, `parse-corpus`), prints a compiled body (`disasm`, [compiler.md](compiler.md)) and an image's structure (`inspect`, [image-format.md](image-format.md)), and never runs a program; `fmt` formats sources and the server answers `textDocument/formatting` ([formatting.md](formatting.md)) | range formatting and formatting on type, go to definition and find usages, more platforms; a heap dump and inspection of JIT-compiled code as further analyzer commands |
 
 Real programs to measure the runtime on, beside the microbenchmarks under
-`goldens/tool/bench/`, live in `benchmarks/`: today
+`benchmarks/micro/`, live in `benchmarks/`: today
 `benchmarks/are-we-fast-yet/`, the fourteen Are We Fast Yet benchmarks,
 Primordial Soup's Ton80 Richards and DeltaBlue, and their harness, which
-[execution.md](execution.md), "The Are We Fast Yet benchmarks", describes and
-`goldens/tool/awfy/` verifies.
+[execution.md](execution.md), "The Are We Fast Yet benchmarks", describes.
+Every benchmark program is held to the outcome recorded beside it --
+`benchmarks/micro/<name>.toml`, `benchmarks/are-we-fast-yet.toml` -- by
+`crates/ns-cli/tests/run_benchmarks.rs`, under both lowerings, in the nextest
+profile `benchmarks` only: a benchmark is sized to be measured, not to run
+on every commit.
 
 ## Architecture
 
@@ -259,10 +263,9 @@ root with `packageUsing:` its manifest; either reaches the platform only as
 ([image-format.md](image-format.md), "Packaging"). A project golden is
 the directory `goldens/<category>/<name>/`, its `newspeak.json` in it and
 `<name>.toml` beside it; its modules live in the directory too, or in a tree
-several goldens share outside `goldens/`, which its `newspeak.json` names by
-relative paths: each `goldens/tool/awfy/` golden is a directory holding only a
-`newspeak.json` over `benchmarks/are-we-fast-yet/`. The modules are not
-goldens themselves, and `goldens/tool/manifest/` pins the manifest.
+outside `goldens/`, which its `newspeak.json` names by relative paths. The
+modules are not goldens themselves, and `goldens/tool/manifest/` pins the
+manifest.
 
 A fifth key, `arguments`, lists the program's arguments, which every runner
 passes after `--` to each command that sends the entry -- `run`, and `load` in
@@ -320,10 +323,8 @@ summary; `cargo nextest list -p ns-cli --run-ignored only` names them.
 | `runtime/` | what the VM guarantees beyond the language's rules |
 | `runtime/cache/` | an outcome an inline cache could change, each added before any cache existed |
 | `runtime/depth-limit/` | the activation limit: what still runs at 1000 deep, what overflows, the reserve a handler runs in, and a recursion through the core library the two lowerings count alike |
-| `tool/` | the tools around `ns-next run`: projects and the benchmark harnesses |
+| `tool/` | the tools around `ns-next run`: projects |
 | `tool/manifest/` | projects: a root assembled with `packageUsing:` and the manifest of the other modules, a name the manifest does not hold, and a manifest the application keeps through `build` and `load`; each project's modules in the directory of its name |
-| `tool/awfy/` | the Are We Fast Yet harness, verified; its sources live in `benchmarks/are-we-fast-yet/` |
-| `tool/bench/` | the measurement protocol's own sources, the ones `ns-next bench` times |
 
 A golden named `spec_<section>_...` pins one named rule of
 `newspeak-spec.pdf`, its section in the file name; it lives with its theme.
@@ -334,8 +335,8 @@ set is found by walking it — no list, no count, so adding a golden needs no
 edit anywhere, and `cargo nextest run -p ns-cli --test run_goldens
 library/number` runs one subtree. A project golden is a
 directory holding a `newspeak.json`, the one directory a category may hold;
-its modules live in it, or in a shared tree outside `goldens/`, as
-`tool/awfy/`'s do; neither's contents are goldens, and neither is walked. A file at the
+its modules live in it, or in a tree outside `goldens/`; neither's contents
+are goldens, and neither is walked. A file at the
 root, a directory beside goldens or an empty directory is refused by name
 rather than skipped, because a golden nothing discovers is not a golden at
 all. `every_golden_is_a_complete_pair` covers the other half: an orphan on
@@ -347,16 +348,11 @@ A golden's rationale — why that outcome is the right one, and which
 specification section it comes from — is a `///` comment at the top of
 the `.ns`, so that it sits with the program it
 explains rather than beside it; for a project golden, the `.ns` is its root
-module. The `awfy/` goldens share one root, the harness, so theirs is the
-harness's own header in `benchmarks/are-we-fast-yet/AreWeFastYet.ns`, which
-says what an untimed run prints and gives the usage line the refusals pin;
-their file names say which case each is. Every `goldens/tool/awfy/*/newspeak.json` lists
-every module of `benchmarks/are-we-fast-yet/newspeak.json`, because the
-harness names each benchmark when it is instantiated; a new benchmark is added
-to the harness tuple, the project file, each `awfy` golden's `newspeak.json`,
-`all_benchmarks_verify.toml` and the name list in `crates/ns-cli/tests/run.rs`'s
-`a_timed_run_prints_a_score_for_every_benchmark`. The `.toml` holds the recorded
-answer and nothing else.
+module. The `.toml` holds the recorded answer and nothing else. A new Are
+We Fast Yet benchmark is added to the harness tuple, its project file,
+`benchmarks/are-we-fast-yet.toml` and the name list in
+`crates/ns-cli/tests/run.rs`'s `a_timed_run_prints_a_score_for_every_benchmark`,
+because the harness names each benchmark when it is instantiated.
 
 ## Gates
 

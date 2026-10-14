@@ -84,9 +84,10 @@ own over the server's document symbols.
 
 `benchmarks/are-we-fast-yet/` — the fourteen Are We Fast Yet benchmarks,
 Primordial Soup's Ton80 Richards and DeltaBlue, and their harness, one
-project, verified by
-`goldens/tool/awfy/` (`docs/design/execution.md`, "The Are We Fast Yet
-benchmarks").
+project; `benchmarks/micro/` — the microbenchmarks `ns-next bench` times.
+Both are held to the outcomes recorded beside them by
+`crates/ns-cli/tests/run_benchmarks.rs`, in the nextest profile `benchmarks`
+only (`docs/design/execution.md`, "The Are We Fast Yet benchmarks").
 
 Read `docs/design/README.md` first — it maps the living design documents and says
 how much of each aspect exists. `docs/PROGRESS.md` is the milestone chronology.

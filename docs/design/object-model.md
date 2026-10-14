@@ -1058,7 +1058,7 @@ cover the parser's flag (`ns-syntax`'s declaration tests); forcing, chains,
 abandonment, the host's two cases and the collector's replacement
 (`tests/future.rs`); the four instructions driven by hand (`tests/vm.rs`);
 the image's two cases and its refusals (`tests/image.rs`); and the wire tags
-(`tests/opcode_tags.rs`). Three of the four `goldens/tool/bench/` fixtures are
+(`tests/opcode_tags.rs`). Three of the four `benchmarks/micro/` fixtures are
 level; `bench_megamorphic.ns` measured about 4% slower, a layout effect of
 the dispatch arm the four instructions add, still open
 ([execution.md](execution.md), "What simultaneous slots cost").

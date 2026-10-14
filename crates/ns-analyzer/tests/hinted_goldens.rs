@@ -51,14 +51,11 @@ fn normalized(path: &Path) -> PathBuf {
     result
 }
 
-/// The `.ns` files of a golden program: the file itself, or for a project
-/// every file its `newspeak.json` names (`main` and `modules`) together with
-/// every one inside its directory. A project may name sources outside its
-/// own directory -- the awfy goldens run the benchmarks -- and those are the
-/// largest programs the hints meet, so leaving them out would make the
-/// oracle vacuous exactly where it matters. Refused: an empty set, which
-/// would check nothing, and a source outside the repository, which the
-/// scratch copy cannot lay out.
+/// The `.ns` files of a program: the file itself, or for a project every
+/// file its `newspeak.json` names (`main` and `modules`) together with every
+/// one inside its directory, since a project may name sources outside its
+/// own directory. Refused: an empty set, which would check nothing, and a
+/// source outside the repository, which the scratch copy cannot lay out.
 fn sources_of(program: &Path) -> Result<Vec<PathBuf>, String> {
     let program = normalized(program);
     let mut files = Vec::new();
@@ -103,19 +100,28 @@ fn sources_of(program: &Path) -> Result<Vec<PathBuf>, String> {
 }
 
 /// Builds `ns-next` in the profile this test was built in and answers
-/// the path cargo reports for it, so that a target directory, a target or
-/// a profile of the caller's choosing never leaves a stale binary in its
+/// the path cargo reports for it, so that a target, a profile or a target
+/// directory of the caller's choosing never leaves a stale binary in its
 /// place. A failed build fails loudly with cargo's output.
+///
+/// It builds into a target directory of its own: a build of `ns-cli` alone
+/// resolves features otherwise than the workspace's test build does, so
+/// building into the shared one relinks the `ns-next` that `ns-cli`'s own
+/// tests may be running at that moment, which Windows refuses.
 fn built_ns_next() -> PathBuf {
+    let target_directory = common::repository_root().join("target/hinted-goldens");
     let mut build = Command::new(env!("CARGO"));
-    build.args([
-        "build",
-        "-p",
-        "ns-cli",
-        "--bin",
-        "ns-next",
-        "--message-format=json-render-diagnostics",
-    ]);
+    build
+        .args([
+            "build",
+            "-p",
+            "ns-cli",
+            "--bin",
+            "ns-next",
+            "--message-format=json-render-diagnostics",
+            "--target-dir",
+        ])
+        .arg(&target_directory);
     if !cfg!(debug_assertions) {
         build.arg("--release");
     }
@@ -129,7 +135,9 @@ fn built_ns_next() -> PathBuf {
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
         .find(|message| {
-            message["reason"] == "compiler-artifact" && message["target"]["name"] == "ns-next"
+            message["reason"] == "compiler-artifact"
+                && message["target"]["name"] == "ns-next"
+                && message["target"]["kind"][0] == "bin"
         })
         .and_then(|message| message["executable"].as_str().map(PathBuf::from))
         .unwrap_or_else(|| panic!("cargo built no ns-next executable:\n{stderr}"))
@@ -145,8 +153,15 @@ fn ns_next() -> &'static Path {
 fn main() {
     let arguments = Arguments::from_args();
     let mut trials = Vec::new();
-    for program in common::golden_programs() {
-        let name = common::golden_name(&program);
+    // The benchmarks too: they are the largest programs the repository
+    // holds, and they are held to their recorded outcomes as goldens are.
+    let goldens = common::golden_programs()
+        .into_iter()
+        .map(|program| (common::golden_name(&program), program));
+    let benchmarks = common::benchmark_programs()
+        .into_iter()
+        .map(|program| (common::benchmark_name(&program), program));
+    for (name, program) in goldens.chain(benchmarks) {
         let sources = match sources_of(&program) {
             Ok(sources) => sources,
             Err(problem) => {

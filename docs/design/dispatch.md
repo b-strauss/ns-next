@@ -1795,7 +1795,7 @@ reclaimable.
     both probes (Primordial Soup; half the capacity); zapping the other
     probes on insert (Cog; discards other keys for a reason particular to
     Cog). Built, and measured against 3b's insert with
-    `goldens/tool/bench/bench_megamorphic.ns`, added for it because none of the
+    `benchmarks/micro/bench_megamorphic.ns`, added for it because none of the
     existing sources reaches a megamorphic site. **The replacement rule
     itself is unmeasured, and that benchmark cannot measure it.** It fills 27
     of the 1024 slots, five of them at the one megamorphic site it drives, so

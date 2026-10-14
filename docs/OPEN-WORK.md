@@ -81,7 +81,7 @@ whole road is below.
 removing the re-entries moved"; every compared binary, the current tree
 included, is built with the same explicit `RUSTFLAGS` (`CLAUDE.md`,
 "Working in this repository"). Four of the eight measurement sources are
-goldens under `goldens/tool/bench/`; the other four -- `bench_new.ns`,
+goldens under `benchmarks/micro/`; the other four -- `bench_new.ns`,
 `bench_new2.ns`, `bench_newarg.ns` and `bench_do.ns` -- are not in the tree
 and must be written out from [execution.md](design/execution.md), "What
 spec-conformant lookup moved", never reconstructed from a prose
@@ -107,10 +107,10 @@ and `prior-art/newspeak-benchmarks`.
   [core-library.md](design/core-library.md), "Large integers".
 - **Before step 2's second plan, the Are We Fast Yet benchmarks** (decided
   with the user on 2026-09-29, so that every later step is measured on real
-  programs rather than only on the microbenchmarks under `goldens/tool/bench/`).
+  programs rather than only on the microbenchmarks under `benchmarks/micro/`).
   The Newspeak versions in `prior-art/somns/core-lib/Benchmarks` come into
   `benchmarks/are-we-fast-yet/`, each a module of the harness's project,
-  verified under both lowerings by `goldens/tool/awfy/` and measured as
+  verified under both lowerings against `benchmarks/are-we-fast-yet.toml` and measured as
   [execution.md](design/execution.md), "The Are We Fast Yet benchmarks",
   describes. Each one widens the platform on demand, as `CLAUDE.md` asks,
   so the Newspeak side grows with them. Stage 1 -- Sieve, Permute, Queens,

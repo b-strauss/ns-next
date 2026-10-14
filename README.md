@@ -181,7 +181,7 @@ cargo run -p ns-analyzer -- inspect app.img --full
 ```bash
 # time main:args: alone, a fresh application assembled untimed for every
 # sample; measure with --release, never a debug build
-cargo run --release -p ns-cli -- bench goldens/tool/bench/bench_loop.ns --iterations 30
+cargo run --release -p ns-cli -- bench benchmarks/micro/bench_loop.ns --iterations 30
 ```
 
 The Are We Fast Yet benchmarks are one project; a benchmark's name after `--`

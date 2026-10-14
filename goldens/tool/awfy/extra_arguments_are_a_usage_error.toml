@@ -1,5 +1,0 @@
-arguments = ["--timed", "Sieve", "extra"]
-status = 1
-stderr = '''
-Uncaught Newspeak error: usage: ns-next run benchmarks/are-we-fast-yet -- [--timed] [Benchmark]
-'''

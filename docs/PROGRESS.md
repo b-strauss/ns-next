@@ -2755,7 +2755,7 @@ variants" and "Primitive methods".
   `RETIRED_OPCODES`.
 - this entry's commit — the documents.
 
-**Measurement.** No fixture under `goldens/tool/bench/` names a builtin in its
+**Measurement.** No fixture under `benchmarks/micro/` names a builtin in its
 loop, and all of them are level against `909bf40` within layout noise
 (`bench_block.ns` and `bench_do.ns` read 2–4% faster only because the base's
 two `-C metadata` layouts are slow); start-up is level. A throwaway loop that
@@ -3252,7 +3252,7 @@ lazy getter's first mechanism, a `MethodFastPath::LazySlot` arm in
 and then taking the slot base off the activation, did not recover it, and
 dropping the fast path did: a getter answers a filled slot from its own
 activation, and the activation derives its slot base from its
-`current_class`. All four `goldens/tool/bench/` fixtures are level with `7c6bdbf`
+`current_class`. All four `benchmarks/micro/` fixtures are level with `7c6bdbf`
 (pooled over three builds a side and two sittings, -0.7% to +0.4%, every
 comparison overlapping); `vm::run` is 6,691 instructions against 6,561, the
 difference an arm no ordinary send runs.
@@ -3400,7 +3400,7 @@ lines to six: there is no builtin `OrderedCollection` left to subclass.
 
 **Measured** ([execution.md](design/execution.md), "What the collections
 module cost"), three builds a side against `6d9974b`: all four
-`goldens/tool/bench/` fixtures are level (-0.2% to +0.5%, every comparison
+`benchmarks/micro/` fixtures are level (-0.2% to +0.5%, every comparison
 overlapping); a start that never sends `platform collections` is level too
 (+0.03 ms, +0.2%), since each shipped module is resolved on its first
 request, not at boot, and the first `platform collections` costs about

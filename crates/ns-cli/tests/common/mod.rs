@@ -11,10 +11,52 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// The repository's root, two levels above this crate.
+pub fn repository_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
 /// The `goldens/` directory: every recorded program outcome lives in a
 /// category directory below it.
 pub fn goldens_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../goldens")
+    repository_root().join("goldens")
+}
+
+/// Every benchmark program with a recorded outcome, sorted: each micro
+/// benchmark under `benchmarks/micro/`, and the Are We Fast Yet project,
+/// which verifies every benchmark at its full size. Each has its `.toml`
+/// beside it, as a golden has, and is held to it as a golden is -- but only
+/// when benchmarking and at the end of a branch, since a benchmark is sized
+/// to be measured, not to be run on every commit.
+pub fn benchmark_programs() -> Vec<PathBuf> {
+    let benchmarks = repository_root().join("benchmarks");
+    let mut programs: Vec<PathBuf> = directory_entries(&benchmarks.join("micro"))
+        .into_iter()
+        .filter(|path| path.extension().is_some_and(|extension| extension == "ns"))
+        .collect();
+    programs.push(benchmarks.join("are-we-fast-yet"));
+    programs.sort();
+    for program in &programs {
+        assert!(
+            program.with_extension("toml").is_file(),
+            "{} has no recorded outcome beside it",
+            program.display()
+        );
+    }
+    programs
+}
+
+/// A benchmark program's path below the repository root without its
+/// extension, `/`-separated on every platform: `benchmarks/micro/bench_loop`.
+pub fn benchmark_name(program: &Path) -> String {
+    program
+        .with_extension("")
+        .strip_prefix(repository_root())
+        .unwrap_or_else(|_| panic!("{} is not in the repository", program.display()))
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// Every golden file with `extension`, found by walking rather than from a

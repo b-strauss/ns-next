@@ -3720,7 +3720,7 @@ The first `platform collections` now resolves and compiles one more
 module, and `List>>add:` is Newspeak where
 `OrderedCollection>>add:` was a leaf. Each plan measures, release build and
 pinned protocol ([execution.md](execution.md)), the start-up of a module
-that answers at once, and the four `goldens/tool/bench/` fixtures; plan 2 also
+that answers at once, and the four `benchmarks/micro/` fixtures; plan 2 also
 the start-up of a module that builds one `List`.
 
 **Plan 1, measured 2026-09-27** ([execution.md](execution.md), "What the
@@ -3973,7 +3973,7 @@ the answer under both lowerings.
 **Measured** against `909bf40` by the protocol with `-C metadata` layouts
 ([execution.md](execution.md), "What the value conditions cost"), start-up
 included ([execution.md](execution.md), "What the class accessors cost"). The
-four fixtures under `goldens/tool/bench/` name no builtin in their loops and are
+four fixtures under `benchmarks/micro/` name no builtin in their loops and are
 level, and start-up is level. The throwaway `bench_builtin.ns`, whose loop
 names `Array` and `OrderedCollection` every iteration, is 1.5% slower, about
 1.4 ns per accessor send against the constant load it replaces. `vm::run`
