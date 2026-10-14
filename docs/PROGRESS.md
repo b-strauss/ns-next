@@ -38,6 +38,7 @@ first.
 | Shipped names in the image: every object the binary owns named by its declaration, under a rule of what may be named where, and the shipped world's fingerprint in the header | Complete | 2026-10-13 | [shipped-names-in-the-image](superpowers/plans/2026-10-12-2224-shipped-names-in-the-image.md) |
 | `class` and `Object`'s class accessors protected | Complete | 2026-10-13 | [protected-class](superpowers/plans/2026-10-13-1158-protected-class.md) |
 | The platform's modules: no class of theirs handed out, the transcript and the clock modules of their own under `core-library/platform/`, the factories keeping only the kernel classes they use, `build` in every factory, every root `= Value` | Complete | 2026-10-13 | — |
+| Editor support: hints for initializing a local in its declaration and for a read-only local, with their quick fixes and "Apply all hints in this file" | Complete | 2026-10-14 | [editor-hints](superpowers/plans/2026-10-14-1204-ns-next-editor-hints.md) |
 | Road step 5 — mirrors and atomic installation, on `become:` as an eager bulk forward | Not started | — | — |
 | Road step 6 — inline allocation in the interpreter | Not started | — | — |
 | Road step 7 — an execution model for compiled code | Not started | — | — |
@@ -5126,3 +5127,70 @@ paths and a `String` needle encoded at every candidate; `printString`'s
 "an Object" in Newspeak-built refusals; `IndexedCollection`'s receiver for
 a non-Integer bound; the amplification figures counted with two-byte class
 tags; and the reviews' missing tests and leftovers.
+
+## The editor hints (2026-10-14)
+
+Plan: [editor-hints](superpowers/plans/2026-10-14-1204-ns-next-editor-hints.md);
+the design is in [editor-support.md](design/editor-support.md), "Hints".
+
+The language server points at two things in a `.ns` file, as hints with
+quick fixes. Hint A: a local declared bare whose first value a statement
+assigns can take that value in its declaration. Hint B: a local declared
+`::=` that nothing assigns after its declaration can be read-only (`=`).
+Both are given for the locals of methods and closures; a class's header
+slots get none (decided with the user, an item of OPEN-WORK). Every fix is
+behaviour-preserving, and each rule's reason is in editor-support.md. The
+code is `crates/ns-analyzer/src/hints/` (byte-offset text edits and
+`apply_all`; `ns-syntax` is unchanged), and `code_actions.rs` and the
+server publish the hints as `HINT` diagnostics and answer their code
+actions, with "Apply all hints in this file" beside them. The JetBrains
+plugin shows them as weak warnings; the batch was checked by hand under
+`runIde` on 2026-10-14.
+
+**Verified**: the behaviour oracle,
+`crates/ns-analyzer/tests/hinted_goldens.rs`, applies every hint to every
+golden's sources, runs each changed program under both lowerings and holds
+it to the recorded outcome, and requires the result to parse and a second
+"apply all" to change nothing. It runs in its own nextest profile, `hints`,
+because it includes the full-size benchmarks; its 628 trials pass. Four new
+goldens under `goldens/language/slot/local/` were written for it. The
+core-library gate `crates/ns-analyzer/tests/hint_gate.rs` holds the shipped
+core library free of hints: two locals of `Kernel.ns` were initialized in
+their declarations (`valueEquals:`'s `index`, `raisedTo:modulo:`'s
+`remaining`), and the golden image fixture was regenerated, only its
+fingerprint bytes changing. The reviews found and closed several unsound
+fixes: a value object's mutable slots, a header slot's setter sends, a
+closure's value, closures in initializers, comments, multi-line literals,
+and an `=` local captured before its initializer. The last exposed a
+compiler defect, recorded in OPEN-WORK: a read-only local a closure
+captures before its initializer runs reads nil under the optimized
+lowering.
+
+- `fce827b9`, `3590a104` -- the design and the plan.
+- `ef739072`, `c41866af`, `53f53067`, `85d6b455`, `6111d0d0` -- the
+  first rules: the locals that can be read-only, a slot's `::=` found with
+  the lexer, the header-slot rules, and hint A's bare slots.
+- `e22bc46b`, `b2384ad1`, `e226be2f` -- hint A's fixes kept behaviour- and
+  comment-preserving, moving settled values after a guard into their
+  declarations, and keeping a statement after others out of headers.
+- `662135fa`, `ce8b91b4`, `d1edd155` -- `apply_all` and the core-library
+  gate; every golden held with every hint applied, idempotence, and the
+  sources a project golden names outside its directory.
+- `e5cf48f7`, `7d4e5c5d` -- the hints and their quick fixes in the
+  language server, and a guarded, cached whole-file edit.
+- `2ffe490e`, `d1f91f56`, `4559da0b`, `c9874cec`, `3a2424e2` -- hints for
+  the locals of methods and closures only, moved into `ns-analyzer`, the
+  oracle in a profile of its own and kept out of the benchmarks profile,
+  the comments naming locals.
+- `6885e8b6`, `bc318b01`, `e98885ff`, `4bed4151` -- the reviews' fixes: no
+  read-only hint for a local a closure can read before its initializer, a
+  multi-line literal kept as written, no unparsable "apply all" and its
+  panic reported, a reordered declaration's column.
+- `26adc037`, `d84d2e03` -- the goldens the oracle depends on, and the
+  lowerings' disagreement recorded in OPEN-WORK.
+- `f07e3f53`, `ee3e39fb` -- the documents, and the check in the IDE.
+- This commit -- the batch's end-of-batch documents.
+
+What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): hints for a
+class's header slots, and the compiler defect above ("Defects that change
+a correct program's output").

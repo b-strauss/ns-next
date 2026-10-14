@@ -245,6 +245,13 @@ goes through the round trip, `build` then `load`, which holds the started
 image's three streams against what `run` answers on the source; a golden
 whose assembly fails must fail its `build` with `run`'s status and report.
 
+The editor hints have a second runner of the goldens, the behaviour oracle
+(`crates/ns-analyzer/tests/hinted_goldens.rs`, [editor-support.md](editor-support.md),
+"Hints"): it applies every hint to a golden's sources, runs the changed
+program under both lowerings and holds it to the same recorded outcome. It
+runs the full-size benchmarks too, so it has a nextest profile of its own,
+`hints`, which the default and benchmarks profiles leave out.
+
 A golden's root class is instantiated with `new`, and a project golden's
 root with `packageUsing:` its manifest; either reaches the platform only as
 `main:args:`'s first argument (§8.4), as every program does
