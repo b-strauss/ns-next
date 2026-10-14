@@ -735,6 +735,18 @@ impl MirrorPrimitive {
     pub fn index(self) -> usize {
         self.0 as usize
     }
+
+    /// The row at `index` of `MIRROR`, for the embedded shipped code, whose
+    /// bytes are the binary's own.
+    // Read by the tests now, and by the boot from the next step on.
+    #[cfg_attr(not(test), expect(dead_code))]
+    pub(crate) fn from_index(index: u8) -> MirrorPrimitive {
+        assert!(
+            usize::from(index) < MIRROR.len(),
+            "internal: no mirror row {index}"
+        );
+        MirrorPrimitive(index)
+    }
 }
 
 /// One leaf, as the VM mirror answers it. The mirror selector's arguments

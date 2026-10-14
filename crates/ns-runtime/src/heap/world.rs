@@ -93,7 +93,10 @@ pub(crate) struct World {
 
 impl World {
     /// A bootstrapped world: every builtin class built, nothing else.
-    pub(crate) fn new(lowering: Lowering) -> World {
+    pub(crate) fn new(
+        lowering: Lowering,
+        shipped_code_path: crate::shipped_code::ShippedCodePath,
+    ) -> World {
         let mut world = World {
             mutator: Mutator {
                 heap: Heap::new(),
@@ -112,6 +115,7 @@ impl World {
                 creations_in_progress: 0,
                 spare_walks: Vec::new(),
                 lowering,
+                shipped_code_path,
                 argument_buffer: Vec::new(),
                 next_dispatch_id: crate::mixin::DispatchId::FIRST_MINTED,
                 caches: crate::interpreter::inline_cache::InlineCaches::new(),

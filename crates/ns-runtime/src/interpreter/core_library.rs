@@ -272,13 +272,9 @@ impl crate::interpreter::Interpreter {
     /// The root mixin of every shipped module after a boot, `Kernel` first
     /// and then the `SHIPPED_MODULES` in order: the one each module
     /// instance's class applies.
-    // Read by the tests now, and by the precompiling step that follows.
-    #[cfg_attr(not(test), expect(dead_code))]
     pub(crate) fn shipped_root_mixins(&mut self) -> Vec<(&'static str, Rc<Mixin>)> {
         self.enter(|mutator| {
-            let names =
-                std::iter::once("Kernel").chain(SHIPPED_MODULES.iter().map(|shipped| shipped.name));
-            names
+            crate::shipped_code::module_names()
                 .map(|name| {
                     let instance = mutator
                         .shipped_world

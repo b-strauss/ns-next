@@ -27,6 +27,7 @@ use std::rc::Rc;
 use crate::compiler::Lowering;
 use crate::hash::IdentityMap;
 use crate::heap::{ActivationHeader, ActivationReference, Heap, Root};
+use crate::shipped_code::ShippedCodePath;
 use crate::types::*;
 use crate::Symbol;
 
@@ -361,6 +362,11 @@ pub struct Mutator<'gc> {
     /// (`docs/design/compiler.md`, "The reference lowering"). Fixed at
     /// construction, so one interpreter never mixes the two.
     pub(crate) lowering: Lowering,
+    /// Where the boot takes the shipped modules' compiled mixins from. Fixed
+    /// at construction, as `lowering` is.
+    // The boot reads it from the next step of the precompiled shipped code on.
+    #[expect(dead_code)]
+    pub(crate) shipped_code_path: ShippedCodePath,
     /// The reusable argument buffer the run loop gathers a send's arguments
     /// into (`vm::send`). Taken while a send is decided and pushed and given
     /// back afterwards, because the decision needs `&mut Mutator` while
@@ -453,19 +459,25 @@ impl Interpreter {
     /// reference lowering is for checking the optimized one against it; an
     /// artifact decoded into either runs the code it carries.
     pub fn bootstrap_with(lowering: Lowering) -> Interpreter {
-        let mut interpreter = Interpreter::with_kernel(lowering);
+        Interpreter::bootstrap_on(lowering, ShippedCodePath::Source)
+    }
+
+    /// `bootstrap_with`, taking the shipped modules' compiled mixins from
+    /// `path`.
+    pub(crate) fn bootstrap_on(lowering: Lowering, path: ShippedCodePath) -> Interpreter {
+        let mut interpreter = Interpreter::with_kernel(lowering, path);
         interpreter.install_shipped_modules();
         interpreter
     }
 
     /// An interpreter as the kernel phase leaves it: the kernel wired in,
-    /// no other shipped module booted. `bootstrap_with` goes on from here;
+    /// no other shipped module booted. `bootstrap_on` goes on from here;
     /// a test stops here to see what the kernel phase alone built.
-    pub(crate) fn with_kernel(lowering: Lowering) -> Interpreter {
+    pub(crate) fn with_kernel(lowering: Lowering, path: ShippedCodePath) -> Interpreter {
         // Only the debug build's stress modes write to these fields below.
         #[cfg_attr(not(debug_assertions), allow(unused_mut))]
         let mut interpreter = Interpreter {
-            world: crate::heap::World::new(lowering),
+            world: crate::heap::World::new(lowering, path),
             running: false,
             #[cfg(debug_assertions)]
             stress: safepoint::StressMoves::from_env(),

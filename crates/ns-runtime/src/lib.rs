@@ -22,6 +22,7 @@ pub mod mixin;
 pub(crate) mod numeric;
 pub mod platform;
 pub mod resolver;
+pub mod shipped_code;
 pub mod symbol;
 pub(crate) mod trace;
 pub mod types;

@@ -2576,7 +2576,10 @@ mod tests {
     /// no second one beside the class the level was applied from.
     #[test]
     fn the_kernel_phase_fills_the_hidden_slot_of_an_applied_kernel_class() {
-        let mut interpreter = Interpreter::with_kernel(crate::Lowering::Optimized);
+        let mut interpreter = Interpreter::with_kernel(
+            crate::Lowering::Optimized,
+            crate::shipped_code::ShippedCodePath::Source,
+        );
         interpreter.enter(|mutator| {
             let Some(kernel) = mutator.kernel.and_then(|value| value.as_object()) else {
                 panic!("the kernel is instantiated by its phase");
