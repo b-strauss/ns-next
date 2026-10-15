@@ -14245,8 +14245,9 @@ fn shipped_name(module: &str, declaration: &str, kind: ShippedKind) -> ShippedNa
 }
 
 /// The builder refuses an unknown module, a declaration its module's root
-/// does not declare and, in a started image, a name of any module but the
-/// kernel, with the error the loader gives, and refuses before it builds
+/// does not declare, a level past its declaration's clauses, a name given
+/// twice and, in a started image, a name of any module but the kernel, with
+/// the error the loader gives, and refuses before it builds
 /// anything: the shipped world names as many objects afterwards as before,
 /// even when a name the builder would build comes first.
 #[test]
@@ -14265,6 +14266,23 @@ fn building_the_shipped_names_refuses_a_name_before_it_builds_anything() {
             ],
             false,
             decode::DecodeError::UnknownShippedName("CollectionsFactory Nothing".to_string()),
+        ),
+        (
+            vec![
+                list,
+                shipped_name("CollectionsFactory", "List", ShippedKind::Level(7)),
+            ],
+            false,
+            decode::DecodeError::UnknownShippedName("CollectionsFactory List level 7".to_string()),
+        ),
+        (
+            vec![
+                list,
+                shipped_name("Kernel", "Array", ShippedKind::Class),
+                shipped_name("Kernel", "Array", ShippedKind::Class),
+            ],
+            false,
+            decode::DecodeError::DuplicateShippedName("Kernel Array".to_string()),
         ),
         (
             vec![shipped_name("Kernel", "Array", ShippedKind::Class), list],

@@ -255,16 +255,19 @@ impl crate::Interpreter {
     /// `SHIPPED_MODULES` order, then every class of such a module named and
     /// not yet named, in the order of `names`. Each is built at most once.
     ///
-    /// First, before anything is built, every name is checked: a module that
-    /// is no shipped module, or a declaration its module's root does not
-    /// declare, is `UnknownShippedName`, and in a started image (`started`)
-    /// a name of any module but the kernel, or of a module's instance, is
-    /// `ShippedNameInStartedImage` -- so a started image builds nothing.
+    /// First, before anything is built, every name is checked, and each
+    /// refusal `resolve` would give is given here: a module that is no
+    /// shipped module, a declaration its module's root does not declare, or
+    /// a level past its declaration's `<:` clauses is `UnknownShippedName`,
+    /// a name given twice `DuplicateShippedName`, and in a started image
+    /// (`started`) a name of any module but the kernel, or of a module's
+    /// instance, is `ShippedNameInStartedImage` -- so a started image builds
+    /// nothing. The started rule is applied as soon as the module is known,
+    /// before its root is looked at, so a started image naming an unknown
+    /// declaration of another module is refused as started.
     /// What is built is the binary's own code, the same build a program's
     /// first demand runs: the names choose which of the binary's modules
-    /// and classes exist, never what runs. What the names leave to `resolve`
-    /// -- a level past its declaration's clauses, a name given twice -- is
-    /// refused there.
+    /// and classes exist, never what runs.
     #[doc(hidden)]
     pub fn build_shipped_names(
         &mut self,
@@ -313,8 +316,8 @@ impl crate::Interpreter {
 /// Answers, per `SHIPPED_MODULES` entry, the root mixin of the module when
 /// a name names it: the recorded instance's or the pending class's, else the
 /// one taken from the shipped code, which the build then uses. One slot per
-/// module however many names the image lists, so nothing here grows with
-/// the section.
+/// module however many names the image lists; only the set that finds a
+/// name given twice grows with the section, as `resolve`'s does.
 fn check_names(
     mutator: &mut Mutator<'_>,
     names: &[ShippedName],
@@ -323,6 +326,8 @@ fn check_names(
     let kernel = Symbol::intern("Kernel");
     let mut kernel_mixin: Option<Rc<Mixin>> = None;
     let mut root_mixins: Vec<Option<Rc<Mixin>>> = vec![None; SHIPPED_MODULES.len()];
+    // Bounded by the section's count, which the decoder bounded.
+    let mut seen: HashSet<ShippedName> = HashSet::with_capacity(names.len());
     for name in names {
         let unknown = || DecodeError::UnknownShippedName(name.describe());
         let slot = if name.module == kernel {
@@ -334,24 +339,36 @@ fn check_names(
                 .ok_or_else(unknown)?;
             &mut root_mixins[position]
         };
+        // Before the root mixin is taken, so that a started image does not
+        // even compile a lazy module's root.
+        if started && (name.module != kernel || name.kind == ShippedKind::ModuleInstance) {
+            return Err(DecodeError::ShippedNameInStartedImage(name.describe()));
+        }
         let root = match slot {
             Some(root) => Rc::clone(root),
             None => Rc::clone(slot.insert(root_mixin_of(mutator, name.module))),
         };
         let declared = if name.declaration == name.module {
-            true
+            Some(root)
+        } else if name.kind == ShippedKind::ModuleInstance {
+            None
         } else {
-            name.kind != ShippedKind::ModuleInstance
-                && root
-                    .nested
-                    .iter()
-                    .any(|nested| nested.name == name.declaration)
+            root.nested
+                .iter()
+                .find(|nested| nested.name == name.declaration)
+                .cloned()
         };
-        if !declared {
+        let Some(declared) = declared else {
             return Err(unknown());
+        };
+        // A level is named by the index of the `<:` clause that adds it.
+        if let ShippedKind::Level(clause) | ShippedKind::LevelMetaclass(clause) = name.kind {
+            if clause as usize >= declared.mixin_applications.len() {
+                return Err(unknown());
+            }
         }
-        if started && (name.module != kernel || name.kind == ShippedKind::ModuleInstance) {
-            return Err(DecodeError::ShippedNameInStartedImage(name.describe()));
+        if !seen.insert(*name) {
+            return Err(DecodeError::DuplicateShippedName(name.describe()));
         }
     }
     Ok(root_mixins)
