@@ -899,8 +899,10 @@ modules and classes the shipped-name section names that the boot did not
 (`Interpreter::build_shipped_names`, "Shipped names" below). It checks every
 name against the binary's declarations first and refuses an unknown module
 or declaration, a level past its clauses, a duplicate, and in a started
-image any name but the kernel's, before it builds anything, so a refused
-image builds nothing; what it then runs is the binary's own code -- a
+image a name of any module but the kernel or of any module instance, the
+kernel's included ("The section" in "Shipped names" below), before it
+builds anything, so a refused image builds nothing; what it then runs is
+the binary's own code -- a
 module's factory and initializers, a class's accessor -- as a program's
 first demand runs it, never anything the image describes; the image
 chooses only which of the binary's few modules and classes are built.
@@ -1699,8 +1701,10 @@ old space's bytes relocated on load, is the model this does not take.
   handles (`decode_described`). Then, from the host, the loader builds the
   binary's own modules and classes the section names that the boot did not
   build (`Interpreter::build_shipped_names`): it checks every name first --
-  an unknown module or declaration, a name given twice, and in a started
-  image any module but the kernel, is refused before anything is built --
+  an unknown module or declaration, a level past its clauses, a name given
+  twice, and in a started image a name of any module but the kernel or of
+  any module instance, is refused before anything is built ("The section"
+  in "Shipped names" below) --
   then builds each named lazy module as a program's first demand does and
   each named class of it through its accessor, and resolves every name
   against the world by table lookup. Then, outside any entry, where only
@@ -1804,8 +1808,11 @@ process start little: an optimized boot decodes the compiled code `cargo
 xtask shipped-code` generates and the binary embeds, for the kernel and
 `PlatformFactory` only, 1.22 ms for a hello program's boot on the
 measuring workstation, where building every module at boot took 1.77 ms
-and compiling the shipped source 13.6 ms; a first `platform collections`
-costs 0.31 ms ([execution.md](execution.md), "What the precompiled shipped
+in the same measurement, and a first `platform collections` costs
+0.31 ms; compiling the shipped source took 13.6 ms in an earlier
+measurement, against 1.6 ms for an eager boot from the artifact there,
+and each pair compares only within its own measurement
+([execution.md](execution.md), "What the precompiled shipped
 code moved"; [core-library.md](core-library.md), "The embedded shipped
 code"). The format is untouched by it: the embedded code is the boot's,
 never the image's.

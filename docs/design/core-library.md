@@ -817,8 +817,8 @@ private lazy slots `transcriptModule`, `timeModule` and
 hands out one class of each name, and the facets, values, are all equal
 (`tests/platform.rs`, `the_platform_and_its_parts_are_values`,
 `the_collections_module_is_built_once_on_first_demand`,
-`the_typed_arrays_module_is_built_once_on_first_demand`). The facet hands out each
-of the module's classes by `^outer CollectionsFactory <Name>`, a class
+`the_typed_arrays_module_is_built_once_on_first_demand`). The facet hands
+out each of the module's classes by `^outer CollectionsFactory <Name>`, a class
 accessor the compiler recognizes in every shipped module but the kernel,
 which is what lets an image name these private classes as values
 ("Shipped names in the image" below), and not its own class, so a program
@@ -1015,9 +1015,10 @@ only sends to it are the host's `build` at boot, `build`'s own
 `Platform`, the sends `outer PlatformFactory <Name>` of `Time`'s class
 accessor and `KernelNamespace`'s members, each naming a nested class or a
 slot it declares, the nested classes' superclass
-clauses, run with it as receiver, and the lazy module slots'
-initializers' own, `vmMirror` and `kernelModule`. `CollectionsFactory`'s instance is held the same way:
-only `PlatformFactory`'s private `collectionsModule` slot keeps it, and the
+clauses, run with it as receiver, and the lazy module slots' initializers'
+own, `vmMirror` and `kernelModule`. `CollectionsFactory`'s instance is held
+the same way: only `PlatformFactory`'s private `collectionsModule` slot
+keeps it, and the
 facet's classes have it as their enclosing object; the sends to it are
 `build` from `Platform`'s `collections` initializer, the facet's
 class accessors' `outer CollectionsFactory <Name>`, and its nested classes'
@@ -2139,8 +2140,9 @@ refuses a view or a builder whose slots an image crafted with an
   `complete_shipped_world` names each, a builtin's levels read off its
   superclass chain; a typed array's class is built and named, levels
   included, when its accessor first builds it, and the loader builds one
-  an image names before it decodes the graph. A program holding a `Float32Array`, a `DataView` or a
-  `StringBuilder` is written to an image without these classes being
+  an image names before it decodes the graph. A program holding a
+  `Float32Array`, a `DataView` or a `StringBuilder` is written to an image
+  without these classes being
   builtins; the typed arrays are named by their module and declaration,
   `TypedArraysFactory Float32Array`, the others by the kernel's.
   `LittleEndianDataView` and `BigEndianDataView` stand as a record's class
@@ -2154,9 +2156,10 @@ refuses a view or a builder whose slots an image crafted with an
   `IndexedCollection`, `StringBuilder`, `DataView` and its two orders in
   the kernel, `TypedArray` and its ten in `TypedArraysFactory.ns` --
   builtins was rejected: a builtin is a class Rust needs a handle on, not a
-  class the image needs a name for. Every boot builds the kernel's five, and
-  each of `TypedArraysFactory`'s eleven is built when a program first
-  reaches it, from the embedded shipped code on an optimized boot ("The embedded shipped code" below).
+  class the image needs a name for. Every boot builds the kernel's five,
+  and each of `TypedArraysFactory`'s eleven is built when a program first
+  reaches it, from the embedded shipped code on an optimized boot ("The
+  embedded shipped code" below).
 - **`Primitive` stays two bytes** (`resolve.rs`'s
   `a_resolution_stays_the_size_the_hot_path_was_measured_at`), so the
   generic element access of the typed arrays and `DataView`,
@@ -2300,9 +2303,9 @@ mirrors refuse every edit to one ([liveness-and-reflection.md](liveness-and-refl
 shipped name names, no class object and no kernel-made object a program
 can reach, such as a VM error's `Error` and its `Message`, is ever
 forwarded; the path to the mirror runs only through class objects and the
-value roots of `Kernel`, `PlatformFactory` and `CollectionsFactory`, so no
-program will be able to redirect a reference that leads shipped code to the
-mirror. A kernel method running on an instance of a program's subclass
+value roots of the six shipped modules, so no program will be able to
+redirect a reference that leads shipped code to the mirror. A kernel
+method running on an instance of a program's subclass
 that the install migrated fails the planned slot-access check
 ([object-model.md](object-model.md), "Planned with road step 5: what a slot
 access checks") rather than writing the old layout into the new shape. Six
@@ -2311,8 +2314,10 @@ and loosening any one of them lets a program claim every primitive:
 
 - Only `resolver::resolve_kernel` records `Binding::MirrorSend`, the mark the
   compiler's recognizers read, and only the shipped core-library modules —
-  `Kernel.ns`, and `PlatformFactory.ns` and `CollectionsFactory.ns` from
-  `interpreter/core_library.rs`'s table — are resolved with it; a user module
+  `Kernel.ns`, and the five entries of `interpreter/core_library.rs`'s
+  table, `PlatformFactory.ns`, `TranscriptFactory.ns`, `TimeFactory.ns`,
+  `CollectionsFactory.ns` and `TypedArraysFactory.ns` — are resolved with
+  it; a user module
   goes through `resolve`, so copying shipped text gets an ordinary send to
   whatever that module's own `vmMirror` holds.
 - The runtime checks what the resolver cannot: that `Kernel`'s root class
@@ -2703,8 +2708,10 @@ process from 20.8 ms to 5.2 ms; building only `Kernel` and
 `PlatformFactory` at boot took the boot from 1.77 ms to 1.22 ms and the
 hello's process from 5.24 ms to 4.74 ms, of which the kernel's decode is
 0.88 ms, and a first demand of `CollectionsFactory` costs 0.31 ms (release,
-the measuring workstation, Windows 11; [execution.md](execution.md), "What
-the precompiled shipped code moved").
+the measuring workstation, Windows 11). The two pairs are two
+measurements, the eager boot's 1.6 and 1.77 ms taken differently, so each
+compares only within its own ([execution.md](execution.md), "What the
+precompiled shipped code moved").
 
 **What it holds.** A header -- the magic `NSSC`, a `u16` format version,
 the `u64` fingerprint, the module count -- and then per module, `Kernel`
@@ -2805,8 +2812,8 @@ image byte sequence decodes into one ("The VM mirror is the whole Rust
 boundary" above). The other locks hold as they did: the kernel's
 `Binding::MirrorSend`s were recorded by `resolve_kernel` when the artifact
 was generated, the check of the mirror slots after each module's
-instantiation runs on both paths, and the image's locks never see the embedded code. The
-bytes are the binary's own, so bytes that do not decode are a defect of the
+instantiation runs on both paths, and the image's locks never see the
+embedded code. The bytes are the binary's own, so bytes that do not decode are a defect of the
 binary and panic, as a shipped module that does not parse does; the
 decoder has no error type and verifies nothing. Embedding compiled code
 does not conflict with [image-format.md](image-format.md)'s "never for the
@@ -2838,10 +2845,12 @@ beside them.
 
 ### Where the library source lives, and how modules are found
 
-The library is source the runtime ships, built at bootstrap as the Rust
-bootstrap used to be built -- from its compiled code, embedded ahead of time,
-on an optimized boot ("The embedded shipped code" above) -- so running a program from source is unchanged:
-the bootstrap gained a phase in front of it and nothing above that changed.
+The library is source the runtime ships, built as the Rust bootstrap used
+to be built -- the kernel and `PlatformFactory` at bootstrap, every other
+module on its first demand, each from its compiled code, embedded ahead of
+time, on an optimized boot ("The embedded shipped code" above) -- so
+running a program from source is unchanged: the bootstrap gained a phase
+in front of it and nothing above that changed.
 A program of several *user* modules does not go through this table: the
 host compiles a project's modules in module order and hands them to the
 application in its manifest ("The manifest" below).
@@ -2861,8 +2870,8 @@ On a boot from source the table parses and resolves an entry once per
 thread, on the first request for it, with `resolve_kernel`, because the
 entry is shipped source: the boot asks for `PlatformFactory`'s, and every
 other entry is asked for when its module is first demanded or an image
-names it ("The module table and the boot" below). It panics for an entry that does
-not parse or resolve, or whose mirror sends pass a literal block anywhere
+names it ("The module table and the boot" below). It panics for an entry
+that does not parse or resolve, or whose mirror sends pass a literal block anywhere
 but as the final `ifFail:` (the rule of "The shape of a kernel method" above,
 which `Kernel.ns` is held to likewise), as the kernel's does: that is a
 defect in the binary, not in a program, and the unit test `every_shipped_module_resolves` checks
@@ -2896,11 +2905,13 @@ system comes with user modules.
 **Start-up is measured, not assumed.** Compiling the shipped source cost
 a hello program's boot 13.6 ms on the measuring workstation once the
 library had grown to six modules of some 9,000 lines, almost all of it
-parsing, resolving and compiling; decoding the embedded shipped code costs
-1.6 ms for the whole boot, and building only `Kernel` and `PlatformFactory`
-at boot 1.22 ms ([execution.md](execution.md), "What the precompiled
-shipped code moved"). Embedded compiled code is decoded by a
-codec of its own rather than as an image, so neither `image::load`'s two
+parsing, resolving and compiling; decoding the embedded shipped code cost
+1.6 ms for the whole boot when it built every module, in the same
+measurement; building only `Kernel` and `PlatformFactory` at boot measures
+1.22 ms against 1.77 ms for the eager boot in a later one
+([execution.md](execution.md), "What the precompiled shipped code moved",
+says why the two eager figures differ). Embedded compiled code is decoded
+by a codec of its own rather than as an image, so neither `image::load`'s two
 verification passes nor lock (6) are touched, and it is generated into a
 gitignored file and included through the build script's output directory,
 never checked in, and refused unless its fingerprint is the binary's: an
@@ -3402,8 +3413,8 @@ search that keeps no growable collection, the mirror's module leaf and
 (plan 2)" below); the third names the shipped world in an image by
 declaration ("Shipped names in the image" below), and the shipped modules
 other than the kernel and the platform's are built on their first demand
-("The module table and the boot" below).** `Kernel.ns` is to hold only what the VM
-must know — the classes whose instances the VM creates or on which dispatch
+("The module table and the boot" below).** `Kernel.ns` is to hold only
+what the VM must know — the classes whose instances the VM creates or on which dispatch
 depends — and the rest of the library moves into modules the runtime ships.
 Primordial Soup splits it this way (`KernelForPrimordialSoup.ns` beside
 `Runtime.ns`, whose `Platform` is built from modules such as
@@ -3647,8 +3658,8 @@ the platform hands out, so a plain kernel class, a private one or the level
 a kernel mixin adds had none.
 
 **What an author of a shipped module keeps.** The rule of what may be named
-where is computed from the declarations when a module is recorded, so a new shipped
-module or class needs no tag and no table, but its shape decides what an
+where is computed from the declarations when a module is recorded, so a
+new shipped module or class needs no tag and no table, but its shape decides what an
 image can carry:
 
 - **Declare every shipped class directly in its module's root.** A name is
@@ -3703,8 +3714,9 @@ binary. **Letting the decoder build shipped classes itself**, by
 restricting shipped modules' superclass clauses to bare names as
 `Kernel.ns`'s are, would constrain the library and teach the decoder class
 construction; the boot, a first demand or the loader builds them instead,
-running only the binary's own code. **Patching placeholders after decoding** would rewrite slots of
-decoded values afterwards. **Rebuilding a shipped class as a record** would
+running only the binary's own code. **Patching placeholders after
+decoding** would rewrite slots of decoded values afterwards. **Rebuilding
+a shipped class as a record** would
 give a twin, where Rust compares class objects by identity. **Making every
 shipped class a builtin** was rejected too: a builtin is a class Rust needs
 a handle on, not a class the image needs a name for.
@@ -3734,8 +3746,8 @@ a handle on, not a class the image needs a name for.
   `PlatformFactory`'s lazy `collectionsModule` builds it with the kernel
   instance, once, on its first demand, and reaches that instance (`vmMirror
   moduleInstanceNamed: #CollectionsFactory ifFail: [...]`) afterwards, so
-  every platform shares one module instance and one class of each; the platform's lazy
-  `collections` slot answers that instance's `build`, its one
+  every platform shares one module instance and one class of each; the
+  platform's lazy `collections` slot answers that instance's `build`, its one
   public member, and plan 1's `Collections` class has left
   `PlatformFactory.ns`. The facet hands out none of its own class, as the
   platform none of its module's: an image names the facet by its

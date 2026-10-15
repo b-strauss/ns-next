@@ -283,8 +283,9 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   13.6 ms boot that then compiled every module (release, the measuring
   workstation, Windows 11), and the first demand of a module on that path
   parses it too, `CollectionsFactory.ns` in 0.93 ms and
-  `TypedArraysFactory.ns` in 0.58 ms. That is every boot under the reference lowering, under which every
-  golden runs, every boot with `NS_NEXT_NO_PRIMITIVE_METHODS`, every boot
+  `TypedArraysFactory.ns` in 0.58 ms. That is every boot under the
+  reference lowering, under which every golden runs, every boot with
+  `NS_NEXT_NO_PRIMITIVE_METHODS`, every boot
   of a binary built without a current artifact, and `cargo xtask
   shipped-code` itself, which every gate run runs. Part of it is the
   comment attachment the runtime discards ("Comment attachment: a
@@ -298,8 +299,9 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   Rust or core-library sources changed after it last ran, embeds no
   current artifact, and the binary boots from source silently -- correct,
   but slowly: parsing, resolving and compiling the kernel alone took about
-  8.6 ms of the 13.6 ms a boot from source measured when it compiled every
-  module, against a whole boot of 1.22 ms from the artifact. The gates regenerate it and the
+  8.6 ms of a 13.6 ms boot from source that compiled every module, where
+  the same measurement's boot from the artifact took 1.6 ms. The gates
+  regenerate it and the
   `commit` gate's `the_optimized_boot_decodes_the_embedded_code` is red
   without it, but a plain `cargo build --release` is not checked. A later
   packaging (`cargo install`, a release build for distribution) needs a

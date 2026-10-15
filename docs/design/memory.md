@@ -1137,11 +1137,14 @@ need, stated carefully because the careless version is wrong.
 `decode_graph_section` allocates every record's object before it fills any,
 because a record must be addressable before the records that reference it
 are read. The decoder allocates them only after the load's one tenure,
-which runs between two entries; nothing before it runs Newspeak, since a
-shipped name is resolved by table lookup, and the graph pass allocates
-every placeholder old, after the tenure, and never polls a safepoint,
-so nothing collects while the placeholders exist and a rejected image
-cannot give them back part-way through ("Generations"). It is
+which runs between two entries. Before it, only the binary's own code
+runs: the loader checks every shipped name against the binary's
+declarations, refusing an unknown one before it builds anything, builds
+the modules and classes the section names that the boot did not, and
+resolves each name by table lookup. Nothing allocates between the tenure
+and the graph pass, which allocates every placeholder old and never polls
+a safepoint, so nothing collects while the placeholders exist and a
+rejected image cannot give them back part-way through ("Generations"). It is
 not retained past that: `image::load` owns its `Interpreter` in a local, so
 every `Err` path drops it and the space with it -- the cost is a transient
 peak during loading, not a leak for the process's life.

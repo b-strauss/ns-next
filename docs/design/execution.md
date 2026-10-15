@@ -5174,8 +5174,8 @@ built every module at boot, so its instantiations and
 demand (`core-library.md`, "The module table and the boot").
 
 **The first stage, measured 2026-10-14, `eb2716b8` against `f60f6782`**,
-the first stage's head against the head of `master`, at which the start-up was measured the same day
-before the branch began, on the same machine, the measuring workstation
+the first stage's head against the head of `master`, at which the start-up
+was measured the same day before the branch began, on the same machine, the measuring workstation
 (Windows 11). Both are release
 builds with the pinned `RUSTFLAGS` of the protocol above, each in its own
 target directory, `f60f6782` in a throwaway worktree under `.temp/`; the
@@ -5250,15 +5250,24 @@ throwaway worktree under `.temp/`, each after `cargo xtask shipped-code` and
 its `--check` saying the artifact is current. Two programs: the hello, and
 one whose `main:args:` sends `platform collections List new` once before
 showing `'hello'`, which pays the first demand of `CollectionsFactory` and
-the build of its `List`. The marks are the first stage's at the boot's
-start and end, the kernel phase's end, around each module's decode and
-around `complete_shipped_world`, and on this side at a lazy module's demand
-(`shipped_module_class`'s entry) and its record (`record_pending`'s end),
-with one at the start of `main` and one at the process's exit; not
-committed. 30 marked runs of each program and side, interleaved, the median
-per span; 40 whole-process runs of the same binaries with the marks
-switched off, interleaved, timed from outside (Python's `subprocess.run`
-under `time.perf_counter`).
+the build of its `List`. The marks are a set of their own, the same on
+both sides but where noted, and not the first stage's per-step ones: at
+the start of `main`, the start of `bootstrap_with`, the end of the kernel
+phase, around each module's decode and around `complete_shipped_world`,
+the end of the shipped-module phase and the process's exit, and on this
+side also at a lazy module's demand (`shipped_module_class`'s entry) and
+its record (`record_pending`'s end); not committed. 30 marked runs of each
+program and side, interleaved, the median per span; 40 whole-process runs
+of the same binaries with the marks switched off, interleaved, timed from
+outside (Python's `subprocess.run` under `time.perf_counter`).
+
+The eager boot measures 1.77 ms here and 1.6 ms in the first stage
+although the code it boots is the same -- `eb2716b8` to `740adb25`
+changed only comments under `crates/`. The two figures are taken
+differently: the first stage's is a sum of per-step medians, which leaves
+out the set-up between its marks, and this one is the median of one span
+from `bootstrap_with`'s start to the boot's end, from another build on
+another day. Each compares only within its own measurement.
 
 | Span, median, ms | Hello, `740adb25` | Hello, `e178ac5c` | `List new`, `740adb25` | `List new`, `e178ac5c` |
 |---|---|---|---|---|
@@ -5275,7 +5284,9 @@ under `time.perf_counter`).
 
 **The boot is 0.55 ms shorter, and a hello's whole process 0.50 ms.** The
 boot no longer decodes, instantiates or completes the four lazy modules;
-what it keeps is the kernel's 1.08 ms and `PlatformFactory`'s 0.15 ms. The
+what it keeps is the kernel phase's 1.08 ms and the shipped-module phase's
+0.15 ms -- `PlatformFactory`'s decode and instantiation, the kernel's and
+the platform's classes completed (0.03 ms) and the platform's `build`. The
 saving is more than the 0.40 ms the first stage's numbers allowed, since
 `TranscriptFactory` and `TimeFactory` and the classes of all four modules
 are no longer built either; a hello builds `TranscriptFactory` on its first
