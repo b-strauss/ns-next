@@ -242,45 +242,64 @@ uses.
 2. **On both paths.** A module is built on first demand whether its mixin
    is decoded from the artifact or compiled from source, so the reference
    lowering builds the world in the same order as the optimized one.
-3. **The build runs in the run loop** (chosen with the user over building
-   only in `image::load`, which would leave every `run` decoding
-   everything). A leaf holds only the `Mutator` and cannot call
-   `Interpreter::instantiate`; an instantiation in the loop is always a
-   `Step`. So the first `moduleInstanceNamed:` for a module answers a step
-   that builds it, as `do:`, the futures and a nested class's accessor
-   already answer steps.
-4. **One build, whoever asks.** Building a module is one sequence, decided
-   as a `Step` by one function: take its root mixin
-   (`Mutator::shipped_root_mixin`), build its root class
-   (`root_class_of_mixin`), instantiate it with its factory's arguments
-   (`ShippedFactory`), check its mirror slot (`check_factory_holds_the_mirror`,
-   lock (2)), build every class its root declares -- metaclasses and the
-   levels its `<:` clauses add -- by the step a nested class's accessor
-   takes, one after another, and then record the instance and every shipped
-   name of that module in the shipped world at once and answer the
-   instance. The leaf answers that step; the boot (`PlatformFactory`) and
-   `image::load` run the same step from the host (`run_from_host`), where a
-   failure stays the boot's panic.
-5. **Nothing is recorded before the build completes.** The module's
-   instance and names enter the shipped world in the step's last
-   continuation, so an unwind through a half-built module -- the depth
-   limit, the only error a shipped initializer can meet -- records nothing,
-   and the next demand builds it afresh. The encoder can therefore never
-   meet a shipped class without its name.
-6. **`image::load` builds the modules its shipped-names section names**,
-   after reading the section and before the tenure, in `SHIPPED_MODULES`
-   order whatever the section's order, from the host, and only then
+3. **The build is arranged in Newspeak, not added to the run loop**
+   (chosen with the user on 2026-10-15). An instantiation in the run loop
+   has no "afterwards": its last initializer delivers the instance straight
+   to the sender (`types.rs`, `Continuation::Instantiate`), and a hook
+   there would sit on the instantiation path whose `Step` sizes were
+   measured to the percent. So `PlatformFactory.ns`'s lazy module slots
+   build a module with ordinary sends:
+   `vmMirror moduleInstanceNamed: #CollectionsFactory ifFail: [vmMirror
+   recordShippedModule: ((vmMirror shippedModuleClassNamed:
+   #CollectionsFactory ifFail: [...]) usingKernel: kernel) ifFail: [...]]`.
+   Two new mirror leaves run no Newspeak:
+   - **`shippedModuleClassNamed:`** answers the root class of a shipped
+     module not yet recorded: it takes the root mixin
+     (`Mutator::shipped_root_mixin`, decoded or compiled) and builds the
+     root class (`root_class_of_mixin`), once -- the class is kept as the
+     module's pending class, so a demand that an unwind interrupted gets
+     the same class again. It declines a name that is no lazy shipped
+     module, or one already recorded.
+   - **`recordShippedModule:`** takes the instance the factory send
+     answered, refuses anything but an instance of a pending root class,
+     checks its mirror slot (`check_factory_holds_the_mirror`, lock (2)),
+     records it as that module's one instance with the names of its
+     instance, root class, metaclass and levels, and answers it.
+   The factory send in between is an ordinary instantiation, with its
+   depth counted and its errors signalled like any other.
+4. **A lazy module's classes are named as they are built.** A module's
+   build no longer builds every class its root declares: each class gets
+   its shipped names -- itself, its metaclass, its levels, with the
+   positions `shipped_entries` gives today -- in `nested::after_clause`,
+   when its accessor builds it, if its declaration is a nested mixin of a
+   recorded shipped root (`Mixin.shipped` tested first). An encoder can
+   reach only a class that exists, so every class it meets is named. The
+   kernel and `PlatformFactory` keep `complete_shipped_world` at boot,
+   which builds all their classes and names whatever the hook did not.
+   A program that uses only `List` builds only `List`.
+5. **Nothing is recorded before the instance exists.** The instance and its
+   names enter the shipped world only in `recordShippedModule:`, after the
+   factory send returned, so an unwind through a half-built module -- the
+   depth limit, the only error a shipped initializer can meet -- records
+   nothing, and the next demand instantiates the pending class afresh.
+6. **`image::load` builds what its shipped-names section names**, after
+   reading the section and before the tenure, from the host: each named
+   lazy module in `SHIPPED_MODULES` order (its class through the same
+   function as `shippedModuleClassNamed:`, instantiated with its factory's
+   arguments (`ShippedFactory`), recorded through the same function as
+   `recordShippedModule:`), then each named class of it
+   (`build_nested_class`, which names it through the hook), and only then
    resolves the names. The image chooses *which* of the binary's modules
-   are built, never what runs: the build is the binary's own code, the same
-   as a run's. `image-format.md`'s argument that nothing between the
-   bootstrap and the graph allocates is restated: the builds allocate, and
-   the tenure that follows them still leaves the graph pass the only
+   and classes are built, never what runs: the build is the binary's own
+   code, as a run's is. `image-format.md`'s argument that nothing between
+   the bootstrap and the graph allocates is restated: the builds allocate,
+   and the tenure that follows them still leaves the graph pass the only
    allocator after it. A started image may name only the kernel, so a
    started image builds nothing.
-7. **The shipped world's order is the order of demand.** A run that asks
-   for `platform collections` before `platform clock` records the
-   collections module first. The encoder walks the world in that order, so
-   an image's bytes stay a function of the program and its run.
+7. **The shipped world's order is the order of demand.** `ShippedWorld`'s
+   entries are recorded as modules and classes are built. The encoder walks
+   them in that order, so an image's bytes stay a function of the program
+   and its run.
 8. **`generate()` compiles every module without building any**: it needs
    the root mixins, not the world (`Interpreter::shipped_root_mixins`
    gives way to compiling each module through
@@ -294,23 +313,29 @@ uses.
   under `run` and `load`.
 - **One instance per module** (`ShippedWorld::add_module_instance` refuses a
   second): a demand after the build answers the recorded instance.
-- **The mirror's six locks**: the check of the mirror slot runs in the
-  build's continuation; `moduleInstanceNamed:` still answers only a shipped
-  module's instance and declines any other name.
+- **The mirror's six locks**: the two new leaves are mirror rows, so only
+  shipped code reaches them; the check of the mirror slot runs in
+  `recordShippedModule:`; `moduleInstanceNamed:` still answers only a
+  recorded shipped module's instance and declines any other name.
 
 ### Tests
 
 1. After `Interpreter::bootstrap()`, the shipped world holds `Kernel` and
    `PlatformFactory` and none of the four lazy modules.
 2. `platform collections` builds `CollectionsFactory` once: a second
-   demand answers the same instance, and the world then holds its names.
-3. Building each lazy module draws no identity hash.
-4. A build interrupted by the depth limit records nothing, and a later
-   demand from a shallow stack builds the module.
-5. An image whose graph holds a `List` loads into a fresh process: the load
-   builds `CollectionsFactory` before the graph, and the loaded `List`
-   class is that module's.
-6. The goldens under both lowerings, the images, caches, benchmarks and
+   demand answers the same instance; after `platform collections List`
+   the world names `List` and not `Map`.
+3. Building each lazy module, and a class of it, draws no identity hash.
+4. A golden: the first `platform collections` at the depth limit is caught
+   as the depth error, and a later one from a shallow stack builds the
+   module and runs (`goldens/runtime/depth-limit/`).
+5. `shippedModuleClassNamed:` declines a name that is no lazy shipped
+   module and one already recorded; `recordShippedModule:` declines an
+   object that is no instance of a pending root class.
+6. An image whose graph holds a `List` loads into a fresh process: the load
+   builds `CollectionsFactory` and its `List` before the graph, and the
+   loaded `List` class is that module's.
+7. The goldens under both lowerings, the images, caches, benchmarks and
    stress gates, unchanged in their outcomes. The boot's inline-cache
    counts (`tests/inline_caches.rs`) change, since the boot no longer runs
    the four modules' initializers; the new counts are established, not
