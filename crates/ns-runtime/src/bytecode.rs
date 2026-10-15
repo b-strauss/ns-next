@@ -450,6 +450,26 @@ pub struct CompiledCode {
     pub source: Span,
 }
 
+/// Every field of a `CompiledCode`, borrowed (`CompiledCode::fields`).
+/// The three a writer may leave out -- its one, the shipped code's encoder,
+/// does -- are here all the same, so that leaving one out is a decision
+/// written where it is made.
+pub(crate) struct CompiledCodeFields<'code> {
+    pub(crate) kind: &'code CodeKind,
+    #[expect(dead_code, reason = "named so that a writer decides to leave it out")]
+    pub(crate) body: &'code EncodedBody,
+    pub(crate) argument_count: &'code u16,
+    pub(crate) register_count: &'code u16,
+    pub(crate) statement_program_counter: &'code [(usize, Range<usize>)],
+    #[expect(dead_code, reason = "named so that a writer decides to leave it out")]
+    pub(crate) family_size: &'code u32,
+    pub(crate) copied_count: &'code u16,
+    #[expect(dead_code, reason = "named so that a writer decides to leave it out")]
+    pub(crate) outer_reach: &'code u16,
+    pub(crate) unwind_marker: &'code Option<UnwindMarker>,
+    pub(crate) source: &'code Span,
+}
+
 impl CompiledCode {
     /// A body from its instructions, encoded at once; `family_size` and
     /// `outer_reach` are derived from them, as the compiler derives them.
@@ -502,6 +522,37 @@ impl CompiledCode {
             copied_count,
             statement_program_counter,
             unwind_marker: None,
+            source,
+        }
+    }
+
+    /// Every field, borrowed, for a writer that decides each one's
+    /// treatment by destructuring the answer without `..`: `CompiledCode`
+    /// itself cannot be destructured so outside this module, since its
+    /// `body` is private to keep every body built through `from_builder`.
+    pub(crate) fn fields(&self) -> CompiledCodeFields<'_> {
+        let CompiledCode {
+            kind,
+            body,
+            argument_count,
+            register_count,
+            statement_program_counter,
+            family_size,
+            copied_count,
+            outer_reach,
+            unwind_marker,
+            source,
+        } = self;
+        CompiledCodeFields {
+            kind,
+            body,
+            argument_count,
+            register_count,
+            statement_program_counter,
+            family_size,
+            copied_count,
+            outer_reach,
+            unwind_marker,
             source,
         }
     }

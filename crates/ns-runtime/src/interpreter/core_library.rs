@@ -55,6 +55,10 @@ pub(crate) enum ShippedFactory {
     Kernel,
 }
 
+/// The kernel module's name. The kernel is a shipped module too, the first,
+/// but booted before the others and not in `SHIPPED_MODULES`.
+pub(crate) const KERNEL_MODULE: &str = "Kernel";
+
 pub(crate) const SHIPPED_MODULES: &[ShippedModule] = &[
     ShippedModule {
         name: "PlatformFactory",
@@ -201,7 +205,7 @@ impl crate::interpreter::Interpreter {
                 .kernel
                 .and_then(|kernel| kernel.as_object())
                 .expect("internal: the kernel's instance is wired in before the shipped modules");
-            mutator.record_shipped_module(Symbol::intern("Kernel"), kernel);
+            mutator.record_shipped_module(Symbol::intern(KERNEL_MODULE), kernel);
         });
         self.build_shipped_module("PlatformFactory", None);
         self.complete_shipped_world();
@@ -366,7 +370,7 @@ impl<'gc> Mutator<'gc> {
     /// (the mirror sends, and for the kernel its shape) on the way. A name
     /// that is neither is a defect in the binary, so it panics.
     pub(crate) fn shipped_root_mixin_from_source(&mut self, name: &str) -> Rc<Mixin> {
-        if name == "Kernel" {
+        if name == KERNEL_MODULE {
             let resolved = super::kernel::resolved_kernel();
             let root_mixin = self.build_root_mixin(
                 &resolved.module.root_class,
@@ -492,6 +496,47 @@ mod tests {
                 panic!("{step}: unexpected Newspeak error: {}", error.message)
             }
         }
+    }
+
+    /// An instance of a pending root class whose factory was given the
+    /// mirror is recorded only when its `vmMirror` slot holds the mirror
+    /// (lock (2)): `TranscriptFactory` instantiated from the host over
+    /// `nil` is declined, nothing is recorded, and the class stays pending.
+    #[test]
+    fn a_module_instance_over_something_that_is_not_the_mirror_is_not_recorded() {
+        let mut interpreter = crate::Interpreter::bootstrap();
+        let transcript = Symbol::intern("TranscriptFactory");
+        let (class, not_the_mirror, entry_count) = interpreter.enter(|mutator| {
+            let class = shipped_module_class(mutator, transcript)
+                .expect("TranscriptFactory is lazy and not yet recorded");
+            (
+                mutator.stash(Value::object(class)),
+                mutator.stash(Value::nil()),
+                mutator.shipped_world.entries().len(),
+            )
+        });
+        let instance = expect_ok(
+            interpreter.instantiate(&class, std::slice::from_ref(&not_the_mirror)),
+            "TranscriptFactory usingVmMirror: nil",
+        );
+        interpreter.enter(|mutator| {
+            let instance = mutator.fetch(&instance);
+            assert!(matches!(
+                record_pending(mutator, instance),
+                Err(reason) if reason.contains("vmMirror slot must hold the VM mirror")
+            ));
+            assert!(record_pending_module(mutator, instance).is_none());
+            assert!(mutator.shipped_world.module_instance(transcript).is_none());
+            assert_eq!(mutator.shipped_world.entries().len(), entry_count);
+            let class = mutator
+                .fetch(&class)
+                .as_object()
+                .expect("a root class is a class object");
+            assert!(mutator
+                .shipped_world
+                .pending_class(transcript)
+                .is_some_and(|pending| pending.same(class)));
+        });
     }
 
     /// Whether the shipped world names the class `declaration` of

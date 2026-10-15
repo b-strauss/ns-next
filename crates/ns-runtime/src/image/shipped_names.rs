@@ -15,7 +15,9 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use crate::heap::Root;
-use crate::interpreter::core_library::{booted, LAZY_SHIPPED_MODULES, SHIPPED_MODULES};
+use crate::interpreter::core_library::{
+    booted, KERNEL_MODULE, LAZY_SHIPPED_MODULES, SHIPPED_MODULES,
+};
 use crate::interpreter::shipped_world::ShippedWorld;
 use crate::mixin::Mixin;
 use crate::types::{ObjectReference, Value};
@@ -212,7 +214,7 @@ pub(crate) fn resolve<'gc>(
     world: &ShippedWorld<'gc>,
     started: bool,
 ) -> Result<Vec<ResolvedName<'gc>>, DecodeError> {
-    let kernel = Symbol::intern("Kernel");
+    let kernel = Symbol::intern(KERNEL_MODULE);
     let mut seen: HashSet<usize> = HashSet::with_capacity(names.len());
     let mut resolved = Vec::with_capacity(names.len());
     for name in names {
@@ -323,7 +325,7 @@ fn check_names(
     names: &[ShippedName],
     started: bool,
 ) -> Result<Vec<Option<Rc<Mixin>>>, DecodeError> {
-    let kernel = Symbol::intern("Kernel");
+    let kernel = Symbol::intern(KERNEL_MODULE);
     let mut kernel_mixin: Option<Rc<Mixin>> = None;
     let mut root_mixins: Vec<Option<Rc<Mixin>>> = vec![None; SHIPPED_MODULES.len()];
     // Bounded by the section's count, which the decoder bounded.
@@ -363,7 +365,9 @@ fn check_names(
         };
         // A level is named by the index of the `<:` clause that adds it.
         if let ShippedKind::Level(clause) | ShippedKind::LevelMetaclass(clause) = name.kind {
-            if clause as usize >= declared.mixin_applications.len() {
+            let declared_clause = usize::try_from(clause)
+                .is_ok_and(|clause| clause < declared.mixin_applications.len());
+            if !declared_clause {
                 return Err(unknown());
             }
         }

@@ -13,6 +13,7 @@ use std::rc::Rc;
 use ns_syntax::ast::AccessModifier;
 
 use crate::heap::{Heap, Root};
+use crate::interpreter::core_library::KERNEL_MODULE;
 use crate::interpreter::Mutator;
 use crate::mixin::{mixin_key, MethodEntry, Mixin};
 use crate::trace::{Trace, Tracer};
@@ -465,7 +466,7 @@ fn class_positions<'gc>(
     class: ClassReference<'gc>,
 ) -> Positions {
     let public = nested.access == AccessModifier::Public
-        && !(module == Symbol::intern("Kernel")
+        && !(module == Symbol::intern(KERNEL_MODULE)
             && KERNEL_CLASSES_FOR_SHIPPED_MODULES.contains(&nested.name.as_str()));
     let value = public || accessed.contains(&nested.name);
     // A class object is made only by evaluating a declaration, so

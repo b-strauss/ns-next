@@ -217,7 +217,7 @@ fn write_image<'gc>(
     // holds would hand it to the program; the loader refuses a started
     // image naming more, so none is written.
     if flags & encode::FLAG_START != 0 {
-        let kernel = crate::Symbol::intern("Kernel");
+        let kernel = crate::Symbol::intern(crate::interpreter::core_library::KERNEL_MODULE);
         if let Some(name) = used.names(mutator).into_iter().find(|name| {
             name.module != kernel || name.kind == shipped_names::ShippedKind::ModuleInstance
         }) {

@@ -8,6 +8,7 @@ use std::rc::Rc;
 use ns_syntax::ast;
 
 use crate::heap::Root;
+use crate::interpreter::core_library::KERNEL_MODULE;
 use crate::interpreter::{HostSignal, Interpreter, Mutator};
 use crate::mixin::{mixin_key, Mixin};
 use crate::types::*;
@@ -114,7 +115,7 @@ impl Interpreter {
     /// so the stress modes see it too.
     pub(crate) fn install_kernel(&mut self) {
         let (kernel_class, applied_classes, mirror) = self.enter(|mutator| {
-            let root_mixin = mutator.shipped_root_mixin("Kernel");
+            let root_mixin = mutator.shipped_root_mixin(KERNEL_MODULE);
             let (kernel_class, applied_classes) = mutator.fill_builtin_classes(&root_mixin);
             let applied_classes: Vec<(Rc<Mixin>, Root)> = applied_classes
                 .into_iter()
@@ -633,7 +634,7 @@ pub(crate) fn kernel_kind_named(name: &str) -> Option<BuiltinClass> {
 /// clause, as any class's does. And every mirror send passes a literal
 /// block only as its failure block (`check_mirror_send_arguments`).
 pub(super) fn check_kernel_shape(root: &Rc<Mixin>, resolved: &ResolvedModule) {
-    check_mirror_send_arguments(resolved, "Kernel");
+    check_mirror_send_arguments(resolved, KERNEL_MODULE);
     let kinds: Vec<BuiltinClass> = BuiltinClass::ALL
         .into_iter()
         .filter(|kind| *kind != BuiltinClass::VmMirror)
@@ -963,8 +964,11 @@ mod tests {
     use crate::mixin::{MethodFastPath, QuickConstant};
     use crate::{BuiltinClass, Interpreter, Symbol};
 
-    #[test]
-    fn every_kernel_class_records_the_receiver_its_clauses_name() {
+    /// Compiles the kernel's root mixin from its source and hands it to
+    /// `check` with the resolved kernel it was compiled from.
+    fn check_kernel_root_from_source(
+        check: impl FnOnce(&crate::mixin::Mixin, &crate::types::ResolvedModule),
+    ) {
         let resolved = super::resolved_kernel();
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
@@ -973,6 +977,13 @@ mod tests {
                 &resolved.bindings,
                 crate::interpreter::instantiate::ModuleSource::Kernel,
             );
+            check(&root, &resolved);
+        });
+    }
+
+    #[test]
+    fn every_kernel_class_records_the_receiver_its_clauses_name() {
+        check_kernel_root_from_source(|root, _| {
             for nested in &root.nested {
                 let declaration = nested.declaration.as_ref().expect("built from source");
                 let written = declaration
@@ -997,14 +1008,7 @@ mod tests {
 
     #[test]
     fn the_kernel_root_records_its_shape() {
-        let resolved = super::resolved_kernel();
-        let mut interpreter = Interpreter::bootstrap();
-        interpreter.enter(|mutator| {
-            let root = mutator.build_root_mixin(
-                &resolved.module.root_class,
-                &resolved.bindings,
-                crate::interpreter::instantiate::ModuleSource::Kernel,
-            );
+        check_kernel_root_from_source(|root, resolved| {
             assert_eq!(
                 root.root_shape,
                 crate::resolver::root_shape(&resolved.module.root_class)
@@ -2580,10 +2584,26 @@ mod tests {
     /// no second one beside the class the level was applied from.
     #[test]
     fn the_kernel_phase_fills_the_hidden_slot_of_an_applied_kernel_class() {
-        let mut interpreter = Interpreter::with_kernel(
-            crate::Lowering::Optimized,
-            crate::shipped_code::ShippedCodePath::Source,
+        assert_the_kernel_phase_fills_the_hidden_slot(crate::shipped_code::ShippedCodePath::Source);
+    }
+
+    /// As `the_kernel_phase_fills_the_hidden_slot_of_an_applied_kernel_class`,
+    /// over the kernel decoded from the embedded shipped code: the decoded
+    /// mixin carries no declaration, so the phase reads the clauses off the
+    /// mixin alone.
+    #[test]
+    fn the_kernel_phase_fills_the_hidden_slot_from_the_embedded_code() {
+        assert!(
+            crate::shipped_code::usable(crate::shipped_code::embedded()),
+            "run `cargo xtask shipped-code`"
         );
+        assert_the_kernel_phase_fills_the_hidden_slot(
+            crate::shipped_code::ShippedCodePath::Embedded,
+        );
+    }
+
+    fn assert_the_kernel_phase_fills_the_hidden_slot(path: crate::shipped_code::ShippedCodePath) {
+        let mut interpreter = Interpreter::with_kernel(crate::Lowering::Optimized, path);
         interpreter.enter(|mutator| {
             let Some(kernel) = mutator.kernel.and_then(|value| value.as_object()) else {
                 panic!("the kernel is instantiated by its phase");

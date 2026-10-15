@@ -78,7 +78,7 @@ impl<'bytes> ByteReader<'bytes> {
         u64::from_le_bytes(self.raw(8).try_into().expect("eight bytes"))
     }
     pub(crate) fn length(&mut self) -> usize {
-        self.u32() as usize
+        usize::try_from(self.u32()).expect("internal: a u32 fits a usize")
     }
     pub(crate) fn str(&mut self) -> &'bytes str {
         let length = self.length();

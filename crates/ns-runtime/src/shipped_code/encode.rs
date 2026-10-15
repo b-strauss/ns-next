@@ -10,12 +10,15 @@ use ns_syntax::ast::AccessModifier;
 use ns_syntax::Span;
 
 use crate::bytecode::{
-    CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal, UnwindMarker,
+    CallSite, CodeKind, CompiledCode, CompiledCodeFields, Instruction, IntegerOperation, Literal,
+    UnwindMarker,
 };
 use crate::mixin::{
-    AccessorKind, ClauseMessage, FactoryMethod, MethodEntry, MethodFastPath, Mixin,
-    MixinApplicationClause, MixinMethod, MixinSlot, QuickConstant, SlotAccessor,
+    AccessorKind, ClassAccessor, ClauseMessage, Factory, FactoryMethod, MethodEntry,
+    MethodFastPath, Mixin, MixinApplicationClause, MixinMethod, MixinSlot, QuickConstant,
+    SlotAccessor,
 };
+use crate::resolver::RootShape;
 use crate::types::BuiltinClass;
 use crate::Symbol;
 
@@ -141,8 +144,12 @@ fn write_mixin(out: &mut Out, mixin: &Mixin) {
         out.boolean(*lazy);
     }
     out.option(factory.as_ref(), |out, factory| {
-        out.symbol(factory.selector);
-        out.length(factory.argument_count);
+        let Factory {
+            selector,
+            argument_count,
+        } = factory;
+        out.symbol(*selector);
+        out.length(*argument_count);
     });
     out.option(superclass.as_ref(), |out, message| {
         out.clause_message(*message)
@@ -174,8 +181,12 @@ fn write_mixin(out: &mut Out, mixin: &Mixin) {
     out.option(superclass_clause_code.as_ref(), |out, code| out.code(code));
     out.option(superclass_message_code.as_ref(), |out, code| out.code(code));
     out.option(root_shape.as_ref(), |out, shape| {
-        out.boolean(shape.over_value);
-        out.boolean(shape.applies_value);
+        let RootShape {
+            over_value,
+            applies_value,
+        } = shape;
+        out.boolean(*over_value);
+        out.boolean(*applies_value);
     });
     out.boolean(*shipped);
 }
@@ -270,8 +281,9 @@ impl Out {
                     out.fast_path(*fast_path);
                 });
                 self.option(class_accessor.as_ref(), |out, accessor| {
-                    out.u16(accessor.depth);
-                    out.symbol(accessor.class_name);
+                    let ClassAccessor { depth, class_name } = accessor;
+                    out.u16(*depth);
+                    out.symbol(*class_name);
                 });
             }
             MethodEntry::SlotAccessor(SlotAccessor {
@@ -349,8 +361,12 @@ impl Out {
 
     fn code(&mut self, code: &CompiledCode) {
         let instructions = code.instructions();
-        let CompiledCode {
+        let CompiledCodeFields {
             kind,
+            // Its decoded view, `instructions` above, is what is written, so
+            // the in-memory form, wide or narrow, is the decoder's
+            // `CodeBuilder`'s to choose.
+            body: _,
             argument_count,
             register_count,
             statement_program_counter,
@@ -361,11 +377,7 @@ impl Out {
             outer_reach: _,
             unwind_marker,
             source,
-            // Exactly the private `body`: its decoded view, `instructions`
-            // above, is what is written, so the in-memory form, wide or
-            // narrow, is the decoder's `CodeBuilder`'s to choose.
-            ..
-        } = code;
+        } = code.fields();
         self.u8(match kind {
             CodeKind::Method => 0,
             CodeKind::Block => 1,

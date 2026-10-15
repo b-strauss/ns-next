@@ -22,7 +22,7 @@
 use std::rc::Rc;
 
 use crate::compiler::{primitive_method, Lowering};
-use crate::interpreter::core_library::SHIPPED_MODULES;
+use crate::interpreter::core_library::{KERNEL_MODULE, SHIPPED_MODULES};
 use crate::interpreter::Interpreter;
 use crate::mixin::Mixin;
 
@@ -60,7 +60,8 @@ pub(crate) enum ShippedCodePath {
 /// Whether `bytes` is an artifact this binary may decode: one written for
 /// exactly the sources it was built from.
 pub(crate) fn usable(bytes: &[u8]) -> bool {
-    let header_length = MAGIC.len() + 2 + 8;
+    // The magic, the format version and the fingerprint.
+    let header_length = MAGIC.len() + size_of::<u16>() + size_of::<u64>();
     if bytes.len() < header_length {
         return false;
     }
@@ -92,7 +93,7 @@ pub(crate) fn path_for(
 /// The shipped modules' names, in the artifact's order: `Kernel`, then
 /// every `SHIPPED_MODULES` name.
 pub(crate) fn module_names() -> impl Iterator<Item = &'static str> {
-    std::iter::once("Kernel").chain(SHIPPED_MODULES.iter().map(|shipped| shipped.name))
+    std::iter::once(KERNEL_MODULE).chain(SHIPPED_MODULES.iter().map(|shipped| shipped.name))
 }
 
 /// The artifact: every shipped module compiled through the source path,

@@ -8,3 +8,4 @@ Cargo.lock.orig
 *.nsb
 /.temp
 /crates/ns-runtime/core-library/shipped-code.bin
+/crates/ns-runtime/core-library/shipped-code.bin.tmp

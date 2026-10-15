@@ -253,15 +253,7 @@ fn main() -> ExitCode {
             }
         }
     }
-    // The gates build and test against the embedded shipped code, so it runs
-    // once per call: right after `cargo fmt --all` when the run includes
-    // `commit` (a group listed before `commit` then sees the artifact as it
-    // was before formatting), else before the first group.
-    let mut placed = false;
-    parts.retain(|part| *part != Part::ShippedCode || !std::mem::replace(&mut placed, true));
-    if !placed {
-        parts.insert(0, Part::ShippedCode);
-    }
+    place_shipped_code(&mut parts);
     let root = repository_root();
     let mut times = Vec::new();
     for part in &parts {
@@ -281,6 +273,18 @@ fn main() -> ExitCode {
     report(&times);
     println!("\nevery gate passed");
     ExitCode::SUCCESS
+}
+
+/// The gates build and test against the embedded shipped code, so it runs
+/// once per call: right after `cargo fmt --all` when the run includes
+/// `commit` (a group listed before `commit` then sees the artifact as it
+/// was before formatting), else before the first group.
+fn place_shipped_code(parts: &mut Vec<Part>) {
+    let mut placed = false;
+    parts.retain(|part| *part != Part::ShippedCode || !std::mem::replace(&mut placed, true));
+    if !placed {
+        parts.insert(0, Part::ShippedCode);
+    }
 }
 
 /// Writes the shipped modules' compiled mixins where `ns-runtime`'s
@@ -305,9 +309,14 @@ fn shipped_code(root: &Path, check: bool) -> ExitCode {
         return ExitCode::FAILURE;
     }
     // Writing only a changed file keeps `build.rs` from rebuilding
-    // `ns-runtime` after an unchanged run.
+    // `ns-runtime` after an unchanged run. Written beside it and renamed, so
+    // that a build running meanwhile embeds the old file or the new one,
+    // never a half-written one whose valid header would make every boot of
+    // that binary panic.
     if !current {
-        std::fs::write(&path, &generated).expect("the core library directory is writable");
+        let temporary = path.with_extension("bin.tmp");
+        std::fs::write(&temporary, &generated).expect("the core library directory is writable");
+        std::fs::rename(&temporary, &path).expect("the artifact can be replaced");
     }
     println!("{SHIPPED_CODE}: {} bytes", generated.len());
     ExitCode::SUCCESS
@@ -467,6 +476,46 @@ mod tests {
                 .filter(|label| label.starts_with("run-corpus"))
                 .count(),
             1 + STRESS_MODES.len()
+        );
+    }
+
+    /// The labels of `parts`' steps, `shipped code` for the task.
+    fn labels_of(parts: &[Part]) -> Vec<&str> {
+        parts
+            .iter()
+            .flat_map(|part| match part {
+                Part::Steps(steps) => steps.iter().map(|step| step.label.as_str()).collect(),
+                Part::StressSuites => vec!["stress suites"],
+                Part::ShippedCode => vec!["shipped code"],
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_shipped_code_runs_once_right_after_formatting() {
+        let mut parts = group("images").expect("a group");
+        parts.extend(group("commit").expect("a group"));
+        parts.extend(group("commit").expect("a group"));
+        place_shipped_code(&mut parts);
+        let labels = labels_of(&parts);
+        assert_eq!(
+            labels
+                .iter()
+                .filter(|label| **label == "shipped code")
+                .count(),
+            1
+        );
+        assert_eq!(labels[..3], ["image round trips", "format", "shipped code"]);
+    }
+
+    #[test]
+    fn without_formatting_the_shipped_code_runs_first() {
+        let mut parts = group("images").expect("a group");
+        parts.extend(group("caches").expect("a group"));
+        place_shipped_code(&mut parts);
+        assert_eq!(
+            labels_of(&parts),
+            ["shipped code", "image round trips", "cache contention"]
         );
     }
 

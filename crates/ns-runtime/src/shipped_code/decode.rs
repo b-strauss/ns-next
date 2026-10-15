@@ -41,7 +41,7 @@ struct Decoder<'bytes> {
 
 impl Decoder<'_> {
     fn symbol(&mut self) -> Symbol {
-        let index = self.reader.u32() as usize;
+        let index = usize::try_from(self.reader.u32()).expect("internal: a u32 fits a usize");
         *self
             .symbols
             .get(index)
