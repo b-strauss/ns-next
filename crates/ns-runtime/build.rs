@@ -2,12 +2,16 @@
 //! (`docs/design/core-library.md`, "The embedded shipped code").
 //!
 //! The code's fingerprint covers everything that can change what the
-//! shipped modules compile to -- the core library's sources and the Rust
-//! sources of `ns-syntax` and `ns-runtime` -- so an artifact a compiler
-//! change made stale is never decoded: it invalidates more often than
-//! needed, and the boot then compiles from source until the artifact is
-//! regenerated. The core library's alone goes into an image's fingerprint,
-//! which must not change with every Rust edit.
+//! shipped modules compile to -- their sources, the Rust sources of
+//! `ns-syntax` and `ns-runtime`, this script and both manifests -- so an
+//! artifact a compiler change made stale is never decoded: it invalidates
+//! more often than needed, and the boot then compiles from source until the
+//! artifact is regenerated. The second, over the shipped modules' sources
+//! alone, goes into an image's fingerprint, which must not change with
+//! every Rust edit. Both take the shipped modules' sources -- `Kernel.ns`,
+//! `PlatformFactory.ns` and `platform/` -- and not `Manifest.ns`, which a
+//! program compiles as a module of its own, so an edit to it changes
+//! neither the shipped code nor the shipped world.
 
 use std::fs::{read, read_dir, write};
 use std::path::{Path, PathBuf};
@@ -19,10 +23,15 @@ fn main() {
     let workspace = manifest.join("../..");
     let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("set by Cargo"));
 
-    let library = files_under(&manifest.join("core-library"), "ns");
+    let mut library = vec![
+        manifest.join("core-library/Kernel.ns"),
+        manifest.join("core-library/PlatformFactory.ns"),
+    ];
+    library.extend(files_under(&manifest.join("core-library/platform"), "ns"));
     let mut code = library.clone();
     code.extend(files_under(&manifest.join("src"), "rs"));
     code.extend(files_under(&workspace.join("crates/ns-syntax/src"), "rs"));
+    code.push(manifest.join("build.rs"));
     code.push(manifest.join("Cargo.toml"));
     code.push(workspace.join("crates/ns-syntax/Cargo.toml"));
 
@@ -63,7 +72,10 @@ fn files_under(directory: &Path, extension: &str) -> Vec<PathBuf> {
             let path = entry.expect("a directory entry").path();
             if path.is_dir() {
                 pending.push(path);
-            } else if path.extension().is_some_and(|found| found == extension) {
+            } else if path
+                .extension()
+                .is_some_and(|candidate| candidate == extension)
+            {
                 found.push(path);
             }
         }

@@ -39,7 +39,8 @@ pub(crate) const FORMAT_VERSION: u16 = 1;
 
 // `SHIPPED_CODE_FINGERPRINT` is the fingerprint of the sources and the
 // compiler the artifact was generated from, which the boot compares against
-// the binary's own; `CORE_LIBRARY_FINGERPRINT` covers the core library alone.
+// the binary's own; `CORE_LIBRARY_FINGERPRINT` covers the shipped modules'
+// sources alone.
 include!(concat!(env!("OUT_DIR"), "/fingerprints.rs"));
 
 /// The artifact `cargo xtask shipped-code` wrote, embedded when the crate
