@@ -1216,23 +1216,22 @@ is allocated (`read_large_integer_parts`).
 (65,536) and by the bytes left at `MIN_SHIPPED_NAME_BYTES`, 9 an entry,
 before it reserves a `Vec` of 16-byte names, at most 1.8x of the section's
 bytes and 1 MiB; resolving them (`shipped_names::resolve`) reserves, for as
-many entries, a set of indices and a `Vec` of resolved names of 32 bytes
-(40 in a debug build, whose handle is two words), about 7.7x of the
-section's bytes (8.5x) for the moment it runs and at most about 5 MiB, all
-of it before any placeholder exists. The check the loader runs before it
-builds the modules and classes a section names (`check_names`) reserves a
-set of as many names, as `resolve` does, and one root mixin per shipped
-module; what the builds allocate is the binary's own modules and classes,
-bounded by the binary rather than by the input, and is tenured before the
-graph pass. A name the loading world does
-not have and a name given twice are refused, so a section that resolves
-lists at most as many names as the shipped world has, a few hundred; what
-the graph pass holds beside its placeholders -- the names and their
-resolution, a second resolution in the graph's own entry with the set
-dropped again -- is therefore bounded by the shipped world, a few KiB,
-not by the input. The figures above stand: about 10.7x of the graph
-section's bytes in a release build and 16x in a debug one, plus at most 4x
-of the symbol section's, plus that constant.
+many entries, a set of indices and a `Vec` of resolved names of 32 bytes (40
+in a debug build, whose handle is two words), about 7.7x of the section's
+bytes (8.5x) for the moment it runs and at most about 5 MiB, all of it before
+any placeholder exists. The check the loader runs before it builds the
+modules and classes a section names (`check_names`) reserves a set of as many
+names, as `resolve` does, and one root mixin per shipped module; what the
+builds allocate is the binary's own modules and classes, bounded by the
+binary rather than by the input, and is tenured before the graph pass. A name
+the loading world does not have and a name given twice are refused, so a
+section that resolves lists at most as many names as the shipped world has, a
+few hundred; what the graph pass holds beside its placeholders -- the names
+and their resolution, a second resolution in the graph's own entry with the
+set dropped again -- is therefore bounded by the shipped world, a few KiB,
+not by the input. The figures above stand: about 10.7x of the graph section's
+bytes in a release build and 16x in a debug one, plus at most 4x of the
+symbol section's, plus that constant.
 
 **What the figures do not count**: the Rust allocator's own overhead per
 allocation of the decoder's tables; a table's `Vec` that doubles while the

@@ -894,18 +894,17 @@ refuses it. A corrupt but version-matching image is an error there, never a
 panic in the VM later.
 
 **The loader builds before the graph, and only what the binary has.** After
-the first passes and before the tenure, the loader builds the shipped
-modules and classes the shipped-name section names that the boot did not
+the first passes and before the tenure, the loader builds the shipped modules
+and classes the shipped-name section names that the boot did not
 (`Interpreter::build_shipped_names`, "Shipped names" below). It checks every
-name against the binary's declarations first and refuses an unknown module
-or declaration, a level past its clauses, a duplicate, and in a started
-image a name of any module but the kernel or of any module instance, the
-kernel's included ("The section" in "Shipped names" below), before it
-builds anything, so a refused image builds nothing; what it then runs is
-the binary's own code -- a
-module's factory and initializers, a class's accessor -- as a program's
-first demand runs it, never anything the image describes; the image
-chooses only which of the binary's few modules and classes are built.
+name against the binary's declarations first and refuses an unknown module or
+declaration, a level past its clauses, a duplicate, and in a started image a
+name of any module but the kernel or of any module instance, the kernel's
+included ("The section" in "Shipped names" below), before it builds anything,
+so a refused image builds nothing; what it then runs is the binary's own code
+-- a module's factory and initializers, a class's accessor -- as a program's
+first demand runs it, never anything the image describes; the image chooses
+only which of the binary's few modules and classes are built.
 
 **A closure's copied values are reconciled with the code that runs them.** Both
 halves come off the wire independently, so a crafted image can make them
@@ -1696,28 +1695,26 @@ old space's bytes relocated on load, is the model this does not take.
   pass** (decided with the user on 2026-10-04). A load runs in two phases
   (`image::load`), after it bootstraps an interpreter
   (`Interpreter::bootstrap`), which builds `Kernel` and `PlatformFactory`.
-  The first decodes everything up to and including the shipped-name
-  section; it reads bytes only, builds no object and keeps the names, not
-  handles (`decode_described`). Then, from the host, the loader builds the
-  binary's own modules and classes the section names that the boot did not
-  build (`Interpreter::build_shipped_names`): it checks every name first --
-  an unknown module or declaration, a level past its clauses, a name given
-  twice, and in a started image a name of any module but the kernel or of
-  any module instance, is refused before anything is built ("The section"
-  in "Shipped names" below) --
-  then builds each named lazy module as a program's first demand does and
-  each named class of it through its accessor, and resolves every name
-  against the world by table lookup. Then, outside any entry, where only
-  roots hold values, one scavenge that tenures everything
+  The first decodes everything up to and including the shipped-name section;
+  it reads bytes only, builds no object and keeps the names, not handles
+  (`decode_described`). Then, from the host, the loader builds the binary's
+  own modules and classes the section names that the boot did not build
+  (`Interpreter::build_shipped_names`): it checks every name first -- an
+  unknown module or declaration, a level past its clauses, a name given
+  twice, and in a started image a name of any module but the kernel or of any
+  module instance, is refused before anything is built ("The section" in
+  "Shipped names" below) -- then builds each named lazy module as a program's
+  first demand does and each named class of it through its accessor, and
+  resolves every name against the world by table lookup. Then, outside any
+  entry, where only roots hold values, one scavenge that tenures everything
   (`Interpreter::tenure_now`) makes the shipped world old, the builds'
   objects with it. The second phase, in an entry of its own, resolves the
   names again -- a lookup, no allocation -- and decodes the graph against
-  them, the module roots' records among it. Spur, Primordial Soup,
-  Strongtalk and HotSpot's CDS all load into a heap that holds nothing
-  young; this makes the heap so before the graph is decoded. One tenure
-  suffices: the builds allocate, but they all run before it, and nothing
-  between the tenure and the graph pass allocates, so the graph pass is the
-  only allocator after it.
+  them, the module roots' records among it. Spur, Primordial Soup, Strongtalk
+  and HotSpot's CDS all load into a heap that holds nothing young; this makes
+  the heap so before the graph is decoded. One tenure suffices: the builds
+  allocate, but they all run before it, and nothing between the tenure and
+  the graph pass allocates, so the graph pass is the only allocator after it.
 - **The graph pass allocates old.** It sets the heap allocating old
   (`Heap::set_allocating_old`) for its whole length, the refusal path
   included, so every placeholder -- the boxed floats and large integers it
@@ -1739,15 +1736,15 @@ An image names every object the binary owns -- each shipped module's
 instance, each class its root declares, their metaclasses and the levels
 their `<:` clauses add -- by where it is declared, resolved against the
 loading binary's shipped world, which the boot and the loader build by the
-binary's own code (decided with the user on
-2026-10-12, built the same week;
-[its plan](../superpowers/plans/2026-10-12-2224-shipped-names-in-the-image.md)).
-It replaced four ways of naming: the builtin class tags, `MIXIN_BUILTIN`
-and `CLASS_METACLASS`; the platform paths and `VALUE_PLATFORM`; the module
-class tags `CLASS_MODULE` and `CLASS_MODULE_LEVEL`; and every tag-named hash
-but `HASHED_SHIPPED`. Code: `image/shipped_names.rs` (the section, its
-reader and the resolution), `interpreter/shipped_world.rs` (the world, its
-names and what may stand where), `image/fingerprint.rs`.
+binary's own code (decided with the user on 2026-10-12, built the same week;
+[its
+plan](../superpowers/plans/2026-10-12-2224-shipped-names-in-the-image.md)).
+It replaced four ways of naming: the builtin class tags, `MIXIN_BUILTIN` and
+`CLASS_METACLASS`; the platform paths and `VALUE_PLATFORM`; the module class
+tags `CLASS_MODULE` and `CLASS_MODULE_LEVEL`; and every tag-named hash but
+`HASHED_SHIPPED`. Code: `image/shipped_names.rs` (the section, its reader and
+the resolution), `interpreter/shipped_world.rs` (the world, its names and
+what may stand where), `image/fingerprint.rs`.
 
 **Why one mechanism.** The VM mirror is never in an image; every shipped
 module instance holds it or the kernel that does; every shipped class object
@@ -1774,8 +1771,8 @@ leaf, so locks (3) to (6) of the mirror would go, and a fix to the kernel
 would no longer reach a deployed artifact ([core-library.md](core-library.md),
 "The VM mirror is the whole Rust boundary").
 
-**The shipped world is a function of the binary, built on demand.** Only
-the binary's own code builds it (`interpreter/core_library.rs`,
+**The shipped world is a function of the binary, built on demand.** Only the
+binary's own code builds it (`interpreter/core_library.rs`,
 `interpreter/shipped_world.rs`). The boot
 (`Interpreter::install_shipped_modules`) records the kernel instance after
 the kernel's phase, builds `PlatformFactory` (`usingVmMirror:kernel:`), and
@@ -1786,57 +1783,56 @@ made. Every other module -- `TranscriptFactory` and `TimeFactory`
 mirror and so is given none) and `TypedArraysFactory`
 (`usingVmMirror:kernel:`) -- is built on its first demand, through the
 mirror's `shippedModuleClassNamed:` and `recordShippedModule:`, and each of
-its classes is named as its accessor builds it (`nested::after_clause`);
-the loader builds the ones an image names the same way before it decodes
-the graph (`Interpreter::build_shipped_names`). The image chooses which of
-the binary's modules and classes exist, never what runs. The world keeps
-two tables, traced as roots (`ShippedWorld`, in the step roots beside the
+its classes is named as its accessor builds it (`nested::after_clause`); the
+loader builds the ones an image names the same way before it decodes the
+graph (`Interpreter::build_shipped_names`). The image chooses which of the
+binary's modules and classes exist, never what runs. The world keeps two
+tables, traced as roots (`ShippedWorld`, in the step roots beside the
 kernel): the module instances, the kernel first, which the mirror's
 `moduleInstanceNamed:` answers, so one collections module serving every
 platform is a guarantee of the VM; and every shipped object under its name,
 `ShippedName` -- (module, declaration, kind), the kind being the module
 instance, the class, its metaclass, the level a clause adds by the clause's
-index, or that level's metaclass (`ShippedKind`) -- with the positions it
-may stand in (`Positions`), recorded in the order the objects are built, so
-the encoder walks them in an order that is a function of the program and
-its run. Every name resolves to the object the binary built, so no
-comparison by identity in Rust changes. No build draws an identity hash,
-so every hash a run draws is the same under `run` and `load`
+index, or that level's metaclass (`ShippedKind`) -- with the positions it may
+stand in (`Positions`), recorded in the order the objects are built, so the
+encoder walks them in an order that is a function of the program and its run.
+Every name resolves to the object the binary built, so no comparison by
+identity in Rust changes. No build draws an identity hash, so every hash a
+run draws is the same under `run` and `load`
 (`goldens/library/object/identity_hash.ns`;
 `building_a_module_on_demand_draws_no_identity_hash`). The world costs a
 process start little: an optimized boot decodes the compiled code `cargo
 xtask shipped-code` generates and the binary embeds, for the kernel and
-`PlatformFactory` only, 1.22 ms for a hello program's boot on the
-measuring workstation, where building every module at boot took 1.77 ms
-in the same measurement, and a first `platform collections` costs
-0.31 ms; compiling the shipped source took 13.6 ms in an earlier
-measurement, against 1.6 ms for an eager boot from the artifact there,
-and each pair compares only within its own measurement
-([execution.md](execution.md), "What the precompiled shipped
+`PlatformFactory` only, 1.22 ms for a hello program's boot on the measuring
+workstation, where building every module at boot took 1.77 ms in the same
+measurement, and a first `platform collections` costs 0.31 ms; compiling the
+shipped source took 13.6 ms in an earlier measurement, against 1.6 ms for an
+eager boot from the artifact there, and each pair compares only within its
+own measurement ([execution.md](execution.md), "What the precompiled shipped
 code moved"; [core-library.md](core-library.md), "The embedded shipped
-code"). The format is untouched by it: the embedded code is the boot's,
-never the image's.
+code"). The format is untouched by it: the embedded code is the boot's, never
+the image's.
 
 **The section.** A `u32` count, then per entry the module's symbol, the
 declaration's symbol (for the root, the module's own name), the kind as a
 `u8` and, for a level or a level's metaclass, the clause's `u32` index
-("Shipped names" in "Sections" above). Each name the image uses appears
-once, in the order of first use. The loader checks the whole section
-against the binary's declarations before it builds anything
-(`shipped_names.rs`'s `check_names`): a name the binary does not have --
-an unknown module or declaration, a level past the declaration's clauses
--- is `UnknownShippedName`, a name given twice `DuplicateShippedName`, and
-in a started image a name of a module other than the kernel, or of a
-module instance, `ShippedNameInStartedImage`
-(`building_the_shipped_names_refuses_a_name_before_it_builds_anything`).
-It then builds what the section names that the boot did not
+("Shipped names" in "Sections" above). Each name the image uses appears once,
+in the order of first use. The loader checks the whole section against the
+binary's declarations before it builds anything (`shipped_names.rs`'s
+`check_names`): a name the binary does not have -- an unknown module or
+declaration, a level past the declaration's clauses -- is
+`UnknownShippedName`, a name given twice `DuplicateShippedName`, and in a
+started image a name of a module other than the kernel, or of a module
+instance, `ShippedNameInStartedImage`
+(`building_the_shipped_names_refuses_a_name_before_it_builds_anything`). It
+then builds what the section names that the boot did not
 (`Interpreter::build_shipped_names`) and resolves the whole section before
 the graph by table lookup alone (`shipped_names::resolve`), which sends
-nothing and refuses the same names again. In the
-graph, a reference is a tag and a `u32` index into the section -- five
-bytes, against the two a builtin class tag took -- so an image of millions
-of small records pays for each name once and resolves each reference by
-indexing; an index past the section is `BadShippedName`:
+nothing and refuses the same names again. In the graph, a reference is a tag
+and a `u32` index into the section -- five bytes, against the two a builtin
+class tag took -- so an image of millions of small records pays for each name
+once and resolves each reference by indexing; an index past the section is
+`BadShippedName`:
 
 | Tag | Number | Followed by | Retired in its place |
 |---|---|---|---|
@@ -1871,28 +1867,28 @@ layout", "Verification" above). The program's module roots and the levels
 their clauses add are class records ("Module section" above).
 
 **The header carries the shipped world's fingerprint**, a `u64` after the
-flag byte (`fingerprint::shipped_world_fingerprint`): FNV-1a over the core
-library's fingerprint, which `crates/ns-runtime/build.rs` takes over every
-`.ns` file of the core library (`CORE_LIBRARY_FINGERPRINT`), the names in
+flag byte (`fingerprint::shipped_world_fingerprint`): FNV-1a over the shipped
+sources' fingerprint, which `crates/ns-runtime/build.rs` takes over the six
+shipped modules' sources -- `Kernel.ns`, `PlatformFactory.ns` and every `.ns`
+under `core-library/platform/` (`CORE_LIBRARY_FINGERPRINT`) -- the names in
 `BuiltinClass::ALL` and the mirror's selectors, each part preceded by its
-length. It covers the core library's sources and not the Rust ones, so an
-image stays loadable across a Rust edit that leaves the shipped world as it
-was. The lowering is not in it: `load` always builds the shipped world with
-the optimized lowering, and an application built under the reference
-lowering carries its own code. A load whose binary computes another refuses the image before it
-reads anything else (`ShippedWorldMismatch`,
-`an_image_of_another_shipped_world_is_refused`). It replaced retiring a
-builtin tag per removed class, and it closes a coupling nothing else
-checks: a frame of a kernel method is reconciled against the loading
-binary's body of that method. `FORMAT_VERSION` stays 1; images are
+length. It covers the shipped sources and not the Rust ones, so an image
+stays loadable across a Rust edit that leaves the shipped world as it was,
+nor `Manifest.ns`, which is no part of the shipped world: a program compiles
+it as a module of its own and an image carries it. The lowering is not in it:
+`load` always builds the shipped world with the optimized lowering, and an
+application built under the reference lowering carries its own code. A load
+whose binary computes another refuses the image before it reads anything else
+(`ShippedWorldMismatch`, `an_image_of_another_shipped_world_is_refused`). It
+replaced retiring a builtin tag per removed class, and it closes a coupling
+nothing else checks: a frame of a kernel method is reconciled against the
+loading binary's body of that method. `FORMAT_VERSION` stays 1; images are
 disposable ("Layout"). `inspect` prints it (`shipped world …`).
 
-**What may be named where** is a static rule, computed from the
-declarations when a module is recorded and kept with each name
-(`Positions`, recorded by `record_shipped_module` and
-`record_shipped_class`) and
-checked per position by the encoder and the decoder alike
-(`shipped_names::NamePosition`):
+**What may be named where** is a static rule, computed from the declarations
+when a module is recorded and kept with each name (`Positions`, recorded by
+`record_shipped_module` and `record_shipped_class`) and checked per position
+by the encoder and the decoder alike (`shipped_names::NamePosition`):
 
 | Position | Allowed |
 |---|---|

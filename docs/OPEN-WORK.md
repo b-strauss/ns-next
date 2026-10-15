@@ -285,27 +285,26 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   parses it too, `CollectionsFactory.ns` in 0.93 ms and
   `TypedArraysFactory.ns` in 0.58 ms. That is every boot under the
   reference lowering, under which every golden runs, every boot with
-  `NS_NEXT_NO_PRIMITIVE_METHODS`, every boot
-  of a binary built without a current artifact, and `cargo xtask
-  shipped-code` itself, which every gate run runs. Part of it is the
-  comment attachment the runtime discards ("Comment attachment: a
-  super-linear corner, and its cost on every boot from source" below).
-  [execution.md](design/execution.md), "What the precompiled shipped code
-  moved"; [core-library.md](design/core-library.md), "The embedded shipped
-  code".
+  `NS_NEXT_NO_PRIMITIVE_METHODS`, every boot of a binary built without a
+  current artifact, and `cargo xtask shipped-code` itself, which every gate
+  run runs. Part of it is the comment attachment the runtime discards
+  ("Comment attachment: a super-linear corner, and its cost on every boot
+  from source" below). [execution.md](design/execution.md), "What the
+  precompiled shipped code moved";
+  [core-library.md](design/core-library.md), "The embedded shipped code".
 
 - **A release binary without the embedded shipped code boots from source**
   (2026-10-14): a tree that never ran `cargo xtask shipped-code`, or whose
-  Rust or core-library sources changed after it last ran, embeds no
-  current artifact, and the binary boots from source silently -- correct,
-  but slowly: parsing, resolving and compiling the kernel alone took about
-  8.6 ms of a 13.6 ms boot from source that compiled every module, where
-  the same measurement's boot from the artifact took 1.6 ms. The gates
-  regenerate it and the
-  `commit` gate's `the_optimized_boot_decodes_the_embedded_code` is red
-  without it, but a plain `cargo build --release` is not checked. A later
-  packaging (`cargo install`, a release build for distribution) needs a
-  way to require it, a build that fails without a current artifact, say.
+  Rust or core-library sources changed after it last ran, embeds no current
+  artifact, and the binary boots from source silently -- correct, but
+  slowly: parsing, resolving and compiling the kernel alone took about 8.6
+  ms of a 13.6 ms boot from source that compiled every module, where the
+  same measurement's boot from the artifact took 1.6 ms. The gates
+  regenerate it and the `commit` gate's
+  `the_optimized_boot_decodes_the_embedded_code` is red without it, but a
+  plain `cargo build --release` is not checked. A later packaging (`cargo
+  install`, a release build for distribution) needs a way to require it, a
+  build that fails without a current artifact, say.
   [core-library.md](design/core-library.md), "The embedded shipped code".
 
 - **A threaded run loop through `become`, measured.** A loop whose every
@@ -945,17 +944,16 @@ activation.
   program that appends in a loop is not measured. Noted 2026-10-13.
   [core-library.md](design/core-library.md), "`StringBuilder`".
 - **3.5 ms of the precompiled shipped code's gain lie outside the boot.**
-  Embedding the shipped modules' compiled code shortened the boot by
-  12.0 ms (13.6 ms to 1.6 ms, the summed medians of temporary marks) and a
-  hello program's whole process by 15.5 ms (20.8 ms to 5.2 ms, median of
-  40; release, the measuring workstation, Windows 11). The 3.5 ms
-  difference falls outside what the marks cover, and its cause is not
-  established; one build per side, one program and one machine were
-  measured. Marks around what precedes `bootstrap_with` and follows the
-  platform's `build` -- the process start, reading the program, the run,
-  the exit -- would place it. Noted 2026-10-14.
-  [execution.md](design/execution.md), "What the precompiled shipped code
-  moved".
+  Embedding the shipped modules' compiled code shortened the boot by 12.0
+  ms (13.6 ms to 1.6 ms, the summed medians of temporary marks) and a hello
+  program's whole process by 15.5 ms (20.8 ms to 5.2 ms, median of 40;
+  release, the measuring workstation, Windows 11). The 3.5 ms difference
+  falls outside what the marks cover, and its cause is not established; one
+  build per side, one program and one machine were measured. Marks around
+  what precedes `bootstrap_with` and follows the platform's `build` -- the
+  process start, reading the program, the run, the exit -- would place it.
+  Noted 2026-10-14. [execution.md](design/execution.md), "What the
+  precompiled shipped code moved".
 
 ## Defects that change a correct program's output
 
@@ -1282,18 +1280,18 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
   operand. [formatting.md](design/formatting.md), rule 21.
   Noted 2026-10-12.
 - **Comment attachment: a super-linear corner, and its cost on every boot
-  from source.** `own_tokens_before` (`crates/ns-syntax/src/attach.rs`) walks
-  every child of the holder for each `Inner` comment, so a cascade with a
-  comment before each `;` attaches in quadratic time; no real source
+  from source.** `own_tokens_before` (`crates/ns-syntax/src/attach.rs`)
+  walks every child of the holder for each `Inner` comment, so a cascade
+  with a comment before each `;` attaches in quadratic time; no real source
   reaches it, and the attachment is linear on every module of the
   repository. The runtime pays for the attachment and discards the
-  comments: `parse` of `Kernel.ns` takes 2.50 ms with its comments and
-  1.06 ms with its `///` lines stripped (0.14 ms of the difference is
-  lexing them), about 2 ms per start for the three shipped modules then
-  measured, on every boot that compiles the shipped source
-  (`interpreter/kernel.rs`, `interpreter/core_library.rs` call
-  `ns_syntax::parse`); an optimized boot from the embedded shipped code
-  parses nothing ("The parser's 3.4 ms for `Kernel.ns`" above). A `parse` that skips the attachment for the runtime
+  comments: `parse` of `Kernel.ns` takes 2.50 ms with its comments and 1.06
+  ms with its `///` lines stripped (0.14 ms of the difference is lexing
+  them), about 2 ms per start for the three shipped modules then measured,
+  on every boot that compiles the shipped source (`interpreter/kernel.rs`,
+  `interpreter/core_library.rs` call `ns_syntax::parse`); an optimized boot
+  from the embedded shipped code parses nothing ("The parser's 3.4 ms for
+  `Kernel.ns`" above). A `parse` that skips the attachment for the runtime
   would recover it. Noted 2026-10-12.
 
 ## Missing tests

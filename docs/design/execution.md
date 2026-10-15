@@ -5163,34 +5163,34 @@ shipped code moved" below).
 ### What the precompiled shipped code moved
 
 The shipped modules' compiled code is generated ahead of time by `cargo xtask
-shipped-code` and embedded in the binary; an optimized boot decodes it
-instead of parsing, resolving and compiling the roughly 9,000 lines of the
-six modules (`shipped_code/`, `interpreter/core_library.rs`). The world is
-built by running the binary's own code on the decoded mixins. It was
-measured in two stages: the first decoded instead of compiling and still
-built every module at boot, so its instantiations and
-`complete_shipped_world` were what they had been; the second builds only
-`Kernel` and `PlatformFactory` at boot and every other module on its first
-demand (`core-library.md`, "The module table and the boot").
+shipped-code` and embedded in the binary; an optimized boot decodes it instead
+of parsing, resolving and compiling the roughly 9,000 lines of the six modules
+(`shipped_code/`, `interpreter/core_library.rs`). The world is built by
+running the binary's own code on the decoded mixins. It was measured in two
+stages: the first decoded instead of compiling and still built every module at
+boot, so its instantiations and `complete_shipped_world` were what they had
+been; the second builds only `Kernel` and `PlatformFactory` at boot and every
+other module on its first demand (`core-library.md`, "The module table and the
+boot").
 
-**The first stage, measured 2026-10-14, `eb2716b8` against `f60f6782`**,
-the first stage's head against the head of `master`, at which the start-up
-was measured the same day before the branch began, on the same machine, the measuring workstation
-(Windows 11). Both are release
-builds with the pinned `RUSTFLAGS` of the protocol above, each in its own
-target directory, `f60f6782` in a throwaway worktree under `.temp/`; the
-branch's artifact was generated first, and the temporary marks (below) show
-its decode phases where `master`'s show parse, resolve and compile, which
-confirms the artifact is used. One build per side: the effect is a boot of
-some 13.6 ms against some 1.6 ms, far above the build-to-build spread of
-percent-level run-loop timings the protocol guards against. The program is a
-hello (`main:args:` showing `'hello'` on the transcript). The marks are
-`Instant` readings at the start of `bootstrap_with` and around each module's
-parse, resolve, compile (decode on the branch), class, instantiation,
-`complete_shipped_world` and the platform's `build`, printed to `stderr`;
-they were in both trees, are not committed, and cost a few microseconds
-each. 30 runs, the median per label; the whole process is 40 runs of the
-same binaries with the marks switched off, timed from outside.
+**The first stage, measured 2026-10-14, `eb2716b8` against `f60f6782`**, the
+first stage's head against the head of `master`, at which the start-up was
+measured the same day before the branch began, on the same machine, the
+measuring workstation (Windows 11). Both are release builds with the pinned
+`RUSTFLAGS` of the protocol above, each in its own target directory,
+`f60f6782` in a throwaway worktree under `.temp/`; the branch's artifact was
+generated first, and the temporary marks (below) show its decode phases where
+`master`'s show parse, resolve and compile, which confirms the artifact is
+used. One build per side: the effect is a boot of some 13.6 ms against some
+1.6 ms, far above the build-to-build spread of percent-level run-loop timings
+the protocol guards against. The program is a hello (`main:args:` showing
+`'hello'` on the transcript). The marks are `Instant` readings at the start of
+`bootstrap_with` and around each module's parse, resolve, compile (decode on
+the branch), class, instantiation, `complete_shipped_world` and the platform's
+`build`, printed to `stderr`; they were in both trees, are not committed, and
+cost a few microseconds each. 30 runs, the median per label; the whole process
+is 40 runs of the same binaries with the marks switched off, timed from
+outside.
 
 | Module | Parse | Resolve | Compile | Class and instance | Sum, `f60f6782` | Decode | Class and instance | Sum, `eb2716b8` |
 |---|---|---|---|---|---|---|---|---|
@@ -5201,12 +5201,12 @@ same binaries with the marks switched off, timed from outside.
 | `complete_shipped_world`, the platform's `build` | | | | | 0.09 ms | | | 0.08 ms |
 | **The boot** | | | | | **13.6 ms** | | | **1.6 ms** |
 
-The module sums include a few microseconds of set-up between marks (0.1 ms
-for the kernel's). The baseline repeats the measurement of `f60f6782` made
-earlier the same day, on the same machine, with the same marks: parsing
-5.26 ms, resolving 0.98 ms, compiling 6.98 ms, building classes,
-instantiating, `complete_shipped_world` and the platform 0.33 ms, the boot
-13.7 ms; the whole process 20.0 ms, `ns-next --version` 2.5 ms.
+The module sums include a few microseconds of set-up between marks (0.1 ms for
+the kernel's). The baseline repeats the measurement of `f60f6782` made earlier
+the same day, on the same machine, with the same marks: parsing 5.26 ms,
+resolving 0.98 ms, compiling 6.98 ms, building classes, instantiating,
+`complete_shipped_world` and the platform 0.33 ms, the boot 13.7 ms; the whole
+process 20.0 ms, `ns-next --version` 2.5 ms.
 
 | Process | `f60f6782` | `eb2716b8` |
 |---|---|---|
@@ -5214,60 +5214,59 @@ instantiating, `complete_shipped_world` and the platform 0.33 ms, the boot
 | `ns-next run` of the hello, median of 40 | 20.8 ms | 5.2 ms |
 | `ns-next --version`, median of 40 | 2.6 ms | 2.5 ms |
 
-**The boot is 12 ms shorter and the whole process 15.5 ms shorter.** The
-boot is an eighth of what it was; the process, with the 2.5 ms a process
-that boots nothing costs, a quarter. The whole process fell by more than the
-boot (15.5 ms against 12.0 ms) and this measurement does not decompose the
-remaining 3.5 ms: it falls outside what the marks cover, and its cause is
-not established. The measurement did not decompose that difference, took one
-build per side, one program and one machine.
+**The boot is 12 ms shorter and the whole process 15.5 ms shorter.** The boot
+is an eighth of what it was; the process, with the 2.5 ms a process that boots
+nothing costs, a quarter. The whole process fell by more than the boot (15.5
+ms against 12.0 ms) and this measurement does not decompose the remaining 3.5
+ms: it falls outside what the marks cover, and its cause is not established.
+The measurement did not decompose that difference, took one build per side,
+one program and one machine.
 
 **Decoding costs 1.3 ms in all**: the kernel's 0.90 ms, `CollectionsFactory`'s
 0.27 ms, `TypedArraysFactory`'s 0.11 ms and 10 to 24 microseconds for each of
 the other three. That is about a ninth of the 12 ms the source path spent on
 the same modules, and the kernel alone is more than half of it. What remains
-of the boot beyond decoding is the instantiations and the class building,
-0.2 ms.
+of the boot beyond decoding is the instantiations and the class building, 0.2
+ms.
 
-**The second stage builds a module on its first demand, and a boot builds
-only `Kernel` and `PlatformFactory`.** By the first stage's numbers it
-could save only what the boot spent on modules a program may never touch:
-`CollectionsFactory` and `TypedArraysFactory`, decoded and instantiated,
-0.27 + 0.01 and 0.11 + 0.02 ms, 0.40 ms together, under the 0.5 ms set as
-the bar for the machinery. It is built anyway (decided with the user on
-2026-10-15) because that cost is not fixed: the artifact grows with every
-module and every member the core library gains -- 211,731 bytes today --
-and an eager boot pays for all of it in every process, whatever the program
-uses, where a boot on demand pays for the kernel, the platform and what
-the program reaches. The kernel's decode, 0.9 ms, is no candidate: it is
-always needed.
+**The second stage builds a module on its first demand, and a boot builds only
+`Kernel` and `PlatformFactory`.** By the first stage's numbers it could save
+only what the boot spent on modules a program may never touch:
+`CollectionsFactory` and `TypedArraysFactory`, decoded and instantiated, 0.27
++ 0.01 and 0.11 + 0.02 ms, 0.40 ms together, under the 0.5 ms set as the bar
+for the machinery. It is built anyway (decided with the user on 2026-10-15)
+because that cost is not fixed: the artifact grows with every module and every
+member the core library gains -- 211,731 bytes today -- and an eager boot pays
+for all of it in every process, whatever the program uses, where a boot on
+demand pays for the kernel, the platform and what the program reaches. The
+kernel's decode, 0.9 ms, is no candidate: it is always needed.
 
-**The second stage, measured 2026-10-15, `e178ac5c` against `740adb25`**,
-the head that builds on demand against the head before its first commit,
-on the measuring workstation (Windows 11), by the first stage's method:
-release builds with the pinned `RUSTFLAGS`, one per side, `740adb25` in a
-throwaway worktree under `.temp/`, each after `cargo xtask shipped-code` and
-its `--check` saying the artifact is current. Two programs: the hello, and
-one whose `main:args:` sends `platform collections List new` once before
-showing `'hello'`, which pays the first demand of `CollectionsFactory` and
-the build of its `List`. The marks are a set of their own, the same on
-both sides but where noted, and not the first stage's per-step ones: at
-the start of `main`, the start of `bootstrap_with`, the end of the kernel
-phase, around each module's decode and around `complete_shipped_world`,
-the end of the shipped-module phase and the process's exit, and on this
-side also at a lazy module's demand (`shipped_module_class`'s entry) and
-its record (`record_pending`'s end); not committed. 30 marked runs of each
-program and side, interleaved, the median per span; 40 whole-process runs
-of the same binaries with the marks switched off, interleaved, timed from
-outside (Python's `subprocess.run` under `time.perf_counter`).
+**The second stage, measured 2026-10-15, `e178ac5c` against `740adb25`**, the
+head that builds on demand against the head before its first commit, on the
+measuring workstation (Windows 11), by the first stage's method: release
+builds with the pinned `RUSTFLAGS`, one per side, `740adb25` in a throwaway
+worktree under `.temp/`, each after `cargo xtask shipped-code` and its
+`--check` saying the artifact is current. Two programs: the hello, and one
+whose `main:args:` sends `platform collections List new` once before showing
+`'hello'`, which pays the first demand of `CollectionsFactory` and the build
+of its `List`. The marks are a set of their own, the same on both sides but
+where noted, and not the first stage's per-step ones: at the start of `main`,
+the start of `bootstrap_with`, the end of the kernel phase, around each
+module's decode and around `complete_shipped_world`, the end of the
+shipped-module phase and the process's exit, and on this side also at a lazy
+module's demand (`shipped_module_class`'s entry) and its record
+(`record_pending`'s end); not committed. 30 marked runs of each program and
+side, interleaved, the median per span; 40 whole-process runs of the same
+binaries with the marks switched off, interleaved, timed from outside
+(Python's `subprocess.run` under `time.perf_counter`).
 
-The eager boot measures 1.77 ms here and 1.6 ms in the first stage
-although the code it boots is the same -- `eb2716b8` to `740adb25`
-changed only comments under `crates/`. The two figures are taken
-differently: the first stage's is a sum of per-step medians, which leaves
-out the set-up between its marks, and this one is the median of one span
-from `bootstrap_with`'s start to the boot's end, from another build on
-another day. Each compares only within its own measurement.
+The eager boot measures 1.77 ms here and 1.6 ms in the first stage although
+the code it boots is the same -- `eb2716b8` to `740adb25` changed only
+comments under `crates/`. The two figures are taken differently: the first
+stage's is a sum of per-step medians, which leaves out the set-up between its
+marks, and this one is the median of one span from `bootstrap_with`'s start to
+the boot's end, from another build on another day. Each compares only within
+its own measurement.
 
 | Span, median, ms | Hello, `740adb25` | Hello, `e178ac5c` | `List new`, `740adb25` | `List new`, `e178ac5c` |
 |---|---|---|---|---|
@@ -5282,25 +5281,24 @@ another day. Each compares only within its own measurement.
 | `ns-next run`, median of 40 | 5.24 | 4.74 | 5.31 | 5.04 |
 | `ns-next --version`, median of 40 | 2.60 | 2.61 | | |
 
-**The boot is 0.55 ms shorter, and a hello's whole process 0.50 ms.** The
-boot no longer decodes, instantiates or completes the four lazy modules;
-what it keeps is the kernel phase's 1.08 ms and the shipped-module phase's
-0.15 ms -- `PlatformFactory`'s decode and instantiation, the kernel's and
-the platform's classes completed (0.03 ms) and the platform's `build`. The
-saving is more than the 0.40 ms the first stage's numbers allowed, since
-`TranscriptFactory` and `TimeFactory` and the classes of all four modules
-are no longer built either; a hello builds `TranscriptFactory` on its first
-`platform transcript`, for 0.04 ms.
+**The boot is 0.55 ms shorter, and a hello's whole process 0.50 ms.** The boot
+no longer decodes, instantiates or completes the four lazy modules; what it
+keeps is the kernel phase's 1.08 ms and the shipped-module phase's 0.15 ms --
+`PlatformFactory`'s decode and instantiation, the kernel's and the platform's
+classes completed (0.03 ms) and the platform's `build`. The saving is more
+than the 0.40 ms the first stage's numbers allowed, since `TranscriptFactory`
+and `TimeFactory` and the classes of all four modules are no longer built
+either; a hello builds `TranscriptFactory` on its first `platform transcript`,
+for 0.04 ms.
 
-**A first demand of `CollectionsFactory` costs 0.31 ms, almost all of it
-the module's decode (0.29 ms)**, and the run after the boot of the `List
-new` program takes 0.35 ms longer than at `740adb25`, where the module was
-already built: the demand, the transcript's and the `List` class. Its
-whole process is still 0.27 ms shorter than before, since it never builds
-`TimeFactory` or `TypedArraysFactory`. This measurement took one build per
-side, two programs and one machine; the boot's spans, 0.5 ms apart, lie far
-outside their own run-to-run spread (min to max 1.70–1.98 against
-1.19–1.34 ms for the hello).
+**A first demand of `CollectionsFactory` costs 0.31 ms, almost all of it the
+module's decode (0.29 ms)**, and the run after the boot of the `List new`
+program takes 0.35 ms longer than at `740adb25`, where the module was already
+built: the demand, the transcript's and the `List` class. Its whole process is
+still 0.27 ms shorter than before, since it never builds `TimeFactory` or
+`TypedArraysFactory`. This measurement took one build per side, two programs
+and one machine; the boot's spans, 0.5 ms apart, lie far outside their own
+run-to-run spread (min to max 1.70–1.98 against 1.19–1.34 ms for the hello).
 
 ### What simultaneous slots cost
 

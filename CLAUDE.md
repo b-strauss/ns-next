@@ -289,14 +289,15 @@ the mirror slot of `Kernel` is checked at boot, and that of every shipped
 module given the mirror (`PlatformFactory`, `TranscriptFactory`,
 `TimeFactory`, `TypedArraysFactory`) whenever its instance is recorded --
 at boot, by `recordShippedModule:` on first demand, or by the loader -- so
-no instance that fails it is ever recorded,
-and no program reaches a shipped root (the factory pattern); (3) the encoder names a
-shipped object by its declaration and refuses one the rule of what may be
-named where does not allow (`image/shipped_names.rs`); (4) no program can name
-the mirror's class or `Top`: the VM mirror's class has no declaration and so no
-name, and the decoder refuses `Top`, `Activation` and every other shipped name
-in a position the rule does not allow;
-(5) the encoder refuses a graph reaching the mirror, its class, `Top` or their
+no instance that fails it is ever recorded, and no program reaches a
+shipped root (the factory pattern), nor the mirror or the kernel instance
+as the argument of a send its receiver may not understand; (3) the encoder
+names a shipped object by its declaration and refuses one the rule of what
+may be named where does not allow (`image/shipped_names.rs`); (4) no
+program can name the mirror's class or `Top`: the VM mirror's class has no
+declaration and so no name, and the decoder refuses `Top`, `Activation` and
+every other shipped name in a position the rule does not allow; (5) the
+encoder refuses a graph reaching the mirror, its class, `Top` or their
 metaclasses, and `decide_factory` refuses to instantiate the mirror's class;
 (6) `SendMirror` has no wire tag (`core-library.md`, "The VM mirror is the
 whole Rust boundary").
@@ -324,18 +325,19 @@ The suites run under `cargo-nextest` (`cargo install cargo-nextest --locked`).
 
 This table is the one place that says which gate runs when;
 `docs/design/README.md`, "Gates", follows it. Each row is a group of
-`cargo xtask gates <group>` (`xtask/src/main.rs`), which says what the group
-runs; several groups run in one call, one after another, and the first that
-fails stops it. Every `cargo xtask gates` call runs `cargo xtask shipped-code`
-once, which writes the embedded shipped code
+`cargo xtask gates <group>` (`xtask/src/main.rs`), which says what the
+group runs; several groups run in one call, one after another, and the
+first that fails stops it. Every `cargo xtask gates` call runs
+`cargo xtask shipped-code` once, which writes the embedded shipped code
 (`crates/ns-runtime/core-library/shipped-code.bin`, gitignored;
-`docs/design/core-library.md`, "The embedded shipped code"): right after
-`cargo fmt --all` in the `commit` group, which is the only step that rewrites
-sources, and otherwise before the first group. "Every commit" is every commit
-that changes more than Markdown (check `git diff --stat`): a change to Rust, a
-test, a fixture, a golden, a `.ns` or a `Cargo.toml` runs its gates however
-small. The nextest profiles are `.config/nextest.toml`'s; every one runs on
-18 threads.
+`docs/design/core-library.md`, "The embedded shipped code") and refuses,
+failing the call, under `NS_NEXT_NO_PRIMITIVE_METHODS=1`: right after
+`cargo fmt --all` in the `commit` group, which is the only step that
+rewrites sources, and otherwise before the first group. "Every commit" is
+every commit that changes more than Markdown (check `git diff --stat`): a
+change to Rust, a test, a fixture, a golden, a `.ns` or a `Cargo.toml` runs
+its gates however small. The nextest profiles are `.config/nextest.toml`'s;
+every one runs on 18 threads.
 
 | Group | Runs | When |
 |---|---|---|
