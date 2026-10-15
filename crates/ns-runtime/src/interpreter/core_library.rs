@@ -311,9 +311,10 @@ fn module_class<'gc>(
 }
 
 /// Records `instance` as its module's one instance, for the mirror's
-/// `recordShippedModule:`, and answers it; `None` when it is no instance of
-/// a pending root class, or its module is given the mirror and its
-/// `vmMirror` slot does not hold it (`record_pending`).
+/// `recordShippedModule:`, names the classes it already built
+/// (`Mutator::name_built_shipped_classes`), and answers it; `None` when it
+/// is no instance of a pending root class, or its module is given the
+/// mirror and its `vmMirror` slot does not hold it (`record_pending`).
 pub(crate) fn record_pending_module<'gc>(
     mutator: &mut Mutator<'gc>,
     instance: Value<'gc>,
@@ -342,6 +343,7 @@ fn record_pending<'gc>(
     }
     mutator.shipped_world.remove_pending(module);
     mutator.record_shipped_module(module, object);
+    mutator.name_built_shipped_classes(module, object);
     Ok(object)
 }
 
@@ -492,17 +494,30 @@ mod tests {
         }
     }
 
+    /// Whether the shipped world names the class `declaration` of
+    /// `CollectionsFactory` (the module's own name for its root).
+    fn collections_names(interpreter: &mut crate::Interpreter, declaration: &str) -> bool {
+        interpreter.enter(|mutator| {
+            let name = crate::interpreter::shipped_world::ShippedName {
+                module: Symbol::intern("CollectionsFactory"),
+                declaration: Symbol::intern(declaration),
+                kind: crate::interpreter::shipped_world::ShippedKind::Class,
+            };
+            mutator.shipped_world.index_of_name(&name).is_some()
+        })
+    }
+
     /// A program's first `platform collections` builds the collections
-    /// module, and a second answers the same namespace; a class of the
-    /// module is named once its accessor builds it, and one never asked for
-    /// is not built, so `platform collections List` names `List` and not
-    /// `Map`.
+    /// module and records it: the namespace it answers is of the instance
+    /// the shipped world records. A class of the module is named once its
+    /// accessor builds it, and one never asked for is not built, so
+    /// `platform collections List` names `List` and not `Map`.
     #[test]
     fn a_program_builds_the_collections_module_and_only_the_classes_it_asks_for() {
         let source = indoc::indoc! {"
             class Demand = Object new () (
-              public twice: platform = (
-                ^platform collections == platform collections
+              public collections: platform = (
+                ^platform collections
               )
 
               public list: platform = (
@@ -519,40 +534,130 @@ mod tests {
         let class = interpreter.load_module(&resolved);
         let demand = expect_ok(interpreter.instantiate(&class, &[]), "Demand new");
         let platform = interpreter.platform();
-        let named = |interpreter: &mut crate::Interpreter, declaration: &str| {
-            interpreter.enter(|mutator| {
-                let name = crate::interpreter::shipped_world::ShippedName {
-                    module: Symbol::intern("CollectionsFactory"),
-                    declaration: Symbol::intern(declaration),
-                    kind: crate::interpreter::shipped_world::ShippedKind::Class,
-                };
-                mutator.shipped_world.index_of_name(&name).is_some()
-            })
-        };
-        assert!(!named(&mut interpreter, "CollectionsFactory"));
-        let twice = expect_ok(
+        assert!(!collections_names(&mut interpreter, "CollectionsFactory"));
+        let facet = expect_ok(
             interpreter.send(
                 &demand,
-                Symbol::intern("twice:"),
+                Symbol::intern("collections:"),
                 std::slice::from_ref(&platform),
             ),
-            "Demand twice:",
+            "Demand collections:",
         );
         interpreter.enter(|mutator| {
-            assert_eq!(
-                mutator.fetch(&twice).as_boolean(),
-                Some(true),
-                "both demands answer the same namespace"
+            let recorded = mutator
+                .shipped_world
+                .module_instance(Symbol::intern("CollectionsFactory"))
+                .expect("the first demand records the collections module");
+            let heap = mutator.heap();
+            let facet = mutator
+                .fetch(&facet)
+                .as_object()
+                .expect("a facet is an object");
+            let enclosing = heap
+                .class_enclosing(heap.object_class(facet))
+                .expect("a facet's class is nested");
+            assert!(
+                enclosing.same(recorded),
+                "the namespace is of the recorded instance"
             );
         });
-        assert!(named(&mut interpreter, "CollectionsFactory"));
-        assert!(!named(&mut interpreter, "List"));
+        assert!(collections_names(&mut interpreter, "CollectionsFactory"));
+        assert!(!collections_names(&mut interpreter, "List"));
         expect_ok(
             interpreter.send(&demand, Symbol::intern("list:"), &[platform]),
             "Demand list:",
         );
-        assert!(named(&mut interpreter, "List"));
-        assert!(!named(&mut interpreter, "Map"));
+        assert!(collections_names(&mut interpreter, "List"));
+        assert!(!collections_names(&mut interpreter, "Map"));
+    }
+
+    /// The pending root class is one per module: asked twice, the leaf's
+    /// function answers the same class, and an instance of it that is never
+    /// recorded -- all a factory send an unwind interrupted could leave --
+    /// gives the module no instance and leaves the same class pending, so
+    /// the next demand instantiates it again.
+    #[test]
+    fn an_unrecorded_instance_leaves_the_same_root_class_pending() {
+        let mut interpreter = crate::Interpreter::bootstrap();
+        let name = Symbol::intern("CollectionsFactory");
+        let (class, kernel) = interpreter.enter(|mutator| {
+            let first = shipped_module_class(mutator, name).expect("a lazy module's class");
+            let second = shipped_module_class(mutator, name).expect("a lazy module's class");
+            assert!(first.same(second));
+            let kernel = mutator.kernel.expect("the kernel is wired in");
+            (mutator.stash(Value::object(first)), mutator.stash(kernel))
+        });
+        expect_ok(
+            interpreter.instantiate(&class, &[kernel]),
+            "CollectionsFactory usingKernel:",
+        );
+        interpreter.enter(|mutator| {
+            assert!(mutator.shipped_world.module_instance(name).is_none());
+            let pending = mutator
+                .shipped_world
+                .pending_class(name)
+                .expect("the class is still pending");
+            let class = mutator.fetch(&class).as_object().expect("a class object");
+            assert!(pending.same(class));
+            let again = shipped_module_class(mutator, name).expect("a lazy module's class");
+            assert!(again.same(class));
+        });
+    }
+
+    /// A class a module built before its instance was recorded is named by
+    /// the record: the accessor's hook names no class of a module not yet
+    /// recorded, so `recordShippedModule:` names whatever the instance
+    /// already holds -- here `List`, built from the host before the record,
+    /// as the module's own initializer could build it -- and nothing it
+    /// does not, so `Map` stays unbuilt and unnamed.
+    #[test]
+    fn recording_a_module_names_the_classes_it_built_before() {
+        let mut interpreter = crate::Interpreter::bootstrap();
+        let name = Symbol::intern("CollectionsFactory");
+        let (class, kernel) = interpreter.enter(|mutator| {
+            let class = shipped_module_class(mutator, name).expect("a lazy module's class");
+            let kernel = mutator.kernel.expect("the kernel is wired in");
+            (mutator.stash(Value::object(class)), mutator.stash(kernel))
+        });
+        let instance = expect_ok(
+            interpreter.instantiate(&class, &[kernel]),
+            "CollectionsFactory usingKernel:",
+        );
+        let list = interpreter.enter(|mutator| {
+            let instance = mutator.fetch(&instance).as_object().expect("an object");
+            let heap = mutator.heap();
+            heap.class_application(heap.object_class(instance))
+                .expect("the root is a class object")
+                .mixin
+                .nested
+                .iter()
+                .find(|nested| nested.name.as_str() == "List")
+                .expect("CollectionsFactory declares List")
+                .clone()
+        });
+        let built = expect_ok(
+            interpreter.build_nested_class(&instance, &list),
+            "CollectionsFactory List",
+        );
+        assert!(!collections_names(&mut interpreter, "List"));
+        interpreter.enter(|mutator| {
+            let instance = mutator.fetch(&instance);
+            assert!(record_pending_module(mutator, instance).is_some());
+        });
+        assert!(collections_names(&mut interpreter, "CollectionsFactory"));
+        assert!(collections_names(&mut interpreter, "List"));
+        assert!(!collections_names(&mut interpreter, "Map"));
+        interpreter.enter(|mutator| {
+            let list_name = crate::interpreter::shipped_world::ShippedName {
+                module: name,
+                declaration: Symbol::intern("List"),
+                kind: crate::interpreter::shipped_world::ShippedKind::Class,
+            };
+            let world = &mutator.shipped_world;
+            let index = world.index_of_name(&list_name).expect("List is named");
+            let built = mutator.fetch(&built).as_object().expect("a class object");
+            assert!(world.entries()[index].object.same(built));
+        });
     }
 
     /// Every lazy module is a `SHIPPED_MODULES` entry, and the platform,

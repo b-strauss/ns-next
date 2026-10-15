@@ -276,8 +276,10 @@ impl crate::interpreter::Interpreter {
     /// a recorded shipped root -- the kernel's and `PlatformFactory`'s --
     /// declares is built, in declaration order, and recorded under its name
     /// with the positions it may stand in (`docs/design/image-format.md`,
-    /// "Shipped names"). A module built later names its classes one by one,
-    /// as their accessors build them (`nested::after_clause`).
+    /// "Shipped names") by `name_built_shipped_classes`, as a module
+    /// recorded later names the classes built before its record. After its
+    /// record, a module names its classes one by one, as their accessors
+    /// build them (`nested::after_clause`).
     /// The kernel's own phase built the kernel's classes, so building one of
     /// them answers the class it cached. Only the binary's own code runs,
     /// so the world is a function of the binary.
@@ -296,21 +298,17 @@ impl crate::interpreter::Interpreter {
         });
         for (module, instance, mixin) in &modules {
             for nested in &mixin.nested {
-                let class = super::core_library::booted(
+                super::core_library::booted(
                     self.build_nested_class(instance, nested),
                     &format!("building {} {}", module.as_str(), nested.name.as_str()),
                 );
-                self.enter(|mutator| {
-                    let class = mutator.fetch(&class).as_object().unwrap_or_else(|| {
-                        panic!(
-                            "internal: {} {} is a class object",
-                            module.as_str(),
-                            nested.name.as_str()
-                        )
-                    });
-                    mutator.record_shipped_class(*module, nested, class);
-                });
             }
+            self.enter(|mutator| {
+                let instance = mutator.fetch(instance).as_object().unwrap_or_else(|| {
+                    panic!("internal: {}'s instance is an object", module.as_str())
+                });
+                mutator.name_built_shipped_classes(*module, instance);
+            });
         }
     }
 }
@@ -354,6 +352,34 @@ impl<'gc> Mutator<'gc> {
         );
         self.shipped_world.accessed.insert(module, accessed);
         self.shipped_world.record_entries(entries);
+    }
+
+    /// Records under its names every class the root of the recorded shipped
+    /// module `module` declares that `instance`, its one instance, has
+    /// already built, in declaration order; a class not built yet is left
+    /// for its accessor to name when it builds it. A class can be built
+    /// before its module is recorded -- by the module's own initializer, or
+    /// by the kernel's phase of the boot -- when the accessor's hook does
+    /// not name it, since the module is not yet a recorded one; without
+    /// this, such a class would stay without a name, and an encoder that
+    /// met it would find no shipped name for an object the binary owns.
+    pub(crate) fn name_built_shipped_classes(
+        &mut self,
+        module: Symbol,
+        instance: ObjectReference<'gc>,
+    ) {
+        let application = root_application(self.heap(), instance);
+        for nested in &application.mixin.nested {
+            let built = application
+                .nested_slot
+                .get(&mixin_key(nested))
+                .and_then(|index| self.heap().instance_field(instance, *index))
+                .and_then(Value::as_object)
+                .filter(|class| self.heap().is_class(*class));
+            if let Some(class) = built {
+                self.record_shipped_class(module, nested, class);
+            }
+        }
     }
 
     /// Records `class`, the class object the declaration `nested` in the

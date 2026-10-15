@@ -13,8 +13,9 @@
 /// the boot").
 ///
 /// The factory pattern: this root holds what is privileged -- the mirror,
-/// and the kernel's classes `KernelNamespace` hands out, never the kernel
-/// instance -- and the host never hands its instance to anyone. It
+/// the kernel instance, which it builds the collections and typed arrays
+/// modules over, and the kernel's classes `KernelNamespace` hands out --
+/// and the host never hands its instance to anyone. It
 /// instantiates the root once, sends it `build`, its one public member, and
 /// hands every program that platform, an instance of the nested class
 /// `Platform`, whose factory is a harmless `new`. What a program receives
@@ -39,8 +40,10 @@
 /// root").
 ///
 /// The factory's parameters are copied into slots because neither a lazy
-/// slot nor a method may name them (§6); of the kernel only the classes
-/// `KernelNamespace` hands out are kept, not the kernel instance itself. A
+/// slot nor a method may name them (§6); a root keeps what it uses, so of
+/// the kernel it keeps the instance, which the lazy module slots build
+/// over, and the classes `KernelNamespace` hands out, and nothing hands
+/// the instance on but to the factories of those two modules. A
 /// send to `vmMirror` here is a mirror send, as in `Kernel.ns`: this module
 /// is resolved with `resolve_kernel`, which only shipped source is.
 ///
@@ -52,6 +55,12 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
     /// The VM mirror the factory was given: the one object through which
     /// a member here reaches a native operation. Never handed out.
     private vmMirror = mirror.
+    /// The kernel module's instance the factory was given, which the
+    /// collections and typed arrays modules are built over on first
+    /// demand. Kept because those builds need the instance itself, not
+    /// only its classes; handed to nothing but their factories, never to
+    /// a program.
+    private kernelModule = kernel.
     /// The kernel's `Exception`, which `KernelNamespace` hands out.
     private Exception = kernel Exception.
     /// The kernel's `Error`, which `KernelNamespace` hands out.
@@ -91,14 +100,16 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
   /// which is sent its factory, and records what the factory answered as
   /// that one instance. A demand an unwind interrupts -- the depth limit
   /// reached inside the factory -- records nothing, so the next demand
-  /// builds the module again from the same class. The kernel's instance
-  /// is asked of the mirror too, so this root keeps none. The module's
-  /// instance is as private as this one: only the facets its `build`
-  /// answers leave this module.
+  /// builds the module again from the same class. A record the mirror
+  /// declines -- a defect in the binary -- leaves the slot `nil`, so the
+  /// next read demands the module again and the member that wanted it
+  /// fails loudly, sending `build` to `nil`. The module's instance is as
+  /// private as this one: only the facets its `build` answers leave this
+  /// module.
   lazy private collectionsModule = vmMirror moduleInstanceNamed: #CollectionsFactory ifFail: [
     vmMirror recordShippedModule: ((vmMirror shippedModuleClassNamed: #CollectionsFactory ifFail: [
       nil.
-    ]) usingKernel: (vmMirror moduleInstanceNamed: #Kernel ifFail: [nil]))
+    ]) usingKernel: kernelModule)
         ifFail: [nil].
   ].
 
@@ -134,7 +145,7 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
   lazy private typedArraysModule = vmMirror moduleInstanceNamed: #TypedArraysFactory ifFail: [
     vmMirror recordShippedModule: ((vmMirror shippedModuleClassNamed: #TypedArraysFactory ifFail: [
       nil.
-    ]) usingVmMirror: vmMirror kernel: (vmMirror moduleInstanceNamed: #Kernel ifFail: [nil]))
+    ]) usingVmMirror: vmMirror kernel: kernelModule)
         ifFail: [nil].
   ].
 

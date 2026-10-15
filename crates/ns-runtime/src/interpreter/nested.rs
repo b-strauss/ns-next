@@ -283,7 +283,10 @@ pub(crate) fn after_clause<'gc>(
 /// `enclosing` is a recorded shipped module's instance and `nested` one of
 /// the declarations of that module's root. A class built before its
 /// module's instance is recorded -- by the module's own initializer, or by
-/// the kernel's phase of the boot -- is named by `complete_shipped_world`.
+/// the kernel's phase of the boot -- is named when the instance is
+/// recorded (`Mutator::name_built_shipped_classes`, which the boot's
+/// `complete_shipped_world` and the mirror's `recordShippedModule:` both
+/// run).
 #[cold]
 #[inline(never)]
 fn name_a_shipped_class<'gc>(
