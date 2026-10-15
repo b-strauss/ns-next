@@ -40,6 +40,7 @@ first.
 | The platform's modules: no class of theirs handed out, the transcript and the clock modules of their own under `core-library/platform/`, the factories keeping only the kernel classes they use, `build` in every factory, every root `= Value` | Complete | 2026-10-13 | — |
 | Editor support: hints for initializing a local in its declaration and for a read-only local, with their quick fixes and "Apply all hints in this file" | Complete | 2026-10-14 | [editor-hints](superpowers/plans/2026-10-14-1204-ns-next-editor-hints.md) |
 | The gates: the suite's longest loops split into parallel trials, the round trips, the two-entry cache, the hints' oracle and the benchmark programs in nextest profiles of their own, the benchmarks out of the goldens, one table of which gate runs when, run as `cargo xtask gates <group>` | Complete | 2026-10-14 | — |
+| The boot: the shipped modules' compiled code embedded in the binary, and four of the six built on their first demand | Complete | 2026-10-15 | [precompiled-shipped-code](superpowers/plans/2026-10-14-2207-precompiled-shipped-code.md), [shipped-modules-on-first-demand](superpowers/plans/2026-10-15-0900-shipped-modules-on-first-demand.md) |
 | Road step 5 — mirrors and atomic installation, on `become:` as an eager bulk forward | Not started | — | — |
 | Road step 6 — inline allocation in the interpreter | Not started | — | — |
 | Road step 7 — an execution model for compiled code | Not started | — | — |
@@ -5259,3 +5260,41 @@ What it leaves open: choosing the gates from what a change touched, which
 `xtask` is the place for; the longest single tests the suite cannot split,
 the compilations of a body past the register ceiling, now bound its wall
 time.
+
+## The boot (2026-10-15)
+
+Plans: [precompiled-shipped-code](superpowers/plans/2026-10-14-2207-precompiled-shipped-code.md)
+and [shipped-modules-on-first-demand](superpowers/plans/2026-10-15-0900-shipped-modules-on-first-demand.md).
+Every boot parsed, resolved and compiled all six shipped modules from
+source, 13.6 ms of a hello program's 20.8 ms process (release, the
+measuring workstation, Windows 11), the kernel 8.8 ms of it, whether the
+program used a module or not.
+
+- **The compiled code embedded.** `crates/ns-runtime/src/shipped_code/`
+  encodes the shipped modules' compiled root mixins, optimized lowering
+  only, in a codec of its own, not an image dialect, so no wire tag
+  carries a mirror send; `cargo xtask shipped-code` writes the artifact
+  (`core-library/shipped-code.bin`, gitignored, written atomically and
+  refused under `NS_NEXT_NO_PRIMITIVE_METHODS`), `build.rs` embeds it with
+  a fingerprint of the sources that compile to it, and an optimized boot
+  decodes it; the reference lowering, a boot without primitive methods and
+  a stale or missing artifact compile from source. Every `cargo xtask
+  gates` call regenerates it. The boot went to 1.6 ms, the process to
+  5.2 ms. The image fingerprint hashes the shipped sources only, no longer
+  `Manifest.ns`.
+- **Four modules on first demand.** The boot builds `Kernel` and
+  `PlatformFactory`; `TranscriptFactory`, `TimeFactory`,
+  `CollectionsFactory` and `TypedArraysFactory` are built when a program
+  first asks for them, by `PlatformFactory.ns`'s lazy private slots
+  through two new mirror leaves, `shippedModuleClassNamed:` and
+  `recordShippedModule:`, which checks the mirror slot before it records
+  (lock (2)); a module's classes are named as their accessors build them
+  (`nested::after_clause`), and a demand an unwind interrupts leaves its
+  root class pending for the next. The root imports the kernel into a
+  private slot, and no slot sends the mirror or the kernel instance to a
+  receiver that may not understand it. `image::load` refuses every unknown
+  shipped name, then builds the binary's own modules and classes the image
+  names before the tenure. The boot went from 1.77 to 1.22 ms, the hello
+  process from 5.24 to 4.74 ms; a first `platform collections` costs
+  0.31 ms ([execution.md](design/execution.md), "What the precompiled
+  shipped code moved").
