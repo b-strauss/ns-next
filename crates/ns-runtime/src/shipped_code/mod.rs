@@ -96,11 +96,17 @@ pub(crate) fn module_names() -> impl Iterator<Item = &'static str> {
 
 /// The artifact: every shipped module compiled through the source path,
 /// checks included, with the optimized lowering, then encoded. For
-/// `cargo xtask shipped-code`.
+/// `cargo xtask shipped-code`. It needs the root mixins, not the world they
+/// build, so it compiles each module and instantiates none.
 #[doc(hidden)]
 pub fn generate() -> Vec<u8> {
     let mut interpreter = Interpreter::bootstrap_on(Lowering::Optimized, ShippedCodePath::Source);
-    encode(&interpreter.shipped_root_mixins(), SHIPPED_CODE_FINGERPRINT)
+    let modules: Vec<(&'static str, Rc<Mixin>)> = interpreter.enter(|mutator| {
+        module_names()
+            .map(|name| (name, mutator.shipped_root_mixin_from_source(name)))
+            .collect()
+    });
+    encode(&modules, SHIPPED_CODE_FINGERPRINT)
 }
 
 /// The root mixin of the module `name` in the artifact `bytes`.

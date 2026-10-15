@@ -38,8 +38,9 @@ pub enum Primitive {
     Platform(PlatformPrimitive),
     Activation(ActivationPrimitive),
     Message(MessagePrimitive),
-    /// `moduleInstanceNamed:`: a shipped module's one instance
-    /// (`builtins::module`).
+    /// `moduleInstanceNamed:`, `shippedModuleClassNamed:` and
+    /// `recordShippedModule:`: a shipped module's one instance, and its
+    /// build on first demand (`builtins::module`).
     Module(ModulePrimitive),
     /// §6.3.2's pull future, made by `Future computing:` and forced by its
     /// `doesNotUnderstand:` (`builtins::future`).
@@ -273,7 +274,11 @@ impl Primitive {
                 | ActivationPrimitive::Terminate,
             ) => false,
             Primitive::Message(MessagePrimitive::SendTo) => false,
-            Primitive::Module(ModulePrimitive::InstanceNamed) => false,
+            Primitive::Module(
+                ModulePrimitive::InstanceNamed
+                | ModulePrimitive::ClassNamed
+                | ModulePrimitive::Record,
+            ) => false,
             Primitive::Future(FuturePrimitive::Value | FuturePrimitive::Made) => false,
             // It reaches its own primitive's row through `execute_sent`,
             // whose failure path looks for a future among that row's
@@ -706,11 +711,18 @@ pub enum MessagePrimitive {
     SendTo,
 }
 
-/// The module table's one leaf (`docs/design/core-library.md`, "The module
+/// The module table's leaves (`docs/design/core-library.md`, "The module
 /// table and the boot").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModulePrimitive {
+    /// A recorded shipped module's one instance.
     InstanceNamed,
+    /// The root class of a lazy shipped module not yet recorded, built
+    /// once and kept pending until its instance is recorded.
+    ClassNamed,
+    /// Records an instance of a pending root class as its module's one
+    /// instance.
+    Record,
 }
 
 /// The two leaves of the futures (`docs/design/object-model.md`,
@@ -1265,6 +1277,19 @@ pub const MIRROR: &[MirrorEntry] = &[
         // Unary: the module's name is the row's subject.
         "moduleInstanceNamed",
         Primitive::Module(ModulePrimitive::InstanceNamed),
+    ),
+    mirror(
+        "shippedModuleClassNamed:ifFail:",
+        // Unary: the module's name is the row's subject.
+        "shippedModuleClassNamed",
+        Primitive::Module(ModulePrimitive::ClassNamed),
+    ),
+    mirror(
+        "recordShippedModule:ifFail:",
+        // Unary: the instance the module's factory answered is the row's
+        // subject.
+        "recordShippedModule",
+        Primitive::Module(ModulePrimitive::Record),
     ),
     mirror(
         "futureValue:ifFail:",

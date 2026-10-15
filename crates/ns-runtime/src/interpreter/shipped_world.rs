@@ -1,9 +1,11 @@
 //! The shipped world: every object the binary owns and an image may name
 //! (`docs/design/image-format.md`, "Shipped names").
-//! Filled during the boot -- each module instance and its root's names as
-//! `install_shipped_modules` builds it, then every class the roots declare
-//! and its names, by `complete_shipped_world`, before the platform is
-//! made -- and never changed afterwards.
+//! Filled as the shipped world is built -- each module instance and its
+//! root's names when the instance is recorded (`record_shipped_module`),
+//! each class a recorded root declares and its names when its accessor
+//! builds it (`nested::after_clause`), and at boot every class of the
+//! modules recorded so far, by `complete_shipped_world` -- and an entry once
+//! recorded is never changed.
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -112,6 +114,10 @@ pub(crate) struct ShippedWorld<'gc> {
     /// root answers (`accessed_classes`): walked once when the module is
     /// recorded rather than once for each class it declares.
     accessed: HashMap<Symbol, HashSet<Symbol>>,
+    /// Per lazy shipped module whose root class `shippedModuleClassNamed:`
+    /// built and whose instance is not yet recorded, that class: a demand
+    /// an unwind interrupted gets the same class again rather than another.
+    pending: Vec<(Symbol, ClassReference<'gc>)>,
 }
 
 impl<'gc> ShippedWorld<'gc> {
@@ -200,6 +206,41 @@ impl<'gc> ShippedWorld<'gc> {
             .collect()
     }
 
+    /// The pending root class of the shipped module `name`, or `None` when
+    /// none was built or its instance is recorded.
+    pub(crate) fn pending_class(&self, name: Symbol) -> Option<ClassReference<'gc>> {
+        self.pending
+            .iter()
+            .find(|(module, _)| *module == name)
+            .map(|(_, class)| *class)
+    }
+
+    /// Keeps `class` as the pending root class of the shipped module `name`.
+    /// The world builds one per module, so a second is a defect.
+    pub(crate) fn add_pending(&mut self, name: Symbol, class: ClassReference<'gc>) {
+        assert!(
+            self.pending_class(name).is_none() && self.module_instance(name).is_none(),
+            "internal: the shipped module {} has a root class already",
+            name.as_str()
+        );
+        self.pending.push((name, class));
+    }
+
+    /// The shipped module whose pending root class `class` is, or `None`
+    /// when it is none.
+    pub(crate) fn module_of_pending_class(&self, class: ClassReference<'gc>) -> Option<Symbol> {
+        self.pending
+            .iter()
+            .find(|(_, pending)| pending.same(class))
+            .map(|(module, _)| *module)
+    }
+
+    /// Drops the pending root class of the shipped module `name`, whose
+    /// instance is about to be recorded.
+    pub(crate) fn remove_pending(&mut self, name: Symbol) {
+        self.pending.retain(|(module, _)| *module != name);
+    }
+
     /// Records `entries` under their names. A name recorded twice is a
     /// defect in the binary: it would name two objects.
     fn record_entries(&mut self, entries: Vec<ShippedEntry<'gc>>) {
@@ -222,6 +263,9 @@ impl Trace for ShippedWorld<'_> {
         }
         for entry in &mut self.entries {
             tracer.object(&mut entry.object);
+        }
+        for (_, class) in &mut self.pending {
+            tracer.object(class);
         }
     }
 }
@@ -320,7 +364,16 @@ impl<'gc> Mutator<'gc> {
             declaration,
             kind: ShippedKind::Class,
         };
-        if self.shipped_world.index_of_name(&class_name).is_some() {
+        if let Some(index) = self.shipped_world.index_of_name(&class_name) {
+            // Two paths record a class -- its accessor's build and
+            // `complete_shipped_world` -- and both must name the one class
+            // object the module caches: another object dropped here would
+            // leave a shipped class no name names.
+            debug_assert!(
+                self.shipped_world.entries()[index].object.same(class),
+                "internal: {} is recorded as two class objects",
+                class_name.describe()
+            );
             return;
         }
         let accessed = self.shipped_world.accessed.get(&module).unwrap_or_else(|| {

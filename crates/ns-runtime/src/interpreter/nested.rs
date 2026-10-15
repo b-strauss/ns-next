@@ -268,7 +268,47 @@ pub(crate) fn after_clause<'gc>(
         index,
         Value::object(class),
     );
+    // A shipped module's class gets its shipped names when it comes into
+    // being, so that an encoder, which can reach only a class that exists,
+    // meets no shipped class without a name. Only shipped source pays more
+    // than this one test.
+    if nested.shipped {
+        name_a_shipped_class(mutator, enclosing, &nested, class);
+    }
     Ok(Step::Value(Value::object(class)))
+}
+
+/// Records `class`, which the declaration `nested` just evaluated to with
+/// `enclosing` as its enclosing object, under its shipped names when
+/// `enclosing` is a recorded shipped module's instance and `nested` one of
+/// the declarations of that module's root. A class built before its
+/// module's instance is recorded -- by the module's own initializer, or by
+/// the kernel's phase of the boot -- is named by `complete_shipped_world`.
+#[cold]
+#[inline(never)]
+fn name_a_shipped_class<'gc>(
+    mutator: &mut Mutator<'gc>,
+    enclosing: ObjectReference<'gc>,
+    nested: &Rc<Mixin>,
+    class: ClassReference<'gc>,
+) {
+    let Some(module) = mutator.shipped_world.module_of_instance(enclosing) else {
+        return;
+    };
+    let Some(root) = mutator
+        .heap
+        .class_application(mutator.heap.object_class(enclosing))
+    else {
+        return;
+    };
+    if root
+        .mixin
+        .nested
+        .iter()
+        .any(|declared| Rc::ptr_eq(declared, nested))
+    {
+        mutator.record_shipped_class(module, nested, class);
+    }
 }
 
 /// The class a declaration that applies mixins builds its own class on, and

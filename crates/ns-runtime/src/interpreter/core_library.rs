@@ -10,7 +10,7 @@ use std::rc::Rc;
 use crate::interpreter::{HostResult, HostSignal, Mutator, Root};
 use crate::mixin::Mixin;
 use crate::shipped_code::ShippedCodePath;
-use crate::types::{ResolvedModule, SourceOrigin, Value};
+use crate::types::{ClassReference, ObjectReference, ResolvedModule, SourceOrigin, Value};
 use crate::Symbol;
 
 pub(crate) const PLATFORM_FACTORY_SOURCE: &str =
@@ -81,6 +81,27 @@ pub(crate) const SHIPPED_MODULES: &[ShippedModule] = &[
         factory: ShippedFactory::MirrorAndKernel,
     },
 ];
+
+/// The shipped modules a program's first demand builds, through
+/// `PlatformFactory.ns`'s lazy slots and the mirror's
+/// `shippedModuleClassNamed:` and `recordShippedModule:`: every
+/// `SHIPPED_MODULES` entry but `PlatformFactory`, whose `build` makes the
+/// platform at boot.
+pub(crate) const LAZY_SHIPPED_MODULES: &[&str] = &[
+    "TranscriptFactory",
+    "TimeFactory",
+    "CollectionsFactory",
+    "TypedArraysFactory",
+];
+
+/// The `SHIPPED_MODULES` entry `name`. A name the table does not list is a
+/// defect in the binary, which names every module it builds.
+fn shipped_module(name: &str) -> &'static ShippedModule {
+    SHIPPED_MODULES
+        .iter()
+        .find(|shipped| shipped.name == name)
+        .unwrap_or_else(|| panic!("internal: no shipped module is named {name}"))
+}
 
 thread_local! {
     /// One cell per `SHIPPED_MODULES` entry, in its order, each filled with
@@ -158,17 +179,12 @@ fn resolve_shipped_source(shipped: &ShippedModule) -> ResolvedModule {
 impl crate::interpreter::Interpreter {
     /// The shipped-module phase of the bootstrap, right after the kernel's
     /// (`docs/design/core-library.md`, "The factory pattern"). It records the
-    /// kernel's instance as the first shipped module's, then compiles every
-    /// `SHIPPED_MODULES` entry in table order and instantiates its root through
-    /// the ordinary `instantiate` -- `PlatformFactory` and `TypedArraysFactory`
-    /// with the VM mirror and the kernel instance, `TranscriptFactory` and
-    /// `TimeFactory` with the mirror alone, `CollectionsFactory` with the
-    /// kernel instance alone -- and records each instance as that module's one
-    /// instance, naming it and its root (`interpreter::shipped_world`). Every shipped module is built
-    /// at every boot, because an image names the shipped world's objects and
-    /// the loader runs nothing the image chooses
+    /// kernel's instance as the first shipped module's, then builds every
+    /// `SHIPPED_MODULES` entry in table order (`build_shipped_module`). Every
+    /// shipped module is built at every boot, because an image names the
+    /// shipped world's objects and the loader runs nothing the image chooses
     /// (`docs/design/image-format.md`, "Shipped names"); the mirror's
-    /// `moduleInstanceNamed:` answers these instances and builds nothing. Then
+    /// `moduleInstanceNamed:` answers these instances. Then
     /// `complete_shipped_world` builds every class the roots declare and
     /// records each under its name.
     ///
@@ -181,48 +197,15 @@ impl crate::interpreter::Interpreter {
     /// program can name answers one. The platform's members are lazy
     /// slots, so nothing past `Platform new` runs here.
     pub(crate) fn install_shipped_modules(&mut self) {
-        let (mirror, kernel) = self.enter(|mutator| {
-            let mirror = mutator.vm_mirror();
+        self.enter(|mutator| {
             let kernel = mutator
                 .kernel
-                .expect("internal: the kernel is wired in before the shipped modules boot");
-            let kernel_object = kernel
-                .as_object()
-                .expect("internal: the kernel's instance is an object");
-            mutator.record_shipped_module(Symbol::intern("Kernel"), kernel_object);
-            (mutator.stash(mirror), mutator.stash(kernel))
+                .and_then(|kernel| kernel.as_object())
+                .expect("internal: the kernel's instance is wired in before the shipped modules");
+            mutator.record_shipped_module(Symbol::intern("Kernel"), kernel);
         });
         for shipped in SHIPPED_MODULES {
-            let name = shipped.name;
-            let factory_class = self.enter(|mutator| {
-                let mixin = mutator.shipped_root_mixin(name);
-                let class = mutator.root_class_of_mixin(&mixin);
-                mutator.stash(Value::object(class))
-            });
-            let instance = match shipped.factory {
-                ShippedFactory::MirrorAndKernel => booted(
-                    self.instantiate(&factory_class, &[mirror.clone(), kernel.clone()]),
-                    &format!("{name} usingVmMirror:kernel:"),
-                ),
-                ShippedFactory::Mirror => booted(
-                    self.instantiate(&factory_class, std::slice::from_ref(&mirror)),
-                    &format!("{name} usingVmMirror:"),
-                ),
-                ShippedFactory::Kernel => booted(
-                    self.instantiate(&factory_class, std::slice::from_ref(&kernel)),
-                    &format!("{name} usingKernel:"),
-                ),
-            };
-            self.enter(|mutator| {
-                let instance = mutator.fetch(&instance);
-                if let ShippedFactory::MirrorAndKernel | ShippedFactory::Mirror = shipped.factory {
-                    check_factory_holds_the_mirror(mutator, name, instance);
-                }
-                let instance = instance
-                    .as_object()
-                    .unwrap_or_else(|| panic!("internal: {name}'s instance is an object"));
-                mutator.record_shipped_module(Symbol::intern(name), instance);
-            });
+            self.build_shipped_module(shipped.name);
         }
         self.complete_shipped_world();
         let platform_factory = self.enter(|mutator| {
@@ -241,6 +224,124 @@ impl crate::interpreter::Interpreter {
             mutator.platform_singleton = Some(platform);
         });
     }
+
+    /// Builds the `SHIPPED_MODULES` entry `name` from the host, as the
+    /// mirror's leaves build it from shipped Newspeak: its root class
+    /// (`module_class`), instantiated through the ordinary `instantiate`
+    /// with its factory's arguments -- `PlatformFactory` and
+    /// `TypedArraysFactory` the VM mirror and the kernel instance,
+    /// `TranscriptFactory` and `TimeFactory` the mirror alone,
+    /// `CollectionsFactory` the kernel instance alone -- and the instance
+    /// recorded as the module's one instance (`record_pending`). A module
+    /// already recorded, or one that fails to build or to record, is a
+    /// defect in the binary, so it panics.
+    pub(crate) fn build_shipped_module(&mut self, name: &str) {
+        let shipped = shipped_module(name);
+        let (factory_class, mirror, kernel) = self.enter(|mutator| {
+            let class = module_class(mutator, shipped)
+                .unwrap_or_else(|| panic!("internal: {name} is built twice"));
+            let mirror = mutator.vm_mirror();
+            let kernel = mutator
+                .kernel
+                .expect("internal: the kernel is wired in before the shipped modules boot");
+            (
+                mutator.stash(Value::object(class)),
+                mutator.stash(mirror),
+                mutator.stash(kernel),
+            )
+        });
+        let instance = match shipped.factory {
+            ShippedFactory::MirrorAndKernel => booted(
+                self.instantiate(&factory_class, &[mirror, kernel]),
+                &format!("{name} usingVmMirror:kernel:"),
+            ),
+            ShippedFactory::Mirror => booted(
+                self.instantiate(&factory_class, &[mirror]),
+                &format!("{name} usingVmMirror:"),
+            ),
+            ShippedFactory::Kernel => booted(
+                self.instantiate(&factory_class, &[kernel]),
+                &format!("{name} usingKernel:"),
+            ),
+        };
+        self.enter(|mutator| {
+            let instance = mutator.fetch(&instance);
+            if let Err(reason) = record_pending(mutator, instance) {
+                panic!("internal: recording {name}'s instance failed: {reason}");
+            }
+        });
+    }
+}
+
+/// The root class of the lazy shipped module `name`, for the mirror's
+/// `shippedModuleClassNamed:`: `None` when `name` is no lazy shipped module
+/// (`LAZY_SHIPPED_MODULES`) or its instance is already recorded.
+pub(crate) fn shipped_module_class<'gc>(
+    mutator: &mut Mutator<'gc>,
+    name: Symbol,
+) -> Option<ClassReference<'gc>> {
+    if !LAZY_SHIPPED_MODULES.contains(&name.as_str()) {
+        return None;
+    }
+    module_class(mutator, shipped_module(name.as_str()))
+}
+
+/// The root class of `shipped`, or `None` when its instance is already
+/// recorded: the module's pending class when one was built, otherwise a
+/// new one, built from the root mixin the boot takes the shipped code from
+/// (`Mutator::shipped_root_mixin`) and kept pending. One class per module,
+/// so that a demand an unwind interrupted instantiates the same class
+/// again, and only an instance of it is ever recorded.
+fn module_class<'gc>(
+    mutator: &mut Mutator<'gc>,
+    shipped: &'static ShippedModule,
+) -> Option<ClassReference<'gc>> {
+    let name = Symbol::intern(shipped.name);
+    if mutator.shipped_world.module_instance(name).is_some() {
+        return None;
+    }
+    if let Some(class) = mutator.shipped_world.pending_class(name) {
+        return Some(class);
+    }
+    let mixin = mutator.shipped_root_mixin(shipped.name);
+    let class = mutator.root_class_of_mixin(&mixin);
+    mutator.shipped_world.add_pending(name, class);
+    Some(class)
+}
+
+/// Records `instance` as its module's one instance, for the mirror's
+/// `recordShippedModule:`, and answers it; `None` when it is no instance of
+/// a pending root class, or its module is given the mirror and its
+/// `vmMirror` slot does not hold it (`record_pending`).
+pub(crate) fn record_pending_module<'gc>(
+    mutator: &mut Mutator<'gc>,
+    instance: Value<'gc>,
+) -> Option<ObjectReference<'gc>> {
+    record_pending(mutator, instance).ok()
+}
+
+/// `record_pending_module`'s work, with why it declined: the host's build
+/// panics with the reason, the mirror's leaf declines. Nothing is recorded
+/// before the instance exists, so an unwind through a half-built module
+/// leaves its class pending and records nothing.
+fn record_pending<'gc>(
+    mutator: &mut Mutator<'gc>,
+    instance: Value<'gc>,
+) -> Result<ObjectReference<'gc>, String> {
+    let Some(object) = instance.as_object() else {
+        return Err("it is no object".to_string());
+    };
+    let class = mutator.heap().object_class(object);
+    let Some(module) = mutator.shipped_world.module_of_pending_class(class) else {
+        return Err("it is no instance of a pending root class".to_string());
+    };
+    let shipped = shipped_module(module.as_str());
+    if let ShippedFactory::MirrorAndKernel | ShippedFactory::Mirror = shipped.factory {
+        factory_holds_the_mirror(mutator, shipped.name, object)?;
+    }
+    mutator.shipped_world.remove_pending(module);
+    mutator.record_shipped_module(module, object);
+    Ok(object)
 }
 
 impl<'gc> Mutator<'gc> {
@@ -278,30 +379,6 @@ impl<'gc> Mutator<'gc> {
     }
 }
 
-impl crate::interpreter::Interpreter {
-    /// The root mixin of every shipped module after a boot, `Kernel` first
-    /// and then the `SHIPPED_MODULES` in order: the one each module
-    /// instance's class applies.
-    pub(crate) fn shipped_root_mixins(&mut self) -> Vec<(&'static str, Rc<Mixin>)> {
-        self.enter(|mutator| {
-            crate::shipped_code::module_names()
-                .map(|name| {
-                    let instance = mutator
-                        .shipped_world
-                        .module_instance(Symbol::intern(name))
-                        .unwrap_or_else(|| panic!("internal: {name} has no module instance"));
-                    let class = mutator.class_of(Value::object(instance));
-                    let application = mutator
-                        .heap()
-                        .class_application(class)
-                        .unwrap_or_else(|| panic!("internal: {name}'s class is a class object"));
-                    (name, Rc::clone(&application.mixin))
-                })
-                .collect()
-        })
-    }
-}
-
 /// What a boot step answered. A shipped module that fails to boot is a
 /// defect in the binary, not in a program, so it panics, naming the step.
 pub(super) fn booted(result: HostResult, step: &str) -> Root {
@@ -322,33 +399,35 @@ pub(super) fn booted(result: HostResult, step: &str) -> Root {
 /// VM mirror is checked here for every shipped module given the mirror, as
 /// `interpreter::kernel` checks it for the kernel. Otherwise a mirror send's
 /// fast path and its `SendMirror` fallback could disagree about the
-/// receiver. The one instance checked is the only one there is: no program
+/// receiver. The one instance checked is the only one recorded: no program
 /// reaches the root's class to make another.
-fn check_factory_holds_the_mirror<'gc>(mutator: &Mutator<'gc>, name: &str, factory: Value<'gc>) {
-    let Some(factory) = factory.as_object() else {
-        panic!("internal: {name}'s instance is an object");
-    };
+fn factory_holds_the_mirror<'gc>(
+    mutator: &Mutator<'gc>,
+    name: &str,
+    factory: ObjectReference<'gc>,
+) -> Result<(), String> {
     let heap = mutator.heap();
     let application = heap
         .class_application(heap.object_class(factory))
         .expect("internal: the factory's class is a class object");
-    let position = application
+    let Some(position) = application
         .mixin
         .slots
         .iter()
         .position(|slot| slot.name.as_str() == "vmMirror" && !slot.mutable && !slot.lazy)
-        .unwrap_or_else(|| {
-            panic!(
-                "internal: {name}.ns's root class must declare the immutable, eager slot vmMirror"
-            )
-        });
+    else {
+        return Err(format!(
+            "{name}.ns's root class must declare the immutable, eager slot vmMirror"
+        ));
+    };
     let holds_the_mirror = heap
         .instance_field(factory, application.own_slot_base + position)
         .is_some_and(|value| mutator.is_vm_mirror(value));
-    assert!(
-        holds_the_mirror,
-        "internal: {name}'s vmMirror slot must hold the VM mirror"
-    );
+    if holds_the_mirror {
+        Ok(())
+    } else {
+        Err(format!("{name}'s vmMirror slot must hold the VM mirror"))
+    }
 }
 
 #[cfg(test)]
@@ -366,20 +445,51 @@ mod tests {
         )
     }
 
+    /// The boot records the kernel's instance first, then every
+    /// `SHIPPED_MODULES` entry in table order, each an instance of its own
+    /// root, and leaves no root class pending.
     #[test]
-    fn the_boot_keeps_every_shipped_root_mixin_in_table_order() {
+    fn the_boot_records_every_shipped_module_in_table_order() {
         let mut interpreter = crate::Interpreter::bootstrap();
-        let names: Vec<&str> = interpreter
-            .shipped_root_mixins()
+        interpreter.enter(|mutator| {
+            let heap = mutator.heap();
+            let names: Vec<&str> = mutator
+                .shipped_world
+                .module_instances()
+                .iter()
+                .map(|(name, instance)| {
+                    let application = heap
+                        .class_application(heap.object_class(*instance))
+                        .expect("a module instance's class is a class object");
+                    assert_eq!(application.mixin.name, *name);
+                    name.as_str()
+                })
+                .collect();
+            let mut expected = vec!["Kernel"];
+            expected.extend(SHIPPED_MODULES.iter().map(|shipped| shipped.name));
+            assert_eq!(names, expected);
+            for shipped in SHIPPED_MODULES {
+                assert!(mutator
+                    .shipped_world
+                    .pending_class(Symbol::intern(shipped.name))
+                    .is_none());
+            }
+        });
+    }
+
+    /// Every lazy module is a `SHIPPED_MODULES` entry, and the platform,
+    /// which the boot makes, is the one entry that is not lazy.
+    #[test]
+    fn every_lazy_shipped_module_is_a_shipped_module_but_the_platform() {
+        for name in LAZY_SHIPPED_MODULES {
+            assert_eq!(shipped_module(name).name, *name);
+        }
+        let others: Vec<&str> = SHIPPED_MODULES
             .iter()
-            .map(|(name, mixin)| {
-                assert_eq!(mixin.name.as_str(), *name);
-                *name
-            })
+            .map(|shipped| shipped.name)
+            .filter(|name| !LAZY_SHIPPED_MODULES.contains(name))
             .collect();
-        let mut expected = vec!["Kernel"];
-        expected.extend(SHIPPED_MODULES.iter().map(|shipped| shipped.name));
-        assert_eq!(names, expected);
+        assert_eq!(others, ["PlatformFactory"]);
     }
 
     /// Every table entry parses and resolves to something, panicking on the
