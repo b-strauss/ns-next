@@ -6275,6 +6275,7 @@ fn closure_world() -> (GraphFixture, decode::DecodedCodeTable) {
         install_mixin(mutator, class, doctored);
         mixin_preorder(mutator.heap(), class)
     });
+    build_fixture_names(&mut interpreter);
     let fixture = GraphFixture {
         codes: table.codes.clone(),
         interpreter,
@@ -13522,6 +13523,77 @@ fn a_second_typed_arrays_facet_is_a_record_of_its_shipped_class() {
     });
 }
 
+/// An image holding a `List` loads into a fresh process, whose boot built
+/// no collections module: the load builds `CollectionsFactory` and its
+/// `List` before the graph, and the loaded list is an instance of the
+/// `List` the loading world's module instance answers. It builds only
+/// what the image names, so `Map`, which the program never used, is not
+/// built.
+#[test]
+fn a_kept_list_loads_into_a_world_that_builds_its_module_on_load() {
+    let source = indoc! {"
+        class Holder usingPlatform: platform = Object new (
+            | public list ::= nil. |
+        ) (
+        ) : ()
+    "};
+    let bytes = snapshot_module_holding(source, "list:", |interpreter, platform| {
+        let collections = expect_ok(
+            interpreter.send(platform, Symbol::intern("collections"), &[]),
+            "platform collections",
+        );
+        let list_class = expect_ok(
+            interpreter.send(&collections, Symbol::intern("List"), &[]),
+            "platform collections List",
+        );
+        expect_ok(
+            interpreter.send(&list_class, Symbol::NEW, &[]),
+            "platform collections List new",
+        )
+    });
+    let mut loaded = image::load(&bytes).expect("load");
+    let instance = loaded.roots.first().cloned().expect("the root instance");
+    let list = send_to(&mut loaded, &instance, "list");
+    let stored_class = class_root_of(&mut loaded, &list);
+    let platform = loaded.interpreter.platform();
+    let collections = send_to(&mut loaded, &platform, "collections");
+    let fresh_class = send_to(&mut loaded, &collections, "List");
+    assert!(
+        same_object(&mut loaded, &stored_class, &fresh_class),
+        "the loaded list is an instance of the loading platform's List"
+    );
+    loaded.interpreter.enter(|mutator| {
+        let name = |declaration: &str, kind| ShippedName {
+            module: Symbol::intern("CollectionsFactory"),
+            declaration: Symbol::intern(declaration),
+            kind,
+        };
+        let Ok(resolved) = image::shipped_names::resolve_in(
+            mutator,
+            &[
+                name("CollectionsFactory", ShippedKind::ModuleInstance),
+                name("List", ShippedKind::Class),
+            ],
+            false,
+        ) else {
+            panic!("the load built the collections module and its List");
+        };
+        let heap = mutator.heap();
+        let list_class = object(mutator.fetch(&stored_class));
+        assert!(list_class.same(resolved[1].object));
+        assert!(
+            heap.class_enclosing(list_class)
+                .is_some_and(|enclosing| enclosing.same(resolved[0].object)),
+            "the loaded List is the loading world's module instance's"
+        );
+        assert!(
+            image::shipped_names::resolve_in(mutator, &[name("Map", ShippedKind::Class)], false)
+                .is_err(),
+            "the load builds only the classes the image names"
+        );
+    });
+}
+
 /// A crafted section entry: a module, a declaration and a kind byte, and a
 /// level's clause index.
 type CraftedEntry = ((&'static str, &'static str, u8), Option<u32>);
@@ -14302,8 +14374,10 @@ fn building_the_shipped_names_refuses_a_name_before_it_builds_anything() {
     }
 }
 
-/// Names of the world the boot built are accepted, and building them again
-/// builds nothing: each module and class is built at most once.
+/// Names of a world already built are accepted, and building them again
+/// builds nothing: each module and class is built at most once. The boot
+/// builds neither module named here, so the first build of the names builds
+/// them, and the second finds them built.
 #[test]
 fn building_the_shipped_names_of_a_built_world_builds_nothing() {
     let names = [
@@ -14321,7 +14395,15 @@ fn building_the_shipped_names_of_a_built_world_builds_nothing() {
         ),
     ];
     let mut interpreter = Interpreter::bootstrap();
+    let booted = interpreter.enter(|mutator| mutator.shipped_name_count());
+    if let Err(error) = interpreter.build_shipped_names(&names, false) {
+        panic!("{error}");
+    }
     let before = interpreter.enter(|mutator| mutator.shipped_name_count());
+    assert!(
+        before > booted,
+        "the first build of the names builds both modules"
+    );
     if let Err(error) = interpreter.build_shipped_names(&names, false) {
         panic!("{error}");
     }

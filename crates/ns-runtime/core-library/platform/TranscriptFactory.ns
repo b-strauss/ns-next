@@ -1,12 +1,13 @@
 /// The transcript's module: answers, to `build`, the program's standard
-/// output, the `Transcript` `platform transcript` is. Built once, at boot.
+/// output, the `Transcript` `platform transcript` is. Built once, on
+/// first demand.
 ///
 /// mirror: the VM mirror, through which the transcript writes.
 ///
 /// The factory pattern `PlatformFactory.ns` is written in: this root holds
-/// the VM mirror, which the host hands it at boot, and nothing hands its
-/// instance to a program. The platform's root reaches it through the
-/// mirror's `moduleInstanceNamed:` and keeps it in a private lazy slot, and
+/// the VM mirror, which the platform's root hands it, and nothing hands its
+/// instance to a program. The platform's root builds it once, through the
+/// mirror, on its first use and keeps it in a private lazy slot, and
 /// each platform's `transcript` getter sends it `build`, its one public
 /// member. Its nested classes are private and reach the mirror lexically,
 /// as members of this root, never through a slot of their own. Nothing a

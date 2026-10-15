@@ -4,11 +4,15 @@
 //!
 //! `moduleInstanceNamed:` answers the canonical instance recorded in the
 //! shipped world (`interpreter::shipped_world`), the same object on every
-//! request, so every platform shares one collections module. A module not
-//! yet recorded is built with ordinary sends between the other two:
-//! `shippedModuleClassNamed:` answers its root class, the module's factory
-//! is sent to it, and `recordShippedModule:` records what the factory
-//! answered as the module's one instance. None of the three runs Newspeak.
+//! request, so every platform shares one collections module. The boot
+//! records only the kernel and `PlatformFactory`; every other module is
+//! built on its first demand, in a lazy slot of `PlatformFactory.ns`, with
+//! ordinary sends between the other two: `shippedModuleClassNamed:`
+//! answers its root class, the module's factory is sent to it, and
+//! `recordShippedModule:` records what the factory answered as the
+//! module's one instance. None of the three runs Newspeak, and nothing is
+//! recorded before the factory answered, so a demand an unwind interrupts
+//! leaves the next one to build the module from the same class.
 
 use crate::builtins::primitive::ModulePrimitive;
 use crate::interpreter::core_library::{record_pending_module, shipped_module_class};
@@ -83,10 +87,12 @@ mod tests {
     }
 
     /// A module already recorded has its one instance, so there is no
-    /// class left to build: the boot still builds every module.
+    /// class left to build. The boot builds no lazy module, so the host
+    /// builds one first.
     #[test]
     fn the_class_leaf_declines_a_recorded_module() {
         let mut interpreter = crate::Interpreter::bootstrap();
+        interpreter.build_shipped_module("CollectionsFactory", None);
         interpreter.enter(|mutator| {
             let name = mutator.new_symbol(Symbol::intern("CollectionsFactory"));
             assert!(mutator

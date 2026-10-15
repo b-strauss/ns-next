@@ -1,8 +1,8 @@
 /// The typed arrays' module: `TypedArray` and its ten subclasses,
 /// `Int8Array` to `Float64Array`, fixed-size sequences of numbers of one
 /// kind stored in a ByteArray, reached through `platform typedArrays`.
-/// Built once, at boot, over the VM mirror and the kernel, from which it
-/// takes `Collection`, `IndexedCollection` and `ArgumentError`;
+/// Built once, on first demand, over the VM mirror and the kernel, from
+/// which it takes `Collection`, `IndexedCollection` and `ArgumentError`;
 /// `ByteArray` it names bare, through `Object`'s accessor.
 ///
 /// mirror: the VM mirror, through which a typed array reads and writes
@@ -13,10 +13,10 @@
 ///     for a ByteArray it cannot view.
 ///
 /// The factory pattern `PlatformFactory.ns` is written in: this root holds
-/// the VM mirror, which the host hands it at boot, and of the kernel only
+/// the VM mirror, which the platform's root hands it, and of the kernel only
 /// the three classes it needs, never the kernel instance; nothing hands
-/// its instance to a program. The platform's root reaches it through the
-/// mirror's `moduleInstanceNamed:` and keeps it in a private lazy slot,
+/// its instance to a program. The platform's root builds it once, through
+/// the mirror, on its first use and keeps it in a private lazy slot,
 /// and each platform's `typedArrays` getter sends it `build`, its one
 /// public member. What a program gets is the `TypedArrays` facet `build`
 /// answers, which hands out this module's classes by class accessors,

@@ -1,0 +1,55 @@
+/// The first demand for a module the boot did not build, made at the
+/// depth limit, is caught as the depth error, and records nothing: a
+/// later demand from a shallow stack builds the module and runs.
+/// `descend:to:in:` reaches the depth `probe:` measured, level for level,
+/// and demands `platform collections` there, where its getter is the
+/// first activation past the limit. Then it demands it again at each
+/// depth above, one level at a time, until one succeeds, so that some of
+/// those demands are interrupted inside the module's factory; none of
+/// them is shown, since how deep the build runs is not what is pinned.
+class AModuleFirstDemandedAtTheDepthLimitIsBuiltLater = Object new (
+  |
+    deepest ::= 0.
+  |
+) (
+  probe: n = (
+    deepest:: n.
+    ^self probe: n + 1.
+  )
+
+  descend: n to: bottom in: platform = (
+    n = bottom ifTrue: [^platform collections].
+    ^self descend: n + 1 to: bottom in: platform.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      built ::= false.
+      bottom ::= 0.
+    |
+    [self probe: 1] on: Error do: [:e | nil].
+    transcript
+        show: ([self descend: 1 to: deepest in: platform] on: Error do: [:e | e messageText]);
+        newLine.
+    bottom:: deepest - 1.
+    [built] whileFalse: [
+      built:: [
+        self descend: 1 to: bottom in: platform.
+        true.
+      ] on: Error do: [:e | false].
+      bottom:: bottom - 1.
+    ].
+    transcript
+        show: (self sizeOfAListIn: platform) printString;
+        newLine.
+  )
+
+  sizeOfAListIn: platform = (
+    |
+      list = platform collections List new.
+    |
+    list add: 1.
+    ^list size.
+  )
+)

@@ -189,38 +189,46 @@ fn platform_collections_answers_the_collections_modules_list() {
     });
 }
 
-/// Every shipped module has one instance, built at boot: the collections
-/// module's instance is in the shipped world before anything asked for
-/// `platform collections` or for the platform at all, and both platforms'
-/// facets are of that very instance.
-#[test]
-fn the_collections_module_is_built_once_at_boot() {
-    let mut interpreter = Interpreter::bootstrap();
-    let at_boot = interpreter.enter(|mutator| {
+/// The shipped module `module`'s instance, by its name in the shipped
+/// world, or `None` while the world has not built it.
+fn module_instance_named(interpreter: &mut Interpreter, module: &str) -> Option<Root> {
+    interpreter.enter(|mutator| {
         let name = ShippedName {
-            module: Symbol::intern("CollectionsFactory"),
-            declaration: Symbol::intern("CollectionsFactory"),
+            module: Symbol::intern(module),
+            declaration: Symbol::intern(module),
             kind: ShippedKind::ModuleInstance,
         };
-        let resolved = match shipped_names::resolve_in(mutator, &[name], false) {
-            Ok(resolved) => resolved,
-            Err(error) => panic!("the collections module is built at boot: {error}"),
-        };
-        mutator.stash(Value::object(resolved[0].object))
-    });
+        let resolved = shipped_names::resolve_in(mutator, &[name], false).ok()?;
+        Some(mutator.stash(Value::object(resolved[0].object)))
+    })
+}
+
+/// The lazy shipped module `module` has one instance, built on the first
+/// demand for the platform's member `member`: the boot does not build it,
+/// the first `platform <member>` does, and both platforms' facets are of
+/// that very instance -- the second demand, from another platform, builds
+/// no second one.
+fn assert_built_once_on_first_demand(module: &str, member: &str) {
+    let mut interpreter = Interpreter::bootstrap();
+    assert!(
+        module_instance_named(&mut interpreter, module).is_none(),
+        "the boot does not build {module}"
+    );
     let platform = interpreter.platform();
     let first = expect_ok(
-        interpreter.send(&platform, Symbol::intern("collections"), &[]),
-        "platform collections",
+        interpreter.send(&platform, Symbol::intern(member), &[]),
+        "platform's member",
     );
+    let built = module_instance_named(&mut interpreter, module)
+        .unwrap_or_else(|| panic!("the first demand builds {module}"));
     let second_platform = class_of(&mut interpreter, &platform);
     let second_platform = expect_ok(
         interpreter.send(&second_platform, Symbol::intern("new"), &[]),
         "platform class new",
     );
     let second = expect_ok(
-        interpreter.send(&second_platform, Symbol::intern("collections"), &[]),
-        "second platform collections",
+        interpreter.send(&second_platform, Symbol::intern(member), &[]),
+        "second platform's member",
     );
     interpreter.enter(|mutator| {
         let heap = mutator.heap();
@@ -232,65 +240,24 @@ fn the_collections_module_is_built_once_at_boot() {
             heap.class_enclosing(heap.object_class(facet))
                 .expect("a facet's class is nested")
         };
-        let at_boot = mutator
-            .fetch(&at_boot)
+        let built = mutator
+            .fetch(&built)
             .as_object()
             .expect("a module instance is an object");
-        assert!(module_of(&first).same(at_boot));
-        assert!(module_of(&second).same(at_boot));
+        assert!(module_of(&first).same(built));
+        assert!(module_of(&second).same(built));
     });
 }
 
-/// The typed arrays module, like the collections module, has one instance,
-/// built at boot: it is in the shipped world before anything asked for
-/// `platform typedArrays`, and both platforms' facets are of that very
-/// instance.
 #[test]
-fn the_typed_arrays_module_is_built_once_at_boot() {
-    let mut interpreter = Interpreter::bootstrap();
-    let at_boot = interpreter.enter(|mutator| {
-        let name = ShippedName {
-            module: Symbol::intern("TypedArraysFactory"),
-            declaration: Symbol::intern("TypedArraysFactory"),
-            kind: ShippedKind::ModuleInstance,
-        };
-        let resolved = match shipped_names::resolve_in(mutator, &[name], false) {
-            Ok(resolved) => resolved,
-            Err(error) => panic!("the typed arrays module is built at boot: {error}"),
-        };
-        mutator.stash(Value::object(resolved[0].object))
-    });
-    let platform = interpreter.platform();
-    let first = expect_ok(
-        interpreter.send(&platform, Symbol::intern("typedArrays"), &[]),
-        "platform typedArrays",
-    );
-    let second_platform = class_of(&mut interpreter, &platform);
-    let second_platform = expect_ok(
-        interpreter.send(&second_platform, Symbol::intern("new"), &[]),
-        "platform class new",
-    );
-    let second = expect_ok(
-        interpreter.send(&second_platform, Symbol::intern("typedArrays"), &[]),
-        "second platform typedArrays",
-    );
-    interpreter.enter(|mutator| {
-        let heap = mutator.heap();
-        let module_of = |facet: &Root| {
-            let facet = mutator
-                .fetch(facet)
-                .as_object()
-                .expect("a facet is an object");
-            heap.class_enclosing(heap.object_class(facet))
-                .expect("a facet's class is nested")
-        };
-        let at_boot = mutator
-            .fetch(&at_boot)
-            .as_object()
-            .expect("a module instance is an object");
-        assert!(module_of(&first).same(at_boot));
-        assert!(module_of(&second).same(at_boot));
-    });
+fn the_collections_module_is_built_once_on_first_demand() {
+    assert_built_once_on_first_demand("CollectionsFactory", "collections");
+}
+
+/// The typed arrays module, like the collections module.
+#[test]
+fn the_typed_arrays_module_is_built_once_on_first_demand() {
+    assert_built_once_on_first_demand("TypedArraysFactory", "typedArrays");
 }
 
 /// The namespace answers the collections module's classes and nothing
@@ -745,7 +712,8 @@ fn the_collections_factory_answers_only_build() {
 /// The platform hands out none of its module's classes, and the collections and
 /// typed arrays facets not their own: an outside send of the class's name finds
 /// nothing, and none of them may stand as a value in an image, since no program
-/// reaches one.
+/// reaches one. A module's class is named once it is built, so each module
+/// is demanded first, and `Stopwatch` through the facet that hands it out.
 #[test]
 fn the_platform_hands_out_none_of_its_modules_classes() {
     let mut interpreter = Interpreter::bootstrap();
@@ -757,6 +725,18 @@ fn the_platform_hands_out_none_of_its_modules_classes() {
     let typed_arrays = expect_ok(
         interpreter.send(&platform, Symbol::intern("typedArrays"), &[]),
         "platform typedArrays",
+    );
+    expect_ok(
+        interpreter.send(&platform, Symbol::intern("transcript"), &[]),
+        "platform transcript",
+    );
+    let time = expect_ok(
+        interpreter.send(&platform, Symbol::intern("time"), &[]),
+        "platform time",
+    );
+    expect_ok(
+        interpreter.send(&time, Symbol::intern("Stopwatch"), &[]),
+        "platform time Stopwatch",
     );
     for (receiver, module, name) in [
         (&platform, "PlatformFactory", "Platform"),

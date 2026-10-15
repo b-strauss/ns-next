@@ -98,8 +98,9 @@ pub(crate) struct ShippedEntry<'gc> {
     pub(crate) positions: Positions,
 }
 
-/// The shipped modules' instances, in the order the boot built them, the
-/// kernel first, and every shipped object under its name.
+/// The shipped modules' instances, in the order they were built -- the
+/// kernel and `PlatformFactory` at boot, every other module on its first
+/// demand -- and every shipped object under its name.
 #[derive(Default)]
 pub(crate) struct ShippedWorld<'gc> {
     module_instances: Vec<(Symbol, ObjectReference<'gc>)>,
@@ -122,7 +123,7 @@ pub(crate) struct ShippedWorld<'gc> {
 
 impl<'gc> ShippedWorld<'gc> {
     /// Records `instance` as the one instance of the shipped module `name`.
-    /// The boot names each module once; a second instance is a defect in
+    /// Each module is recorded once; a second instance is a defect in
     /// the binary, and so is one instance recorded for two modules, which
     /// would leave `module_of_instance` two answers.
     fn add_module_instance(&mut self, name: Symbol, instance: ObjectReference<'gc>) {
@@ -150,8 +151,8 @@ impl<'gc> ShippedWorld<'gc> {
             .map(|(_, instance)| *instance)
     }
 
-    /// Every shipped module's name and instance, in the order the boot
-    /// built them.
+    /// Every shipped module's name and instance recorded so far, in the
+    /// order they were built.
     pub(crate) fn module_instances(&self) -> &[(Symbol, ObjectReference<'gc>)] {
         &self.module_instances
     }
@@ -165,8 +166,8 @@ impl<'gc> ShippedWorld<'gc> {
             .map(|(module, _)| *module)
     }
 
-    /// Every shipped object under its name, in the order the boot recorded
-    /// them (`ShippedWorld::entries`' field comment); empty only before the
+    /// Every shipped object named so far, in the order it was recorded
+    /// (`ShippedWorld::entries`' field comment); empty only before the
     /// first module is recorded.
     pub(crate) fn entries(&self) -> &[ShippedEntry<'gc>] {
         &self.entries
@@ -272,11 +273,11 @@ impl Trace for ShippedWorld<'_> {
 
 impl crate::interpreter::Interpreter {
     /// The last phase of the boot before the platform is made: every class
-    /// a recorded shipped root declares is built, in declaration order, and
-    /// recorded under its name with the positions it may stand in
-    /// (`docs/design/image-format.md`, "Shipped names"). An image names
-    /// into this world and the loader runs
-    /// nothing the image chooses, so all of it must exist before a decode.
+    /// a recorded shipped root -- the kernel's and `PlatformFactory`'s --
+    /// declares is built, in declaration order, and recorded under its name
+    /// with the positions it may stand in (`docs/design/image-format.md`,
+    /// "Shipped names"). A module built later names its classes one by one,
+    /// as their accessors build them (`nested::after_clause`).
     /// The kernel's own phase built the kernel's classes, so building one of
     /// them answers the class it cached. Only the binary's own code runs,
     /// so the world is a function of the binary.
@@ -582,6 +583,22 @@ mod tests {
         }
     }
 
+    /// A boot that has also built the shipped classes `classes` names, each
+    /// a module and a declaration of it -- the module itself for its root --
+    /// as an image naming them would have them built: the boot builds only
+    /// the kernel and the platform, every other module on first demand.
+    fn bootstrap_with(classes: &[(&str, &str)]) -> crate::Interpreter {
+        let mut interpreter = crate::Interpreter::bootstrap();
+        let names: Vec<ShippedName> = classes
+            .iter()
+            .map(|(module, declaration)| name(module, declaration, ShippedKind::Class))
+            .collect();
+        if let Err(error) = interpreter.build_shipped_names(&names, false) {
+            panic!("the shipped classes build: {error}");
+        }
+        interpreter
+    }
+
     fn positions_of(world: &ShippedWorld<'_>, shipped: ShippedName) -> Positions {
         let index = world
             .index_of_name(&shipped)
@@ -589,11 +606,20 @@ mod tests {
         world.entries()[index].positions
     }
 
-    /// The names the image format relies on all exist, and each may stand
-    /// exactly where the rule of `image-format.md` allows.
+    /// The names the image format relies on all exist once their modules
+    /// and classes are built, and each may stand exactly where the rule of
+    /// `image-format.md` allows.
     #[test]
     fn every_shipped_object_is_named_with_the_positions_the_rule_allows() {
-        let mut interpreter = crate::Interpreter::bootstrap();
+        let mut interpreter = bootstrap_with(&[
+            ("TranscriptFactory", "Transcript"),
+            ("TimeFactory", "Time"),
+            ("CollectionsFactory", "List"),
+            ("CollectionsFactory", "Collections"),
+            ("TypedArraysFactory", "TypedArray"),
+            ("TypedArraysFactory", "Int16Array"),
+            ("TypedArraysFactory", "TypedArrays"),
+        ]);
         interpreter.enter(|mutator| {
             let world = &mutator.shipped_world;
             let array = positions_of(world, name("Kernel", "Array", ShippedKind::Class));
@@ -804,7 +830,8 @@ mod tests {
     /// value and a superclass, as a public one is.
     #[test]
     fn a_private_class_a_public_class_accessor_answers_is_a_value() {
-        let mut interpreter = crate::Interpreter::bootstrap();
+        let mut interpreter =
+            bootstrap_with(&[("TimeFactory", "Stopwatch"), ("CollectionsFactory", "Map")]);
         interpreter.enter(|mutator| {
             let world = &mutator.shipped_world;
             for (module, declaration) in
@@ -849,6 +876,57 @@ mod tests {
     fn a_boot_draws_no_identity_hash() {
         let mut interpreter = crate::Interpreter::bootstrap();
         interpreter.enter(|mutator| {
+            let object = mutator.new_string(String::new());
+            assert_eq!(mutator.heap_mut().object_ensure_identity_hash(object), 1);
+        });
+    }
+
+    /// What a host send answered, or a panic naming `step`.
+    fn expect_ok(result: crate::HostResult, step: &str) -> Root {
+        match result {
+            Ok(answer) => answer,
+            Err(crate::HostSignal::Return) => panic!("{step}: a non-local return escaped"),
+            Err(crate::HostSignal::Error(error)) => {
+                panic!("{step}: unexpected Newspeak error: {}", error.message)
+            }
+        }
+    }
+
+    /// Building each lazy module on demand, and a class of each, runs
+    /// their superclass clauses and initializers and draws no identity
+    /// hash either: the first hash a program draws is 1 whichever modules
+    /// it used, under `run` and `load` alike.
+    #[test]
+    fn building_a_module_on_demand_draws_no_identity_hash() {
+        let mut interpreter = crate::Interpreter::bootstrap();
+        let platform = interpreter.platform();
+        for (member, class) in [
+            ("collections", "List"),
+            ("time", "Stopwatch"),
+            ("typedArrays", "Int16Array"),
+        ] {
+            let facet = expect_ok(
+                interpreter.send(&platform, Symbol::intern(member), &[]),
+                member,
+            );
+            expect_ok(interpreter.send(&facet, Symbol::intern(class), &[]), class);
+        }
+        // The transcript is itself an instance of the module's class
+        // `Transcript`, which its `build` instantiates.
+        expect_ok(
+            interpreter.send(&platform, Symbol::intern("transcript"), &[]),
+            "transcript",
+        );
+        interpreter.enter(|mutator| {
+            for module in super::super::core_library::LAZY_SHIPPED_MODULES {
+                assert!(
+                    mutator
+                        .shipped_world
+                        .module_instance(Symbol::intern(module))
+                        .is_some(),
+                    "{module} is built"
+                );
+            }
             let object = mutator.new_string(String::new());
             assert_eq!(mutator.heap_mut().object_ensure_identity_hash(object), 1);
         });
@@ -1026,14 +1104,14 @@ mod tests {
     /// class's names are recorded once, whichever build records it first.
     #[test]
     fn a_class_is_named_once_however_often_it_is_recorded() {
-        let mut interpreter = crate::Interpreter::bootstrap();
+        let mut interpreter = bootstrap_with(&[("CollectionsFactory", "List")]);
         interpreter.enter(|mutator| {
             let before = mutator.shipped_world.entries().len();
             let collections = Symbol::intern("CollectionsFactory");
             let instance = mutator
                 .shipped_world
                 .module_instance(collections)
-                .expect("CollectionsFactory is built at boot");
+                .expect("CollectionsFactory is built with its List");
             let application = root_application(mutator.heap(), instance);
             let list = application
                 .mixin
@@ -1047,7 +1125,7 @@ mod tests {
                 .get(&mixin_key(&list))
                 .and_then(|index| mutator.heap().instance_field(instance, *index))
                 .and_then(Value::as_object)
-                .expect("List was built at boot");
+                .expect("List was built and named");
             mutator.record_shipped_class(collections, &list, class);
             assert_eq!(mutator.shipped_world.entries().len(), before);
         });

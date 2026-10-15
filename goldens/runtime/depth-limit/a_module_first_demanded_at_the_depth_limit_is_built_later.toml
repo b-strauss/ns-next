@@ -1,0 +1,4 @@
+stdout = '''
+stack overflow: recursion too deep
+1
+'''

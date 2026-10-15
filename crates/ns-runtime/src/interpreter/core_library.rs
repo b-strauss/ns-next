@@ -1,8 +1,9 @@
 //! The shipped core-library modules beyond the kernel
 //! (`docs/design/core-library.md`, "The module table and the boot"):
 //! source compiled into the binary, resolved with `resolve_kernel` because
-//! it is shipped, and every one of them compiled and instantiated once at
-//! every boot.
+//! it is shipped. `PlatformFactory` is instantiated at every boot, each
+//! other module once, on a program's first demand or when an image names
+//! it (`LAZY_SHIPPED_MODULES`).
 
 use std::cell::OnceCell;
 use std::rc::Rc;
@@ -108,16 +109,14 @@ thread_local! {
     /// that module parsed and resolved the first time a boot on this thread
     /// asks for it. Per thread, for the reason `interpreter::kernel`'s
     /// `RESOLVED_KERNEL` is: the AST and its bindings are immutable, and the
-    /// test suite bootstraps well over a hundred interpreters. Every boot
-    /// asks for every entry, because every shipped module is instantiated
-    /// at every boot: an image names the shipped world's objects, and the
-    /// loader runs nothing the image chooses, so they must all exist before
-    /// it decodes (`docs/design/image-format.md`, "Shipped names"). Resolving
+    /// test suite bootstraps well over a hundred interpreters. A cell is
+    /// filled when the source path first compiles its module, at boot for
+    /// `PlatformFactory` and on first demand for the others. Resolving
     /// is pure -- a parse and `resolve_kernel`, no
     /// heap and no handle -- and never asks for another module, so filling
     /// a cell cannot re-enter it. Each interpreter still compiles every
-    /// module: compiling needs no heap, but the boot builds its world from
-    /// its own mixins.
+    /// module it builds: compiling needs no heap, but each world is built
+    /// from its own mixins.
     static RESOLVED_SHIPPED_MODULES: Vec<OnceCell<Rc<ResolvedModule>>> =
         SHIPPED_MODULES.iter().map(|_| OnceCell::new()).collect();
 }
@@ -179,14 +178,14 @@ fn resolve_shipped_source(shipped: &ShippedModule) -> ResolvedModule {
 impl crate::interpreter::Interpreter {
     /// The shipped-module phase of the bootstrap, right after the kernel's
     /// (`docs/design/core-library.md`, "The factory pattern"). It records the
-    /// kernel's instance as the first shipped module's, then builds every
-    /// `SHIPPED_MODULES` entry in table order (`build_shipped_module`). Every
-    /// shipped module is built at every boot, because an image names the
-    /// shipped world's objects and the loader runs nothing the image chooses
-    /// (`docs/design/image-format.md`, "Shipped names"); the mirror's
-    /// `moduleInstanceNamed:` answers these instances. Then
-    /// `complete_shipped_world` builds every class the roots declare and
-    /// records each under its name.
+    /// kernel's instance as the first shipped module's, then builds
+    /// `PlatformFactory` (`build_shipped_module`), whose `build` makes the
+    /// platform and reaches no other module. Then `complete_shipped_world`
+    /// builds every class the two roots declare and records each under its
+    /// name. Every other shipped module (`LAZY_SHIPPED_MODULES`) is built on
+    /// first demand, through `PlatformFactory.ns`'s lazy slots, or by the
+    /// loader when an image names it (`build_shipped_names`), so a program
+    /// pays only for the modules it uses.
     ///
     /// Last, `PlatformFactory`'s instance is sent `build`, its one
     /// public member, as an ordinary host send -- runs like the kernel's
@@ -204,9 +203,7 @@ impl crate::interpreter::Interpreter {
                 .expect("internal: the kernel's instance is wired in before the shipped modules");
             mutator.record_shipped_module(Symbol::intern("Kernel"), kernel);
         });
-        for shipped in SHIPPED_MODULES {
-            self.build_shipped_module(shipped.name, None);
-        }
+        self.build_shipped_module("PlatformFactory", None);
         self.complete_shipped_world();
         let platform_factory = self.enter(|mutator| {
             let factory = mutator
@@ -449,11 +446,11 @@ mod tests {
         )
     }
 
-    /// The boot records the kernel's instance first, then every
-    /// `SHIPPED_MODULES` entry in table order, each an instance of its own
-    /// root, and leaves no root class pending.
+    /// The boot records the kernel's instance, then `PlatformFactory`'s,
+    /// each an instance of its own root, and builds none of the lazy
+    /// modules: no instance and no pending root class of one.
     #[test]
-    fn the_boot_records_every_shipped_module_in_table_order() {
+    fn the_boot_builds_only_the_kernel_and_the_platform_module() {
         let mut interpreter = crate::Interpreter::bootstrap();
         interpreter.enter(|mutator| {
             let heap = mutator.heap();
@@ -469,16 +466,93 @@ mod tests {
                     name.as_str()
                 })
                 .collect();
-            let mut expected = vec!["Kernel"];
-            expected.extend(SHIPPED_MODULES.iter().map(|shipped| shipped.name));
-            assert_eq!(names, expected);
-            for shipped in SHIPPED_MODULES {
+            assert_eq!(names, ["Kernel", "PlatformFactory"]);
+            for name in ["Kernel", "PlatformFactory"] {
                 assert!(mutator
                     .shipped_world
-                    .pending_class(Symbol::intern(shipped.name))
-                    .is_none());
+                    .module_instance(Symbol::intern(name))
+                    .is_some());
+            }
+            for name in LAZY_SHIPPED_MODULES {
+                let name = Symbol::intern(name);
+                assert!(mutator.shipped_world.module_instance(name).is_none());
+                assert!(mutator.shipped_world.pending_class(name).is_none());
             }
         });
+    }
+
+    /// What a host send answered, or a panic naming `step`.
+    fn expect_ok(result: HostResult, step: &str) -> Root {
+        match result {
+            Ok(answer) => answer,
+            Err(HostSignal::Return) => panic!("{step}: a non-local return escaped"),
+            Err(HostSignal::Error(error)) => {
+                panic!("{step}: unexpected Newspeak error: {}", error.message)
+            }
+        }
+    }
+
+    /// A program's first `platform collections` builds the collections
+    /// module, and a second answers the same namespace; a class of the
+    /// module is named once its accessor builds it, and one never asked for
+    /// is not built, so `platform collections List` names `List` and not
+    /// `Map`.
+    #[test]
+    fn a_program_builds_the_collections_module_and_only_the_classes_it_asks_for() {
+        let source = indoc::indoc! {"
+            class Demand = Object new () (
+              public twice: platform = (
+                ^platform collections == platform collections
+              )
+
+              public list: platform = (
+                ^platform collections List
+              )
+            )
+        "};
+        let module = ns_syntax::parse(source).expect("parse");
+        let origin = SourceOrigin::File(std::path::PathBuf::from("demand.ns"));
+        let Ok(resolved) = crate::resolve(module, Rc::from(source), origin) else {
+            panic!("the module resolves");
+        };
+        let mut interpreter = crate::Interpreter::bootstrap();
+        let class = interpreter.load_module(&resolved);
+        let demand = expect_ok(interpreter.instantiate(&class, &[]), "Demand new");
+        let platform = interpreter.platform();
+        let named = |interpreter: &mut crate::Interpreter, declaration: &str| {
+            interpreter.enter(|mutator| {
+                let name = crate::interpreter::shipped_world::ShippedName {
+                    module: Symbol::intern("CollectionsFactory"),
+                    declaration: Symbol::intern(declaration),
+                    kind: crate::interpreter::shipped_world::ShippedKind::Class,
+                };
+                mutator.shipped_world.index_of_name(&name).is_some()
+            })
+        };
+        assert!(!named(&mut interpreter, "CollectionsFactory"));
+        let twice = expect_ok(
+            interpreter.send(
+                &demand,
+                Symbol::intern("twice:"),
+                std::slice::from_ref(&platform),
+            ),
+            "Demand twice:",
+        );
+        interpreter.enter(|mutator| {
+            assert_eq!(
+                mutator.fetch(&twice).as_boolean(),
+                Some(true),
+                "both demands answer the same namespace"
+            );
+        });
+        assert!(named(&mut interpreter, "CollectionsFactory"));
+        assert!(!named(&mut interpreter, "List"));
+        expect_ok(
+            interpreter.send(&demand, Symbol::intern("list:"), &[platform]),
+            "Demand list:",
+        );
+        assert!(named(&mut interpreter, "List"));
+        assert!(!named(&mut interpreter, "Map"));
     }
 
     /// Every lazy module is a `SHIPPED_MODULES` entry, and the platform,
@@ -510,12 +584,19 @@ mod tests {
         }
     }
 
-    /// The leaf answers the canonical instance the boot built, the same object
-    /// on every request, and declines a name the table does not list and a
-    /// subject that is no symbol, so the forwarder's failure block runs.
+    /// The leaf declines a lazy module not yet built, so the forwarder's
+    /// failure block -- which builds it -- runs; once it is built, the leaf
+    /// answers the canonical instance, the same object on every request.
+    /// It declines a name the table does not list and a subject that is no
+    /// symbol.
     #[test]
-    fn module_instance_named_answers_the_boots_instance_and_declines_anything_else() {
+    fn module_instance_named_answers_the_built_instance_and_declines_anything_else() {
         let mut interpreter = crate::Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let name = mutator.new_symbol(Symbol::intern("CollectionsFactory"));
+            assert!(module_instance_named(mutator, name).is_none());
+        });
+        interpreter.build_shipped_module("CollectionsFactory", None);
         interpreter.enter(|mutator| {
             let name = mutator.new_symbol(Symbol::intern("CollectionsFactory"));
             let Some(Ok(first)) = module_instance_named(mutator, name) else {

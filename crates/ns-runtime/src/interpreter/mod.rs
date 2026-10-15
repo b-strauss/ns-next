@@ -282,9 +282,10 @@ pub struct Mutator<'gc> {
     /// enclosing object of every builtin class. `None` only until the
     /// bootstrap's kernel phase has run.
     pub(crate) kernel: Option<Value<'gc>>,
-    /// Every shipped module's one instance, the kernel's first, and every
-    /// shipped object under its name, built at boot and never changed
-    /// afterwards (`interpreter::shipped_world`).
+    /// Every built shipped module's one instance, the kernel's first, and
+    /// every shipped object under its name: the kernel's and the platform's
+    /// built at boot, the others as a program or a load first demands them,
+    /// and an entry never changed once recorded (`interpreter::shipped_world`).
     pub(crate) shipped_world: shipped_world::ShippedWorld<'gc>,
     /// The `=` the core library's `Value` declares, recorded by the
     /// bootstrap's kernel phase. `builtins::value`'s derived equality

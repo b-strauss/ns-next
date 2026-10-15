@@ -441,9 +441,13 @@ mod tests {
     }
 
     /// `names` as a section, against a fresh symbol table: the table and
-    /// the bytes.
+    /// the bytes. The names are built first, as a program's demand would
+    /// build them, since a boot builds only the kernel and the platform.
     fn section_of(names: &[ShippedName]) -> (symbols::Table, Vec<u8>) {
         let mut interpreter = crate::Interpreter::bootstrap();
+        if let Err(error) = interpreter.build_shipped_names(names, false) {
+            panic!("the names build: {error}");
+        }
         interpreter.enter(|mutator| {
             let world = &mutator.shipped_world;
             let used: Vec<usize> = names

@@ -664,9 +664,9 @@ impl Resolver {
 
 /// The bare identifier `vmMirror`, not a local, naming a member of the
 /// module's root class -- the outermost entry of `chain`. That it is an
-/// immutable slot holding the mirror is the bootstrap's to check, for each
-/// shipped module it instantiates (`interpreter::kernel`'s `wire_kernel_in`,
-/// `interpreter::core_library`'s `check_factory_holds_the_mirror`), since
+/// immutable slot holding the mirror is checked when each shipped module's
+/// instance is recorded (`interpreter::kernel`'s `wire_kernel_in`,
+/// `interpreter::core_library`'s `factory_holds_the_mirror`), since
 /// the resolver cannot know what a slot holds.
 fn is_the_mirror_slot(receiver: &Expression, scope: &ScopeStack, chain: &[EnclosingClass]) -> bool {
     let ExpressionKind::Identifier(identifier) = &receiver.kind else {

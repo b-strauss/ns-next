@@ -27,12 +27,12 @@
 /// transcript, the clock, the collections and the typed arrays are each a
 /// module of their own, another such root (`platform/TranscriptFactory.ns`,
 /// `platform/TimeFactory.ns`, `platform/CollectionsFactory.ns`,
-/// `platform/TypedArraysFactory.ns`), whose one instance the host builds at
-/// boot and this root reaches through the mirror's `moduleInstanceNamed:`,
-/// keeping it in a private lazy slot here; the platform hands out only the
-/// facets their `build` answers. Nothing a program can name answers this
-/// root's instance or its class, so no program can build a second one over
-/// something that is not the mirror. Keep it so: no code whose receiver is
+/// `platform/TypedArraysFactory.ns`), whose one instance this root builds
+/// through the mirror on its first use and keeps in a private lazy slot
+/// here; the platform hands out only the facets their `build` answers.
+/// Nothing a program can name answers this root's instance or its class,
+/// so no program can build a second one over something that is not the
+/// mirror. Keep it so: no code whose receiver is
 /// this root's instance may send it anything it does not understand, since
 /// a `MessageNotUnderstood` hands its receiver to whoever catches it
 /// (`docs/design/core-library.md`, "No program reaches a shipped module's
@@ -45,8 +45,8 @@
 /// is resolved with `resolve_kernel`, which only shipped source is.
 ///
 /// Everything here is a value (§3.1.1): stateless but for what the host
-/// hands the root and the modules the boot built, which the root reaches
-/// through the mirror.
+/// hands the root and the modules built on first use, which the root
+/// reaches through the mirror.
 class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
   |
     /// The VM mirror the factory was given: the one object through which
@@ -82,29 +82,61 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
     private DataView = kernel DataView.
   |
 ) (
-  /// The one collections module, the instance the boot built over the
-  /// kernel, and the same object on every use.
+  /// The one collections module, built over the kernel on first use and
+  /// the same object on every use after it.
   ///
-  /// The host builds every shipped module once, at boot, and the mirror
-  /// answers that instance, so every platform's facet comes from one
-  /// factory and hands out one `List` class. Its instance is as private
-  /// as this one: only the facets its `build` answers leave this module.
-  lazy private collectionsModule = vmMirror moduleInstanceNamed: #CollectionsFactory ifFail: [nil].
+  /// The mirror answers a module's one instance once it is recorded, so
+  /// every platform's facet comes from one factory and hands out one
+  /// `List` class. Until then the mirror answers the module's root class,
+  /// which is sent its factory, and records what the factory answered as
+  /// that one instance. A demand an unwind interrupts -- the depth limit
+  /// reached inside the factory -- records nothing, so the next demand
+  /// builds the module again from the same class. The kernel's instance
+  /// is asked of the mirror too, so this root keeps none. The module's
+  /// instance is as private as this one: only the facets its `build`
+  /// answers leave this module.
+  lazy private collectionsModule = vmMirror moduleInstanceNamed: #CollectionsFactory ifFail: [
+    vmMirror recordShippedModule: ((vmMirror shippedModuleClassNamed: #CollectionsFactory ifFail: [
+      nil.
+    ]) usingKernel: (vmMirror moduleInstanceNamed: #Kernel ifFail: [nil]))
+        ifFail: [nil].
+  ].
 
-  /// The one transcript module, the instance the boot built over the
-  /// mirror, and the same object on every use. Only the transcripts its
-  /// `build` answers leave this module.
-  lazy private transcriptModule = vmMirror moduleInstanceNamed: #TranscriptFactory ifFail: [nil].
+  /// The one transcript module, built over the mirror on first use and
+  /// the same object on every use after it, as `collectionsModule` is: a
+  /// demand an unwind interrupts records nothing, and the next one builds
+  /// the module again. Only the transcripts its `build` answers leave
+  /// this module.
+  lazy private transcriptModule = vmMirror moduleInstanceNamed: #TranscriptFactory ifFail: [
+    vmMirror recordShippedModule: ((vmMirror shippedModuleClassNamed: #TranscriptFactory ifFail: [
+      nil.
+    ]) usingVmMirror: vmMirror)
+        ifFail: [nil].
+  ].
 
-  /// The one clock module, the instance the boot built over the mirror,
-  /// and the same object on every use. Only the `Time` namespaces its
-  /// `build` answers leave this module.
-  lazy private timeModule = vmMirror moduleInstanceNamed: #TimeFactory ifFail: [nil].
+  /// The one clock module, built over the mirror on first use and the
+  /// same object on every use after it, as `collectionsModule` is: a
+  /// demand an unwind interrupts records nothing, and the next one builds
+  /// the module again. Only the `Time` namespaces its `build` answers
+  /// leave this module.
+  lazy private timeModule = vmMirror moduleInstanceNamed: #TimeFactory ifFail: [
+    vmMirror recordShippedModule: ((vmMirror shippedModuleClassNamed: #TimeFactory ifFail: [
+      nil.
+    ]) usingVmMirror: vmMirror)
+        ifFail: [nil].
+  ].
 
-  /// The one typed arrays module, the instance the boot built over the
-  /// mirror and the kernel, and the same object on every use. Only the
+  /// The one typed arrays module, built over the mirror and the kernel on
+  /// first use and the same object on every use after it, as
+  /// `collectionsModule` is: a demand an unwind interrupts records
+  /// nothing, and the next one builds the module again. Only the
   /// `TypedArrays` namespaces its `build` answers leave this module.
-  lazy private typedArraysModule = vmMirror moduleInstanceNamed: #TypedArraysFactory ifFail: [nil].
+  lazy private typedArraysModule = vmMirror moduleInstanceNamed: #TypedArraysFactory ifFail: [
+    vmMirror recordShippedModule: ((vmMirror shippedModuleClassNamed: #TypedArraysFactory ifFail: [
+      nil.
+    ]) usingVmMirror: vmMirror kernel: (vmMirror moduleInstanceNamed: #Kernel ifFail: [nil]))
+        ifFail: [nil].
+  ].
 
   /// The platform a program is handed: the namespace of what it may use
   /// beyond the kernel, each member built on first use.
