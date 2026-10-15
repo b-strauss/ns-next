@@ -37,7 +37,10 @@
 /// this root's instance may send it anything it does not understand, since
 /// a `MessageNotUnderstood` hands its receiver to whoever catches it
 /// (`docs/design/core-library.md`, "No program reaches a shipped module's
-/// root").
+/// root"). For the same reason neither the mirror nor the kernel instance
+/// is ever an argument of a send to a receiver that may not understand
+/// it: a `MessageNotUnderstood` hands its message's arguments to whoever
+/// catches it too.
 ///
 /// The factory's parameters are copied into slots because neither a lazy
 /// slot nor a method may name them (§6); a root keeps what it uses, so of
@@ -98,55 +101,70 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
   /// every platform's facet comes from one factory and hands out one
   /// `List` class. Until then the mirror answers the module's root class,
   /// which is sent its factory, and records what the factory answered as
-  /// that one instance. A demand an unwind interrupts -- the depth limit
-  /// reached inside the factory -- records nothing, so the next demand
-  /// builds the module again from the same class. A record the mirror
-  /// declines -- a defect in the binary -- leaves the slot `nil`, so the
-  /// next read demands the module again and the member that wanted it
-  /// fails loudly, sending `build` to `nil`. The module's instance is as
-  /// private as this one: only the facets its `build` answers leave this
-  /// module.
+  /// that one instance. The factory goes only to a class the mirror
+  /// answered; a declined lookup leaves the slot `nil` and sends nothing,
+  /// so the kernel instance, and the mirror in the other modules' slots,
+  /// is never the argument of a send `nil` does not understand, whose
+  /// `MessageNotUnderstood` would hand it to whoever catches it. A demand
+  /// an unwind interrupts -- the depth limit reached inside the factory --
+  /// records nothing, so the next demand builds the module again from the
+  /// same class. A record the mirror declines -- a defect in the binary --
+  /// leaves the slot `nil`, so the next read demands the module again and
+  /// the member that wanted it fails loudly, sending `build` to `nil`. The
+  /// module's instance is as private as this one: only the facets its
+  /// `build` answers leave this module.
   lazy private collectionsModule = vmMirror moduleInstanceNamed: #CollectionsFactory ifFail: [
-    vmMirror recordShippedModule: ((vmMirror shippedModuleClassNamed: #CollectionsFactory ifFail: [
-      nil.
-    ]) usingKernel: kernelModule)
-        ifFail: [nil].
+    |
+      rootClass = vmMirror shippedModuleClassNamed: #CollectionsFactory ifFail: [nil].
+    |
+    rootClass isNil ifFalse: [
+      vmMirror recordShippedModule: (rootClass usingKernel: kernelModule) ifFail: [nil].
+    ].
   ].
 
   /// The one transcript module, built over the mirror on first use and
-  /// the same object on every use after it, as `collectionsModule` is: a
-  /// demand an unwind interrupts records nothing, and the next one builds
-  /// the module again. Only the transcripts its `build` answers leave
-  /// this module.
+  /// the same object on every use after it, as `collectionsModule` is: the
+  /// factory goes only to a class the mirror answered, and a demand an
+  /// unwind interrupts records nothing, so the next one builds the module
+  /// again. Only the transcripts its `build` answers leave this module.
   lazy private transcriptModule = vmMirror moduleInstanceNamed: #TranscriptFactory ifFail: [
-    vmMirror recordShippedModule: ((vmMirror shippedModuleClassNamed: #TranscriptFactory ifFail: [
-      nil.
-    ]) usingVmMirror: vmMirror)
-        ifFail: [nil].
+    |
+      rootClass = vmMirror shippedModuleClassNamed: #TranscriptFactory ifFail: [nil].
+    |
+    rootClass isNil ifFalse: [
+      vmMirror recordShippedModule: (rootClass usingVmMirror: vmMirror) ifFail: [nil].
+    ].
   ].
 
   /// The one clock module, built over the mirror on first use and the
-  /// same object on every use after it, as `collectionsModule` is: a
-  /// demand an unwind interrupts records nothing, and the next one builds
-  /// the module again. Only the `Time` namespaces its `build` answers
-  /// leave this module.
+  /// same object on every use after it, as `collectionsModule` is: the
+  /// factory goes only to a class the mirror answered, and a demand an
+  /// unwind interrupts records nothing, so the next one builds the module
+  /// again. Only the `Time` namespaces its `build` answers leave this
+  /// module.
   lazy private timeModule = vmMirror moduleInstanceNamed: #TimeFactory ifFail: [
-    vmMirror recordShippedModule: ((vmMirror shippedModuleClassNamed: #TimeFactory ifFail: [
-      nil.
-    ]) usingVmMirror: vmMirror)
-        ifFail: [nil].
+    |
+      rootClass = vmMirror shippedModuleClassNamed: #TimeFactory ifFail: [nil].
+    |
+    rootClass isNil ifFalse: [
+      vmMirror recordShippedModule: (rootClass usingVmMirror: vmMirror) ifFail: [nil].
+    ].
   ].
 
   /// The one typed arrays module, built over the mirror and the kernel on
   /// first use and the same object on every use after it, as
-  /// `collectionsModule` is: a demand an unwind interrupts records
-  /// nothing, and the next one builds the module again. Only the
-  /// `TypedArrays` namespaces its `build` answers leave this module.
+  /// `collectionsModule` is: the factory goes only to a class the mirror
+  /// answered, and a demand an unwind interrupts records nothing, so the
+  /// next one builds the module again. Only the `TypedArrays` namespaces
+  /// its `build` answers leave this module.
   lazy private typedArraysModule = vmMirror moduleInstanceNamed: #TypedArraysFactory ifFail: [
-    vmMirror recordShippedModule: ((vmMirror shippedModuleClassNamed: #TypedArraysFactory ifFail: [
-      nil.
-    ]) usingVmMirror: vmMirror kernel: kernelModule)
-        ifFail: [nil].
+    |
+      rootClass = vmMirror shippedModuleClassNamed: #TypedArraysFactory ifFail: [nil].
+    |
+    rootClass isNil ifFalse: [
+      vmMirror recordShippedModule: (rootClass usingVmMirror: vmMirror kernel: kernelModule)
+          ifFail: [nil].
+    ].
   ].
 
   /// The platform a program is handed: the namespace of what it may use
