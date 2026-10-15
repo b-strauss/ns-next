@@ -314,6 +314,15 @@ impl crate::interpreter::Interpreter {
     }
 }
 
+impl Mutator<'_> {
+    /// How many objects the shipped world names: what a test reads to see
+    /// that something built, or did not build, a shipped module or class.
+    #[doc(hidden)]
+    pub fn shipped_name_count(&self) -> usize {
+        self.shipped_world.entries().len()
+    }
+}
+
 impl<'gc> Mutator<'gc> {
     /// Records `instance` as the one instance of the shipped module
     /// `module` and names it, its class -- the module's root --, the root's

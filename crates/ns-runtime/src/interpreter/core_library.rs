@@ -205,7 +205,7 @@ impl crate::interpreter::Interpreter {
             mutator.record_shipped_module(Symbol::intern("Kernel"), kernel);
         });
         for shipped in SHIPPED_MODULES {
-            self.build_shipped_module(shipped.name);
+            self.build_shipped_module(shipped.name, None);
         }
         self.complete_shipped_world();
         let platform_factory = self.enter(|mutator| {
@@ -234,11 +234,13 @@ impl crate::interpreter::Interpreter {
     /// `CollectionsFactory` the kernel instance alone -- and the instance
     /// recorded as the module's one instance (`record_pending`). A module
     /// already recorded, or one that fails to build or to record, is a
-    /// defect in the binary, so it panics.
-    pub(crate) fn build_shipped_module(&mut self, name: &str) {
+    /// defect in the binary, so it panics. `root_mixin` is the module's root
+    /// mixin when the caller has already taken it from the shipped code, so
+    /// that it is not decoded or compiled twice.
+    pub(crate) fn build_shipped_module(&mut self, name: &str, root_mixin: Option<Rc<Mixin>>) {
         let shipped = shipped_module(name);
         let (factory_class, mirror, kernel) = self.enter(|mutator| {
-            let class = module_class(mutator, shipped)
+            let class = module_class(mutator, shipped, root_mixin)
                 .unwrap_or_else(|| panic!("internal: {name} is built twice"));
             let mirror = mutator.vm_mirror();
             let kernel = mutator
@@ -283,18 +285,20 @@ pub(crate) fn shipped_module_class<'gc>(
     if !LAZY_SHIPPED_MODULES.contains(&name.as_str()) {
         return None;
     }
-    module_class(mutator, shipped_module(name.as_str()))
+    module_class(mutator, shipped_module(name.as_str()), None)
 }
 
 /// The root class of `shipped`, or `None` when its instance is already
 /// recorded: the module's pending class when one was built, otherwise a
-/// new one, built from the root mixin the boot takes the shipped code from
-/// (`Mutator::shipped_root_mixin`) and kept pending. One class per module,
-/// so that a demand an unwind interrupted instantiates the same class
-/// again, and only an instance of it is ever recorded.
+/// new one, built from `root_mixin` or else the root mixin the boot takes
+/// the shipped code from (`Mutator::shipped_root_mixin`), and kept pending.
+/// One class per module, so that a demand an unwind interrupted
+/// instantiates the same class again, and only an instance of it is ever
+/// recorded.
 fn module_class<'gc>(
     mutator: &mut Mutator<'gc>,
     shipped: &'static ShippedModule,
+    root_mixin: Option<Rc<Mixin>>,
 ) -> Option<ClassReference<'gc>> {
     let name = Symbol::intern(shipped.name);
     if mutator.shipped_world.module_instance(name).is_some() {
@@ -303,7 +307,7 @@ fn module_class<'gc>(
     if let Some(class) = mutator.shipped_world.pending_class(name) {
         return Some(class);
     }
-    let mixin = mutator.shipped_root_mixin(shipped.name);
+    let mixin = root_mixin.unwrap_or_else(|| mutator.shipped_root_mixin(shipped.name));
     let class = mutator.root_class_of_mixin(&mixin);
     mutator.shipped_world.add_pending(name, class);
     Some(class)
@@ -381,7 +385,7 @@ impl<'gc> Mutator<'gc> {
 
 /// What a boot step answered. A shipped module that fails to boot is a
 /// defect in the binary, not in a program, so it panics, naming the step.
-pub(super) fn booted(result: HostResult, step: &str) -> Root {
+pub(crate) fn booted(result: HostResult, step: &str) -> Root {
     match result {
         Ok(answer) => answer,
         Err(HostSignal::Error(error)) => {

@@ -12,9 +12,13 @@
 //! loading boot built.
 
 use std::collections::HashSet;
+use std::rc::Rc;
 
+use crate::heap::Root;
+use crate::interpreter::core_library::{booted, LAZY_SHIPPED_MODULES, SHIPPED_MODULES};
 use crate::interpreter::shipped_world::ShippedWorld;
-use crate::types::ObjectReference;
+use crate::mixin::Mixin;
+use crate::types::{ObjectReference, Value};
 use crate::{Mutator, Symbol};
 
 pub use crate::interpreter::shipped_world::{Positions, ShippedKind, ShippedName};
@@ -232,13 +236,179 @@ pub(crate) fn resolve<'gc>(
 }
 
 /// `resolve` against `mutator`'s own shipped world, for a host or a test
-/// that decodes a graph section it wrote by hand.
+/// that decodes a graph section it wrote by hand. The world holds what has
+/// been built so far: a name of a module or class not yet built is refused,
+/// so a host resolving names a fresh boot may not have built builds them
+/// first (`Interpreter::build_shipped_names`), as `image::load` does.
 pub fn resolve_in<'gc>(
     mutator: &Mutator<'gc>,
     names: &[ShippedName],
     started: bool,
 ) -> Result<Vec<ResolvedName<'gc>>, DecodeError> {
     resolve(names, &mutator.shipped_world, started)
+}
+
+impl crate::Interpreter {
+    /// Builds the shipped modules and classes `names` names that this
+    /// interpreter has not built yet, so that `resolve` finds each in its
+    /// shipped world: every lazy module named and not recorded, in
+    /// `SHIPPED_MODULES` order, then every class of such a module named and
+    /// not yet named, in the order of `names`. Each is built at most once.
+    ///
+    /// First, before anything is built, every name is checked: a module that
+    /// is no shipped module, or a declaration its module's root does not
+    /// declare, is `UnknownShippedName`, and in a started image (`started`)
+    /// a name of any module but the kernel, or of a module's instance, is
+    /// `ShippedNameInStartedImage` -- so a started image builds nothing.
+    /// What is built is the binary's own code, the same build a program's
+    /// first demand runs: the names choose which of the binary's modules
+    /// and classes exist, never what runs. What the names leave to `resolve`
+    /// -- a level past its declaration's clauses, a name given twice -- is
+    /// refused there.
+    #[doc(hidden)]
+    pub fn build_shipped_names(
+        &mut self,
+        names: &[ShippedName],
+        started: bool,
+    ) -> Result<(), DecodeError> {
+        let root_mixins = self.enter(|mutator| check_names(mutator, names, started))?;
+        for (shipped, root_mixin) in SHIPPED_MODULES.iter().zip(root_mixins) {
+            let Some(root_mixin) = root_mixin else {
+                continue;
+            };
+            let module = Symbol::intern(shipped.name);
+            let recorded =
+                self.enter(|mutator| mutator.shipped_world.module_instance(module).is_some());
+            if LAZY_SHIPPED_MODULES.contains(&shipped.name) && !recorded {
+                self.build_shipped_module(shipped.name, Some(root_mixin));
+            }
+        }
+        for name in names {
+            if name.declaration == name.module
+                || !LAZY_SHIPPED_MODULES.contains(&name.module.as_str())
+            {
+                continue;
+            }
+            let Some((instance, nested)) = self.enter(|mutator| unbuilt_class(mutator, name))
+            else {
+                continue;
+            };
+            let class = booted(
+                self.build_nested_class(&instance, &nested),
+                &format!("building {}", name.describe()),
+            );
+            self.enter(|mutator| {
+                let class = mutator
+                    .fetch(&class)
+                    .as_object()
+                    .unwrap_or_else(|| panic!("internal: {} is a class object", name.describe()));
+                mutator.record_shipped_class(name.module, &nested, class);
+            });
+        }
+        Ok(())
+    }
+}
+
+/// `build_shipped_names`' check of every name, which builds nothing.
+/// Answers, per `SHIPPED_MODULES` entry, the root mixin of the module when
+/// a name names it: the recorded instance's or the pending class's, else the
+/// one taken from the shipped code, which the build then uses. One slot per
+/// module however many names the image lists, so nothing here grows with
+/// the section.
+fn check_names(
+    mutator: &mut Mutator<'_>,
+    names: &[ShippedName],
+    started: bool,
+) -> Result<Vec<Option<Rc<Mixin>>>, DecodeError> {
+    let kernel = Symbol::intern("Kernel");
+    let mut kernel_mixin: Option<Rc<Mixin>> = None;
+    let mut root_mixins: Vec<Option<Rc<Mixin>>> = vec![None; SHIPPED_MODULES.len()];
+    for name in names {
+        let unknown = || DecodeError::UnknownShippedName(name.describe());
+        let slot = if name.module == kernel {
+            &mut kernel_mixin
+        } else {
+            let position = SHIPPED_MODULES
+                .iter()
+                .position(|shipped| shipped.name == name.module.as_str())
+                .ok_or_else(unknown)?;
+            &mut root_mixins[position]
+        };
+        let root = match slot {
+            Some(root) => Rc::clone(root),
+            None => Rc::clone(slot.insert(root_mixin_of(mutator, name.module))),
+        };
+        let declared = if name.declaration == name.module {
+            true
+        } else {
+            name.kind != ShippedKind::ModuleInstance
+                && root
+                    .nested
+                    .iter()
+                    .any(|nested| nested.name == name.declaration)
+        };
+        if !declared {
+            return Err(unknown());
+        }
+        if started && (name.module != kernel || name.kind == ShippedKind::ModuleInstance) {
+            return Err(DecodeError::ShippedNameInStartedImage(name.describe()));
+        }
+    }
+    Ok(root_mixins)
+}
+
+/// The root mixin of the shipped module `module`, which `check_names` has
+/// found in the binary's table: its recorded instance's, its pending class's,
+/// or else taken from the shipped code, which builds no object.
+fn root_mixin_of(mutator: &mut Mutator<'_>, module: Symbol) -> Rc<Mixin> {
+    let heap = mutator.heap();
+    let class = match mutator.shipped_world.module_instance(module) {
+        Some(instance) => Some(heap.object_class(instance)),
+        None => mutator.shipped_world.pending_class(module),
+    };
+    match class {
+        Some(class) => Rc::clone(
+            &heap
+                .class_application(class)
+                .expect("internal: a shipped module's root class is a class object")
+                .mixin,
+        ),
+        None => mutator.shipped_root_mixin(module.as_str()),
+    }
+}
+
+/// The recorded instance of `name`'s module, rooted, and the declaration
+/// `name` names in its root, when that class is not named yet; `None` when
+/// it is, which `build_shipped_names` then leaves as it is.
+fn unbuilt_class(mutator: &mut Mutator<'_>, name: &ShippedName) -> Option<(Root, Rc<Mixin>)> {
+    let class_name = ShippedName {
+        kind: ShippedKind::Class,
+        ..*name
+    };
+    if mutator.shipped_world.index_of_name(&class_name).is_some() {
+        return None;
+    }
+    let instance = mutator
+        .shipped_world
+        .module_instance(name.module)
+        .unwrap_or_else(|| {
+            panic!(
+                "internal: {} is built before its classes",
+                name.module.as_str()
+            )
+        });
+    let heap = mutator.heap();
+    let root = heap
+        .class_application(heap.object_class(instance))
+        .expect("internal: a shipped module's root class is a class object");
+    let nested = root
+        .mixin
+        .nested
+        .iter()
+        .find(|nested| nested.name == name.declaration)
+        .cloned()
+        .unwrap_or_else(|| panic!("internal: {} was checked to be declared", name.describe()));
+    Some((mutator.stash(Value::object(instance)), nested))
 }
 
 #[cfg(test)]

@@ -3419,6 +3419,15 @@ fn fixture_names() -> Vec<ShippedName> {
         .collect()
 }
 
+/// Builds what `FIXTURE_NAMES` names that `interpreter`'s boot has not
+/// built, as `image::load` does before it resolves a section, so that the
+/// fixture's names resolve against its world.
+fn build_fixture_names(interpreter: &mut Interpreter) {
+    if let Err(error) = interpreter.build_shipped_names(&fixture_names(), false) {
+        panic!("the fixture's names are the binary's: {error}");
+    }
+}
+
 /// A class reference to the shipped name at `index` of the fixture's
 /// section.
 fn shipped(writer: &mut encode::Writer, index: u32) {
@@ -3469,6 +3478,7 @@ impl GraphFixture {
         let (mut interpreter, class) = load(source);
         let mixins = interpreter
             .enter(|mutator| mixin_preorder(mutator.heap(), class_reference(mutator, &class)));
+        build_fixture_names(&mut interpreter);
         GraphFixture {
             interpreter,
             codes: Vec::new(),
@@ -6928,6 +6938,7 @@ fn the_hash_of_a_shipped_level_survives_a_snapshot() {
 /// section of `FIXTURE_NAMES`.
 fn decode_tag_named(bytes: &[u8]) -> Result<u32, decode::DecodeError> {
     let (mut interpreter, _class) = load(EMPTY);
+    build_fixture_names(&mut interpreter);
     interpreter.enter(|mutator| {
         let shipped = shipped_names::resolve_in(mutator, &fixture_names(), false)
             .expect("the fixture's names resolve");
@@ -7021,6 +7032,7 @@ fn a_tag_named_hash_past_the_shipped_names_is_refused() {
 #[test]
 fn a_tag_named_hash_may_name_a_module_instance() {
     let mut interpreter = Interpreter::bootstrap();
+    build_fixture_names(&mut interpreter);
     interpreter.enter(|mutator| {
         let shipped = shipped_names::resolve_in(mutator, &fixture_names(), false)
             .expect("the fixture's names resolve");
@@ -14221,4 +14233,85 @@ fn a_start_image_with_other_than_one_root_is_refused() {
             "{error}"
         );
     }
+}
+
+/// A shipped name as a test writes it.
+fn shipped_name(module: &str, declaration: &str, kind: ShippedKind) -> ShippedName {
+    ShippedName {
+        module: Symbol::intern(module),
+        declaration: Symbol::intern(declaration),
+        kind,
+    }
+}
+
+/// The builder refuses an unknown module, a declaration its module's root
+/// does not declare and, in a started image, a name of any module but the
+/// kernel, with the error the loader gives, and refuses before it builds
+/// anything: the shipped world names as many objects afterwards as before,
+/// even when a name the builder would build comes first.
+#[test]
+fn building_the_shipped_names_refuses_a_name_before_it_builds_anything() {
+    let list = shipped_name("CollectionsFactory", "List", ShippedKind::Class);
+    let cases = [
+        (
+            vec![list, shipped_name("Nothing", "Array", ShippedKind::Class)],
+            false,
+            decode::DecodeError::UnknownShippedName("Nothing Array".to_string()),
+        ),
+        (
+            vec![
+                list,
+                shipped_name("CollectionsFactory", "Nothing", ShippedKind::Class),
+            ],
+            false,
+            decode::DecodeError::UnknownShippedName("CollectionsFactory Nothing".to_string()),
+        ),
+        (
+            vec![shipped_name("Kernel", "Array", ShippedKind::Class), list],
+            true,
+            decode::DecodeError::ShippedNameInStartedImage("CollectionsFactory List".to_string()),
+        ),
+    ];
+    for (names, started, expected) in cases {
+        let mut interpreter = Interpreter::bootstrap();
+        let before = interpreter.enter(|mutator| mutator.shipped_name_count());
+        match interpreter.build_shipped_names(&names, started) {
+            Ok(()) => panic!("expected the names to be refused"),
+            Err(error) => assert_eq!(error, expected),
+        }
+        let after = interpreter.enter(|mutator| mutator.shipped_name_count());
+        assert_eq!(after, before, "a refused name built nothing");
+    }
+}
+
+/// Names of the world the boot built are accepted, and building them again
+/// builds nothing: each module and class is built at most once.
+#[test]
+fn building_the_shipped_names_of_a_built_world_builds_nothing() {
+    let names = [
+        shipped_name("Kernel", "Array", ShippedKind::Class),
+        shipped_name(
+            "CollectionsFactory",
+            "CollectionsFactory",
+            ShippedKind::ModuleInstance,
+        ),
+        shipped_name("CollectionsFactory", "List", ShippedKind::Metaclass),
+        shipped_name(
+            "TypedArraysFactory",
+            "TypedArraysFactory",
+            ShippedKind::Class,
+        ),
+    ];
+    let mut interpreter = Interpreter::bootstrap();
+    let before = interpreter.enter(|mutator| mutator.shipped_name_count());
+    if let Err(error) = interpreter.build_shipped_names(&names, false) {
+        panic!("{error}");
+    }
+    let after = interpreter.enter(|mutator| mutator.shipped_name_count());
+    assert_eq!(after, before);
+    interpreter.enter(|mutator| {
+        if let Err(error) = shipped_names::resolve_in(mutator, &names, false) {
+            panic!("{error}");
+        }
+    });
 }

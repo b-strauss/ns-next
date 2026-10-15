@@ -295,44 +295,36 @@ pub struct LoadedImage {
 /// body off the decoded mixins that carry it. A corrupt but version-matching
 /// image is an `Err` here, never a panic in the VM later.
 ///
-/// An image loads in two phases, and nothing runs between them or in
-/// either. The first decodes everything up to and including the
-/// shipped-name section and resolves every name against the loading boot's
-/// shipped world by table lookup alone (`shipped_names::resolve`), refusing
-/// a name the world does not have, a name given twice, and in a started
-/// image a name of any module but the kernel; it builds no object and keeps
-/// the names, not handles. After a tenure, the second resolves the names
-/// again inside its own entry -- a lookup, no allocation -- and decodes the
-/// graph against them.
+/// An image loads in two phases, and nothing the image describes runs
+/// between them or in either. The first decodes everything up to and
+/// including the shipped-name section; it builds no object and keeps the
+/// names, not handles. Then the loader builds the binary's own shipped
+/// modules and classes the section names that the boot has not built
+/// (`Interpreter::build_shipped_names`) -- by the binary's own code, the
+/// build a program's first demand runs, after a check of every name that
+/// refuses an unknown module or declaration, and in a started image a name
+/// of any module but the kernel, before anything is built -- and resolves
+/// every name against the shipped world by table lookup alone
+/// (`shipped_names::resolve`), refusing a name the world does not have and
+/// a name given twice. Both happen before the tenure, so the builds'
+/// objects are old with the rest of the shipped world. After the tenure,
+/// the second phase resolves the names again inside its own entry -- a
+/// lookup, no allocation -- and decodes the graph against them.
 pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
     let mut reader = decode::Reader::new(bytes);
     let header = decode::read_header(&mut reader).map_err(|error| error.to_string())?;
     let mut interpreter = Interpreter::bootstrap();
-    let described = interpreter.enter(|mutator| -> Result<Described, String> {
-        let symbols = symbols::decode(&mut reader).map_err(|error| error.to_string())?;
-        let mut table =
-            decode::decode_code_table(&mut reader, &symbols).map_err(|error| error.to_string())?;
-        decode::verify_code_table(&table).map_err(|error| error.to_string())?;
-        // Every body in the table is read and structurally sound now, so a
-        // family's call-site numbers -- a block's depend on where its
-        // `MakeClosure` sits in its root's emission order -- can be assigned.
-        decode::number_call_site_families(&mut table).map_err(|error| error.to_string())?;
-        let mixins = mixins::decode(&mut reader, &symbols, &table.codes)
-            .map_err(|error| error.to_string())?;
-        decode::verify_mixins(&mixins).map_err(|error| error.to_string())?;
-        let decoded_modules = modules::decode_modules(&mut reader, &mixins, header.has_source)
-            .map_err(|error| error.to_string())?;
-        let names = shipped_names::decode_section(&mut reader, &symbols)
-            .map_err(|error| error.to_string())?;
-        shipped_names::resolve(&names, &mutator.shipped_world, header.start)
-            .map_err(|error| error.to_string())?;
-        Ok(Described {
-            symbols,
-            table,
-            mixins,
-            decoded_modules,
-            names,
-        })
+    let described = decode_described(&mut reader, header)?;
+    // Outside any entry, since a build runs the binary's own initializers
+    // and accessors. The check of every name comes first, so a name this
+    // binary does not have builds nothing.
+    interpreter
+        .build_shipped_names(&described.names, header.start)
+        .map_err(|error| error.to_string())?;
+    interpreter.enter(|mutator| {
+        shipped_names::resolve(&described.names, &mutator.shipped_world, header.start)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     })?;
     // Every object the graph will name is old from here on: the shipped
     // world (decided with the user on 2026-10-04;
@@ -387,6 +379,37 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
         modules,
         roots,
         start: header.start,
+    })
+}
+
+/// The first phase of `load`: everything up to and including the
+/// shipped-name section, decoded and verified. It reads bytes only -- no
+/// heap, no world -- so it needs no entry.
+fn decode_described(
+    reader: &mut decode::Reader<'_>,
+    header: decode::Header,
+) -> Result<Described, String> {
+    let symbols = symbols::decode(reader).map_err(|error| error.to_string())?;
+    let mut table =
+        decode::decode_code_table(reader, &symbols).map_err(|error| error.to_string())?;
+    decode::verify_code_table(&table).map_err(|error| error.to_string())?;
+    // Every body in the table is read and structurally sound now, so a
+    // family's call-site numbers -- a block's depend on where its
+    // `MakeClosure` sits in its root's emission order -- can be assigned.
+    decode::number_call_site_families(&mut table).map_err(|error| error.to_string())?;
+    let mixins =
+        mixins::decode(reader, &symbols, &table.codes).map_err(|error| error.to_string())?;
+    decode::verify_mixins(&mixins).map_err(|error| error.to_string())?;
+    let decoded_modules = modules::decode_modules(reader, &mixins, header.has_source)
+        .map_err(|error| error.to_string())?;
+    let names =
+        shipped_names::decode_section(reader, &symbols).map_err(|error| error.to_string())?;
+    Ok(Described {
+        symbols,
+        table,
+        mixins,
+        decoded_modules,
+        names,
     })
 }
 
