@@ -164,13 +164,13 @@ impl crate::interpreter::Interpreter {
     /// with the VM mirror and the kernel instance, `TranscriptFactory` and
     /// `TimeFactory` with the mirror alone, `CollectionsFactory` with the
     /// kernel instance alone -- and records each instance as that module's one
-    /// instance (`interpreter::shipped_world`). Every shipped module is built
+    /// instance, naming it and its root (`interpreter::shipped_world`). Every shipped module is built
     /// at every boot, because an image names the shipped world's objects and
     /// the loader runs nothing the image chooses
     /// (`docs/design/image-format.md`, "Shipped names"); the mirror's
     /// `moduleInstanceNamed:` answers these instances and builds nothing. Then
     /// `complete_shipped_world` builds every class the roots declare and
-    /// records every shipped object under its name.
+    /// records each under its name.
     ///
     /// Last, `PlatformFactory`'s instance is sent `build`, its one
     /// public member, as an ordinary host send -- runs like the kernel's
@@ -189,9 +189,7 @@ impl crate::interpreter::Interpreter {
             let kernel_object = kernel
                 .as_object()
                 .expect("internal: the kernel's instance is an object");
-            mutator
-                .shipped_world
-                .add_module_instance(Symbol::intern("Kernel"), kernel_object);
+            mutator.record_shipped_module(Symbol::intern("Kernel"), kernel_object);
             (mutator.stash(mirror), mutator.stash(kernel))
         });
         for shipped in SHIPPED_MODULES {
@@ -223,9 +221,7 @@ impl crate::interpreter::Interpreter {
                 let instance = instance
                     .as_object()
                     .unwrap_or_else(|| panic!("internal: {name}'s instance is an object"));
-                mutator
-                    .shipped_world
-                    .add_module_instance(Symbol::intern(name), instance);
+                mutator.record_shipped_module(Symbol::intern(name), instance);
             });
         }
         self.complete_shipped_world();

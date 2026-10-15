@@ -1,8 +1,8 @@
 //! The shipped world: every object the binary owns and an image may name
 //! (`docs/design/image-format.md`, "Shipped names").
-//! Filled during the boot -- each module instance as
+//! Filled during the boot -- each module instance and its root's names as
 //! `install_shipped_modules` builds it, then every class the roots declare
-//! and every name, by `complete_shipped_world`, before the platform is
+//! and its names, by `complete_shipped_world`, before the platform is
 //! made -- and never changed afterwards.
 
 use std::collections::{HashMap, HashSet};
@@ -101,25 +101,37 @@ pub(crate) struct ShippedEntry<'gc> {
 #[derive(Default)]
 pub(crate) struct ShippedWorld<'gc> {
     module_instances: Vec<(Symbol, ObjectReference<'gc>)>,
-    /// Per module in `module_instances`' order: the instance, the root
-    /// class, its metaclass and its levels, then every class the root
-    /// declares, in declaration order, each followed by its metaclass and
-    /// its levels.
+    /// In the order of recording: per module as it is recorded, the
+    /// instance, the root class, its metaclass and its levels; per class a
+    /// root declares as it is built and recorded, the class, its metaclass
+    /// and its levels.
     entries: Vec<ShippedEntry<'gc>>,
     /// Each entry's name to its position in `entries`.
     by_name: HashMap<ShippedName, usize>,
+    /// Per recorded module, the classes a public class accessor of its
+    /// root answers (`accessed_classes`): walked once when the module is
+    /// recorded rather than once for each class it declares.
+    accessed: HashMap<Symbol, HashSet<Symbol>>,
 }
 
 impl<'gc> ShippedWorld<'gc> {
     /// Records `instance` as the one instance of the shipped module `name`.
     /// The boot names each module once; a second instance is a defect in
-    /// the binary.
-    pub(crate) fn add_module_instance(&mut self, name: Symbol, instance: ObjectReference<'gc>) {
+    /// the binary, and so is one instance recorded for two modules, which
+    /// would leave `module_of_instance` two answers.
+    fn add_module_instance(&mut self, name: Symbol, instance: ObjectReference<'gc>) {
         assert!(
             self.module_instance(name).is_none(),
             "internal: the shipped module {} is instantiated twice",
             name.as_str()
         );
+        if let Some(recorded) = self.module_of_instance(instance) {
+            panic!(
+                "internal: the instance of the shipped module {} is recorded again as {}",
+                recorded.as_str(),
+                name.as_str()
+            );
+        }
         self.module_instances.push((name, instance));
     }
 
@@ -138,9 +150,18 @@ impl<'gc> ShippedWorld<'gc> {
         &self.module_instances
     }
 
+    /// The name of the shipped module whose one instance `instance` is, or
+    /// `None` when it is no shipped module's instance.
+    pub(crate) fn module_of_instance(&self, instance: ObjectReference<'gc>) -> Option<Symbol> {
+        self.module_instances
+            .iter()
+            .find(|(_, recorded)| recorded.same(instance))
+            .map(|(module, _)| *module)
+    }
+
     /// Every shipped object under its name, in the order the boot recorded
-    /// them (`ShippedWorld::entries`' field comment); empty only before
-    /// `complete_shipped_world` has run.
+    /// them (`ShippedWorld::entries`' field comment); empty only before the
+    /// first module is recorded.
     pub(crate) fn entries(&self) -> &[ShippedEntry<'gc>] {
         &self.entries
     }
@@ -207,10 +228,10 @@ impl Trace for ShippedWorld<'_> {
 
 impl crate::interpreter::Interpreter {
     /// The last phase of the boot before the platform is made: every class
-    /// a shipped root declares is built, in declaration order, and every
-    /// shipped object is recorded under its name with the positions it may
-    /// stand in (`docs/design/image-format.md`, "Shipped names"). An image
-    /// names into this world and the loader runs
+    /// a recorded shipped root declares is built, in declaration order, and
+    /// recorded under its name with the positions it may stand in
+    /// (`docs/design/image-format.md`, "Shipped names"). An image names
+    /// into this world and the loader runs
     /// nothing the image chooses, so all of it must exist before a decode.
     /// The kernel's own phase built the kernel's classes, so building one of
     /// them answers the class it cached. Only the binary's own code runs,
@@ -230,16 +251,89 @@ impl crate::interpreter::Interpreter {
         });
         for (module, instance, mixin) in &modules {
             for nested in &mixin.nested {
-                super::core_library::booted(
+                let class = super::core_library::booted(
                     self.build_nested_class(instance, nested),
                     &format!("building {} {}", module.as_str(), nested.name.as_str()),
                 );
+                self.enter(|mutator| {
+                    let class = mutator.fetch(&class).as_object().unwrap_or_else(|| {
+                        panic!(
+                            "internal: {} {} is a class object",
+                            module.as_str(),
+                            nested.name.as_str()
+                        )
+                    });
+                    mutator.record_shipped_class(*module, nested, class);
+                });
             }
         }
-        self.enter(|mutator| {
-            let entries = shipped_entries(mutator);
-            mutator.shipped_world.record_entries(entries);
+    }
+}
+
+impl<'gc> Mutator<'gc> {
+    /// Records `instance` as the one instance of the shipped module
+    /// `module` and names it, its class -- the module's root --, the root's
+    /// metaclass and its levels.
+    pub(crate) fn record_shipped_module(&mut self, module: Symbol, instance: ObjectReference<'gc>) {
+        self.shipped_world.add_module_instance(module, instance);
+        let heap = self.heap();
+        let accessed = accessed_classes(&root_application(heap, instance).mixin);
+        let mut entries = vec![ShippedEntry {
+            name: ShippedName {
+                module,
+                declaration: module,
+                kind: ShippedKind::ModuleInstance,
+            },
+            object: instance,
+            positions: Positions {
+                frame_register: true,
+                ..Positions::default()
+            },
+        }];
+        push_class(
+            heap,
+            &mut entries,
+            module,
+            module,
+            heap.object_class(instance),
+            Positions::FRAME_CLASS_ONLY,
+        );
+        self.shipped_world.accessed.insert(module, accessed);
+        self.shipped_world.record_entries(entries);
+    }
+
+    /// Records `class`, the class object the declaration `nested` in the
+    /// root of the recorded shipped module `module` evaluated to, under its
+    /// name with the positions it may stand in, then its metaclass and its
+    /// levels. A class already named is left as it is: a shipped module has
+    /// one instance and its accessor builds the class once, so recording it
+    /// again names the same object.
+    pub(crate) fn record_shipped_class(
+        &mut self,
+        module: Symbol,
+        nested: &Rc<Mixin>,
+        class: ClassReference<'gc>,
+    ) {
+        let declaration = nested.name;
+        let class_name = ShippedName {
+            module,
+            declaration,
+            kind: ShippedKind::Class,
+        };
+        if self.shipped_world.index_of_name(&class_name).is_some() {
+            return;
+        }
+        let accessed = self.shipped_world.accessed.get(&module).unwrap_or_else(|| {
+            panic!(
+                "internal: {} is recorded before its classes",
+                module.as_str()
+            )
         });
+        let heap = self.heap();
+        let positions = class_positions(heap, module, accessed, nested, class);
+        let mut entries = Vec::new();
+        push_class(heap, &mut entries, module, declaration, class, positions);
+        self.shipped_world.record_entries(entries);
     }
 }
 
@@ -268,77 +362,39 @@ fn root_application<'gc>(
 /// holds the list to the two facets.
 const KERNEL_CLASSES_FOR_SHIPPED_MODULES: &[&str] = &["IndexedCollection"];
 
-/// Every shipped object under its name, in the order of
-/// `ShippedWorld::entries`' field comment. Every class a root declares has
-/// been built, so each cache slot holds its class.
-fn shipped_entries<'gc>(mutator: &Mutator<'gc>) -> Vec<ShippedEntry<'gc>> {
-    let heap = mutator.heap();
-    let kernel = Symbol::intern("Kernel");
-    let mut entries = Vec::new();
-    for &(module, instance) in mutator.shipped_world.module_instances() {
-        let root_class = heap.object_class(instance);
-        let application = root_application(heap, instance);
-        entries.push(ShippedEntry {
-            name: ShippedName {
-                module,
-                declaration: module,
-                kind: ShippedKind::ModuleInstance,
-            },
-            object: instance,
-            positions: Positions {
-                frame_register: true,
-                ..Positions::default()
-            },
-        });
-        push_class(
-            heap,
-            &mut entries,
-            module,
-            module,
-            root_class,
-            Positions::FRAME_CLASS_ONLY,
+/// Where an image may put `class`, the class object the declaration
+/// `nested` in the root of the shipped module `module` evaluated to;
+/// `accessed` is that root's `accessed_classes`.
+fn class_positions<'gc>(
+    heap: &Heap<'gc>,
+    module: Symbol,
+    accessed: &HashSet<Symbol>,
+    nested: &Mixin,
+    class: ClassReference<'gc>,
+) -> Positions {
+    let public = nested.access == AccessModifier::Public
+        && !(module == Symbol::intern("Kernel")
+            && KERNEL_CLASSES_FOR_SHIPPED_MODULES.contains(&nested.name.as_str()));
+    let value = public || accessed.contains(&nested.name);
+    // A class object is made only by evaluating a declaration, so
+    // nothing may inherit from what every class object inherits.
+    let superclass = value
+        && !matches!(
+            heap.class_builtin(class),
+            Some(BuiltinClass::Behavior | BuiltinClass::Class | BuiltinClass::Metaclass)
         );
-        let accessed = accessed_classes(&application.mixin);
-        for nested in &application.mixin.nested {
-            let class = application
-                .nested_slot
-                .get(&mixin_key(nested))
-                .and_then(|index| heap.instance_field(instance, *index))
-                .and_then(Value::as_object)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "internal: {} {} was built at bootstrap",
-                        module.as_str(),
-                        nested.name.as_str()
-                    )
-                });
-            let public = nested.access == AccessModifier::Public
-                && !(module == kernel
-                    && KERNEL_CLASSES_FOR_SHIPPED_MODULES.contains(&nested.name.as_str()));
-            let value = public || accessed.contains(&nested.name);
-            // A class object is made only by evaluating a declaration, so
-            // nothing may inherit from what every class object inherits.
-            let superclass = value
-                && !matches!(
-                    heap.class_builtin(class),
-                    Some(BuiltinClass::Behavior | BuiltinClass::Class | BuiltinClass::Metaclass)
-                );
-            // No object is an instance of `Top`: §3.2 gives it no subclass
-            // but `Object`, which every class a program reaches inherits, so
-            // a record of it is refused as `Top` is refused as a value (lock
-            // (4) of the VM mirror).
-            let header = heap.class_builtin(class) != Some(BuiltinClass::Top);
-            let positions = Positions {
-                value,
-                superclass,
-                header,
-                frame_class: true,
-                frame_register: false,
-            };
-            push_class(heap, &mut entries, module, nested.name, class, positions);
-        }
+    // No object is an instance of `Top`: §3.2 gives it no subclass
+    // but `Object`, which every class a program reaches inherits, so
+    // a record of it is refused as `Top` is refused as a value (lock
+    // (4) of the VM mirror).
+    let header = heap.class_builtin(class) != Some(BuiltinClass::Top);
+    Positions {
+        value,
+        superclass,
+        header,
+        frame_class: true,
+        frame_register: false,
     }
-    entries
 }
 
 /// Records `class` as `(module, declaration, Class)` with `positions`,
@@ -901,6 +957,52 @@ mod tests {
                 .describe(),
                 "CollectionsFactory instance"
             );
+        });
+    }
+
+    /// Recording a class the world already names adds no entry: a
+    /// class's names are recorded once, whichever build records it first.
+    #[test]
+    fn a_class_is_named_once_however_often_it_is_recorded() {
+        let mut interpreter = crate::Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let before = mutator.shipped_world.entries().len();
+            let collections = Symbol::intern("CollectionsFactory");
+            let instance = mutator
+                .shipped_world
+                .module_instance(collections)
+                .expect("CollectionsFactory is built at boot");
+            let application = root_application(mutator.heap(), instance);
+            let list = application
+                .mixin
+                .nested
+                .iter()
+                .find(|nested| nested.name.as_str() == "List")
+                .expect("CollectionsFactory declares List")
+                .clone();
+            let class = application
+                .nested_slot
+                .get(&mixin_key(&list))
+                .and_then(|index| mutator.heap().instance_field(instance, *index))
+                .and_then(Value::as_object)
+                .expect("List was built at boot");
+            mutator.record_shipped_class(collections, &list, class);
+            assert_eq!(mutator.shipped_world.entries().len(), before);
+        });
+    }
+
+    /// A shipped module's instance leads back to its module's name; any
+    /// other object to none.
+    #[test]
+    fn a_module_instance_leads_back_to_its_module() {
+        let mut interpreter = crate::Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let world = &mutator.shipped_world;
+            for &(module, instance) in world.module_instances() {
+                assert_eq!(world.module_of_instance(instance), Some(module));
+            }
+            let array = mutator.builtin_class(BuiltinClass::Array);
+            assert_eq!(world.module_of_instance(array), None);
         });
     }
 }
