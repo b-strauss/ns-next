@@ -108,9 +108,7 @@ pub(crate) fn module_names() -> impl Iterator<Item = &'static str> {
 /// them, silently.
 #[doc(hidden)]
 pub fn generate() -> Result<Vec<u8>, &'static str> {
-    if primitive_method::disabled() {
-        return Err(GENERATING_WITHOUT_PRIMITIVE_METHODS);
-    }
+    refuse_without_primitive_methods(primitive_method::disabled())?;
     let mut interpreter = Interpreter::bootstrap_on(Lowering::Optimized, ShippedCodePath::Source);
     let modules: Vec<(&'static str, Rc<Mixin>)> = interpreter.enter(|mutator| {
         module_names()
@@ -118,6 +116,17 @@ pub fn generate() -> Result<Vec<u8>, &'static str> {
             .collect()
     });
     Ok(encode(&modules, SHIPPED_CODE_FINGERPRINT))
+}
+
+/// `generate`'s refusal, given whether primitive methods are disabled; a
+/// function of its own because the process reads the variable once, so no
+/// test of the suite could reach the refusal through `generate`.
+fn refuse_without_primitive_methods(primitive_methods_disabled: bool) -> Result<(), &'static str> {
+    if primitive_methods_disabled {
+        Err(GENERATING_WITHOUT_PRIMITIVE_METHODS)
+    } else {
+        Ok(())
+    }
 }
 
 /// Why `generate` refuses under `NS_NEXT_NO_PRIMITIVE_METHODS=1`.
@@ -258,7 +267,11 @@ mod tests {
 
     #[test]
     fn generating_without_primitive_methods_is_refused() {
-        assert_eq!(generate().is_err(), primitive_method::disabled());
+        assert_eq!(
+            refuse_without_primitive_methods(true),
+            Err(GENERATING_WITHOUT_PRIMITIVE_METHODS)
+        );
+        assert_eq!(refuse_without_primitive_methods(false), Ok(()));
     }
 
     /// Asserts that the kernel's `Object` in the artifact `bytes` keeps its

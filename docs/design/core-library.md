@@ -2689,9 +2689,9 @@ the specification requires them of every value.
 ### The embedded shipped code
 
 The shipped modules' compiled code is produced ahead of time and embedded
-in the binary (decided with the user on 2026-10-14). `cargo xtask
-shipped-code` (`xtask/src/main.rs`) boots an interpreter from source with
-the optimized lowering, compiles the root mixin of every shipped module
+in the binary (decided with the user on 2026-10-14).
+`cargo xtask shipped-code` (`xtask/src/main.rs`) boots an interpreter from
+source with the optimized lowering, compiles the root mixin of every shipped module
 through the source path -- it needs the mixins, not the world they build,
 so it instantiates no module the boot does not -- and writes them, encoded
 (`shipped_code::generate`), to
@@ -2816,8 +2816,8 @@ artifact boots from source too, which a later packaging has to rule out
 ([OPEN-WORK.md](../OPEN-WORK.md), "A release binary without the embedded
 shipped code boots from source"). The tests in `shipped_code/mod.rs` run in
 the `commit` gate: `the_optimized_boot_decodes_the_embedded_code` fails
-when the artifact is missing or stale, saying to run `cargo xtask
-shipped-code` -- a bare `cargo nextest run` without it is red, the gate
+when the artifact is missing or stale, saying to run
+`cargo xtask shipped-code` -- a bare `cargo nextest run` without it is red, the gate
 green, since skipping would leave the embedded path silently untested --
 `the_reference_boot_compiles_from_source` is its counterpart, and
 `the_embedded_shipped_code_round_trips` re-encodes the decoded bytes, which

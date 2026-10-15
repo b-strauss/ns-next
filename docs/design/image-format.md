@@ -1872,10 +1872,10 @@ sources' fingerprint, which `crates/ns-runtime/build.rs` takes over the six
 shipped modules' sources -- `Kernel.ns`, `PlatformFactory.ns` and every `.ns`
 under `core-library/platform/` (`CORE_LIBRARY_FINGERPRINT`) -- the names in
 `BuiltinClass::ALL` and the mirror's selectors, each part preceded by its
-length. It covers the shipped sources and not the Rust ones, so an image
-stays loadable across a Rust edit that leaves the shipped world as it was,
-nor `Manifest.ns`, which is no part of the shipped world: a program compiles
-it as a module of its own and an image carries it. The lowering is not in it:
+length. It covers neither the Rust sources, so an image stays loadable
+across a Rust edit that leaves the shipped world as it was, nor
+`Manifest.ns`, which is no part of the shipped world: a program compiles it
+as a module of its own and an image carries it. The lowering is not in it:
 `load` always builds the shipped world with the optimized lowering, and an
 application built under the reference lowering carries its own code. A load
 whose binary computes another refuses the image before it reads anything else

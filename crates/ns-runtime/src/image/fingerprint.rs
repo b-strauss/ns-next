@@ -11,9 +11,10 @@ use crate::types::BuiltinClass;
 /// FNV-1a over the fingerprint `build.rs` takes over the shipped modules'
 /// sources (`Manifest.ns`, a program's own module, is none of them), the
 /// builtin classes' names and the mirror's selectors, each preceded by its
-/// length so that no two sequences of parts hash alike by running together. The lowering is not in it: `load` always builds the
-/// shipped world with the optimized lowering, and an application carries
-/// its own code.
+/// length so that no two sequences of parts hash alike by running
+/// together. The lowering is not in it: `load` always builds the shipped
+/// world with the optimized lowering, and an application carries its own
+/// code.
 pub fn shipped_world_fingerprint() -> u64 {
     static FINGERPRINT: OnceLock<u64> = OnceLock::new();
     *FINGERPRINT.get_or_init(|| {
