@@ -287,7 +287,13 @@ fn main() -> ExitCode {
 /// `build.rs` embeds them; with `check`, only says whether the file there
 /// is current.
 fn shipped_code(root: &Path, check: bool) -> ExitCode {
-    let generated = ns_runtime::shipped_code::generate();
+    let generated = match ns_runtime::shipped_code::generate() {
+        Ok(generated) => generated,
+        Err(refusal) => {
+            eprintln!("{refusal}");
+            return ExitCode::FAILURE;
+        }
+    };
     let path = root.join(SHIPPED_CODE);
     let current = std::fs::read(&path).is_ok_and(|existing| existing == generated);
     if check {

@@ -21,7 +21,7 @@
 
 use std::rc::Rc;
 
-use crate::compiler::Lowering;
+use crate::compiler::{primitive_method, Lowering};
 use crate::interpreter::core_library::SHIPPED_MODULES;
 use crate::interpreter::Interpreter;
 use crate::mixin::Mixin;
@@ -98,16 +98,30 @@ pub(crate) fn module_names() -> impl Iterator<Item = &'static str> {
 /// checks included, with the optimized lowering, then encoded. For
 /// `cargo xtask shipped-code`. It needs the root mixins, not the world they
 /// build, so it compiles each module and instantiates none.
+///
+/// Refuses, answering why, under `NS_NEXT_NO_PRIMITIVE_METHODS=1`: the
+/// fingerprint covers the sources, not the process's environment, so an
+/// artifact compiled without primitive methods would carry the binary's
+/// fingerprint and every later optimized boot would decode a kernel without
+/// them, silently.
 #[doc(hidden)]
-pub fn generate() -> Vec<u8> {
+pub fn generate() -> Result<Vec<u8>, &'static str> {
+    if primitive_method::disabled() {
+        return Err(GENERATING_WITHOUT_PRIMITIVE_METHODS);
+    }
     let mut interpreter = Interpreter::bootstrap_on(Lowering::Optimized, ShippedCodePath::Source);
     let modules: Vec<(&'static str, Rc<Mixin>)> = interpreter.enter(|mutator| {
         module_names()
             .map(|name| (name, mutator.shipped_root_mixin_from_source(name)))
             .collect()
     });
-    encode(&modules, SHIPPED_CODE_FINGERPRINT)
+    Ok(encode(&modules, SHIPPED_CODE_FINGERPRINT))
 }
+
+/// Why `generate` refuses under `NS_NEXT_NO_PRIMITIVE_METHODS=1`.
+const GENERATING_WITHOUT_PRIMITIVE_METHODS: &str =
+    "NS_NEXT_NO_PRIMITIVE_METHODS=1 is set: the shipped code is compiled with primitive \
+     methods, so it is not generated under it; unset the variable and run again";
 
 /// The root mixin of the module `name` in the artifact `bytes`.
 pub(crate) fn decode_module(bytes: &[u8], name: &str) -> Rc<Mixin> {
@@ -188,8 +202,19 @@ mod tests {
         );
     }
 
+    /// The artifact `generate` writes; a test that needs one cannot run
+    /// under `NS_NEXT_NO_PRIMITIVE_METHODS=1`, and says so.
+    fn generated() -> Vec<u8> {
+        generate().unwrap_or_else(|refusal| panic!("{refusal}"))
+    }
+
     #[test]
     fn the_optimized_boot_decodes_the_embedded_code() {
+        assert!(
+            !primitive_method::disabled(),
+            "NS_NEXT_NO_PRIMITIVE_METHODS=1 is set: an optimized boot compiles the shipped code \
+             from source under it"
+        );
         assert!(
             usable(embedded()),
             "the embedded shipped code is missing or stale: run `cargo xtask shipped-code`"
@@ -224,15 +249,21 @@ mod tests {
 
     #[test]
     fn generated_shipped_code_round_trips() {
-        let generated = generate();
+        let generated = generated();
         let decoded = decoded_modules(&generated);
         assert_eq!(encode(&decoded, SHIPPED_CODE_FINGERPRINT), generated);
     }
 
     #[test]
-    fn decoded_shipped_code_keeps_the_mirror_sends_and_fast_paths() {
-        let generated = generate();
-        let kernel = decode_module(&generated, "Kernel");
+    fn generating_without_primitive_methods_is_refused() {
+        assert_eq!(generate().is_err(), primitive_method::disabled());
+    }
+
+    /// Asserts that the kernel's `Object` in the artifact `bytes` keeps its
+    /// mirror sends and its primitive methods' fast paths, and that the
+    /// kernel root is marked shipped and carries no declaration.
+    fn assert_keeps_the_mirror_sends_and_fast_paths(bytes: &[u8]) {
+        let kernel = decode_module(bytes, "Kernel");
         let object = kernel
             .nested
             .iter()
@@ -249,12 +280,29 @@ mod tests {
                 .filter(|instruction| matches!(instruction, Instruction::SendMirror { .. }))
                 .count();
         }
-        assert!(mirror_sends > 0 && fast_paths > 0);
+        assert!(mirror_sends > 0, "the kernel's Object has no mirror send");
+        assert!(
+            fast_paths > 0,
+            "the kernel's Object has no primitive method: was the artifact generated under \
+             NS_NEXT_NO_PRIMITIVE_METHODS=1?"
+        );
         assert!(kernel.shipped && kernel.declaration.is_none());
     }
 
     #[test]
+    fn decoded_shipped_code_keeps_the_mirror_sends_and_fast_paths() {
+        assert_keeps_the_mirror_sends_and_fast_paths(&generated());
+    }
+
+    #[test]
+    fn the_embedded_shipped_code_keeps_the_mirror_sends_and_fast_paths() {
+        let bytes = embedded();
+        assert!(usable(bytes), "run `cargo xtask shipped-code`");
+        assert_keeps_the_mirror_sends_and_fast_paths(bytes);
+    }
+
+    #[test]
     fn generated_shipped_code_is_reproducible() {
-        assert_eq!(generate(), generate());
+        assert_eq!(generated(), generated());
     }
 }
