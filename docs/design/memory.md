@@ -1216,7 +1216,12 @@ bytes and 1 MiB; resolving them (`shipped_names::resolve`) reserves, for as
 many entries, a set of indices and a `Vec` of resolved names of 32 bytes
 (40 in a debug build, whose handle is two words), about 7.7x of the
 section's bytes (8.5x) for the moment it runs and at most about 5 MiB, all
-of it before any placeholder exists. A name the loading world does
+of it before any placeholder exists. The check the loader runs before it
+builds the modules and classes a section names (`check_names`) reserves a
+set of as many names, as `resolve` does, and one root mixin per shipped
+module; what the builds allocate is the binary's own modules and classes,
+bounded by the binary rather than by the input, and is tenured before the
+graph pass. A name the loading world does
 not have and a name given twice are refused, so a section that resolves
 lists at most as many names as the shipped world has, a few hundred; what
 the graph pass holds beside its placeholders -- the names and their
@@ -2369,13 +2374,15 @@ scavenge.
 
 ### An image load tenures once
 
-Every load bootstraps, which builds the whole shipped world, before it
-decodes the graph, so every object an image can name is young when the
-graph pass starts; the first phase, which reads everything up to the
-graph and resolves the shipped names, allocates none. One scavenge that
-tenures everything, between two entries
-(`Interpreter::tenure_now`), makes the shipped world old, and the graph pass then
-allocates old, its stores old-to-old (decision 4;
+Every load bootstraps, which builds `Kernel` and `PlatformFactory`, and
+then builds the shipped modules and classes the image names that the boot
+did not (`Interpreter::build_shipped_names`), all before it decodes the
+graph, so every object an image can name exists, young, when the graph
+pass starts; the first phase, which reads everything up to the graph,
+allocates none, and the builds after it allocate as a program's first
+demand does. One scavenge that tenures everything, between two entries and
+after the builds (`Interpreter::tenure_now`), makes the shipped world old,
+and the graph pass then allocates old, its stores old-to-old (decision 4;
 [image-format.md](image-format.md), "The image under generations").
 
 ### Finding a missed barrier: the scavenge stress mode
@@ -2445,13 +2452,15 @@ Decided with the user on 2026-10-04:
    ([OPEN-WORK.md](../OPEN-WORK.md)).
 4. **An image load tenures once, between the shipped-name section and the
    graph pass.** Spur, Primordial Soup, Strongtalk and HotSpot's CDS all
-   load into a heap that holds nothing young; here the bootstrap's objects,
-   the whole shipped world among them, are young when the graph pass
-   starts, and one tenure between two entries makes them old. The decoder
+   load into a heap that holds nothing young; here the bootstrap's objects
+   and those of the shipped modules and classes the loader builds for the
+   image's names are young when the graph pass starts, and one tenure
+   between two entries, after those builds, makes them old. The decoder
    then allocates its graph old, as Soup's `AllocateSnapshot` does
-   (`prior-art/primordialsoup/vm/heap.cc:228`). A second tenure right after
-   the bootstrap would be the same one: the first phase, which decodes up to
-   the graph and resolves the shipped names, allocates nothing.
+   (`prior-art/primordialsoup/vm/heap.cc:228`). One tenure suffices because
+   it comes last: the first phase, which decodes up to the graph, allocates
+   nothing, the builds all run before the tenure, and nothing between the
+   tenure and the graph pass allocates.
 
 The plan also chose constants for the user to confirm, each one line to
 change and each stated where it is built above: eden's 512 KiB reserve,
@@ -2670,8 +2679,9 @@ the groundwork the JIT tiers take over, as Cogit's `genPrimitiveNew` and
 - **An image load tenures once, between the shipped-name section and the
   graph pass** (decided with the user on 2026-10-04), so that the graph pass
   allocates old into a heap that holds nothing young, as every reference
-  loads; nothing between the bootstrap and the graph pass allocates, so the
-  one tenure covers the bootstrap's objects.
+  loads; the loader's builds of the shipped modules and classes the image
+  names run before it and nothing between it and the graph pass allocates,
+  so the one tenure covers the bootstrap's objects and the builds'.
 - **A refused commit or an exhausted reservation aborts the process**, as a
   failed `Vec` push does, through `std::alloc::handle_alloc_error` (decided
   with the user on 2026-10-03). Allocation stays infallible, so no hot path

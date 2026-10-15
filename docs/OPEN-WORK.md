@@ -279,10 +279,11 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   Rust boundary".
 
 - **The parser's 3.4 ms for `Kernel.ns`** (2026-10-14): a boot that
-  compiles the shipped source still parses it, `Kernel.ns` in 3.44 ms,
-  `CollectionsFactory.ns` in 0.93 ms and `TypedArraysFactory.ns` in
-  0.58 ms of a 13.6 ms boot (release, the measuring workstation, Windows
-  11). That is every boot under the reference lowering, under which every
+  compiles the shipped source still parses it, `Kernel.ns` in 3.44 ms of a
+  13.6 ms boot that then compiled every module (release, the measuring
+  workstation, Windows 11), and the first demand of a module on that path
+  parses it too, `CollectionsFactory.ns` in 0.93 ms and
+  `TypedArraysFactory.ns` in 0.58 ms. That is every boot under the reference lowering, under which every
   golden runs, every boot with `NS_NEXT_NO_PRIMITIVE_METHODS`, every boot
   of a binary built without a current artifact, and `cargo xtask
   shipped-code` itself, which every gate run runs. Part of it is the
@@ -296,7 +297,9 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   (2026-10-14): a tree that never ran `cargo xtask shipped-code`, or whose
   Rust or core-library sources changed after it last ran, embeds no
   current artifact, and the binary boots from source silently -- correct,
-  but at 13.6 ms instead of 1.6 ms. The gates regenerate it and the
+  but slowly: parsing, resolving and compiling the kernel alone took about
+  8.6 ms of the 13.6 ms a boot from source measured when it compiled every
+  module, against a whole boot of 1.22 ms from the artifact. The gates regenerate it and the
   `commit` gate's `the_optimized_boot_decodes_the_embedded_code` is red
   without it, but a plain `cargo build --release` is not checked. A later
   packaging (`cargo install`, a release build for distribution) needs a
@@ -512,7 +515,8 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   *Unimplemented* by the specification; object literals need the activation as
   enclosing object and a syntax choice. [frontend.md](design/frontend.md),
   "Possible future extensions".
-- **The module namespace on the mirror.** `moduleInstanceNamed:` is built; the table
+- **The module namespace on the mirror.** `moduleInstanceNamed:`, and the
+  build of a shipped module on its first demand, are built; the table
   of shipped modules is still the host's, a table entry has no "shipped" flag,
   and the file-system fallback for user modules does not exist — all three
   come with the first user module. Static module linking through it is decided,

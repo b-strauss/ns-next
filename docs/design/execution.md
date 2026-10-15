@@ -4993,14 +4993,14 @@ they measure is the send sites' shape, which (c) restored.
 The collections module (`docs/design/core-library.md`, "The collections
 module (plan 2)") is a third shipped module, `CollectionsFactory.ns`, whose
 `List` is Newspeak over `Array new:` where the builtin `OrderedCollection`
-was Rust over a growable payload. Every boot builds it, with every other
-shipped module and every class their roots declare
-(`interpreter/shipped_world.rs`, `complete_shipped_world`): an image names
-the shipped world's objects by their declarations and the loader runs
-nothing the image chooses, so all of them exist before it decodes
-(`image-format.md`, "Shipped names"). The mirror's
-`moduleInstanceNamed:` answers the instance the boot built, and
-`PlatformFactory`'s lazy `collectionsModule` reads it.
+was Rust over a growable payload. It is built on the first `platform
+collections`: `PlatformFactory`'s lazy `collectionsModule` asks the mirror
+for the module's root class (`shippedModuleClassNamed:`), sends it the
+module's factory and records the instance (`recordShippedModule:`), and
+each class of it is built and named as its accessor builds it
+(`interpreter/core_library.rs`, `interpreter/nested.rs`'s `after_clause`).
+An image that names the module or one of its classes has the loader build
+them before it decodes the graph (`image-format.md`, "Shipped names").
 
 Plan 2, which the first two measurements below are of, built the module on
 the first `platform collections` instead, through the mirror's
@@ -5064,7 +5064,9 @@ both in every sitting, every one of its builds above every head build, by
 0.085 ms pooled: that is what resolving `CollectionsFactory.ns`'s 99 lines
 at every boot cost, and resolving each shipped module on its first request
 (`interpreter/core_library.rs`'s `RESOLVED_SHIPPED_MODULES`, one cell per
-table entry) is what removed it then; every boot asks for every entry now.
+table entry) is what removed it then; a boot from source today asks for
+`PlatformFactory`'s entry alone, and for another only on its module's first
+demand.
 The 15 lines `Kernel.ns` grew by do not show. `startup_list.ns` is where the work went: the head and `ee4bdc8` are
 level there (-0.03 ms), since both resolve the module by the time the
 program ends, and both lie 0.28–0.31 ms above `6d9974b`, whose `List` was a
@@ -5125,8 +5127,9 @@ built any shipped module but `PlatformFactory`; `1ff9a33`, whose boot
 compiles and instantiates `PlatformFactory` and `CollectionsFactory` and
 builds only the classes a run asks for; and `2d35951`, whose boot then
 builds every class the three roots declare and records each shipped
-object under its name (`complete_shipped_world`), as every later tree's
-does. Medians in ms:
+object under its name (`complete_shipped_world`), as every tree did until
+the shipped modules were built on first demand ("What the precompiled
+shipped code moved" below). Medians in ms:
 
 | Round | `e2e1695` | `1ff9a33` | `2d35951` |
 |---|---|---|---|
@@ -5163,11 +5166,15 @@ The shipped modules' compiled code is generated ahead of time by `cargo xtask
 shipped-code` and embedded in the binary; an optimized boot decodes it
 instead of parsing, resolving and compiling the roughly 9,000 lines of the
 six modules (`shipped_code/`, `interpreter/core_library.rs`). The world is
-still built by running the binary's own code on the decoded mixins, so the
-instantiations and `complete_shipped_world` are what they were.
+built by running the binary's own code on the decoded mixins. It was
+measured in two stages: the first decoded instead of compiling and still
+built every module at boot, so its instantiations and
+`complete_shipped_world` were what they had been; the second builds only
+`Kernel` and `PlatformFactory` at boot and every other module on its first
+demand (`core-library.md`, "The module table and the boot").
 
-**Measured 2026-10-14, `eb2716b8` against `f60f6782`**, this branch's head
-against the head of `master`, at which the start-up was measured the same day
+**The first stage, measured 2026-10-14, `eb2716b8` against `f60f6782`**,
+the first stage's head against the head of `master`, at which the start-up was measured the same day
 before the branch began, on the same machine, the measuring workstation
 (Windows 11). Both are release
 builds with the pinned `RUSTFLAGS` of the protocol above, each in its own
@@ -5222,14 +5229,67 @@ the same modules, and the kernel alone is more than half of it. What remains
 of the boot beyond decoding is the instantiations and the class building,
 0.2 ms.
 
-**The second stage does not pay at this size.** Loading a module on its
-first demand could save only what the boot spends on modules a program may
-never touch: `CollectionsFactory` and `TypedArraysFactory`, decoded and
-instantiated, cost 0.27 + 0.01 and 0.11 + 0.02 ms, 0.40 ms together, below
-the 0.5 ms the stage has to exceed to be worth the machinery. The kernel's 0.90 ms is not a candidate: it
-is always needed. The item stays in [OPEN-WORK.md](../OPEN-WORK.md) with
-these numbers, to be measured again if the shipped modules grow by an order
-of magnitude.
+**The second stage builds a module on its first demand, and a boot builds
+only `Kernel` and `PlatformFactory`.** By the first stage's numbers it
+could save only what the boot spent on modules a program may never touch:
+`CollectionsFactory` and `TypedArraysFactory`, decoded and instantiated,
+0.27 + 0.01 and 0.11 + 0.02 ms, 0.40 ms together, under the 0.5 ms set as
+the bar for the machinery. It is built anyway (decided with the user on
+2026-10-15) because that cost is not fixed: the artifact grows with every
+module and every member the core library gains -- 211,731 bytes today --
+and an eager boot pays for all of it in every process, whatever the program
+uses, where a boot on demand pays for the kernel, the platform and what
+the program reaches. The kernel's decode, 0.9 ms, is no candidate: it is
+always needed.
+
+**The second stage, measured 2026-10-15, `e178ac5c` against `740adb25`**,
+the head that builds on demand against the head before its first commit,
+on the measuring workstation (Windows 11), by the first stage's method:
+release builds with the pinned `RUSTFLAGS`, one per side, `740adb25` in a
+throwaway worktree under `.temp/`, each after `cargo xtask shipped-code` and
+its `--check` saying the artifact is current. Two programs: the hello, and
+one whose `main:args:` sends `platform collections List new` once before
+showing `'hello'`, which pays the first demand of `CollectionsFactory` and
+the build of its `List`. The marks are the first stage's at the boot's
+start and end, the kernel phase's end, around each module's decode and
+around `complete_shipped_world`, and on this side at a lazy module's demand
+(`shipped_module_class`'s entry) and its record (`record_pending`'s end),
+with one at the start of `main` and one at the process's exit; not
+committed. 30 marked runs of each program and side, interleaved, the median
+per span; 40 whole-process runs of the same binaries with the marks
+switched off, interleaved, timed from outside (Python's `subprocess.run`
+under `time.perf_counter`).
+
+| Span, median, ms | Hello, `740adb25` | Hello, `e178ac5c` | `List new`, `740adb25` | `List new`, `e178ac5c` |
+|---|---|---|---|---|
+| The kernel phase (its decode) | 1.08 (0.88) | 1.08 (0.88) | 1.05 (0.86) | 1.03 (0.83) |
+| The shipped-module phase | 0.68 | 0.15 | 0.68 | 0.15 |
+| of which `complete_shipped_world` | 0.08 | 0.03 | 0.07 | 0.03 |
+| **The boot** | **1.77** | **1.22** | **1.73** | **1.18** |
+| The boot's end to the exit | 0.49 | 0.46 | 0.49 | 0.84 |
+| of which `TranscriptFactory`'s demand | | 0.04 | | 0.03 |
+| of which `CollectionsFactory`'s demand (its decode) | | | | 0.31 (0.29) |
+| `main` to the exit | 2.60 | 2.01 | 2.56 | 2.37 |
+| `ns-next run`, median of 40 | 5.24 | 4.74 | 5.31 | 5.04 |
+| `ns-next --version`, median of 40 | 2.60 | 2.61 | | |
+
+**The boot is 0.55 ms shorter, and a hello's whole process 0.50 ms.** The
+boot no longer decodes, instantiates or completes the four lazy modules;
+what it keeps is the kernel's 1.08 ms and `PlatformFactory`'s 0.15 ms. The
+saving is more than the 0.40 ms the first stage's numbers allowed, since
+`TranscriptFactory` and `TimeFactory` and the classes of all four modules
+are no longer built either; a hello builds `TranscriptFactory` on its first
+`platform transcript`, for 0.04 ms.
+
+**A first demand of `CollectionsFactory` costs 0.31 ms, almost all of it
+the module's decode (0.29 ms)**, and the run after the boot of the `List
+new` program takes 0.35 ms longer than at `740adb25`, where the module was
+already built: the demand, the transcript's and the `List` class. Its
+whole process is still 0.27 ms shorter than before, since it never builds
+`TimeFactory` or `TypedArraysFactory`. This measurement took one build per
+side, two programs and one machine; the boot's spans, 0.5 ms apart, lie far
+outside their own run-to-run spread (min to max 1.70–1.98 against
+1.19–1.34 ms for the hello).
 
 ### What simultaneous slots cost
 

@@ -402,9 +402,10 @@ impl<'gc> Mutator<'gc> {
         };
         if let Some(index) = self.shipped_world.index_of_name(&class_name) {
             // Two paths record a class -- its accessor's build and
-            // `complete_shipped_world` -- and both must name the one class
-            // object the module caches: another object dropped here would
-            // leave a shipped class no name names.
+            // `name_built_shipped_classes`, which `complete_shipped_world`
+            // and `recordShippedModule:` both run -- and both must name the
+            // one class object the module caches: another object dropped
+            // here would leave a shipped class no name names.
             debug_assert!(
                 self.shipped_world.entries()[index].object.same(class),
                 "internal: {} is recorded as two class objects",

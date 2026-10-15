@@ -23,7 +23,11 @@ Rust 1.98.0, edition 2021, six crates:
   `mirror.rs` and its leaves in `builtins/`), the core library
   (`core-library/Kernel.ns`, `PlatformFactory.ns` and, under `platform/`,
   `TranscriptFactory.ns`, `TimeFactory.ns`, `CollectionsFactory.ns` and
-  `TypedArraysFactory.ns`, every root `= Value`, booted by `interpreter/kernel.rs` and `interpreter/core_library.rs`),
+  `TypedArraysFactory.ns`, every root `= Value`; `Kernel` and
+  `PlatformFactory` booted by `interpreter/kernel.rs` and
+  `interpreter/core_library.rs`, the other four built on first demand by
+  `PlatformFactory.ns`'s lazy slots through two mirror leaves, or by the
+  loader when an image names them),
   `LargeInteger` arithmetic (`arbitrary_integer/`, adapted
   from `num-bigint` and `num-integer`), the heap (`heap.rs`, one object space
   of variably sized objects in `ns-memory`'s reservation (`heap/space.rs`),
@@ -155,11 +159,15 @@ mixins before any decoded code runs (`image-format.md`, "Verification"). The
 decoder sizes every record from its own bytes in a first pass and allocates
 nothing before it (`image-format.md`, "Two passes"), then fills each
 placeholder in place, so no record is built beside its placeholder. The
-decoder allocates its graph only after a tenure between entries: the
-loader runs no code before the graph, since a shipped name is a table
-lookup, and the graph pass allocates old, after the tenure, and never polls a
-safepoint, so nothing collects while its placeholders exist and the peak
-argument stands (`image-format.md`, "The image under generations"). The
+decoder allocates its graph only after a tenure between entries: before
+the tenure the loader checks every shipped name against the binary's
+declarations, refusing an unknown one before it builds anything, then
+builds the binary's own modules and classes the image names that the boot
+did not -- the binary's code, which the image only selects -- and
+resolves each name by table lookup; nothing allocates between the tenure
+and the graph pass, which allocates old and never polls a safepoint, so
+nothing collects while its placeholders exist and the peak argument stands
+(`image-format.md`, "The image under generations"). The
 transient peak of a rejected load is about 10.7x of the graph bytes plus ≤4x
 of the symbol section in a release build, and about 16x of the graph bytes
 plus ≤4x of the symbol section in a debug one (`memory.md`, "The
@@ -170,7 +178,8 @@ bounds). The guarantee
 covers decoding only: `ns-next load` runs the packaged application's code,
 recursion bounded by the 100,000-activation depth limit plus its 1,000 reserve
 (`execution.md`, "The depth limit"), and an image that names the shipped
-world only looks its names up, running nothing before the application starts.
+world has the loader build what it names by the binary's own code and look
+its names up, running nothing of the image's before the application starts.
 
 **Every store into an existing object goes through `heap.rs`'s store
 accessors and their write barrier.** A scavenge reads only the young
@@ -276,9 +285,11 @@ shipped core-library modules reach it. Six locks keep it there; never loosen one
 and never add a way for a program to obtain the mirror, its class or a
 `MirrorSend` binding: (1) only `resolver::resolve_kernel` records
 `Binding::MirrorSend`, and only the shipped modules are resolved with it; (2)
-the bootstrap checks the mirror slot of `Kernel` and of every shipped module
-it hands the mirror (`PlatformFactory`, `TranscriptFactory`, `TimeFactory`,
-`TypedArraysFactory`),
+the mirror slot of `Kernel` is checked at boot, and that of every shipped
+module given the mirror (`PlatformFactory`, `TranscriptFactory`,
+`TimeFactory`, `TypedArraysFactory`) whenever its instance is recorded --
+at boot, by `recordShippedModule:` on first demand, or by the loader -- so
+no instance that fails it is ever recorded,
 and no program reaches a shipped root (the factory pattern); (3) the encoder names a
 shipped object by its declaration and refuses one the rule of what may be
 named where does not allow (`image/shipped_names.rs`); (4) no program can name
