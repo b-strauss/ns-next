@@ -795,30 +795,29 @@ activation.
 
 ## Unexplained measurements and unmeasured decisions
 
-- **The weak references cost Havlak 1.1%, CD 0.7% and DeltaBlueTon80
-  1.7%, not yet measured again since the slot accessors were narrowed.**
-  Measured on 2026-10-16 against `master`
-  (`378b0c57`) by the `measuring-performance` protocol: three pinned
-  release builds a side (`-C metadata=alpha`, `beta`, `gamma`), three
-  rounds rotating the six binaries, the sixteen Are We Fast Yet programs
-  (`--iterations 3` for the five slow ones, 10 otherwise) and the four
-  fixtures under `benchmarks/micro/` (`--iterations 30`). Pooled medians
-  moved between -2.0% (Towers) and +1.7% (DeltaBlueTon80), most within
-  the builds' spread; only Havlak (3556 to 3594 ms), CD (3865 to 3894 ms)
-  and DeltaBlueTon80 (7.72 to 7.85 ms) put every branch build's median
-  above every master build's. The microbenchmarks moved -0.2% to +1.2%,
-  inside their spread, so the slot accessors' format predicate, which
-  then accepted `Ephemeron` beside `FixedPointers`, showed no cost on
-  them -- but none of the four reads a slot much. The collectors are not
-  the cause: with `--collector-statistics`, Havlak's scavenges and
-  collections paused 682 ms in four runs on both trees and CD's 43 and
-  44 ms, against the 30 to 40 ms a run the branch is slower, so the cost
-  is the mutator's: the slot accessors' predicate or the instantiation
-  path (`instantiate_allocating`), not told apart. The slot accessors
-  are now `master`'s again -- an `Ephemeron`'s fields are reached through
-  mirror leaves of their own -- and the measurement is to be repeated to
-  learn whether the instantiation path accounts for any of it.
-  [core-library.md](design/core-library.md), "Weak references".
+- **The weak references may cost CD, Havlak and DeltaBlueTon80 up to
+  1.7%, at the edge of what the protocol resolves.** Measured on
+  2026-10-16 against `master` (`378b0c57`) by the `measuring-performance`
+  protocol, three pinned release builds a side (`-C metadata=alpha`,
+  `beta`, `gamma`), three rounds rotating the six binaries. In the first
+  sitting, over the sixteen Are We Fast Yet programs and the four
+  fixtures under `benchmarks/micro/`, pooled medians moved between -2.0%
+  (Towers) and +1.7% (DeltaBlueTon80), and only Havlak (+1.1%), CD
+  (+0.7%) and DeltaBlueTon80 (+1.7%) put every branch build above every
+  master build. The collectors are not the cause: with
+  `--collector-statistics` Havlak's pauses were 682 ms in four runs on
+  both trees and CD's 43 and 44 ms. The slot accessors then accepted
+  `Ephemeron` beside `FixedPointers`; they are `master`'s again -- an
+  `Ephemeron`'s fields are reached through mirror leaves of their own --
+  and a second sitting with three new builds of that tree against the
+  same `master` builds measured Havlak +0.7%, CD +0.6%, DeltaBlueTon80
+  +1.7%, Richards +1.0% and DeltaBlue -0.1%, with no program separating
+  any longer: each lies within the builds' spread, which reaches 1.6% for
+  Havlak and 1.9% for DeltaBlueTon80 between builds of one tree. Whether a
+  cost remains -- the instantiation path through `instantiate_allocating`
+  is the one mutator path left that changed -- needs more builds a side
+  than three to tell. [core-library.md](design/core-library.md), "Weak
+  references".
 - **The numeric tower's slow paths are unmeasured on their own.** The Are
   We Fast Yet benchmarks run as fast as without the tower, but none of
   them stresses what still goes the long way: `Float>>hash` of a
