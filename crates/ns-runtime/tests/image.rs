@@ -2833,7 +2833,8 @@ fn inspect_shows_a_byte_array_by_its_size_and_first_bytes() {
 /// name. Each `fill…:` method makes what is meant to be held only weakly
 /// by `Object new` inside it and returns, so no frame the graph reaches
 /// holds it: the slots reach it, or nothing does. The slots are walked in
-/// order, so `first` is met before `second` and both before `held`.
+/// order, so `first` is met before `second` and both before `held`, and
+/// `weakFirst` before `late`.
 const WEAK_HOLDER: &str = indoc! {"
     class X = Object new (
       |
@@ -2842,6 +2843,8 @@ const WEAK_HOLDER: &str = indoc! {"
         public held
         public weak
         public bare
+        public weakFirst
+        public late
       |
     ) (
       public fillWeak: platform = (
@@ -2866,6 +2869,19 @@ const WEAK_HOLDER: &str = indoc! {"
         first:: platform kernel Ephemeron new.
         first
             key: Object new;
+            value: 'the' , ' value';
+            finalizer: 'the' , ' finalizer'.
+      )
+
+      public fillWeakFirst: platform = (
+        late:: Object new.
+        weakFirst:: platform kernel WeakArray new: 1.
+        weakFirst at: 1 put: late.
+      )
+
+      public fillNilKey: platform = (
+        first:: platform kernel Ephemeron new.
+        first
             value: 'the' , ' value';
             finalizer: 'the' , ' finalizer'.
       )
@@ -2956,6 +2972,45 @@ fn a_weak_array_round_trips_its_strongly_reached_elements() {
         assert!(heap.object_class(bare).same(weak_array_class));
         assert_eq!(heap.weak_array_size(bare), None);
         assert_eq!(heap.instance_field_count(bare), Some(0));
+    });
+}
+
+/// `weakFirst` is walked before `late`, the one slot that reaches its
+/// element strongly: whether a weak word is written is decided once the
+/// walk is done, not when the weak array is met, so the element stays.
+#[test]
+fn a_weak_array_walked_before_the_strong_path_to_its_element_keeps_it() {
+    weak_holder_round_trip("fillWeakFirst:", |mutator, holder| {
+        let heap = mutator.heap();
+        let weak = object(holder_field(mutator, holder, 5));
+        let late = holder_field(mutator, holder, 6);
+        assert!(late.as_object().is_some(), "the strong slot is written");
+        let elements = heap
+            .weak_array_elements(weak)
+            .expect("a weak array decodes as one");
+        assert_eq!(elements.len(), 1);
+        assert!(
+            same_value_object(elements[0], late),
+            "the element reached strongly after the weak array"
+        );
+    });
+}
+
+/// A `nil` key is never collected, so an ephemeron keyed by it holds its
+/// value and finalizer as any slot does, and is written with them.
+#[test]
+fn an_ephemeron_with_a_nil_key_round_trips_with_its_value() {
+    weak_holder_round_trip("fillNilKey:", |mutator, holder| {
+        let heap = mutator.heap();
+        let ephemeron = object(holder_field(mutator, holder, 0));
+        assert_eq!(heap.object_shape(ephemeron), ObjectShape::Ephemeron);
+        let fields = heap
+            .instance_fields(ephemeron)
+            .expect("an ephemeron has fields");
+        assert_eq!(fields.len(), 3);
+        assert!(fields[0].is_nil(), "the key");
+        assert_eq!(text_or_class_name(mutator, fields[1]), "the value");
+        assert_eq!(text_or_class_name(mutator, fields[2]), "the finalizer");
     });
 }
 

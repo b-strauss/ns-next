@@ -1,0 +1,45 @@
+/// A WeakMap whose entries have died rebuilds its table at the same size:
+/// `fill:` stores 192 entries under keys nothing else holds, three
+/// quarters of the 256 slots and one short of a rehash, and the
+/// collection leaves each of them dead in its slot. The held keys stored
+/// next reuse dead entries on their chains or take empty slots, and the
+/// first that takes one passes the three quarters while few entries
+/// live, so the table is rehashed at 256, the dead entries dropped and
+/// the count of used slots reset to the live ones. Every held key then
+/// answers its value; a removed one is no longer found. What is printed
+/// holds whatever a collection, at any point, has made of the dropped
+/// keys.
+class AWeakMapRehashesAtTheSameSizeOnceItsKeysHaveDied = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      kernel = platform kernel.
+      map = kernel WeakMap new.
+      keys = Array new: 200.
+      allFound ::= true.
+      show
+    |
+    show:: [:object |
+      transcript
+          show: object printString;
+          newLine.
+    ].
+    fill: map.
+    kernel garbageCollect.
+    1 to: 200 do: [:index |
+      keys at: index put: Object new.
+      map at: (keys at: index) put: index.
+    ].
+    1 to: 200 do: [:index | (map at: (keys at: index)) = index ifFalse: [allFound:: false]].
+    show value: allFound.
+    show value: (map removeKey: (keys at: 1)).
+    show value: (map includesKey: (keys at: 1)).
+    show value: (map at: (keys at: 200)).
+  )
+
+  /// Stores 192 entries in `map`, each under a new key nothing else
+  /// holds.
+  fill: map = (
+    1 to: 192 do: [:index | map at: Object new put: index].
+  )
+)
