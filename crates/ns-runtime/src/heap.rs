@@ -1413,6 +1413,8 @@ impl<'gc> Heap<'gc> {
         let format = match format {
             PlaceholderFormat::Instance => Format::FixedPointers,
             PlaceholderFormat::Array => Format::IndexablePointers,
+            PlaceholderFormat::WeakArray => Format::WeakPointers,
+            PlaceholderFormat::Ephemeron => Format::Ephemeron,
         };
         self.rewrite_placeholder_header(object, class, identity_hash, format, 0);
     }
@@ -6649,11 +6651,16 @@ mod tests {
     /// leaves must be exactly the one the normal allocation writes --
     /// header (format, size, unused units, guard, identity hash) and words.
     #[test]
-    fn an_instance_or_array_filled_in_place_is_the_block_its_allocation_writes() {
+    fn a_record_of_fields_filled_in_place_is_the_block_its_allocation_writes() {
         let mut heap = frame_heap();
         let class = named_class(&mut heap, "Thing");
         let values = [Value::small_integer(7), Value::nil(), Value::object(class)];
-        for format in [PlaceholderFormat::Instance, PlaceholderFormat::Array] {
+        for format in [
+            PlaceholderFormat::Instance,
+            PlaceholderFormat::Array,
+            PlaceholderFormat::WeakArray,
+            PlaceholderFormat::Ephemeron,
+        ] {
             let placeholder = heap.allocate_placeholder(class, values.len());
             heap.shape_placeholder(placeholder, class, 42, format);
             for (index, value) in values.iter().enumerate() {
@@ -6672,6 +6679,20 @@ mod tests {
                     instance
                 }
                 PlaceholderFormat::Array => heap.allocate_array(class, &values),
+                PlaceholderFormat::WeakArray => {
+                    let weak = heap.allocate_weak_array(class, values.len());
+                    for (index, value) in values.iter().enumerate() {
+                        assert!(heap.weak_array_set_element(weak, index, *value));
+                    }
+                    weak
+                }
+                PlaceholderFormat::Ephemeron => {
+                    let ephemeron = heap.allocate_ephemeron(class, values.len());
+                    for (index, value) in values.iter().enumerate() {
+                        assert!(heap.instance_set_field(ephemeron, index, *value));
+                    }
+                    ephemeron
+                }
             };
             heap.object_set_identity_hash(built, 42);
             assert_eq!(heap.block(placeholder), heap.block(built));

@@ -229,7 +229,7 @@ pub const VALUE_SHIPPED_MODULE: u8 = 11;
 pub const RETIRED_VALUE_TAGS: [u8; 2] = [7, 8];
 
 /// An object record's body, following its class tag and identity hash.
-/// Next free number: 12.
+/// Next free number: 14.
 pub const OBJECT_INSTANCE: u8 = 0;
 pub const OBJECT_STRING: u8 = 1;
 pub const OBJECT_SYMBOL: u8 = 2;
@@ -265,6 +265,17 @@ pub const OBJECT_FRAME: u8 = 10;
 /// reserve ahead of them is not written, since the decoder places the data
 /// at its own placeholder's alignment.
 pub const OBJECT_BYTE_ARRAY: u8 = 11;
+/// A `WeakArray`: a `u32` count, then that many values, its slots in order.
+/// Only a record whose header is `Kernel WeakArray` carries it. A slot names
+/// its object only when the graph reaches that object strongly otherwise,
+/// and is `nil` if not: the encoder writes what a collection would keep.
+pub const OBJECT_WEAK_ARRAY: u8 = 12;
+/// An `Ephemeron`: a `u32` field count, then that many values, the key
+/// first. Only a record whose header is `Kernel Ephemeron` carries it, with
+/// exactly that class's field count, and that header carries no other
+/// body. An ephemeron whose key the graph never reaches strongly is written
+/// with every field `nil`, as a collection would leave it.
+pub const OBJECT_EPHEMERON: u8 = 13;
 
 /// Object-body tags that no longer name anything and are never reused: 4 was
 /// the closure record while it carried its parameter names and its home

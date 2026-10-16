@@ -222,6 +222,8 @@ fn retired_object_body_tags_are_refused() {
         OBJECT_METACLASS,
         OBJECT_FRAME,
         OBJECT_BYTE_ARRAY,
+        OBJECT_WEAK_ARRAY,
+        OBJECT_EPHEMERON,
     ];
     for retired in RETIRED_OBJECT_BODIES {
         assert!(!live.contains(&retired), "tag {retired} is retired");
@@ -256,6 +258,8 @@ fn graph_section_tags_are_fixed() {
     assert_eq!(OBJECT_METACLASS, 8);
     assert_eq!(OBJECT_FRAME, 10);
     assert_eq!(OBJECT_BYTE_ARRAY, 11);
+    assert_eq!(OBJECT_WEAK_ARRAY, 12);
+    assert_eq!(OBJECT_EPHEMERON, 13);
 
     assert_eq!(MIXIN_ROW, 0);
     assert_eq!(MIXIN_SHIPPED, 2);
@@ -351,6 +355,8 @@ fn no_two_graph_tags_in_a_family_share_a_number() {
             OBJECT_METACLASS,
             OBJECT_FRAME,
             OBJECT_BYTE_ARRAY,
+            OBJECT_WEAK_ARRAY,
+            OBJECT_EPHEMERON,
         ],
         &LIVE_MIXIN_TAGS,
         &LIVE_CLASS_TAGS,

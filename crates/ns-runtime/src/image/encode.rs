@@ -1,7 +1,7 @@
 //! Canonical, little-endian, self-describing byte encoding for the image
 //! format -- see `docs/design/image-format.md`. Never a memory dump.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::bytecode::{CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal};
@@ -846,6 +846,13 @@ pub struct GraphTable<'gc> {
     /// traversal reached (`unnamed_shipped_class`).
     unnamed: Option<String>,
     used: UsedNames,
+    /// The ephemerons met whose key the walk has not reached yet, each
+    /// with its key: their value and finalizer are traced only once it is
+    /// (`GraphTable::build`).
+    pending_ephemerons: Vec<(ObjectReference<'gc>, ObjectReference<'gc>)>,
+    /// The ephemerons whose key the walk never reached, by identity key:
+    /// written with every field `nil`, as a collection would leave them.
+    mourned: HashSet<usize>,
 }
 
 /// What the graph walk resolves an object against before it enters it: the
@@ -872,6 +879,15 @@ impl<'gc> GraphTable<'gc> {
     /// walk gives it there, and one they do not reach -- a module only
     /// carried for its code -- still becomes a record, the one the module
     /// section names.
+    ///
+    /// The walk keeps what a collection would keep
+    /// (`docs/design/core-library.md`, "Weak references"): a weak array's
+    /// slots are not followed, and an ephemeron's fields are followed only
+    /// once its key is reached. An ephemeron met before its key waits; once the
+    /// walk ends, each waiting one whose key now has an id is traced, and
+    /// the scan repeats until a round traces none, so a key reached only
+    /// through another ephemeron's value is found however long the chain.
+    /// Every round scans in list order, so the order stays canonical.
     fn build(
         heap: &Heap<'gc>,
         roots: &[Value<'gc>],
@@ -884,6 +900,8 @@ impl<'gc> GraphTable<'gc> {
             reached_mirror: false,
             unnamed: None,
             used: UsedNames::new(),
+            pending_ephemerons: Vec::new(),
+            mourned: HashSet::new(),
         };
         let mut stack: Vec<Value<'gc>> = module_roots
             .iter()
@@ -891,35 +909,62 @@ impl<'gc> GraphTable<'gc> {
             .map(|class| Value::object(*class))
             .chain(roots.iter().rev().copied())
             .collect();
-        while let Some(value) = stack.pop() {
-            table.visit_value(heap, value, named, &mut stack);
+        table.drain(heap, named, &mut stack);
+        loop {
+            let mut progressed = false;
+            for (ephemeron, key) in std::mem::take(&mut table.pending_ephemerons) {
+                if table.has_id(heap, key) {
+                    progressed = true;
+                    let fields = heap.instance_fields(ephemeron).unwrap_or_default();
+                    stack.extend(fields.into_iter().rev());
+                    table.drain(heap, named, &mut stack);
+                } else {
+                    table.pending_ephemerons.push((ephemeron, key));
+                }
+            }
+            if !progressed {
+                break;
+            }
         }
+        table.mourned = std::mem::take(&mut table.pending_ephemerons)
+            .into_iter()
+            .map(|(ephemeron, _)| heap.object_identity_key(ephemeron))
+            .collect();
         table
     }
 
-    fn visit_value(
+    fn drain(&mut self, heap: &Heap<'gc>, named: &Named<'_, 'gc>, stack: &mut Vec<Value<'gc>>) {
+        while let Some(value) = stack.pop() {
+            self.visit_value(heap, value, named, stack);
+        }
+    }
+
+    fn has_id(&self, heap: &Heap<'gc>, object: ObjectReference<'gc>) -> bool {
+        self.object_ids
+            .contains_key(&heap.object_identity_key(object))
+    }
+
+    /// Answers the object `value` names if it is one the graph would make
+    /// a record of, which only its id, once the walk has given it one,
+    /// keeps reachable; `None` for everything else, which needs no record:
+    /// an immediate, a value written by value, a shipped name -- the
+    /// loading world holds those strongly, so a weak word or an
+    /// ephemeron's key holding one always keeps it -- and what is refused.
+    /// Notes a shipped name, the VM mirror or an unnamed shipped class
+    /// wherever the walk meets one, weakly held or not.
+    fn admit(
         &mut self,
         heap: &Heap<'gc>,
         value: Value<'gc>,
         named: &Named<'_, 'gc>,
-        stack: &mut Vec<Value<'gc>>,
-    ) {
+    ) -> Option<ObjectReference<'gc>> {
         // A resolved future is never entered: every reference to one is
         // written as its value (`encode_value`), so its value is what the
         // graph holds.
         let value = future::seen_through(heap, value);
-        let Some(object) = value.as_object() else {
-            return;
-        };
-        // A value, not a record: `encode_value` writes its digits, a
-        // boxed float's bits or a fraction's two parts wherever it is
-        // referenced, so it takes no object id (§3.1.1), and a fraction's
-        // parts are no objects of the graph either.
-        if heap.is_large_integer(object)
-            || heap.is_boxed_float(object)
-            || heap.fraction_parts(object).is_some()
-        {
-            return;
+        let object = value.as_object()?;
+        if written_by_value(heap, object) {
+            return None;
         }
         // The VM mirror is a capability the bootstrap hands to the core
         // library alone (`docs/design/core-library.md`, "The VM mirror is
@@ -929,21 +974,34 @@ impl<'gc> GraphTable<'gc> {
             || heap.class_builtin(heap.object_class(object)) == Some(BuiltinClass::VmMirror);
         if is_mirror {
             self.reached_mirror = true;
-            return;
+            return None;
         }
-        let key = heap.object_identity_key(object);
         // Named by its declaration: the loading world has it, so the image
         // carries nothing of it.
-        if let Some(world_index) = named.by_object.get(&key) {
+        if let Some(world_index) = named.by_object.get(&heap.object_identity_key(object)) {
             self.used.use_name(*world_index);
-            return;
+            return None;
         }
         if let Some(refusal) = unnamed_shipped_class(heap, object) {
             if self.unnamed.is_none() {
                 self.unnamed = Some(refusal);
             }
-            return;
+            return None;
         }
+        Some(object)
+    }
+
+    fn visit_value(
+        &mut self,
+        heap: &Heap<'gc>,
+        value: Value<'gc>,
+        named: &Named<'_, 'gc>,
+        stack: &mut Vec<Value<'gc>>,
+    ) {
+        let Some(object) = self.admit(heap, value, named) else {
+            return;
+        };
+        let key = heap.object_identity_key(object);
         if self.object_ids.contains_key(&key) {
             return;
         }
@@ -1008,12 +1066,51 @@ impl<'gc> GraphTable<'gc> {
                 | ObjectShape::LargeInteger
                 | ObjectShape::Float
                 | ObjectShape::ByteArray => {}
-                // Refused by `encode_object`, so what they hold is never
-                // written.
-                ObjectShape::WeakArray | ObjectShape::Ephemeron => {}
+                // Not followed: a slot names its object only if something
+                // else reaches it (`GraphTable::weakly_held`). Admitted all
+                // the same, so a shipped name a slot holds is listed and
+                // the mirror refused.
+                ObjectShape::WeakArray => {
+                    for element in heap.weak_array_elements(object).unwrap_or_default() {
+                        self.admit(heap, element, named);
+                    }
+                }
+                ObjectShape::Ephemeron => {
+                    let fields = heap.instance_fields(object).unwrap_or_default();
+                    // An ephemeron without fields has no key; only a
+                    // crafted image could make one, and nothing waits on it.
+                    let key = fields.first().and_then(|key| self.admit(heap, *key, named));
+                    match key {
+                        Some(key) if !self.has_id(heap, key) => {
+                            self.pending_ephemerons.push((object, key));
+                        }
+                        _ => stack.extend(fields),
+                    }
+                }
             }
         }
         stack[before..].reverse();
+    }
+
+    /// What a weak word holding `value` is written as: `value` if the graph
+    /// writes it otherwise (`admit`), else `nil`, as a collection would
+    /// leave it. `shipped` is the shipped world's entries by object.
+    fn weakly_held(
+        &self,
+        heap: &Heap<'gc>,
+        shipped: &HashMap<usize, usize>,
+        value: Value<'gc>,
+    ) -> Value<'gc> {
+        match future::seen_through(heap, value).as_object() {
+            Some(object)
+                if !written_by_value(heap, object)
+                    && !shipped.contains_key(&heap.object_identity_key(object))
+                    && !self.has_id(heap, object) =>
+            {
+                Value::nil()
+            }
+            _ => value,
+        }
     }
 
     pub fn object_id(&self, heap: &Heap<'gc>, object: ObjectReference<'gc>) -> u32 {
@@ -1031,6 +1128,16 @@ impl<'gc> GraphTable<'gc> {
     pub fn objects(&self) -> &[ObjectReference<'gc>] {
         &self.objects
     }
+}
+
+/// Whether `object` is a value, not a record: `encode_value` writes a
+/// `LargeInteger`'s digits, a boxed float's bits or a fraction's two parts
+/// wherever it is referenced, so it takes no object id (§3.1.1), and a
+/// fraction's parts are no objects of the graph either.
+fn written_by_value<'gc>(heap: &Heap<'gc>, object: ObjectReference<'gc>) -> bool {
+    heap.is_large_integer(object)
+        || heap.is_boxed_float(object)
+        || heap.fraction_parts(object).is_some()
 }
 
 /// A frame's graph references, in the order its record writes them: the
@@ -1582,13 +1689,35 @@ fn encode_object<'gc>(
         ObjectShape::Float => {
             unreachable!("a boxed Float is written as a value, never as an object record")
         }
-        // The wire has no record for either yet: refused rather than
-        // written strong, which would keep alive what a collection drops.
+        // Written as a collection would leave it: a slot whose object
+        // nothing else reaches is `nil` (`GraphTable::weakly_held`).
         ObjectShape::WeakArray => {
-            return Err("image encoding cannot serialize a WeakArray".to_string());
+            writer.write_u8(OBJECT_WEAK_ARRAY);
+            let elements: Vec<Value<'gc>> = heap
+                .weak_array_elements(object)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|element| {
+                    context
+                        .table
+                        .weakly_held(heap, context.shipped_by_object, element)
+                })
+                .collect();
+            encode_values(writer, &elements, NamePosition::Value, context)?;
         }
+        // An ephemeron whose key the walk never reached is mourned, every
+        // field `nil`; any other has its fields, which the walk traced.
         ObjectShape::Ephemeron => {
-            return Err("image encoding cannot serialize an Ephemeron".to_string());
+            writer.write_u8(OBJECT_EPHEMERON);
+            let mut fields = heap.instance_fields(object).unwrap_or_default();
+            if context
+                .table
+                .mourned
+                .contains(&heap.object_identity_key(object))
+            {
+                fields.fill(Value::nil());
+            }
+            encode_values(writer, &fields, NamePosition::Value, context)?;
         }
     }
     Ok(())

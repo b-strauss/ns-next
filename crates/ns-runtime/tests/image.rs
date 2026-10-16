@@ -18,8 +18,9 @@ use ns_runtime::image::{decode, encode, mixins, symbols};
 use ns_runtime::SourceOrigin as Origin;
 use ns_runtime::{
     ArbitraryInteger, BuiltinClass, ClassReference, DispatchId, FrameKind, Heap, HostResult,
-    HostSignal, Interpreter, Mixin, MixinApplication, Mutator, NewClass, NewClosure, Root,
-    SourceOrigin, Symbol, Value, ValueKind, SMALL_INTEGER_MAX, SMALL_INTEGER_MIN,
+    HostSignal, Interpreter, Mixin, MixinApplication, Mutator, NewClass, NewClosure,
+    ObjectReference, ObjectShape, Root, SourceOrigin, Symbol, Value, ValueKind, SMALL_INTEGER_MAX,
+    SMALL_INTEGER_MIN,
 };
 use ns_syntax::ast::AccessModifier;
 use ns_syntax::Span;
@@ -2652,7 +2653,7 @@ const EMPTY: &str = indoc! {"
     ) : ()
 "};
 
-fn object<'gc>(value: Value<'gc>) -> ns_runtime::ObjectReference<'gc> {
+fn object<'gc>(value: Value<'gc>) -> ObjectReference<'gc> {
     let Some(handle) = value.as_object() else {
         panic!("expected an object")
     };
@@ -2823,6 +2824,256 @@ fn inspect_shows_a_byte_array_by_its_size_and_first_bytes() {
     );
     assert!(
         shown("byte array of 20 bytes [03 0a 11 18 1f 26 2d 34 3b 42 49 50 57 5e 65 6c ...]"),
+        "{:?}",
+        report.graph_objects
+    );
+}
+
+/// A program holding weak arrays and ephemerons beside some of what they
+/// name. Each `fill…:` method makes what is meant to be held only weakly
+/// by `Object new` inside it and returns, so no frame the graph reaches
+/// holds it: the slots reach it, or nothing does. The slots are walked in
+/// order, so `first` is met before `second` and both before `held`.
+const WEAK_HOLDER: &str = indoc! {"
+    class X = Object new (
+      |
+        public first
+        public second
+        public held
+        public weak
+        public bare
+      |
+    ) (
+      public fillWeak: platform = (
+        held:: Object new.
+        weak:: platform kernel WeakArray new: 3.
+        weak at: 1 put: held.
+        weak at: 2 put: Object new.
+        weak at: 3 put: 7.
+        bare:: platform kernel WeakArray withoutSlots.
+      )
+
+      public fillReached: platform = (
+        held:: Object new.
+        first:: platform kernel Ephemeron new.
+        first
+            key: held;
+            value: 'the' , ' value';
+            finalizer: 'the' , ' finalizer'.
+      )
+
+      public fillMourned: platform = (
+        first:: platform kernel Ephemeron new.
+        first
+            key: Object new;
+            value: 'the' , ' value';
+            finalizer: 'the' , ' finalizer'.
+      )
+
+      public fillChain: platform = (
+        |
+          chainKey = Object new.
+        |
+        held:: Object new.
+        first:: platform kernel Ephemeron new.
+        second:: platform kernel Ephemeron new.
+        first
+            key: chainKey;
+            value: 'the first' , ' value'.
+        second
+            key: held;
+            value: chainKey.
+      )
+    ) : ()
+"};
+
+/// Round-trips an instance of `WEAK_HOLDER` once `selector` has filled it,
+/// and hands the decoded instance to `inspect` inside an entry.
+fn weak_holder_round_trip(
+    selector: &str,
+    inspect: impl for<'gc> FnOnce(&Mutator<'gc>, ObjectReference<'gc>),
+) {
+    let (mut interpreter, _class, _original, decoded, _max) =
+        round_trip_graph(WEAK_HOLDER, |interpreter, class| {
+            let instance = expect_ok(interpreter.instantiate(class, &[]), "instantiate");
+            let platform = interpreter.platform();
+            expect_ok(
+                interpreter.send(&instance, Symbol::intern(selector), &[platform]),
+                selector,
+            );
+            vec![instance]
+        });
+    interpreter.enter(|mutator| {
+        let decoded = object(mutator.fetch(&decoded[0]));
+        inspect(mutator, decoded);
+    });
+}
+
+/// The slot of `WEAK_HOLDER`'s instance `holder` at `index`.
+fn holder_field<'gc>(
+    mutator: &Mutator<'gc>,
+    holder: ObjectReference<'gc>,
+    index: usize,
+) -> Value<'gc> {
+    mutator
+        .heap()
+        .instance_field(holder, index)
+        .expect("the holder has its slots")
+}
+
+/// Whether `value` and `other` are one object.
+fn same_value_object<'gc>(value: Value<'gc>, other: Value<'gc>) -> bool {
+    matches!(
+        (value.as_object(), other.as_object()),
+        (Some(one), Some(two)) if one.same(two)
+    )
+}
+
+/// The encoder writes what a collection would keep: the object the
+/// holder's `held` slot reaches too stays, the one only the weak array
+/// reaches is written `nil`, and the integer, which no collection clears,
+/// stays. `WeakArray withoutSlots`, an ordinary instance of the class,
+/// travels as one.
+#[test]
+fn a_weak_array_round_trips_its_strongly_reached_elements() {
+    weak_holder_round_trip("fillWeak:", |mutator, holder| {
+        let heap = mutator.heap();
+        let weak_array_class = mutator.builtin_class(BuiltinClass::WeakArray);
+        let held = holder_field(mutator, holder, 2);
+        let weak = object(holder_field(mutator, holder, 3));
+        assert!(heap.object_class(weak).same(weak_array_class));
+        let elements = heap
+            .weak_array_elements(weak)
+            .expect("a weak array decodes as one");
+        assert_eq!(elements.len(), 3);
+        assert!(
+            same_value_object(elements[0], held),
+            "the strongly held object"
+        );
+        assert!(elements[1].is_nil(), "the object held only weakly");
+        assert_eq!(elements[2].as_small_integer(), Some(7));
+        let bare = object(holder_field(mutator, holder, 4));
+        assert!(heap.object_class(bare).same(weak_array_class));
+        assert_eq!(heap.weak_array_size(bare), None);
+        assert_eq!(heap.instance_field_count(bare), Some(0));
+    });
+}
+
+#[test]
+fn an_ephemeron_round_trips_with_its_value_while_its_key_is_reached() {
+    weak_holder_round_trip("fillReached:", |mutator, holder| {
+        let heap = mutator.heap();
+        let held = holder_field(mutator, holder, 2);
+        let ephemeron = object(holder_field(mutator, holder, 0));
+        assert!(heap
+            .object_class(ephemeron)
+            .same(mutator.builtin_class(BuiltinClass::Ephemeron)));
+        assert_eq!(heap.object_shape(ephemeron), ObjectShape::Ephemeron);
+        let fields = heap
+            .instance_fields(ephemeron)
+            .expect("an ephemeron has fields");
+        assert_eq!(fields.len(), 3);
+        assert!(same_value_object(fields[0], held), "the key");
+        assert_eq!(text_or_class_name(mutator, fields[1]), "the value");
+        assert_eq!(text_or_class_name(mutator, fields[2]), "the finalizer");
+    });
+}
+
+/// A key nothing but the ephemeron reaches is one a collection would
+/// mourn: the ephemeron is written with all three fields `nil`.
+#[test]
+fn an_ephemeron_whose_key_is_not_reached_is_written_mourned() {
+    weak_holder_round_trip("fillMourned:", |mutator, holder| {
+        let heap = mutator.heap();
+        let ephemeron = object(holder_field(mutator, holder, 0));
+        assert_eq!(heap.object_shape(ephemeron), ObjectShape::Ephemeron);
+        let fields = heap
+            .instance_fields(ephemeron)
+            .expect("an ephemeron has fields");
+        assert_eq!(fields.len(), 3);
+        assert!(fields.iter().all(|field| field.is_nil()), "mourned");
+    });
+}
+
+/// `first`'s key is reached only through `second`'s value, and `second`'s
+/// key only through `held`, a slot walked after both: when the walk ends
+/// both are pending, and one pass over them in order finds `first`'s key
+/// still unreached. Only the fixpoint -- `second` traced, then the pending
+/// ones scanned again -- writes `first` whole.
+#[test]
+fn an_ephemeron_whose_key_is_reached_only_through_another_ephemeron_is_written_after_it() {
+    weak_holder_round_trip("fillChain:", |mutator, holder| {
+        let heap = mutator.heap();
+        let held = holder_field(mutator, holder, 2);
+        let first = object(holder_field(mutator, holder, 0));
+        let second = object(holder_field(mutator, holder, 1));
+        let first_fields = heap.instance_fields(first).expect("an ephemeron");
+        let second_fields = heap.instance_fields(second).expect("an ephemeron");
+        assert!(same_value_object(second_fields[0], held), "second's key");
+        assert!(
+            first_fields[0].as_object().is_some(),
+            "first's key is written"
+        );
+        assert!(
+            same_value_object(second_fields[1], first_fields[0]),
+            "second's value is first's key"
+        );
+        assert_eq!(
+            text_or_class_name(mutator, first_fields[1]),
+            "the first value"
+        );
+        assert!(first_fields[2].is_nil());
+        assert!(second_fields[2].is_nil());
+    });
+}
+
+/// `inspect` reads both records as the loader does and shows their values.
+/// `fillReached:` gives `held` a new object, so the one the weak array
+/// held first is reached by nothing else and shows as `nil`.
+#[test]
+fn inspect_shows_a_weak_array_and_an_ephemeron() {
+    let (mut interpreter, class) = load(WEAK_HOLDER);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let platform = interpreter.platform();
+    for selector in ["fillWeak:", "fillReached:"] {
+        expect_ok(
+            interpreter.send(
+                &instance,
+                Symbol::intern(selector),
+                std::slice::from_ref(&platform),
+            ),
+            selector,
+        );
+    }
+    let bytes = interpreter.enter(|mutator| {
+        let instance = mutator.fetch(&instance);
+        let class = class_reference(mutator, &class);
+        snapshot_one(
+            mutator,
+            None,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    let shown = |expected: &str| {
+        report
+            .graph_objects
+            .iter()
+            .any(|object| object.ends_with(expected))
+    };
+    assert!(
+        shown("Kernel WeakArray, hash 0, weak array [nil, nil, 7]"),
+        "{:?}",
+        report.graph_objects
+    );
+    assert!(
+        report
+            .graph_objects
+            .iter()
+            .any(|object| object.contains("Kernel Ephemeron, hash 0, ephemeron {object ")),
         "{:?}",
         report.graph_objects
     );
@@ -3369,6 +3620,8 @@ const FIXTURE_NAMES: &[(&str, &str, u8)] = &[
     ("Kernel", "BigEndianDataView", 1),      // BIG_ENDIAN_DATA_VIEW_NAME = 23
     ("Kernel", "StringBuilder", 1),          // STRING_BUILDER_NAME = 24
     ("Kernel", "IndexedCollection", 1),      // INDEXED_COLLECTION_NAME = 25
+    ("Kernel", "WeakArray", 1),              // WEAK_ARRAY_NAME = 26
+    ("Kernel", "Ephemeron", 1),              // EPHEMERON_NAME = 27
 ];
 const OBJECT_NAME: u32 = 0;
 const ARRAY_NAME: u32 = 1;
@@ -3396,6 +3649,8 @@ const INT16_ARRAY_NAME: u32 = 22;
 const BIG_ENDIAN_DATA_VIEW_NAME: u32 = 23;
 const STRING_BUILDER_NAME: u32 = 24;
 const INDEXED_COLLECTION_NAME: u32 = 25;
+const WEAK_ARRAY_NAME: u32 = 26;
+const EPHEMERON_NAME: u32 = 27;
 
 /// A section entry's kind byte as the shipped name it stands for.
 fn fixture_kind(kind: u8) -> ShippedKind {
@@ -3842,6 +4097,152 @@ fn a_byte_array_record_and_the_byte_array_class_go_together() {
             fixture.interpreter.heap_statistics().live_objects,
             before,
             "nothing was allocated"
+        );
+    }
+}
+
+/// A one-record graph section: an `OBJECT_WEAK_ARRAY` or
+/// `OBJECT_EPHEMERON` record of `body` under `header`, its count `count`,
+/// then `values` nils.
+fn one_weak_record(header: u32, body: u8, count: u32, values: usize) -> Vec<u8> {
+    class_records(1, |writer| {
+        writer.write_shipped(header);
+        writer.write_u32(1); // identity hash
+        writer.write_u8(body);
+        writer.write_u32(count);
+        for _ in 0..values {
+            writer.write_u8(VALUE_NIL);
+        }
+    })
+}
+
+/// `bytes` is refused with `expected`, its text `text`, and nothing
+/// allocated: every refusal below is the first pass's.
+fn refused_before_allocating(bytes: &[u8], expected: &decode::DecodeError, text: &str) {
+    let mut fixture = GraphFixture::new();
+    let before = fixture.interpreter.heap_statistics().live_objects;
+    let error = fixture.decode_error(bytes);
+    assert_eq!(&error, expected);
+    assert_eq!(error.to_string(), text);
+    assert_eq!(
+        fixture.interpreter.heap_statistics().live_objects,
+        before,
+        "nothing was allocated"
+    );
+}
+
+#[test]
+fn a_crafted_weak_array_and_ephemeron_decode_to_their_values() {
+    let bytes = class_records(2, |writer| {
+        writer.write_shipped(WEAK_ARRAY_NAME);
+        writer.write_u32(1); // identity hash
+        writer.write_u8(OBJECT_WEAK_ARRAY);
+        writer.write_u32(2);
+        writer.write_u8(VALUE_OBJECT_ID);
+        writer.write_u32(1);
+        writer.write_u8(VALUE_SMALL_INTEGER);
+        writer.write_i64(5);
+        writer.write_shipped(EPHEMERON_NAME);
+        writer.write_u32(2); // identity hash
+        writer.write_u8(OBJECT_EPHEMERON);
+        writer.write_u32(3);
+        writer.write_u8(VALUE_OBJECT_ID); // the key: the weak array
+        writer.write_u32(0);
+        writer.write_u8(VALUE_SMALL_INTEGER);
+        writer.write_i64(6);
+        writer.write_u8(VALUE_NIL);
+    });
+    GraphFixture::new().decoded(&bytes, "a weak array and an ephemeron", |heap, graph| {
+        let weak = graph.objects[0];
+        let ephemeron = graph.objects[1];
+        let elements = heap.weak_array_elements(weak).expect("a weak array");
+        assert!(same_value_object(elements[0], Value::object(ephemeron)));
+        assert_eq!(elements[1].as_small_integer(), Some(5));
+        assert_eq!(heap.object_identity_hash(weak), 1);
+        assert_eq!(heap.object_shape(ephemeron), ObjectShape::Ephemeron);
+        let fields = heap.instance_fields(ephemeron).expect("an ephemeron");
+        assert!(same_value_object(fields[0], Value::object(weak)));
+        assert_eq!(fields[1].as_small_integer(), Some(6));
+        assert!(fields[2].is_nil());
+        assert_eq!(heap.object_identity_hash(ephemeron), 2);
+    });
+}
+
+/// A weak-array record under any class but `WeakArray` would be an object
+/// of that class holding weakly what its methods take for strong slots.
+#[test]
+fn a_weak_array_record_on_another_class_is_refused() {
+    for header in [ARRAY_NAME, OBJECT_NAME, EPHEMERON_NAME] {
+        refused_before_allocating(
+            &one_weak_record(header, OBJECT_WEAK_ARRAY, 2, 2),
+            &decode::DecodeError::WeakArrayRecordUnderAnotherClass,
+            "a weak-array record has a class other than WeakArray",
+        );
+    }
+}
+
+/// An ephemeron record under any class but `Ephemeron` would make the
+/// collectors read that class's first slot as a key; any other record
+/// under `Ephemeron`'s header would answer its methods over slots held
+/// strongly, which no program makes.
+#[test]
+fn an_ephemeron_record_on_another_class_is_refused() {
+    for header in [OBJECT_NAME, ARRAY_NAME, WEAK_ARRAY_NAME] {
+        refused_before_allocating(
+            &one_weak_record(header, OBJECT_EPHEMERON, 3, 3),
+            &decode::DecodeError::EphemeronRecordMismatch {
+                body: OBJECT_EPHEMERON,
+            },
+            "an ephemeron record has a class other than Ephemeron",
+        );
+    }
+    for body in [OBJECT_INSTANCE, OBJECT_ARRAY, OBJECT_WEAK_ARRAY] {
+        let text = if body == OBJECT_WEAK_ARRAY {
+            "a weak-array record has a class other than WeakArray".to_string()
+        } else {
+            format!(
+                "a record of the class Ephemeron has object body {body}, but an Ephemeron is \
+                 an ephemeron record"
+            )
+        };
+        let expected = if body == OBJECT_WEAK_ARRAY {
+            decode::DecodeError::WeakArrayRecordUnderAnotherClass
+        } else {
+            decode::DecodeError::EphemeronRecordMismatch { body }
+        };
+        refused_before_allocating(
+            &one_weak_record(EPHEMERON_NAME, body, 3, 3),
+            &expected,
+            &text,
+        );
+    }
+}
+
+/// An `Ephemeron` has exactly its class's three fields, the key first; a
+/// record of any other count is refused before its values are read.
+#[test]
+fn an_ephemeron_record_with_another_field_count_is_refused() {
+    for count in [0, 1, 2, 4] {
+        refused_before_allocating(
+            &one_weak_record(EPHEMERON_NAME, OBJECT_EPHEMERON, count, count as usize),
+            &decode::DecodeError::EphemeronFieldCount {
+                expected: 3,
+                found: count as usize,
+            },
+            &format!("an ephemeron record has {count} fields, but an Ephemeron has 3"),
+        );
+    }
+}
+
+/// A count the bytes that follow cannot hold is refused before anything
+/// is allocated, as an `Array`'s is.
+#[test]
+fn a_weak_array_count_past_its_bytes_is_refused_before_allocating() {
+    for count in [1_000_000, u32::MAX] {
+        refused_before_allocating(
+            &one_weak_record(WEAK_ARRAY_NAME, OBJECT_WEAK_ARRAY, count, 8),
+            &decode::DecodeError::UnexpectedEndOfFile,
+            &decode::DecodeError::UnexpectedEndOfFile.to_string(),
         );
     }
 }
@@ -11969,7 +12370,7 @@ const DATA_CYCLE: &str = indoc! {"
 fn reaches_a_future<'gc>(mutator: &Mutator<'gc>, value: Value<'gc>) -> bool {
     let heap = mutator.heap();
     let future_class = mutator.builtin_class(BuiltinClass::FutureImplementation);
-    let mut seen: Vec<ns_runtime::ObjectReference<'gc>> = Vec::new();
+    let mut seen: Vec<ObjectReference<'gc>> = Vec::new();
     let mut pending = vec![value];
     while let Some(value) = pending.pop() {
         let Some(object) = value.as_object() else {
@@ -13770,12 +14171,20 @@ fn a_record_of_top_is_refused() {
 /// before anything is allocated.
 #[test]
 fn a_record_of_a_shipped_class_with_another_body_is_refused() {
-    for body in [OBJECT_ARRAY, OBJECT_STRING, OBJECT_FRAME, OBJECT_BYTE_ARRAY] {
+    for body in [
+        OBJECT_ARRAY,
+        OBJECT_STRING,
+        OBJECT_FRAME,
+        OBJECT_BYTE_ARRAY,
+        OBJECT_WEAK_ARRAY,
+        OBJECT_EPHEMERON,
+    ] {
         let bytes = class_records(1, |writer| {
             writer.write_shipped(STOPWATCH_NAME);
             writer.write_u32(5); // identity hash
             writer.write_u8(body);
-            // No elements, an empty text, a program counter or no bytes.
+            // No elements, an empty text, a program counter, no bytes or
+            // no fields.
             writer.write_u32(0);
         });
         let error = GraphFixture::new().decode_error(&bytes);

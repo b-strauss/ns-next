@@ -416,6 +416,26 @@ pub enum DecodeError {
     ByteArrayRecordMismatch {
         body: u8,
     },
+    /// An `OBJECT_WEAK_ARRAY` record under a header whose class is not the
+    /// builtin `WeakArray`: an object of that class would hold weakly what
+    /// its methods take for strong slots. `WeakArray`'s header may carry an
+    /// `OBJECT_INSTANCE` too, the slotless instance `withoutSlots` makes.
+    WeakArrayRecordUnderAnotherClass,
+    /// An `OBJECT_EPHEMERON` record under a header whose class is not the
+    /// builtin `Ephemeron`, or a record of any other body, `body`, under
+    /// `Ephemeron`'s. The first would have the collectors read that class's
+    /// first slot as a key; the second would hold strongly what an
+    /// `Ephemeron`'s methods hold through its key, and no program makes one.
+    EphemeronRecordMismatch {
+        body: u8,
+    },
+    /// An `OBJECT_EPHEMERON` record of `found` fields where `Ephemeron`
+    /// declares `expected`: its methods read the three slots it declares,
+    /// the key first.
+    EphemeronFieldCount {
+        expected: usize,
+        found: usize,
+    },
     /// Bytes remain after the last section. Refused rather than ignored:
     /// silently accepting a tail means a padded image loads as something its
     /// author did not write.
@@ -743,6 +763,21 @@ impl std::fmt::Display for DecodeError {
                 f,
                 "a record of the class ByteArray has object body {body}, but a ByteArray is a \
                  byte-array record"
+            ),
+            DecodeError::WeakArrayRecordUnderAnotherClass => {
+                f.write_str("a weak-array record has a class other than WeakArray")
+            }
+            DecodeError::EphemeronRecordMismatch { body } if *body == OBJECT_EPHEMERON => {
+                f.write_str("an ephemeron record has a class other than Ephemeron")
+            }
+            DecodeError::EphemeronRecordMismatch { body } => write!(
+                f,
+                "a record of the class Ephemeron has object body {body}, but an Ephemeron is \
+                 an ephemeron record"
+            ),
+            DecodeError::EphemeronFieldCount { expected, found } => write!(
+                f,
+                "an ephemeron record has {found} fields, but an Ephemeron has {expected}"
             ),
             DecodeError::TrailingBytes { count } => {
                 write!(f, "{count} trailing byte(s) after the last section")
@@ -3485,6 +3520,14 @@ impl Sizing<'_, '_, '_> {
         if (header == Some(BuiltinClass::ByteArray)) != (body == OBJECT_BYTE_ARRAY) {
             return Err(DecodeError::ByteArrayRecordMismatch { body });
         }
+        // Likewise `WeakArray`'s and `Ephemeron`'s, except that `WeakArray`'s
+        // header carries an instance record too, `withoutSlots`'s.
+        if body == OBJECT_WEAK_ARRAY && header != Some(BuiltinClass::WeakArray) {
+            return Err(DecodeError::WeakArrayRecordUnderAnotherClass);
+        }
+        if (header == Some(BuiltinClass::Ephemeron)) != (body == OBJECT_EPHEMERON) {
+            return Err(DecodeError::EphemeronRecordMismatch { body });
+        }
         let (fields, frame) = match body {
             // A future has exactly its two fields; a record under its header
             // claiming any other count is refused here, before it is
@@ -3503,7 +3546,19 @@ impl Sizing<'_, '_, '_> {
                 }
                 (count, false)
             }
-            OBJECT_INSTANCE | OBJECT_ARRAY => (self.values(reader, NamePosition::Value)?, false),
+            OBJECT_INSTANCE | OBJECT_ARRAY | OBJECT_WEAK_ARRAY => {
+                (self.values(reader, NamePosition::Value)?, false)
+            }
+            // Its count checked before its values are read, as the second
+            // pass checks it, so a mismatch is reported as itself.
+            OBJECT_EPHEMERON => {
+                let count = reader.read_u32()? as usize;
+                ephemeron_field_count(self.context.mutator, count)?;
+                for _ in 0..count {
+                    self.value(reader, NamePosition::Value)?;
+                }
+                (count, false)
+            }
             OBJECT_STRING => {
                 let text = reader.read_text()?;
                 (record_size::string_fields(text), false)
@@ -3575,6 +3630,24 @@ impl Sizing<'_, '_, '_> {
             record_size::block_words(fields),
         ))
     }
+}
+
+/// Refuses an ephemeron record of `count` fields unless `Ephemeron`
+/// declares exactly that many: its methods read its own slots, the key
+/// first, and the collectors read the first field as the key.
+fn ephemeron_field_count(mutator: &Mutator<'_>, count: usize) -> Result<(), DecodeError> {
+    let class = mutator.builtin_class(BuiltinClass::Ephemeron);
+    let expected = mutator
+        .heap
+        .class_application(class)
+        .map_or(0, |application| application.slot_count);
+    if count != expected {
+        return Err(DecodeError::EphemeronFieldCount {
+            expected,
+            found: count,
+        });
+    }
+    Ok(())
 }
 
 /// The graph section in two passes, so that cycles and shared references
@@ -3702,6 +3775,15 @@ pub fn decode_graph_section<'gc>(
             != (body == OBJECT_BYTE_ARRAY)
         {
             return Err(DecodeError::ByteArrayRecordMismatch { body });
+        }
+        // Refused by the first pass too; restated here as what filling a
+        // weak-array or an ephemeron record rests on.
+        let builtin = context.mutator.heap.class_builtin(class);
+        if body == OBJECT_WEAK_ARRAY && builtin != Some(BuiltinClass::WeakArray) {
+            return Err(DecodeError::WeakArrayRecordUnderAnotherClass);
+        }
+        if (builtin == Some(BuiltinClass::Ephemeron)) != (body == OBJECT_EPHEMERON) {
+            return Err(DecodeError::EphemeronRecordMismatch { body });
         }
         if body == OBJECT_FRAME {
             if !activation_header {
@@ -3850,6 +3932,29 @@ pub fn decode_graph_section<'gc>(
                     class,
                     identity_hash,
                     PlaceholderFormat::Array,
+                );
+                decode_fields_into(reader, context, &tables, *object, 0, count)?;
+                None
+            }
+            OBJECT_WEAK_ARRAY => {
+                let count = reader.read_u32()? as usize;
+                context.mutator.heap.shape_placeholder(
+                    *object,
+                    class,
+                    identity_hash,
+                    PlaceholderFormat::WeakArray,
+                );
+                decode_fields_into(reader, context, &tables, *object, 0, count)?;
+                None
+            }
+            OBJECT_EPHEMERON => {
+                let count = reader.read_u32()? as usize;
+                ephemeron_field_count(context.mutator, count)?;
+                context.mutator.heap.shape_placeholder(
+                    *object,
+                    class,
+                    identity_hash,
+                    PlaceholderFormat::Ephemeron,
                 );
                 decode_fields_into(reader, context, &tables, *object, 0, count)?;
                 None

@@ -473,6 +473,12 @@ fn walk_graph(
             opcodes::OBJECT_ARRAY => {
                 format!("array [{}]", read_values(reader, targets)?.join(", "))
             }
+            opcodes::OBJECT_WEAK_ARRAY => {
+                format!("weak array [{}]", read_values(reader, targets)?.join(", "))
+            }
+            opcodes::OBJECT_EPHEMERON => {
+                format!("ephemeron {{{}}}", read_values(reader, targets)?.join(", "))
+            }
             opcodes::OBJECT_CLOSURE => format!("closure {}", read_closure_record(reader, targets)?),
             opcodes::OBJECT_CLASS => read_class_record(reader, targets)?,
             opcodes::OBJECT_METACLASS => {

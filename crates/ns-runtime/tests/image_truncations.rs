@@ -1,8 +1,9 @@
 //! Every truncation of an image is refused with an error, never a panic:
 //! an image is untrusted input (`docs/design/image-format.md`,
-//! "Verification"). Three images -- a snapshot holding a closure and a
-//! `ByteArray`, its packaged application, and a second packaged application
-//! -- each cut at every length short of its own.
+//! "Verification"). Four images -- a snapshot holding a closure and a
+//! `ByteArray`, its packaged application, a second packaged application,
+//! and a snapshot holding a weak array and an ephemeron -- each cut at
+//! every length short of its own.
 //!
 //! One trial per image and per part of its lengths (`libtest-mimic`, so
 //! `harness = false`): as one test, the loads of every length ran alone at
@@ -27,10 +28,11 @@ const PARTS: usize = 8;
 type Build = fn() -> Vec<u8>;
 
 /// The images, by name, each with the function that builds it.
-const IMAGES: [(&str, Build); 3] = [
+const IMAGES: [(&str, Build); 4] = [
     ("snapshot", snapshot),
     ("packaged", packaged),
     ("packaged_application", packaged_application),
+    ("weak", weak),
 ];
 
 fn main() {
@@ -133,6 +135,53 @@ fn packaged_application() -> Vec<u8> {
             image::package(mutator, &modules, mutator.fetch(&application))
         })
         .unwrap_or_else(|error| panic!("{error}"))
+}
+
+const WEAK_SOURCE: &str = indoc! {"
+    class X = Object new (
+      |
+        held = Object new.
+        weak
+        ephemeron
+      |
+    ) (
+      public fill: platform = (
+        weak:: platform kernel WeakArray new: 3.
+        weak at: 1 put: held.
+        weak at: 3 put: 5.
+        ephemeron:: platform kernel Ephemeron new.
+        ephemeron
+            key: held;
+            value: 'a value'.
+      )
+    ) : ()
+"};
+
+/// A snapshot of an instance of `WEAK_SOURCE`'s class, which holds a weak
+/// array and an ephemeron, so that both records are cut at every byte.
+fn weak() -> Vec<u8> {
+    let (mut interpreter, class) = load(WEAK_SOURCE);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let platform = interpreter.platform();
+    expect_ok(
+        interpreter.send(
+            &instance,
+            ns_runtime::Symbol::intern("fill:"),
+            std::slice::from_ref(&platform),
+        ),
+        "fill:",
+    );
+    let origin = SourceOrigin::File(PathBuf::from("t.ns"));
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let instance = mutator.fetch(&instance);
+        let modules = [image::ModuleSource {
+            class,
+            origin: &origin,
+            source: Some(WEAK_SOURCE),
+        }];
+        image::snapshot(mutator, &modules, &[instance]).expect("snapshot")
+    })
 }
 
 fn load(source: &str) -> (Interpreter, Root) {
