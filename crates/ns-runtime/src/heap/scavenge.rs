@@ -8,6 +8,12 @@
 //! scavenge tenures everything. Its old place becomes a forwarder: the
 //! forwarded format, its class word naming the copy.
 //!
+//! Only strong words keep a young object alive
+//! (`object::strong_pointer_ranges`): the words of a weak object and the
+//! fields of an ephemeron whose key has not survived wait for `finish`,
+//! which forwards or clears them once the copying is done
+//! (`docs/design/core-library.md`, "The heap and the collectors").
+//!
 //! A child of `heap`, so it may name a handle's private offset. It holds
 //! the space and nothing else of the heap, so that the roots it traces --
 //! the activation stack, the host roots, the step state -- can be borrowed
@@ -16,7 +22,7 @@
 use std::num::NonZeroU64;
 
 use crate::heap::header::{Format, Header, MAX_AGE};
-use crate::heap::object::{self, pointer_ranges, CLASS};
+use crate::heap::object::{self, strong_pointer_ranges, CLASS, FIELDS};
 use crate::heap::space::{allocation_range, block_range, is_young, object_at, RegionName, Space};
 use crate::heap::{header_index, FrameReference, ObjectReference, Word};
 use crate::trace::Tracer;
@@ -36,6 +42,12 @@ pub(crate) struct Scavenger<'space> {
     /// Promoted objects that still name a young one: the scavenge's
     /// additions to the remembered set.
     pub(in crate::heap) remembered: Vec<NonZeroU64>,
+    /// Every copied or remembered `WeakPointers` object, its words settled
+    /// by `finish`; and every `Ephemeron` whose key had not survived when
+    /// it was scanned. Each object is scanned once, and a listed ephemeron
+    /// again only once its key survived, so neither list names one twice.
+    weak_objects: Vec<NonZeroU64>,
+    ephemerons: Vec<NonZeroU64>,
     /// How many objects were copied: the nursery's new count, and how many
     /// of them went old.
     pub(in crate::heap) survived: usize,
@@ -67,6 +79,8 @@ impl<'space> Scavenger<'space> {
             survivor_scan,
             promoted_scan,
             remembered: Vec::new(),
+            weak_objects: Vec::new(),
+            ephemerons: Vec::new(),
             survived: 0,
             promoted: 0,
             #[cfg(debug_assertions)]
@@ -83,23 +97,43 @@ impl<'space> Scavenger<'space> {
     /// if it is young and not already in the survivor space being filled,
     /// as Spur's `scavengeReferentsOf:` decides (`cointerp.c:43316-43322`).
     pub(in crate::heap) fn evacuate(&mut self, offset: NonZeroU64) -> NonZeroU64 {
+        let offset = self.follow(offset);
+        if self.stays(offset) {
+            return offset;
+        }
+        self.copy(offset)
+    }
+
+    /// The end of the chain of forwarders that starts at `offset`.
+    fn follow(&self, offset: NonZeroU64) -> NonZeroU64 {
+        let words = self.space.words();
         let mut offset = offset;
         loop {
-            let words = self.space.words();
             let header = header_index(offset);
             if Header(words[header]).format() != Format::Forwarded {
-                break;
+                return offset;
             }
             offset = match Word::from_bits(words[header + CLASS]).object_offset() {
                 Some(target) => target,
                 None => unreachable!("internal: a forwarder names an object"),
             };
         }
+    }
+
+    /// Whether the object at `offset`, the end of its forwarders, stays
+    /// where it is: old, or already copied into the survivor space being
+    /// filled.
+    fn stays(&self, offset: NonZeroU64) -> bool {
         let future = self.space.future_survivor();
-        if !is_young(offset) || (future.base..future.end).contains(&(offset.get() as usize)) {
-            return offset;
-        }
-        self.copy(offset)
+        !is_young(offset) || (future.base..future.end).contains(&(offset.get() as usize))
+    }
+
+    /// Where the object `offset` names lives once the scavenge is done, if
+    /// a strong word has reached it so far; `None` for a young object
+    /// nothing copied.
+    fn survivor(&self, offset: NonZeroU64) -> Option<NonZeroU64> {
+        let offset = self.follow(offset);
+        self.stays(offset).then_some(offset)
     }
 
     /// Copies the young object at `offset` into the survivor space or the
@@ -156,11 +190,27 @@ impl<'space> Scavenger<'space> {
         moved_offset
     }
 
-    /// Rewrites every pointer word of the object at word `header`; answers
-    /// whether it still names a young object afterwards.
+    /// Rewrites every strong pointer word of the object at word `header`;
+    /// answers whether one names a young object afterwards. A weak object
+    /// is listed for `finish`, and so is an ephemeron whose key -- a young
+    /// object nothing has copied yet -- has not survived so far.
     pub(in crate::heap) fn scan_object(&mut self, header: usize) -> bool {
-        let block = block_range(self.space.words(), header);
-        let ranges = pointer_ranges(&self.space.words()[block.clone()]);
+        let words = self.space.words();
+        let block = block_range(words, header);
+        let format = Header(words[header]).format();
+        let mut key_died = false;
+        let ranges = strong_pointer_ranges(&words[block.clone()], |key| {
+            let survives = Word::from_bits(key)
+                .object_offset()
+                .is_none_or(|target| self.survivor(target).is_some());
+            key_died = !survives;
+            survives
+        });
+        match format {
+            Format::WeakPointers => self.weak_objects.push(offset_of(header)),
+            Format::Ephemeron if key_died => self.ephemerons.push(offset_of(header)),
+            _ => {}
+        }
         let mut names_young = false;
         for range in ranges {
             for position in range.start + block.start..range.end + block.start {
@@ -188,15 +238,7 @@ impl<'space> Scavenger<'space> {
             while self.promoted_scan < self.space.region(RegionName::Old).top {
                 let (header, next) = object_at(self.space.words(), self.promoted_scan / 8);
                 if self.scan_object(header) {
-                    let offset = match NonZeroU64::new(8 * header as u64) {
-                        Some(offset) => offset,
-                        None => {
-                            unreachable!("internal: a promoted object lies past the first object")
-                        }
-                    };
-                    let words = self.space.words_mut();
-                    words[header] = Header(words[header]).with_remembered(true).0;
-                    self.remembered.push(offset);
+                    self.remember(header);
                 }
                 self.promoted_scan = 8 * next;
                 progressed = true;
@@ -204,6 +246,97 @@ impl<'space> Scavenger<'space> {
             if !progressed {
                 return;
             }
+        }
+    }
+
+    /// Ends a scavenge whose Cheney loop `drain` has run dry, as
+    /// `Heap::finish_marking` ends a marking: scans each listed ephemeron
+    /// whose key has since survived and drains again, until a round scans
+    /// none; mourns every ephemeron still listed -- its key reached by
+    /// nothing but ephemerons -- by setting its fields to nil; and
+    /// rewrites every word of a listed weak object that names a young
+    /// object to the copy, or to nil where nothing copied it.
+    ///
+    /// Must run before the nursery is vacated: a weak word left naming it
+    /// would name whatever is allocated there next. An old object either
+    /// pass leaves naming a young one is remembered, so that the next
+    /// scavenge settles its words again.
+    ///
+    /// Mourning and clearing write nil, which names no young object, so
+    /// they are the collector's own rewrites and need no write barrier.
+    pub(in crate::heap) fn finish(&mut self) {
+        loop {
+            let pending = std::mem::take(&mut self.ephemerons);
+            let mut progressed = false;
+            for ephemeron in pending {
+                if self.ephemeron_key_survives(ephemeron) {
+                    let header = header_index(ephemeron);
+                    if self.scan_object(header) && !is_young(ephemeron) {
+                        self.remember(header);
+                    }
+                    progressed = true;
+                } else {
+                    self.ephemerons.push(ephemeron);
+                }
+            }
+            if !progressed {
+                break;
+            }
+            self.drain();
+        }
+        for ephemeron in std::mem::take(&mut self.ephemerons) {
+            let fields = self.field_range(header_index(ephemeron));
+            self.space.words_mut()[fields].fill(Word::NIL.bits());
+        }
+        for weak_object in std::mem::take(&mut self.weak_objects) {
+            let header = header_index(weak_object);
+            let mut names_young = false;
+            for position in self.field_range(header) {
+                let word = Word::from_bits(self.space.words()[position]);
+                if let Some(target) = word.object_offset().filter(|target| is_young(*target)) {
+                    let settled = match self.survivor(target) {
+                        Some(moved) => {
+                            names_young |= is_young(moved);
+                            Word::with_object_offset(moved)
+                        }
+                        None => Word::NIL,
+                    };
+                    self.space.words_mut()[position] = settled.bits();
+                }
+            }
+            if names_young && !is_young(weak_object) {
+                self.remember(header);
+            }
+        }
+    }
+
+    /// Whether the key of the listed ephemeron at `offset` has survived. A
+    /// listed ephemeron's key is an object: one with no field or another
+    /// key is scanned whole and never listed.
+    fn ephemeron_key_survives(&self, offset: NonZeroU64) -> bool {
+        let words = self.space.words();
+        words[self.field_range(header_index(offset))]
+            .first()
+            .and_then(|key| Word::from_bits(*key).object_offset())
+            .is_some_and(|key| self.survivor(key).is_some())
+    }
+
+    /// The words of the fields of the object at word `header`.
+    fn field_range(&self, header: usize) -> std::ops::Range<usize> {
+        let block = block_range(self.space.words(), header);
+        (block.start + FIELDS).min(block.end)..block.end
+    }
+
+    /// Adds the old object at word `header` to the scavenge's remembered
+    /// set unless its bit says it is in already, so that no object is in
+    /// the set twice: an old weak object or ephemeron whose strong words
+    /// name a young object was remembered when they were scanned.
+    fn remember(&mut self, header: usize) {
+        let words = self.space.words_mut();
+        let found = Header(words[header]);
+        if !found.remembered() {
+            words[header] = found.with_remembered(true).0;
+            self.remembered.push(offset_of(header));
         }
     }
 
@@ -249,6 +382,14 @@ impl Tracer for Scavenger<'_> {
         if let Some(target) = word.object_offset().filter(|target| is_young(*target)) {
             *word = Word::with_object_offset(self.evacuate(target));
         }
+    }
+}
+
+/// The offset of the object whose header is word `header`.
+fn offset_of(header: usize) -> NonZeroU64 {
+    match NonZeroU64::new(8 * header as u64) {
+        Some(offset) => offset,
+        None => unreachable!("internal: an object lies past the first word"),
     }
 }
 
