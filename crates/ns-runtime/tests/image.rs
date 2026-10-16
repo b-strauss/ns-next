@@ -3005,7 +3005,7 @@ fn an_ephemeron_with_a_nil_key_round_trips_with_its_value() {
         let ephemeron = object(holder_field(mutator, holder, 0));
         assert_eq!(heap.object_shape(ephemeron), ObjectShape::Ephemeron);
         let fields = heap
-            .instance_fields(ephemeron)
+            .ephemeron_fields(ephemeron)
             .expect("an ephemeron has fields");
         assert_eq!(fields.len(), 3);
         assert!(fields[0].is_nil(), "the key");
@@ -3025,7 +3025,7 @@ fn an_ephemeron_round_trips_with_its_value_while_its_key_is_reached() {
             .same(mutator.builtin_class(BuiltinClass::Ephemeron)));
         assert_eq!(heap.object_shape(ephemeron), ObjectShape::Ephemeron);
         let fields = heap
-            .instance_fields(ephemeron)
+            .ephemeron_fields(ephemeron)
             .expect("an ephemeron has fields");
         assert_eq!(fields.len(), 3);
         assert!(same_value_object(fields[0], held), "the key");
@@ -3043,7 +3043,7 @@ fn an_ephemeron_whose_key_is_not_reached_is_written_mourned() {
         let ephemeron = object(holder_field(mutator, holder, 0));
         assert_eq!(heap.object_shape(ephemeron), ObjectShape::Ephemeron);
         let fields = heap
-            .instance_fields(ephemeron)
+            .ephemeron_fields(ephemeron)
             .expect("an ephemeron has fields");
         assert_eq!(fields.len(), 3);
         assert!(fields.iter().all(|field| field.is_nil()), "mourned");
@@ -3062,8 +3062,8 @@ fn an_ephemeron_whose_key_is_reached_only_through_another_ephemeron_is_written_a
         let held = holder_field(mutator, holder, 2);
         let first = object(holder_field(mutator, holder, 0));
         let second = object(holder_field(mutator, holder, 1));
-        let first_fields = heap.instance_fields(first).expect("an ephemeron");
-        let second_fields = heap.instance_fields(second).expect("an ephemeron");
+        let first_fields = heap.ephemeron_fields(first).expect("an ephemeron");
+        let second_fields = heap.ephemeron_fields(second).expect("an ephemeron");
         assert!(same_value_object(second_fields[0], held), "second's key");
         assert!(
             first_fields[0].as_object().is_some(),
@@ -4215,7 +4215,7 @@ fn a_crafted_weak_array_and_ephemeron_decode_to_their_values() {
         assert_eq!(elements[1].as_small_integer(), Some(5));
         assert_eq!(heap.object_identity_hash(weak), 1);
         assert_eq!(heap.object_shape(ephemeron), ObjectShape::Ephemeron);
-        let fields = heap.instance_fields(ephemeron).expect("an ephemeron");
+        let fields = heap.ephemeron_fields(ephemeron).expect("an ephemeron");
         assert!(same_value_object(fields[0], Value::object(weak)));
         assert_eq!(fields[1].as_small_integer(), Some(6));
         assert!(fields[2].is_nil());

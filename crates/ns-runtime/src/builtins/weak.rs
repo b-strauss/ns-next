@@ -1,10 +1,10 @@
-//! `WeakArray`'s leaves, `garbageCollect`, and the question `Ephemeron`
-//! asks of a key, whether it is a value. A `WeakArray` is fixed-size
-//! once made, as an `Array` is, and refuses an index or a size in
-//! `Array`'s texts, so a program meets one sequence protocol whichever it
-//! holds; what differs is that the collectors clear a slot whose object
-//! nothing else reaches (`docs/design/core-library.md`, "Weak
-//! references").
+//! `WeakArray`'s leaves, `garbageCollect`, `Ephemeron`'s fields, and the
+//! question `Ephemeron` asks of a key, whether it is a value. A
+//! `WeakArray` is fixed-size once made, as an `Array` is, and refuses an
+//! index or a size in `Array`'s texts, so a program meets one sequence
+//! protocol whichever it holds; what differs is that the collectors clear
+//! a slot whose object nothing else reaches (`docs/design/core-library.md`,
+//! "Weak references").
 
 use crate::builtins::collections::{
     integer_argument, not_an_integer, out_of_range, IntegerArgument,
@@ -15,12 +15,14 @@ use crate::interpreter::instantiate;
 use crate::types::*;
 use crate::{Mutator, Symbol};
 
-/// `WeakArray`'s native methods, `garbageCollect` and `objectIsValue:`.
-/// Each `WeakArray` leaf declines -- answers `None` -- for a subject that
-/// is no `WeakArray`, a user subclass's instance among them, which holds
-/// no weak slots, so that the failure block's `super` send runs.
-/// `garbageCollect` never declines, and `objectIsValue:` only for a future
-/// it would answer `false` to.
+/// `WeakArray`'s native methods, `garbageCollect`, `Ephemeron`'s accessors
+/// and `objectIsValue:`. Each `WeakArray` leaf declines -- answers `None`
+/// -- for a subject that is no `WeakArray`, a user subclass's instance
+/// among them, which holds no weak slots, so that the failure block's
+/// `super` send runs. An `Ephemeron` leaf declines for a subject that is
+/// neither an `Ephemeron` nor an instance of a class that inherits
+/// `Ephemeron`'s mixin. `garbageCollect` never declines, and
+/// `objectIsValue:` only for a future it would answer `false` to.
 pub(crate) fn execute<'gc>(
     mutator: &mut Mutator<'gc>,
     primitive: WeakPrimitive,
@@ -34,6 +36,18 @@ pub(crate) fn execute<'gc>(
         WeakPrimitive::ElementAt => element_at(mutator, receiver, selector, arguments),
         WeakPrimitive::ElementAtPut => element_at_put(mutator, receiver, selector, arguments),
         WeakPrimitive::Collect => Some(Ok(collect(mutator, receiver))),
+        WeakPrimitive::EphemeronKey => ephemeron_field(mutator, receiver, KEY).map(Ok),
+        WeakPrimitive::EphemeronValue => ephemeron_field(mutator, receiver, VALUE).map(Ok),
+        WeakPrimitive::EphemeronFinalizer => ephemeron_field(mutator, receiver, FINALIZER).map(Ok),
+        WeakPrimitive::EphemeronSetKey => {
+            ephemeron_set_field(mutator, receiver, KEY, arguments).map(Ok)
+        }
+        WeakPrimitive::EphemeronSetValue => {
+            ephemeron_set_field(mutator, receiver, VALUE, arguments).map(Ok)
+        }
+        WeakPrimitive::EphemeronSetFinalizer => {
+            ephemeron_set_field(mutator, receiver, FINALIZER, arguments).map(Ok)
+        }
         // Declined for a future it would answer `false` to, so the failure
         // path asks again of the future's value
         // (`interpreter::future::declines_for_a_future`).
@@ -190,6 +204,83 @@ fn allocate<'gc>(
     Some(Ok(Value::object(
         mutator.heap.allocate_weak_array(class, length),
     )))
+}
+
+/// An ephemeron's key, the field the collectors read as the key.
+const KEY: usize = 0;
+/// An ephemeron's value, reached through a live key.
+const VALUE: usize = 1;
+/// An ephemeron's finalizer, reached through a live key.
+const FINALIZER: usize = 2;
+
+/// The field at `index` of `receiver`'s ephemeron state -- 0 the key, 1 the
+/// value, 2 the finalizer; `None` when `receiver` has none.
+///
+/// An `Ephemeron` keeps the three in fields of its own format, which the
+/// slot accessors do not reach, so that an ordinary object's slot pays
+/// nothing for the ephemeron's format; the three slots `Kernel.ns`
+/// declares give it its size and lay out a subclass's instance, which is an
+/// ordinary object, held strongly (`docs/design/core-library.md`, "A user
+/// subclass gets no payload"), whose three are its slots at the level
+/// applying `Ephemeron`'s mixin.
+fn ephemeron_field<'gc>(
+    mutator: &Mutator<'gc>,
+    receiver: Value<'gc>,
+    index: usize,
+) -> Option<Value<'gc>> {
+    let object = receiver.as_object()?;
+    if let Some(value) = mutator.heap.ephemeron_field(object, index) {
+        return Some(value);
+    }
+    let base = ephemeron_slot_base(mutator, object)?;
+    mutator
+        .heap
+        .instance_field(object, base.checked_add(index)?)
+}
+
+/// Stores the argument, any object, in the field at `index` of
+/// `receiver`'s ephemeron state, as `ephemeron_field` finds it, through the
+/// write barrier, and answers the receiver; `None` when `receiver` has
+/// none. `key:`'s refusal of a value is `Kernel.ns`'s, before it sends
+/// this: its text ends in the key's `printString`, which only Newspeak can
+/// produce.
+fn ephemeron_set_field<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
+    index: usize,
+    arguments: &[Value<'gc>],
+) -> Option<Value<'gc>> {
+    let object = receiver.as_object()?;
+    let value = arguments.first().copied().unwrap_or(Value::nil());
+    if mutator.heap.ephemeron_set_field(object, index, value) {
+        return Some(receiver);
+    }
+    let field = ephemeron_slot_base(mutator, object)?.checked_add(index)?;
+    mutator
+        .heap
+        .instance_set_field(object, field, value)
+        .then_some(receiver)
+}
+
+/// Where the slots `Ephemeron`'s mixin declares begin in `object`'s
+/// fields: the own slot base of the first level of its class's chain that
+/// applies that mixin -- the kernel's `Ephemeron` above a subclass, or a
+/// level a `<:` clause added. `None` when no level applies it. Matched by
+/// mixin, as `inheritsMixinOf:` matches, so that every class whose
+/// methods are `Ephemeron`'s finds the slots they were declared with.
+fn ephemeron_slot_base<'gc>(mutator: &Mutator<'gc>, object: ObjectReference<'gc>) -> Option<usize> {
+    let heap = &mutator.heap;
+    let ephemeron = heap.class_application(mutator.builtin_class(BuiltinClass::Ephemeron))?;
+    let mut current = Some(heap.object_class(object));
+    while let Some(level) = current {
+        if let Some(application) = heap.class_application(level) {
+            if std::rc::Rc::ptr_eq(&application.mixin, &ephemeron.mixin) {
+                return Some(application.own_slot_base);
+            }
+        }
+        current = heap.class_superclass(level);
+    }
+    None
 }
 
 /// `garbageCollect`: asks for a full collection and answers the receiver.

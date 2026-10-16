@@ -1,0 +1,67 @@
+/// A user subclass of Ephemeron reads and writes its key, value and
+/// finalizer through the accessors it inherits, which reach its three
+/// slots: each starts nil, each setter answers the receiver, each getter
+/// answers what was stored, and `key:` refuses a value as an Ephemeron's
+/// does, leaving the key as it was. A slot the subclass declares itself
+/// is left as it was. A class that applies Ephemeron's mixin to a
+/// superclass with a slot of its own reaches the mixin's three slots, not
+/// the superclass's.
+class ASubclassOfEphemeronReadsAndWritesThroughItsAccessors = Object new (
+  |
+    Ephemeron ::= nil.
+  |
+) (
+  class MyEphemeron = Ephemeron new (
+    |
+      public extra ::= 'extra'.
+    |
+  ) ()
+
+  class Base = Object new (
+    |
+      public base ::= 'base'.
+    |
+  ) ()
+
+  class Applied = Base new <: Ephemeron.
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      kernel = platform kernel.
+      key = Object new.
+      mine
+      applied
+      show
+    |
+    Ephemeron:: kernel Ephemeron.
+    show:: [:object |
+      transcript
+          show: object printString;
+          newLine.
+    ].
+    mine:: MyEphemeron new.
+    show value: mine key.
+    show value: mine value.
+    show value: mine finalizer.
+    show value: (mine key: key) == mine.
+    show value: (mine value: 'the value') == mine.
+    show value: (mine finalizer: 'the finalizer') == mine.
+    show value: mine key == key.
+    show value: mine value.
+    show value: mine finalizer.
+    show value: mine extra.
+    show value: ([mine key: 3] on: kernel ArgumentError do: [:error | error messageText]).
+    show value: mine key == key.
+    show value: mine isKindOfEphemeron.
+    applied:: Applied new.
+    show value: applied key.
+    show value: (applied key: key) == applied.
+    show value: (applied value: 'the applied value') == applied.
+    show value: (applied finalizer: 'the applied finalizer') == applied.
+    show value: applied key == key.
+    show value: applied value.
+    show value: applied finalizer.
+    show value: applied base.
+  )
+)

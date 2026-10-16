@@ -287,7 +287,13 @@ impl Primitive {
                 | WeakPrimitive::Size
                 | WeakPrimitive::ElementAt
                 | WeakPrimitive::ElementAtPut
-                | WeakPrimitive::Collect,
+                | WeakPrimitive::Collect
+                | WeakPrimitive::EphemeronKey
+                | WeakPrimitive::EphemeronSetKey
+                | WeakPrimitive::EphemeronValue
+                | WeakPrimitive::EphemeronSetValue
+                | WeakPrimitive::EphemeronFinalizer
+                | WeakPrimitive::EphemeronSetFinalizer,
             ) => false,
             // A future is no value, but it may stand for one, which a weak
             // structure must refuse as a key (§6.3.2: a future is
@@ -564,8 +570,8 @@ pub enum BytePrimitive {
     WriteCodePoint,
 }
 
-/// `WeakArray`'s primitives, the full collection a program asks for, and
-/// the question a weak structure asks of a key.
+/// `WeakArray`'s primitives, the full collection a program asks for,
+/// `Ephemeron`'s fields, and the question a weak structure asks of a key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WeakPrimitive {
     /// `WeakArray new: size`, on `WeakArray`'s class side.
@@ -578,6 +584,17 @@ pub enum WeakPrimitive {
     /// Whether an object is a value (§3.1.1), which `Ephemeron>>key:`
     /// refuses as a key.
     IsValue,
+    /// `Ephemeron>>key`: the key, its first field.
+    EphemeronKey,
+    /// `Ephemeron>>key:`: stores the key, whose refusal of a value is
+    /// `Kernel.ns`'s.
+    EphemeronSetKey,
+    /// `Ephemeron>>value`: the value, its second field.
+    EphemeronValue,
+    EphemeronSetValue,
+    /// `Ephemeron>>finalizer`: the finalizer, its third field.
+    EphemeronFinalizer,
+    EphemeronSetFinalizer,
 }
 
 /// The ten element kinds of the typed arrays and `DataView`.
@@ -2092,6 +2109,36 @@ pub const MIRROR: &[MirrorEntry] = &[
         "objectIsValue:ifFail:",
         "isValue",
         Primitive::Weak(WeakPrimitive::IsValue),
+    ),
+    mirror(
+        "ephemeronKey:ifFail:",
+        "key",
+        Primitive::Weak(WeakPrimitive::EphemeronKey),
+    ),
+    mirror(
+        "ephemeron:key:ifFail:",
+        "key:",
+        Primitive::Weak(WeakPrimitive::EphemeronSetKey),
+    ),
+    mirror(
+        "ephemeronValue:ifFail:",
+        "value",
+        Primitive::Weak(WeakPrimitive::EphemeronValue),
+    ),
+    mirror(
+        "ephemeron:value:ifFail:",
+        "value:",
+        Primitive::Weak(WeakPrimitive::EphemeronSetValue),
+    ),
+    mirror(
+        "ephemeronFinalizer:ifFail:",
+        "finalizer",
+        Primitive::Weak(WeakPrimitive::EphemeronFinalizer),
+    ),
+    mirror(
+        "ephemeron:finalizer:ifFail:",
+        "finalizer:",
+        Primitive::Weak(WeakPrimitive::EphemeronSetFinalizer),
     ),
 ];
 

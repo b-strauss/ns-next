@@ -5320,7 +5320,9 @@ compaction and before the nursery is vacated. The kernel has `WeakArray`, a
 builtin whose factory `withoutSlots` keeps `WeakArray new` not understood,
 made by its class side's `new:`, which refuses a size it cannot allocate;
 `Ephemeron`, a builtin of three private slots, the key first, its finalizer
-held and never run; and `WeakMap`, Newspeak over an `Array` of ephemerons
+held and never run, whose accessors reach its fields through mirror
+leaves of their own, so that the slot accessors take an ordinary object
+alone, as on `master`; and `WeakMap`, Newspeak over an `Array` of ephemerons
 probed linearly. `Ephemeron>>key:` and `WeakMap>>at:put:` refuse a value as
 a key with an `ArgumentError` signalled in Newspeak, through the mirror
 leaf `objectIsValue:ifFail:`, which sees through a future. `platform
@@ -5331,7 +5333,7 @@ return is the safepoint that serves the collection the leaf requested;
 image carries `OBJECT_WEAK_ARRAY` (body tag 12) and `OBJECT_EPHEMERON`
 (13), written as a collection would leave them but for what takes no
 record -- an immediate, a shipped name, a value written by value -- which is
-kept; the decoder holds each body to its class. The `MIRROR` table has 242
+kept; the decoder holds each body to its class. The `MIRROR` table has 248
 rows, and a fresh boot leaves 27 inline-cache sites and 22 global entries
 (the platform's eager slots for the three classes), where it left 23 and
 19.

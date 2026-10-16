@@ -4737,23 +4737,32 @@ class Kernel vmMirror: mirror = Value (
   ///
   /// A subclass inherits the protocol but not the property: its instance
   /// is an ordinary object whose three slots hold strongly.
+  ///
+  /// The accessors reach the three through the mirror, which reads the
+  /// fields of an Ephemeron's own format and the slots of a subclass's
+  /// instance alike. No method names the slots: they only give an
+  /// Ephemeron its three fields and lay out a subclass's instance. An
+  /// Ephemeron's fields are no instance slots, so that an ordinary
+  /// object's slot pays nothing for their format; the slots therefore
+  /// have no initializer, which would store into one, and each starts
+  /// nil.
   public class Ephemeron = Object (
     |
       /// The key, nil or an object that is not a value; the collectors
       /// read it as the first field, so it is declared first.
-      private storedKey ::= nil.
+      private storedKey.
       /// The value, any object, reached through a live key.
-      private storedValue ::= nil.
+      private storedValue.
       /// The finalizer, any object, reached through a live key; held,
       /// never run.
-      private storedFinalizer ::= nil.
+      private storedFinalizer.
     |
   ) (
     /// Answers the key, or nil when the receiver has none: it was never
     /// given one, was given nil, or a collection found nothing but
     /// ephemerons reaching it.
     public key = (
-      ^storedKey.
+      ^vmMirror ephemeronKey: self ifFail: [^super key].
     )
 
     /// Makes `newKey` the key and answers the receiver.
@@ -4769,7 +4778,10 @@ class Kernel vmMirror: mirror = Value (
     /// String, an instance of a value class. A refused key leaves the
     /// key as it was.
     ///
-    /// The leaf never declines: it answers a Boolean for any object.
+    /// The value leaf never declines: it answers a Boolean for any
+    /// object. The refusal is signalled here rather than by the leaf that
+    /// stores the key, since its text ends in the key's printString,
+    /// which only Newspeak computes.
     public key: newKey = (
       newKey isNil ifFalse: [
         (vmMirror objectIsValue: newKey ifFail: [false]) ifTrue: [
@@ -4779,26 +4791,26 @@ class Kernel vmMirror: mirror = Value (
               , newKey printString.
         ].
       ].
-      storedKey:: newKey.
+      ^vmMirror ephemeron: self key: newKey ifFail: [^super key: newKey].
     )
 
     /// Answers the value, nil until one is given or once a collection
     /// has cleared the receiver.
     public value = (
-      ^storedValue.
+      ^vmMirror ephemeronValue: self ifFail: [^super value].
     )
 
     /// Makes `newValue` the value and answers the receiver.
     ///
     /// newValue: any object; kept alive while the key is.
     public value: newValue = (
-      storedValue:: newValue.
+      ^vmMirror ephemeron: self value: newValue ifFail: [^super value: newValue].
     )
 
     /// Answers the finalizer, nil until one is given or once a
     /// collection has cleared the receiver.
     public finalizer = (
-      ^storedFinalizer.
+      ^vmMirror ephemeronFinalizer: self ifFail: [^super finalizer].
     )
 
     /// Makes `newFinalizer` the finalizer and answers the receiver. The
@@ -4806,7 +4818,7 @@ class Kernel vmMirror: mirror = Value (
     ///
     /// newFinalizer: any object.
     public finalizer: newFinalizer = (
-      storedFinalizer:: newFinalizer.
+      ^vmMirror ephemeron: self finalizer: newFinalizer ifFail: [^super finalizer: newFinalizer].
     )
 
     /// Answers true: the receiver is an Ephemeron.

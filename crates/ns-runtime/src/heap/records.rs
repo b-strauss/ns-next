@@ -30,9 +30,9 @@ pub enum ObjectShape {
     /// A `WeakArray`: its slots hold their objects weakly
     /// (`Heap::weak_array_elements`).
     WeakArray,
-    /// An `Ephemeron`: its key, value and finalizer are instance fields
-    /// (`Heap::instance_fields`), the value and finalizer held only through
-    /// a live key.
+    /// An `Ephemeron`: its key, value and finalizer are fields of its own
+    /// format (`Heap::ephemeron_fields`), the value and finalizer held only
+    /// through a live key.
     Ephemeron,
 }
 

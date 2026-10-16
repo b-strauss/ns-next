@@ -915,7 +915,7 @@ impl<'gc> GraphTable<'gc> {
             for (ephemeron, key) in std::mem::take(&mut table.pending_ephemerons) {
                 if table.has_id(heap, key) {
                     progressed = true;
-                    let fields = heap.instance_fields(ephemeron).unwrap_or_default();
+                    let fields = heap.ephemeron_fields(ephemeron).unwrap_or_default();
                     stack.extend(fields.into_iter().rev());
                     table.drain(heap, named, &mut stack);
                 } else {
@@ -1076,7 +1076,7 @@ impl<'gc> GraphTable<'gc> {
                     }
                 }
                 ObjectShape::Ephemeron => {
-                    let fields = heap.instance_fields(object).unwrap_or_default();
+                    let fields = heap.ephemeron_fields(object).unwrap_or_default();
                     // An ephemeron without fields has no key; only a
                     // crafted image could make one, and nothing waits on it.
                     let key = fields.first().and_then(|key| self.admit(heap, *key, named));
@@ -1709,7 +1709,7 @@ fn encode_object<'gc>(
         // field `nil`; any other has its fields, which the walk traced.
         ObjectShape::Ephemeron => {
             writer.write_u8(OBJECT_EPHEMERON);
-            let mut fields = heap.instance_fields(object).unwrap_or_default();
+            let mut fields = heap.ephemeron_fields(object).unwrap_or_default();
             if context
                 .table
                 .mourned

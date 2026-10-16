@@ -670,8 +670,9 @@ pub(super) fn check_kernel_shape(root: &Rc<Mixin>, resolved: &ResolvedModule) {
         // `FutureImplementation`'s two slots are an ordinary field vector
         // too, which `interpreter::future` allocates and alone reads and
         // writes. `Ephemeron`'s three are the fields of its own format,
-        // which `decide_factory` allocates and its slot accessors reach as
-        // any instance's.
+        // which `decide_factory` allocates and only its mirror leaves
+        // reach (`builtins/weak.rs`); declared with no initializer, since
+        // an initializer's slot store does not reach that format.
         assert!(
             nested.slots.is_empty()
                 || matches!(
@@ -699,6 +700,17 @@ pub(super) fn check_kernel_shape(root: &Rc<Mixin>, resolved: &ResolvedModule) {
                 names,
                 ["storedKey", "storedValue", "storedFinalizer"],
                 "internal: Kernel.ns's Ephemeron must declare its key first, then its value and finalizer"
+            );
+            // Its instantiation writes no slot: an initializer's store
+            // would meet the `Ephemeron` format, which the slot accessors
+            // refuse.
+            assert!(
+                nested.slots.iter().all(|slot| !slot.lazy
+                    && slot
+                        .declaration
+                        .as_ref()
+                        .is_some_and(|declaration| declaration.initializer.is_none())),
+                "internal: Kernel.ns's Ephemeron must declare its slots without initializers"
             );
         }
         let declaration = nested
@@ -1252,14 +1264,9 @@ mod tests {
         ("WeakArray", "do:"),
         ("WeakArray", "keysAndValuesDo:"),
         ("WeakArray", "copyWith:"),
-        // `Ephemeron`'s accessors read and write its own slots, and `key:`
-        // asks the value leaf before it writes: no leaf answers for them.
-        ("Ephemeron", "key"),
+        // `Ephemeron>>key:` asks the value leaf and signals its refusal
+        // before it sends the store on: no leaf answers for it.
         ("Ephemeron", "key:"),
-        ("Ephemeron", "value"),
-        ("Ephemeron", "value:"),
-        ("Ephemeron", "finalizer"),
-        ("Ephemeron", "finalizer:"),
         // `WeakMap` is Newspeak over an `Array` of `Ephemeron`s: each
         // member probes its table by sends, and `at:put:` asks the value
         // leaf before it searches. No leaf answers for any of them.

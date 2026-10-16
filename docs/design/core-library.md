@@ -628,7 +628,7 @@ boundary that gives all of this its purpose does not exist
 ([liveness-and-reflection.md](liveness-and-reflection.md), "Value objects
 exist; the boundary they cross does not").
 
-The leaves are the 242 rows of `builtins/primitive.rs`'s `MIRROR` table. A
+The leaves are the 248 rows of `builtins/primitive.rs`'s `MIRROR` table. A
 row names the **mirror selector** (`collection:at:put:ifFail:`), the
 **reported selector** — the kernel selector every error text of that leaf
 names, `at:put:` — and the `Primitive` it runs. Every mirror selector ends
@@ -2203,8 +2203,8 @@ canonical implementation decides, and Primordial Soup's kernel
 (`prior-art/primordialsoup/newspeak/KernelForPrimordialSoup.ns`, 852-861
 and 2553-2718; its collector `vm/heap.cc`) is the API adopted, every body
 written here. The leaves are `builtins/weak.rs` (`WeakPrimitive`): four
-for `WeakArray`, `garbageCollect`, and `objectIsValue:`, the question a
-weak structure asks of a key.
+for `WeakArray`, `garbageCollect`, six for `Ephemeron`'s accessors, and
+`objectIsValue:`, the question a weak structure asks of a key.
 
 **The classes, in one table:**
 
@@ -2267,13 +2267,22 @@ root sends the kernel instance it keeps, and one the instance understands
   `nil`; `key:`, `value:` and `finalizer:` answer the receiver. Its state
   is three private slots, `storedKey`, `storedValue` and
   `storedFinalizer`, the key first, since the collectors read the first
-  field as the key; `check_kernel_shape` (`interpreter/kernel.rs`) holds
-  the declaration to that order at boot. `key:` refuses a value other than
+  field as the key, each without an initializer;
+  `check_kernel_shape` (`interpreter/kernel.rs`) holds the declaration to
+  that order and to no initializer at boot. No method names them: they
+  give an `Ephemeron` its three fields and lay out a subclass's instance.
+  The accessors are mirror forwarders -- `key` is `^vmMirror
+  ephemeronKey: self ifFail: [^super key]`, and so on for `value`,
+  `finalizer`, `value:` and `finalizer:` -- which run with no activation;
+  `key:` is an ordinary method that checks its argument and then stores
+  it through `ephemeron:key:ifFail:`. `key:` refuses a value other than
   `nil` ("A weak collection refuses a value as a key" under "The kernel
   completed to Primordial Soup's core API" below) with an `ArgumentError`
   carrying it, "key: requires an object that is not a value, got "
   followed by its `printString`, signalled in Newspeak once the leaf
-  `objectIsValue:ifFail:` has answered `true`. That leaf sees through a
+  `objectIsValue:ifFail:` has answered `true` -- in Newspeak, not by the
+  leaf that stores the key, because the text ends in the key's
+  `printString`, which a program's class may define. That leaf sees through a
   future: it declines where it would answer `false` and a future is its
   subject, and the failure path asks again of the future's value
   (`interpreter::future::declines_for_a_future`), so a future standing for
@@ -2325,6 +2334,13 @@ factories of `Array`, `ByteArray` and `String` do. So a subclass of
 strongly -- Primordial Soup's "can be
 subclassed, but subclasses won't have the ephemeron property"
 (`goldens/library/weak/a_subclass_of_ephemeron_holds_strongly.ns`).
+`Ephemeron`'s leaves read and write such an instance's three slots
+instead of an `Ephemeron`'s fields: those that begin at the own slot base
+of the first level of its class's chain applying `Ephemeron`'s mixin,
+matched by mixin as `inheritsMixinOf:` matches, so that a class applying
+the mixin with `<:` to a superclass with slots of its own reaches the
+mixin's slots too; an object with no such level makes them decline
+(`goldens/library/weak/a_subclass_of_ephemeron_reads_and_writes_through_its_accessors.ns`).
 
 **The goldens are `goldens/library/weak/`.** Each asserts only what holds
 whether or not an extra collection ran -- a strongly held object stays,
@@ -2339,10 +2355,20 @@ image's records.
 **Two formats**, codes 10 and 11 (`heap/header.rs`): `WeakPointers`, whose
 fields are the indexed slots of a `WeakArray`, and `Ephemeron`, whose
 first field is the key and whose others -- the value, the finalizer -- are
-reached only through a live key. An `Ephemeron`'s three slots are
-ordinary instance slots, so a slot read and write take either
-`FixedPointers` or `Ephemeron`; the check for `FixedPointers` comes first,
-so an ordinary object's slot pays nothing more.
+reached only through a live key. An `Ephemeron`'s fields are no instance
+slots: the slot accessors (`Heap::instance_field`,
+`Heap::instance_set_field` and the rest) take `FixedPointers` alone, as
+before the weak references, and the `Ephemeron` format has accessors of
+its own beside the weak array's (`Heap::ephemeron_field`,
+`ephemeron_set_field`, `ephemeron_fields`), which the mirror leaves, the
+image encoder and the tests use. So an ordinary object's slot pays
+nothing for the `Ephemeron` format (decided with the user on
+2026-10-16): with slot accessors that took both formats, Havlak, CD and
+DeltaBlueTon80 ran 0.7 to 1.7% slower than on `master`, the cost the
+mutator's rather than the collectors' ([OPEN-WORK.md](../OPEN-WORK.md)).
+The slots an `Ephemeron` declares are therefore reached only by its
+leaves, and its instantiation writes none of them: they have no
+initializer.
 
 **Marking traces strong words; forwarding rewrites every word.**
 `pointer_ranges` stays the one enumeration of an object's pointer words,
