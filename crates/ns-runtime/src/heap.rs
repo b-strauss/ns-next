@@ -8616,18 +8616,143 @@ mod tests {
         let ephemeron = heap.allocate_ephemeron(class, 3);
         assert!(heap.instance_set_field(ephemeron, 0, Value::object(key)));
         assert!(heap.instance_set_field(ephemeron, 1, Value::object(value)));
-        // The ephemeron is copied and scanned before its key is reached.
-        let mut ephemeron_root = Value::object(ephemeron);
-        let mut key_root = Value::object(key);
+        // The key is reached only through the holder, which the Cheney scan
+        // reaches after the ephemeron: the ephemeron is listed with a key
+        // not yet copied, and only `finish`'s fixpoint keeps its value.
+        let holder = heap.allocate_instance(class, 1);
+        assert!(heap.instance_set_field(holder, 0, Value::object(key)));
+        let mut array_root = Value::object(
+            heap.allocate_array(class, &[Value::object(ephemeron), Value::object(holder)]),
+        );
 
-        scavenge_bare(&mut heap, false, &mut [&mut ephemeron_root, &mut key_root]);
+        scavenge_bare(&mut heap, false, &mut [&mut array_root]);
 
+        let elements = heap
+            .array_elements(rooted(array_root))
+            .expect("the array answers its elements");
+        let key = heap
+            .instance_field(rooted(elements[1]), 0)
+            .expect("the holder holds the key");
+        assert_eq!(text_of(&heap, key).as_deref(), Some("key"));
         let fields = heap
-            .instance_fields(rooted(ephemeron_root))
+            .instance_fields(rooted(elements[0]))
             .expect("an ephemeron answers its fields");
-        assert!(names(fields[0], rooted(key_root)));
+        assert!(names(fields[0], rooted(key)));
         assert_eq!(text_of(&heap, fields[1]).as_deref(), Some("value"));
         assert!(fields[2].is_nil());
+        verify_remembered_set_if_debug(&heap);
+    }
+
+    /// An old ephemeron in the remembered set is scanned before the Cheney
+    /// loop copies its young key, which only a young holder reaches: it is
+    /// listed, and once the key survives, the rescan keeps its young value
+    /// and remembers it -- once, though one of a young class was remembered
+    /// already for its class word.
+    #[test]
+    fn an_old_ephemeron_whose_young_key_survives_later_keeps_its_value_and_is_remembered_once() {
+        for class_is_young in [false, true] {
+            let mut heap = Heap::new();
+            let old_class = old_instance_class(&mut heap);
+            let class = if class_is_young {
+                heap.allocate_self_referential(0)
+            } else {
+                old_class
+            };
+            heap.set_allocating_old(true);
+            let ephemeron = heap.allocate_ephemeron(class, 2);
+            heap.set_allocating_old(false);
+            let key = heap.allocate_string(old_class, crate::CodePoints::from("key"));
+            let value = heap.allocate_string(old_class, crate::CodePoints::from("value"));
+            assert!(heap.instance_set_field(ephemeron, 0, Value::object(key)));
+            assert!(heap.instance_set_field(ephemeron, 1, Value::object(value)));
+            let holder = heap.allocate_instance(old_class, 1);
+            assert!(heap.instance_set_field(holder, 0, Value::object(key)));
+            let mut ephemeron_root = Value::object(ephemeron);
+            let mut holder_root = Value::object(holder);
+
+            scavenge_bare(
+                &mut heap,
+                false,
+                &mut [&mut ephemeron_root, &mut holder_root],
+            );
+
+            let ephemeron = rooted(ephemeron_root);
+            let key = heap
+                .instance_field(rooted(holder_root), 0)
+                .expect("the holder holds the key");
+            let fields = heap
+                .instance_fields(ephemeron)
+                .expect("an ephemeron answers its fields");
+            assert!(names(fields[0], rooted(key)));
+            assert_eq!(text_of(&heap, fields[1]).as_deref(), Some("value"));
+            assert_eq!(
+                heap.remembered
+                    .iter()
+                    .filter(|entry| **entry == ephemeron.offset)
+                    .count(),
+                1,
+                "it names a young value, so it is remembered, once"
+            );
+            verify_remembered_set_if_debug(&heap);
+        }
+    }
+
+    /// A weak array and an ephemeron promoted by age, not by `tenure_all`,
+    /// still name a young survivor afterwards: each is remembered, once,
+    /// and its words name the copies.
+    #[test]
+    fn a_weak_object_promoted_by_age_that_names_a_young_survivor_is_remembered() {
+        let mut heap = Heap::new();
+        let class = old_instance_class(&mut heap);
+        let weak = heap.allocate_weak_array(class, 1);
+        let ephemeron = heap.allocate_ephemeron(class, 2);
+        let mut weak_root = Value::object(weak);
+        let mut ephemeron_root = Value::object(ephemeron);
+        // The first scavenge ages both to 1; the second promotes them.
+        scavenge_bare(&mut heap, false, &mut [&mut weak_root, &mut ephemeron_root]);
+        let (weak, ephemeron) = (rooted(weak_root), rooted(ephemeron_root));
+        assert!(space::is_young(weak.offset) && space::is_young(ephemeron.offset));
+        let class = heap.object_class(weak);
+        let kept = heap.allocate_string(class, crate::CodePoints::from("kept"));
+        let value = heap.allocate_string(class, crate::CodePoints::from("value"));
+        assert!(heap.weak_array_set_element(weak, 0, Value::object(kept)));
+        assert!(heap.instance_set_field(ephemeron, 0, Value::object(kept)));
+        assert!(heap.instance_set_field(ephemeron, 1, Value::object(value)));
+        let mut kept_root = Value::object(kept);
+        heap.tenuring_threshold = 1;
+
+        scavenge_bare(
+            &mut heap,
+            false,
+            &mut [&mut weak_root, &mut ephemeron_root, &mut kept_root],
+        );
+
+        let (weak, ephemeron, kept) =
+            (rooted(weak_root), rooted(ephemeron_root), rooted(kept_root));
+        assert!(!space::is_young(weak.offset) && !space::is_young(ephemeron.offset));
+        assert!(
+            space::is_young(kept.offset),
+            "the fresh object stayed young"
+        );
+        let element = heap
+            .weak_array_element(weak, 0)
+            .expect("a weak array answers its slot");
+        assert!(names(element, kept), "the word names the copy");
+        let fields = heap
+            .instance_fields(ephemeron)
+            .expect("an ephemeron answers its fields");
+        assert!(names(fields[0], kept));
+        assert_eq!(text_of(&heap, fields[1]).as_deref(), Some("value"));
+        for promoted in [weak, ephemeron] {
+            assert_eq!(
+                heap.remembered
+                    .iter()
+                    .filter(|entry| **entry == promoted.offset)
+                    .count(),
+                1,
+                "a promoted object naming a young one is remembered, once"
+            );
+        }
         verify_remembered_set_if_debug(&heap);
     }
 
@@ -8680,6 +8805,9 @@ mod tests {
 
     /// Task 1's chain, all young: while the first key is held by nothing,
     /// the whole chain is mourned; once it is rooted, every value survives.
+    /// The array holds the chain last link first, so the Cheney scan lists
+    /// every ephemeron but the first before its key is copied, and the
+    /// fixpoint takes a round per link.
     #[test]
     fn a_chain_of_young_ephemerons_dies_whole_in_a_scavenge() {
         const LENGTH: usize = 512;
@@ -8696,6 +8824,7 @@ mod tests {
                 assert!(heap.instance_set_field(ephemeron, 1, Value::object(keys[position + 1])));
                 ephemerons.push(Value::object(ephemeron));
             }
+            ephemerons.reverse();
             let mut array_root = Value::object(heap.allocate_array(class, &ephemerons));
             let mut first_key_root = if root_the_first_key {
                 Value::object(keys[0])

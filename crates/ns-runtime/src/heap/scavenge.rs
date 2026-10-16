@@ -44,8 +44,12 @@ pub(crate) struct Scavenger<'space> {
     pub(in crate::heap) remembered: Vec<NonZeroU64>,
     /// Every copied or remembered `WeakPointers` object, its words settled
     /// by `finish`; and every `Ephemeron` whose key had not survived when
-    /// it was scanned. Each object is scanned once, and a listed ephemeron
-    /// again only once its key survived, so neither list names one twice.
+    /// it was scanned. Neither list names an object twice, because only a
+    /// scan lists one and no object is scanned twice but a listed
+    /// ephemeron, rescanned once its key survived and so not listed again:
+    /// the remembered set holds each old object once, the Cheney loop
+    /// scans each copy once, and the remembered objects lie below where
+    /// its scan of the old space starts.
     weak_objects: Vec<NonZeroU64>,
     ephemerons: Vec<NonZeroU64>,
     /// How many objects were copied: the nursery's new count, and how many
