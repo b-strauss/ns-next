@@ -1260,6 +1260,15 @@ mod tests {
         ("Ephemeron", "value:"),
         ("Ephemeron", "finalizer"),
         ("Ephemeron", "finalizer:"),
+        // `WeakMap` is Newspeak over an `Array` of `Ephemeron`s: each
+        // member probes its table by sends, and `at:put:` asks the value
+        // leaf before it searches. No leaf answers for any of them.
+        ("WeakMap", "at:"),
+        ("WeakMap", "includesKey:"),
+        ("WeakMap", "removeKey:"),
+        ("WeakMap", "at:put:"),
+        ("WeakMap", "entryAt:"),
+        ("WeakMap", "rehash"),
         // `String`'s code-point protocol is Newspeak over its leaves --
         // `size`, `at:`, `copyFrom:to:` and the two searches: every method
         // sends, none forwards to a leaf.
@@ -1738,6 +1747,11 @@ mod tests {
         (
             "DataView",
             "isKindOfDataView",
+            MethodFastPath::Constant(QuickConstant::True),
+        ),
+        (
+            "WeakMap",
+            "isKindOfWeakMap",
             MethodFastPath::Constant(QuickConstant::True),
         ),
     ];

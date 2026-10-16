@@ -1,0 +1,25 @@
+stdout = '''
+nil
+'one'
+'one'
+true
+false
+'two'
+'two'
+'two'
+nil
+nil
+false
+nil
+false
+nil
+true
+false
+true
+false
+at:put: requires a key that is not a value, got 3
+at:put: requires a key that is not a value, got nil
+at:put: requires a key that is not a value, got 'text'
+at:put: requires a key that is not a value, got 3
+false
+'''

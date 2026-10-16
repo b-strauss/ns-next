@@ -97,6 +97,8 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
     private WeakArray = kernel WeakArray.
     /// The kernel's `Ephemeron`, which `KernelNamespace` hands out.
     private Ephemeron = kernel Ephemeron.
+    /// The kernel's `WeakMap`, which `KernelNamespace` hands out.
+    private WeakMap = kernel WeakMap.
   |
 ) (
   /// The one collections module, built over the kernel on first use and
@@ -308,6 +310,12 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
     /// only while their key is.
     public Ephemeron = (
       ^outer PlatformFactory Ephemeron.
+    )
+
+    /// Answers the kernel's class `WeakMap`, which a program instantiates
+    /// with `new` for a map whose entries last only while their keys do.
+    public WeakMap = (
+      ^outer PlatformFactory WeakMap.
     )
 
     /// Runs a full collection and answers the receiver: every object that

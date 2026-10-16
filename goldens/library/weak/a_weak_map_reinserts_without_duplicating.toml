@@ -1,0 +1,10 @@
+stdout = '''
+'first'
+'again'
+'again'
+nil
+'again'
+nil
+false
+nil
+'''

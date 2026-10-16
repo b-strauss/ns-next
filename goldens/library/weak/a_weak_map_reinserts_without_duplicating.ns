@@ -1,0 +1,49 @@
+/// Two keys whose identity hashes agree in their low eight bits share a
+/// probe chain in a WeakMap of 256 entries, the second behind the first.
+/// Once the first is removed, its entry is dead but still in the chain;
+/// putting the second again must find the second's own entry further
+/// along rather than reuse the dead one, so that `at:` answers the new
+/// value and one `removeKey:` leaves the map without the key. The two
+/// keys are found among fresh Objects by their `identityHash bitAnd: 255`,
+/// a Map from those bits to the first Object that had them; 257 of them
+/// are bound to hold such a pair.
+class AWeakMapReinsertsWithoutDuplicating = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      kernel = platform kernel.
+      map = kernel WeakMap new.
+      buckets = platform collections Map new.
+      first ::= nil.
+      second ::= nil.
+      show
+    |
+    show:: [:object |
+      transcript
+          show: object printString;
+          newLine.
+    ].
+    [second isNil] whileTrue: [
+      |
+        candidate = Object new.
+        bucket = 1 + (candidate identityHash bitAnd: 255).
+      |
+      (buckets includesKey: bucket) ifTrue: [
+        first:: buckets at: bucket.
+        second:: candidate.
+      ] ifFalse: [
+        buckets at: bucket put: candidate.
+      ].
+    ].
+    map at: first put: 'first'.
+    map at: second put: 'second'.
+    show value: (map removeKey: first).
+    show value: (map at: second put: 'again').
+    show value: (map at: second).
+    show value: (map at: first).
+    show value: (map removeKey: second).
+    show value: (map at: second).
+    show value: (map includesKey: second).
+    show value: (map removeKey: second).
+  )
+)

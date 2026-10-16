@@ -1,0 +1,66 @@
+/// A WeakMap answers nil for a key it does not hold; `at:put:` answers the
+/// value, a second `at:put:` under the same key replaces it, and `at:`,
+/// `includesKey:` and `removeKey:` -- which answers the value removed,
+/// then nil -- read what was stored. nil is never found as a key, even
+/// where a removed entry has left one behind. Five thousand keys, held
+/// strongly by a List, each read back its own value after the map has
+/// grown well past its first table. `at:put:` refuses a value as a key,
+/// nil included and a future whose value is a value, with an
+/// ArgumentError. `isKindOfWeakMap` answers true for a WeakMap and false
+/// for any other object.
+class AWeakMapAnswersWhatItWasGiven = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      kernel = platform kernel.
+      map = kernel WeakMap new.
+      key = Object new.
+      other = Object new.
+      keys = platform collections List new.
+      allFound ::= true.
+      show
+      refusal
+    |
+    show:: [:object |
+      transcript
+          show: object printString;
+          newLine.
+    ].
+    refusal:: [:action |
+      transcript
+          show: (action on: kernel ArgumentError do: [:error | error messageText]);
+          newLine.
+    ].
+    show value: (map at: key).
+    show value: (map at: key put: 'one').
+    show value: (map at: key).
+    show value: (map includesKey: key).
+    show value: (map includesKey: other).
+    show value: (map at: key put: 'two').
+    show value: (map at: key).
+    show value: (map removeKey: key).
+    show value: (map removeKey: key).
+    show value: (map at: key).
+    show value: (map includesKey: key).
+    show value: (map at: nil).
+    show value: (map includesKey: nil).
+    show value: (map removeKey: nil).
+    1 to: 5000 do: [:index |
+      |
+        each = Object new.
+      |
+      keys add: each.
+      map at: each put: index.
+    ].
+    1 to: 5000 do: [:index | (map at: (keys at: index)) = index ifFalse: [allFound:: false]].
+    show value: allFound.
+    show value: (map includesKey: other).
+    show value: map isKindOfWeakMap.
+    show value: key isKindOfWeakMap.
+    refusal value: [map at: 3 put: 'three'].
+    refusal value: [map at: nil put: 'nothing'].
+    refusal value: [map at: 'text' put: 'text'].
+    refusal value: [map at: (kernel Future computing: [3]) put: 'future'].
+    show value: (map includesKey: 3).
+  )
+)

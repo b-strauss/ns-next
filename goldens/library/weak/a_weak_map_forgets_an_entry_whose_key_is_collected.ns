@@ -1,0 +1,54 @@
+/// After `platform kernel garbageCollect` a WeakMap still holds the entry
+/// whose key a slot holds, and has let go of the one whose key nothing
+/// else reached: that entry's value, which a WeakArray watches, is
+/// collected with it. A key added after the collection is found. The
+/// dropped key and its value are made at run time by a method of their
+/// own that stores them and returns, so that no register of `main:`
+/// holds either; nothing is asserted of the dropped entry before the
+/// collection.
+class AWeakMapForgetsAnEntryWhoseKeyIsCollected = Object new (
+  |
+    heldKey ::= nil.
+  |
+) (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      kernel = platform kernel.
+      map = kernel WeakMap new.
+      watch = kernel WeakArray new: 1.
+      third = Object new.
+      held
+      dropped
+      show
+    |
+    show:: [:object |
+      transcript
+          show: object printString;
+          newLine.
+    ].
+    fill: map watching: watch.
+    kernel garbageCollect.
+    held:: map includesKey: heldKey.
+    dropped:: watch at: 1.
+    show value: held.
+    show value: dropped.
+    show value: (map at: heldKey).
+    show value: (map at: third put: 'third').
+    show value: (map at: third).
+    show value: (map at: heldKey).
+  )
+
+  /// Stores in `map` an entry under a new key `heldKey` holds, and one
+  /// under a new key nothing else reaches, whose value `watch` holds
+  /// weakly in its first slot.
+  fill: map watching: watch = (
+    |
+      value = 'dropped' , ' value'.
+    |
+    heldKey:: Object new.
+    map at: heldKey put: 'held'.
+    map at: Object new put: value.
+    watch at: 1 put: value.
+  )
+)

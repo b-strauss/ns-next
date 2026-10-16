@@ -755,17 +755,17 @@ ns_runtime::for_each_lowering! {
 /// superclass clauses runs here, which is why the counts are well below
 /// what a boot building every module left. Each eager slot initializer of
 /// `PlatformFactory` that sends to the kernel instance takes a site and
-/// fills the global entry of the class it names: its sixteen, `kernel
-/// Exception` to `kernel Ephemeron`, fill sixteen. The platform's boot
+/// fills the global entry of the class it names: its seventeen, `kernel
+/// Exception` to `kernel WeakMap`, fill seventeen. The platform's boot
 /// sends `PlatformFactory`'s `build`, `^Platform new`, whose family takes
 /// two sites and fills two global entries (the lexical `Platform`, and
 /// `new` to the class), and `Platform`'s superclass clause, `Value`, whose
 /// family takes two more and whose lexical `Value` fills another. The boot
 /// builds every class the two roots declare, so the superclass clause of
-/// every one that is no builtin runs too -- `StringBuilder` and
-/// `DataView`'s `Object` and its two byte orders' `DataView` in the
-/// kernel, and `KernelNamespace`'s `Value` in `PlatformFactory` -- and
-/// they take the remaining five sites and fill the remaining two global
+/// every one that is no builtin runs too -- `StringBuilder`'s,
+/// `DataView`'s and `WeakMap`'s `Object` and its two byte orders'
+/// `DataView` in the kernel, and `KernelNamespace`'s `Value` in
+/// `PlatformFactory` -- and they take the remaining six sites and fill the remaining two global
 /// entries, the kernel's lexical `Object` and `DataView`, a lexical send
 /// being keyed by the module it is sent in, so `KernelNamespace`'s
 /// `Value` finds `Platform`'s entry filled. Pinned so that the boot
@@ -775,12 +775,12 @@ ns_runtime::for_each_lowering! {
 /// entries, so those are counted only without it; the sites stay either
 /// way.
 #[test]
-fn a_fresh_bootstrap_leaves_twenty_five_sites_and_twenty_one_global_entries() {
+fn a_fresh_bootstrap_leaves_twenty_seven_sites_and_twenty_two_global_entries() {
     let mut interpreter = Interpreter::bootstrap();
     let statistics = interpreter.cache_statistics();
-    assert_eq!(statistics.site_entries, 25);
+    assert_eq!(statistics.site_entries, 27);
     let stress_caches = std::env::var("NS_NEXT_STRESS_CACHES").is_ok_and(|value| value == "1");
     if !stress_caches {
-        assert_eq!(statistics.filled_global_entries, 21);
+        assert_eq!(statistics.filled_global_entries, 22);
     }
 }

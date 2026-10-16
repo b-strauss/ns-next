@@ -4805,6 +4805,202 @@ class Kernel vmMirror: mirror = Value (
     )
   )
 
+  /// A map from keys to values that keeps neither alive for its own sake:
+  /// an entry stays while something other than an ephemeron reaches its
+  /// key, and once nothing does, a collection removes it, its value with
+  /// it. `WeakMap new` makes an empty one. Keys are compared by `==` and
+  /// hashed by `identityHash`; a key is an object that is not a value
+  /// (§3.1.1). There is no enumeration and no `size`, since what the map
+  /// holds changes with every collection. No value: `=` and `hash` are
+  /// identity.
+  ///
+  /// Each entry is an Ephemeron in a table probed linearly from its key's
+  /// identity hash. A removed or collected entry stays in the table with
+  /// a nil key, so that the chains running through it stay unbroken, until
+  /// `at:put:` reuses it or the table is rebuilt.
+  public class WeakMap = Object (
+    |
+      /// The entries: nil where no entry was ever made, otherwise an
+      /// Ephemeron, whose key is nil once its entry was removed or
+      /// collected. Its size is a power of two, so that a hash is masked
+      /// onto it, and it is never full, so that every chain ends at a nil.
+      /// It starts large, since a map is expected to serve a whole module.
+      private table ::= outer Kernel Array new: 256.
+      /// How many slots of `table` hold an Ephemeron, live or dead.
+      private used ::= 0.
+    |
+  ) (
+    /// Answers true: the receiver is a WeakMap.
+    public isKindOfWeakMap = (
+      ^true.
+    )
+
+    /// Answers the value stored under `key`, or nil when the receiver
+    /// holds no entry under it.
+    ///
+    /// key: any object; nil and a value are never found.
+    public at: key = (
+      |
+        entry = self entryAt: key.
+      |
+      entry isNil ifTrue: [^nil].
+      ^entry value.
+    )
+
+    /// Answers whether the receiver holds an entry under `key`.
+    ///
+    /// key: any object; nil and a value are never found.
+    public includesKey: key = (
+      ^(self entryAt: key) notNil.
+    )
+
+    /// Removes the entry under `key` and answers its value, or answers
+    /// nil when the receiver holds no entry under it.
+    ///
+    /// key: any object; nil and a value are never found.
+    public removeKey: key = (
+      |
+        entry = self entryAt: key.
+        removed
+      |
+      entry isNil ifTrue: [^nil].
+      removed:: entry value.
+      entry
+          key: nil;
+          value: nil.
+      ^removed.
+    )
+
+    /// Stores `value` under `key` and answers `value`, replacing the value
+    /// stored under `key` before, if any.
+    ///
+    /// key: an object that is not a value (§3.1.1). A value has no
+    ///     identity -- an equal one can always be made again -- so whether
+    ///     an entry under it vanished would depend on when the collector
+    ///     ran.
+    /// value: any object; kept alive while `key` is.
+    ///
+    /// Signals an ArgumentError carrying `key`, 'at:put: requires a key
+    /// that is not a value, got …' followed by its printString, for nil
+    /// or a value -- an Integer, a Float, true, false, a String, an
+    /// instance of a value class, a future whose value is one. A refused
+    /// key leaves the receiver as it was.
+    ///
+    /// The whole chain is searched for `key` before a dead entry passed on
+    /// the way is reused: `key` may sit further along than an entry
+    /// removed since it was stored, and reusing that one would leave two
+    /// entries under `key`, the older one found first once the newer is
+    /// removed.
+    public at: key put: value = (
+      |
+        mask
+        index
+        entry
+        reusable
+      |
+      (key isNil or: [vmMirror objectIsValue: key ifFail: [false]]) ifTrue: [
+        ^(outer
+            Kernel
+            ArgumentError value: key) signal: 'at:put: requires a key that is not a value, got '
+            , key printString.
+      ].
+      mask:: table size - 1.
+      index:: 1 + (key identityHash bitAnd: mask).
+      entry:: table at: index.
+      [entry isNil] whileFalse: [
+        |
+          entryKey = entry key.
+        |
+        entryKey == key ifTrue: [
+          entry value: value.
+          ^value.
+        ].
+        (entryKey isNil and: [reusable isNil]) ifTrue: [reusable:: entry].
+        index:: 1 + (index bitAnd: mask).
+        entry:: table at: index.
+      ].
+      reusable isNil ifFalse: [
+        reusable
+            key: key;
+            value: value.
+        ^value.
+      ].
+      entry:: outer Kernel Ephemeron new.
+      entry
+          key: key;
+          value: value.
+      table at: index put: entry.
+      used:: used + 1.
+      used > (table size // 4 * 3) ifTrue: [self rehash].
+      ^value.
+    )
+
+    /// Answers the entry whose key is `key`, or nil when there is none.
+    ///
+    /// key: any object; nil, the key every dead entry has, answers nil.
+    private entryAt: key = (
+      |
+        mask
+        index
+        entry
+      |
+      key isNil ifTrue: [^nil].
+      mask:: table size - 1.
+      index:: 1 + (key identityHash bitAnd: mask).
+      entry:: table at: index.
+      [entry isNil] whileFalse: [
+        entry key == key ifTrue: [^entry].
+        index:: 1 + (index bitAnd: mask).
+        entry:: table at: index.
+      ].
+      ^nil.
+    )
+
+    /// Rebuilds `table` from its live entries, dropping the dead ones:
+    /// twice as large when more than half of it holds live entries, the
+    /// same size otherwise, so that a map whose keys keep dying does not
+    /// grow without end. Sets `used` to the number of entries moved.
+    ///
+    /// The entries are counted again as they are moved rather than taken
+    /// from the first count, since a collection can kill an entry between
+    /// the two passes; each key is read once and held while its entry is
+    /// placed, so that one cannot die halfway.
+    private rehash = (
+      |
+        oldTable = table.
+        live ::= 0.
+        capacity ::= oldTable size.
+        newTable
+        mask
+        moved ::= 0.
+      |
+      1 to: oldTable size do: [:oldIndex |
+        |
+          entry = oldTable at: oldIndex.
+        |
+        (entry notNil and: [entry key notNil]) ifTrue: [live:: live + 1].
+      ].
+      live > (capacity // 2) ifTrue: [capacity:: capacity * 2].
+      newTable:: outer Kernel Array new: capacity.
+      mask:: capacity - 1.
+      1 to: oldTable size do: [:oldIndex |
+        |
+          entry = oldTable at: oldIndex.
+          entryKey = entry isNil ifTrue: [nil] ifFalse: [entry key].
+          index ::= 0.
+        |
+        entryKey isNil ifFalse: [
+          index:: 1 + (entryKey identityHash bitAnd: mask).
+          [(newTable at: index) isNil] whileFalse: [index:: 1 + (index bitAnd: mask)].
+          newTable at: index put: entry.
+          moved:: moved + 1.
+        ].
+      ].
+      table:: newTable.
+      used:: moved.
+    )
+  )
+
   /// A view of a ByteArray that reads and writes numbers of one to eight
   /// bytes in a byte order given when it is made, at any byte position:
   /// `DataView on: bytes byteOrder: #bigEndian` and `DataView new: size
