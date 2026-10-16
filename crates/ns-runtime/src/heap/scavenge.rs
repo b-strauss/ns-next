@@ -23,6 +23,7 @@ use std::num::NonZeroU64;
 
 use crate::heap::header::{Format, Header, MAX_AGE};
 use crate::heap::object::{self, pointer_ranges_of, strong_pointer_ranges, CLASS, FIELDS};
+use crate::heap::pending::PendingEphemerons;
 use crate::heap::space::{allocation_range, block_range, is_young, object_at, RegionName, Space};
 use crate::heap::{
     header_index, offset_of_header, FrameReference, ObjectReference, ResolvedFutures, Word,
@@ -58,6 +59,14 @@ pub(crate) struct Scavenger<'space> {
     /// its scan of the old space starts.
     weak_objects: Vec<NonZeroU64>,
     ephemerons: Vec<NonZeroU64>,
+    /// Whether `copy` lists what it copies on `copied`: only during
+    /// `finish`'s fixpoint, whose pending ephemerons are indexed by the
+    /// young objects that would resolve them.
+    recording: bool,
+    /// Every object `finish`'s fixpoint has copied and not yet looked up,
+    /// by the offset it was copied from -- where a pending key word, or
+    /// the forwarders it starts, ends.
+    copied: Vec<NonZeroU64>,
     /// How many objects were copied: the nursery's new count, and how many
     /// of them went old.
     pub(in crate::heap) survived: usize,
@@ -93,6 +102,8 @@ impl<'space> Scavenger<'space> {
             remembered: Vec::new(),
             weak_objects: Vec::new(),
             ephemerons: Vec::new(),
+            recording: false,
+            copied: Vec::new(),
             survived: 0,
             promoted: 0,
             #[cfg(debug_assertions)]
@@ -199,6 +210,9 @@ impl<'space> Scavenger<'space> {
         words[header + CLASS] = Word::with_object_offset(moved_offset).bits();
         self.survived += 1;
         self.promoted += usize::from(promoted);
+        if self.recording {
+            self.copied.push(offset);
+        }
         moved_offset
     }
 
@@ -271,13 +285,19 @@ impl<'space> Scavenger<'space> {
 
     /// Ends a scavenge whose Cheney loop `drain` has run dry, as
     /// `Heap::finish_marking` ends a marking: scans each listed ephemeron
-    /// whose key has since survived and drains again, until a round scans
-    /// none; mourns every ephemeron still listed -- its key reached by
-    /// nothing but ephemerons -- by setting its fields to nil; and
-    /// rewrites every word of a listed weak object that names a young
-    /// object to the copy, or to nil where nothing copied it -- a resolved
-    /// future nothing copied first to its value
-    /// (`see_through_resolved_future`).
+    /// whose key has since survived, and indexes the rest by the young
+    /// objects whose copy would resolve them (`pending_keys`); then drains,
+    /// looking every object copied meanwhile up in the index and scanning
+    /// the ephemerons it resolves, until nothing new is copied; mourns
+    /// every ephemeron left in the index -- its key reached by nothing but
+    /// ephemerons -- by setting its fields to nil; and rewrites every word
+    /// of a listed weak object that names a young object to the copy, or
+    /// to nil where nothing copied it -- a resolved future nothing copied
+    /// first to its value (`see_through_resolved_future`).
+    ///
+    /// Each ephemeron is scanned at most once more and each object the
+    /// fixpoint copies looked up once, so a chain of ephemerons each keyed
+    /// by the previous one's value costs its length, not its square.
     ///
     /// Must run before the nursery is vacated: a weak word left naming it
     /// would name whatever is allocated there next. An old object either
@@ -287,28 +307,39 @@ impl<'space> Scavenger<'space> {
     /// Mourning and clearing write nil, which names no young object, so
     /// they are the collector's own rewrites and need no write barrier.
     pub(in crate::heap) fn finish(&mut self) {
-        loop {
-            let pending = std::mem::take(&mut self.ephemerons);
-            let mut progressed = false;
-            for ephemeron in pending {
-                if self.ephemeron_key_survives(ephemeron) {
-                    let header = header_index(ephemeron);
-                    if self.scan_object(header) && !is_young(ephemeron) {
-                        self.remember(header);
+        if !self.ephemerons.is_empty() {
+            let mut pending = PendingEphemerons::new();
+            self.recording = true;
+            loop {
+                // Ephemerons the last drain scanned before their key
+                // survived join the index; one whose key that drain copied
+                // meanwhile was recorded before it was indexed, so it is
+                // scanned here.
+                for ephemeron in std::mem::take(&mut self.ephemerons) {
+                    if self.ephemeron_key_survives(ephemeron) {
+                        self.resolve_ephemeron(ephemeron);
+                    } else {
+                        let keys = self.pending_keys(ephemeron);
+                        pending.add(ephemeron, keys.into_iter().flatten());
                     }
-                    progressed = true;
-                } else {
-                    self.ephemerons.push(ephemeron);
                 }
+                // Every object copied is either scanned already or
+                // recorded here, so nothing recorded means nothing new
+                // survived.
+                let copied = std::mem::take(&mut self.copied);
+                if copied.is_empty() {
+                    break;
+                }
+                for offset in copied {
+                    pending.take(offset, |ephemeron| self.resolve_ephemeron(ephemeron));
+                }
+                self.drain();
             }
-            if !progressed {
-                break;
+            self.recording = false;
+            for ephemeron in pending.unresolved() {
+                let fields = self.field_range(header_index(ephemeron));
+                self.space.words_mut()[fields].fill(Word::NIL.bits());
             }
-            self.drain();
-        }
-        for ephemeron in std::mem::take(&mut self.ephemerons) {
-            let fields = self.field_range(header_index(ephemeron));
-            self.space.words_mut()[fields].fill(Word::NIL.bits());
         }
         for weak_object in std::mem::take(&mut self.weak_objects) {
             let header = header_index(weak_object);
@@ -331,6 +362,38 @@ impl<'space> Scavenger<'space> {
                 self.remember(header);
             }
         }
+    }
+
+    /// Scans the listed ephemeron at `offset`, whose key has survived: its
+    /// guarded fields are copied, and an old one that names a young object
+    /// afterwards is remembered.
+    fn resolve_ephemeron(&mut self, offset: NonZeroU64) {
+        debug_assert!(
+            self.ephemeron_key_survives(offset),
+            "internal: an ephemeron is resolved only once its key survives"
+        );
+        let header = header_index(offset);
+        if self.scan_object(header) && !is_young(offset) {
+            self.remember(header);
+        }
+    }
+
+    /// The young objects whose copy resolves the listed ephemeron at
+    /// `offset`, whose key has not survived, as `key_survives` judges it:
+    /// the key, at the end of its forwarders, where `copy` records it, and
+    /// when the key is a resolved future, its value too.
+    fn pending_keys(&self, offset: NonZeroU64) -> [Option<NonZeroU64>; 2] {
+        let Some(key) = self.space.words()[self.field_range(header_index(offset))]
+            .first()
+            .and_then(|key| Word::from_bits(*key).object_offset())
+        else {
+            return [None, None];
+        };
+        let value = self
+            .resolved_future_value(key)
+            .and_then(|value| value.object_offset())
+            .map(|value| self.follow(value));
+        [Some(self.follow(key)), value]
     }
 
     /// Whether the key of the listed ephemeron at `offset` has survived. A

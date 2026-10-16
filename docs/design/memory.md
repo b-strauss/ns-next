@@ -2673,6 +2673,17 @@ the groundwork the JIT tiers take over, as Cogit's `genPrimitiveNew` and
   vacated, Primordial Soup's order (`vm/heap.cc:627-682`), since a word
   left naming a dead object would be forwarded to garbage or name what is
   allocated next.
+- **The ephemeron fixpoint indexes its pending ephemerons by key** rather
+  than rescanning them per round, as Primordial Soup
+  (`vm/heap.cc:853-911`) and Spur (`processEphemerons`) do: only the
+  fixpoint's own drains record what they mark or copy, each recorded
+  object is looked up once and each ephemeron resolved once
+  (`heap/pending.rs`), so a chain of ephemerons each keyed by the previous
+  one's value costs its length rather than its square, and the ordinary
+  marking and Cheney loop pay nothing for it -- the marking's drain takes
+  the recording as a parameter of its type, the scavenger's copy tests one
+  flag ([core-library.md](core-library.md), "The heap and the
+  collectors").
 - **The application cache stays strong until live editing** (decided with
   the user on 2026-10-03). Its key was an address, which needs the strong
   reference to keep it unique; since road step 3a it is a pair of the heap's

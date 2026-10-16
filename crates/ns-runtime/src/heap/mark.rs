@@ -26,6 +26,10 @@ pub(crate) struct Marker {
     /// fields not yet traced: traced if the key is marked later, mourned
     /// if it never is (`Heap::finish_marking`).
     pub(super) ephemerons: Vec<NonZeroU64>,
+    /// Every object `finish_marking`'s fixpoint has marked and not yet
+    /// looked up among the pending ephemerons' keys; the main marking
+    /// records nothing.
+    pub(super) reached: Vec<NonZeroU64>,
 }
 
 impl Marker {
@@ -34,7 +38,13 @@ impl Marker {
             work: Vec::new(),
             weak_objects: Vec::new(),
             ephemerons: Vec::new(),
+            reached: Vec::new(),
         }
+    }
+
+    /// Whether the work list is empty.
+    pub(super) fn is_done(&self) -> bool {
+        self.work.is_empty()
     }
 
     /// Adds the object at `offset` to the work list.

@@ -457,15 +457,15 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   builder whose data are full grows one append early. A builder costs at
   most one early growth; noted 2026-10-13.
   [core-library.md](design/core-library.md), "`StringBuilder`".
-- **The ephemeron fixpoint rescans its whole pending list each round.**
-  Both collectors (`Heap::finish_marking`, `Scavenger::finish`) and the
-  image encoder (`GraphTable::build`) walk every listed ephemeron in every
-  round until a round finds no key newly reached, so a chain of ephemerons
-  each keyed by the previous one's value costs time quadratic in its
-  length. An index from a key to the ephemerons waiting on it would make
-  it linear; worth building only if a measurement shows a program meets
-  such chains. Noted 2026-10-16. [core-library.md](design/core-library.md),
-  "The heap and the collectors".
+- **The image encoder's ephemeron fixpoint rescans its pending list each
+  round.** `GraphTable::build` walks every waiting ephemeron in every round
+  until a round finds no key newly reached, so a chain of ephemerons each
+  keyed by the previous one's value costs time quadratic in its length.
+  Both collectors index their pending ephemerons by key instead
+  (`heap/pending.rs`); the encoder could do the same, worth it only if a
+  measurement shows an image meets such chains. Noted 2026-10-16.
+  [core-library.md](design/core-library.md), "The heap and the
+  collectors".
 
 ## Planned: language and library
 

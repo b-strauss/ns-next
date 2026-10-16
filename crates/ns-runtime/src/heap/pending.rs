@@ -1,0 +1,137 @@
+//! The ephemerons a collector's fixpoint still waits on, indexed by the
+//! object whose survival decides each (`docs/design/core-library.md`, "The
+//! heap and the collectors"). A collector records every object its fixpoint
+//! newly reaches and looks each up here once, so an ephemeron is resolved
+//! when its key is reached rather than found by rescanning every pending
+//! one per round, which costs the square of a chain's length.
+//!
+//! A child of `heap`; it holds offsets only, as the collector sees them,
+//! and lives no longer than one collection.
+
+use crate::hash::IdentityMap;
+use std::num::NonZeroU64;
+
+/// The pending ephemerons, each reachable from every object whose survival
+/// resolves it: one for a key, two for a resolved future's key in a
+/// scavenge (the proxy and its value). Each is resolved at most once.
+pub(in crate::heap) struct PendingEphemerons {
+    /// The ephemerons, in the order they were added.
+    ephemerons: Vec<NonZeroU64>,
+    /// Whether each ephemeron has been resolved, by its position above:
+    /// one indexed under two objects must not be resolved twice.
+    resolved: Vec<bool>,
+    /// The first link of each indexed object's list.
+    first_link: IdentityMap<u64, usize>,
+    /// The links: an ephemeron's position, and the next link of the same
+    /// object's list. Several ephemerons may share a key.
+    links: Vec<(usize, Option<usize>)>,
+}
+
+impl PendingEphemerons {
+    pub(in crate::heap) fn new() -> PendingEphemerons {
+        PendingEphemerons {
+            ephemerons: Vec::new(),
+            resolved: Vec::new(),
+            first_link: IdentityMap::default(),
+            links: Vec::new(),
+        }
+    }
+
+    /// Indexes the ephemeron at `ephemeron` under each object of `keys`,
+    /// whose survival resolves it.
+    pub(in crate::heap) fn add(
+        &mut self,
+        ephemeron: NonZeroU64,
+        keys: impl IntoIterator<Item = NonZeroU64>,
+    ) {
+        let position = self.ephemerons.len();
+        self.ephemerons.push(ephemeron);
+        self.resolved.push(false);
+        for key in keys {
+            let link = self.links.len();
+            let next = self.first_link.insert(key.get(), link);
+            self.links.push((position, next));
+        }
+    }
+
+    /// Hands every unresolved ephemeron indexed under `key` to `resolve`,
+    /// once, and forgets the key: the object has survived, and is reached
+    /// only once.
+    pub(in crate::heap) fn take(&mut self, key: NonZeroU64, mut resolve: impl FnMut(NonZeroU64)) {
+        #[cfg(test)]
+        work::count_lookup();
+        let mut link = self.first_link.remove(&key.get());
+        while let Some(current) = link {
+            let (position, next) = self.links[current];
+            if !self.resolved[position] {
+                self.resolved[position] = true;
+                #[cfg(test)]
+                work::count_resolution();
+                resolve(self.ephemerons[position]);
+            }
+            link = next;
+        }
+    }
+
+    /// Every ephemeron never resolved: its key reached by nothing but
+    /// ephemerons.
+    pub(in crate::heap) fn unresolved(&self) -> impl Iterator<Item = NonZeroU64> + '_ {
+        self.ephemerons
+            .iter()
+            .zip(&self.resolved)
+            .filter(|(_, resolved)| !**resolved)
+            .map(|(ephemeron, _)| *ephemeron)
+    }
+}
+
+/// How much work the fixpoints did on this thread, for the tests that hold
+/// it linear in what the fixpoint reaches.
+#[cfg(test)]
+pub(in crate::heap) mod work {
+    use std::cell::Cell;
+
+    thread_local! {
+        static LOOKUPS: Cell<usize> = const { Cell::new(0) };
+        static RESOLUTIONS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(in crate::heap) fn count_lookup() {
+        LOOKUPS.with(|lookups| lookups.set(lookups.get() + 1));
+    }
+
+    pub(in crate::heap) fn count_resolution() {
+        RESOLUTIONS.with(|resolutions| resolutions.set(resolutions.get() + 1));
+    }
+
+    /// The lookups and resolutions counted since the last call, which
+    /// starts the count afresh.
+    pub(in crate::heap) fn take() -> (usize, usize) {
+        (
+            LOOKUPS.with(|lookups| lookups.replace(0)),
+            RESOLUTIONS.with(|resolutions| resolutions.replace(0)),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn offset(value: u64) -> NonZeroU64 {
+        NonZeroU64::new(value).expect("a test offset is not zero")
+    }
+
+    #[test]
+    fn an_ephemeron_under_two_keys_is_resolved_once_and_the_rest_stay_unresolved() {
+        let mut pending = PendingEphemerons::new();
+        pending.add(offset(8), [offset(100), offset(200)]);
+        pending.add(offset(16), [offset(100)]);
+        pending.add(offset(24), [offset(300)]);
+        let mut resolved = Vec::new();
+        pending.take(offset(200), |ephemeron| resolved.push(ephemeron));
+        pending.take(offset(100), |ephemeron| resolved.push(ephemeron));
+        pending.take(offset(100), |ephemeron| resolved.push(ephemeron));
+        assert_eq!(resolved, [offset(8), offset(16)]);
+        assert_eq!(pending.unresolved().collect::<Vec<_>>(), [offset(24)]);
+    }
+}

@@ -32,6 +32,7 @@ mod compaction;
 mod header;
 pub(crate) mod mark;
 mod object;
+mod pending;
 mod records;
 mod scavenge;
 mod space;
@@ -49,6 +50,7 @@ use object::{
     FIELDS, HEADER,
 };
 pub(crate) use object::{ByteArrayData, ByteArrayDataMut};
+use pending::PendingEphemerons;
 pub use records::{FrameRecord, NewClass, NewClosure, ObjectShape, PlaceholderFormat};
 use scavenge::Scavenger;
 use space::{
@@ -5527,6 +5529,14 @@ impl<'gc> Heap<'gc> {
     /// list, both for `finish_marking`. Since an object is visited once,
     /// neither list names one twice.
     pub(crate) fn drain_marking(&mut self, marker: &mut mark::Marker) {
+        self.drain_marking_recording::<false>(marker);
+    }
+
+    /// `drain_marking`, which with `RECORD` also lists every object it
+    /// marks on the marker's `reached`, for `finish_marking`'s fixpoint to
+    /// look up among the pending ephemerons' keys. A parameter of the type
+    /// rather than a flag, so the main marking does not even test it.
+    fn drain_marking_recording<const RECORD: bool>(&mut self, marker: &mut mark::Marker) {
         let words = self.space.words_mut();
         while let Some(offset) = marker.next() {
             let index = header_index(offset);
@@ -5535,6 +5545,9 @@ impl<'gc> Heap<'gc> {
                 continue;
             }
             words[index] = header.with_marked(true).0;
+            if RECORD {
+                marker.reached.push(offset);
+            }
             let block = block_range(words, index);
             let format = header.format();
             let ranges = match format {
@@ -5570,16 +5583,20 @@ impl<'gc> Heap<'gc> {
     }
 
     /// Ends a marking whose work list `drain_marking` has emptied: traces
-    /// each listed ephemeron whose key has since been marked and drains
-    /// again, until a round traces none; then mourns every ephemeron still
-    /// listed -- its key reached by nothing but ephemerons -- and clears
-    /// every word of a listed weak object that names an unmarked object
-    /// (`docs/design/core-library.md`, "The heap and the collectors").
+    /// each listed ephemeron whose key has since been marked, and indexes
+    /// the rest by key (`pending::PendingEphemerons`); then drains, looking
+    /// every object the drain marks up in the index and tracing the
+    /// ephemerons keyed by it, until a drain marks nothing; then mourns
+    /// every ephemeron left in the index -- its key reached by nothing but
+    /// ephemerons -- and clears every word of a listed weak object that
+    /// names an unmarked object (`docs/design/core-library.md`, "The heap
+    /// and the collectors").
     ///
     /// Must run before compaction, which forwards only marked objects: a
     /// word left naming a dead one would be forwarded to garbage. Each
-    /// round rescans the whole list, which is quadratic only in the length
-    /// of a chain of ephemerons each keyed by the previous one's value.
+    /// ephemeron is traced at most once and each object the fixpoint
+    /// marks looked up once, so a chain of ephemerons each keyed by the
+    /// previous one's value costs its length, not its square.
     ///
     /// A resolved future in a weak word or an ephemeron's key is judged by
     /// its value's liveness, as a scavenge judges it: `World::collect` runs
@@ -5589,24 +5606,33 @@ impl<'gc> Heap<'gc> {
     /// Mourning and clearing write nil, which names no young object, so
     /// they are the collector's own rewrites and need no write barrier.
     pub(crate) fn finish_marking(&mut self, marker: &mut mark::Marker) {
-        loop {
-            let pending = std::mem::take(&mut marker.ephemerons);
-            let mut progressed = false;
-            for ephemeron in pending {
-                if self.ephemeron_key_marked(ephemeron) {
-                    self.push_ephemeron_fields(ephemeron, marker);
-                    progressed = true;
-                } else {
-                    marker.ephemerons.push(ephemeron);
+        if !marker.ephemerons.is_empty() {
+            let mut pending = PendingEphemerons::new();
+            loop {
+                // Ephemerons the last drain visited before their key join
+                // the index; one whose key that drain marked meanwhile was
+                // recorded before it was indexed, so it is traced here.
+                for ephemeron in std::mem::take(&mut marker.ephemerons) {
+                    let key = self.ephemeron_key(ephemeron);
+                    if key.is_some_and(|key| self.is_marked(key)) {
+                        self.push_ephemeron_fields(ephemeron, marker);
+                    } else {
+                        pending.add(ephemeron, key);
+                    }
                 }
+                for reached in std::mem::take(&mut marker.reached) {
+                    pending.take(reached, |ephemeron| {
+                        self.push_ephemeron_fields(ephemeron, marker);
+                    });
+                }
+                if marker.is_done() {
+                    break;
+                }
+                self.drain_marking_recording::<true>(marker);
             }
-            if !progressed {
-                break;
+            for ephemeron in pending.unresolved() {
+                self.mourn_ephemeron(ephemeron);
             }
-            self.drain_marking(marker);
-        }
-        for ephemeron in std::mem::take(&mut marker.ephemerons) {
-            self.mourn_ephemeron(ephemeron);
         }
         for weak_object in std::mem::take(&mut marker.weak_objects) {
             self.clear_unmarked_words(weak_object);
@@ -5619,15 +5645,18 @@ impl<'gc> Heap<'gc> {
         (block.start + FIELDS).min(block.end)..block.end
     }
 
-    /// Whether the key of the listed ephemeron at `offset` is marked. A
-    /// listed ephemeron's key is an object: one with no field or another
-    /// key is traced whole and never listed.
-    fn ephemeron_key_marked(&self, offset: NonZeroU64) -> bool {
-        let words = self.space.words();
-        words[self.field_range(offset)]
+    /// The key of the listed ephemeron at `offset`. A listed ephemeron's
+    /// key is an object: one with no field or another key is traced whole
+    /// and never listed.
+    fn ephemeron_key(&self, offset: NonZeroU64) -> Option<NonZeroU64> {
+        self.space.words()[self.field_range(offset)]
             .first()
             .and_then(|key| Word::from_bits(*key).object_offset())
-            .is_some_and(|key| Header(words[header_index(key)]).marked())
+    }
+
+    /// Whether the object at `offset` is marked.
+    fn is_marked(&self, offset: NonZeroU64) -> bool {
+        Header(self.space.words()[header_index(offset)]).marked()
     }
 
     /// Pushes every unmarked object the fields of the ephemeron at `offset`
@@ -6386,17 +6415,48 @@ mod tests {
     /// apiece.
     #[test]
     fn a_chain_of_ephemerons_whose_keys_only_their_values_reach_dies_whole() {
-        const LENGTH: usize = 512;
-        for root_the_first_key in [false, true] {
+        collect_a_chain_of_ephemerons(512);
+    }
+
+    /// The chain at a length whose square a rescan per round would make
+    /// obvious: the fixpoint looks each object it marks up once and
+    /// traces each ephemeron once.
+    #[test]
+    fn a_long_chain_of_ephemerons_costs_its_length_in_a_collection() {
+        const LENGTH: usize = 20_000;
+        let [(unrooted_lookups, unrooted_resolutions), (lookups, resolutions)] =
+            collect_a_chain_of_ephemerons(LENGTH);
+        assert_eq!(
+            (unrooted_lookups, unrooted_resolutions),
+            (0, 0),
+            "nothing is reached, so nothing is looked up"
+        );
+        assert!(
+            lookups <= 2 * LENGTH,
+            "{lookups} lookups for {LENGTH} links"
+        );
+        assert!(
+            resolutions <= LENGTH,
+            "{resolutions} resolutions for {LENGTH} links"
+        );
+    }
+
+    /// `LENGTH` ephemerons, each one's value the next one's key, collected
+    /// once with the first key held by nothing -- the whole chain is
+    /// mourned -- and once with it rooted -- every value survives, the
+    /// fixpoint reaching link after link. Answers the fixpoint's lookups
+    /// and resolutions in each collection.
+    fn collect_a_chain_of_ephemerons(length: usize) -> [(usize, usize); 2] {
+        [false, true].map(|root_the_first_key| {
             let mut heap = Heap::new();
             let class = named_class(&mut heap, "Object");
             let ephemeron_class = named_class(&mut heap, "Ephemeron");
             let array_class = named_class(&mut heap, "Array");
-            let keys: Vec<ObjectReference<'_>> = (0..=LENGTH)
+            let keys: Vec<ObjectReference<'_>> = (0..=length)
                 .map(|_| heap.allocate_instance(class, 0))
                 .collect();
-            let mut ephemerons = Vec::with_capacity(LENGTH);
-            for position in 0..LENGTH {
+            let mut ephemerons = Vec::with_capacity(length);
+            for position in 0..length {
                 let ephemeron = heap.allocate_ephemeron(ephemeron_class, 3);
                 assert!(heap.ephemeron_set_field(ephemeron, 0, Value::object(keys[position])));
                 assert!(heap.ephemeron_set_field(ephemeron, 1, Value::object(keys[position + 1])));
@@ -6408,11 +6468,13 @@ mod tests {
             } else {
                 Value::nil()
             };
+            pending::work::take();
             heap.collect_for_test(&mut [&mut array_root, &mut first_key_root]);
+            let work = pending::work::take();
             let ephemerons = heap
                 .array_elements(rooted(array_root))
                 .expect("the array answers its elements");
-            assert_eq!(ephemerons.len(), LENGTH);
+            assert_eq!(ephemerons.len(), length);
             for (position, ephemeron) in ephemerons.into_iter().enumerate() {
                 let fields = heap
                     .ephemeron_fields(rooted(ephemeron))
@@ -6429,7 +6491,126 @@ mod tests {
                     );
                 }
             }
+            work
+        })
+    }
+
+    /// Two ephemerons share a key that only a third ephemeron's value
+    /// reaches, its own key marked after it was visited: once the third is
+    /// traced, the shared key's one lookup resolves both.
+    #[test]
+    fn two_ephemerons_sharing_a_key_reached_late_are_both_kept_in_a_collection() {
+        let mut heap = Heap::new();
+        let class = named_class(&mut heap, "Object");
+        let ephemeron_class = named_class(&mut heap, "Ephemeron");
+        let array_class = named_class(&mut heap, "Array");
+        let [first_key, shared_key, first_value, second_value] =
+            [0; 4].map(|_| heap.allocate_instance(class, 0));
+        let holder = heap.allocate_instance(class, 1);
+        assert!(heap.instance_set_field(holder, 0, Value::object(first_key)));
+        let first = heap.allocate_ephemeron(ephemeron_class, 2);
+        assert!(heap.ephemeron_set_field(first, 0, Value::object(first_key)));
+        assert!(heap.ephemeron_set_field(first, 1, Value::object(shared_key)));
+        let sharing = [first_value, second_value].map(|value| {
+            let ephemeron = heap.allocate_ephemeron(ephemeron_class, 2);
+            assert!(heap.ephemeron_set_field(ephemeron, 0, Value::object(shared_key)));
+            assert!(heap.ephemeron_set_field(ephemeron, 1, Value::object(value)));
+            Value::object(ephemeron)
+        });
+        // The work list is a stack: the ephemerons are visited last to
+        // first, all before the holder marks the first key.
+        let mut array_root = Value::object(heap.allocate_array(
+            array_class,
+            &[
+                Value::object(holder),
+                Value::object(first),
+                sharing[0],
+                sharing[1],
+            ],
+        ));
+        pending::work::take();
+
+        heap.collect_for_test(&mut [&mut array_root]);
+
+        let (_, resolutions) = pending::work::take();
+        assert_eq!(resolutions, 2, "both through the shared key's lookup");
+        let elements = heap
+            .array_elements(rooted(array_root))
+            .expect("the array answers its elements");
+        for ephemeron in &elements[2..] {
+            let fields = heap
+                .ephemeron_fields(rooted(*ephemeron))
+                .expect("an ephemeron answers its fields");
+            assert!(
+                fields.iter().all(|field| field.as_object().is_some()),
+                "the ephemeron keeps its key and its value"
+            );
         }
+    }
+
+    /// An ephemeron keyed by a resolved future whose value only another
+    /// ephemeron's value reaches, that one's key marked after it was
+    /// visited: the key reads the value, which the fixpoint marks late,
+    /// and the entry is kept.
+    #[test]
+    fn an_ephemeron_keyed_by_a_resolved_future_reached_late_is_kept_in_a_collection() {
+        let mut heap = Heap::new();
+        let class = named_class(&mut heap, "Object");
+        let future_class = named_class(&mut heap, "FutureImplementation");
+        let ephemeron_class = named_class(&mut heap, "Ephemeron");
+        let array_class = named_class(&mut heap, "Array");
+        let value = heap.allocate_instance(class, 0);
+        let guarded = heap.allocate_instance(class, 1);
+        assert!(heap.instance_set_field(guarded, 0, Value::small_integer(7)));
+        let future = resolved_future(&mut heap, future_class, Value::object(value));
+        let late_key = heap.allocate_instance(class, 0);
+        let holder = heap.allocate_instance(class, 1);
+        assert!(heap.instance_set_field(holder, 0, Value::object(late_key)));
+        let reaching = heap.allocate_ephemeron(ephemeron_class, 2);
+        assert!(heap.ephemeron_set_field(reaching, 0, Value::object(late_key)));
+        assert!(heap.ephemeron_set_field(reaching, 1, Value::object(value)));
+        let keyed = heap.allocate_ephemeron(ephemeron_class, 2);
+        assert!(heap.ephemeron_set_field(keyed, 0, Value::object(future)));
+        assert!(heap.ephemeron_set_field(keyed, 1, Value::object(guarded)));
+        let mut array_root = Value::object(heap.allocate_array(
+            array_class,
+            &[
+                Value::object(holder),
+                Value::object(reaching),
+                Value::object(keyed),
+            ],
+        ));
+        heap.replace_resolved_futures(ResolvedFutures::new(
+            future_class,
+            FUTURE_COMPUTATION,
+            FUTURE_STATE,
+            FUTURE_RESOLVED,
+        ));
+        pending::work::take();
+
+        heap.collect_for_test(&mut [&mut array_root]);
+
+        let (_, resolutions) = pending::work::take();
+        assert_eq!(resolutions, 1, "through the value's lookup");
+        let elements = heap
+            .array_elements(rooted(array_root))
+            .expect("the array answers its elements");
+        let reaching_fields = heap
+            .ephemeron_fields(rooted(elements[1]))
+            .expect("an ephemeron answers its fields");
+        let keyed_fields = heap
+            .ephemeron_fields(rooted(elements[2]))
+            .expect("an ephemeron answers its fields");
+        assert!(
+            names(keyed_fields[0], rooted(reaching_fields[1])),
+            "the key reads the value"
+        );
+        assert_eq!(
+            heap.instance_field(rooted(keyed_fields[1]), 0)
+                .and_then(Value::as_small_integer),
+            Some(7),
+            "the entry is kept"
+        );
     }
 
     /// The positions of a future's two fields and its resolved state, as
@@ -9031,18 +9212,47 @@ mod tests {
     /// the whole chain is mourned; once it is rooted, every value survives.
     /// The array holds the chain last link first, so the Cheney scan lists
     /// every ephemeron but the first before its key is copied, and the
-    /// fixpoint takes a round per link.
+    /// fixpoint reaches link after link.
     #[test]
     fn a_chain_of_young_ephemerons_dies_whole_in_a_scavenge() {
-        const LENGTH: usize = 512;
-        for root_the_first_key in [false, true] {
+        scavenge_a_chain_of_ephemerons(512);
+    }
+
+    /// The chain at a length whose square a rescan per round would make
+    /// obvious: the fixpoint looks each object it copies up once and
+    /// scans each ephemeron once more.
+    #[test]
+    fn a_long_chain_of_young_ephemerons_costs_its_length_in_a_scavenge() {
+        const LENGTH: usize = 20_000;
+        let [(unrooted_lookups, unrooted_resolutions), (lookups, resolutions)] =
+            scavenge_a_chain_of_ephemerons(LENGTH);
+        assert_eq!(
+            (unrooted_lookups, unrooted_resolutions),
+            (0, 0),
+            "nothing is copied, so nothing is looked up"
+        );
+        assert!(
+            lookups <= 2 * LENGTH,
+            "{lookups} lookups for {LENGTH} links"
+        );
+        assert!(
+            resolutions <= LENGTH,
+            "{resolutions} resolutions for {LENGTH} links"
+        );
+    }
+
+    /// The scavenge's `collect_a_chain_of_ephemerons`, all young: answers
+    /// the fixpoint's lookups and resolutions with the first key held by
+    /// nothing and with it rooted.
+    fn scavenge_a_chain_of_ephemerons(length: usize) -> [(usize, usize); 2] {
+        [false, true].map(|root_the_first_key| {
             let mut heap = Heap::new();
             let class = old_instance_class(&mut heap);
-            let keys: Vec<ObjectReference<'_>> = (0..=LENGTH)
+            let keys: Vec<ObjectReference<'_>> = (0..=length)
                 .map(|_| heap.allocate_instance(class, 0))
                 .collect();
-            let mut ephemerons = Vec::with_capacity(LENGTH);
-            for position in 0..LENGTH {
+            let mut ephemerons = Vec::with_capacity(length);
+            for position in 0..length {
                 let ephemeron = heap.allocate_ephemeron(class, 3);
                 assert!(heap.ephemeron_set_field(ephemeron, 0, Value::object(keys[position])));
                 assert!(heap.ephemeron_set_field(ephemeron, 1, Value::object(keys[position + 1])));
@@ -9055,6 +9265,7 @@ mod tests {
             } else {
                 Value::nil()
             };
+            pending::work::take();
 
             scavenge_bare(
                 &mut heap,
@@ -9062,10 +9273,11 @@ mod tests {
                 &mut [&mut array_root, &mut first_key_root],
             );
 
+            let work = pending::work::take();
             let ephemerons = heap
                 .array_elements(rooted(array_root))
                 .expect("the array answers its elements");
-            assert_eq!(ephemerons.len(), LENGTH);
+            assert_eq!(ephemerons.len(), length);
             for (position, ephemeron) in ephemerons.into_iter().enumerate() {
                 let fields = heap
                     .ephemeron_fields(rooted(ephemeron))
@@ -9085,8 +9297,144 @@ mod tests {
                 }
             }
             verify_remembered_set_if_debug(&heap);
+            work
+        })
+    }
+
+    /// Two young ephemerons share a key that only a third ephemeron's
+    /// value reaches, its own key copied after it was scanned: once the
+    /// third is scanned, the shared key's one lookup resolves both. Old
+    /// sharers name their young values afterwards and are remembered,
+    /// once.
+    #[test]
+    fn two_ephemerons_sharing_a_key_reached_late_are_both_kept_in_a_scavenge() {
+        for sharers_are_old in [false, true] {
+            let mut heap = Heap::new();
+            let class = old_instance_class(&mut heap);
+            let [first_key, shared_key, first_value, second_value] =
+                [0; 4].map(|_| heap.allocate_instance(class, 0));
+            let holder = heap.allocate_instance(class, 1);
+            assert!(heap.instance_set_field(holder, 0, Value::object(first_key)));
+            let first = heap.allocate_ephemeron(class, 2);
+            assert!(heap.ephemeron_set_field(first, 0, Value::object(first_key)));
+            assert!(heap.ephemeron_set_field(first, 1, Value::object(shared_key)));
+            heap.set_allocating_old(sharers_are_old);
+            let sharing = [first_value, second_value].map(|value| {
+                let ephemeron = heap.allocate_ephemeron(class, 2);
+                assert!(heap.ephemeron_set_field(ephemeron, 0, Value::object(shared_key)));
+                assert!(heap.ephemeron_set_field(ephemeron, 1, Value::object(value)));
+                Value::object(ephemeron)
+            });
+            heap.set_allocating_old(false);
+            // The Cheney scan reaches the ephemerons in this order, all
+            // before the holder copies the first key.
+            let mut array_root = Value::object(heap.allocate_array(
+                class,
+                &[
+                    sharing[0],
+                    sharing[1],
+                    Value::object(first),
+                    Value::object(holder),
+                ],
+            ));
+            pending::work::take();
+
+            scavenge_bare(&mut heap, false, &mut [&mut array_root]);
+
+            let (_, resolutions) = pending::work::take();
+            assert_eq!(resolutions, 2, "both through the shared key's lookup");
+            let elements = heap
+                .array_elements(rooted(array_root))
+                .expect("the array answers its elements");
+            for ephemeron in elements[..2].iter().copied().map(rooted) {
+                let fields = heap
+                    .ephemeron_fields(ephemeron)
+                    .expect("an ephemeron answers its fields");
+                assert!(
+                    fields.iter().all(|field| field.as_object().is_some()),
+                    "the ephemeron keeps its key and its value"
+                );
+                if sharers_are_old {
+                    assert_eq!(
+                        heap.remembered
+                            .iter()
+                            .filter(|entry| **entry == ephemeron.offset)
+                            .count(),
+                        1,
+                        "it names young objects, so it is remembered, once"
+                    );
+                }
+            }
+            verify_remembered_set_if_debug(&heap);
         }
     }
+
+    /// An ephemeron keyed by a resolved future whose value only another
+    /// ephemeron's value reaches, that one's key copied after it was
+    /// scanned: indexed by the value as well as the proxy, it is resolved
+    /// when the fixpoint copies the value, and its key names the copy.
+    #[test]
+    fn an_ephemeron_keyed_by_a_resolved_future_reached_late_is_kept_in_a_scavenge() {
+        let mut heap = Heap::new();
+        let class = old_instance_class(&mut heap);
+        let future_class = old_instance_class(&mut heap);
+        let value = heap.allocate_string(class, crate::CodePoints::from("value"));
+        let guarded = heap.allocate_string(class, crate::CodePoints::from("guarded"));
+        let future = resolved_future(&mut heap, future_class, Value::object(value));
+        let late_key = heap.allocate_instance(class, 0);
+        let holder = heap.allocate_instance(class, 1);
+        assert!(heap.instance_set_field(holder, 0, Value::object(late_key)));
+        let reaching = heap.allocate_ephemeron(class, 2);
+        assert!(heap.ephemeron_set_field(reaching, 0, Value::object(late_key)));
+        assert!(heap.ephemeron_set_field(reaching, 1, Value::object(value)));
+        let keyed = heap.allocate_ephemeron(class, 2);
+        assert!(heap.ephemeron_set_field(keyed, 0, Value::object(future)));
+        assert!(heap.ephemeron_set_field(keyed, 1, Value::object(guarded)));
+        let mut array_root = Value::object(heap.allocate_array(
+            class,
+            &[
+                Value::object(keyed),
+                Value::object(reaching),
+                Value::object(holder),
+            ],
+        ));
+        let futures = ResolvedFutures::new(
+            future_class,
+            FUTURE_COMPUTATION,
+            FUTURE_STATE,
+            FUTURE_RESOLVED,
+        );
+        pending::work::take();
+
+        heap.scavenge(false, Some(futures), |scavenger| {
+            use crate::trace::Tracer;
+            scavenger.value(&mut array_root);
+        });
+
+        let (_, resolutions) = pending::work::take();
+        assert_eq!(resolutions, 1, "through the value's lookup");
+        let elements = heap
+            .array_elements(rooted(array_root))
+            .expect("the array answers its elements");
+        let reaching_fields = heap
+            .ephemeron_fields(rooted(elements[1]))
+            .expect("an ephemeron answers its fields");
+        let keyed_fields = heap
+            .ephemeron_fields(rooted(elements[0]))
+            .expect("an ephemeron answers its fields");
+        assert_eq!(text_of(&heap, reaching_fields[1]).as_deref(), Some("value"));
+        assert!(
+            names(keyed_fields[0], rooted(reaching_fields[1])),
+            "the key names the value's copy"
+        );
+        assert_eq!(
+            text_of(&heap, keyed_fields[1]).as_deref(),
+            Some("guarded"),
+            "the entry is kept"
+        );
+        verify_remembered_set_if_debug(&heap);
+    }
+
     /// A resolved future that only a weak word or an ephemeron's key names
     /// stands for its value in a scavenge as in a collection: the value
     /// survives through a holder the Cheney scan reaches after the weak
