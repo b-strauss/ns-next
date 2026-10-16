@@ -2312,8 +2312,10 @@ is whole, and running it comes with the actors' event loop
 kernel method" below). `decide_factory` (`interpreter/instantiate.rs`)
 allocates the `Ephemeron` format only for the class whose own builtin is
 `Ephemeron`, and `WeakArray new:`'s leaf declines for any subject but
-`WeakArray` itself. So a subclass of `WeakArray` has no weak slots and its
-leaves decline, and a subclass of `Ephemeron` is an ordinary object with
+`WeakArray` itself -- unreachable, since a flat class side is sent from
+no other, and its failure block sends `new:` on to `super`, which nothing
+understands, so it would signal rather than answer `nil`. So a subclass
+of `WeakArray` has no weak slots and its leaves decline, and a subclass of `Ephemeron` is an ordinary object with
 the same three slots, held strongly -- Primordial Soup's "can be
 subclassed, but subclasses won't have the ephemeron property"
 (`goldens/library/weak/a_subclass_of_ephemeron_holds_strongly.ns`).

@@ -765,15 +765,15 @@ ns_runtime::for_each_lowering! {
 /// every one that is no builtin runs too -- `StringBuilder`'s,
 /// `DataView`'s and `WeakMap`'s `Object` and its two byte orders'
 /// `DataView` in the kernel, and `KernelNamespace`'s `Value` in
-/// `PlatformFactory` -- and they take the remaining six sites and fill the remaining two global
-/// entries, the kernel's lexical `Object` and `DataView`, a lexical send
-/// being keyed by the module it is sent in, so `KernelNamespace`'s
-/// `Value` finds `Platform`'s entry filled. Pinned so that the boot
-/// growing -- more shipped code run at every start -- is noticed rather
-/// than absorbed by the tests that count from it. The cache stress mode
-/// vacates the caches at the boot's safepoints, which may empty the global
-/// entries, so those are counted only without it; the sites stay either
-/// way.
+/// `PlatformFactory` -- and they take the remaining six sites and fill
+/// the remaining two global entries, the kernel's lexical `Object` and
+/// `DataView`, a lexical send being keyed by the module it is sent in, so
+/// `KernelNamespace`'s `Value` finds `Platform`'s entry filled. Pinned so
+/// that the boot growing -- more shipped code run at every start -- is
+/// noticed rather than absorbed by the tests that count from it. The
+/// cache stress mode vacates the caches at the boot's safepoints, which
+/// may empty the global entries, so those are counted only without it;
+/// the sites stay either way.
 #[test]
 fn a_fresh_bootstrap_leaves_twenty_seven_sites_and_twenty_two_global_entries() {
     let mut interpreter = Interpreter::bootstrap();

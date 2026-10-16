@@ -4592,13 +4592,13 @@ class Kernel vmMirror: mirror = Value (
   /// Make one with the class side's `new:`, never with the factory
   /// `withoutSlots`. `withoutSlots` answers an instance with no slots at
   /// all, not even zero weak ones: every leaf here declines on it, so
-  /// every member but `isKindOfArray` and `isKindOfWeakArray` signals --
-  /// `at:` and `at:put:` a MessageNotUnderstood, `size` and the members
-  /// built on it the Error of Collection's `subclassResponsibility` -- as
-  /// for an instance of a subclass, which holds no slots either. The
-  /// factory exists only so that the class's factory is not `new`, which
-  /// keeps `WeakArray new` not understood: there is no WeakArray without
-  /// a size.
+  /// every member declared here but `isKindOfArray` and
+  /// `isKindOfWeakArray` signals -- `at:` and `at:put:` a
+  /// MessageNotUnderstood, `size` and the members built on it the Error
+  /// of Collection's `subclassResponsibility` -- as for an instance of a
+  /// subclass, which holds no slots either. The factory exists only so
+  /// that the class's factory is not `new`, which keeps `WeakArray new`
+  /// not understood: there is no WeakArray without a size.
   public class WeakArray withoutSlots = Collection () (
     /// Answers true: the receiver is a WeakArray.
     public isKindOfWeakArray = (
@@ -4707,10 +4707,12 @@ class Kernel vmMirror: mirror = Value (
     /// 'new: cannot allocate a WeakArray of … elements' for one too
     /// large to allocate.
     ///
-    /// The leaf declines only a subject that is not `WeakArray` itself,
-    /// which a flat class side cannot be sent from.
+    /// The leaf answers only for `WeakArray` itself, which is the only
+    /// subject a flat class side is sent from; any other falls to `super`,
+    /// where nothing understands `new:`, so the send signals rather than
+    /// answering an object that is no WeakArray.
     public new: size = (
-      ^vmMirror weakArrayClass: self new: size ifFail: [nil].
+      ^vmMirror weakArrayClass: self new: size ifFail: [^super new: size].
     )
   )
 

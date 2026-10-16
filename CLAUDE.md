@@ -44,11 +44,12 @@ Rust 1.98.0, edition 2021, six crates:
   between entries, and both trace only an object's strong words
   (`heap/object.rs`'s `strong_pointer_ranges`), clearing a `WeakArray`'s
   slots (format `WeakPointers`) and mourning an `Ephemeron` (format
-  `Ephemeron`) whose key nothing else reaches; the write barrier and the remembered set in `heap.rs`'s
-  store accessors; `heap/value.rs`, a value as one
-  tagged word, Spur's, and `Word`, the bare word a heap object stores; the
-  step state `Mutator` in `interpreter/mod.rs`, held at rest by `World` in
-  `heap/world.rs` and reached only through `Interpreter::enter`) and the image
+  `Ephemeron`) whose key nothing else reaches; the write barrier and the
+  remembered set in `heap.rs`'s store accessors; `heap/value.rs`, a value
+  as one tagged word, Spur's, and `Word`, the bare word a heap object
+  stores; the step state `Mutator` in `interpreter/mod.rs`, held at rest
+  by `World` in `heap/world.rs` and reached only through
+  `Interpreter::enter`) and the image
   format (`image/`). `shipped_code/` encodes and decodes the shipped modules'
   compiled mixins; `build.rs` embeds the artifact `cargo xtask shipped-code`
   writes (`core-library/shipped-code.bin`, gitignored) with a fingerprint of
