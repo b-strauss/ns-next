@@ -24,13 +24,19 @@ use std::num::NonZeroU64;
 use crate::heap::header::{Format, Header, MAX_AGE};
 use crate::heap::object::{self, strong_pointer_ranges, CLASS, FIELDS};
 use crate::heap::space::{allocation_range, block_range, is_young, object_at, RegionName, Space};
-use crate::heap::{header_index, FrameReference, ObjectReference, Word};
+use crate::heap::{
+    header_index, offset_of_header, FrameReference, ObjectReference, ResolvedFutures, Word,
+};
 use crate::trace::Tracer;
 
 pub(crate) struct Scavenger<'space> {
     pub(in crate::heap) space: &'space mut Space,
     tenure_all: bool,
     threshold: u8,
+    /// The test for a resolved future, whose value decides for it in a
+    /// weak word or an ephemeron's key (`ResolvedFutures`); `None` when
+    /// the program has made no future.
+    futures: Option<ResolvedFutures>,
     /// The words copied into the survivor space, by the age they arrive
     /// with: Strongtalk's age table (`ageTable.cpp`).
     pub(in crate::heap) ages: [usize; MAX_AGE as usize + 1],
@@ -69,6 +75,7 @@ impl<'space> Scavenger<'space> {
         space: &'space mut Space,
         tenure_all: bool,
         threshold: u8,
+        futures: Option<ResolvedFutures>,
         #[cfg(debug_assertions)] heap_id: u32,
         #[cfg(debug_assertions)] from_epoch: u32,
         #[cfg(debug_assertions)] to_epoch: u32,
@@ -79,6 +86,7 @@ impl<'space> Scavenger<'space> {
             space,
             tenure_all,
             threshold,
+            futures,
             ages: [0; MAX_AGE as usize + 1],
             survivor_scan,
             promoted_scan,
@@ -197,22 +205,27 @@ impl<'space> Scavenger<'space> {
     /// Rewrites every strong pointer word of the object at word `header`;
     /// answers whether one names a young object afterwards. A weak object
     /// is listed for `finish`, and so is an ephemeron whose key -- a young
-    /// object nothing has copied yet -- has not survived so far.
+    /// object nothing has copied yet -- has not survived so far. An
+    /// ephemeron whose key survived only as a resolved future's value
+    /// (`key_survives`) is keyed by that value from here on.
     pub(in crate::heap) fn scan_object(&mut self, header: usize) -> bool {
         let words = self.space.words();
         let block = block_range(words, header);
         let format = Header(words[header]).format();
         let mut key_died = false;
         let ranges = strong_pointer_ranges(&words[block.clone()], |key| {
-            let survives = Word::from_bits(key)
-                .object_offset()
-                .is_none_or(|target| self.survivor(target).is_some());
+            let survives = self.key_survives(key);
             key_died = !survives;
             survives
         });
         match format {
-            Format::WeakPointers => self.weak_objects.push(offset_of(header)),
-            Format::Ephemeron if key_died => self.ephemerons.push(offset_of(header)),
+            Format::WeakPointers => self.weak_objects.push(offset_of_header(header)),
+            Format::Ephemeron if key_died => self.ephemerons.push(offset_of_header(header)),
+            Format::Ephemeron => {
+                if let Some(key) = self.field_range(header).next() {
+                    self.see_through_resolved_future(key);
+                }
+            }
             _ => {}
         }
         let mut names_young = false;
@@ -259,7 +272,9 @@ impl<'space> Scavenger<'space> {
     /// none; mourns every ephemeron still listed -- its key reached by
     /// nothing but ephemerons -- by setting its fields to nil; and
     /// rewrites every word of a listed weak object that names a young
-    /// object to the copy, or to nil where nothing copied it.
+    /// object to the copy, or to nil where nothing copied it -- a resolved
+    /// future nothing copied first to its value
+    /// (`see_through_resolved_future`).
     ///
     /// Must run before the nursery is vacated: a weak word left naming it
     /// would name whatever is allocated there next. An old object either
@@ -296,6 +311,7 @@ impl<'space> Scavenger<'space> {
             let header = header_index(weak_object);
             let mut names_young = false;
             for position in self.field_range(header) {
+                self.see_through_resolved_future(position);
                 let word = Word::from_bits(self.space.words()[position]);
                 if let Some(target) = word.object_offset().filter(|target| is_young(*target)) {
                     let settled = match self.survivor(target) {
@@ -318,11 +334,56 @@ impl<'space> Scavenger<'space> {
     /// listed ephemeron's key is an object: one with no field or another
     /// key is scanned whole and never listed.
     fn ephemeron_key_survives(&self, offset: NonZeroU64) -> bool {
-        let words = self.space.words();
-        words[self.field_range(header_index(offset))]
+        self.space.words()[self.field_range(header_index(offset))]
             .first()
-            .and_then(|key| Word::from_bits(*key).object_offset())
-            .is_some_and(|key| self.survivor(key).is_some())
+            .is_some_and(|key| self.key_survives(*key))
+    }
+
+    /// Whether an ephemeron whose key word is `key` keeps its value so far:
+    /// an immediate key always, an object once a strong word has reached
+    /// it, and a resolved future nothing has reached once its value
+    /// survives -- the future stands for its value, which `==` sees, as a
+    /// full collection judges it once `replace_resolved_futures` has
+    /// rewritten the key. An unresolved future is judged as itself.
+    fn key_survives(&self, key: u64) -> bool {
+        let Some(target) = Word::from_bits(key).object_offset() else {
+            return true;
+        };
+        if self.survivor(target).is_some() {
+            return true;
+        }
+        self.resolved_future_value(target).is_some_and(|value| {
+            value
+                .object_offset()
+                .is_none_or(|value| self.survivor(value).is_some())
+        })
+    }
+
+    /// The value word of the object at `offset` when it is a resolved
+    /// future (`ResolvedFutures`), read where the object lives now.
+    fn resolved_future_value(&self, offset: NonZeroU64) -> Option<Word> {
+        self.futures?
+            .value_of(self.space.words(), offset, |found| self.follow(found))
+    }
+
+    /// Rewrites the word at `position`, a weak word or a surviving
+    /// ephemeron's key, to the value of the resolved future it names when
+    /// nothing has copied that future, as `replace_resolved_futures` would
+    /// have rewritten it before a full collection: otherwise a scavenge
+    /// would forget, or keep only through a copy of the proxy, an entry a
+    /// collection keeps for its value. The caller then settles the word as
+    /// any other; the value's word names the young object as it was, which
+    /// the caller follows to its copy.
+    fn see_through_resolved_future(&mut self, position: usize) {
+        let Some(target) = Word::from_bits(self.space.words()[position]).object_offset() else {
+            return;
+        };
+        if self.survivor(target).is_some() {
+            return;
+        }
+        if let Some(value) = self.resolved_future_value(target) {
+            self.space.words_mut()[position] = value.bits();
+        }
     }
 
     /// The words of the fields of the object at word `header`.
@@ -340,7 +401,7 @@ impl<'space> Scavenger<'space> {
         let found = Header(words[header]);
         if !found.remembered() {
             words[header] = found.with_remembered(true).0;
-            self.remembered.push(offset_of(header));
+            self.remembered.push(offset_of_header(header));
         }
     }
 
@@ -386,14 +447,6 @@ impl Tracer for Scavenger<'_> {
         if let Some(target) = word.object_offset().filter(|target| is_young(*target)) {
             *word = Word::with_object_offset(self.evacuate(target));
         }
-    }
-}
-
-/// The offset of the object whose header is word `header`.
-fn offset_of(header: usize) -> NonZeroU64 {
-    match NonZeroU64::new(8 * header as u64) {
-        Some(offset) => offset,
-        None => unreachable!("internal: an object lies past the first word"),
     }
 }
 

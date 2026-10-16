@@ -754,12 +754,17 @@ exception is what takes no record: a weak word or a key holding an
 immediate, a shipped name or an object written by value -- a
 `LargeInteger`, a boxed `Float`, a `Fraction` -- is written as it is
 whether or not anything else reaches it, since a collection's timing is
-unspecified and keeping more than one would is never wrong. A weakly held
-object is still met by the walk, so a weakly held unnamed shipped class or
-the VM mirror refuses the image as a strongly held one does. The decoder
-refuses a weak-array body under any class but `WeakArray`
-(`WeakArrayRecordUnderAnotherClass`; `WeakArray`'s header carries an
-instance record too, the slotless one its factory `withoutSlots` makes),
+unspecified and keeping more than one would is never wrong. What a weak
+array's slot or an ephemeron's key holds is still met by the walk, so an
+unnamed shipped class or the VM mirror there refuses the image as a
+strongly held one does; an ephemeron's value and finalizer are met only
+once its key is reached, so one that only a mourned ephemeron holds there
+refuses nothing, and nothing of it is written either way. The decoder
+refuses a weak-array body under any class but `WeakArray` and any body
+under `WeakArray`'s but a weak-array one and the slotless instance record
+its factory `withoutSlots` makes (`WeakArrayRecordMismatch`), that
+instance record held to the class's slot count, none
+(`WeakArrayInstanceFieldCount`);
 an ephemeron body under any class but `Ephemeron` and any other body under
 `Ephemeron`'s (`EphemeronRecordMismatch`), and an ephemeron record whose
 field count is not the class's (`EphemeronFieldCount`). Nothing is cleared
@@ -781,7 +786,10 @@ a `FutureImplementation` record of a field count other than two refused
 refused unless it is an instance record (`ShippedInstanceBody`), and a
 byte-array body and a `ByteArray` header refused unless they come together
 (`ByteArrayRecordMismatch`), a weak-array body under another class than
-`WeakArray` (`WeakArrayRecordUnderAnotherClass`), and an ephemeron body
+`WeakArray` and any body under `WeakArray`'s but a weak-array one and an
+instance record (`WeakArrayRecordMismatch`), that instance record with
+the class's slot count, none (`WeakArrayInstanceFieldCount`), and an
+ephemeron body
 and an `Ephemeron` header refused unless they come together
 (`EphemeronRecordMismatch`) and with the class's field count
 (`EphemeronFieldCount`); each record yields its object's size, read from its own
@@ -1317,10 +1325,11 @@ A builtin's record is held to its own format instead, as above; for a
 have: a byte-array body under any header but `Kernel ByteArray`, and a
 `Kernel ByteArray` header over any other body, are
 `ByteArrayRecordMismatch`, refused by the first pass and the second alike;
-an `Ephemeron`'s both ways too (`EphemeronRecordMismatch`), and a weak
-array's body under any header but `Kernel WeakArray`
-(`WeakArrayRecordUnderAnotherClass`), whose own header carries an
-instance record as well, the slotless one of its factory `withoutSlots`.
+an `Ephemeron`'s both ways too (`EphemeronRecordMismatch`), and a
+`WeakArray`'s both ways (`WeakArrayRecordMismatch`) but that its header
+carries an instance record as well, the slotless one of its factory
+`withoutSlots`, held to the class's slot count, none
+(`WeakArrayInstanceFieldCount`).
 A view's or a `StringBuilder`'s record is an ordinary instance record of
 its shipped class; what its slots hold is the program's to check, and the
 kernel refuses a crafted one with an `ArgumentError`

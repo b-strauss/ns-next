@@ -417,10 +417,24 @@ pub enum DecodeError {
         body: u8,
     },
     /// An `OBJECT_WEAK_ARRAY` record under a header whose class is not the
-    /// builtin `WeakArray`: an object of that class would hold weakly what
-    /// its methods take for strong slots. `WeakArray`'s header may carry an
-    /// `OBJECT_INSTANCE` too, the slotless instance `withoutSlots` makes.
-    WeakArrayRecordUnderAnotherClass,
+    /// builtin `WeakArray`, or a record of a body, `body`, other than
+    /// `OBJECT_WEAK_ARRAY` and `OBJECT_INSTANCE` under `WeakArray`'s. The
+    /// first would be an object of that class holding weakly what its
+    /// methods take for strong slots; the second would answer `WeakArray`'s
+    /// leaves over an object of another shape, which no program makes.
+    /// `WeakArray`'s header carries an `OBJECT_INSTANCE` too, the slotless
+    /// instance `withoutSlots` makes (`WeakArrayInstanceFieldCount`).
+    WeakArrayRecordMismatch {
+        body: u8,
+    },
+    /// An `OBJECT_INSTANCE` record under `WeakArray`'s header of `found`
+    /// fields where the class declares `expected` slots: the instance
+    /// `withoutSlots` makes has exactly the class's slots, none, and a
+    /// record of more would be an object no program makes.
+    WeakArrayInstanceFieldCount {
+        expected: usize,
+        found: usize,
+    },
     /// An `OBJECT_EPHEMERON` record under a header whose class is not the
     /// builtin `Ephemeron`, or a record of any other body, `body`, under
     /// `Ephemeron`'s. The first would have the collectors read that class's
@@ -764,9 +778,19 @@ impl std::fmt::Display for DecodeError {
                 "a record of the class ByteArray has object body {body}, but a ByteArray is a \
                  byte-array record"
             ),
-            DecodeError::WeakArrayRecordUnderAnotherClass => {
+            DecodeError::WeakArrayRecordMismatch { body } if *body == OBJECT_WEAK_ARRAY => {
                 f.write_str("a weak-array record has a class other than WeakArray")
             }
+            DecodeError::WeakArrayRecordMismatch { body } => write!(
+                f,
+                "a record of the class WeakArray has object body {body}, but a WeakArray is \
+                 a weak-array record or a slotless instance record"
+            ),
+            DecodeError::WeakArrayInstanceFieldCount { expected, found } => write!(
+                f,
+                "an instance record of the class WeakArray has {found} fields, but WeakArray \
+                 declares {expected} slots"
+            ),
             DecodeError::EphemeronRecordMismatch { body } if *body == OBJECT_EPHEMERON => {
                 f.write_str("an ephemeron record has a class other than Ephemeron")
             }
@@ -3521,9 +3545,11 @@ impl Sizing<'_, '_, '_> {
             return Err(DecodeError::ByteArrayRecordMismatch { body });
         }
         // Likewise `WeakArray`'s and `Ephemeron`'s, except that `WeakArray`'s
-        // header carries an instance record too, `withoutSlots`'s.
-        if body == OBJECT_WEAK_ARRAY && header != Some(BuiltinClass::WeakArray) {
-            return Err(DecodeError::WeakArrayRecordUnderAnotherClass);
+        // header carries an instance record too, `withoutSlots`'s, whose
+        // count the arm below holds to the class's.
+        let weak_array = header == Some(BuiltinClass::WeakArray);
+        if weak_array_record_mismatch(weak_array, body) {
+            return Err(DecodeError::WeakArrayRecordMismatch { body });
         }
         if (header == Some(BuiltinClass::Ephemeron)) != (body == OBJECT_EPHEMERON) {
             return Err(DecodeError::EphemeronRecordMismatch { body });
@@ -3544,6 +3570,11 @@ impl Sizing<'_, '_, '_> {
                 if count != 0 {
                     return Err(DecodeError::FractionRecord);
                 }
+                (count, false)
+            }
+            OBJECT_INSTANCE if weak_array => {
+                let count = self.values(reader, NamePosition::Value)?;
+                weak_array_instance_field_count(self.context.mutator, count)?;
                 (count, false)
             }
             OBJECT_INSTANCE | OBJECT_ARRAY | OBJECT_WEAK_ARRAY => {
@@ -3636,11 +3667,7 @@ impl Sizing<'_, '_, '_> {
 /// declares exactly that many: its methods read its own slots, the key
 /// first, and the collectors read the first field as the key.
 fn ephemeron_field_count(mutator: &Mutator<'_>, count: usize) -> Result<(), DecodeError> {
-    let class = mutator.builtin_class(BuiltinClass::Ephemeron);
-    let expected = mutator
-        .heap
-        .class_application(class)
-        .map_or(0, |application| application.slot_count);
+    let expected = builtin_slot_count(mutator, BuiltinClass::Ephemeron);
     if count != expected {
         return Err(DecodeError::EphemeronFieldCount {
             expected,
@@ -3648,6 +3675,42 @@ fn ephemeron_field_count(mutator: &Mutator<'_>, count: usize) -> Result<(), Deco
         });
     }
     Ok(())
+}
+
+/// Whether a record of `body` is refused for `WeakArray`'s header, which
+/// `weak_array` says it is: a weak-array record goes under that header
+/// alone, and that header carries nothing else but `withoutSlots`'s
+/// instance record.
+fn weak_array_record_mismatch(weak_array: bool, body: u8) -> bool {
+    if weak_array {
+        body != OBJECT_WEAK_ARRAY && body != OBJECT_INSTANCE
+    } else {
+        body == OBJECT_WEAK_ARRAY
+    }
+}
+
+/// Refuses an instance record of `count` fields under `WeakArray`'s
+/// header unless the class declares exactly that many slots, as the
+/// instance `withoutSlots` makes has.
+fn weak_array_instance_field_count(mutator: &Mutator<'_>, count: usize) -> Result<(), DecodeError> {
+    let expected = builtin_slot_count(mutator, BuiltinClass::WeakArray);
+    if count != expected {
+        return Err(DecodeError::WeakArrayInstanceFieldCount {
+            expected,
+            found: count,
+        });
+    }
+    Ok(())
+}
+
+/// How many slots the builtin class `kind` declares, as the loading
+/// binary lays it out.
+fn builtin_slot_count(mutator: &Mutator<'_>, kind: BuiltinClass) -> usize {
+    let class = mutator.builtin_class(kind);
+    mutator
+        .heap
+        .class_application(class)
+        .map_or(0, |application| application.slot_count)
 }
 
 /// The graph section in two passes, so that cycles and shared references
@@ -3779,8 +3842,9 @@ pub fn decode_graph_section<'gc>(
         // Refused by the first pass too; restated here as what filling a
         // weak-array or an ephemeron record rests on.
         let builtin = context.mutator.heap.class_builtin(class);
-        if body == OBJECT_WEAK_ARRAY && builtin != Some(BuiltinClass::WeakArray) {
-            return Err(DecodeError::WeakArrayRecordUnderAnotherClass);
+        let weak_array = builtin == Some(BuiltinClass::WeakArray);
+        if weak_array_record_mismatch(weak_array, body) {
+            return Err(DecodeError::WeakArrayRecordMismatch { body });
         }
         if (builtin == Some(BuiltinClass::Ephemeron)) != (body == OBJECT_EPHEMERON) {
             return Err(DecodeError::EphemeronRecordMismatch { body });
@@ -3845,6 +3909,11 @@ pub fn decode_graph_section<'gc>(
                 // layout check, as what reading the two fields below rests on.
                 if future_header && count != crate::interpreter::future::FIELD_COUNT {
                     return Err(DecodeError::FutureRecord);
+                }
+                // Refused by the first pass too; restated here as what
+                // `WeakArray`'s leaves declining on the instance rests on.
+                if weak_array {
+                    weak_array_instance_field_count(context.mutator, count)?;
                 }
                 if shipped_non_builtin {
                     let expected = context

@@ -462,6 +462,80 @@ const REMEMBERED_SET_LIMIT: usize = 8 << 10;
 /// 6 builds on).
 const EDEN_RESERVE: usize = 512 << 10;
 
+/// What makes an object a resolved future, read from the space's words by
+/// both collectors: `replace_resolved_futures`, before a collection
+/// marks, and the scavenger's weak pass, which sees through a resolved
+/// future in a weak word or an ephemeron's key that nothing else keeps
+/// (`docs/design/core-library.md`, "The heap and the collectors"). One
+/// test for both, so that a scavenge and a collection judge such a word
+/// alike.
+///
+/// A future is a `FixedPointers` object of the future class whose field
+/// `state_index` holds `SmallInteger(resolved)`; its value is then field
+/// `computation_index`, unless that value is itself a future -- one
+/// crafted code corrupted, left for a forcing to refuse.
+#[derive(Clone, Copy)]
+pub(crate) struct ResolvedFutures {
+    class: NonZeroU64,
+    computation_index: usize,
+    state_index: usize,
+    resolved: u64,
+}
+
+impl ResolvedFutures {
+    /// The test for instances of `future_class`. `future_class` must be a
+    /// handle of the heap the test is used on, fresh at the call: the test
+    /// keeps its offset, which the scavenger follows if it moves.
+    pub(crate) fn new(
+        future_class: ClassReference<'_>,
+        computation_index: usize,
+        state_index: usize,
+        resolved: i64,
+    ) -> ResolvedFutures {
+        ResolvedFutures {
+            class: future_class.offset,
+            computation_index,
+            state_index,
+            resolved: Value::small_integer(resolved).word().bits(),
+        }
+    }
+
+    /// The value word of the resolved future at `offset`, or `None` when
+    /// it is no resolved future. `follow` answers where an object named by
+    /// a word lives now: itself outside a scavenge, the end of its
+    /// forwarders during one, so that a class or a future already copied
+    /// is recognised as the original was.
+    fn value_of(
+        &self,
+        words: &[u64],
+        offset: NonZeroU64,
+        follow: impl Fn(NonZeroU64) -> NonZeroU64,
+    ) -> Option<Word> {
+        let class = follow(self.class);
+        let is_future = |object: NonZeroU64| {
+            let header = header_index(object);
+            Header(words[header]).format() == Format::FixedPointers
+                && Word::from_bits(words[header + CLASS])
+                    .object_offset()
+                    .is_some_and(|named| follow(named) == class)
+        };
+        let future = follow(offset);
+        if !is_future(future) {
+            return None;
+        }
+        let fields = &words[block_range(words, header_index(future))];
+        let fields = fields.get(FIELDS..)?;
+        if *fields.get(self.state_index)? != self.resolved {
+            return None;
+        }
+        let value = Word::from_bits(*fields.get(self.computation_index)?);
+        match value.object_offset() {
+            Some(target) if is_future(target) => None,
+            _ => Some(value),
+        }
+    }
+}
+
 pub struct Heap<'gc> {
     /// The next identity hash to hand out. Hashes are assigned lazily, the
     /// first time `object_ensure_identity_hash` is asked for one, and never derived
@@ -645,6 +719,15 @@ fn has_instance_fields(format: Format) -> bool {
 #[inline(always)]
 fn header_index(offset: NonZeroU64) -> usize {
     (offset.get() / 8) as usize
+}
+
+/// The offset of the object whose header is word `header`: the inverse of
+/// `header_index`.
+fn offset_of_header(header: usize) -> NonZeroU64 {
+    match NonZeroU64::new(8 * header as u64) {
+        Some(offset) => offset,
+        None => unreachable!("internal: an object lies past the first word"),
+    }
 }
 
 /// How many bytes of objects the space may hold after a collection that
@@ -4727,13 +4810,16 @@ impl<'gc> Heap<'gc> {
     /// the nursery is reclaimed, and every handle the heap holds is rewritten
     /// into the next epoch. `step_roots` traces what the step state holds
     /// beside the heap (`World::scavenge`). `tenure_all` sends every survivor
-    /// old, which empties the nursery and the remembered set.
+    /// old, which empties the nursery and the remembered set. `futures` is
+    /// the test for a resolved future, which the weak pass sees through
+    /// (`ResolvedFutures`); `None` when the program has made none.
     ///
     /// Sound only where nothing outside the heap and the interpreter holds a
     /// handle: at a safepoint of the run loop, or between entries.
     pub(crate) fn scavenge(
         &mut self,
         tenure_all: bool,
+        futures: Option<ResolvedFutures>,
         step_roots: impl FnOnce(&mut Scavenger<'_>),
     ) {
         use crate::trace::{Trace, Tracer};
@@ -4766,6 +4852,7 @@ impl<'gc> Heap<'gc> {
             space,
             tenure_all,
             threshold,
+            futures,
             #[cfg(debug_assertions)]
             heap_id,
             #[cfg(debug_assertions)]
@@ -5219,20 +5306,14 @@ impl<'gc> Heap<'gc> {
     /// before marking, so a future nothing else reaches is garbage by the time
     /// the marker looks. Answers how many references it replaced.
     ///
-    /// A future is an `Instance` of `future_class` whose field `state_index`
-    /// is `SmallInteger(resolved)`; its value is then field
-    /// `computation_index`. That value is never itself a future --
-    /// `Mutator::future_computed` follows a future of a future before it
-    /// records one, and one whose fields crafted code made so is malformed
-    /// and not replaced -- so one pass of replacement leaves no resolved
-    /// future behind in any field it rewrites.
-    pub(crate) fn replace_resolved_futures(
-        &mut self,
-        future_class: ClassReference<'gc>,
-        computation_index: usize,
-        state_index: usize,
-        resolved: i64,
-    ) -> usize {
+    /// Which objects are resolved futures, and their values, is `futures`'
+    /// test, the one the scavenger's weak pass applies too. A future's
+    /// value is never itself a future -- `Mutator::future_computed` follows
+    /// a future of a future before it records one, and one whose fields
+    /// crafted code made so is malformed and not replaced -- so one pass of
+    /// replacement leaves no resolved future behind in any field it
+    /// rewrites.
+    pub(crate) fn replace_resolved_futures(&mut self, futures: ResolvedFutures) -> usize {
         // First pass: every resolved future's offset and its value.
         // Words, not values: the replacement copies a stored word into
         // another field, so it needs no check and no epoch.
@@ -5244,29 +5325,9 @@ impl<'gc> Heap<'gc> {
                 let words = self.space.words();
                 let (header, next) = object_at(words, position);
                 position = next;
-                let block = &words[block_range(words, header)];
-                if !self.block_class(block).same(future_class)
-                    || Header(block[HEADER]).format() != Format::FixedPointers
-                {
-                    continue;
-                }
-                let fields = &block[FIELDS..];
-                if let (Some(state), Some(value)) = (
-                    fields
-                        .get(state_index)
-                        .and_then(|state| self.load(Word::from_bits(*state)).as_small_integer()),
-                    fields.get(computation_index).copied().map(Word::from_bits),
-                ) {
-                    // A "resolved" future whose value is a future is one
-                    // crafted code corrupted (`FutureState::Malformed`): it
-                    // is left in place, for a forcing to refuse.
-                    let value_is_a_future = self
-                        .load(value)
-                        .as_object()
-                        .is_some_and(|target| self.object_class(target).same(future_class));
-                    if state == resolved && !value_is_a_future {
-                        values.insert(8 * header as u64, value);
-                    }
+                let object = offset_of_header(header);
+                if let Some(value) = futures.value_of(words, object, |found| found) {
+                    values.insert(object.get(), value);
                 }
             }
         }
@@ -5330,8 +5391,9 @@ impl<'gc> Heap<'gc> {
     /// the traversal runs.
     ///
     /// The canonical symbol table is deliberately not among these roots: it
-    /// is the system's one weak structure (`docs/design/memory.md`, "Weak
-    /// references"), pruned against the finished marking by
+    /// is the runtime's own weak structure, beside the `WeakArray`s,
+    /// `Ephemeron`s and `WeakMap`s of a program (`docs/design/memory.md`,
+    /// "Weak references"), pruned against the finished marking by
     /// `prune_canonical_symbols` rather than kept alive by it. The space
     /// itself is never a root, only what the roots reach.
     pub(crate) fn begin_marking(&mut self) -> mark::Marker {
@@ -5493,6 +5555,11 @@ impl<'gc> Heap<'gc> {
     /// word left naming a dead one would be forwarded to garbage. Each
     /// round rescans the whole list, which is quadratic only in the length
     /// of a chain of ephemerons each keyed by the previous one's value.
+    ///
+    /// A resolved future in a weak word or an ephemeron's key is judged by
+    /// its value's liveness, as a scavenge judges it: `World::collect` runs
+    /// `replace_resolved_futures` before marking, which has rewritten every
+    /// such word to the value by the time this reads it.
     ///
     /// Mourning and clearing write nil, which names no young object, so
     /// they are the collector's own rewrites and need no write barrier.
@@ -6335,6 +6402,85 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The positions of a future's two fields and its resolved state, as
+    /// `interpreter::future` lays a `FutureImplementation` out.
+    const FUTURE_COMPUTATION: usize = 0;
+    const FUTURE_STATE: usize = 1;
+    const FUTURE_RESOLVED: i64 = 2;
+
+    /// A future of `future_class` resolved to `value`.
+    fn resolved_future<'gc>(
+        heap: &mut Heap<'gc>,
+        future_class: ClassReference<'gc>,
+        value: Value<'gc>,
+    ) -> ObjectReference<'gc> {
+        let future = heap.allocate_instance(future_class, 2);
+        assert!(heap.instance_set_field(future, FUTURE_COMPUTATION, value));
+        assert!(heap.instance_set_field(
+            future,
+            FUTURE_STATE,
+            Value::small_integer(FUTURE_RESOLVED)
+        ));
+        future
+    }
+
+    /// A resolved future that only a weak word or an ephemeron's key
+    /// names stands for its value, which something else holds: the
+    /// collection keeps the entry for the value's sake, and the word reads
+    /// the value afterwards. The proxy is collected.
+    #[test]
+    fn a_resolved_future_held_weakly_is_judged_by_its_value_in_a_collection() {
+        let mut heap = Heap::new();
+        let class = named_class(&mut heap, "Object");
+        let future_class = named_class(&mut heap, "FutureImplementation");
+        let weak_class = named_class(&mut heap, "WeakArray");
+        let ephemeron_class = named_class(&mut heap, "Ephemeron");
+        let value = heap.allocate_instance(class, 1);
+        assert!(heap.instance_set_field(value, 0, Value::small_integer(42)));
+        let guarded = heap.allocate_instance(class, 1);
+        assert!(heap.instance_set_field(guarded, 0, Value::small_integer(7)));
+        let future = resolved_future(&mut heap, future_class, Value::object(value));
+        let weak = heap.allocate_weak_array(weak_class, 1);
+        assert!(heap.weak_array_set_element(weak, 0, Value::object(future)));
+        let ephemeron = heap.allocate_ephemeron(ephemeron_class, 3);
+        assert!(heap.instance_set_field(ephemeron, 0, Value::object(future)));
+        assert!(heap.instance_set_field(ephemeron, 1, Value::object(guarded)));
+        let objects_before = heap.object_count;
+        let mut weak_root = Value::object(weak);
+        let mut ephemeron_root = Value::object(ephemeron);
+        let mut value_root = Value::object(value);
+
+        // As `World::collect` does before it marks.
+        heap.replace_resolved_futures(ResolvedFutures::new(
+            future_class,
+            FUTURE_COMPUTATION,
+            FUTURE_STATE,
+            FUTURE_RESOLVED,
+        ));
+        heap.collect_for_test(&mut [&mut weak_root, &mut ephemeron_root, &mut value_root]);
+
+        let value = rooted(value_root);
+        let element = heap
+            .weak_array_element(rooted(weak_root), 0)
+            .expect("a weak array answers its slot");
+        assert!(names(element, value), "the weak word reads the value");
+        let fields = heap
+            .instance_fields(rooted(ephemeron_root))
+            .expect("an ephemeron answers its fields");
+        assert!(names(fields[0], value), "the key reads the value");
+        assert_eq!(
+            heap.instance_field(rooted(fields[1]), 0)
+                .and_then(Value::as_small_integer),
+            Some(7),
+            "the entry is kept"
+        );
+        assert_eq!(
+            heap.object_count,
+            objects_before - 2,
+            "the proxy is collected, and its class, which only it named"
+        );
     }
 
     /// A move rewrites a weak word and an ephemeron's guarded fields like
@@ -8159,7 +8305,7 @@ mod tests {
     /// Scavenges a bare heap with `roots` as the step state's roots.
     fn scavenge_bare<'gc>(heap: &mut Heap<'gc>, tenure_all: bool, roots: &mut [&mut Value<'gc>]) {
         use crate::trace::Tracer;
-        heap.scavenge(tenure_all, |scavenger| {
+        heap.scavenge(tenure_all, None, |scavenger| {
             for root in roots.iter_mut() {
                 scavenger.value(root);
             }
@@ -8460,7 +8606,7 @@ mod tests {
         heap.pop_activation(activation);
         assert!(heap.header(heap.frame_object(frame)).remembered());
 
-        heap.scavenge(false, |scavenger| {
+        heap.scavenge(false, None, |scavenger| {
             use crate::trace::Tracer;
             scavenger.frame(&mut frame);
         });
@@ -8879,6 +9025,92 @@ mod tests {
                     assert!(
                         fields.iter().all(|field| field.is_nil()),
                         "ephemeron {position} is mourned"
+                    );
+                }
+            }
+            verify_remembered_set_if_debug(&heap);
+        }
+    }
+    /// A resolved future that only a weak word or an ephemeron's key names
+    /// stands for its value in a scavenge as in a collection: the value
+    /// survives through a holder the Cheney scan reaches after the weak
+    /// objects, the proxy through nothing, and each word then names the
+    /// value's copy -- in an old weak object too, which stays remembered
+    /// for it. An unresolved future held only weakly is judged as itself.
+    #[test]
+    fn a_resolved_future_held_weakly_is_judged_by_its_value_in_a_scavenge() {
+        for holders_are_old in [false, true] {
+            let mut heap = Heap::new();
+            let class = old_instance_class(&mut heap);
+            let future_class = old_instance_class(&mut heap);
+            heap.set_allocating_old(holders_are_old);
+            let weak = heap.allocate_weak_array(class, 2);
+            let ephemeron = heap.allocate_ephemeron(class, 3);
+            heap.set_allocating_old(false);
+            assert_eq!(space::is_young(weak.offset), !holders_are_old);
+            let value = heap.allocate_string(class, crate::CodePoints::from("value"));
+            let guarded = heap.allocate_string(class, crate::CodePoints::from("guarded"));
+            let future = resolved_future(&mut heap, future_class, Value::object(value));
+            let unresolved = heap.allocate_instance(future_class, 2);
+            assert!(heap.instance_set_field(unresolved, FUTURE_STATE, Value::small_integer(0)));
+            assert!(heap.weak_array_set_element(weak, 0, Value::object(future)));
+            assert!(heap.weak_array_set_element(weak, 1, Value::object(unresolved)));
+            assert!(heap.instance_set_field(ephemeron, 0, Value::object(future)));
+            assert!(heap.instance_set_field(ephemeron, 1, Value::object(guarded)));
+            let holder = heap.allocate_instance(class, 1);
+            assert!(heap.instance_set_field(holder, 0, Value::object(value)));
+            let mut ephemeron_root = Value::object(ephemeron);
+            let mut weak_root = Value::object(weak);
+            let mut holder_root = Value::object(holder);
+            let futures = ResolvedFutures::new(
+                future_class,
+                FUTURE_COMPUTATION,
+                FUTURE_STATE,
+                FUTURE_RESOLVED,
+            );
+
+            heap.scavenge(false, Some(futures), |scavenger| {
+                use crate::trace::Tracer;
+                for root in [&mut ephemeron_root, &mut weak_root, &mut holder_root] {
+                    scavenger.value(root);
+                }
+            });
+
+            let weak = rooted(weak_root);
+            let ephemeron = rooted(ephemeron_root);
+            let value = heap
+                .instance_field(rooted(holder_root), 0)
+                .expect("the holder holds the value");
+            assert_eq!(text_of(&heap, value).as_deref(), Some("value"));
+            let elements = heap
+                .weak_array_elements(weak)
+                .expect("a weak array answers its elements");
+            assert!(
+                names(elements[0], rooted(value)),
+                "the weak word names the value's copy"
+            );
+            assert!(elements[1].is_nil(), "the unresolved future is gone");
+            let fields = heap
+                .instance_fields(ephemeron)
+                .expect("an ephemeron answers its fields");
+            assert!(
+                names(fields[0], rooted(value)),
+                "the key names the value's copy"
+            );
+            assert_eq!(
+                text_of(&heap, fields[1]).as_deref(),
+                Some("guarded"),
+                "the entry is kept"
+            );
+            if holders_are_old {
+                for holder in [weak, ephemeron] {
+                    assert_eq!(
+                        heap.remembered
+                            .iter()
+                            .filter(|entry| **entry == holder.offset)
+                            .count(),
+                        1,
+                        "an old holder naming the young value stays remembered, once"
                     );
                 }
             }

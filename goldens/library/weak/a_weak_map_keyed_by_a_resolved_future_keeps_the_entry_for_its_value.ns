@@ -1,0 +1,45 @@
+/// A resolved future stands for its value in a WeakMap's key and in a
+/// WeakArray's slot: once nothing but those reaches the future, while a
+/// slot holds its value, a collection keeps the entry and the slot for
+/// the value's sake. The future is made by a method of its own that
+/// stores it and returns, so that no register of `main:` holds it;
+/// `at:put:` resolves it, since a key is checked for being a value. The
+/// arrays allocated next fill eden more than twice over, so that
+/// scavenges judge the future while it is young and held only weakly,
+/// before `garbageCollect` judges it in a full collection.
+class AWeakMapKeyedByAResolvedFutureKeepsTheEntryForItsValue = Object new (
+  |
+    held = Object new.
+  |
+) (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      kernel = platform kernel.
+      map = kernel WeakMap new.
+      watch = kernel WeakArray new: 1.
+      show
+    |
+    show:: [:object |
+      transcript
+          show: object printString;
+          newLine.
+    ].
+    fill: map watching: watch future: kernel Future.
+    1 to: 3000 do: [:index | Array new: 1000].
+    kernel garbageCollect.
+    show value: (map at: held).
+    show value: (map includesKey: held).
+    show value: (watch at: 1) == held.
+  )
+
+  /// Stores in `map` an entry under a future of `held` and puts the same
+  /// future in `watch`'s first slot, holding it nowhere else.
+  fill: map watching: watch future: Future = (
+    |
+      future = Future computing: [held].
+    |
+    map at: future put: 'kept'.
+    watch at: 1 put: future.
+  )
+)

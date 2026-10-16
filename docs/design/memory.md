@@ -809,9 +809,10 @@ word, and a move carries it along with the rest of the object.
 **A resolved future is traced as its value.** Before it marks, a collection
 (`World::collect`) rewrites every object field that holds a resolved future
 of a simultaneous slot clause to hold its value instead
-(`Heap::replace_resolved_futures`, called through
-`interpreter::future::replace_resolved_futures`): an instance's and an
-array's fields -- an indirection vector is an `Array` -- and a closure's
+(`Heap::replace_resolved_futures`, with the test
+`interpreter::future::resolved_futures` answers): an instance's and an
+array's fields -- an indirection vector is an `Array` --, a weak array's
+words and an ephemeron's fields, and a closure's
 copied values. A class object holds no `Value` a future could stand in, a
 string or symbol none at all, and a frame object is exempt as a register
 file is, below. The
@@ -835,7 +836,10 @@ for it, and the move stress mode (`World::move_everything`) does not
 replace: moving is not collecting ([object-model.md](object-model.md),
 "Simultaneous slots"). A scavenge does not replace either: the walk reads
 every object of both generations, which a scavenge exists not to do, so a
-resolved future stays until the next full collection.
+resolved future stays until the next full collection. Only where nothing
+else keeps one -- in a weak word or an ephemeron's key -- does a scavenge
+judge it by its value and rewrite the word to it, with the same test
+([core-library.md](core-library.md), "The heap and the collectors").
 
 ### The move stress mode
 

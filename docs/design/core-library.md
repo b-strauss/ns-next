@@ -2385,12 +2385,32 @@ so a weak object that held only young referents now gone stops costing a
 scan; one that still names a young survivor is remembered once, however
 many of its words do.
 
-Neither pass needs the write barrier: setting a word to `nil` stores no
-young object, and they are the collector's own rewrites
-([memory.md](memory.md), "Generations"). A program's store into a weak
-slot goes through the barrier like every store
-(`Heap::weak_array_set_element`): an old weak object naming a young one
-must be remembered for the scavenge to forward or clear the word.
+**A resolved future in a weak word or an ephemeron's key stands for its
+value**, in both collectors alike. `Ephemeron>>key:`, `WeakMap>>at:put:`
+and `WeakArray>>at:put:` store the future itself, though `objectIsValue:`
+and `==` see through it, so the entry lives as long as the value does, not
+the proxy. A full collection gets this from
+`Heap::replace_resolved_futures`, which runs before it marks and rewrites
+every field naming a resolved future, weak ones included, to the value
+([memory.md](memory.md), "A resolved future is traced as its value"). A
+scavenge has no such pass; instead `Scavenger::key_survives` judges a key
+that is a resolved future nothing has copied by its value, and
+`see_through_resolved_future` rewrites such a key once it survives, and
+such a weak word before it is settled, to the value -- the value's copy
+once settled, an old holder remembered if that copy is young. Both apply
+one test (`heap::ResolvedFutures`: the future class, the `RESOLVED`
+state, a value that is no future). A future the scavenge copied, or an
+old one, is kept as itself, and an unresolved future is judged as itself:
+`key:` resolves one before it stores it, but a weak slot may hold one
+(`goldens/library/weak/a_weak_map_keyed_by_a_resolved_future_keeps_the_entry_for_its_value.ns`).
+
+Neither pass needs the write barrier: they are the collector's own
+rewrites ([memory.md](memory.md), "Generations"). Setting a word to `nil`
+stores no young object, and the scavenge remembers an old holder itself
+when a word it rewrote to a resolved future's value names a young copy. A
+program's store into a weak slot goes through the barrier like every
+store (`Heap::weak_array_set_element`): an old weak object naming a young
+one must be remembered for the scavenge to forward or clear the word.
 
 **The stress modes take them as they are.** The collection and scavenge
 stress modes run the passes above at their own safepoints, the move stress
@@ -2423,18 +2443,24 @@ and are written whole wherever they are referenced (§3.1.1) -- is written
 as it is, even where nothing else in the graph reaches it. A collection's
 timing is unspecified, so keeping more than a collection would is never
 wrong, and a value has no identity a load could tell apart. A future is
-seen through first. The walk still meets every weakly held object: a
-weakly held shipped object is listed among the shipped names, and a weakly
-held unnamed shipped class, or the VM mirror, refuses the whole image, as
-a strongly held one does.
+seen through first. The walk still meets what a weak array's slot or an
+ephemeron's key holds: a shipped object there is listed among the shipped
+names, and an unnamed shipped class, or the VM mirror, there refuses the
+whole image, as a strongly held one does. An ephemeron's value and
+finalizer are met only once its key is reached, so an unnamed shipped
+class or the mirror that only a mourned ephemeron's value or finalizer
+holds refuses nothing; nothing of it is written either way, since the
+encoder writes a mourned ephemeron with every field `nil`.
 
 **The decoder holds each body to its class.** It sizes both records from
 their own bytes in its first pass, as an `Array`'s, and refuses, in both
-passes, `OBJECT_WEAK_ARRAY` under any class but `WeakArray`
-(`WeakArrayRecordUnderAnotherClass`) -- `WeakArray`'s header carries an
-`OBJECT_INSTANCE` too, the slotless instance `withoutSlots` makes --
-`OBJECT_EPHEMERON` under any class but `Ephemeron` and any other body
-under `Ephemeron`'s (`EphemeronRecordMismatch`), and an ephemeron record
+passes, `OBJECT_WEAK_ARRAY` under any class but `WeakArray` and any body
+under `WeakArray`'s but `OBJECT_WEAK_ARRAY` and the slotless
+`OBJECT_INSTANCE` `withoutSlots` makes (`WeakArrayRecordMismatch`), that
+instance held to the class's slot count, none
+(`WeakArrayInstanceFieldCount`); `OBJECT_EPHEMERON` under any class but
+`Ephemeron` and any other body under `Ephemeron`'s
+(`EphemeronRecordMismatch`); and an ephemeron record
 whose field count is not the class's (`EphemeronFieldCount`), checked
 before its values are read. It fills the placeholders in place
 (`PlaceholderFormat::WeakArray`, `PlaceholderFormat::Ephemeron`); it

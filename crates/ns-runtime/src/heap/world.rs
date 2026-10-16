@@ -233,8 +233,9 @@ impl World {
     pub(crate) fn scavenge(&mut self, tenure_all: bool) {
         let start = std::time::Instant::now();
         self.check_quiescent_state();
+        let futures = crate::interpreter::future::resolved_futures(&self.mutator);
         let (heap, mut roots) = split(&mut self.mutator);
-        heap.scavenge(tenure_all, |scavenger| {
+        heap.scavenge(tenure_all, futures, |scavenger| {
             use crate::trace::Trace;
             roots.trace(scavenger);
         });
@@ -282,8 +283,8 @@ impl World {
         // fields reached is garbage by the time the marker looks; a program
         // that never made a future pays nothing for it. `move_everything`
         // does not replace: moving is not collecting.
-        if self.mutator.futures_made {
-            crate::interpreter::future::replace_resolved_futures(&mut self.mutator);
+        if let Some(futures) = crate::interpreter::future::resolved_futures(&self.mutator) {
+            self.mutator.heap.replace_resolved_futures(futures);
         }
         self.mark_everything_reachable();
         // Between marking and compacting: compaction clears the mark bits,

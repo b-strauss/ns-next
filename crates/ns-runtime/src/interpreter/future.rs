@@ -336,14 +336,18 @@ fn state_in<'gc>(heap: &Heap<'gc>, future: ObjectReference<'gc>) -> FutureState<
     }
 }
 
-/// Replaces every resolved future an object field holds with its value, for
-/// a collection about to mark (`World::collect`). `Heap::replace_resolved_futures`
-/// says why registers and host roots keep theirs. Answers the count.
-pub(crate) fn replace_resolved_futures(mutator: &mut Mutator<'_>) -> usize {
-    let future_class = mutator.builtin_class(BuiltinClass::FutureImplementation);
-    mutator
-        .heap
-        .replace_resolved_futures(future_class, COMPUTATION_FIELD, STATE_FIELD, RESOLVED)
+/// The test both collectors apply to find a resolved future and its value
+/// (`Heap::replace_resolved_futures`, the scavenger's weak pass); `None`
+/// before the program has made a future, when there is none to find.
+pub(crate) fn resolved_futures(mutator: &Mutator<'_>) -> Option<crate::heap::ResolvedFutures> {
+    mutator.futures_made.then(|| {
+        crate::heap::ResolvedFutures::new(
+            mutator.builtin_class(BuiltinClass::FutureImplementation),
+            COMPUTATION_FIELD,
+            STATE_FIELD,
+            RESOLVED,
+        )
+    })
 }
 
 /// What an image writes in place of `value`: a resolved future's value, and

@@ -4175,19 +4175,89 @@ fn a_weak_array_record_on_another_class_is_refused() {
     for header in [ARRAY_NAME, OBJECT_NAME, EPHEMERON_NAME] {
         refused_before_allocating(
             &one_weak_record(header, OBJECT_WEAK_ARRAY, 2, 2),
-            &decode::DecodeError::WeakArrayRecordUnderAnotherClass,
+            &decode::DecodeError::WeakArrayRecordMismatch {
+                body: OBJECT_WEAK_ARRAY,
+            },
             "a weak-array record has a class other than WeakArray",
         );
     }
 }
 
+/// `WeakArray`'s header carries a weak-array record or the slotless
+/// instance record `withoutSlots` makes, nothing else: any other body
+/// would answer its leaves over an object of another shape. Each is
+/// refused as soon as its body is read -- a byte-array body by the
+/// byte-array check, which comes first -- so the bytes after it are never
+/// looked at.
+#[test]
+fn another_body_under_the_weak_array_class_is_refused() {
+    for body in [
+        OBJECT_ARRAY,
+        OBJECT_STRING,
+        OBJECT_SYMBOL,
+        OBJECT_CLOSURE,
+        OBJECT_EPHEMERON,
+        OBJECT_CLASS,
+        OBJECT_METACLASS,
+        OBJECT_FRAME,
+    ] {
+        refused_before_allocating(
+            &one_weak_record(WEAK_ARRAY_NAME, body, 0, 0),
+            &decode::DecodeError::WeakArrayRecordMismatch { body },
+            &format!(
+                "a record of the class WeakArray has object body {body}, but a WeakArray is \
+                 a weak-array record or a slotless instance record"
+            ),
+        );
+    }
+    refused_before_allocating(
+        &one_weak_record(WEAK_ARRAY_NAME, OBJECT_BYTE_ARRAY, 0, 0),
+        &decode::DecodeError::ByteArrayRecordMismatch {
+            body: OBJECT_BYTE_ARRAY,
+        },
+        "a byte-array record has a class other than ByteArray",
+    );
+}
+
+/// The instance record `WeakArray`'s header may carry has the class's
+/// slots, none: one of more fields is refused before anything is
+/// allocated, and one of none decodes to the instance `withoutSlots`
+/// makes.
+#[test]
+fn an_instance_record_under_the_weak_array_class_has_no_fields() {
+    for count in [1, 2] {
+        refused_before_allocating(
+            &one_weak_record(WEAK_ARRAY_NAME, OBJECT_INSTANCE, count, count as usize),
+            &decode::DecodeError::WeakArrayInstanceFieldCount {
+                expected: 0,
+                found: count as usize,
+            },
+            &format!(
+                "an instance record of the class WeakArray has {count} fields, but WeakArray \
+                 declares 0 slots"
+            ),
+        );
+    }
+    GraphFixture::new().decoded(
+        &one_weak_record(WEAK_ARRAY_NAME, OBJECT_INSTANCE, 0, 0),
+        "a slotless WeakArray",
+        |heap, graph| {
+            let object = graph.objects[0];
+            assert_eq!(heap.object_shape(object), ObjectShape::Instance);
+            assert_eq!(heap.instance_field_count(object), Some(0));
+        },
+    );
+}
+
 /// An ephemeron record under any class but `Ephemeron` would make the
 /// collectors read that class's first slot as a key; any other record
 /// under `Ephemeron`'s header would answer its methods over slots held
-/// strongly, which no program makes.
+/// strongly, which no program makes. Under `WeakArray`'s header the
+/// weak-array check refuses it first
+/// (`another_body_under_the_weak_array_class_is_refused`).
 #[test]
 fn an_ephemeron_record_on_another_class_is_refused() {
-    for header in [OBJECT_NAME, ARRAY_NAME, WEAK_ARRAY_NAME] {
+    for header in [OBJECT_NAME, ARRAY_NAME] {
         refused_before_allocating(
             &one_weak_record(header, OBJECT_EPHEMERON, 3, 3),
             &decode::DecodeError::EphemeronRecordMismatch {
@@ -4206,7 +4276,7 @@ fn an_ephemeron_record_on_another_class_is_refused() {
             )
         };
         let expected = if body == OBJECT_WEAK_ARRAY {
-            decode::DecodeError::WeakArrayRecordUnderAnotherClass
+            decode::DecodeError::WeakArrayRecordMismatch { body }
         } else {
             decode::DecodeError::EphemeronRecordMismatch { body }
         };

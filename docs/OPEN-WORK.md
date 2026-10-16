@@ -1296,16 +1296,6 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
   program reaches the path; route it
   through `decide_factory`. Noted 2026-10-16.
   [core-library.md](design/core-library.md), "Weak references".
-- **The decoder does not hold `WeakArray`'s header to its two bodies.** It
-  refuses `OBJECT_WEAK_ARRAY` under any other class, but not a crafted
-  `OBJECT_ARRAY` under `WeakArray`'s header, which decodes to an object of
-  `WeakArray`'s class whose slots hold strongly. Its leaves
-  decline on it, as on a subclass's instance, so it is wrong but safe;
-  refusing every body but `OBJECT_WEAK_ARRAY` and `OBJECT_INSTANCE`, as
-  `Ephemeron`'s header is held to its one, would close it. Noted
-  2026-10-16. `image/decode.rs`, `Sizing::record`;
-  [core-library.md](design/core-library.md), "The image" under "Weak
-  references".
 
 ## Missing tests
 
