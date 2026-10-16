@@ -45,6 +45,8 @@ pub enum Primitive {
     /// §6.3.2's pull future, made by `Future computing:` and forced by its
     /// `doesNotUnderstand:` (`builtins::future`).
     Future(FuturePrimitive),
+    /// `WeakArray`'s leaves and `garbageCollect` (`builtins::weak`).
+    Weak(WeakPrimitive),
     /// A leaf reached as a send to the VM mirror: a row of `MIRROR`.
     Mirror(MirrorPrimitive),
 }
@@ -280,6 +282,13 @@ impl Primitive {
                 | ModulePrimitive::Record,
             ) => false,
             Primitive::Future(FuturePrimitive::Value | FuturePrimitive::Made) => false,
+            Primitive::Weak(
+                WeakPrimitive::Allocate
+                | WeakPrimitive::Size
+                | WeakPrimitive::ElementAt
+                | WeakPrimitive::ElementAtPut
+                | WeakPrimitive::Collect,
+            ) => false,
             // It reaches its own primitive's row through `execute_sent`,
             // whose failure path looks for a future among that row's
             // operands.
@@ -549,6 +558,18 @@ pub enum BytePrimitive {
     /// `at:putCodePoint:`: one code point's UTF-8 bytes, stored from an
     /// index.
     WriteCodePoint,
+}
+
+/// `WeakArray`'s primitives, and the full collection a program asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WeakPrimitive {
+    /// `WeakArray new: size`, on `WeakArray`'s class side.
+    Allocate,
+    Size,
+    ElementAt,
+    ElementAtPut,
+    /// `garbageCollect`: a full collection, served at the next safepoint.
+    Collect,
 }
 
 /// The ten element kinds of the typed arrays and `DataView`.
@@ -2030,6 +2051,31 @@ pub const MIRROR: &[MirrorEntry] = &[
         "byteArray:bigEndianFloat64At:put:ifFail:",
         "float64At:put:",
         Primitive::Element(ElementAccess::new(ElementKind::Float64, true, true, true)),
+    ),
+    mirror(
+        "weakArrayClass:new:ifFail:",
+        "new:",
+        Primitive::Weak(WeakPrimitive::Allocate),
+    ),
+    mirror(
+        "weakArraySize:ifFail:",
+        "size",
+        Primitive::Weak(WeakPrimitive::Size),
+    ),
+    mirror(
+        "weakArray:at:ifFail:",
+        "at:",
+        Primitive::Weak(WeakPrimitive::ElementAt),
+    ),
+    mirror(
+        "weakArray:at:put:ifFail:",
+        "at:put:",
+        Primitive::Weak(WeakPrimitive::ElementAtPut),
+    ),
+    mirror(
+        "garbageCollect:ifFail:",
+        "garbageCollect",
+        Primitive::Weak(WeakPrimitive::Collect),
     ),
 ];
 

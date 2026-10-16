@@ -1,0 +1,37 @@
+/// After `platform kernel garbageCollect` a WeakArray reads nil where it
+/// held an object nothing else reaches -- an Object and a String made at
+/// run time, each by a method of its own that stores it and returns, so
+/// that no register of `main:` holds it -- and still holds an object a
+/// local holds and an Integer, which is never collected. Nothing is
+/// asserted of the slots before the collection, which another collection
+/// may already have cleared.
+class AWeakArrayForgetsAnObjectAfterACollection = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      weak = platform kernel WeakArray new: 4.
+      held = 'strongly' , ' held'.
+    |
+    weak at: 1 put: held.
+    storeAnObjectIn: weak.
+    weak at: 3 put: 7.
+    storeAStringIn: weak.
+    platform kernel garbageCollect.
+    weak do: [:each |
+      transcript
+          show: each printString;
+          newLine.
+    ].
+  )
+
+  /// Stores in the second slot of `weak` an Object nothing else reaches.
+  storeAnObjectIn: weak = (
+    weak at: 2 put: Object new.
+  )
+
+  /// Stores in the fourth slot of `weak` a String made at run time that
+  /// nothing else reaches.
+  storeAStringIn: weak = (
+    weak at: 4 put: 'weakly' , ' held'.
+  )
+)

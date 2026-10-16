@@ -260,6 +260,39 @@ fn the_typed_arrays_module_is_built_once_on_first_demand() {
     assert_built_once_on_first_demand("TypedArraysFactory", "typedArrays");
 }
 
+/// `platform kernel WeakArray` and `platform collections WeakArray` are
+/// both the kernel's builtin `WeakArray`: the corpus asks the collections
+/// facet for it (`corpus/modules/Brazil.ns`), and a second class there
+/// would be one whose instances hold no weak slots.
+#[test]
+fn both_facets_answer_the_kernels_weak_array() {
+    let mut interpreter = Interpreter::bootstrap();
+    let platform = interpreter.platform();
+    let mut answers = Vec::new();
+    for facet in ["kernel", "collections"] {
+        let namespace = expect_ok(
+            interpreter.send(&platform, Symbol::intern(facet), &[]),
+            facet,
+        );
+        answers.push(expect_ok(
+            interpreter.send(&namespace, Symbol::intern("WeakArray"), &[]),
+            facet,
+        ));
+    }
+    interpreter.enter(|mutator| {
+        let expected = mutator.builtin_class(BuiltinClass::WeakArray);
+        for answer in &answers {
+            match mutator.fetch(answer).kind() {
+                ValueKind::Object(object) => assert!(object.same(expected)),
+                _ => panic!(
+                    "expected the WeakArray class, got {}",
+                    mutator.heap().describe(mutator.fetch(answer))
+                ),
+            }
+        }
+    });
+}
+
 /// The namespace answers the collections module's classes and nothing
 /// more: `IdentitySet`, which the corpus asks for, names a class this
 /// runtime does not have, and must fail loudly rather than quietly alias

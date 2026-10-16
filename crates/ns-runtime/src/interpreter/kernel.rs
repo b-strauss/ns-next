@@ -102,6 +102,7 @@ pub(crate) fn kernel_class_name(kind: BuiltinClass) -> &'static str {
         BuiltinClass::Collection => "Collection",
         BuiltinClass::Fraction => "Fraction",
         BuiltinClass::ByteArray => "ByteArray",
+        BuiltinClass::WeakArray => "WeakArray",
         BuiltinClass::VmMirror => {
             unreachable!("internal: the mirror's class is not in Kernel.ns")
         }
@@ -624,7 +625,8 @@ pub(crate) fn kernel_kind_named(name: &str) -> Option<BuiltinClass> {
 /// The shape the phase relies on and the resolver cannot check: one nested
 /// class per builtin but the mirror's, named as `kernel_class_name` says,
 /// each declaring no slots -- but the exception classes and `Message` --
-/// and the default factory `new`; a root class with
+/// and the default factory `new` -- but `FutureImplementation` and
+/// `WeakArray`, which name their own; a root class with
 /// exactly one slot, the immutable `vmMirror`; a clause on every builtin's
 /// class but `Top`, a bare name with no message arguments -- it is read,
 /// never run -- naming a builtin, from which the chain reaches `Top` without
@@ -687,11 +689,18 @@ pub(super) fn check_kernel_shape(root: &Rc<Mixin>, resolved: &ResolvedModule) {
             .declaration
             .as_ref()
             .unwrap_or_else(|| panic!("internal: Kernel.ns's {name} was built from no source"));
-        // `FutureImplementation` alone takes its computation through its
+        // `FutureImplementation` takes its computation through its
         // factory, so that `Future computing:` stores it untouched; a
         // simultaneous slot clause makes its futures without sending it.
+        // `WeakArray` names its factory so that `WeakArray new` is not
+        // understood: its class side's `new:` makes one with slots, and a
+        // `new` would answer an instance holding none.
         assert!(
-            declaration.factory.is_none() || kind == BuiltinClass::FutureImplementation,
+            declaration.factory.is_none()
+                || matches!(
+                    kind,
+                    BuiltinClass::FutureImplementation | BuiltinClass::WeakArray
+                ),
             "internal: Kernel.ns's {name} declares a factory; a builtin's is `new`"
         );
         match (&declaration.superclass, kind) {
@@ -1220,6 +1229,13 @@ mod tests {
         ("ByteArray", "indexOf:"),
         ("ByteArray", "lastIndexOf:"),
         ("ByteArray", "withAll:"),
+        // `WeakArray`'s `isEmpty` over its `size`, its `do:`, a loop over
+        // the size leaf's answer that sends `value:`, and the loops of
+        // `keysAndValuesDo:` and `copyWith:`: sends, no leaf.
+        ("WeakArray", "isEmpty"),
+        ("WeakArray", "do:"),
+        ("WeakArray", "keysAndValuesDo:"),
+        ("WeakArray", "copyWith:"),
         // `String`'s code-point protocol is Newspeak over its leaves --
         // `size`, `at:`, `copyFrom:to:` and the two searches: every method
         // sends, none forwards to a leaf.
@@ -1637,6 +1653,16 @@ mod tests {
             "asByteArray",
             MethodFastPath::Receiver,
         ),
+        (
+            BuiltinClass::WeakArray,
+            "isKindOfWeakArray",
+            MethodFastPath::Constant(QuickConstant::True),
+        ),
+        (
+            BuiltinClass::WeakArray,
+            "isKindOfArray",
+            MethodFastPath::Constant(QuickConstant::True),
+        ),
         // Quick in shape, though only the unwinder activates it, pushing it
         // as a method so that its return carries the unwind on
         // (`Mutator::start_unwind_block`).
@@ -1692,8 +1718,8 @@ mod tests {
     /// mirror's class, `Behavior`, `Class`, `Metaclass`, `Activation`,
     /// `FutureImplementation`, `LargeInteger`, which a program meets only as
     /// an integer's class, and the exception classes, `Message`, `Proxy`,
-    /// `Future`, `Collection` and `Fraction`, which a program reaches
-    /// through `platform kernel`.
+    /// `Future`, `Collection`, `Fraction` and `WeakArray`, which a program
+    /// reaches through `platform kernel`.
     const OBJECT_CLASS_ACCESSORS: &[BuiltinClass] = &[
         BuiltinClass::Object,
         BuiltinClass::Value,
@@ -2368,6 +2394,7 @@ mod tests {
                 "Stopwatch",
                 "LargeInteger",
                 "Collection",
+                "WeakArray",
             ] {
                 assert!(
                     application

@@ -62,7 +62,8 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
     /// collections and typed arrays modules are built over on first
     /// demand. Kept because those builds need the instance itself, not
     /// only its classes; handed to nothing but their factories, never to
-    /// a program.
+    /// a program, and sent nothing but `garbageCollect`, which it
+    /// understands.
     private kernelModule = kernel.
     /// The kernel's `Exception`, which `KernelNamespace` hands out.
     private Exception = kernel Exception.
@@ -92,6 +93,8 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
     private StringBuilder = kernel StringBuilder.
     /// The kernel's `DataView`, which `KernelNamespace` hands out.
     private DataView = kernel DataView.
+    /// The kernel's `WeakArray`, which `KernelNamespace` hands out.
+    private WeakArray = kernel WeakArray.
   |
 ) (
   /// The one collections module, built over the kernel on first use and
@@ -212,7 +215,8 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
 
   /// `platform kernel`: the kernel classes a program may name that
   /// `Object`'s class accessors do not answer, and `Closure`, which they
-  /// answer too.
+  /// answer too; and `garbageCollect`, the full collection a program
+  /// asks for to see a weak slot cleared.
   ///
   /// The facet over the kernel module that Primordial Soup's `Kernel
   /// wrapping:` answers.
@@ -288,6 +292,25 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
     /// with `on:byteOrder:` a ByteArray or `new:byteOrder:`.
     public DataView = (
       ^outer PlatformFactory DataView.
+    )
+
+    /// Answers the kernel's class `WeakArray`, which a program
+    /// instantiates with `new:` for a sequence whose slots do not keep
+    /// their objects alive.
+    public WeakArray = (
+      ^outer PlatformFactory WeakArray.
+    )
+
+    /// Runs a full collection and answers the receiver: every object that
+    /// nothing but weak slots reaches is reclaimed, and those slots read
+    /// nil before the sender's next instruction runs.
+    ///
+    /// An ordinary method, not a forwarder to the mirror: the collection
+    /// the kernel's `garbageCollect` asks for is served at the safepoint
+    /// of this method's return, so a method of its own must stand between
+    /// the program and the leaf.
+    public garbageCollect = (
+      kernelModule garbageCollect.
     )
   )
 

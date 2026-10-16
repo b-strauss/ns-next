@@ -4581,6 +4581,134 @@ class Kernel vmMirror: mirror = Value (
     )
   )
 
+  /// A fixed-size sequence whose slots hold their objects weakly, indexed
+  /// from 1, and a Collection: `WeakArray new: 3` makes one of nils. A
+  /// slot holds any object, a value included, without keeping it alive:
+  /// once nothing but weak slots reaches the object, a collection sets
+  /// every slot holding it to nil. An immediate -- an Integer that fits a
+  /// SmallInteger, nil, true, false -- is never collected, so a slot
+  /// holding one keeps it. No value: `=` and `hash` are identity.
+  ///
+  /// The factory is not `new`, so that `WeakArray new` is not understood:
+  /// a WeakArray is made by the class side's `new:`, which gives it its
+  /// slots. Sent, the factory answers an instance holding no slots, as an
+  /// instance of a subclass holds none, on which every leaf here
+  /// declines.
+  public class WeakArray withoutSlots = Collection () (
+    /// Answers true: the receiver is a WeakArray.
+    public isKindOfWeakArray = (
+      ^true.
+    )
+
+    /// Answers true, as an Array does: a WeakArray answers the sequence
+    /// protocol -- `at:`, `at:put:`, `size`, `do:` -- that code asking
+    /// this sends.
+    public isKindOfArray = (
+      ^true.
+    )
+
+    /// Answers the object in the slot at `index`, or nil when the slot
+    /// holds none or the collector has reclaimed its object.
+    ///
+    /// index: an Integer from 1 to `size`.
+    ///
+    /// Signals an ArgumentError carrying `index`: 'index … out of
+    /// range: valid indices are 1..size (size …)' for an Integer outside
+    /// 1 to `size`, a LargeInteger included, and 'at: requires an
+    /// Integer index, got …' for an index that is no Integer.
+    public at: index = (
+      ^vmMirror weakArray: self at: index ifFail: [^super at: index].
+    )
+
+    /// Stores `value` in the slot at `index` and answers `value`.
+    ///
+    /// index: an Integer from 1 to `size`.
+    /// value: any object; the slot holds it until a collection finds
+    ///     nothing but weak slots reaching it.
+    ///
+    /// Signals an ArgumentError carrying `index`: 'index … out of
+    /// range: valid indices are 1..size (size …)' for an Integer outside
+    /// 1 to `size`, a LargeInteger included, and 'at:put: requires an
+    /// Integer index, got …' for an index that is no Integer. A refused
+    /// store leaves the slot as it was.
+    public at: index put: value = (
+      ^vmMirror weakArray: self at: index put: value ifFail: [^super at: index put: value].
+    )
+
+    /// Answers the number of slots, fixed when the WeakArray was made;
+    /// a slot the collector cleared still counts.
+    public size = (
+      ^vmMirror weakArraySize: self ifFail: [^super size].
+    )
+
+    /// Answers whether the receiver has no slot.
+    public isEmpty = (
+      ^self size = 0.
+    )
+
+    /// Evaluates `action` with the object in each slot in turn, from the
+    /// first, nil for a slot that holds none, reading each slot only when
+    /// it reaches it; answers the receiver.
+    ///
+    /// action: a block of one argument, or anything understanding
+    /// `value:`; sent `value:` with each slot's object.
+    ///
+    /// Signals what `action`'s `value:` signals.
+    ///
+    /// The size is read through its leaf rather than `self size`, which
+    /// for a receiver holding no slots -- an instance of a subclass --
+    /// would reach Collection's `size`, which counts through `do:` and
+    /// would come back here; the declining leaf sends such a receiver on
+    /// to Collection's `do:` instead.
+    public do: action = (
+      |
+        count = vmMirror weakArraySize: self ifFail: [^super do: action].
+      |
+      1 to: count do: [:index | action value: (self at: index)].
+    )
+
+    /// Evaluates `action` with each index and the object in the slot
+    /// there, from the first, nil for a slot that holds none, reading
+    /// each slot only when it reaches it; answers the receiver.
+    ///
+    /// action: a two-argument block, given the index and the object.
+    ///
+    /// Signals what `action`'s `value:value:` signals.
+    public keysAndValuesDo: action = (
+      1 to: self size do: [:index | action value: index value: (self at: index)].
+    )
+
+    /// Answers a new WeakArray one slot longer than the receiver, holding
+    /// the receiver's objects in order and `element` last. The receiver
+    /// is unchanged.
+    ///
+    /// element: any object; the new WeakArray holds it weakly.
+    public copyWith: element = (
+      |
+        result = outer Kernel WeakArray new: self size + 1.
+      |
+      1 to: self size do: [:index | result at: index put: (self at: index)].
+      result at: result size put: element.
+      ^result.
+    )
+  ) : (
+    /// Answers a new WeakArray of `size` slots, each nil.
+    ///
+    /// size: an Integer, at least 0.
+    ///
+    /// Signals an ArgumentError carrying `size`: 'new: requires an
+    /// Integer size, got …' for a size that is no Integer, 'new:
+    /// requires a size of at least 0, got …' for a negative one, and
+    /// 'new: cannot allocate a WeakArray of … elements' for one too
+    /// large to allocate.
+    ///
+    /// The leaf declines only a subject that is not `WeakArray` itself,
+    /// which a flat class side cannot be sent from.
+    public new: size = (
+      ^vmMirror weakArrayClass: self new: size ifFail: [nil].
+    )
+  )
+
   /// A view of a ByteArray that reads and writes numbers of one to eight
   /// bytes in a byte order given when it is made, at any byte position:
   /// `DataView on: bytes byteOrder: #bigEndian` and `DataView new: size
@@ -5732,5 +5860,19 @@ class Kernel vmMirror: mirror = Value (
     private valueOf: action with: element = (
       ^action value: element.
     )
+  )
+
+  /// Runs a full collection and answers the receiver: every object that
+  /// nothing but weak slots reaches is reclaimed, and those slots read
+  /// nil from then on. `platform kernel garbageCollect` sends it.
+  ///
+  /// The leaf asks for the collection, and the run loop serves it at its
+  /// next safepoint: the return from the method that sent this one,
+  /// before that method's sender runs on. The leaf never declines; its
+  /// failure block answers the receiver, as the leaf does, rather than
+  /// resending to `super`, so that no MessageNotUnderstood could ever
+  /// carry the kernel instance.
+  public garbageCollect = (
+    ^vmMirror garbageCollect: self ifFail: [self].
   )
 )

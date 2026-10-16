@@ -1,0 +1,30 @@
+/// A WeakArray refuses an index or a size as an Array does: an index
+/// outside 1 to `size` or one that is no Integer, and a size that is
+/// negative or no Integer, each an ArgumentError in an Array's words. Its
+/// factory is not `new`: `WeakArray new` is not understood.
+class AWeakArrayRefusesABadIndexOrSize = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      kernel = platform kernel.
+      WeakArray = kernel WeakArray.
+      weak = WeakArray new: 3.
+      refusal
+    |
+    refusal:: [:action |
+      transcript
+          show: (action on: kernel ArgumentError do: [:error | error messageText]);
+          newLine.
+    ].
+    refusal value: [weak at: 0].
+    refusal value: [weak at: 4].
+    refusal value: [weak at: nil].
+    refusal value: [weak at: 1.5].
+    refusal value: [weak at: 4 put: 1].
+    refusal value: [WeakArray new: -1].
+    refusal value: [WeakArray new: nil].
+    transcript
+        show: ([WeakArray new] on: kernel MessageNotUnderstood do: [:error | error messageText]);
+        newLine.
+  )
+)

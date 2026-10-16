@@ -1,0 +1,78 @@
+/// A WeakArray made by `new:` holds that many nils, indexed from 1:
+/// `at:put:` answers the value it stores and `at:` reads it back. `do:`
+/// and `keysAndValuesDo:` walk the elements in order, `copyWith:` answers
+/// a new WeakArray one longer with the element last, and it answers
+/// `isKindOfArray` and `isKindOfWeakArray`. The collections facet hands
+/// out the kernel's class. Every element here is a value never collected
+/// or an object a local holds, so a collection at any point changes
+/// nothing.
+class AWeakArrayAnswersItsSizeAndElements = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      WeakArray = platform kernel WeakArray.
+      empty = WeakArray new: 0.
+      weak = WeakArray new: 3.
+      text = 'th' , 'ree'.
+      longer
+    |
+    transcript
+        show: empty size printString;
+        show: ' ';
+        show: weak size printString;
+        newLine.
+    transcript
+        show: (weak at: 1) printString;
+        newLine.
+    transcript
+        show: (weak at: 2 put: 42) printString;
+        show: ' ';
+        show: (weak at: 3 put: text) printString;
+        newLine.
+    transcript
+        show: (weak at: 2) printString;
+        show: ' ';
+        show: ((weak at: 3) == text) printString;
+        newLine.
+    transcript
+        show: empty isEmpty printString;
+        show: ' ';
+        show: weak isEmpty printString;
+        newLine.
+    weak do: [:each |
+      transcript
+          show: each printString;
+          show: ' '.
+    ].
+    transcript newLine.
+    weak keysAndValuesDo: [:index :each |
+      transcript
+          show: index printString;
+          show: '=';
+          show: each printString;
+          show: ' '.
+    ].
+    transcript newLine.
+    longer:: weak copyWith: 7.
+    transcript
+        show: longer size printString;
+        show: ' ';
+        show: (longer at: 2) printString;
+        show: ' ';
+        show: (longer at: 4) printString;
+        show: ' ';
+        show: longer isKindOfWeakArray printString;
+        show: ' ';
+        show: (longer == weak) printString;
+        show: ' ';
+        show: weak size printString;
+        newLine.
+    transcript
+        show: weak isKindOfArray printString;
+        show: ' ';
+        show: weak isKindOfWeakArray printString;
+        show: ' ';
+        show: (platform collections WeakArray == platform kernel WeakArray) printString;
+        newLine.
+  )
+)

@@ -165,6 +165,12 @@ pub enum BuiltinClass {
     /// (`docs/design/core-library.md`, "`ByteArray` in the heap, the
     /// movers and the image"). Not a value class (§3.1.1).
     ByteArray,
+    /// A fixed-size sequence whose slots hold their objects weakly: a
+    /// builtin because its instances have their own format,
+    /// `WeakPointers`, whose words the collectors clear once nothing else
+    /// reaches their objects (`docs/design/core-library.md`, "Planned:
+    /// sub-project 6, weak references"). Not a value class (§3.1.1).
+    WeakArray,
 }
 
 impl BuiltinClass {
@@ -184,7 +190,7 @@ impl BuiltinClass {
     /// `objects_class_accessors_are_exactly_the_nameable_builtins`. An image
     /// names it by its declaration in `Kernel.ns`, like every shipped class
     /// (`image::shipped_names`), so it needs no wire tag.
-    pub const ALL: [BuiltinClass; 35] = [
+    pub const ALL: [BuiltinClass; 36] = [
         BuiltinClass::Object,
         BuiltinClass::Boolean,
         BuiltinClass::True,
@@ -220,6 +226,7 @@ impl BuiltinClass {
         BuiltinClass::Collection,
         BuiltinClass::Fraction,
         BuiltinClass::ByteArray,
+        BuiltinClass::WeakArray,
     ];
 }
 

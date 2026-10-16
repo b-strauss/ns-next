@@ -982,13 +982,6 @@ impl<'gc> Heap<'gc> {
     }
 
     /// A `WeakArray` of `class` of `size` slots, every one nil.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the kernel's allocation leaf, its caller, comes next"
-        )
-    )]
     pub(crate) fn allocate_weak_array(
         &mut self,
         class: ClassReference<'gc>,
@@ -1059,7 +1052,20 @@ impl<'gc> Heap<'gc> {
     /// dropped at once: a size inside the reservation can still be one a
     /// host that does not overcommit refuses to commit.
     pub(crate) fn byte_array_fits(&self, size: usize) -> bool {
-        let field_count = object::byte_array_field_count(size);
+        self.fields_fit(object::byte_array_field_count(size))
+    }
+
+    /// Whether a `WeakArray` of `size` slots can be allocated, asked before
+    /// a size the program chose is, for `byte_array_fits`'s reason and by
+    /// its two halves.
+    pub(crate) fn weak_array_fits(&self, size: usize) -> bool {
+        self.fields_fit(size)
+    }
+
+    /// Whether an object of `field_count` fields fits the old space of the
+    /// reservation and the operating system grants memory of its size
+    /// (`byte_array_fits`).
+    fn fields_fit(&self, field_count: usize) -> bool {
         let words = record_size::block_words(field_count);
         let old = self.space.region(RegionName::Old);
         let inside_the_reservation = words
@@ -4852,9 +4858,11 @@ impl<'gc> Heap<'gc> {
     /// back. Real work here would have `reify` collect a frame no stack
     /// entry points at yet.
     ///
-    /// `allocate_block` is its only caller, so every allocation path compares
-    /// against the limit.
-    fn request_collection(&mut self) {
+    /// `allocate_block` calls it, so every allocation path compares against
+    /// the limit; so does a scavenge that leaves the old space past it, and
+    /// `garbageCollect`'s leaf (`builtins::weak`), which a program sends to
+    /// see a weak slot cleared.
+    pub(crate) fn request_collection(&mut self) {
         self.collection_requested = true;
         self.safepoint_requested = true;
     }

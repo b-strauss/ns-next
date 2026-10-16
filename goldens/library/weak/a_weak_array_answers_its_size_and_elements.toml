@@ -1,0 +1,11 @@
+stdout = '''
+0 3
+nil
+42 'three'
+42 true
+true false
+nil 42 'three' 
+1=nil 2=42 3='three' 
+4 42 7 true false 3
+true true true
+'''

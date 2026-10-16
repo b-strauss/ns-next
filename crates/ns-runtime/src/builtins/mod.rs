@@ -7,7 +7,8 @@
 //! `Kernel.ns` builds over the running activations, `message` for
 //! `Message>>sendTo:`, `module` for `moduleInstanceNamed:`, through which
 //! shipped source reaches another shipped module, and `future` for the
-//! forcing of §6.3.2's pull future. `primitive` names every
+//! forcing of §6.3.2's pull future, and `weak` for `WeakArray` and the
+//! full collection a program asks for. `primitive` names every
 //! one of them as a `Primitive` and lists them as the rows of the VM
 //! mirror, the one builtin
 //! whose method table holds primitive entries (`dispatch::Lookup::Primitive`);
@@ -27,6 +28,7 @@ pub mod object_class;
 pub mod primitive;
 pub mod text;
 pub mod value;
+pub mod weak;
 
 use primitive::Primitive;
 
@@ -111,6 +113,9 @@ pub(crate) fn execute<'gc>(
             module::execute(mutator, primitive, receiver).map(wrap_error)
         }
         Primitive::Future(primitive) => future::execute(mutator, primitive, receiver),
+        Primitive::Weak(primitive) => {
+            weak::execute(mutator, primitive, receiver, selector, arguments).map(wrap_error)
+        }
         // Always `Some`: a leaf that declines here runs the failure block
         // the send carries, so a mirror row never answers `None`.
         Primitive::Mirror(row) => Some(crate::interpreter::mirror::execute_sent(
