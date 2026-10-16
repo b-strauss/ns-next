@@ -1106,8 +1106,8 @@ speculative platform. The core is different: Primordial Soup's API is the
 specification it is completed to, and each sub-project pins what it adds
 with goldens of its own.
 
-The `collections` namespace hands out `Collection` and `WeakArray`, the
-kernel's, and the module's `List`, `Map`, `IdentityMap`, `Set`,
+The `collections` namespace hands out `Collection`, `WeakArray` and
+`WeakMap`, the kernel's, and the module's `List`, `Map`, `IdentityMap`, `Set`,
 `NotFound` and `ConcurrentModification`, each with Primordial Soup's
 protocol ("The collections module (plan 2)" and "Weak references" below).
 The corpus also asks that namespace for `IdentitySet`, which Primordial
@@ -2212,14 +2212,18 @@ weak structure asks of a key.
 |---|---|---|---|
 | `WeakArray` | builtin, format `WeakPointers`; factory `withoutSlots`, made by its class side's `new:` | `platform kernel`, and `platform collections` | `Collection` |
 | `Ephemeron` | builtin, format `Ephemeron`, three private slots | `platform kernel` | `Object` |
-| `WeakMap` | Newspeak, over an `Array` of `Ephemeron`s | `platform kernel` | `Object` |
+| `WeakMap` | Newspeak, over an `Array` of `Ephemeron`s | `platform kernel`, and `platform collections` | `Object` |
 
 `platform collections` hands out `WeakArray` as well because the corpus
 asks it there (`corpus/modules/Brazil.ns:24`, `VictoryFuelTesting.ns:5`)
 and the canonical Newspeak's collections namespace has it
 (`prior-art/newspeak/Collections.ns:40`); both facets answer the one class
 (`tests/platform.rs`, `both_facets_answer_the_kernels_weak_array`).
-Primordial Soup hands all three out through the kernel alone.
+It hands out `WeakMap` too, a collection a program looks for among the
+others (decided with the user on 2026-10-16), again the kernel's one class
+(`both_facets_answer_the_kernels_weak_map`). Primordial Soup hands all
+three out through the kernel alone, and `Ephemeron`, a building block
+rather than a collection, stays the kernel facet's.
 
 **`platform kernel garbageCollect` runs a full collection before its
 sender's next instruction**, as Primordial Soup's `Kernel>>garbageCollect`

@@ -5326,7 +5326,8 @@ a key with an `ArgumentError` signalled in Newspeak, through the mirror
 leaf `objectIsValue:ifFail:`, which sees through a future. `platform
 kernel` hands out the three and `garbageCollect`, an ordinary method whose
 return is the safepoint that serves the collection the leaf requested;
-`platform collections` hands out `WeakArray` too, as the corpus asks. An
+`platform collections` hands out `WeakArray` too, as the corpus asks, and
+`WeakMap`. An
 image carries `OBJECT_WEAK_ARRAY` (body tag 12) and `OBJECT_EPHEMERON`
 (13), written as a collection would leave them but for what takes no
 record -- an immediate, a shipped name, a value written by value -- which is

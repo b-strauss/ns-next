@@ -2,16 +2,17 @@
 /// with -- `List`, `Map`, `IdentityMap` and `Set` -- and the Errors they
 /// signal, `NotFound` and `ConcurrentModification`, reached through
 /// `platform collections`. Built once, on first demand, over the kernel,
-/// from which it takes `Collection`, `ArgumentError` and `WeakArray`;
-/// `Error` and `Array` it names bare, through `Object`'s accessors.
+/// from which it takes `Collection`, `ArgumentError`, `WeakArray` and
+/// `WeakMap`; `Error` and `Array` it names bare, through `Object`'s
+/// accessors.
 ///
 /// kernel: the kernel module instance; its `Collection` is the superclass
 ///     of `List`, `Map` and `Set`, its `ArgumentError` what they signal for
-///     an index or a capacity out of range, and its `WeakArray` what the
-///     facet hands out beside them.
+///     an index or a capacity out of range, and its `WeakArray` and
+///     `WeakMap` what the facet hands out beside them.
 ///
 /// The factory pattern `PlatformFactory.ns` is written in. This root keeps
-/// of the kernel only the three classes it needs, never the kernel instance,
+/// of the kernel only the four classes it needs, never the kernel instance,
 /// and nothing hands its instance to a program: the platform's root builds
 /// it once, through the mirror, on its first use and keeps it in a
 /// private lazy slot, and each platform's `collections` getter sends it
@@ -41,12 +42,14 @@ class CollectionsFactory usingKernel: kernel = Value (
     private Collection = kernel Collection.
     /// The kernel's `WeakArray`, which the `Collections` facet hands out.
     private WeakArray = kernel WeakArray.
+    /// The kernel's `WeakMap`, which the `Collections` facet hands out.
+    private WeakMap = kernel WeakMap.
   |
 ) (
   /// The namespace `platform collections` answers: it hands out the
-  /// module's classes, one accessor each, and the kernel's `Collection`
-  /// and `WeakArray`; nothing else. Its own class is not among them, so a program makes
-  /// no second namespace.
+  /// module's classes, one accessor each, and the kernel's `Collection`,
+  /// `WeakArray` and `WeakMap`; nothing else. Its own class is not among
+  /// them, so a program makes no second namespace.
   private class Collections = Value () (
     /// Answers the `List` class: `List new`, `List new: capacity` or
     /// `List withAll: collection`.
@@ -126,6 +129,18 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// asks for it here (`corpus/modules/Brazil.ns`).
     public WeakArray = (
       ^outer CollectionsFactory WeakArray.
+    )
+
+    /// Answers the kernel's `WeakMap` class, the one `platform kernel
+    /// WeakMap` answers: `WeakMap new`, a map whose entries last only while
+    /// their keys do.
+    ///
+    /// Signals nothing itself.
+    ///
+    /// Handed out here as well as by the kernel facet because a weak map
+    /// is a collection a program looks for among the others.
+    public WeakMap = (
+      ^outer CollectionsFactory WeakMap.
     )
   )
 

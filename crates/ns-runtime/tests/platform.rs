@@ -293,6 +293,39 @@ fn both_facets_answer_the_kernels_weak_array() {
     });
 }
 
+/// `platform kernel WeakMap` and `platform collections WeakMap` are one
+/// class: a second one would be a different class with the same name, whose
+/// instances fail `isKindOf…` and identity comparisons against the other's.
+#[test]
+fn both_facets_answer_the_kernels_weak_map() {
+    let mut interpreter = Interpreter::bootstrap();
+    let platform = interpreter.platform();
+    let mut answers = Vec::new();
+    for facet in ["kernel", "collections"] {
+        let namespace = expect_ok(
+            interpreter.send(&platform, Symbol::intern(facet), &[]),
+            facet,
+        );
+        answers.push(expect_ok(
+            interpreter.send(&namespace, Symbol::intern("WeakMap"), &[]),
+            facet,
+        ));
+    }
+    interpreter.enter(|mutator| {
+        let objects: Vec<_> = answers
+            .iter()
+            .map(|answer| match mutator.fetch(answer).kind() {
+                ValueKind::Object(object) => object,
+                _ => panic!(
+                    "expected the WeakMap class, got {}",
+                    mutator.heap().describe(mutator.fetch(answer))
+                ),
+            })
+            .collect();
+        assert!(objects[0].same(objects[1]));
+    });
+}
+
 /// The namespace answers the collections module's classes and nothing
 /// more: `IdentitySet`, which the corpus asks for, names a class this
 /// runtime does not have, and must fail loudly rather than quietly alias
