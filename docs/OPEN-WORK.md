@@ -38,9 +38,11 @@ format every mover realigns, the image record `OBJECT_BYTE_ARRAY`;
 and the views"); weak references. Each has its own design and plan; the
 sixth and last sub-project is next -- **weak references**: `WeakArray`,
 `WeakMap` and `Ephemeron`, in the scavenger and the compaction, the image
-and the stress modes, a weak collection refusing a value as a key -- and
-it has no design yet, so the next session starts by designing it with the
-user, from the specification and `prior-art/`, and then writes its plan. Today the canonical symbol table is
+and the stress modes, a weak collection refusing a value as a key --
+designed with the user on 2026-10-16
+([core-library.md](design/core-library.md), "Planned: sub-project 6, weak
+references") and planned
+([plan](superpowers/plans/2026-10-16-1645-weak-references.md)). Today the canonical symbol table is
 the one weak structure ([memory.md](design/memory.md), "Weak
 references"), and the corpus asks `platform collections` for `WeakArray`
 ([core-library.md](design/core-library.md), "The platform"). The
