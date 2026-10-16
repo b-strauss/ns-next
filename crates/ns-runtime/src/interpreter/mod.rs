@@ -1758,28 +1758,19 @@ impl<'gc> Mutator<'gc> {
         kind: BuiltinClass,
         name: &str,
     ) -> Option<Value<'gc>> {
-        let kernel_mixin = self
-            .heap
-            .class_application(self.builtin_class(kind))?
-            .mixin
-            .clone();
-        let mut level = Some(self.class_of(Value::object(object)));
-        while let Some(current) = level {
-            if let Some(application) = self.heap.class_application(current) {
-                if Rc::ptr_eq(&application.mixin, &kernel_mixin) {
-                    let position = application
-                        .mixin
-                        .slots
-                        .iter()
-                        .position(|slot| slot.name.as_str() == name)?;
-                    return self
-                        .heap
-                        .instance_field(object, application.own_slot_base + position);
-                }
-            }
-            level = self.heap.class_superclass(current);
-        }
-        None
+        let field = self.heap.with_level_applying_mixin_of(
+            self.class_of(Value::object(object)),
+            self.builtin_class(kind),
+            |application| {
+                let position = application
+                    .mixin
+                    .slots
+                    .iter()
+                    .position(|slot| slot.name.as_str() == name)?;
+                application.own_slot_base.checked_add(position)
+            },
+        )??;
+        self.heap.instance_field(object, field)
     }
 
     /// The VM mirror. Built by `bootstrap_builtin_classes`, before anything

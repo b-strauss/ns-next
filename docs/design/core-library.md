@@ -2357,15 +2357,14 @@ fields are the indexed slots of a `WeakArray`, and `Ephemeron`, whose
 first field is the key and whose others -- the value, the finalizer -- are
 reached only through a live key. An `Ephemeron`'s fields are no instance
 slots: the slot accessors (`Heap::instance_field`,
-`Heap::instance_set_field` and the rest) take `FixedPointers` alone, as
-before the weak references, and the `Ephemeron` format has accessors of
-its own beside the weak array's (`Heap::ephemeron_field`,
-`ephemeron_set_field`, `ephemeron_fields`), which the mirror leaves, the
-image encoder and the tests use. So an ordinary object's slot pays
-nothing for the `Ephemeron` format (decided with the user on
-2026-10-16): with slot accessors that took both formats, Havlak, CD and
-DeltaBlueTon80 ran 0.7 to 1.7% slower than on `master`, the cost the
-mutator's rather than the collectors' ([OPEN-WORK.md](../OPEN-WORK.md)).
+`Heap::instance_set_field` and the rest) take `FixedPointers` alone, and
+the `Ephemeron` format has accessors of its own beside the weak array's
+(`Heap::ephemeron_field`, `ephemeron_set_field`, `ephemeron_fields`),
+which the mirror leaves, the image encoder and the tests use. That is so
+that an ordinary object's slot pays nothing for the format (decided with
+the user on 2026-10-16): accessors that took both formats cost Havlak,
+CD and DeltaBlueTon80 0.7 to 1.7%, in the mutator rather than the
+collectors ([OPEN-WORK.md](../OPEN-WORK.md)).
 The slots an `Ephemeron` declares are therefore reached only by its
 leaves, and its instantiation writes none of them: they have no
 initializer.

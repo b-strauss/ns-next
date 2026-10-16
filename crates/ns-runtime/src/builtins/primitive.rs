@@ -591,9 +591,11 @@ pub enum WeakPrimitive {
     EphemeronSetKey,
     /// `Ephemeron>>value`: the value, its second field.
     EphemeronValue,
+    /// `Ephemeron>>value:`: stores the value.
     EphemeronSetValue,
     /// `Ephemeron>>finalizer`: the finalizer, its third field.
     EphemeronFinalizer,
+    /// `Ephemeron>>finalizer:`: stores the finalizer.
     EphemeronSetFinalizer,
 }
 

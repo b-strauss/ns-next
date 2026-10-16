@@ -265,22 +265,15 @@ fn ephemeron_set_field<'gc>(
 /// Where the slots `Ephemeron`'s mixin declares begin in `object`'s
 /// fields: the own slot base of the first level of its class's chain that
 /// applies that mixin -- the kernel's `Ephemeron` above a subclass, or a
-/// level a `<:` clause added. `None` when no level applies it. Matched by
-/// mixin, as `inheritsMixinOf:` matches, so that every class whose
-/// methods are `Ephemeron`'s finds the slots they were declared with.
+/// level a `<:` clause added (`Heap::with_level_applying_mixin_of`), so
+/// that every class whose methods are `Ephemeron`'s finds the slots they
+/// were declared with. `None` when no level applies it.
 fn ephemeron_slot_base<'gc>(mutator: &Mutator<'gc>, object: ObjectReference<'gc>) -> Option<usize> {
-    let heap = &mutator.heap;
-    let ephemeron = heap.class_application(mutator.builtin_class(BuiltinClass::Ephemeron))?;
-    let mut current = Some(heap.object_class(object));
-    while let Some(level) = current {
-        if let Some(application) = heap.class_application(level) {
-            if std::rc::Rc::ptr_eq(&application.mixin, &ephemeron.mixin) {
-                return Some(application.own_slot_base);
-            }
-        }
-        current = heap.class_superclass(level);
-    }
-    None
+    mutator.heap.with_level_applying_mixin_of(
+        mutator.heap.object_class(object),
+        mutator.builtin_class(BuiltinClass::Ephemeron),
+        |application| application.own_slot_base,
+    )
 }
 
 /// `garbageCollect`: asks for a full collection and answers the receiver.

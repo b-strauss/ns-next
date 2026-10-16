@@ -3256,6 +3256,33 @@ impl<'gc> Heap<'gc> {
         self.tables.applications.get(usize::try_from(index).ok()?)
     }
 
+    /// Runs `read` over the application of the first level of `class`'s
+    /// superclass chain, `class` included, that applies the mixin of
+    /// `mixin_of`: a subclass's instance finds there the slots that mixin
+    /// declares, at the level's own slot base, whatever slots other levels
+    /// add -- a `<:` clause's level as well as the class itself. Matched by
+    /// mixin, not by class object, and compared by reference, so the walk
+    /// clones no application. `None` when no level applies it, or
+    /// `mixin_of` is no class object.
+    pub(crate) fn with_level_applying_mixin_of<T>(
+        &self,
+        class: ClassReference<'gc>,
+        mixin_of: ClassReference<'gc>,
+        read: impl FnOnce(&crate::mixin::MixinApplication) -> T,
+    ) -> Option<T> {
+        let mixin = &self.class_application_entry(mixin_of)?.mixin;
+        let mut level = Some(class);
+        while let Some(current) = level {
+            if let Some(application) = self.class_application_entry(current) {
+                if Rc::ptr_eq(&application.mixin, mixin) {
+                    return Some(read(application));
+                }
+            }
+            level = self.class_superclass(current);
+        }
+        None
+    }
+
     /// The applying declaration, the clause's position in it and the
     /// builtin it named, unpacked from `class`'s applied-clause field and
     /// borrowed from the mixin table; `None` for a class object no mixin
