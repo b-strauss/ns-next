@@ -4508,7 +4508,7 @@ server.
 ## The kernel's aligning sub-project (2026-10-06)
 
 Plan: [ns-next-kernel-aligning](superpowers/plans/2026-10-06-0311-ns-next-kernel-aligning.md);
-[core-library.md](design/core-library.md), "Planned: the kernel completed to
+[core-library.md](design/core-library.md), "The kernel completed to
 Primordial Soup's core API", "Decisions".
 
 The first of the six sub-projects that complete the kernel to Primordial
@@ -4535,7 +4535,7 @@ What the branch left open, the foundations sub-project, is built
 
 Plan: [ns-next-kernel-foundations](superpowers/plans/2026-10-06-2036-ns-next-kernel-foundations.md);
 [core-library.md](design/core-library.md), "Exceptions", "The pull future",
-"Planned: the kernel completed to Primordial Soup's core API", "Decisions".
+"The kernel completed to Primordial Soup's core API", "Decisions".
 
 The second of the six sub-projects. Primordial Soup's error classes exist
 under `Error` -- `ArgumentError`, `CannotReturn` and the kernel-private
@@ -4585,7 +4585,7 @@ built ("The kernel's collections and strings sub-project" below).
 
 Plan: [ns-next-kernel-collections-and-strings](superpowers/plans/2026-10-10-1800-ns-next-kernel-collections-and-strings.md);
 [core-library.md](design/core-library.md), "What exists", "The collections
-module (plan 2)", "What is measured", "Planned: the kernel completed to
+module (plan 2)", "What is measured", "The kernel completed to
 Primordial Soup's core API", "Decisions".
 
 The third of the six sub-projects. An abstract `Collection` is a kernel
@@ -5122,10 +5122,10 @@ a hello program's median start went from about 15.4 ms to about 20.1 ms at
   refusals with their own texts, and the leaf `byteArrayClass:fits:ifFail:`.
 - This commit -- the documents.
 
-What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): weak
-references, the sixth sub-project, is next and has no design yet; the
-boot's cost of building the shipped world, which it raised; byte-by-byte bulk
-paths and a `String` needle encoded at every candidate; `printString`'s
+What the branch left open is in [OPEN-WORK.md](OPEN-WORK.md) where it
+is still open: weak references, the sixth sub-project, came next ("The
+kernel's weak references sub-project" below); the boot's cost of
+building the shipped world, which it raised; byte-by-byte bulk paths and a `String` needle encoded at every candidate; `printString`'s
 "an Object" in Newspeak-built refusals; `IndexedCollection`'s receiver for
 a non-Integer bound; the amplification figures counted with two-byte class
 tags; and the reviews' missing tests and leftovers.
@@ -5298,3 +5298,63 @@ program used a module or not.
   process from 5.24 to 4.74 ms; a first `platform collections` costs
   0.31 ms ([execution.md](design/execution.md), "What the precompiled
   shipped code moved").
+
+## The kernel's weak references sub-project (2026-10-16)
+
+Plan: [weak-references](superpowers/plans/2026-10-16-1645-weak-references.md);
+[core-library.md](design/core-library.md), "Weak references";
+[memory.md](design/memory.md), "Weak references";
+[image-format.md](design/image-format.md), "A `WeakArray` and an
+`Ephemeron` are records of their own".
+
+The sixth and last of the six sub-projects, which completes the kernel to
+Primordial Soup's core API. Two heap formats, `WeakPointers` (code 10) and
+`Ephemeron` (11), whose words forwarding reads through `pointer_ranges` as
+any pointer object's, while marking and the scavenger trace
+`strong_pointer_ranges`, which leaves out a weak array's slots and the
+fields of an ephemeron whose key is not yet known to survive. Both
+collectors then settle them in Primordial Soup's order: an ephemeron
+fixpoint, the ephemerons whose key nothing else reaches mourned -- every
+field `nil` -- and every weak word naming a dead object cleared, before
+compaction and before the nursery is vacated. The kernel has `WeakArray`, a
+builtin whose factory `withoutSlots` keeps `WeakArray new` not understood,
+made by its class side's `new:`, which refuses a size it cannot allocate;
+`Ephemeron`, a builtin of three private slots, the key first, its finalizer
+held and never run; and `WeakMap`, Newspeak over an `Array` of ephemerons
+probed linearly. `Ephemeron>>key:` and `WeakMap>>at:put:` refuse a value as
+a key with an `ArgumentError` signalled in Newspeak, through the mirror
+leaf `objectIsValue:ifFail:`, which sees through a future. `platform
+kernel` hands out the three and `garbageCollect`, an ordinary method whose
+return is the safepoint that serves the collection the leaf requested;
+`platform collections` hands out `WeakArray` too, as the corpus asks. An
+image carries `OBJECT_WEAK_ARRAY` (body tag 12) and `OBJECT_EPHEMERON`
+(13), written as a collection would leave them but for what takes no
+record -- an immediate, a shipped name, a value written by value -- which is
+kept; the decoder holds each body to its class. The `MIRROR` table has 242
+rows, and a fresh boot leaves 27 inline-cache sites and 22 global entries
+(the platform's eager slots for the three classes), where it left 23 and
+19.
+
+No existing golden's outcome changed. New goldens under
+`goldens/library/weak/`; heap tests in `heap.rs` and `heap/object.rs`;
+host tests in `tests/image.rs`, `tests/image_truncations.rs`,
+`tests/platform.rs` and `tests/opcode_tags.rs`. The golden image fixture
+was regenerated for the changed shipped modules, its size unchanged.
+
+- `6023dfbc` -- the design and the plan.
+- `b335f6ee` -- weak arrays and ephemerons in the full collection.
+- `47b66b23`, `7412408f` -- in the scavenge, and the tests that reach its
+  ephemeron fixpoint and an object promoted by age.
+- `39c2476f`, `05c10018` -- `WeakArray` and `garbageCollect` in the
+  kernel, the timing of `garbageCollect` pinned and the refusals widened.
+- `a72db28a`, `ba98f631` -- `Ephemeron` in the kernel, and a future
+  standing for a value refused as its key.
+- `25fbb681` -- `WeakMap`.
+- `24d9ab6f` -- weak arrays and ephemerons in the image.
+- This commit -- the documents.
+
+What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): running
+the finalizer, which comes with the actors' event loop; the ephemeron
+fixpoint's rescan per round; `Interpreter::instantiate` bypassing
+`decide_factory`; and the decoder's `WeakArray` header not held to its
+two bodies. Road step 5, mirrors and atomic installation, is next.

@@ -41,7 +41,10 @@ Rust 1.98.0, edition 2021, six crates:
   mark-and-slide collector, which compacts both generations into the old
   space, the mark bit in the header and the forwarding through a live-word
   bitmap (`heap/compaction.rs`), both run only at run-loop safepoints or
-  between entries; the write barrier and the remembered set in `heap.rs`'s
+  between entries, and both trace only an object's strong words
+  (`heap/object.rs`'s `strong_pointer_ranges`), clearing a `WeakArray`'s
+  slots (format `WeakPointers`) and mourning an `Ephemeron` (format
+  `Ephemeron`) whose key nothing else reaches; the write barrier and the remembered set in `heap.rs`'s
   store accessors; `heap/value.rs`, a value as one
   tagged word, Spur's, and `Word`, the bare word a heap object stores; the
   step state `Mutator` in `interpreter/mod.rs`, held at rest by `World` in
@@ -379,7 +382,7 @@ comment; the kernel facet (`platform kernel`) and the typed arrays facet
 `TypedArraysFactory.ns`, are exempt. `Kernel.ns` and `CollectionsFactory.ns` take Primordial Soup's whole
 core API instead, its selectors and behaviour adopted, every body written
 here and no other project named in their comments (`core-library.md`,
-"Planned: the kernel completed to Primordial Soup's core API").
+"The kernel completed to Primordial Soup's core API").
 
 Add no new external dependency without a reason that survives review — the image
 format is hand-rolled on purpose.

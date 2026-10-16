@@ -30,8 +30,10 @@
 > across runs only as `Root`s, and a debug-build stress mode moves
 > everything at the safepoints to check all of it (step 2b); and every
 > movable handle carries a lifetime brand, so that holding one across a
-> safepoint is a compile error (step 2c). The canonical symbol table is
-> weak; everything else the collector traces is strong.
+> safepoint is a compile error (step 2c). The canonical symbol table, a
+> `WeakArray`'s slots and the fields of an `Ephemeron` whose key nothing
+> else reaches are weak; everything else the collector traces is strong
+> ("Weak references").
 > **Planned:** allocation by a bump in eden inlined into the instructions
 > that allocate ("Planned: inline allocation").
 > **Code:** `crates/ns-runtime/src/heap.rs` (the activation stack, the
@@ -43,7 +45,8 @@
 > scavenger and the tenuring threshold), `heap/compaction.rs` (the
 > live-word bitmap a collection forwards through, and the move's shift),
 > `heap/object.rs` (the block of words an object is, `pointer_ranges`,
-> which names its pointer words by its format, `trace_block`, and
+> which names its pointer words by its format, `strong_pointer_ranges`,
+> those of them that keep an object alive, `trace_block`, and
 > `realign`, which moves a `ByteArray`'s data to its block's alignment),
 > `heap/header.rs` (the header word),
 > `heap/records.rs` (the seam's value types), `heap/tables.rs` (the per-heap
@@ -681,7 +684,10 @@ pointer words by the format in its header
 enumeration of an object's pointer words, which marking reads the words
 through (`Heap::drain_marking`) and forwarding rewrites them through
 (`trace_block`), so a field one of the two must reach cannot be missed by
-the other. A
+the other. Marking and the scavenger read it by way of
+`strong_pointer_ranges`, which leaves out only the weak words of a
+`WeakArray` and of an `Ephemeron` whose key is not yet known to survive
+("Weak references"). A
 `Word` -- a class word, an instance's or an array's field, a register, a
 copied closure value, an object field of a class object, a closure or a
 frame -- goes to `Tracer::word`,
@@ -717,7 +723,9 @@ check").
   that of every forcing chained behind it; and every register. `StackEntry`'s impl is
   in `heap.rs`, where its fields are private.
 - Every object in the space, by its format: its class word; an instance's
-  or an array's fields; a closure's captured frame and its copied values,
+  or an array's fields; a `WeakArray`'s slots and an `Ephemeron`'s fields,
+  every one forwarded but traced for liveness only as "Weak references"
+  says; a closure's captured frame and its copied values,
   never its code id or feedback base; a class object's enclosing object,
   declaring class, superclass, for a metaclass its class (`this_class`), and
   its value-class refusal, never its builtin tag, applied clause or
@@ -1345,9 +1353,12 @@ theirs there too.
 The marker (`heap/mark.rs`) is a `Tracer` (`trace.rs`) beside `Forwarder`,
 through which the roots enter its explicit work list; `Heap::drain_marking`
 then pops each offset, skips an object already marked, sets the bit and
-pushes every unmarked object its pointer words name, read through
-`pointer_ranges` -- the one enumeration of an object's pointer words, which
-forwarding's `trace_block` walks too ("What the collector traces"). The bit
+pushes every unmarked object its strong pointer words name, read through
+`strong_pointer_ranges` -- `pointer_ranges`, the one enumeration of an
+object's pointer words, which forwarding's `trace_block` walks too ("What
+the collector traces"), less the weak words, whose objects
+`Heap::finish_marking` settles once the work list is empty ("Weak
+references"). The bit
 is set when an object is visited, not when it is pushed, so an object
 reached twice before its visit is popped twice and visited once, which also
 ends the traversal on a cycle. The traversal is iterative because the
@@ -1507,6 +1518,40 @@ In a release build the two triggers are what the safepoint's slow path serves.
 
 ### Weak references
 
+Three things are weak: the canonical symbol table, a `WeakArray`'s slots,
+and an `Ephemeron`'s fields while its key is reached by nothing but
+ephemerons.
+
+**A `WeakArray` and an `Ephemeron` have formats of their own**, codes 10
+and 11 (`heap/header.rs`): `WeakPointers`, whose fields are a `WeakArray`'s
+slots, and `Ephemeron`, whose first field is the key and whose others, the
+value and the finalizer, are reached only through a live key
+([core-library.md](core-library.md), "Weak references", has the classes,
+their protocol and the image's records). Their words are stored words
+like any pointer object's: `pointer_ranges` names every one of them, so
+forwarding, the moves and the remembered set's verification read them all,
+and a weak word follows its object while the object lives. Marking and the
+scavenger trace `strong_pointer_ranges` instead, the class word alone of a
+`WeakPointers` object and of an `Ephemeron` whose key is not yet known to
+survive. Each collector lists those objects as it meets them and, once
+its traversal has run dry, settles them in Primordial Soup's order
+(`vm/heap.cc:627-682`): it traces each listed ephemeron whose key has
+since been reached and runs the traversal again, until a round reaches
+no new key; sets every field of an ephemeron still listed to `nil` (it is
+mourned: its key was reached by nothing but ephemerons); and sets to
+`nil` every word of a listed weak object whose object was not reached. A
+full collection does so in `Heap::finish_marking`, between
+`drain_marking` and `prune_canonical_symbols`, before compaction, whose
+forwarding table answers only marked objects; a scavenge in
+`Scavenger::finish`, before the nursery is vacated, a young key surviving
+when it was copied, forwarding each surviving young referent's word to
+its copy, and remembering an old weak object or ephemeron that still names
+a young object afterwards, once. Writing `nil` stores no young object, so
+neither pass needs the write barrier; a program's store into a weak slot
+takes it like every store (`Heap::weak_array_set_element`). The finalizer
+is held and never run until the actors' event loop gives it a turn to run
+in ([OPEN-WORK.md](../OPEN-WORK.md)).
+
 **The canonical symbol table is weak** (`canonical_symbols`,
 `Heap::prune_canonical_symbols`). As a strong root every symbol object a
 program ever made would outlive the process, since a selector literal makes
@@ -1573,7 +1618,7 @@ option of guarding a private lexical site on N's mixin
 The cache holds no handle at all — a pair of numbers for a key, an `Rc` for a
 value — so it is neither a root nor a forwarding target.
 
-Nothing else is weak. An inline-cache entry holds no handle by construction, so
+An inline-cache entry holds no handle by construction, so
 it survives a collection untouched and simply misses when its guard no longer
 matches. Compiled code holds none either: `Literal::Symbol` is an interner
 index, not an object.
@@ -2198,9 +2243,11 @@ A Cheney copy of the nursery's survivors (`heap/scavenge.rs`), as Spur's
   recursion depth, up to the depth limit's 100,000 activations and its
   1,000 reserve; Spur bounds that with stack pages, and road step 7's
   shared frames revisit it. Each remembered object leaves the set, its bit
-  cleared, has its pointer words scanned, and rejoins only if it still
-  names a young object.
-- **The Cheney loop** then scans what was copied, in the future survivor
+  cleared, has its strong pointer words scanned, and rejoins only if it
+  still names a young object, a weak word included once the weak objects
+  are settled.
+- **The Cheney loop** then scans the strong words
+  (`strong_pointer_ranges`) of what was copied, in the future survivor
   space and in the old space from where each top stood when the scavenge
   began, until neither grew; a promoted object that still names a young
   one joins the remembered set.
@@ -2226,6 +2273,11 @@ A Cheney copy of the nursery's survivors (`heap/scavenge.rs`), as Spur's
   eden promoted, so a promotion never meets a refused commit halfway
   through; a commit the operating system refuses aborts the process as
   running out of memory before the scavenge begins.
+- **Then the weak objects are settled** (`Scavenger::finish`): the
+  ephemerons whose key was copied meanwhile are scanned, the Cheney loop
+  run again, until a round scans none; the rest are mourned; and every
+  young word of a weak object is forwarded to the copy or set to `nil`
+  ("Weak references").
 - **Afterwards** the weak symbol table is pruned ("Weak references"), the
   survivor spaces flip, eden is empty, the threshold is recomputed, and the
   request is cleared. A rebuilt remembered set past its limit requests a
@@ -2397,7 +2449,8 @@ remembered set before each of them (`Heap::verify_remembered_set`): a walk
 of the old space asserting that the set holds no offset twice, that every
 entry is the header of an old object carrying the remembered bit, that
 every old object carrying the bit is an entry, and that every old object
-naming a young one carries the bit.
+naming a young one carries the bit -- by any word `pointer_ranges` names,
+a weak one included, since the next scavenge must forward or clear it.
 The verification runs only under the stress mode, since it walks the old
 space at every scavenge (chosen by the plan). It is Strongtalk's
 `VerifyBeforeScavenge` (`universe_more.cpp:98`) and HotSpot's
@@ -2601,9 +2654,21 @@ the groundwork the JIT tiers take over, as Cogit's `genPrimitiveNew` and
   come from `windows-sys` and `libc`, declaration-only crates, rather than
   hand-written declarations whose constants differ per platform and would be
   wrong only on the platforms nobody here runs.
-- **The canonical symbol table is the system's only weak structure.** §5.1.6
-  survives it because `Mutator::new_symbol` is the only way to make a symbol
-  object, so one that is collected was held by nothing.
+- **The canonical symbol table is the runtime's only weak structure of its
+  own**; a program's are `WeakArray`, `Ephemeron` and `WeakMap`
+  ([core-library.md](core-library.md), "Weak references"). §5.1.6
+  survives the table being weak because `Mutator::new_symbol` is the only
+  way to make a symbol object, so one that is collected was held by
+  nothing.
+- **A weak word is forwarded like a strong one and traced for liveness
+  apart** (built on 2026-10-16): `pointer_ranges` stays the one
+  enumeration of pointer words, which forwarding and the moves need whole,
+  and `strong_pointer_ranges` leaves the weak words out for marking and
+  the scavenger, so the two cannot drift apart. The ephemeron fixpoint,
+  mourning and clearing run before compaction and before the nursery is
+  vacated, Primordial Soup's order (`vm/heap.cc:627-682`), since a word
+  left naming a dead object would be forwarded to garbage or name what is
+  allocated next.
 - **The application cache stays strong until live editing** (decided with
   the user on 2026-10-03). Its key was an address, which needs the strong
   reference to keep it unique; since road step 3a it is a pair of the heap's

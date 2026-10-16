@@ -269,6 +269,10 @@ pub const OBJECT_BYTE_ARRAY: u8 = 11;
 /// Only a record whose header is `Kernel WeakArray` carries it. A slot names
 /// its object only when the graph reaches that object strongly otherwise,
 /// and is `nil` if not: the encoder writes what a collection would keep.
+/// What takes no record -- an immediate, a shipped name, a `LargeInteger`,
+/// boxed `Float` or `Fraction` written by value -- is written as it is
+/// whether or not anything else reaches it: a collection's timing is
+/// unspecified, so keeping more than one would is never wrong.
 pub const OBJECT_WEAK_ARRAY: u8 = 12;
 /// An `Ephemeron`: a `u32` field count, then that many values, the key
 /// first. Only a record whose header is `Kernel Ephemeron` carries it, with

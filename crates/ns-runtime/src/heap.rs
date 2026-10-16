@@ -5374,7 +5374,7 @@ impl<'gc> Heap<'gc> {
     }
 
     /// Clears every canonical symbol the marking did not reach. The table is
-    /// the system's only weak structure: `Mutator::new_symbol` is the only
+    /// weak, and sound so: `Mutator::new_symbol` is the only
     /// way to make a symbol object (§5.1.6: equal symbols are one object), so
     /// one that is collected was held by nothing -- anything that held it
     /// would have been a root and kept it live -- and the next mint is again

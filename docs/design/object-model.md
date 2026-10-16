@@ -1791,6 +1791,8 @@ either layout open.
 | 6 | free | a gap a collector leaves, walkable like an object; no object has it, since the sliding compaction and the scavenge leave no gap; a debug build writes it as the poison over the nursery a scavenge vacated, and `Heap::block` refuses it there ([memory.md](memory.md), "Finding a missed barrier: the scavenge stress mode") |
 | 7 | class | a class object: eight fixed fields |
 | 8-9 | 32-bit-indexed | a wide string or symbol |
+| 10 | weak pointers (`WeakPointers`) | a `WeakArray`'s slots, forwarded like any pointer words but not traced for liveness ([memory.md](memory.md), "Weak references") |
+| 11 | ephemeron (`Ephemeron`) | an `Ephemeron`: its key, then the value and the finalizer, traced only once the key is reached and set to `nil` when it is not ([memory.md](memory.md), "Weak references") |
 | 16-23 | byte-indexed | a one-byte string or symbol |
 | 24-31 | aligned bytes (`AlignedBytes`) | a `ByteArray`: three reserve words, then its bytes, which begin at the first 32-byte address in the block ([memory.md](memory.md), "Every mover realigns a `ByteArray`'s data") |
 

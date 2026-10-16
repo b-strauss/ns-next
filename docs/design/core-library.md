@@ -1,6 +1,6 @@
 # Core library and the platform
 
-> **Status:** partial — the core library is built as Newspeak source,
+> **Status:** built — the core library is built as Newspeak source,
 > `Kernel.ns`, over one VM mirror, §3.2's `Behavior`, `Class` and
 > `Metaclass` and §8.6's exceptions included, and the platform is a facet
 > of the shipped module `PlatformFactory.ns` with lazy members, its
@@ -8,16 +8,18 @@
 > of the shipped modules `TranscriptFactory.ns`, `TimeFactory.ns`,
 > `CollectionsFactory.ns` and `TypedArraysFactory.ns`, the third with
 > Newspeak `List`, `Map`, `IdentityMap` and `Set`, the fourth with
-> `TypedArray` and its ten classes; missing is part
-> of Primordial Soup's core API, whose names and loops are aligned, whose
-> foundations -- the error classes, `Proxy` and a public `Future` --, whose
-> collections and strings, whose numbers -- `Fraction` and a symmetric
-> numeric tower among them ("The numeric tower") -- and whose `ByteArray`
-> and `StringBuilder`, with the typed arrays (a module of their own) and
-> `DataView` beside them ("`ByteArray`, `StringBuilder` and the views"),
-> are built, and the
-> rest, weak references, planned ("Planned: the kernel completed to
-> Primordial Soup's core API").
+> `TypedArray` and its ten classes; and the kernel carries Primordial
+> Soup's whole core API ("The kernel completed to Primordial Soup's core
+> API"): its names and loops, its foundations -- the error classes, `Proxy`
+> and a public `Future` --, its collections and strings, its numbers --
+> `Fraction` and a symmetric numeric tower among them ("The numeric
+> tower") --, its `ByteArray` and `StringBuilder`, with the typed arrays (a
+> module of their own) and `DataView` beside them ("`ByteArray`,
+> `StringBuilder` and the views"), and its weak references, `WeakArray`,
+> `Ephemeron` and `WeakMap` ("Weak references").
+> **Planned:** real bodies for control flow and `do:` before the baseline
+> JIT ("Planned: real bodies for control flow and `do:`, before the
+> baseline JIT").
 > Every member of `Kernel.ns`, `PlatformFactory.ns`, `TranscriptFactory.ns`,
 > `TimeFactory.ns`, `CollectionsFactory.ns` and `TypedArraysFactory.ns` --
 > public, protected and private -- is documented
@@ -41,7 +43,8 @@
 > and `recordShippedModule:`, `builtins/future.rs` the pull
 > future's forcing, `builtins/bytes.rs` `ByteArray`'s and the UTF-8
 > conversions', `builtins/elements.rs` the typed arrays' and `DataView`'s
-> element access),
+> element access, `builtins/weak.rs` `WeakArray`'s, `garbageCollect` and
+> `objectIsValue:`),
 > `interpreter/unwind.rs` (the one unwinder, and a VM error signalled),
 > `compiler/primitive_method.rs`, `compiler/unwind_marker.rs`, `platform.rs`.
 
@@ -625,7 +628,7 @@ boundary that gives all of this its purpose does not exist
 ([liveness-and-reflection.md](liveness-and-reflection.md), "Value objects
 exist; the boundary they cross does not").
 
-The leaves are the 236 rows of `builtins/primitive.rs`'s `MIRROR` table. A
+The leaves are the 242 rows of `builtins/primitive.rs`'s `MIRROR` table. A
 row names the **mirror selector** (`collection:at:put:ifFail:`), the
 **reported selector** — the kernel selector every error text of that leaf
 names, `at:put:` — and the `Primitive` it runs. Every mirror selector ends
@@ -749,7 +752,9 @@ leaf is reached through it, and so is the kernel instance in
 demand ("The module table and the boot" below), so its root imports it
 into the private slot `kernelModule` (decided with the user on 2026-10-15:
 §6.3's import of a factory parameter, rather than a mirror leaf answering
-the kernel), and hands it to nothing but those two factories. What a
+the kernel), hands it to nothing but those two factories, and sends it
+nothing but `garbageCollect`, which it understands ("Weak references"
+below). What a
 program receives, and may instantiate, are the root's nested classes, its
 facets. Each reaches the privileged state lexically, as a
 member of the root, never through a slot of its own, so the facets keep
@@ -1077,11 +1082,9 @@ factory's, holding the mirror and the kernel -- is never written.
 ## The on-demand rule
 
 **`PlatformFactory.ns` is widened only on demand.** `Kernel.ns` and
-`CollectionsFactory.ns` are not bound by it: they are to carry Primordial
-Soup's whole core API ("Planned: the kernel completed to Primordial Soup's
-core API" below; decided with the user on 2026-10-06), and until that work
-has reached a class, what it has is what the programs below asked for.
-An accessor exists because a module on `corpus/runnable.toml` or
+`CollectionsFactory.ns` are not bound by it: they carry Primordial Soup's
+whole core API ("The kernel completed to Primordial Soup's core API"
+below; decided with the user on 2026-10-06). An accessor exists because a module on `corpus/runnable.toml` or
 a program under `benchmarks/` needs it, and the whitelist entry or the
 program that demanded it is named in a comment beside it: the comments of
 `Time` and `Stopwatch` name `benchmarks/are-we-fast-yet/AreWeFastYet.ns`.
@@ -1103,16 +1106,15 @@ speculative platform. The core is different: Primordial Soup's API is the
 specification it is completed to, and each sub-project pins what it adds
 with goldens of its own.
 
-The `collections` namespace hands out `Collection`, the kernel's, and the
-module's `List`, `Map`, `IdentityMap`, `Set`, `NotFound` and
-`ConcurrentModification`, each with Primordial Soup's protocol ("The
-collections module (plan 2)" below). The corpus also asks that namespace
-for `IdentitySet` and `WeakArray`; `WeakArray` comes with the weak
-references, sub-project 6 ("Planned: the kernel completed to Primordial
-Soup's core API" below), and `IdentitySet`, which Primordial Soup does not
-have, does not. Neither is ever an alias of `Set` or `List`, which compare
-by `=` and hold their elements strongly
-(`tests/platform.rs`, `platform_collections_does_not_invent_an_identity_set`).
+The `collections` namespace hands out `Collection` and `WeakArray`, the
+kernel's, and the module's `List`, `Map`, `IdentityMap`, `Set`,
+`NotFound` and `ConcurrentModification`, each with Primordial Soup's
+protocol ("The collections module (plan 2)" and "Weak references" below).
+The corpus also asks that namespace for `IdentitySet`, which Primordial
+Soup does not have, and it is not there: the send is not understood,
+never quietly answered by `Set`, which compares by `=`, or `IdentityMap`
+(`tests/platform.rs`,
+`platform_collections_does_not_invent_an_identity_set`).
 
 ## Large integers
 
@@ -1455,7 +1457,7 @@ the value objects, and §5.1.1, on non-integral *literals* -- and fixes no
 arithmetic protocol anywhere; §8.3 leaves the platform's modules to provide
 classes "some of which are standard and mentioned in this specification".
 So the protocol is Primordial Soup's, adopted as the kernel completion
-adopts the rest of its core API ("Planned: the kernel completed to
+adopts the rest of its core API ("The kernel completed to
 Primordial Soup's core API" below), and the tower under it is made
 symmetric where Primordial Soup's is not: there `(1/2) = 0.5` is `false`;
 `Float>>hash` is `asInteger`, so `1.5 hash = 1 hash`; `Fraction>>hash` is
@@ -1651,7 +1653,7 @@ moved"); Mandelbrot and NBody run about 4% faster.
 
 ## `ByteArray`, `StringBuilder` and the views
 
-The kernel completion's fifth sub-project ("Planned: the kernel completed
+The kernel completion's fifth sub-project ("The kernel completed
 to Primordial Soup's core API" below), designed with the user on
 2026-10-12 and built on 2026-10-13
 ([its plan](../superpowers/plans/2026-10-13-1614-byte-array-and-views.md)).
@@ -2185,6 +2187,261 @@ refuses a view or a builder whose slots an image crafted with an
   `Collection`, so the mixin declares none of `at:`, `at:put:`, `size`,
   `do:`, `=`, `hash` and `printString`, and
   `goldens/library/builtin-subclass/` keeps its output.
+
+## Weak references
+
+The kernel completion's sixth and last sub-project ("The kernel completed
+to Primordial Soup's core API" below), designed with the user on
+2026-10-16 and built the same day
+([its plan](../superpowers/plans/2026-10-16-1645-weak-references.md)).
+The kernel has `WeakArray`, `Ephemeron` and `WeakMap`, with Primordial
+Soup's protocol, and both collectors, the image and the stress modes know
+weak slots and ephemerons. The specification says nothing about weak
+references -- the whole of `newspeak-spec.md` was searched for weak,
+ephemeron, finalization, garbage, reclaiming and the collector -- so the
+canonical implementation decides, and Primordial Soup's kernel
+(`prior-art/primordialsoup/newspeak/KernelForPrimordialSoup.ns`, 852-861
+and 2553-2718; its collector `vm/heap.cc`) is the API adopted, every body
+written here. The leaves are `builtins/weak.rs` (`WeakPrimitive`): four
+for `WeakArray`, `garbageCollect`, and `objectIsValue:`, the question a
+weak structure asks of a key.
+
+**The classes, in one table:**
+
+| Class | Kind | Reached through | Superclass |
+|---|---|---|---|
+| `WeakArray` | builtin, format `WeakPointers`; factory `withoutSlots`, made by its class side's `new:` | `platform kernel`, and `platform collections` | `Collection` |
+| `Ephemeron` | builtin, format `Ephemeron`, three private slots | `platform kernel` | `Object` |
+| `WeakMap` | Newspeak, over an `Array` of `Ephemeron`s | `platform kernel` | `Object` |
+
+`platform collections` hands out `WeakArray` as well because the corpus
+asks it there (`corpus/modules/Brazil.ns:24`, `VictoryFuelTesting.ns:5`)
+and the canonical Newspeak's collections namespace has it
+(`prior-art/newspeak/Collections.ns:40`); both facets answer the one class
+(`tests/platform.rs`, `both_facets_answer_the_kernels_weak_array`).
+Primordial Soup hands all three out through the kernel alone.
+
+**`platform kernel garbageCollect` runs a full collection before its
+sender's next instruction**, as Primordial Soup's `Kernel>>garbageCollect`
+does (`prior-art/primordialsoup/newspeak/Kernel.ns:44`); it is what a
+program -- a golden among them -- uses to observe a slot being cleared.
+`Kernel>>garbageCollect`'s leaf only requests the collection
+(`Heap::request_collection`), and the run loop serves the request at its
+next safepoint, the return from the activated method that sent it. That
+method is the kernel facet's `garbageCollect`, an ordinary method whose
+body is `kernelModule garbageCollect`: `Kernel>>garbageCollect` itself
+compiles to a fast path, which activates nothing and so returns through no
+safepoint, so a method of its own must stand between the program and the
+leaf, or a slot read right after it would still name the object
+(`goldens/library/weak/a_weak_array_forgets_an_object_after_a_collection.ns`).
+`interpreter/kernel.rs`'s
+`the_platform_modules_members_have_the_fast_path_they_should` pins the
+facet's method as activated. It is the one message `PlatformFactory`'s
+root sends the kernel instance it keeps, and one the instance understands
+("The platform" above).
+
+**The protocol, Primordial Soup's:**
+
+- `WeakArray new: size` answers a `WeakArray` of `size` nils. It refuses
+  a size that is no `Integer` ("new: requires an Integer size, got …"), a
+  negative one ("new: requires a size of at least 0, got …") and one too
+  large to allocate ("new: cannot allocate a WeakArray of … elements",
+  asked of `Heap::weak_array_fits` before anything is allocated, as
+  `ByteArray new:` asks `byte_array_fits`) with an `ArgumentError`
+  carrying the size. `WeakArray new` is not understood: the class's
+  factory is `withoutSlots`, which answers an instance with no slots at
+  all, on which every leaf declines as on a subclass's instance; the
+  factory exists only so that it is not `new`, since there is no
+  `WeakArray` without a size. `at:`, `at:put:` (answering the value) and
+  `size`, indexed from 1 and refused out of range in `Array`'s texts;
+  `do:`, `keysAndValuesDo:`, `isEmpty`, `copyWith:` (a new `WeakArray` one
+  longer, the element last), `isKindOfArray` and `isKindOfWeakArray`
+  answering `true`. It holds any object, a value included: a slot whose
+  object is collected reads `nil`, and an immediate -- a `SmallInteger`,
+  `nil`, `true`, `false` -- is never collected.
+- `Ephemeron new` answers one whose `key`, `value` and `finalizer` are
+  `nil`; `key:`, `value:` and `finalizer:` answer the receiver. Its state
+  is three private slots, `storedKey`, `storedValue` and
+  `storedFinalizer`, the key first, since the collectors read the first
+  field as the key; `check_kernel_shape` (`interpreter/kernel.rs`) holds
+  the declaration to that order at boot. `key:` refuses a value other than
+  `nil` ("A weak collection refuses a value as a key" under "The kernel
+  completed to Primordial Soup's core API" below) with an `ArgumentError`
+  carrying it, "key: requires an object that is not a value, got "
+  followed by its `printString`, signalled in Newspeak once the leaf
+  `objectIsValue:ifFail:` has answered `true`. That leaf sees through a
+  future: it declines where it would answer `false` and a future is its
+  subject, and the failure path asks again of the future's value
+  (`interpreter::future::declines_for_a_future`), so a future standing for
+  a value is refused as the value is. `nil` is the key of an ephemeron
+  that has none, the state it is made in and the one its collected key
+  leaves it in. While its key is an object something else reaches, its
+  value and finalizer are reached through it; once the key is reached by
+  nothing but ephemerons, the collector sets all three to `nil`.
+  `isKindOfEphemeron` answers `true`.
+- `WeakMap new`: `at:` (answering `nil` for an absent key), `at:put:`
+  (answering the value), `includesKey:`, `removeKey:` (answering the value
+  removed, or `nil`), `isKindOfWeakMap`. Keys are compared by identity and
+  hashed by `identityHash`; `at:put:` refuses `nil` or a value as a key,
+  through the same leaf, with an `ArgumentError` carrying it, "at:put:
+  requires a key that is not a value, got " followed by its `printString`,
+  where Primordial Soup's ends in a `doesNotUnderstand:`. It has no
+  enumeration and no `size`, since what it holds changes with every
+  collection. Each entry is an `Ephemeron` in a table probed linearly from
+  the key's identity hash, 256 slots to start with and always a power of
+  two. A removed or collected entry keeps its place with a `nil` key, so
+  that the chains through it stay unbroken, until `at:put:` reuses it --
+  having searched the whole chain for the key first, so that no key ends up
+  under two entries -- or a rehash drops it. The table is rehashed once
+  more than three quarters of it hold entries, and doubled only when more
+  than half of it is live, so a map whose keys keep dying does not grow
+  without end.
+
+**The finalizer is held, never run** (decided with the user on
+2026-10-16). Running it needs a point at which code may run without
+interrupting the program: a collection happens at a safepoint inside
+whatever method is running, and Primordial Soup -- which clears the slot
+and never runs it, a `TODO` in `vm/heap.cc:923` -- Spur, which hands a
+fired ephemeron to a finalization process through a semaphore, and
+JavaScript, whose `FinalizationRegistry` runs between turns, all answer it
+with a scheduler ns-next does not have. The slot is there so that the API
+is whole, and running it comes with the actors' event loop
+([OPEN-WORK.md](../OPEN-WORK.md)).
+
+**A user subclass gets no payload**, as of every builtin ("The shape of a
+kernel method" below). `decide_factory` (`interpreter/instantiate.rs`)
+allocates the `Ephemeron` format only for the class whose own builtin is
+`Ephemeron`, and `WeakArray new:`'s leaf declines for any subject but
+`WeakArray` itself. So a subclass of `WeakArray` has no weak slots and its
+leaves decline, and a subclass of `Ephemeron` is an ordinary object with
+the same three slots, held strongly -- Primordial Soup's "can be
+subclassed, but subclasses won't have the ephemeron property"
+(`goldens/library/weak/a_subclass_of_ephemeron_holds_strongly.ns`).
+
+**The goldens are `goldens/library/weak/`.** Each asserts only what holds
+whether or not an extra collection ran -- a strongly held object stays,
+and an object held only weakly reads `nil` after `garbageCollect` -- so
+each holds under every stress mode. Heap tests in `heap.rs` and
+`heap/object.rs` hold both collectors, a move and the remembered set to
+what follows, and `tests/image.rs` and `tests/image_truncations.rs` the
+image's records.
+
+### The heap and the collectors
+
+**Two formats**, codes 10 and 11 (`heap/header.rs`): `WeakPointers`, whose
+fields are the indexed slots of a `WeakArray`, and `Ephemeron`, whose
+first field is the key and whose others -- the value, the finalizer -- are
+reached only through a live key. An `Ephemeron`'s three slots are
+ordinary instance slots, so a slot read and write take either
+`FixedPointers` or `Ephemeron`; the check for `FixedPointers` comes first,
+so an ordinary object's slot pays nothing more.
+
+**Marking traces strong words; forwarding rewrites every word.**
+`pointer_ranges` stays the one enumeration of an object's pointer words,
+which forwarding, the moves and the remembered set's verification read;
+`strong_pointer_ranges` (`heap/object.rs`) answers what marking and the
+scavenger trace: the class word alone of `WeakPointers` and of an
+`Ephemeron` whose key is not yet known to survive, `pointer_ranges`
+otherwise. A weak word must not keep its object alive, but while the
+object lives the word must follow it, or it would name whatever is moved
+to its old place. An ephemeron with no fields -- only a crafted image
+makes one -- has no key and is traced as a fixed object.
+
+**A full collection** finishes its marking in `Heap::finish_marking`,
+between `drain_marking` and `prune_canonical_symbols`, Primordial Soup's
+order (`vm/heap.cc:627-682`):
+
+1. Marking puts every `WeakPointers` object it visits on a weak list and
+   every `Ephemeron` whose key is an unmarked object on an ephemeron list
+   (`mark::Marker`), tracing its class word only.
+2. Then, until a round marks nothing new: each listed ephemeron whose key
+   is now marked has its fields pushed, and the work list is drained
+   again. A chain of ephemerons whose keys are reached only through each
+   other's values is thus collected whole; each round rescans the list,
+   which is quadratic only in the length of such a chain
+   ([OPEN-WORK.md](../OPEN-WORK.md)).
+3. Every ephemeron still listed is mourned: its fields are set to `nil`.
+4. Every word of a listed `WeakPointers` object that names an unmarked
+   object is set to `nil`.
+
+Only then may compaction run: its forwarding table answers only marked
+objects, and a dead word left in a weak slot would be forwarded to
+garbage.
+
+**A scavenge** (`Heap::scavenge`; `Scavenger::finish` in
+`heap/scavenge.rs`) does the same within the nursery: a key survives when
+it is an immediate, old, or already copied (`vm/heap.cc:848-851`). A
+`WeakPointers` object the scavenge copies or finds in the remembered set
+has its class word scanned and goes on a weak list; an `Ephemeron` whose
+key has not survived goes on the ephemeron list with its class word
+scanned alone. After the Cheney loop, each listed ephemeron whose key has
+since survived is scanned and the loop drained again, until a round scans
+none; the rest are mourned; then every young word of a listed weak object
+is forwarded to the copy or, its object not copied, set to `nil` -- all
+before the nursery is vacated, or the word would name whatever is
+allocated there next. An old object leaves the remembered set unless a
+word of it, a weak word included, still names a young object afterwards,
+so a weak object that held only young referents now gone stops costing a
+scan; one that still names a young survivor is remembered once, however
+many of its words do.
+
+Neither pass needs the write barrier: setting a word to `nil` stores no
+young object, and they are the collector's own rewrites
+([memory.md](memory.md), "Generations"). A program's store into a weak
+slot goes through the barrier like every store
+(`Heap::weak_array_set_element`): an old weak object naming a young one
+must be remembered for the scavenge to forward or clear the word.
+
+**The stress modes take them as they are.** The collection and scavenge
+stress modes run the passes above at their own safepoints, the move stress
+mode forwards every word through `pointer_ranges`, and the scavenge stress
+mode's check of the remembered set reads `pointer_ranges` too, so it
+counts weak words.
+
+### The image
+
+Two object bodies, the next free numbers (`image/opcodes.rs`):
+`OBJECT_WEAK_ARRAY` (12), a `u32` count and that many values, and
+`OBJECT_EPHEMERON` (13), a `u32` field count and that many values, the
+key first, each under a header that names its kernel class by its shipped
+name. **The encoder writes what a collection would keep**, as Primordial
+Soup's serializer does
+(`prior-art/primordialsoup/newspeak/Serialization.ns:548-561, 718-726,
+793-795`; `GraphTable::build` and `GraphTable::weakly_held` in
+`image/encode.rs`): a weak word names its object only if the graph reaches
+that object strongly otherwise, and is `nil` if not; an ephemeron's value
+and finalizer are traced once its key is reached, to a fixpoint, so a key
+reached only through another ephemeron's value is found however long the
+chain, and an ephemeron whose key never is is written with every field
+`nil`. Every round scans in list order, so the encoding stays canonical.
+
+**What takes no record is kept, never cleared.** A weak word or an
+ephemeron's key holding an immediate, a shipped name -- which the loading
+world holds strongly -- or an object written by value -- a
+`LargeInteger`, a boxed `Float` or a `Fraction`, which take no object id
+and are written whole wherever they are referenced (§3.1.1) -- is written
+as it is, even where nothing else in the graph reaches it. A collection's
+timing is unspecified, so keeping more than a collection would is never
+wrong, and a value has no identity a load could tell apart. A future is
+seen through first. The walk still meets every weakly held object: a
+weakly held shipped object is listed among the shipped names, and a weakly
+held unnamed shipped class, or the VM mirror, refuses the whole image, as
+a strongly held one does.
+
+**The decoder holds each body to its class.** It sizes both records from
+their own bytes in its first pass, as an `Array`'s, and refuses, in both
+passes, `OBJECT_WEAK_ARRAY` under any class but `WeakArray`
+(`WeakArrayRecordUnderAnotherClass`) -- `WeakArray`'s header carries an
+`OBJECT_INSTANCE` too, the slotless instance `withoutSlots` makes --
+`OBJECT_EPHEMERON` under any class but `Ephemeron` and any other body
+under `Ephemeron`'s (`EphemeronRecordMismatch`), and an ephemeron record
+whose field count is not the class's (`EphemeronFieldCount`), checked
+before its values are read. It fills the placeholders in place
+(`PlaceholderFormat::WeakArray`, `PlaceholderFormat::Ephemeron`); it
+allocates old and never collects while it decodes
+([image-format.md](image-format.md), "The image under generations"), so
+nothing is cleared at load. `inspect` prints the two records as
+"weak array [...]" and "ephemeron {...}".
 
 ## The core library as Newspeak source over a VM mirror
 
@@ -3069,8 +3326,10 @@ platform's lazy `kernel` slot holds a value of `PlatformFactory.ns`'s
 `KernelNamespace`, whose methods answer `Exception`, `Error`,
 `MessageNotUnderstood`, `Halt`, `Message`, `ArgumentError`, `CannotReturn`,
 `CannotInstantiate`, `Closure`, `Future`, `Proxy`, `Collection`,
-`StringBuilder` and `DataView` from the kernel instance the platform was
-handed; the typed arrays are `platform typedArrays`'. `NotFound` is answered by
+`StringBuilder`, `DataView`, `WeakArray`, `Ephemeron` and `WeakMap` from
+the kernel instance the platform was handed, and whose `garbageCollect`
+runs a full collection ("Weak references" above); the typed arrays are
+`platform typedArrays`'. `NotFound` is answered by
 `platform collections`, as Primordial Soup keeps it in its collections
 module, and `NonBooleanReceiver` by nothing.
 `Exception` and `Error`, the two roots, are `Object`'s accessors as well
@@ -4048,7 +4307,7 @@ ms, and a first `platform collections` costs 0.31 ms
 "The embedded shipped code" above).
 
 **The collections written here, measured 2026-10-10** (sub-project 3 of
-"Planned: the kernel completed to Primordial Soup's core API" below), the
+"The kernel completed to Primordial Soup's core API" below), the
 Are We Fast Yet benchmarks, release builds, three builds by three rounds a
 side against `eeaa1d90`: Havlak is 6.3% slower (3,491 ms to 3,711 ms) and
 DeltaBlue 4.7% (670.5 ms to 702.3 ms), the other fourteen within noise,
@@ -4144,7 +4403,9 @@ and `Error`. `ByteArray` joined them with sub-project 5, as §3.2 names it
 beside `Array` ("`ByteArray`, `StringBuilder` and the views" above);
 `StringBuilder` and `DataView` did not, and a program names them through
 `platform kernel`; the typed arrays did not either, and a program names
-them through `platform typedArrays`. `Fraction`
+them through `platform typedArrays`; nor did `WeakArray`, `Ephemeron` and
+`WeakMap`, which a program names through `platform kernel` ("Weak
+references" above). `Fraction`
 joined them with the numeric tower (decided with the user on 2026-10-11):
 it is one of the numbers, and a program that names `Float` bare names
 `Fraction` the same way. `Exception` and `Error` joined them the same day,
@@ -4433,13 +4694,14 @@ iteration, through `Closure`'s private `valueOf:with:` and `valueOf:`
 A conditional sends `value` to such an argument too, and nothing answers
 it ("`True` and `False` are quick methods" above).
 
-## Planned: the kernel completed to Primordial Soup's core API
+## The kernel completed to Primordial Soup's core API
 
-Would change: `Kernel.ns` and `CollectionsFactory.ns` carry the whole
-public core API of Primordial Soup's kernel and collections
+`Kernel.ns` and `CollectionsFactory.ns` carry the whole public core API
+of Primordial Soup's kernel and collections
 (`prior-art/primordialsoup/newspeak/KernelForPrimordialSoup.ns`,
-`newspeak/Collections.ns`), before road step 5 (decided with the user on
-2026-10-06). Core means the classes a program computes with -- objects,
+`newspeak/Collections.ns`), completed before road step 5 (decided with the
+user on 2026-10-06) in the six sub-projects below, the last built on
+2026-10-16. Core means the classes a program computes with -- objects,
 booleans, numbers, strings, closures, messages, exceptions, collections,
 byte arrays, weak references -- and not the platform's side effects (files,
 network, time, random numbers, processes), not reflection or tooling
@@ -4575,172 +4837,12 @@ a non-integral literal is a binary float" above), and there is no
    possible later APIs and not part of the sub-project (noted with the
    user on 2026-10-11). Designed with the user on 2026-10-12, with
    `DataView` beside the typed arrays.
-6. **Weak references**: `WeakArray`, `WeakMap` and `Ephemeron`, in the
-   scavenger and the compaction, the image and the stress modes. Next;
-   designed with the user on 2026-10-16 ("Planned: sub-project 6, weak
-   references" below). The one weak structure today is the canonical
-   symbol table ([memory.md](memory.md), "Weak references").
-
-## Planned: sub-project 6, weak references
-
-Would change: the kernel has `WeakArray`, `Ephemeron` and `WeakMap`, with
-Primordial Soup's protocol, and both collectors, the image and the stress
-modes know weak slots and ephemerons (designed with the user on
-2026-10-16). The specification says nothing about weak references -- the
-whole of `newspeak-spec.md` was searched for weak, ephemeron, finalization,
-garbage, reclaiming and the collector -- so the canonical implementation
-decides, and Primordial Soup's kernel
-(`prior-art/primordialsoup/newspeak/KernelForPrimordialSoup.ns`, 852-861
-and 2553-2718; its collector `vm/heap.cc`) is the API adopted, every body
-written here.
-
-**The classes, in one table:**
-
-| Class | Kind | Reached through | Superclass |
-|---|---|---|---|
-| `WeakArray` | builtin, format `WeakPointers` | `platform kernel`, and `platform collections` | `Collection` |
-| `Ephemeron` | builtin, format `Ephemeron`, three slots | `platform kernel` | `Object` |
-| `WeakMap` | Newspeak, over an `Array` of `Ephemeron`s | `platform kernel` | `Object` |
-
-`platform collections` hands out `WeakArray` as well because the corpus
-asks it there (`corpus/modules/Brazil.ns:24`, `VictoryFuelTesting.ns:5`)
-and the canonical Newspeak's collections namespace has it
-(`prior-art/newspeak/Collections.ns:40`); Primordial Soup hands all three
-out through the kernel alone. `platform kernel garbageCollect` runs a
-full collection before it answers, as Primordial Soup's
-`Kernel>>garbageCollect` does (`prior-art/primordialsoup/newspeak/Kernel.ns:44`);
-it is what a program -- a golden among them -- uses to observe a slot
-being cleared.
-
-**The protocol, Primordial Soup's:**
-
-- `WeakArray new: size` answers a `WeakArray` of `size` nils, refusing a
-  size that is no `Integer` or is negative with an `ArgumentError`, in
-  `Array new:`'s texts; `WeakArray new` is not understood (its factory is
-  no `new`). `at:`, `at:put:` (answering the value) and `size`, indexed
-  from 1 and refused out of range in `Array`'s texts; `do:`,
-  `keysAndValuesDo:`, `isEmpty`, `copyWith:` (a new `WeakArray` one longer,
-  the element last), `isKindOfArray` and `isKindOfWeakArray` answering
-  `true`. It holds any object, a value included: a slot whose object is
-  collected reads `nil`, and an immediate -- a `SmallInteger`, `nil`,
-  `true`, `false` -- is never collected.
-- `Ephemeron new` answers one whose `key`, `value` and `finalizer` are
-  `nil`; `key:`, `value:` and `finalizer:` answer the receiver. `key:`
-  refuses a value other than `nil` with an `ArgumentError` ("A weak
-  collection refuses a value as a key" under "Planned: the kernel
-  completed to Primordial Soup's core API" above); `nil` is the key of an
-  ephemeron that has none, the state it is made in and the one its
-  collected key leaves it in. While its key is an object something else
-  reaches, its value and finalizer are reached through it; once the key is
-  reached by nothing but ephemerons, the collector sets all three to
-  `nil`. `isKindOfEphemeron` answers `true`.
-- `WeakMap new`: `at:` (answering `nil` for an absent key),
-  `at:put:` (answering the value), `includesKey:`, `removeKey:`
-  (answering the value removed, or `nil`), `isKindOfWeakMap`. Keys are
-  compared by identity and hashed by `identityHash`; `at:put:` refuses a
-  value as a key, `nil` included, with an `ArgumentError`, where Primordial
-  Soup's ends in a `doesNotUnderstand:`. It has no enumeration and no
-  `size`, since what it holds changes with every collection.
-
-**The finalizer is held, never run** (decided with the user on
-2026-10-16). Running it needs a point at which code may run without
-interrupting the program: a collection happens at a safepoint inside
-whatever method is running, and Primordial Soup -- which clears the slot
-and never runs it, a `TODO` in `vm/heap.cc:923` -- Spur, which hands a
-fired ephemeron to a finalization process through a semaphore, and
-JavaScript, whose `FinalizationRegistry` runs between turns, all answer it
-with a scheduler ns-next does not have. The slot is there so that the API
-is whole, and running it comes with the actors' event loop
-([OPEN-WORK.md](../OPEN-WORK.md)).
-
-**A user subclass gets no payload**, as of every builtin ("The shape of a kernel
-method" above): a subclass of `WeakArray` has no weak slots,
-its leaves decline, and a subclass of `Ephemeron` is an ordinary object
-with the same three slots, held strongly -- Primordial Soup's "can be
-subclassed, but subclasses won't have the ephemeron property".
-
-### The heap and the collectors
-
-**Two formats**, codes 10 and 11 (`heap/header.rs`): `WeakPointers`, whose
-fields are the indexed slots of a `WeakArray`, and `Ephemeron`, whose
-first field is the key and whose others -- the value, the finalizer -- are
-reached only through a live key. An `Ephemeron`'s three slots are
-ordinary instance slots, so a slot read and write take either
-`FixedPointers` or `Ephemeron`; the check for `FixedPointers` stays the
-first, so an ordinary object's slot pays nothing more.
-
-**Marking traces strong words; forwarding rewrites every word.**
-`pointer_ranges` stays the one enumeration of an object's pointer words,
-which forwarding, the moves and the remembered set's verification read;
-`strong_pointer_ranges` answers what marking and the scavenger trace: the
-class word alone of `WeakPointers` and of an `Ephemeron` whose key is not
-yet known to survive, everything otherwise. An ephemeron with no fields --
-only a crafted image makes one -- has no key and is traced as a fixed
-object.
-
-**A full collection** (`World::collect`), between `drain_marking` and
-`prune_canonical_symbols`, Primordial Soup's order (`vm/heap.cc:627-682`):
-
-1. Marking puts every `WeakPointers` object it visits on a weak list and
-   every `Ephemeron` whose key is an unmarked object on an ephemeron list,
-   tracing its class word only.
-2. Then, until a round marks nothing new: each listed ephemeron whose key
-   is now marked has its fields pushed, and the work list is drained
-   again. A chain of ephemerons whose keys are reached only through each
-   other's values is thus collected whole; each round rescans the list,
-   which is quadratic only in the length of such a chain.
-3. Every ephemeron still listed is mourned: its fields are set to `nil`.
-4. Every word of a listed `WeakPointers` object that names an unmarked
-   object is set to `nil`.
-
-Only then may compaction run: its forwarding table answers only marked
-objects, and a dead word left in a weak slot would be forwarded to
-garbage.
-
-**A scavenge** (`Heap::scavenge`) does the same within the nursery: a key
-survives when it is an immediate, old, or already copied
-(`vm/heap.cc:848-851`). A `WeakPointers` object the scavenge copies or
-finds in the remembered set has its class word scanned and goes on a weak
-list; an `Ephemeron` whose key has not survived goes on the ephemeron
-list instead of being scanned. After the Cheney loop, each listed
-ephemeron whose key has since survived is scanned and the loop drained
-again, until a round scans none; the rest are mourned; then every young
-word of a listed weak object is forwarded to the copy or, its object not
-copied, set to `nil`. An old object leaves the remembered set unless a
-word of it still names a young object afterwards, so a weak object that
-held only young referents now gone stops costing a scan.
-
-Neither pass needs the write barrier: setting a word to `nil` stores no
-young object, and they are the collector's own rewrites
-([memory.md](memory.md), "Generations").
-
-**The stress modes take them as they are.** The collection and scavenge
-stress modes run the passes above at their own safepoints, the move stress
-mode forwards every word through `pointer_ranges`, and the scavenge
-stress mode's check of the remembered set counts weak words, since an old
-weak object naming a young one must stay remembered for the scavenge to
-clear or forward the word. A golden asserts only what holds whether or not
-an extra collection ran: a strongly held object stays, and an object held
-only weakly reads `nil` after `garbageCollect`.
-
-### The image
-
-Two object bodies, the next free numbers (`image/opcodes.rs`):
-`OBJECT_WEAK_ARRAY` (12), a `u32` count and that many values, and
-`OBJECT_EPHEMERON` (13), a `u32` field count and that many values, the
-key first. **The encoder writes what a collection would keep**, as
-Primordial Soup's serializer does
-(`prior-art/primordialsoup/newspeak/Serialization.ns:548-561, 718-726,
-793-795`): a weak word names its object only if the graph reaches that
-object otherwise, and `nil` if not; an ephemeron's value and finalizer are
-traced once its key is reached, to a fixpoint, and an ephemeron whose key
-never is is written with every field `nil`. The decoder sizes both
-records from their own bytes in its first pass, as an `Array`'s, refuses
-`OBJECT_WEAK_ARRAY` on a class other than `WeakArray` and
-`OBJECT_EPHEMERON` on one other than `Ephemeron` or with a field count
-other than its class's, and fills the placeholders; it allocates old and
-never collects while it decodes ([image-format.md](image-format.md), "The
-image under generations"), so nothing is cleared at load.
+6. **Weak references** -- built (2026-10-16, [its
+   plan](../superpowers/plans/2026-10-16-1645-weak-references.md);
+   "Weak references" above): `WeakArray`, `WeakMap` and `Ephemeron`, in
+   the scavenger and the compaction, the image and the stress modes, a
+   weak collection refusing a value as a key, and `platform kernel
+   garbageCollect`.
 
 ## Decisions
 
@@ -4764,7 +4866,7 @@ image under generations"), so nothing is cleared at load.
   public class only for its class side's `computing:`, over the private
   `FutureImplementation` under the public `Proxy`; and the `isKindOf…`
   rule, `false` for a unary question nobody declared ("Exceptions", "The
-  pull future", "Planned: the kernel completed to Primordial Soup's core
+  pull future", "The kernel completed to Primordial Soup's core
   API" above;
   [plan](../superpowers/plans/2026-10-06-2036-ns-next-kernel-foundations.md)).
 

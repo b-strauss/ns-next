@@ -15,41 +15,7 @@ when they were written.
 
 ## Next
 
-**The kernel completed to Primordial Soup's core API**, before road step 5
-(decided with the user on 2026-10-06): `Kernel.ns` and
-`CollectionsFactory.ns` take Primordial Soup's whole public core API --
-selectors and behaviour adopted, every body written here -- in six
-sub-projects, in this order: aligning, which is built (`Block` is
-`Closure`, `sentTo:` is `sendTo:`, `Array>>at:put:` answers the value, the
-loops send `value` to a non-block); foundations, which is built too (the
-error classes under `Error`, the `isKindOf…` rule, `yourself`,
-`identityHash`, the kernel facet's accessors, `Proxy`, a public `Future`);
-collections and strings, which is built too (an abstract `Collection` in
-the kernel with `Array` under it, the whole protocol of `Array`, `List`,
-`Map` and `Set`, `IdentityMap`, `ConcurrentModification`, `String`'s
-protocol in code points, every member of the shipped modules documented);
-numbers, which is built too (`Float`'s mathematics and texts, `Integer`'s
-and `Number`'s protocol, `Fraction`, and the symmetric tower); `ByteArray`
-and `StringBuilder`, which is built too, with typed arrays and `DataView`
-over a `ByteArray` as an API of our own beside them (the UTF-8
-conversions, the kernel mixin `IndexedCollection`, the `AlignedBytes`
-format every mover realigns, the image record `OBJECT_BYTE_ARRAY`;
-[core-library.md](design/core-library.md), "`ByteArray`, `StringBuilder`
-and the views"); weak references. Each has its own design and plan; the
-sixth and last sub-project is next -- **weak references**: `WeakArray`,
-`WeakMap` and `Ephemeron`, in the scavenger and the compaction, the image
-and the stress modes, a weak collection refusing a value as a key --
-designed with the user on 2026-10-16
-([core-library.md](design/core-library.md), "Planned: sub-project 6, weak
-references") and planned
-([plan](superpowers/plans/2026-10-16-1645-weak-references.md)). Today the canonical symbol table is
-the one weak structure ([memory.md](design/memory.md), "Weak
-references"), and the corpus asks `platform collections` for `WeakArray`
-([core-library.md](design/core-library.md), "The platform"). The
-decisions and the scope are [core-library.md](design/core-library.md),
-"Planned: the kernel completed to Primordial Soup's core API".
-
-**Then road step 5, mirrors and atomic installation** ("Step 5, mirrors and
+**Road step 5, mirrors and atomic installation** ("Step 5, mirrors and
 atomic installation" below; decided with the user on 2026-10-05). Its
 building block is `become:` as an eager bulk forward, as Primordial Soup's:
 a one-way forward of an array of old objects to an array of new ones that
@@ -76,8 +42,11 @@ the road is built, road step 4 last: generations
 ([memory.md](design/memory.md), "Generations";
 [image-format.md](design/image-format.md), "The image under
 generations"), whose scavenger's forwarded format is the one the bulk
-forward writes. Each step has its entry in [PROGRESS.md](PROGRESS.md); the
-whole road is below.
+forward writes. So is the kernel completed to Primordial Soup's core API,
+which was to come first (decided with the user on 2026-10-06), weak
+references last ([core-library.md](design/core-library.md), "The kernel
+completed to Primordial Soup's core API", "Weak references"). Each step
+has its entry in [PROGRESS.md](PROGRESS.md); the whole road is below.
 
 **Measuring.** The protocol is [execution.md](design/execution.md)'s "What
 removing the re-entries moved"; every compared binary, the current tree
@@ -488,6 +457,15 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   builder whose data are full grows one append early. A builder costs at
   most one early growth; noted 2026-10-13.
   [core-library.md](design/core-library.md), "`StringBuilder`".
+- **The ephemeron fixpoint rescans its whole pending list each round.**
+  Both collectors (`Heap::finish_marking`, `Scavenger::finish`) and the
+  image encoder (`GraphTable::build`) walk every listed ephemeron in every
+  round until a round finds no key newly reached, so a chain of ephemerons
+  each keyed by the previous one's value costs time quadratic in its
+  length. An index from a key to the ephemerons waiting on it would make
+  it linear; worth building only if a measurement shows a program meets
+  such chains. Noted 2026-10-16. [core-library.md](design/core-library.md),
+  "The heap and the collectors".
 
 ## Planned: language and library
 
@@ -615,6 +593,16 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   snapshot units, promises for `<-:`, and copying value objects across an
   actor boundary. The treatment of in-flight cross-actor promises at snapshot
   time still needs design. [liveness-and-reflection.md](design/liveness-and-reflection.md).
+- **Running an ephemeron's finalizer comes with the actors' event loop**
+  (decided with the user on 2026-10-16). Today an `Ephemeron`'s finalizer
+  is held and never run: a collection whose key is reached by nothing but
+  ephemerons mourns it, setting its key, value and finalizer to `nil`. A
+  finalizer needs a point at which code may run without interrupting the
+  program, which a turn of the event loop gives; the collector then fires
+  an ephemeron instead -- keeps its key and value and queues it -- and the
+  loop runs the finalizer between turns, as JavaScript's
+  `FinalizationRegistry` does. [core-library.md](design/core-library.md),
+  "Weak references".
 - **A decompiler** for exporting an image back to `.ns`, and the other image
   questions below. [image-format.md](design/image-format.md), "Open questions".
 - **A script recorded into an image.** `ns-next build` takes no `--script`:
@@ -1022,7 +1010,8 @@ text, `to:by:do:`'s zero step, `String withAll:`'s nil for an argument
 that only answers `isKindOfArray` or `isKindOfString`, and the error of a
 `hash` that is no Integer.
 
-- **`<<`, `Array new:` and `ByteArray new:` probe a program-chosen size with
+- **`<<`, `Array new:`, `ByteArray new:` and `WeakArray new:` probe a
+  program-chosen size with
   `try_reserve_exact`, which refuses an impossible size on Windows but on a
   system that overcommits (Linux) can succeed**, and the process is then
   OOM-killed while the zeros are written, where a program-chosen size is
@@ -1030,7 +1019,8 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
   from one the system will accept and then kill for.
   `crates/ns-runtime/src/builtins/collections.rs`, `allocate`;
   `heap.rs`, `Heap::byte_array_fits`, behind every leaf that makes a
-  `ByteArray` of a size the program chose; and
+  `ByteArray` of a size the program chose, and `Heap::weak_array_fits`,
+  behind `WeakArray new:`; and
   `builtins/numbers/mod.rs`, `shift_left`, which reaches
   `ArbitraryInteger::shift_left`
   (`crates/ns-runtime/src/arbitrary_integer/mod.rs`), where the digits are
@@ -1295,6 +1285,27 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
   from the embedded shipped code parses nothing ("The parser's 3.4 ms for
   `Kernel.ns`" above). A `parse` that skips the attachment for the runtime
   would recover it. Noted 2026-10-12.
+- **`Interpreter::instantiate`, the host's way to instantiate, bypasses
+  `decide_factory`.** It calls `decide_instantiation` directly
+  (`interpreter/instantiate.rs`), so a host that instantiates `Ephemeron`,
+  `ByteArray` or `Array` gets an ordinary instance of `FixedPointers`
+  where a send of the class's factory would have made one of the class's
+  own format: an `Ephemeron` that holds its value strongly, for one, and
+  an image holding such an `Ephemeron` or `ByteArray` is refused at load,
+  since the decoder holds those classes' records to their formats. No
+  program reaches the path; route it
+  through `decide_factory`. Noted 2026-10-16.
+  [core-library.md](design/core-library.md), "Weak references".
+- **The decoder does not hold `WeakArray`'s header to its two bodies.** It
+  refuses `OBJECT_WEAK_ARRAY` under any other class, but not a crafted
+  `OBJECT_ARRAY` under `WeakArray`'s header, which decodes to an object of
+  `WeakArray`'s class whose slots hold strongly. Its leaves
+  decline on it, as on a subclass's instance, so it is wrong but safe;
+  refusing every body but `OBJECT_WEAK_ARRAY` and `OBJECT_INSTANCE`, as
+  `Ephemeron`'s header is held to its one, would close it. Noted
+  2026-10-16. `image/decode.rs`, `Sizing::record`;
+  [core-library.md](design/core-library.md), "The image" under "Weak
+  references".
 
 ## Missing tests
 

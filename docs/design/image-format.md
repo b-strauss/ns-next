@@ -725,7 +725,7 @@ table: tag 9, the activation record whose body was one frame-table id, is
 retired with it (`RETIRED_OBJECT_BODIES` is 4, 5 and 9).
 
 **A `ByteArray` is a record of its own**, `OBJECT_BYTE_ARRAY` (body tag
-11; "Next free number: 12" in `opcodes.rs`): a `u32` length, then that
+11): a `u32` length, then that
 many bytes, in order, under a header that names `Kernel ByteArray` by its
 shipped name. Only the bytes travel: the three reserve words ahead of the
 data are not written, since the decoder places the data at its own
@@ -739,6 +739,35 @@ an ordinary instance record of its shipped class, its slot holding the
 `ByteArray`'s record ([core-library.md](core-library.md), "`ByteArray`,
 `StringBuilder` and the views").
 
+**A `WeakArray` and an `Ephemeron` are records of their own**
+(`opcodes.rs`, "Next free number: 14"): `OBJECT_WEAK_ARRAY` (body tag 12),
+a `u32` count and that many values, its slots in order, under a header
+naming `Kernel WeakArray`; and `OBJECT_EPHEMERON` (13), a `u32` field count
+and that many values, the key first, under a header naming `Kernel
+Ephemeron`. **The encoder writes what a collection would keep**: a weak
+slot names its object only if the graph reaches that object strongly
+otherwise, and is `nil` if not; an ephemeron's value and finalizer are
+followed only once its key has been reached, to a fixpoint, and an
+ephemeron whose key never is is written with every field `nil`
+(`GraphTable::build`, `GraphTable::weakly_held` in `encode.rs`). The
+exception is what takes no record: a weak word or a key holding an
+immediate, a shipped name or an object written by value -- a
+`LargeInteger`, a boxed `Float`, a `Fraction` -- is written as it is
+whether or not anything else reaches it, since a collection's timing is
+unspecified and keeping more than one would is never wrong. A weakly held
+object is still met by the walk, so a weakly held unnamed shipped class or
+the VM mirror refuses the image as a strongly held one does. The decoder
+refuses a weak-array body under any class but `WeakArray`
+(`WeakArrayRecordUnderAnotherClass`; `WeakArray`'s header carries an
+instance record too, the slotless one its factory `withoutSlots` makes),
+an ephemeron body under any class but `Ephemeron` and any other body under
+`Ephemeron`'s (`EphemeronRecordMismatch`), and an ephemeron record whose
+field count is not the class's (`EphemeronFieldCount`). Nothing is cleared
+at load, since the decoder never collects ("The image under
+generations"), and `inspect` prints the records as "weak array [...]" and
+"ephemeron {...}" ([core-library.md](core-library.md), "Weak
+references").
+
 **Two passes.** Records reference each other freely and forward, so every
 record's object must exist before any is filled. `decode_graph_section`
 therefore reads the object table twice. The first pass (`Sizing`) reads
@@ -751,9 +780,14 @@ a `FutureImplementation` record of a field count other than two refused
 (`FutureRecord`), a record of a shipped class that is no builtin
 refused unless it is an instance record (`ShippedInstanceBody`), and a
 byte-array body and a `ByteArray` header refused unless they come together
-(`ByteArrayRecordMismatch`); each record yields its object's size, read from its own
-bytes — the kind comes first in a frame record, the register count and a
-byte array's length are on the wire, so no size depends on another record. If the objects would take
+(`ByteArrayRecordMismatch`), a weak-array body under another class than
+`WeakArray` (`WeakArrayRecordUnderAnotherClass`), and an ephemeron body
+and an `Ephemeron` header refused unless they come together
+(`EphemeronRecordMismatch`) and with the class's field count
+(`EphemeronFieldCount`); each record yields its object's size, read from its own
+bytes — the kind comes first in a frame record, the register count, a
+byte array's length and a weak array's or an ephemeron's count are on the
+wire, so no size depends on another record. If the objects would take
 more than eight words a byte of the input left, the load is refused
 (`UnexpectedEndOfFile`) before anything is allocated; a symbol's text is not
 counted against that, since it is bounded once per entry by the symbol
@@ -763,7 +797,8 @@ frame object of its register count — and the second pass fills each in place:
 a header and class word rewritten, each value stored as it is read, a string
 packed straight from the buffer, a byte array's bytes copied to the data
 words at its placeholder's 32-byte alignment, the header's format becoming
-`AlignedBytes`, a class record's eight fields copied in
+`AlignedBytes`, a weak array's or an ephemeron's header taking its format,
+`WeakPointers` or `Ephemeron`, a class record's eight fields copied in
 (`Heap::shape_placeholder` and the `fill_placeholder_*` and `fill_frame_*`
 accessors), so no record is ever built beside its placeholder. A frame
 record's body is filled last, from its remembered position, once the
@@ -1281,7 +1316,11 @@ A builtin's record is held to its own format instead, as above; for a
 `ByteArray` both ways, since its format is the one no other class may
 have: a byte-array body under any header but `Kernel ByteArray`, and a
 `Kernel ByteArray` header over any other body, are
-`ByteArrayRecordMismatch`, refused by the first pass and the second alike.
+`ByteArrayRecordMismatch`, refused by the first pass and the second alike;
+an `Ephemeron`'s both ways too (`EphemeronRecordMismatch`), and a weak
+array's body under any header but `Kernel WeakArray`
+(`WeakArrayRecordUnderAnotherClass`), whose own header carries an
+instance record as well, the slotless one of its factory `withoutSlots`.
 A view's or a `StringBuilder`'s record is an ordinary instance record of
 its shipped class; what its slots hold is the program's to check, and the
 kernel refuses a crafted one with an `ArgumentError`
@@ -2250,6 +2289,18 @@ shipped world.
   shipped classes, so none of them is a builtin. The body and the
   `ByteArray` header are held to each other both ways, since a record
   carries exactly its class's layout (`ByteArrayRecordMismatch`).
+- **An image keeps what a collection would keep** (designed with the user
+  on 2026-10-16, built the same day; "A `WeakArray` and an `Ephemeron` are
+  records of their own"): `OBJECT_WEAK_ARRAY` (12) and `OBJECT_EPHEMERON`
+  (13), the next free body tags, and an encoder that writes a weak slot
+  `nil` and mourns an ephemeron where nothing else in the graph reaches
+  the object or the key, as Primordial Soup's serializer does
+  (`prior-art/primordialsoup/newspeak/Serialization.ns:548-561, 718-726,
+  793-795`), so a snapshot carries no object only weak references hold.
+  What takes no record -- an immediate, a shipped name, a value written by
+  value -- is kept whether or not anything else reaches it: keeping more
+  than a collection would is never wrong, since a collection's timing is
+  unspecified.
 
 ## Open questions
 

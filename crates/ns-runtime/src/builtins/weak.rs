@@ -3,8 +3,8 @@
 //! once made, as an `Array` is, and refuses an index or a size in
 //! `Array`'s texts, so a program meets one sequence protocol whichever it
 //! holds; what differs is that the collectors clear a slot whose object
-//! nothing else reaches (`docs/design/core-library.md`, "Planned:
-//! sub-project 6, weak references").
+//! nothing else reaches (`docs/design/core-library.md`, "Weak
+//! references").
 
 use crate::builtins::collections::{
     integer_argument, not_an_integer, out_of_range, IntegerArgument,

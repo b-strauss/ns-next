@@ -168,15 +168,15 @@ pub enum BuiltinClass {
     /// A fixed-size sequence whose slots hold their objects weakly: a
     /// builtin because its instances have their own format,
     /// `WeakPointers`, whose words the collectors clear once nothing else
-    /// reaches their objects (`docs/design/core-library.md`, "Planned:
-    /// sub-project 6, weak references"). Not a value class (§3.1.1).
+    /// reaches their objects (`docs/design/core-library.md`, "Weak
+    /// references"). Not a value class (§3.1.1).
     WeakArray,
     /// A key, a value and a finalizer, the value and the finalizer
     /// reached only while something other than an ephemeron reaches the
     /// key: a builtin because its instances have their own format,
     /// `Ephemeron`, whose first field the collectors read as the key
-    /// (`docs/design/core-library.md`, "Planned: sub-project 6, weak
-    /// references"). Not a value class (§3.1.1).
+    /// (`docs/design/core-library.md`, "Weak references"). Not a value
+    /// class (§3.1.1).
     Ephemeron,
 }
 
