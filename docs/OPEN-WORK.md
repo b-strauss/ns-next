@@ -808,10 +808,13 @@ activation.
   above every master build's. The microbenchmarks moved -0.2% to +1.2%,
   inside their spread, so the slot accessors' format predicate
   (`pointer_word_of`, `set_pointer_word_of` in `heap.rs`), which accept
-  `Ephemeron` beside `FixedPointers`, show no cost of their own. Havlak
-  and CD allocate the most, which points at the collectors' new format
-  checks (`strong_pointer_ranges`, the weak lists) rather than at a slot
-  read; not attributed further. [core-library.md](design/core-library.md),
+  `Ephemeron` beside `FixedPointers`, show no cost on them -- but none of
+  the four reads a slot much. The collectors are not the cause: with
+  `--collector-statistics`, Havlak's scavenges and collections paused
+  682 ms in four runs on both trees and CD's 43 and 44 ms, against the
+  30 to 40 ms a run the branch is slower, so the cost is the mutator's:
+  the slot accessors' predicate or the instantiation path
+  (`instantiate_allocating`), not yet told apart. [core-library.md](design/core-library.md),
   "Weak references".
 - **The numeric tower's slow paths are unmeasured on their own.** The Are
   We Fast Yet benchmarks run as fast as without the tower, but none of
