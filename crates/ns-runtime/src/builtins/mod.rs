@@ -7,8 +7,9 @@
 //! `Kernel.ns` builds over the running activations, `message` for
 //! `Message>>sendTo:`, `module` for `moduleInstanceNamed:`, through which
 //! shipped source reaches another shipped module, and `future` for the
-//! forcing of §6.3.2's pull future, and `weak` for `WeakArray` and the
-//! full collection a program asks for. `primitive` names every
+//! forcing of §6.3.2's pull future, and `weak` for `WeakArray`, the
+//! full collection a program asks for and `Ephemeron`'s check of a key.
+//! `primitive` names every
 //! one of them as a `Primitive` and lists them as the rows of the VM
 //! mirror, the one builtin
 //! whose method table holds primitive entries (`dispatch::Lookup::Primitive`);

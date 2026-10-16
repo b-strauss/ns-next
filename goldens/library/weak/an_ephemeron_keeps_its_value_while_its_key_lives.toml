@@ -1,0 +1,8 @@
+stdout = '''
+true
+'the value'
+'the finalizer'
+nil
+nil
+nil
+'''

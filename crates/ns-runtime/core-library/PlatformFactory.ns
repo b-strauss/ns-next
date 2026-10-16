@@ -95,6 +95,8 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
     private DataView = kernel DataView.
     /// The kernel's `WeakArray`, which `KernelNamespace` hands out.
     private WeakArray = kernel WeakArray.
+    /// The kernel's `Ephemeron`, which `KernelNamespace` hands out.
+    private Ephemeron = kernel Ephemeron.
   |
 ) (
   /// The one collections module, built over the kernel on first use and
@@ -299,6 +301,13 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
     /// their objects alive.
     public WeakArray = (
       ^outer PlatformFactory WeakArray.
+    )
+
+    /// Answers the kernel's class `Ephemeron`, which a program
+    /// instantiates with `new` for a value and a finalizer kept alive
+    /// only while their key is.
+    public Ephemeron = (
+      ^outer PlatformFactory Ephemeron.
     )
 
     /// Runs a full collection and answers the receiver: every object that

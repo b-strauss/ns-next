@@ -1,0 +1,20 @@
+stdout = '''
+nil
+nil
+nil
+true
+true
+true
+true
+'the value'
+'the finalizer'
+true
+nil
+key: requires an object that is not a value, got 3
+key: requires an object that is not a value, got 'text'
+key: requires an object that is not a value, got 1.5
+key: requires an object that is not a value, got true
+nil
+true
+false
+'''

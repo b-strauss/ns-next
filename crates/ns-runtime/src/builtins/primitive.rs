@@ -287,7 +287,8 @@ impl Primitive {
                 | WeakPrimitive::Size
                 | WeakPrimitive::ElementAt
                 | WeakPrimitive::ElementAtPut
-                | WeakPrimitive::Collect,
+                | WeakPrimitive::Collect
+                | WeakPrimitive::IsValue,
             ) => false,
             // It reaches its own primitive's row through `execute_sent`,
             // whose failure path looks for a future among that row's
@@ -560,7 +561,8 @@ pub enum BytePrimitive {
     WriteCodePoint,
 }
 
-/// `WeakArray`'s primitives, and the full collection a program asks for.
+/// `WeakArray`'s primitives, the full collection a program asks for, and
+/// the question a weak structure asks of a key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WeakPrimitive {
     /// `WeakArray new: size`, on `WeakArray`'s class side.
@@ -570,6 +572,9 @@ pub enum WeakPrimitive {
     ElementAtPut,
     /// `garbageCollect`: a full collection, served at the next safepoint.
     Collect,
+    /// Whether an object is a value (§3.1.1), which `Ephemeron>>key:`
+    /// refuses as a key.
+    IsValue,
 }
 
 /// The ten element kinds of the typed arrays and `DataView`.
@@ -2076,6 +2081,14 @@ pub const MIRROR: &[MirrorEntry] = &[
         "garbageCollect:ifFail:",
         "garbageCollect",
         Primitive::Weak(WeakPrimitive::Collect),
+    ),
+    // Reported `isValue`, no kernel selector: a row's arity is its
+    // reported selector's, this leaf takes its subject alone, and it
+    // raises nothing whose text the selector would name.
+    mirror(
+        "objectIsValue:ifFail:",
+        "isValue",
+        Primitive::Weak(WeakPrimitive::IsValue),
     ),
 ];
 

@@ -1,0 +1,52 @@
+/// An Ephemeron keeps its value and finalizer alive while its key lives,
+/// though nothing else reaches them: after `platform kernel
+/// garbageCollect`, with the key held by a slot, both are still there.
+/// Once that slot lets go of the key, the next collection finds the key
+/// reached by nothing but the ephemeron and sets all three to nil. The
+/// key, the value and the finalizer are made at run time by a method of
+/// their own that stores them and returns, and the key is compared by
+/// another, so that no register of `main:` holds any of them.
+class AnEphemeronKeepsItsValueWhileItsKeyLives = Object new (
+  |
+    heldKey ::= nil.
+  |
+) (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      kernel = platform kernel.
+      ephemeron = kernel Ephemeron new.
+      show
+    |
+    show:: [:object |
+      transcript
+          show: object printString;
+          newLine.
+    ].
+    fill: ephemeron.
+    kernel garbageCollect.
+    show value: (keyIsHeldIn: ephemeron).
+    show value: ephemeron value.
+    show value: ephemeron finalizer.
+    heldKey:: nil.
+    kernel garbageCollect.
+    show value: ephemeron key.
+    show value: ephemeron value.
+    show value: ephemeron finalizer.
+  )
+
+  /// Stores in `ephemeron` a new key, which `heldKey` holds too, and a
+  /// value and a finalizer that nothing else reaches.
+  fill: ephemeron = (
+    heldKey:: Object new.
+    ephemeron
+        key: heldKey;
+        value: 'the' , ' value';
+        finalizer: 'the' , ' finalizer'.
+  )
+
+  /// Answers whether `ephemeron`'s key is the one `heldKey` holds.
+  keyIsHeldIn: ephemeron = (
+    ^ephemeron key == heldKey.
+  )
+)

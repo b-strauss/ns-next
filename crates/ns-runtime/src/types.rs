@@ -171,6 +171,13 @@ pub enum BuiltinClass {
     /// reaches their objects (`docs/design/core-library.md`, "Planned:
     /// sub-project 6, weak references"). Not a value class (§3.1.1).
     WeakArray,
+    /// A key, a value and a finalizer, the value and the finalizer
+    /// reached only while something other than an ephemeron reaches the
+    /// key: a builtin because its instances have their own format,
+    /// `Ephemeron`, whose first field the collectors read as the key
+    /// (`docs/design/core-library.md`, "Planned: sub-project 6, weak
+    /// references"). Not a value class (§3.1.1).
+    Ephemeron,
 }
 
 impl BuiltinClass {
@@ -190,7 +197,7 @@ impl BuiltinClass {
     /// `objects_class_accessors_are_exactly_the_nameable_builtins`. An image
     /// names it by its declaration in `Kernel.ns`, like every shipped class
     /// (`image::shipped_names`), so it needs no wire tag.
-    pub const ALL: [BuiltinClass; 36] = [
+    pub const ALL: [BuiltinClass; 37] = [
         BuiltinClass::Object,
         BuiltinClass::Boolean,
         BuiltinClass::True,
@@ -227,6 +234,7 @@ impl BuiltinClass {
         BuiltinClass::Fraction,
         BuiltinClass::ByteArray,
         BuiltinClass::WeakArray,
+        BuiltinClass::Ephemeron,
     ];
 }
 

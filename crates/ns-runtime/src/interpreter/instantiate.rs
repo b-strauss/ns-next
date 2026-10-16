@@ -531,6 +531,14 @@ impl<'gc> Mutator<'gc> {
             Some(BuiltinClass::String) => Ok(Step::Value(Value::object(
                 self.new_string_from_code_points(crate::CodePoints::from("")),
             ))),
+            // The `Ephemeron` format, so that the collectors treat the first
+            // field as the key; asked of the class's own builtin, so a user
+            // subclass takes the arm below and holds strongly
+            // (`docs/design/core-library.md`, "A user subclass gets no
+            // payload").
+            Some(BuiltinClass::Ephemeron) => {
+                self.instantiate_allocating(class, arguments.to_vec(), Heap::allocate_ephemeron)
+            }
             _ => self.decide_instantiation(class, arguments.to_vec()),
         }
     }
@@ -553,6 +561,19 @@ impl<'gc> Mutator<'gc> {
         &mut self,
         class: ClassReference<'gc>,
         factory_arguments: Vec<Value<'gc>>,
+    ) -> Result<Step<'gc>, Signal<'gc>> {
+        self.instantiate_allocating(class, factory_arguments, Heap::allocate_instance)
+    }
+
+    /// `decide_instantiation`, with the instance's fields made by
+    /// `allocate`: an ordinary instance's, or an ephemeron's, whose format
+    /// alone sets it apart. Generic rather than a function pointer, so that
+    /// every instantiation's allocation stays a direct call.
+    fn instantiate_allocating(
+        &mut self,
+        class: ClassReference<'gc>,
+        factory_arguments: Vec<Value<'gc>>,
+        allocate: impl FnOnce(&mut Heap<'gc>, ClassReference<'gc>, usize) -> ObjectReference<'gc>,
     ) -> Result<Step<'gc>, Signal<'gc>> {
         let application = self.heap.class_application(class);
         // Asked before anything is allocated: a class whose instances could
@@ -592,7 +613,7 @@ impl<'gc> Mutator<'gc> {
         // knows the whole layout, inherited slots included -- summing the
         // chain here again would be a second answer to the same question.
         let slot_count = application.map_or(0, |application| application.slot_count);
-        let instance = self.heap.allocate_instance(class, slot_count);
+        let instance = allocate(&mut self.heap, class, slot_count);
         let state = self.walk_state(Value::object(instance));
         self.climb_levels(state, class, factory_arguments)
     }

@@ -1,0 +1,38 @@
+/// A user subclass of Ephemeron inherits its protocol but not its
+/// ephemeron property: its instance is an ordinary object whose three
+/// slots hold strongly. A key nothing but such an instance reaches -- made
+/// at run time by a method of its own that stores it and returns -- and
+/// the value with it survive `platform kernel garbageCollect`.
+class ASubclassOfEphemeronHoldsStrongly = Object new (
+  |
+    Ephemeron ::= nil.
+  |
+) (
+  class MyEphemeron = Ephemeron new () ()
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      kernel = platform kernel.
+      mine
+    |
+    Ephemeron:: kernel Ephemeron.
+    mine:: MyEphemeron new.
+    fill: mine.
+    kernel garbageCollect.
+    transcript
+        show: mine key isNil printString;
+        newLine.
+    transcript
+        show: mine value printString;
+        newLine.
+    transcript
+        show: mine isKindOfEphemeron printString;
+        newLine.
+  )
+
+  /// Stores in `ephemeron` a key and a value that nothing else reaches.
+  fill: ephemeron = (
+    (ephemeron key: Object new) value: 'kept' , ' value'.
+  )
+)

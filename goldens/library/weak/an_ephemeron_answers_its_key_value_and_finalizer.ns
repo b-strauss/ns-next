@@ -1,0 +1,49 @@
+/// An Ephemeron is made with nil for its key, value and finalizer; `key:`,
+/// `value:` and `finalizer:` each answer the receiver and `key`, `value`
+/// and `finalizer` read back what they stored. `key: nil` is accepted --
+/// nil is the key of an ephemeron that has none -- while a value as a
+/// key, an immediate or not, is refused with an ArgumentError that leaves
+/// the key as it was. `isKindOfEphemeron` answers true for an Ephemeron
+/// and false for any other object.
+class AnEphemeronAnswersItsKeyValueAndFinalizer = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      kernel = platform kernel.
+      Ephemeron = kernel Ephemeron.
+      fresh = Ephemeron new.
+      ephemeron = Ephemeron new.
+      key = Object new.
+      show
+      refusal
+    |
+    show:: [:object |
+      transcript
+          show: object printString;
+          newLine.
+    ].
+    refusal:: [:action |
+      transcript
+          show: (action on: kernel ArgumentError do: [:error | error messageText]);
+          newLine.
+    ].
+    show value: fresh key.
+    show value: fresh value.
+    show value: fresh finalizer.
+    show value: (ephemeron key: key) == ephemeron.
+    show value: (ephemeron value: 'the value') == ephemeron.
+    show value: (ephemeron finalizer: 'the finalizer') == ephemeron.
+    show value: ephemeron key == key.
+    show value: ephemeron value.
+    show value: ephemeron finalizer.
+    show value: (ephemeron key: nil) == ephemeron.
+    show value: ephemeron key.
+    refusal value: [ephemeron key: 3].
+    refusal value: [ephemeron key: 'text'].
+    refusal value: [ephemeron key: 1.5].
+    refusal value: [ephemeron key: true].
+    show value: ephemeron key.
+    show value: ephemeron isKindOfEphemeron.
+    show value: key isKindOfEphemeron.
+  )
+)

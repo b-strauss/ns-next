@@ -1,4 +1,5 @@
-//! `WeakArray`'s leaves and `garbageCollect`. A `WeakArray` is fixed-size
+//! `WeakArray`'s leaves, `garbageCollect`, and the question `Ephemeron`
+//! asks of a key, whether it is a value. A `WeakArray` is fixed-size
 //! once made, as an `Array` is, and refuses an index or a size in
 //! `Array`'s texts, so a program meets one sequence protocol whichever it
 //! holds; what differs is that the collectors clear a slot whose object
@@ -10,13 +11,15 @@ use crate::builtins::collections::{
 };
 use crate::builtins::first_argument;
 use crate::builtins::primitive::WeakPrimitive;
+use crate::interpreter::instantiate;
 use crate::types::*;
 use crate::{Mutator, Symbol};
 
-/// `WeakArray`'s native methods and `garbageCollect`. Each `WeakArray`
-/// leaf declines -- answers `None` -- for a subject that is no
-/// `WeakArray`, a user subclass's instance among them, which holds no weak
-/// slots, so that the failure block's `super` send runs.
+/// `WeakArray`'s native methods, `garbageCollect` and `objectIsValue:`.
+/// Each `WeakArray` leaf declines -- answers `None` -- for a subject that
+/// is no `WeakArray`, a user subclass's instance among them, which holds
+/// no weak slots, so that the failure block's `super` send runs; the other
+/// two never decline.
 pub(crate) fn execute<'gc>(
     mutator: &mut Mutator<'gc>,
     primitive: WeakPrimitive,
@@ -30,6 +33,7 @@ pub(crate) fn execute<'gc>(
         WeakPrimitive::ElementAt => element_at(mutator, receiver, selector, arguments),
         WeakPrimitive::ElementAtPut => element_at_put(mutator, receiver, selector, arguments),
         WeakPrimitive::Collect => Some(Ok(collect(mutator, receiver))),
+        WeakPrimitive::IsValue => Some(Ok(Value::boolean(is_a_value(mutator, receiver)))),
     }
 }
 
@@ -187,4 +191,17 @@ fn allocate<'gc>(
 fn collect<'gc>(mutator: &mut Mutator<'gc>, receiver: Value<'gc>) -> Value<'gc> {
     mutator.heap.request_collection();
     receiver
+}
+
+/// Whether `subject` is a value (§3.1.1): an immediate -- a SmallInteger,
+/// a SmallFloat, nil, true, false -- always, and an object when
+/// `instantiate::is_a_value` accepts it. A weak structure refuses such a
+/// key, since an equal one can always be made again and an entry under it
+/// would vanish or not as the collector happened to run. It answers only a
+/// Boolean, so it hands the program nothing it did not already hold.
+fn is_a_value<'gc>(mutator: &Mutator<'gc>, subject: Value<'gc>) -> bool {
+    match subject.as_object() {
+        Some(object) => instantiate::is_a_value(mutator, object),
+        None => true,
+    }
 }

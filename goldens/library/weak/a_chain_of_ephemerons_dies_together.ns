@@ -1,0 +1,59 @@
+/// A chain of 512 ephemerons, each held by a strong Array, each one's
+/// value the next one's key: while the first key lives, every key is
+/// reached through the ephemeron before it and survives `platform kernel
+/// garbageCollect`. Once the slot holding the first key lets go of it,
+/// one collection finds every key reached by nothing but ephemerons, and
+/// every key reads nil. The keys are made, and counted, by methods of
+/// their own, so that no register of `main:` holds one.
+class AChainOfEphemeronsDiesTogether = Object new (
+  |
+    firstKey ::= nil.
+  |
+) (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      kernel = platform kernel.
+      chain = Array new: 512.
+    |
+    fill: chain with: kernel Ephemeron.
+    kernel garbageCollect.
+    transcript
+        show: (keysIn: chain) printString;
+        newLine.
+    firstKey:: nil.
+    kernel garbageCollect.
+    transcript
+        show: (keysIn: chain) printString;
+        newLine.
+  )
+
+  /// Fills `chain` with new instances of `Ephemeron`, the first keyed by
+  /// a new object `firstKey` holds and each valued by a new object that
+  /// keys the next; the last one's value keys none.
+  fill: chain with: Ephemeron = (
+    |
+      key
+    |
+    firstKey:: Object new.
+    key:: firstKey.
+    1 to: chain size do: [:index |
+      |
+        next
+      |
+      next:: Object new.
+      chain at: index put: ((Ephemeron new key: key) value: next).
+      key:: next.
+    ].
+  )
+
+  /// Answers how many of the ephemerons in `chain` still have a key.
+  keysIn: chain = (
+    |
+      count
+    |
+    count:: 0.
+    chain do: [:ephemeron | ephemeron key isNil ifFalse: [count:: count + 1]].
+    ^count.
+  )
+)

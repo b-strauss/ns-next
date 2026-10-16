@@ -4714,6 +4714,97 @@ class Kernel vmMirror: mirror = Value (
     )
   )
 
+  /// A key, a value and a finalizer, of which only the key is held for
+  /// its own sake: while something other than an ephemeron reaches the
+  /// key, the value and the finalizer are kept alive through it, and once
+  /// nothing but ephemerons reaches the key, a collection sets all three
+  /// to nil. `Ephemeron new` makes one whose three are nil. No value: `=`
+  /// and `hash` are identity.
+  ///
+  /// The finalizer is held, never run. A key that is nil, the state an
+  /// ephemeron is made in and the one a collected key leaves it in, keeps
+  /// the value and the finalizer alive as any slot does.
+  ///
+  /// A subclass inherits the protocol but not the property: its instance
+  /// is an ordinary object whose three slots hold strongly.
+  public class Ephemeron = Object (
+    |
+      /// The key, nil or an object that is not a value; the collectors
+      /// read it as the first field, so it is declared first.
+      private storedKey ::= nil.
+      /// The value, any object, reached through a live key.
+      private storedValue ::= nil.
+      /// The finalizer, any object, reached through a live key; held,
+      /// never run.
+      private storedFinalizer ::= nil.
+    |
+  ) (
+    /// Answers the key, or nil when the receiver has none: it was never
+    /// given one, was given nil, or a collection found nothing but
+    /// ephemerons reaching it.
+    public key = (
+      ^storedKey.
+    )
+
+    /// Makes `newKey` the key and answers the receiver.
+    ///
+    /// newKey: nil, or an object that is not a value (§3.1.1). A value
+    /// has no identity -- an equal one can always be made again -- so
+    /// whether an entry under it vanished would depend on when the
+    /// collector ran.
+    ///
+    /// Signals an ArgumentError carrying `newKey`, 'key: requires an
+    /// object that is not a value, got …' followed by its printString,
+    /// for a value other than nil -- an Integer, a Float, true, false, a
+    /// String, an instance of a value class. A refused key leaves the
+    /// key as it was.
+    ///
+    /// The leaf never declines: it answers a Boolean for any object.
+    public key: newKey = (
+      newKey isNil ifFalse: [
+        (vmMirror objectIsValue: newKey ifFail: [false]) ifTrue: [
+          ^(outer
+              Kernel
+              ArgumentError value: newKey) signal: 'key: requires an object that is not a value, got '
+              , newKey printString.
+        ].
+      ].
+      storedKey:: newKey.
+    )
+
+    /// Answers the value, nil until one is given or once a collection
+    /// has cleared the receiver.
+    public value = (
+      ^storedValue.
+    )
+
+    /// Makes `newValue` the value and answers the receiver.
+    ///
+    /// newValue: any object; kept alive while the key is.
+    public value: newValue = (
+      storedValue:: newValue.
+    )
+
+    /// Answers the finalizer, nil until one is given or once a
+    /// collection has cleared the receiver.
+    public finalizer = (
+      ^storedFinalizer.
+    )
+
+    /// Makes `newFinalizer` the finalizer and answers the receiver. The
+    /// finalizer is held while the key lives, and never run.
+    ///
+    /// newFinalizer: any object.
+    public finalizer: newFinalizer = (
+      storedFinalizer:: newFinalizer.
+    )
+
+    /// Answers true: the receiver is an Ephemeron.
+    public isKindOfEphemeron = (
+      ^true.
+    )
+  )
+
   /// A view of a ByteArray that reads and writes numbers of one to eight
   /// bytes in a byte order given when it is made, at any byte position:
   /// `DataView on: bytes byteOrder: #bigEndian` and `DataView new: size

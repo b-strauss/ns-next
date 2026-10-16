@@ -103,6 +103,7 @@ pub(crate) fn kernel_class_name(kind: BuiltinClass) -> &'static str {
         BuiltinClass::Fraction => "Fraction",
         BuiltinClass::ByteArray => "ByteArray",
         BuiltinClass::WeakArray => "WeakArray",
+        BuiltinClass::Ephemeron => "Ephemeron",
         BuiltinClass::VmMirror => {
             unreachable!("internal: the mirror's class is not in Kernel.ns")
         }
@@ -624,7 +625,8 @@ pub(crate) fn kernel_kind_named(name: &str) -> Option<BuiltinClass> {
 
 /// The shape the phase relies on and the resolver cannot check: one nested
 /// class per builtin but the mirror's, named as `kernel_class_name` says,
-/// each declaring no slots -- but the exception classes and `Message` --
+/// each declaring no slots -- but the exception classes, `Message`,
+/// `FutureImplementation` and `Ephemeron`, whose first slot is its key --
 /// and the default factory `new` -- but `FutureImplementation` and
 /// `WeakArray`, which name their own; a root class with
 /// exactly one slot, the immutable `vmMirror`; a clause on every builtin's
@@ -667,7 +669,9 @@ pub(super) fn check_kernel_shape(root: &Rc<Mixin>, resolved: &ResolvedModule) {
         // activation's state lives in the running activation it wraps.
         // `FutureImplementation`'s two slots are an ordinary field vector
         // too, which `interpreter::future` allocates and alone reads and
-        // writes.
+        // writes. `Ephemeron`'s three are the fields of its own format,
+        // which `decide_factory` allocates and its slot accessors reach as
+        // any instance's.
         assert!(
             nested.slots.is_empty()
                 || matches!(
@@ -682,9 +686,21 @@ pub(super) fn check_kernel_shape(root: &Rc<Mixin>, resolved: &ResolvedModule) {
                         | BuiltinClass::NonBooleanReceiver
                         | BuiltinClass::CannotInstantiate
                         | BuiltinClass::FutureImplementation
+                        | BuiltinClass::Ephemeron
                 ),
             "internal: Kernel.ns's {name} declares a slot; a builtin's instances have none"
         );
+        // The collectors read an ephemeron's first field as its key, and
+        // `Object` above it declares none, so the key must be its first
+        // slot.
+        if kind == BuiltinClass::Ephemeron {
+            let names: Vec<&str> = nested.slots.iter().map(|slot| slot.name.as_str()).collect();
+            assert_eq!(
+                names,
+                ["storedKey", "storedValue", "storedFinalizer"],
+                "internal: Kernel.ns's Ephemeron must declare its key first, then its value and finalizer"
+            );
+        }
         let declaration = nested
             .declaration
             .as_ref()
@@ -1236,6 +1252,14 @@ mod tests {
         ("WeakArray", "do:"),
         ("WeakArray", "keysAndValuesDo:"),
         ("WeakArray", "copyWith:"),
+        // `Ephemeron`'s accessors read and write its own slots, and `key:`
+        // asks the value leaf before it writes: no leaf answers for them.
+        ("Ephemeron", "key"),
+        ("Ephemeron", "key:"),
+        ("Ephemeron", "value"),
+        ("Ephemeron", "value:"),
+        ("Ephemeron", "finalizer"),
+        ("Ephemeron", "finalizer:"),
         // `String`'s code-point protocol is Newspeak over its leaves --
         // `size`, `at:`, `copyFrom:to:` and the two searches: every method
         // sends, none forwards to a leaf.
@@ -1663,6 +1687,11 @@ mod tests {
             "isKindOfArray",
             MethodFastPath::Constant(QuickConstant::True),
         ),
+        (
+            BuiltinClass::Ephemeron,
+            "isKindOfEphemeron",
+            MethodFastPath::Constant(QuickConstant::True),
+        ),
         // Quick in shape, though only the unwinder activates it, pushing it
         // as a method so that its return carries the unwind on
         // (`Mutator::start_unwind_block`).
@@ -1718,8 +1747,8 @@ mod tests {
     /// mirror's class, `Behavior`, `Class`, `Metaclass`, `Activation`,
     /// `FutureImplementation`, `LargeInteger`, which a program meets only as
     /// an integer's class, and the exception classes, `Message`, `Proxy`,
-    /// `Future`, `Collection`, `Fraction` and `WeakArray`, which a program
-    /// reaches through `platform kernel`.
+    /// `Future`, `Collection`, `Fraction`, `WeakArray` and `Ephemeron`,
+    /// which a program reaches through `platform kernel`.
     const OBJECT_CLASS_ACCESSORS: &[BuiltinClass] = &[
         BuiltinClass::Object,
         BuiltinClass::Value,
@@ -1963,6 +1992,7 @@ mod tests {
                 "StringBuilder",
                 "DataView",
                 "WeakArray",
+                "Ephemeron",
             ] {
                 assert_eq!(
                     fast_path(&kernel_namespace, selector),
@@ -2411,6 +2441,7 @@ mod tests {
                 "LargeInteger",
                 "Collection",
                 "WeakArray",
+                "Ephemeron",
             ] {
                 assert!(
                     application

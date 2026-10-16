@@ -993,13 +993,6 @@ impl<'gc> Heap<'gc> {
 
     /// An `Ephemeron` of `class` with `field_count` fields, the key first,
     /// every one nil.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the kernel's allocation leaf, its caller, comes next"
-        )
-    )]
     pub(crate) fn allocate_ephemeron(
         &mut self,
         class: ClassReference<'gc>,
