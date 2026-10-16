@@ -1549,9 +1549,8 @@ ephemeron, so the common case, every key reached by the time the first
 check runs, looks nothing up. It sets every field of an ephemeron left in
 the index to `nil` (it is mourned: its key was reached by nothing but
 ephemerons); and sets to `nil` every word of a listed weak object whose
-object was not reached. A
-full collection does so in `Heap::finish_marking`, between
-`drain_marking` and `prune_canonical_symbols`, before compaction, whose
+object was not reached. A full collection does so in
+`Heap::finish_marking`, between `drain_marking` and `prune_canonical_symbols`, before compaction, whose
 forwarding table answers only marked objects; a scavenge in
 `Scavenger::finish`, before the nursery is vacated, a young key surviving
 when it was copied, forwarding each surviving young referent's word to

@@ -107,6 +107,7 @@ pub(in crate::heap) mod work {
         static LOOKUPS: Cell<usize> = const { Cell::new(0) };
         static RESOLUTIONS: Cell<usize> = const { Cell::new(0) };
         static EXAMINED: Cell<usize> = const { Cell::new(0) };
+        static RECORDED: Cell<usize> = const { Cell::new(0) };
     }
 
     /// The work counted since the last `take`.
@@ -119,6 +120,8 @@ pub(in crate::heap) mod work {
         /// Listed ephemerons a round's first check examined, resolving or
         /// indexing each.
         pub(in crate::heap) examined: usize,
+        /// Objects a drain recorded for lookup.
+        pub(in crate::heap) recorded: usize,
     }
 
     pub(in crate::heap) fn count_lookup() {
@@ -133,6 +136,10 @@ pub(in crate::heap) mod work {
         EXAMINED.with(|examined| examined.set(examined.get() + 1));
     }
 
+    pub(in crate::heap) fn count_recorded() {
+        RECORDED.with(|recorded| recorded.set(recorded.get() + 1));
+    }
+
     /// The work counted since the last call, which starts the count
     /// afresh.
     pub(in crate::heap) fn take() -> Work {
@@ -140,6 +147,7 @@ pub(in crate::heap) mod work {
             lookups: LOOKUPS.with(|lookups| lookups.replace(0)),
             resolutions: RESOLUTIONS.with(|resolutions| resolutions.replace(0)),
             examined: EXAMINED.with(|examined| examined.replace(0)),
+            recorded: RECORDED.with(|recorded| recorded.replace(0)),
         }
     }
 }

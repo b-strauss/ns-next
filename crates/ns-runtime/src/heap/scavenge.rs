@@ -211,6 +211,8 @@ impl<'space> Scavenger<'space> {
         self.survived += 1;
         self.promoted += usize::from(promoted);
         if self.recording {
+            #[cfg(test)]
+            crate::heap::pending::work::count_recorded();
             self.copied.push(offset);
         }
         moved_offset
@@ -353,16 +355,20 @@ impl<'space> Scavenger<'space> {
                 // Every copy waits to be scanned, so nothing waiting means
                 // nothing new survived since the last drain.
                 if !self.has_unscanned() {
+                    // Only a drain lists ephemerons.
+                    debug_assert!(self.ephemerons.is_empty());
                     break;
                 }
                 // With nothing pending, what the drain copies can resolve
                 // nothing, so it is not recorded: an ephemeron the drain
                 // lists meanwhile meets the check above next round.
                 self.recording = !pending.is_empty();
+                if pending.is_empty() {
+                    self.copied.clear();
+                }
                 self.drain();
             }
             self.recording = false;
-            self.copied.clear();
             for ephemeron in pending.unresolved() {
                 let fields = self.field_range(header_index(ephemeron));
                 self.space.words_mut()[fields].fill(Word::NIL.bits());

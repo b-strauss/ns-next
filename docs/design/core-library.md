@@ -2397,9 +2397,9 @@ order (`vm/heap.cc:627-682`):
    looked up in the index once: the ephemerons keyed by it have their
    fields pushed and leave the index. Ephemerons a drain visits before
    their key join the index, or are traced at once if their key was
-   marked meanwhile. This repeats until the work list stays empty. A chain of ephemerons
-   whose keys are reached only through each other's values is thus
-   collected whole, and each ephemeron is traced at most once and each
+   marked meanwhile. This repeats until the work list stays empty. A
+   chain of ephemerons whose keys are reached only through each other's
+   values is thus collected whole, and each ephemeron is traced at most once and each
    object looked up at most once, so the fixpoint costs what it reaches,
    linear in such a chain's length, where Primordial Soup
    (`vm/heap.cc:853-911`) and Spur (`processEphemerons`) rescan the whole
