@@ -812,8 +812,8 @@ activation.
   and a second sitting with three new builds of that tree against the
   same `master` builds measured Havlak +0.7%, CD +0.6%, DeltaBlueTon80
   +1.7%, Richards +1.0% and DeltaBlue -0.1%, with no program separating
-  any longer: each lies within the builds' spread, which reaches 1.6% for
-  Havlak and 1.9% for DeltaBlueTon80 between builds of one tree. Whether a
+  any longer: each lies within the builds' spread, which reaches 1.9% for
+  Havlak and 2.3% for DeltaBlueTon80 between builds of one tree. Whether a
   cost remains -- the instantiation path through `instantiate_allocating`
   is the one mutator path left that changed -- needs more builds a side
   than three to tell. [core-library.md](design/core-library.md), "Weak
