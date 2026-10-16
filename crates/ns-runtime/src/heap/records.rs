@@ -27,6 +27,13 @@ pub enum ObjectShape {
     LargeInteger,
     Float,
     ByteArray,
+    /// A `WeakArray`: its slots hold their objects weakly
+    /// (`Heap::weak_array_elements`).
+    WeakArray,
+    /// An `Ephemeron`: its key, value and finalizer are instance fields
+    /// (`Heap::instance_fields`), the value and finalizer held only through
+    /// a live key.
+    Ephemeron,
 }
 
 /// A class object to build (`Heap::allocate_class`,

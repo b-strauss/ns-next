@@ -217,13 +217,15 @@ impl World {
     }
 
     /// Marks everything reachable: the heap's own roots, then the step
-    /// state's (`StepRoots`), then the traversal.
+    /// state's (`StepRoots`), then the traversal, then the ephemerons and
+    /// weak objects it found (`Heap::finish_marking`).
     pub(crate) fn mark_everything_reachable(&mut self) {
         use crate::trace::Trace;
         let (heap, mut roots) = split(&mut self.mutator);
         let mut marker = heap.begin_marking();
         roots.trace(&mut marker);
         heap.drain_marking(&mut marker);
+        heap.finish_marking(&mut marker);
     }
 
     /// One scavenge (`Heap::scavenge`), with the step state's roots traced

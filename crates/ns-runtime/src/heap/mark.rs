@@ -18,11 +18,23 @@ use std::num::NonZeroU64;
 /// of the two.
 pub(crate) struct Marker {
     work: Vec<NonZeroU64>,
+    /// Every `WeakPointers` object visited, whose words naming an object
+    /// left unmarked are cleared once the marking is finished
+    /// (`Heap::finish_marking`).
+    pub(super) weak_objects: Vec<NonZeroU64>,
+    /// Every `Ephemeron` visited before its key was marked, its guarded
+    /// fields not yet traced: traced if the key is marked later, mourned
+    /// if it never is (`Heap::finish_marking`).
+    pub(super) ephemerons: Vec<NonZeroU64>,
 }
 
 impl Marker {
     pub(crate) fn new() -> Marker {
-        Marker { work: Vec::new() }
+        Marker {
+            work: Vec::new(),
+            weak_objects: Vec::new(),
+            ephemerons: Vec::new(),
+        }
     }
 
     /// Adds the object at `offset` to the work list.

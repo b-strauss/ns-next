@@ -1008,6 +1008,9 @@ impl<'gc> GraphTable<'gc> {
                 | ObjectShape::LargeInteger
                 | ObjectShape::Float
                 | ObjectShape::ByteArray => {}
+                // Refused by `encode_object`, so what they hold is never
+                // written.
+                ObjectShape::WeakArray | ObjectShape::Ephemeron => {}
             }
         }
         stack[before..].reverse();
@@ -1578,6 +1581,14 @@ fn encode_object<'gc>(
         // Likewise a boxed `Float`, whose bits `encode_value` writes.
         ObjectShape::Float => {
             unreachable!("a boxed Float is written as a value, never as an object record")
+        }
+        // The wire has no record for either yet: refused rather than
+        // written strong, which would keep alive what a collection drops.
+        ObjectShape::WeakArray => {
+            return Err("image encoding cannot serialize a WeakArray".to_string());
+        }
+        ObjectShape::Ephemeron => {
+            return Err("image encoding cannot serialize an Ephemeron".to_string());
         }
     }
     Ok(())

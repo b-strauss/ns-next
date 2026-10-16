@@ -23,6 +23,10 @@
 //! address wherever the block lies -- an offset computed from the header's
 //! index, never stored, so that every mover moves the data within the new
 //! block to its alignment (`realign`);
+//! `WeakPointers`, a `WeakArray`'s slots, and `Ephemeron`, an ephemeron's
+//! key and the fields it guards -- stored words like `IndexablePointers`'
+//! and `FixedPointers`', which marking and the scavenger trace only in part
+//! (`strong_pointer_ranges`);
 //! `Frame`, a reified activation (`frame_field`); `Closure`, a block closure
 //! (`closure_field`); `Class`, a class object (`class_field`). Each
 //! allocation in `Heap` writes its object's header, class word and fields
@@ -65,16 +69,18 @@ pub(in crate::heap) const POINTER_RANGES: usize = 1 + class_field::POINTERS.len(
 
 /// The indices of every word of `block` that holds a stored `Word`, as
 /// ranges relative to the block's start, decided by the header's format
-/// alone: the class word always; every field of `FixedPointers` and
-/// `IndexablePointers`; a class object's object fields; a closure's captured
+/// alone: the class word always; every field of `FixedPointers`,
+/// `IndexablePointers`, `WeakPointers` and `Ephemeron`; a class object's
+/// object fields; a closure's captured
 /// frame and copied values; a frame's fixed fields, and its registers once
 /// it is no longer married; nothing of `SixtyFourBit`, `Bytes`,
 /// `ThirtyTwoBit` and `AlignedBytes`, whose digits, code points and bytes
 /// would read as handles.
 ///
 /// The one enumeration of an object's pointer words: marking reads the
-/// words through it and forwarding rewrites them through `trace_block`, so
-/// a field one of the two must reach cannot be missed by the other
+/// words through it -- by way of `strong_pointer_ranges`, which leaves out
+/// only weak words -- and forwarding rewrites them through `trace_block`,
+/// so a field one of the two must reach cannot be missed by the other
 /// (`docs/design/memory.md`, "What the collector traces"). Unused entries
 /// are empty, and every range is clamped to the block, so a block shorter
 /// than its format expects yields empty ranges rather than a panic.
@@ -87,7 +93,10 @@ pub(in crate::heap) fn pointer_ranges(block: &[u64]) -> [std::ops::Range<usize>;
     let clamped = |start: usize, end: usize| start.min(length)..end.min(length);
     ranges[0] = clamped(CLASS, CLASS + 1);
     match Header(header).format() {
-        Format::FixedPointers | Format::IndexablePointers => ranges[1] = clamped(FIELDS, length),
+        Format::FixedPointers
+        | Format::IndexablePointers
+        | Format::WeakPointers
+        | Format::Ephemeron => ranges[1] = clamped(FIELDS, length),
         // A married frame's registers are its stack entry's, traced with
         // the stack; its own stay nil until the divorce copies them in, so
         // they are skipped rather than walked for nothing.
@@ -126,6 +135,39 @@ pub(in crate::heap) fn pointer_ranges(block: &[u64]) -> [std::ops::Range<usize>;
         | Format::Free => {}
     }
     ranges
+}
+
+/// The words of `block` that keep what they name alive: the class word
+/// alone of `WeakPointers`, and of an `Ephemeron` whose key -- its first
+/// field, handed to `key_survives` as stored -- is not yet known to
+/// survive; `pointer_ranges` otherwise. An `Ephemeron` with no field has
+/// no key and is traced as `FixedPointers`.
+///
+/// What marking and the scavenger trace, while forwarding, the moves and
+/// the remembered set's verification read `pointer_ranges`: a weak word
+/// must not keep its object alive, but while the object lives the word
+/// must follow it, or it would name whatever is moved to its old place
+/// (`docs/design/core-library.md`, "The heap and the collectors").
+pub(in crate::heap) fn strong_pointer_ranges(
+    block: &[u64],
+    key_survives: impl FnOnce(u64) -> bool,
+) -> [std::ops::Range<usize>; POINTER_RANGES] {
+    let class_word_only = || {
+        let mut ranges: [std::ops::Range<usize>; POINTER_RANGES] = Default::default();
+        ranges[0] = CLASS.min(block.len())..(CLASS + 1).min(block.len());
+        ranges
+    };
+    let Some(&header) = block.get(HEADER) else {
+        return Default::default();
+    };
+    match Header(header).format() {
+        Format::WeakPointers => class_word_only(),
+        Format::Ephemeron => match block.get(FIELDS) {
+            Some(&key) if !key_survives(key) => class_word_only(),
+            _ => pointer_ranges(block),
+        },
+        _ => pointer_ranges(block),
+    }
 }
 
 /// Hands every word of `block` that `pointer_ranges` names to `tracer` and
@@ -730,6 +772,9 @@ mod tests {
         let covered =
             |words: &[u64]| -> Vec<usize> { pointer_ranges(words).into_iter().flatten().collect() };
         assert_eq!(covered(&block(Format::FixedPointers, 2)), vec![CLASS, 2, 3]);
+        // Forwarding reads every weak word.
+        assert_eq!(covered(&block(Format::WeakPointers, 2)), vec![CLASS, 2, 3]);
+        assert_eq!(covered(&block(Format::Ephemeron, 3)), vec![CLASS, 2, 3, 4]);
         assert_eq!(covered(&block(Format::SixtyFourBit, 2)), vec![CLASS]);
         // A ByteArray's reserve and data are bytes, never handles.
         assert_eq!(
@@ -753,5 +798,32 @@ mod tests {
         assert_eq!(covered(&frame).len(), 1 + frame_field::COUNT + 2);
         frame[FIELDS + frame_field::MARRIED] = 0b1001; // a SmallInteger
         assert_eq!(covered(&frame).len(), 1 + frame_field::COUNT);
+    }
+
+    #[test]
+    fn strong_pointer_ranges_leave_out_weak_words_and_the_fields_of_a_dead_key() {
+        let block = |format: Format, fields: usize| {
+            let mut words = vec![Word::NIL.bits(); FIELDS + fields];
+            words[HEADER] = Header::new(DispatchId::NONE, format, 0, 1 + fields).0;
+            words
+        };
+        let strong = |words: &[u64], survives: bool| -> Vec<usize> {
+            strong_pointer_ranges(words, |_| survives)
+                .into_iter()
+                .flatten()
+                .collect()
+        };
+        assert_eq!(strong(&block(Format::WeakPointers, 2), true), vec![CLASS]);
+        assert_eq!(strong(&block(Format::Ephemeron, 3), false), vec![CLASS]);
+        assert_eq!(
+            strong(&block(Format::Ephemeron, 3), true),
+            vec![CLASS, 2, 3, 4]
+        );
+        // No key, nothing to wait for.
+        assert_eq!(strong(&block(Format::Ephemeron, 0), false), vec![CLASS]);
+        assert_eq!(
+            strong(&block(Format::FixedPointers, 2), false),
+            vec![CLASS, 2, 3]
+        );
     }
 }

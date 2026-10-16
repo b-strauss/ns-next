@@ -60,6 +60,14 @@ pub(super) enum Format {
     Class = 7,
     /// 8..=9: the low bit is the number of unused units.
     ThirtyTwoBit = 8,
+    /// A `WeakArray`'s slots: stored words the collectors forward but do
+    /// not trace, so that a slot whose object nothing else reaches reads
+    /// nil after the collection that reclaims it.
+    WeakPointers = 10,
+    /// An `Ephemeron`'s fields, the key first: the others are traced only
+    /// once the key is known to survive, and all are set to nil when it
+    /// does not, so that a value never keeps its own key alive.
+    Ephemeron = 11,
     /// 16..=23: the low three bits are the number of unused units.
     Bytes = 16,
     /// 24..=31: a `ByteArray`'s bytes, its data at a 32-byte address; the
@@ -82,6 +90,8 @@ impl Format {
             5 => Format::Forwarded,
             7 => Format::Class,
             8..=9 => Format::ThirtyTwoBit,
+            10 => Format::WeakPointers,
+            11 => Format::Ephemeron,
             16..=23 => Format::Bytes,
             24..=31 => Format::AlignedBytes,
             _ => Format::Free,
@@ -257,6 +267,12 @@ mod tests {
         assert_eq!(aligned.format(), Format::AlignedBytes);
         assert_eq!(aligned.unused(), 7);
         assert_eq!(aligned.word_count(), 12);
+        for format in [Format::WeakPointers, Format::Ephemeron] {
+            let weak = Header::new(guard, format, 0, 3);
+            assert_eq!(weak.format(), format);
+            assert_eq!(weak.unused(), 0);
+            assert_eq!(weak.word_count(), 3);
+        }
     }
 
     #[test]

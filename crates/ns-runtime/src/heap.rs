@@ -633,6 +633,14 @@ pub(crate) trait Relocation {
     fn apply(&self, offset: NonZeroU64) -> NonZeroU64;
 }
 
+/// Whether an object of `format` has instance slots: an ordinary object's,
+/// or an ephemeron's three. `FixedPointers` is compared first, so that an
+/// ordinary object's slot pays nothing more for the ephemeron's.
+#[inline(always)]
+fn has_instance_fields(format: Format) -> bool {
+    format == Format::FixedPointers || format == Format::Ephemeron
+}
+
 /// The word index of the header at byte offset `offset`.
 #[inline(always)]
 fn header_index(offset: NonZeroU64) -> usize {
@@ -971,6 +979,41 @@ impl<'gc> Heap<'gc> {
             elements.iter().map(|element| element.word()),
         );
         object
+    }
+
+    /// A `WeakArray` of `class` of `size` slots, every one nil.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the kernel's allocation leaf, its caller, comes next"
+        )
+    )]
+    pub(crate) fn allocate_weak_array(
+        &mut self,
+        class: ClassReference<'gc>,
+        size: usize,
+    ) -> ObjectReference<'gc> {
+        self.allocate_object(class, Format::WeakPointers, 0, false, size)
+            .0
+    }
+
+    /// An `Ephemeron` of `class` with `field_count` fields, the key first,
+    /// every one nil.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the kernel's allocation leaf, its caller, comes next"
+        )
+    )]
+    pub(crate) fn allocate_ephemeron(
+        &mut self,
+        class: ClassReference<'gc>,
+        field_count: usize,
+    ) -> ObjectReference<'gc> {
+        self.allocate_object(class, Format::Ephemeron, 0, false, field_count)
+            .0
     }
 
     /// A String of `class` holding `text`.
@@ -2111,6 +2154,8 @@ impl<'gc> Heap<'gc> {
         match self.header(object).format() {
             Format::FixedPointers => ObjectShape::Instance,
             Format::IndexablePointers => ObjectShape::Array,
+            Format::WeakPointers => ObjectShape::WeakArray,
+            Format::Ephemeron => ObjectShape::Ephemeron,
             Format::Frame => ObjectShape::Activation,
             Format::Closure => ObjectShape::Closure,
             Format::Class => ObjectShape::Class,
@@ -2138,19 +2183,30 @@ impl<'gc> Heap<'gc> {
     /// and the call alone measured 5-8% of a benchmark's samples.
     #[inline(always)]
     fn pointer_words(&self, object: ObjectReference<'gc>, format: Format) -> Option<&[u64]> {
-        let block = self.block(object);
-        (Header(block[HEADER]).format() == format).then(|| &block[FIELDS..])
+        self.pointer_words_of(object, |found| found == format)
     }
 
-    /// `pointer_words`, for a write; always inlined for the same reason.
+    /// `pointer_words` of an object whose format `accepts` takes; always
+    /// inlined for the same reason.
+    #[inline(always)]
+    fn pointer_words_of(
+        &self,
+        object: ObjectReference<'gc>,
+        accepts: impl Fn(Format) -> bool,
+    ) -> Option<&[u64]> {
+        let block = self.block(object);
+        accepts(Header(block[HEADER]).format()).then(|| &block[FIELDS..])
+    }
+
+    /// `pointer_words_of`, for a write; always inlined for the same reason.
     #[inline(always)]
     fn pointer_words_mut(
         &mut self,
         object: ObjectReference<'gc>,
-        format: Format,
+        accepts: impl Fn(Format) -> bool,
     ) -> Option<&mut [u64]> {
         let block = self.block_mut(object);
-        if Header(block[HEADER]).format() != format {
+        if !accepts(Header(block[HEADER]).format()) {
             return None;
         }
         Some(&mut block[FIELDS..])
@@ -2168,17 +2224,30 @@ impl<'gc> Heap<'gc> {
         format: Format,
         index: usize,
     ) -> Option<Value<'gc>> {
-        let bits = *self.pointer_words(object, format)?.get(index)?;
+        self.pointer_word_of(object, |found| found == format, index)
+    }
+
+    /// `pointer_word` of an object whose format `accepts` takes; always
+    /// inlined for the same reason.
+    #[inline(always)]
+    fn pointer_word_of(
+        &self,
+        object: ObjectReference<'gc>,
+        accepts: impl Fn(Format) -> bool,
+        index: usize,
+    ) -> Option<Value<'gc>> {
+        let bits = *self.pointer_words_of(object, accepts)?.get(index)?;
         Some(self.load(Word::from_bits(bits)))
     }
 
-    /// Every pointer word of a word-format object of `format`, in order.
+    /// Every pointer word of a word-format object whose format `accepts`
+    /// takes, in order.
     fn pointer_values(
         &self,
         object: ObjectReference<'gc>,
-        format: Format,
+        accepts: impl Fn(Format) -> bool,
     ) -> Option<Vec<Value<'gc>>> {
-        let words = self.pointer_words(object, format)?;
+        let words = self.pointer_words_of(object, accepts)?;
         Some(
             words
                 .iter()
@@ -2196,9 +2265,21 @@ impl<'gc> Heap<'gc> {
         index: usize,
         value: Value<'gc>,
     ) -> bool {
+        self.set_pointer_word_of(object, |found| found == format, index, value)
+    }
+
+    /// `set_pointer_word` into an object whose format `accepts` takes, the
+    /// write barrier included.
+    fn set_pointer_word_of(
+        &mut self,
+        object: ObjectReference<'gc>,
+        accepts: impl Fn(Format) -> bool,
+        index: usize,
+        value: Value<'gc>,
+    ) -> bool {
         let word = self.store(value);
         match self
-            .pointer_words_mut(object, format)
+            .pointer_words_mut(object, accepts)
             .and_then(|words| words.get_mut(index))
         {
             Some(slot) => {
@@ -2215,21 +2296,60 @@ impl<'gc> Heap<'gc> {
             .map(<[u64]>::len)
     }
 
-    /// The number of fields of an `ObjectShape::Instance`, mirroring
-    /// `array_element_count`; `None` for any other shape.
+    /// The number of fields of an `ObjectShape::Instance` or an
+    /// `ObjectShape::Ephemeron`, mirroring `array_element_count`; `None`
+    /// for any other shape.
     pub fn instance_field_count(&self, object: ObjectReference<'gc>) -> Option<usize> {
-        self.pointer_words(object, Format::FixedPointers)
+        self.pointer_words_of(object, has_instance_fields)
             .map(<[u64]>::len)
     }
 
-    /// Every field of an `ObjectShape::Instance`, in order, mirroring
-    /// `array_elements`; `None` for any other shape.
+    /// Every field of an `ObjectShape::Instance` or an
+    /// `ObjectShape::Ephemeron`, in order, mirroring `array_elements`;
+    /// `None` for any other shape.
     pub fn instance_fields(&self, object: ObjectReference<'gc>) -> Option<Vec<Value<'gc>>> {
-        self.pointer_values(object, Format::FixedPointers)
+        self.pointer_values(object, has_instance_fields)
     }
 
     pub fn array_elements(&self, object: ObjectReference<'gc>) -> Option<Vec<Value<'gc>>> {
-        self.pointer_values(object, Format::IndexablePointers)
+        self.pointer_values(object, |found| found == Format::IndexablePointers)
+    }
+
+    /// The number of slots of an `ObjectShape::WeakArray`; `None` for any
+    /// other shape.
+    pub fn weak_array_size(&self, object: ObjectReference<'gc>) -> Option<usize> {
+        self.pointer_words(object, Format::WeakPointers)
+            .map(<[u64]>::len)
+    }
+
+    /// The slot of an `ObjectShape::WeakArray` at the 0-based `index`, nil
+    /// once the collector reclaimed its object; `None` for any other shape
+    /// or past its slots.
+    pub fn weak_array_element(
+        &self,
+        object: ObjectReference<'gc>,
+        index: usize,
+    ) -> Option<Value<'gc>> {
+        self.pointer_word(object, Format::WeakPointers, index)
+    }
+
+    /// Answers whether the write happened, mirroring `array_set_element`.
+    /// Through the write barrier like every store: an old weak array naming
+    /// a young object must be remembered, so that a scavenge forwards or
+    /// clears the word.
+    pub fn weak_array_set_element(
+        &mut self,
+        object: ObjectReference<'gc>,
+        index: usize,
+        value: Value<'gc>,
+    ) -> bool {
+        self.set_pointer_word(object, Format::WeakPointers, index, value)
+    }
+
+    /// Every slot of an `ObjectShape::WeakArray`, in order; `None` for any
+    /// other shape.
+    pub fn weak_array_elements(&self, object: ObjectReference<'gc>) -> Option<Vec<Value<'gc>>> {
+        self.pointer_values(object, |found| found == Format::WeakPointers)
     }
 
     pub fn array_element(&self, object: ObjectReference<'gc>, index: usize) -> Option<Value<'gc>> {
@@ -2250,10 +2370,11 @@ impl<'gc> Heap<'gc> {
     }
 
     /// The instance field at `index`, or `None` when `object` is no
-    /// `ObjectShape::Instance` or `index` is out of range -- the same
-    /// total-rather-than-panicking shape as the array accessors above.
+    /// `ObjectShape::Instance` or `ObjectShape::Ephemeron`, or `index` is
+    /// out of range -- the same total-rather-than-panicking shape as the
+    /// array accessors above.
     pub fn instance_field(&self, object: ObjectReference<'gc>, index: usize) -> Option<Value<'gc>> {
-        self.pointer_word(object, Format::FixedPointers, index)
+        self.pointer_word_of(object, has_instance_fields, index)
     }
 
     /// Answers whether the write happened, mirroring `array_set_element`.
@@ -2263,7 +2384,7 @@ impl<'gc> Heap<'gc> {
         index: usize,
         value: Value<'gc>,
     ) -> bool {
-        self.set_pointer_word(object, Format::FixedPointers, index, value)
+        self.set_pointer_word_of(object, has_instance_fields, index, value)
     }
 
     /// A String's text as UTF-8, for the boundaries that need a Rust
@@ -2759,7 +2880,7 @@ impl<'gc> Heap<'gc> {
         object: ObjectReference<'gc>,
         feedback_base: FeedbackBase,
     ) {
-        if let Some(words) = self.pointer_words_mut(object, Format::Closure) {
+        if let Some(words) = self.pointer_words_mut(object, |found| found == Format::Closure) {
             if words.len() >= closure_field::COUNT {
                 words[closure_field::FEEDBACK_BASE] =
                     count_word(feedback_base.raw() as usize).bits();
@@ -2848,6 +2969,8 @@ impl<'gc> Heap<'gc> {
                     Format::IndexablePointers => {
                         format!("an Array of {}", self.fields(object).len())
                     }
+                    Format::WeakPointers => "a WeakArray".to_string(),
+                    Format::Ephemeron => "an Ephemeron".to_string(),
                     Format::SixtyFourBit => {
                         match self.float_value(value) {
                             // As an immediate float describes: which of the
@@ -5177,7 +5300,10 @@ impl<'gc> Heap<'gc> {
                 // answered by its value, and its value-class refusal is the
                 // runtime's own record.
                 let first_rewritable = match format {
-                    Format::FixedPointers | Format::IndexablePointers => 0,
+                    Format::FixedPointers
+                    | Format::IndexablePointers
+                    | Format::WeakPointers
+                    | Format::Ephemeron => 0,
                     Format::Closure => closure_field::COUNT.min(words.len()),
                     _ => words.len(),
                 };
@@ -5309,6 +5435,12 @@ impl<'gc> Heap<'gc> {
     /// and visited once -- which is also what ends the traversal on a
     /// cycle. A married frame's registers are its entry's, already pushed
     /// with the stack, so `pointer_ranges` leaves them out.
+    ///
+    /// Only strong words are traced (`object::strong_pointer_ranges`): a
+    /// `WeakPointers` object goes on the marker's weak list, and an
+    /// `Ephemeron` whose key is an object not yet marked on its ephemeron
+    /// list, both for `finish_marking`. Since an object is visited once,
+    /// neither list names one twice.
     pub(crate) fn drain_marking(&mut self, marker: &mut mark::Marker) {
         let words = self.space.words_mut();
         while let Some(offset) = marker.next() {
@@ -5319,13 +5451,118 @@ impl<'gc> Heap<'gc> {
             }
             words[index] = header.with_marked(true).0;
             let block = block_range(words, index);
-            for range in pointer_ranges(&words[block.clone()]) {
+            let mut key_died = false;
+            let ranges = object::strong_pointer_ranges(&words[block.clone()], |key| {
+                let survives = Word::from_bits(key)
+                    .object_offset()
+                    .is_none_or(|target| Header(words[header_index(target)]).marked());
+                key_died = !survives;
+                survives
+            });
+            match header.format() {
+                Format::WeakPointers => marker.weak_objects.push(offset),
+                Format::Ephemeron if key_died => marker.ephemerons.push(offset),
+                _ => {}
+            }
+            for range in ranges {
                 for position in range.start + block.start..range.end + block.start {
                     if let Some(target) = Word::from_bits(words[position]).object_offset() {
                         if !Header(words[header_index(target)]).marked() {
                             marker.push(target);
                         }
                     }
+                }
+            }
+        }
+    }
+
+    /// Ends a marking whose work list `drain_marking` has emptied: traces
+    /// each listed ephemeron whose key has since been marked and drains
+    /// again, until a round traces none; then mourns every ephemeron still
+    /// listed -- its key reached by nothing but ephemerons -- and clears
+    /// every word of a listed weak object that names an unmarked object
+    /// (`docs/design/core-library.md`, "The heap and the collectors").
+    ///
+    /// Must run before compaction, which forwards only marked objects: a
+    /// word left naming a dead one would be forwarded to garbage. Each
+    /// round rescans the whole list, which is quadratic only in the length
+    /// of a chain of ephemerons each keyed by the previous one's value.
+    ///
+    /// Mourning and clearing write nil, which names no young object, so
+    /// they are the collector's own rewrites and need no write barrier.
+    pub(crate) fn finish_marking(&mut self, marker: &mut mark::Marker) {
+        loop {
+            let pending = std::mem::take(&mut marker.ephemerons);
+            let mut progressed = false;
+            for ephemeron in pending {
+                if self.ephemeron_key_marked(ephemeron) {
+                    self.push_ephemeron_fields(ephemeron, marker);
+                    progressed = true;
+                } else {
+                    marker.ephemerons.push(ephemeron);
+                }
+            }
+            if !progressed {
+                break;
+            }
+            self.drain_marking(marker);
+        }
+        for ephemeron in std::mem::take(&mut marker.ephemerons) {
+            self.mourn_ephemeron(ephemeron);
+        }
+        for weak_object in std::mem::take(&mut marker.weak_objects) {
+            self.clear_unmarked_words(weak_object);
+        }
+    }
+
+    /// The words of the fields of the object at `offset`.
+    fn field_range(&self, offset: NonZeroU64) -> Range<usize> {
+        let block = block_range(self.space.words(), header_index(offset));
+        (block.start + FIELDS).min(block.end)..block.end
+    }
+
+    /// Whether the key of the listed ephemeron at `offset` is marked. A
+    /// listed ephemeron's key is an object: one with no field or another
+    /// key is traced whole and never listed.
+    fn ephemeron_key_marked(&self, offset: NonZeroU64) -> bool {
+        let words = self.space.words();
+        words[self.field_range(offset)]
+            .first()
+            .and_then(|key| Word::from_bits(*key).object_offset())
+            .is_some_and(|key| Header(words[header_index(key)]).marked())
+    }
+
+    /// Pushes every unmarked object the fields of the ephemeron at `offset`
+    /// name: its key is marked, so its value and finalizer are reached
+    /// through it.
+    fn push_ephemeron_fields(&self, offset: NonZeroU64, marker: &mut mark::Marker) {
+        let words = self.space.words();
+        for bits in &words[self.field_range(offset)] {
+            if let Some(target) = Word::from_bits(*bits).object_offset() {
+                if !Header(words[header_index(target)]).marked() {
+                    marker.push(target);
+                }
+            }
+        }
+    }
+
+    /// Sets every field of the ephemeron at `offset` to nil: its key is
+    /// reached by nothing but ephemerons, so it and what it guards are gone.
+    fn mourn_ephemeron(&mut self, offset: NonZeroU64) {
+        let fields = self.field_range(offset);
+        self.space.words_mut()[fields].fill(Word::NIL.bits());
+    }
+
+    /// Sets every word of the weak object at `offset` that names an
+    /// unmarked object to nil, so that no slot names what the compaction
+    /// is about to reclaim.
+    fn clear_unmarked_words(&mut self, offset: NonZeroU64) {
+        let fields = self.field_range(offset);
+        let words = self.space.words_mut();
+        for position in fields {
+            if let Some(target) = Word::from_bits(words[position]).object_offset() {
+                if !Header(words[header_index(target)]).marked() {
+                    words[position] = Word::NIL.bits();
                 }
             }
         }
@@ -5347,8 +5584,9 @@ impl<'gc> Heap<'gc> {
         }
     }
 
-    /// Marks from the heap's own roots and `roots`, prunes the canonical
-    /// symbol table, compacts, and forwards `roots`, for the heap's own
+    /// Marks from the heap's own roots and `roots`, finishes the marking's
+    /// weak objects and ephemerons, prunes the canonical symbol table,
+    /// compacts, and forwards `roots`, for the heap's own
     /// tests. A real collection goes through
     /// `World`.
     #[cfg(test)]
@@ -5359,6 +5597,7 @@ impl<'gc> Heap<'gc> {
             marker.value(root);
         }
         self.drain_marking(&mut marker);
+        self.finish_marking(&mut marker);
         self.prune_canonical_symbols();
         let mut forwarder = self.compact();
         for root in roots.iter_mut() {
@@ -5897,6 +6136,235 @@ mod tests {
             assert_eq!(heap.symbol_value(string), None);
             assert_eq!(heap.symbol_of.len(), 1);
         }
+    }
+
+    /// Whether `value` names the same object as `object`.
+    fn names<'gc>(value: Value<'gc>, object: ObjectReference<'gc>) -> bool {
+        value.as_object().is_some_and(|named| named.same(object))
+    }
+
+    /// A collection keeps what something else holds strongly, forgets an
+    /// object only the weak array holds, and leaves an immediate alone.
+    #[test]
+    fn a_weak_array_keeps_a_strongly_held_object_and_forgets_the_rest() {
+        let mut heap = Heap::new();
+        let class = named_class(&mut heap, "Object");
+        let weak_class = named_class(&mut heap, "WeakArray");
+        // Below the kept object, so that compaction moves it.
+        let forgotten = heap.allocate_instance(class, 0);
+        let held = heap.allocate_instance(class, 0);
+        let weak = heap.allocate_weak_array(weak_class, 3);
+        let elements = [
+            Value::object(held),
+            Value::object(forgotten),
+            Value::small_integer(7),
+        ];
+        for (index, element) in elements.into_iter().enumerate() {
+            assert!(heap.weak_array_set_element(weak, index, element));
+        }
+        let held_offset = held.offset;
+        let mut weak_root = Value::object(weak);
+        let mut held_root = Value::object(held);
+        heap.collect_for_test(&mut [&mut weak_root, &mut held_root]);
+        let weak = rooted(weak_root);
+        let held = rooted(held_root);
+        assert_ne!(held.offset, held_offset, "the collection moved the object");
+        assert_eq!(heap.weak_array_size(weak), Some(3));
+        let elements = heap
+            .weak_array_elements(weak)
+            .expect("a weak array answers its elements");
+        assert!(names(elements[0], held), "the word follows its object");
+        assert!(
+            elements[1].is_nil(),
+            "an object only the array held is gone"
+        );
+        assert_eq!(elements[2].as_small_integer(), Some(7));
+        assert!(names(
+            heap.weak_array_element(weak, 0).unwrap_or(Value::nil()),
+            held
+        ));
+        assert!(heap.weak_array_element(weak, 3).is_none());
+    }
+
+    /// A live key keeps the ephemeron's value alive, though nothing else
+    /// reaches it.
+    #[test]
+    fn an_ephemeron_with_a_live_key_keeps_its_value() {
+        let mut heap = Heap::new();
+        let class = named_class(&mut heap, "Object");
+        let ephemeron_class = named_class(&mut heap, "Ephemeron");
+        let key = heap.allocate_instance(class, 0);
+        let value = heap.allocate_instance(class, 1);
+        assert!(heap.instance_set_field(value, 0, Value::small_integer(42)));
+        let ephemeron = heap.allocate_ephemeron(ephemeron_class, 3);
+        assert_eq!(heap.instance_field_count(ephemeron), Some(3));
+        assert!(heap.instance_set_field(ephemeron, 0, Value::object(key)));
+        assert!(heap.instance_set_field(ephemeron, 1, Value::object(value)));
+        let mut ephemeron_root = Value::object(ephemeron);
+        let mut key_root = Value::object(key);
+        // The work list is a stack: the ephemeron is visited before its
+        // key, so its value is reached only once the marking is finished.
+        heap.collect_for_test(&mut [&mut key_root, &mut ephemeron_root]);
+        let ephemeron = rooted(ephemeron_root);
+        let key = rooted(key_root);
+        let fields = heap
+            .instance_fields(ephemeron)
+            .expect("an ephemeron answers its fields");
+        assert!(names(fields[0], key));
+        let value = rooted(fields[1]);
+        assert_eq!(
+            heap.instance_field(value, 0)
+                .and_then(Value::as_small_integer),
+            Some(42)
+        );
+        assert!(fields[2].is_nil());
+    }
+
+    /// A key nothing but the ephemeron reaches is collected, and the
+    /// ephemeron is mourned: every field reads nil.
+    #[test]
+    fn an_ephemeron_with_a_dead_key_is_mourned() {
+        let mut heap = Heap::new();
+        let class = named_class(&mut heap, "Object");
+        let ephemeron_class = named_class(&mut heap, "Ephemeron");
+        let ephemeron = heap.allocate_ephemeron(ephemeron_class, 3);
+        for index in 0..3 {
+            let field = heap.allocate_instance(class, 0);
+            assert!(heap.instance_set_field(ephemeron, index, Value::object(field)));
+        }
+        let mut ephemeron_root = Value::object(ephemeron);
+        heap.collect_for_test(&mut [&mut ephemeron_root]);
+        let fields = heap
+            .instance_fields(rooted(ephemeron_root))
+            .expect("an ephemeron answers its fields");
+        assert_eq!(fields.len(), 3);
+        assert!(fields.iter().all(|field| field.is_nil()));
+    }
+
+    /// An immediate or nil key is never collected, so the value it guards
+    /// is held strongly.
+    #[test]
+    fn an_ephemeron_with_an_immediate_or_nil_key_holds_its_value() {
+        let mut heap = Heap::new();
+        let class = named_class(&mut heap, "Object");
+        let ephemeron_class = named_class(&mut heap, "Ephemeron");
+        let mut roots = Vec::new();
+        for (key, payload) in [(Value::nil(), 1), (Value::small_integer(7), 2)] {
+            let value = heap.allocate_instance(class, 1);
+            assert!(heap.instance_set_field(value, 0, Value::small_integer(payload)));
+            let ephemeron = heap.allocate_ephemeron(ephemeron_class, 3);
+            assert!(heap.instance_set_field(ephemeron, 0, key));
+            assert!(heap.instance_set_field(ephemeron, 1, Value::object(value)));
+            roots.push(Value::object(ephemeron));
+        }
+        let [mut first, mut second] = [roots[0], roots[1]];
+        heap.collect_for_test(&mut [&mut first, &mut second]);
+        for (ephemeron, key, payload) in [(first, None, 1), (second, Some(7), 2)] {
+            let ephemeron = rooted(ephemeron);
+            let key_read = heap
+                .instance_field(ephemeron, 0)
+                .expect("an ephemeron has a key");
+            assert_eq!(key_read.as_small_integer(), key);
+            assert_eq!(key_read.is_nil(), key.is_none());
+            let value = rooted(
+                heap.instance_field(ephemeron, 1)
+                    .expect("an ephemeron has a value"),
+            );
+            assert_eq!(
+                heap.instance_field(value, 0)
+                    .and_then(Value::as_small_integer),
+                Some(payload)
+            );
+        }
+    }
+
+    /// 512 ephemerons, each one's value the next one's key: while the first
+    /// key is held by nothing, no key is ever reached but through a value
+    /// a dead key guards, and the whole chain is mourned; once the first
+    /// key is rooted, every value survives, one round of the fixpoint
+    /// apiece.
+    #[test]
+    fn a_chain_of_ephemerons_whose_keys_only_their_values_reach_dies_whole() {
+        const LENGTH: usize = 512;
+        for root_the_first_key in [false, true] {
+            let mut heap = Heap::new();
+            let class = named_class(&mut heap, "Object");
+            let ephemeron_class = named_class(&mut heap, "Ephemeron");
+            let array_class = named_class(&mut heap, "Array");
+            let keys: Vec<ObjectReference<'_>> = (0..=LENGTH)
+                .map(|_| heap.allocate_instance(class, 0))
+                .collect();
+            let mut ephemerons = Vec::with_capacity(LENGTH);
+            for position in 0..LENGTH {
+                let ephemeron = heap.allocate_ephemeron(ephemeron_class, 3);
+                assert!(heap.instance_set_field(ephemeron, 0, Value::object(keys[position])));
+                assert!(heap.instance_set_field(ephemeron, 1, Value::object(keys[position + 1])));
+                ephemerons.push(Value::object(ephemeron));
+            }
+            let mut array_root = Value::object(heap.allocate_array(array_class, &ephemerons));
+            let mut first_key_root = if root_the_first_key {
+                Value::object(keys[0])
+            } else {
+                Value::nil()
+            };
+            heap.collect_for_test(&mut [&mut array_root, &mut first_key_root]);
+            let ephemerons = heap
+                .array_elements(rooted(array_root))
+                .expect("the array answers its elements");
+            assert_eq!(ephemerons.len(), LENGTH);
+            for (position, ephemeron) in ephemerons.into_iter().enumerate() {
+                let fields = heap
+                    .instance_fields(rooted(ephemeron))
+                    .expect("an ephemeron answers its fields");
+                if root_the_first_key {
+                    assert!(
+                        fields[0].as_object().is_some() && fields[1].as_object().is_some(),
+                        "ephemeron {position} keeps its key and its value"
+                    );
+                } else {
+                    assert!(
+                        fields.iter().all(|field| field.is_nil()),
+                        "ephemeron {position} is mourned"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A move rewrites a weak word and an ephemeron's guarded fields like
+    /// any other: forwarding reads every word, marking only the strong.
+    #[test]
+    #[cfg(debug_assertions)]
+    fn a_move_forwards_every_weak_word() {
+        let mut heap = Heap::new();
+        let class = named_class(&mut heap, "Object");
+        let weak_class = named_class(&mut heap, "WeakArray");
+        let ephemeron_class = named_class(&mut heap, "Ephemeron");
+        let element = heap.allocate_instance(class, 0);
+        let key = heap.allocate_instance(class, 0);
+        let value = heap.allocate_instance(class, 0);
+        let weak = heap.allocate_weak_array(weak_class, 1);
+        assert!(heap.weak_array_set_element(weak, 0, Value::object(element)));
+        let ephemeron = heap.allocate_ephemeron(ephemeron_class, 3);
+        assert!(heap.instance_set_field(ephemeron, 0, Value::object(key)));
+        assert!(heap.instance_set_field(ephemeron, 1, Value::object(value)));
+        let roots =
+            [weak, ephemeron, element, key, value].map(|object| heap.stash(Value::object(object)));
+        move_bare_heap(&mut heap);
+        let [weak, ephemeron, element, key, value] =
+            roots.each_ref().map(|root| rooted(heap.fetch(root)));
+        assert!(names(
+            heap.weak_array_element(weak, 0).unwrap_or(Value::nil()),
+            element
+        ));
+        assert!(names(
+            heap.instance_field(ephemeron, 0).unwrap_or(Value::nil()),
+            key
+        ));
+        assert!(names(
+            heap.instance_field(ephemeron, 1).unwrap_or(Value::nil()),
+            value
+        ));
     }
 
     #[test]
