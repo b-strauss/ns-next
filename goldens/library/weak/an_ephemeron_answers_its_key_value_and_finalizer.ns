@@ -2,10 +2,23 @@
 /// `value:` and `finalizer:` each answer the receiver and `key`, `value`
 /// and `finalizer` read back what they stored. `key: nil` is accepted --
 /// nil is the key of an ephemeron that has none -- while a value as a
-/// key, an immediate or not, is refused with an ArgumentError that leaves
-/// the key as it was. `isKindOfEphemeron` answers true for an Ephemeron
-/// and false for any other object.
-class AnEphemeronAnswersItsKeyValueAndFinalizer = Object new () (
+/// key, an immediate or not -- an instance of a value class of the
+/// program's own among them, and a future whose value is a value -- is
+/// refused with an ArgumentError that leaves the key as it was.
+/// `isKindOfEphemeron` answers true for an Ephemeron and false for any
+/// other object.
+///
+/// The module is a value (`Object <: Value`) because §3.1.1 asks a value
+/// class's enclosing object to be one.
+class AnEphemeronAnswersItsKeyValueAndFinalizer = Object <: Value () (
+  /// A value class of the program's own.
+  public class Point = Value new () (
+    /// Answers the text the refusal renders.
+    public printString = (
+      ^'a Point'.
+    )
+  )
+
   public main: platform args: arguments = (
     |
       transcript = platform transcript.
@@ -38,11 +51,14 @@ class AnEphemeronAnswersItsKeyValueAndFinalizer = Object new () (
     show value: ephemeron finalizer.
     show value: (ephemeron key: nil) == ephemeron.
     show value: ephemeron key.
+    ephemeron key: key.
     refusal value: [ephemeron key: 3].
     refusal value: [ephemeron key: 'text'].
     refusal value: [ephemeron key: 1.5].
     refusal value: [ephemeron key: true].
-    show value: ephemeron key.
+    refusal value: [ephemeron key: Point new].
+    refusal value: [ephemeron key: (kernel Future computing: [3])].
+    show value: ephemeron key == key.
     show value: ephemeron isKindOfEphemeron.
     show value: key isKindOfEphemeron.
   )

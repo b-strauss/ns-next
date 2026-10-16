@@ -10,7 +10,7 @@ use crate::builtins::collections::{
     integer_argument, not_an_integer, out_of_range, IntegerArgument,
 };
 use crate::builtins::first_argument;
-use crate::builtins::primitive::WeakPrimitive;
+use crate::builtins::primitive::{Primitive, WeakPrimitive};
 use crate::interpreter::instantiate;
 use crate::types::*;
 use crate::{Mutator, Symbol};
@@ -18,8 +18,9 @@ use crate::{Mutator, Symbol};
 /// `WeakArray`'s native methods, `garbageCollect` and `objectIsValue:`.
 /// Each `WeakArray` leaf declines -- answers `None` -- for a subject that
 /// is no `WeakArray`, a user subclass's instance among them, which holds
-/// no weak slots, so that the failure block's `super` send runs; the other
-/// two never decline.
+/// no weak slots, so that the failure block's `super` send runs.
+/// `garbageCollect` never declines, and `objectIsValue:` only for a future
+/// it would answer `false` to.
 pub(crate) fn execute<'gc>(
     mutator: &mut Mutator<'gc>,
     primitive: WeakPrimitive,
@@ -33,7 +34,17 @@ pub(crate) fn execute<'gc>(
         WeakPrimitive::ElementAt => element_at(mutator, receiver, selector, arguments),
         WeakPrimitive::ElementAtPut => element_at_put(mutator, receiver, selector, arguments),
         WeakPrimitive::Collect => Some(Ok(collect(mutator, receiver))),
-        WeakPrimitive::IsValue => Some(Ok(Value::boolean(is_a_value(mutator, receiver)))),
+        // Declined for a future it would answer `false` to, so the failure
+        // path asks again of the future's value
+        // (`interpreter::future::declines_for_a_future`).
+        WeakPrimitive::IsValue => crate::interpreter::future::declines_for_a_future(
+            mutator,
+            Primitive::Weak(primitive),
+            is_a_value(mutator, receiver),
+            receiver,
+            arguments,
+        )
+        .map(|answer| Ok(Value::boolean(answer))),
     }
 }
 
@@ -198,7 +209,9 @@ fn collect<'gc>(mutator: &mut Mutator<'gc>, receiver: Value<'gc>) -> Value<'gc> 
 /// `instantiate::is_a_value` accepts it. A weak structure refuses such a
 /// key, since an equal one can always be made again and an entry under it
 /// would vanish or not as the collector happened to run. It answers only a
-/// Boolean, so it hands the program nothing it did not already hold.
+/// Boolean, so it hands the program nothing it did not already hold; and
+/// it declines for a future it would answer `false` to, so that a future
+/// standing for a value is refused as that value is.
 fn is_a_value<'gc>(mutator: &Mutator<'gc>, subject: Value<'gc>) -> bool {
     match subject.as_object() {
         Some(object) => instantiate::is_a_value(mutator, object),

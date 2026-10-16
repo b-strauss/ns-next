@@ -14,7 +14,9 @@ key: requires an object that is not a value, got 3
 key: requires an object that is not a value, got 'text'
 key: requires an object that is not a value, got 1.5
 key: requires an object that is not a value, got true
-nil
+key: requires an object that is not a value, got a Point
+key: requires an object that is not a value, got 3
+true
 true
 false
 '''

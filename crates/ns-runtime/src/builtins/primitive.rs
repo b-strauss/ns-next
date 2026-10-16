@@ -287,9 +287,12 @@ impl Primitive {
                 | WeakPrimitive::Size
                 | WeakPrimitive::ElementAt
                 | WeakPrimitive::ElementAtPut
-                | WeakPrimitive::Collect
-                | WeakPrimitive::IsValue,
+                | WeakPrimitive::Collect,
             ) => false,
+            // A future is no value, but it may stand for one, which a weak
+            // structure must refuse as a key (§6.3.2: a future is
+            // transparent).
+            Primitive::Weak(WeakPrimitive::IsValue) => true,
             // It reaches its own primitive's row through `execute_sent`,
             // whose failure path looks for a future among that row's
             // operands.
