@@ -1943,6 +1943,11 @@ mod tests {
                 method.fast_path
             };
             assert_eq!(fast_path(&collections, "List"), None, "Collections>>List");
+            assert_eq!(
+                fast_path(&collections, "WeakArray"),
+                None,
+                "Collections>>WeakArray"
+            );
             for selector in [
                 "Exception",
                 "Error",
@@ -1957,6 +1962,7 @@ mod tests {
                 "Proxy",
                 "StringBuilder",
                 "DataView",
+                "WeakArray",
             ] {
                 assert_eq!(
                     fast_path(&kernel_namespace, selector),
@@ -1964,6 +1970,16 @@ mod tests {
                     "KernelNamespace>>{selector}"
                 );
             }
+            // The collection the kernel's `garbageCollect` asks for is served
+            // at the safepoint of this method's return: as a fast path it
+            // would have none, and a weak slot read right after it would
+            // still name the object
+            // (`goldens/library/weak/a_weak_array_forgets_an_object_after_a_collection.ns`).
+            assert_eq!(
+                fast_path(&kernel_namespace, "garbageCollect"),
+                None,
+                "KernelNamespace>>garbageCollect must be activated"
+            );
             for selector in ["show:", "newLine"] {
                 assert!(
                     matches!(

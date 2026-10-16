@@ -4589,11 +4589,16 @@ class Kernel vmMirror: mirror = Value (
   /// SmallInteger, nil, true, false -- is never collected, so a slot
   /// holding one keeps it. No value: `=` and `hash` are identity.
   ///
-  /// The factory is not `new`, so that `WeakArray new` is not understood:
-  /// a WeakArray is made by the class side's `new:`, which gives it its
-  /// slots. Sent, the factory answers an instance holding no slots, as an
-  /// instance of a subclass holds none, on which every leaf here
-  /// declines.
+  /// Make one with the class side's `new:`, never with the factory
+  /// `withoutSlots`. `withoutSlots` answers an instance with no slots at
+  /// all, not even zero weak ones: every leaf here declines on it, so
+  /// every member but `isKindOfArray` and `isKindOfWeakArray` signals --
+  /// `at:` and `at:put:` a MessageNotUnderstood, `size` and the members
+  /// built on it the Error of Collection's `subclassResponsibility` -- as
+  /// for an instance of a subclass, which holds no slots either. The
+  /// factory exists only so that the class's factory is not `new`, which
+  /// keeps `WeakArray new` not understood: there is no WeakArray without
+  /// a size.
   public class WeakArray withoutSlots = Collection () (
     /// Answers true: the receiver is a WeakArray.
     public isKindOfWeakArray = (

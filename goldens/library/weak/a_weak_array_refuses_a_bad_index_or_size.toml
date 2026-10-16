@@ -3,8 +3,12 @@ index 0 out of range: valid indices are 1..3 (size 3)
 index 4 out of range: valid indices are 1..3 (size 3)
 at: requires an Integer index, got nil
 at: requires an Integer index, got 1.5
+index 1180591620717411303424 out of range: valid indices are 1..3 (size 3)
 index 4 out of range: valid indices are 1..3 (size 3)
+at:put: requires an Integer index, got the String "one"
 new: requires a size of at least 0, got -1
 new: requires an Integer size, got nil
+new: cannot allocate a WeakArray of 1180591620717411303424 elements
+new: requires a size of at least 0, got -1180591620717411303424
 an object does not understand #new
 '''

@@ -2,22 +2,33 @@
 /// held an object nothing else reaches -- an Object and a String made at
 /// run time, each by a method of its own that stores it and returns, so
 /// that no register of `main:` holds it -- and still holds an object a
-/// local holds and an Integer, which is never collected. Nothing is
-/// asserted of the slots before the collection, which another collection
-/// may already have cleared.
+/// local holds and an Integer, which is never collected. Each slot is read
+/// by `at:`, which activates nothing, right after `garbageCollect`
+/// returns, so the collection must have run by then and not at some
+/// later activation. Nothing is asserted of the slots before the
+/// collection, which another collection may already have cleared.
 class AWeakArrayForgetsAnObjectAfterACollection = Object new () (
   public main: platform args: arguments = (
     |
       transcript = platform transcript.
-      weak = platform kernel WeakArray new: 4.
+      kernel = platform kernel.
+      weak = kernel WeakArray new: 4.
       held = 'strongly' , ' held'.
+      first
+      second
+      third
+      fourth
     |
     weak at: 1 put: held.
     storeAnObjectIn: weak.
     weak at: 3 put: 7.
     storeAStringIn: weak.
-    platform kernel garbageCollect.
-    weak do: [:each |
+    kernel garbageCollect.
+    first:: weak at: 1.
+    second:: weak at: 2.
+    third:: weak at: 3.
+    fourth:: weak at: 4.
+    {first. second. third. fourth} do: [:each |
       transcript
           show: each printString;
           newLine.
