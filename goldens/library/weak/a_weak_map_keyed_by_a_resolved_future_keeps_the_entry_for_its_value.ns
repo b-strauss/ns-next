@@ -4,9 +4,10 @@
 /// the value's sake. The future is made by a method of its own that
 /// stores it and returns, so that no register of `main:` holds it;
 /// `at:put:` resolves it, since a key is checked for being a value. The
-/// arrays allocated next fill eden more than twice over, so that
-/// scavenges judge the future while it is young and held only weakly,
-/// before `garbageCollect` judges it in a full collection.
+/// arrays allocated next, about 24 MiB, must exceed eden (8 MiB,
+/// `EDEN_BYTES` in `heap/space.rs`) for a scavenge to judge the future
+/// while it is young and held only weakly, before `garbageCollect`
+/// judges it in a full collection; a larger eden needs a longer loop.
 class AWeakMapKeyedByAResolvedFutureKeepsTheEntryForItsValue = Object new (
   |
     held = Object new.

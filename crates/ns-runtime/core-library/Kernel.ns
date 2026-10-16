@@ -3204,11 +3204,12 @@ class Kernel vmMirror: mirror = Value (
     /// Unicode code point, an Integer from 0 to 1114111 outside 55296 to
     /// 57343, got …', for any other argument.
     ///
-    /// It takes a code point, not a byte. The leaf declines only a
-    /// subject that is not `String` itself, which a flat class side
-    /// cannot be sent from.
+    /// It takes a code point, not a byte. The leaf answers only for
+    /// `String` itself, the only subject a flat class side is sent from;
+    /// any other falls to `super`, where nothing understands `with:`, so
+    /// the send signals rather than answering nil.
     public with: code = (
-      ^vmMirror stringClass: self with: code ifFail: [nil].
+      ^vmMirror stringClass: self with: code ifFail: [^super with: code].
     )
 
     /// Answers a new String of the code points of `codePoints`, in its
@@ -3281,11 +3282,14 @@ class Kernel vmMirror: mirror = Value (
     /// 'fromUtf8:from:to:'.
     ///
     /// Strict rather than a replacement character for each bad sequence,
-    /// so that nothing is lost silently. The leaf declines only a subject
-    /// that is not `String` itself, which a flat class side cannot be sent
-    /// from.
+    /// so that nothing is lost silently. The leaf answers only for
+    /// `String` itself, the only subject a flat class side is sent from;
+    /// any other falls to `super`, where nothing understands
+    /// `fromUtf8:from:to:`, so the send signals rather than answering nil.
     public fromUtf8: bytes from: start to: stop = (
-      ^vmMirror stringClass: self fromUtf8: bytes from: start to: stop ifFail: [nil].
+      ^vmMirror stringClass: self fromUtf8: bytes from: start to: stop ifFail: [
+        ^super fromUtf8: bytes from: start to: stop.
+      ].
     )
   )
 
@@ -4256,10 +4260,12 @@ class Kernel vmMirror: mirror = Value (
     /// to allocate.
     ///
     /// A sized array of nils, which `List` grows into and the handler
-    /// search fills. The leaf declines only a subject that is not `Array`
-    /// itself, which a flat class side cannot be sent from.
+    /// search fills. The leaf answers only for `Array` itself, the only
+    /// subject a flat class side is sent from; any other falls to `super`,
+    /// where nothing understands `new:`, so the send signals rather than
+    /// answering nil.
     public new: size = (
-      ^vmMirror arrayClass: self new: size ifFail: [nil].
+      ^vmMirror arrayClass: self new: size ifFail: [^super new: size].
     )
 
     /// Answers a new Array of `collection`'s elements, in its `do:`
@@ -4539,10 +4545,12 @@ class Kernel vmMirror: mirror = Value (
     /// 'new: cannot allocate a ByteArray of … bytes' for one too large
     /// to allocate.
     ///
-    /// The leaf declines only a subject that is not `ByteArray` itself,
-    /// which a flat class side cannot be sent from.
+    /// The leaf answers only for `ByteArray` itself, the only subject a
+    /// flat class side is sent from; any other falls to `super`, where
+    /// nothing understands `new:`, so the send signals rather than
+    /// answering nil.
     public new: size = (
-      ^vmMirror byteArrayClass: self new: size ifFail: [nil].
+      ^vmMirror byteArrayClass: self new: size ifFail: [^super new: size].
     )
 
     /// Answers a new ByteArray of `collection`'s elements: a copy of a

@@ -530,7 +530,9 @@ impl ResolvedFutures {
         }
         let value = Word::from_bits(*fields.get(self.computation_index)?);
         match value.object_offset() {
-            Some(target) if is_future(target) => None,
+            // Followed, as the future was: in a scavenge an inner future
+            // already copied reads as a forwarder, which is no future.
+            Some(target) if is_future(follow(target)) => None,
             _ => Some(value),
         }
     }
@@ -9114,6 +9116,57 @@ mod tests {
                     );
                 }
             }
+            verify_remembered_set_if_debug(&heap);
+        }
+    }
+
+    /// A "resolved" future whose value is itself a future is one crafted
+    /// code corrupted, and neither collector sees through it: a weak word
+    /// holding it is judged by the outer future alone, which only the weak
+    /// word holds, and cleared -- in a scavenge too, where the inner future
+    /// a root holds has already been copied and its old place is a
+    /// forwarder, which must still be recognised as a future.
+    #[test]
+    fn a_malformed_resolved_future_held_weakly_is_not_seen_through_by_either_collector() {
+        for collection in [false, true] {
+            let mut heap = Heap::new();
+            let class = old_instance_class(&mut heap);
+            let future_class = old_instance_class(&mut heap);
+            let weak = heap.allocate_weak_array(class, 1);
+            let value = heap.allocate_string(class, crate::CodePoints::from("value"));
+            let inner = resolved_future(&mut heap, future_class, Value::object(value));
+            let outer = resolved_future(&mut heap, future_class, Value::object(inner));
+            assert!(heap.weak_array_set_element(weak, 0, Value::object(outer)));
+            let mut weak_root = Value::object(weak);
+            let mut inner_root = Value::object(inner);
+            let futures = ResolvedFutures::new(
+                future_class,
+                FUTURE_COMPUTATION,
+                FUTURE_STATE,
+                FUTURE_RESOLVED,
+            );
+
+            if collection {
+                // The weak word is left naming the outer future, whose own
+                // field the replacement rewrites to the inner one's value.
+                heap.replace_resolved_futures(futures);
+                heap.collect_for_test(&mut [&mut weak_root, &mut inner_root]);
+            } else {
+                heap.scavenge(false, Some(futures), |scavenger| {
+                    use crate::trace::Tracer;
+                    for root in [&mut weak_root, &mut inner_root] {
+                        scavenger.value(root);
+                    }
+                });
+            }
+
+            let element = heap
+                .weak_array_element(rooted(weak_root), 0)
+                .expect("a weak array answers its slot");
+            assert!(
+                element.is_nil(),
+                "the outer future, held only weakly, is gone (collection: {collection})"
+            );
             verify_remembered_set_if_debug(&heap);
         }
     }
