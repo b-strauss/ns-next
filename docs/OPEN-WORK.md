@@ -795,6 +795,15 @@ activation.
 
 ## Unexplained measurements and unmeasured decisions
 
+- **An instance slot's read and write through a format predicate are
+  unmeasured.** Since the weak references, `instance_field` and its
+  siblings in `heap.rs` accept `Ephemeron` beside `FixedPointers` through
+  an always-inlined closure (`pointer_word_of`, `set_pointer_word_of`),
+  the `FixedPointers` compare first, so an ordinary slot should pay
+  nothing more; no release benchmark has compared it against the tree
+  before (the `measuring-performance` skill). Noted by the weak references
+  sub-project, 2026-10-16. [core-library.md](design/core-library.md),
+  "Weak references".
 - **The numeric tower's slow paths are unmeasured on their own.** The Are
   We Fast Yet benchmarks run as fast as without the tower, but none of
   them stresses what still goes the long way: `Float>>hash` of a
