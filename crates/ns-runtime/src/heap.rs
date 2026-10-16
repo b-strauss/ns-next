@@ -5536,19 +5536,27 @@ impl<'gc> Heap<'gc> {
             }
             words[index] = header.with_marked(true).0;
             let block = block_range(words, index);
-            let mut key_died = false;
-            let ranges = object::strong_pointer_ranges(&words[block.clone()], |key| {
-                let survives = Word::from_bits(key)
-                    .object_offset()
-                    .is_none_or(|target| Header(words[header_index(target)]).marked());
-                key_died = !survives;
-                survives
-            });
-            match header.format() {
-                Format::WeakPointers => marker.weak_objects.push(offset),
-                Format::Ephemeron if key_died => marker.ephemerons.push(offset),
-                _ => {}
-            }
+            let format = header.format();
+            let ranges = match format {
+                Format::WeakPointers | Format::Ephemeron => {
+                    let mut key_died = false;
+                    let ranges =
+                        object::strong_pointer_ranges(format, &words[block.clone()], |key| {
+                            let survives = Word::from_bits(key)
+                                .object_offset()
+                                .is_none_or(|target| Header(words[header_index(target)]).marked());
+                            key_died = !survives;
+                            survives
+                        });
+                    if format == Format::WeakPointers {
+                        marker.weak_objects.push(offset);
+                    } else if key_died {
+                        marker.ephemerons.push(offset);
+                    }
+                    ranges
+                }
+                _ => object::pointer_ranges_of(format, &words[block.clone()]),
+            };
             for range in ranges {
                 for position in range.start + block.start..range.end + block.start {
                     if let Some(target) = Word::from_bits(words[position]).object_offset() {

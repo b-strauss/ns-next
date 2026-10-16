@@ -22,7 +22,7 @@
 use std::num::NonZeroU64;
 
 use crate::heap::header::{Format, Header, MAX_AGE};
-use crate::heap::object::{self, strong_pointer_ranges, CLASS, FIELDS};
+use crate::heap::object::{self, pointer_ranges_of, strong_pointer_ranges, CLASS, FIELDS};
 use crate::heap::space::{allocation_range, block_range, is_young, object_at, RegionName, Space};
 use crate::heap::{
     header_index, offset_of_header, FrameReference, ObjectReference, ResolvedFutures, Word,
@@ -212,22 +212,25 @@ impl<'space> Scavenger<'space> {
         let words = self.space.words();
         let block = block_range(words, header);
         let format = Header(words[header]).format();
-        let mut key_died = false;
-        let ranges = strong_pointer_ranges(&words[block.clone()], |key| {
-            let survives = self.key_survives(key);
-            key_died = !survives;
-            survives
-        });
-        match format {
-            Format::WeakPointers => self.weak_objects.push(offset_of_header(header)),
-            Format::Ephemeron if key_died => self.ephemerons.push(offset_of_header(header)),
-            Format::Ephemeron => {
-                if let Some(key) = self.field_range(header).next() {
+        let ranges = match format {
+            Format::WeakPointers | Format::Ephemeron => {
+                let mut key_died = false;
+                let ranges = strong_pointer_ranges(format, &words[block.clone()], |key| {
+                    let survives = self.key_survives(key);
+                    key_died = !survives;
+                    survives
+                });
+                if format == Format::WeakPointers {
+                    self.weak_objects.push(offset_of_header(header));
+                } else if key_died {
+                    self.ephemerons.push(offset_of_header(header));
+                } else if let Some(key) = self.field_range(header).next() {
                     self.see_through_resolved_future(key);
                 }
+                ranges
             }
-            _ => {}
-        }
+            _ => pointer_ranges_of(format, &words[block.clone()]),
+        };
         let mut names_young = false;
         for range in ranges {
             for position in range.start + block.start..range.end + block.start {

@@ -77,22 +77,36 @@ pub(in crate::heap) const POINTER_RANGES: usize = 1 + class_field::POINTERS.len(
 /// `ThirtyTwoBit` and `AlignedBytes`, whose digits, code points and bytes
 /// would read as handles.
 ///
-/// The one enumeration of an object's pointer words: marking reads the
-/// words through it -- by way of `strong_pointer_ranges`, which leaves out
-/// only weak words -- and forwarding rewrites them through `trace_block`,
+/// The one enumeration of an object's pointer words (`pointer_ranges_of`
+/// holds it): marking and the scavenger read the words through it -- a
+/// weak object by way of `strong_pointer_ranges`, which leaves out only
+/// weak words -- and forwarding rewrites them through `trace_block`,
 /// so a field one of the two must reach cannot be missed by the other
 /// (`docs/design/memory.md`, "What the collector traces"). Unused entries
 /// are empty, and every range is clamped to the block, so a block shorter
 /// than its format expects yields empty ranges rather than a panic.
 pub(in crate::heap) fn pointer_ranges(block: &[u64]) -> [std::ops::Range<usize>; POINTER_RANGES] {
-    let mut ranges: [std::ops::Range<usize>; POINTER_RANGES] = Default::default();
     let Some(&header) = block.get(HEADER) else {
-        return ranges;
+        return Default::default();
     };
+    pointer_ranges_of(Header(header).format(), block)
+}
+
+/// `pointer_ranges` for a block whose header the caller has already
+/// decoded to `format`: the enumeration itself, which `pointer_ranges`
+/// forwards to. Marking and the scavenger decode each object's format once
+/// to choose between this and the weak path, so that an ordinary object
+/// pays no second read of its header. The same contract: ranges clamped
+/// to the block, an empty or short block answering empty ranges.
+pub(in crate::heap) fn pointer_ranges_of(
+    format: Format,
+    block: &[u64],
+) -> [std::ops::Range<usize>; POINTER_RANGES] {
+    let mut ranges: [std::ops::Range<usize>; POINTER_RANGES] = Default::default();
     let length = block.len();
     let clamped = |start: usize, end: usize| start.min(length)..end.min(length);
     ranges[0] = clamped(CLASS, CLASS + 1);
-    match Header(header).format() {
+    match format {
         Format::FixedPointers
         | Format::IndexablePointers
         | Format::WeakPointers
@@ -137,18 +151,22 @@ pub(in crate::heap) fn pointer_ranges(block: &[u64]) -> [std::ops::Range<usize>;
     ranges
 }
 
-/// The words of `block` that keep what they name alive: the class word
-/// alone of `WeakPointers`, and of an `Ephemeron` whose key -- its first
-/// field, handed to `key_survives` as stored -- is not yet known to
-/// survive; `pointer_ranges` otherwise. An `Ephemeron` with no field has
-/// no key and is traced as `FixedPointers`.
+/// The words of `block`, its header decoded to `format`, that keep what
+/// they name alive: the class word alone of `WeakPointers`, and of an
+/// `Ephemeron` whose key -- its first field, handed to `key_survives` as
+/// stored -- is not yet known to survive; `pointer_ranges_of` otherwise.
+/// An `Ephemeron` with no field has no key and is traced as
+/// `FixedPointers`.
 ///
 /// What marking and the scavenger trace, while forwarding, the moves and
 /// the remembered set's verification read `pointer_ranges`: a weak word
 /// must not keep its object alive, but while the object lives the word
 /// must follow it, or it would name whatever is moved to its old place
-/// (`docs/design/core-library.md`, "The heap and the collectors").
+/// (`docs/design/core-library.md`, "The heap and the collectors"). Both
+/// send only the weak formats here and every other object straight to
+/// `pointer_ranges_of`, so that an ordinary object calls no closure.
 pub(in crate::heap) fn strong_pointer_ranges(
+    format: Format,
     block: &[u64],
     key_survives: impl FnOnce(u64) -> bool,
 ) -> [std::ops::Range<usize>; POINTER_RANGES] {
@@ -157,16 +175,13 @@ pub(in crate::heap) fn strong_pointer_ranges(
         ranges[0] = CLASS.min(block.len())..(CLASS + 1).min(block.len());
         ranges
     };
-    let Some(&header) = block.get(HEADER) else {
-        return Default::default();
-    };
-    match Header(header).format() {
+    match format {
         Format::WeakPointers => class_word_only(),
         Format::Ephemeron => match block.get(FIELDS) {
             Some(&key) if !key_survives(key) => class_word_only(),
-            _ => pointer_ranges(block),
+            _ => pointer_ranges_of(format, block),
         },
-        _ => pointer_ranges(block),
+        _ => pointer_ranges_of(format, block),
     }
 }
 
@@ -808,7 +823,7 @@ mod tests {
             words
         };
         let strong = |words: &[u64], survives: bool| -> Vec<usize> {
-            strong_pointer_ranges(words, |_| survives)
+            strong_pointer_ranges(Header(words[HEADER]).format(), words, |_| survives)
                 .into_iter()
                 .flatten()
                 .collect()
@@ -825,5 +840,47 @@ mod tests {
             strong(&block(Format::FixedPointers, 2), false),
             vec![CLASS, 2, 3]
         );
+    }
+
+    #[test]
+    fn pointer_ranges_of_a_decoded_format_answer_what_pointer_ranges_answers() {
+        let formats = [
+            Format::FixedPointers,
+            Format::IndexablePointers,
+            Format::Frame,
+            Format::Closure,
+            Format::SixtyFourBit,
+            Format::Forwarded,
+            Format::Free,
+            Format::Class,
+            Format::ThirtyTwoBit,
+            Format::WeakPointers,
+            Format::Ephemeron,
+            Format::Bytes,
+            Format::AlignedBytes,
+        ];
+        for format in formats {
+            // Long enough for every format's fields, and short ones too:
+            // the contract clamps rather than panics.
+            for fields in [0, 1, class_field::COUNT + 3] {
+                let mut words = vec![Word::NIL.bits(); FIELDS + fields];
+                words[HEADER] = Header::new(DispatchId::NONE, format, 0, 1 + fields).0;
+                assert_eq!(
+                    pointer_ranges_of(format, &words),
+                    pointer_ranges(&words),
+                    "{format:?} with {fields} fields"
+                );
+                let header_only = &words[..=HEADER];
+                assert_eq!(
+                    pointer_ranges_of(format, header_only),
+                    pointer_ranges(header_only),
+                    "{format:?} with its header alone"
+                );
+            }
+        }
+        // A block without a header has no pointer words in any format.
+        assert!(pointer_ranges_of(Format::FixedPointers, &[])
+            .iter()
+            .all(|range| range.is_empty()));
     }
 }
