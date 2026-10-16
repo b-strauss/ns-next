@@ -795,14 +795,23 @@ activation.
 
 ## Unexplained measurements and unmeasured decisions
 
-- **An instance slot's read and write through a format predicate are
-  unmeasured.** Since the weak references, `instance_field` and its
-  siblings in `heap.rs` accept `Ephemeron` beside `FixedPointers` through
-  an always-inlined closure (`pointer_word_of`, `set_pointer_word_of`),
-  the `FixedPointers` compare first, so an ordinary slot should pay
-  nothing more; no release benchmark has compared it against the tree
-  before (the `measuring-performance` skill). Noted by the weak references
-  sub-project, 2026-10-16. [core-library.md](design/core-library.md),
+- **The weak references cost Havlak 1.1%, CD 0.7% and DeltaBlueTon80
+  1.7%, unexplained.** Measured on 2026-10-16 against `master`
+  (`378b0c57`) by the `measuring-performance` protocol: three pinned
+  release builds a side (`-C metadata=alpha`, `beta`, `gamma`), three
+  rounds rotating the six binaries, the sixteen Are We Fast Yet programs
+  (`--iterations 3` for the five slow ones, 10 otherwise) and the four
+  fixtures under `benchmarks/micro/` (`--iterations 30`). Pooled medians
+  moved between -2.0% (Towers) and +1.7% (DeltaBlueTon80), most within
+  the builds' spread; only Havlak (3556 to 3594 ms), CD (3865 to 3894 ms)
+  and DeltaBlueTon80 (7.72 to 7.85 ms) put every branch build's median
+  above every master build's. The microbenchmarks moved -0.2% to +1.2%,
+  inside their spread, so the slot accessors' format predicate
+  (`pointer_word_of`, `set_pointer_word_of` in `heap.rs`), which accept
+  `Ephemeron` beside `FixedPointers`, show no cost of their own. Havlak
+  and CD allocate the most, which points at the collectors' new format
+  checks (`strong_pointer_ranges`, the weak lists) rather than at a slot
+  read; not attributed further. [core-library.md](design/core-library.md),
   "Weak references".
 - **The numeric tower's slow paths are unmeasured on their own.** The Are
   We Fast Yet benchmarks run as fast as without the tower, but none of
