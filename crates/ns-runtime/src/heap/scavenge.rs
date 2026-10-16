@@ -60,8 +60,8 @@ pub(crate) struct Scavenger<'space> {
     weak_objects: Vec<NonZeroU64>,
     ephemerons: Vec<NonZeroU64>,
     /// Whether `copy` lists what it copies on `copied`: only during
-    /// `finish`'s fixpoint, whose pending ephemerons are indexed by the
-    /// young objects that would resolve them.
+    /// `finish`'s fixpoint, while its index of the pending ephemerons, by
+    /// the young objects that would resolve them, holds an unresolved one.
     recording: bool,
     /// Every object `finish`'s fixpoint has copied and not yet looked up,
     /// by the offset it was copied from -- where a pending key word, or
@@ -259,6 +259,13 @@ impl<'space> Scavenger<'space> {
         names_young
     }
 
+    /// Whether an object was copied and not yet scanned: what `drain`
+    /// would scan.
+    fn has_unscanned(&self) -> bool {
+        self.survivor_scan < self.space.future_survivor().top
+            || self.promoted_scan < self.space.region(RegionName::Old).top
+    }
+
     /// The Cheney loop: scans what was copied until nothing new was.
     pub(in crate::heap) fn drain(&mut self) {
         loop {
@@ -288,7 +295,8 @@ impl<'space> Scavenger<'space> {
     /// whose key has since survived, and indexes the rest by the young
     /// objects whose copy would resolve them (`pending_keys`); then drains,
     /// looking every object copied meanwhile up in the index and scanning
-    /// the ephemerons it resolves, until nothing new is copied; mourns
+    /// the ephemerons it resolves, until nothing copied waits to be
+    /// scanned; mourns
     /// every ephemeron left in the index -- its key reached by nothing but
     /// ephemerons -- by setting its fields to nil; and rewrites every word
     /// of a listed weak object that names a young object to the copy, or
@@ -298,6 +306,9 @@ impl<'space> Scavenger<'space> {
     /// Each ephemeron is scanned at most once more and each object the
     /// fixpoint copies looked up once, so a chain of ephemerons each keyed
     /// by the previous one's value costs its length, not its square.
+    /// Copies are recorded only while the index holds an unresolved
+    /// ephemeron, so a fixpoint whose first check resolves every listed
+    /// one -- every key reachable -- looks nothing up.
     ///
     /// Must run before the nursery is vacated: a weak word left naming it
     /// would name whatever is allocated there next. An old object either
@@ -309,33 +320,49 @@ impl<'space> Scavenger<'space> {
     pub(in crate::heap) fn finish(&mut self) {
         if !self.ephemerons.is_empty() {
             let mut pending = PendingEphemerons::new();
-            self.recording = true;
+            // Spare buffers the scavenger's lists are swapped with each
+            // round, so a long chain allocates nothing per round.
+            let mut listed = Vec::new();
+            let mut copied = Vec::new();
             loop {
                 // Ephemerons the last drain scanned before their key
                 // survived join the index; one whose key that drain copied
-                // meanwhile was recorded before it was indexed, so it is
+                // meanwhile was copied before it was indexed, so it is
                 // scanned here.
-                for ephemeron in std::mem::take(&mut self.ephemerons) {
+                std::mem::swap(&mut self.ephemerons, &mut listed);
+                for ephemeron in listed.drain(..) {
+                    #[cfg(test)]
+                    crate::heap::pending::work::count_examined();
                     if self.ephemeron_key_survives(ephemeron) {
                         self.resolve_ephemeron(ephemeron);
                     } else {
                         let keys = self.pending_keys(ephemeron);
                         pending.add(ephemeron, keys.into_iter().flatten());
+                        // From here on a copy may resolve it -- even one
+                        // this check makes resolving a later ephemeron.
+                        self.recording = true;
                     }
                 }
-                // Every object copied is either scanned already or
-                // recorded here, so nothing recorded means nothing new
-                // survived.
-                let copied = std::mem::take(&mut self.copied);
-                if copied.is_empty() {
-                    break;
-                }
-                for offset in copied {
+                std::mem::swap(&mut self.copied, &mut copied);
+                for offset in copied.drain(..) {
+                    if pending.is_empty() {
+                        break;
+                    }
                     pending.take(offset, |ephemeron| self.resolve_ephemeron(ephemeron));
                 }
+                // Every copy waits to be scanned, so nothing waiting means
+                // nothing new survived since the last drain.
+                if !self.has_unscanned() {
+                    break;
+                }
+                // With nothing pending, what the drain copies can resolve
+                // nothing, so it is not recorded: an ephemeron the drain
+                // lists meanwhile meets the check above next round.
+                self.recording = !pending.is_empty();
                 self.drain();
             }
             self.recording = false;
+            self.copied.clear();
             for ephemeron in pending.unresolved() {
                 let fields = self.field_range(header_index(ephemeron));
                 self.space.words_mut()[fields].fill(Word::NIL.bits());

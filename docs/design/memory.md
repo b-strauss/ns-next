@@ -1540,10 +1540,16 @@ scavenger trace `strong_pointer_ranges` instead, the class word alone of a
 survive. Each collector lists those objects as it meets them and, once
 its traversal has run dry, settles them in Primordial Soup's order
 (`vm/heap.cc:627-682`): it traces each listed ephemeron whose key has
-since been reached and runs the traversal again, until a round reaches
-no new key; sets every field of an ephemeron still listed to `nil` (it is
-mourned: its key was reached by nothing but ephemerons); and sets to
-`nil` every word of a listed weak object whose object was not reached. A
+since been reached and indexes the rest by key (`heap/pending.rs`), then
+runs the traversal again, looking each object it reaches up in the index
+once and tracing the ephemerons keyed by it, and ephemerons it lists anew
+meet the same check, until the traversal has nothing left to visit; it
+records what it reaches only while the index holds an unresolved
+ephemeron, so the common case, every key reached by the time the first
+check runs, looks nothing up. It sets every field of an ephemeron left in
+the index to `nil` (it is mourned: its key was reached by nothing but
+ephemerons); and sets to `nil` every word of a listed weak object whose
+object was not reached. A
 full collection does so in `Heap::finish_marking`, between
 `drain_marking` and `prune_canonical_symbols`, before compaction, whose
 forwarding table answers only marked objects; a scavenge in
@@ -2278,10 +2284,13 @@ A Cheney copy of the nursery's survivors (`heap/scavenge.rs`), as Spur's
   through; a commit the operating system refuses aborts the process as
   running out of memory before the scavenge begins.
 - **Then the weak objects are settled** (`Scavenger::finish`): the
-  ephemerons whose key was copied meanwhile are scanned, the Cheney loop
-  run again, until a round scans none; the rest are mourned; and every
-  young word of a weak object is forwarded to the copy or set to `nil`
-  ("Weak references").
+  ephemerons whose key was copied meanwhile are scanned and the rest
+  indexed by the young objects whose copy would resolve them; the Cheney
+  loop runs again, each object it copies looked up once in the index --
+  recorded only while the index holds an unresolved ephemeron -- and its
+  ephemerons scanned, until no copy waits to be scanned; the ephemerons
+  left in the index are mourned; and every young word of a weak object is
+  forwarded to the copy or set to `nil` ("Weak references").
 - **Afterwards** the weak symbol table is pruned ("Weak references"), the
   survivor spaces flip, eden is empty, the threshold is recomputed, and the
   request is cleared. A rebuilt remembered set past its limit requests a
@@ -2676,7 +2685,9 @@ the groundwork the JIT tiers take over, as Cogit's `genPrimitiveNew` and
 - **The ephemeron fixpoint indexes its pending ephemerons by key** rather
   than rescanning them per round, as Primordial Soup
   (`vm/heap.cc:853-911`) and Spur (`processEphemerons`) do: only the
-  fixpoint's own drains record what they mark or copy, each recorded
+  fixpoint's own drains record what they mark or copy, and only while the
+  index holds an unresolved ephemeron, so a fixpoint whose first check
+  resolves every listed ephemeron records nothing; each recorded
   object is looked up once and each ephemeron resolved once
   (`heap/pending.rs`), so a chain of ephemerons each keyed by the previous
   one's value costs its length rather than its square, and the ordinary

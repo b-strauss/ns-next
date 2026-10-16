@@ -26,9 +26,9 @@ pub(crate) struct Marker {
     /// fields not yet traced: traced if the key is marked later, mourned
     /// if it never is (`Heap::finish_marking`).
     pub(super) ephemerons: Vec<NonZeroU64>,
-    /// Every object `finish_marking`'s fixpoint has marked and not yet
-    /// looked up among the pending ephemerons' keys; the main marking
-    /// records nothing.
+    /// Every object `finish_marking`'s fixpoint has marked, while an
+    /// ephemeron was pending, and not yet looked up among the pending
+    /// ephemerons' keys; the main marking records nothing.
     pub(super) reached: Vec<NonZeroU64>,
 }
 

@@ -2391,11 +2391,13 @@ order (`vm/heap.cc:627-682`):
    pushed, and the others are indexed by their key
    (`heap/pending.rs`, `PendingEphemerons`; several may share one). The
    work list is drained again, and every object the drain marks -- only
-   this drain records them, the main marking pays nothing -- is looked up
-   in the index once: the ephemerons keyed by it have their fields pushed
-   and leave the index. Ephemerons a drain visits before their key join
-   the index, or are traced at once if their key was marked meanwhile.
-   This repeats until a drain marks nothing new. A chain of ephemerons
+   this drain records them, and only while the index holds an unresolved
+   ephemeron, so the main marking pays nothing and neither does a
+   fixpoint whose first check resolved every listed ephemeron -- is
+   looked up in the index once: the ephemerons keyed by it have their
+   fields pushed and leave the index. Ephemerons a drain visits before
+   their key join the index, or are traced at once if their key was
+   marked meanwhile. This repeats until the work list stays empty. A chain of ephemerons
    whose keys are reached only through each other's values is thus
    collected whole, and each ephemeron is traced at most once and each
    object looked up at most once, so the fixpoint costs what it reaches,
@@ -2422,9 +2424,10 @@ since survived is scanned, and the others are indexed by the young object
 whose copy would make their key survive -- the key at the end of its
 forwarders, and, for a key that is a resolved future, its value as well
 (`Scavenger::pending_keys`). The loop is drained again, and every object
-copied meanwhile -- only the fixpoint records copies -- is looked up once
-in the index, its ephemerons scanned (an old one that then names a young
-object remembered once) and removed, until nothing new is copied; the
+copied meanwhile -- only the fixpoint records copies, and only while the
+index holds an unresolved ephemeron -- is looked up once in the index,
+its ephemerons scanned (an old one that then names a young object
+remembered once) and removed, until no copy waits to be scanned; the
 rest are mourned. As in a full collection the fixpoint is linear in what
 it reaches. Then every young word of a listed weak object
 is forwarded to the copy or, its object not copied, set to `nil` -- all

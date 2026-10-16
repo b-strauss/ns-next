@@ -1,7 +1,8 @@
 //! The ephemerons a collector's fixpoint still waits on, indexed by the
 //! object whose survival decides each (`docs/design/core-library.md`, "The
-//! heap and the collectors"). A collector records every object its fixpoint
-//! newly reaches and looks each up here once, so an ephemeron is resolved
+//! heap and the collectors"). While the index holds an ephemeron, a
+//! collector records every object its fixpoint newly reaches and looks
+//! each up here once, so an ephemeron is resolved
 //! when its key is reached rather than found by rescanning every pending
 //! one per round, which costs the square of a chain's length.
 //!
@@ -25,6 +26,9 @@ pub(in crate::heap) struct PendingEphemerons {
     /// The links: an ephemeron's position, and the next link of the same
     /// object's list. Several ephemerons may share a key.
     links: Vec<(usize, Option<usize>)>,
+    /// How many ephemerons are not yet resolved: none, and no object the
+    /// fixpoint reaches can resolve anything, so it need not be recorded.
+    unresolved_count: usize,
 }
 
 impl PendingEphemerons {
@@ -34,7 +38,14 @@ impl PendingEphemerons {
             resolved: Vec::new(),
             first_link: IdentityMap::default(),
             links: Vec::new(),
+            unresolved_count: 0,
         }
+    }
+
+    /// Whether every ephemeron added has been resolved, so that looking
+    /// an object up would find nothing.
+    pub(in crate::heap) fn is_empty(&self) -> bool {
+        self.unresolved_count == 0
     }
 
     /// Indexes the ephemeron at `ephemeron` under each object of `keys`,
@@ -47,6 +58,7 @@ impl PendingEphemerons {
         let position = self.ephemerons.len();
         self.ephemerons.push(ephemeron);
         self.resolved.push(false);
+        self.unresolved_count += 1;
         for key in keys {
             let link = self.links.len();
             let next = self.first_link.insert(key.get(), link);
@@ -65,6 +77,7 @@ impl PendingEphemerons {
             let (position, next) = self.links[current];
             if !self.resolved[position] {
                 self.resolved[position] = true;
+                self.unresolved_count -= 1;
                 #[cfg(test)]
                 work::count_resolution();
                 resolve(self.ephemerons[position]);
@@ -93,6 +106,19 @@ pub(in crate::heap) mod work {
     thread_local! {
         static LOOKUPS: Cell<usize> = const { Cell::new(0) };
         static RESOLUTIONS: Cell<usize> = const { Cell::new(0) };
+        static EXAMINED: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// The work counted since the last `take`.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(in crate::heap) struct Work {
+        /// Objects looked up in the index.
+        pub(in crate::heap) lookups: usize,
+        /// Ephemerons the index resolved.
+        pub(in crate::heap) resolutions: usize,
+        /// Listed ephemerons a round's first check examined, resolving or
+        /// indexing each.
+        pub(in crate::heap) examined: usize,
     }
 
     pub(in crate::heap) fn count_lookup() {
@@ -103,13 +129,18 @@ pub(in crate::heap) mod work {
         RESOLUTIONS.with(|resolutions| resolutions.set(resolutions.get() + 1));
     }
 
-    /// The lookups and resolutions counted since the last call, which
-    /// starts the count afresh.
-    pub(in crate::heap) fn take() -> (usize, usize) {
-        (
-            LOOKUPS.with(|lookups| lookups.replace(0)),
-            RESOLUTIONS.with(|resolutions| resolutions.replace(0)),
-        )
+    pub(in crate::heap) fn count_examined() {
+        EXAMINED.with(|examined| examined.set(examined.get() + 1));
+    }
+
+    /// The work counted since the last call, which starts the count
+    /// afresh.
+    pub(in crate::heap) fn take() -> Work {
+        Work {
+            lookups: LOOKUPS.with(|lookups| lookups.replace(0)),
+            resolutions: RESOLUTIONS.with(|resolutions| resolutions.replace(0)),
+            examined: EXAMINED.with(|examined| examined.replace(0)),
+        }
     }
 }
 
@@ -127,11 +158,15 @@ mod tests {
         pending.add(offset(8), [offset(100), offset(200)]);
         pending.add(offset(16), [offset(100)]);
         pending.add(offset(24), [offset(300)]);
+        assert!(!pending.is_empty());
         let mut resolved = Vec::new();
         pending.take(offset(200), |ephemeron| resolved.push(ephemeron));
         pending.take(offset(100), |ephemeron| resolved.push(ephemeron));
         pending.take(offset(100), |ephemeron| resolved.push(ephemeron));
         assert_eq!(resolved, [offset(8), offset(16)]);
         assert_eq!(pending.unresolved().collect::<Vec<_>>(), [offset(24)]);
+        assert!(!pending.is_empty());
+        pending.take(offset(300), |ephemeron| resolved.push(ephemeron));
+        assert!(pending.is_empty(), "every ephemeron is resolved");
     }
 }
