@@ -795,29 +795,24 @@ activation.
 
 ## Unexplained measurements and unmeasured decisions
 
-- **The weak references may cost CD, Havlak and DeltaBlueTon80 up to
-  1.7%, at the edge of what the protocol resolves.** Measured on
-  2026-10-16 against `master` (`378b0c57`) by the `measuring-performance`
-  protocol, three pinned release builds a side (`-C metadata=alpha`,
-  `beta`, `gamma`), three rounds rotating the six binaries. In the first
-  sitting, over the sixteen Are We Fast Yet programs and the four
-  fixtures under `benchmarks/micro/`, pooled medians moved between -2.0%
-  (Towers) and +1.7% (DeltaBlueTon80), and only Havlak (+1.1%), CD
-  (+0.7%) and DeltaBlueTon80 (+1.7%) put every branch build above every
-  master build. The collectors are not the cause: with
-  `--collector-statistics` Havlak's pauses were 682 ms in four runs on
-  both trees and CD's 43 and 44 ms. The slot accessors then accepted
-  `Ephemeron` beside `FixedPointers`; they are `master`'s again -- an
-  `Ephemeron`'s fields are reached through mirror leaves of their own --
-  and a second sitting with three new builds of that tree against the
-  same `master` builds measured Havlak +0.7%, CD +0.6%, DeltaBlueTon80
-  +1.7%, Richards +1.0% and DeltaBlue -0.1%, with no program separating
-  any longer: each lies within the builds' spread, which reaches 1.9% for
-  Havlak and 2.3% for DeltaBlueTon80 between builds of one tree. Whether a
-  cost remains -- the instantiation path through `instantiate_allocating`
-  is the one mutator path left that changed -- needs more builds a side
-  than three to tell. [core-library.md](design/core-library.md), "Weak
-  references".
+- **Indexing the pending ephemerons costs a map with many dead keys about
+  2 ms of collector pauses.** Measured on 2026-10-17 by the
+  `measuring-performance` protocol, three pinned release builds a side,
+  two sittings, with a throwaway source that fills a `WeakMap` with 20,000
+  held and 20,000 dropped keys and collects once: since the fixpoint
+  resolves pending ephemerons through an index of their keys
+  (`heap/pending.rs`), its scavenges paused 12.3 ms instead of 9.9 and its
+  collections 17.5 instead of 15.2, the run 61.6 ms instead of 60.8 (within
+  the spread); a 4,000-link chain of ephemerons went from 67.5 ms a run
+  to 4.3. Every ephemeron whose key nothing else reaches enters the index
+  before it is mourned, where the rescan touched it once a round. Indexing
+  only from the second round on -- a first rescan resolves what it can,
+  and only what is still pending afterwards enters the index, if the round
+  reached anything -- would keep the chain linear and the map at the
+  rescan's cost. A program without ephemerons pays nothing measurable:
+  against `master` Havlak and CD run within the builds' spread, their
+  pauses equal.
+  [core-library.md](design/core-library.md), "Weak references".
 - **The numeric tower's slow paths are unmeasured on their own.** The Are
   We Fast Yet benchmarks run as fast as without the tower, but none of
   them stresses what still goes the long way: `Float>>hash` of a
