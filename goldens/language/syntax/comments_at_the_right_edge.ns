@@ -1,0 +1,105 @@
+/// A comment right after type arguments that stand past the span of the
+/// send, the assignment or the superclass clause they end, and one inside a
+/// pattern literal whose tuple holds a pattern and a block: the shapes the
+/// attachment of a parse without an error once placed unlike the walk.
+/// Every debug run of the goldens attaches this module both ways and holds
+/// the two equal. Type arguments are kept and ignored (newspeak-spec.pdf
+/// 4.3), so the program runs as it would without them.
+class CommentsAtTheRightEdge = Object new (
+  |
+    slotted = 9 printString[E]. /// after a header slot's value
+  |
+) (
+  /// Never read: a superclass clause's message is evaluated only when the
+  /// class is.
+  class AfterAClause = Object foo: 1 bar[E] /// after a clause's message
+  () ()
+
+  /// Never read, as the class above.
+  class AfterAMixinClause = Object
+  <: Object foo: 1 bar[E] /// after a mixin clause's message
+  () ()
+
+  lazy cached = 8 printString[E]. /// after a lazy slot's value
+
+  public assigned = (
+    |
+      value
+    |
+    value:: 3 printString[E]. /// after an assignment's value
+    ^value.
+  )
+
+  public chained = (
+    |
+      first
+      second
+    |
+    first:: second:: 4 printString[E]. /// after a chain of assignments
+    ^first , second.
+  )
+
+  public sent = (
+    ^3 + 4 printString size[E]. /// after a binary argument's unary message
+  )
+
+  public cascaded = (
+    ^(Array new: 2)
+        at: 1 put: 5;
+        at: 2 put: 6 printString[E]. /// after a cascade
+  )
+
+  public tupled = (
+    ^{
+      1 printString[E]. /// after a tuple's element
+    }.
+  )
+
+  public blocked = (
+    ^[
+      7 printString[E]. /// after a block's statement
+    ] value.
+  )
+
+  /// Never sent: a pattern literal is not evaluated yet.
+  public patterned = (
+    ^<{ <a: 1>. /// inside a pattern literal's tuple
+    2 }>.
+  )
+
+  /// Never sent, as the method above.
+  public patternedWithABlock = (
+    ^(<{ [ | | ] }> /// after a pattern literal holding a block
+    ).
+  )
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+    |
+    t
+        show: assigned;
+        newLine.
+    t
+        show: chained;
+        newLine.
+    t
+        show: sent printString;
+        newLine.
+    t
+        show: cascaded;
+        newLine.
+    t
+        show: (tupled at: 1);
+        newLine.
+    t
+        show: blocked;
+        newLine.
+    t
+        show: cached;
+        newLine.
+    t
+        show: slotted;
+        newLine.
+  )
+)

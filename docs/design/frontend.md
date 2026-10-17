@@ -411,8 +411,10 @@ The argument is not what holds the clean path: the oracle tests hold it
 to the reference over every source and over hand-written sources for
 every right edge, and a debug build attaches a copy of every clean parse
 by the walk too and compares the two node by node, so every parse of the
-workspace's debug suites checks it. The right edge's exceptions were
-found that way, by the comparison and by the branch's review.
+workspace's debug suites checks it, and the golden
+`goldens/language/syntax/comments_at_the_right_edge.ns` holds every shape
+the comparison or a review found there. The right edge's exceptions were
+found that way.
 
 Measured 2026-10-17 on the measuring
 workstation (Windows 11, release builds with the function-alignment pin,
