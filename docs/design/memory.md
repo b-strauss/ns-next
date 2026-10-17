@@ -1807,7 +1807,7 @@ nothing one by one -- it slides the survivors down and moves the top.
 slot, by swapping the
 global allocator of `ns-cli` in scratch builds (three builds a side, two
 sittings, medians, the measurement protocol of [execution.md](execution.md)),
-against the Windows heap the shipped build uses:
+against the Windows heap:
 
 | Source | mimalloc | A bump allocator that never frees |
 |---|---|---|
@@ -1817,7 +1817,7 @@ against the Windows heap the shipped build uses:
 | `bench_megamorphic.ns` | level | +6.6% |
 | A scratch source churning short-lived lists, instances and strings | **−8.9%** | −5.6% |
 
-An xperf profile of the shipped allocator put 16.9% of `bench_block.ns`'s
+An xperf profile of the Windows heap put 16.9% of `bench_block.ns`'s
 samples and 11.0% of the churning source's in `ntdll.dll`'s heap; under
 mimalloc about 3% and 2% remained in the allocator's own functions, with about
 1.3% more in the drop glue of the payload types the slots then held. The bump
@@ -1992,6 +1992,54 @@ and an interpreter, which holds `Rc`s throughout, is not `Send` either.
   space" and, for the nursery a scavenge vacates, "Generations".
 - **Executable memory for the JIT tiers** comes to the same crate when they
   do, with its `unsafe` entry into generated code.
+
+### The allocator of the Rust side
+
+Everything Rust allocates -- the syntax tree, the resolver's and the
+compiler's tables, the compiled code, the image decoder's buffers, the
+analyzer's documents -- goes through the global allocator; the Newspeak
+heap is the reservation above and never does. Both binaries, `ns-next` and
+`ns-next-analyzer`, set it to mimalloc (`#[global_allocator]` in each
+`main.rs`; the dependency in the workspace manifest). A library crate sets
+none: a global allocator is the whole program's, so one set in
+`ns-syntax` or `ns-runtime` would be imposed on every program linking it,
+the test binaries included, which run on the platform's allocator.
+
+Rust's default on Windows is the process heap (`HeapAlloc`), which the
+front end, allocating and freeing a node at a time, pays for heavily.
+Measured on 2026-10-17 on the measuring workstation (Windows 11, release
+builds with the alignment pin, three builds a side): `parse` over the 211
+corpus modules (`cargo bench -p ns-syntax --bench corpus`) takes 92-96 ms
+on the process heap, 54 ms under mimalloc, 56 ms under snmalloc, 53 ms
+under rpmalloc and 168 ms under the segment heap a manifest can select;
+`ns-next-analyzer parse-corpus corpus/modules` 164 ms against 77 ms; a boot
+from source (`hello.ns` under `NS_NEXT_NO_PRIMITIVE_METHODS=1`) 14.9 ms
+against 11.8 ms; a boot from the embedded shipped code 4.9 ms against 5.0
+ms, the one case mimalloc measures slower. Of the benchmarks, under
+mimalloc: `bench_block` -11 %, Bounce -8 %, Storage -7 %, CD and DeltaBlue
+-5 %, Json and Havlak -5 %, `bench_megamorphic` and DeltaBlueTon80 -3 %,
+List +3 %, the others within their spread.
+
+It costs memory: mimalloc keeps the segments it took resident rather than
+handing them back at once. Peak working set
+(`PROCESS_MEMORY_COUNTERS.PeakWorkingSetSize`, read after the process
+exits; same builds) of `hello.ns`, `bench_loop.ns` and `bench_send.ns`
+under `bench --iterations 10` 6.0 MB against 7.3 MB, `bench_block.ns`
+13.9 MB against 15.1 MB, Richards 30.7 MB against 31.2 MB, `run-corpus
+corpus/modules` 6.3 MB against 7.5 MB, `ns-next-analyzer parse-corpus`
+19.5 MB against 28.7 MB; the peak commit charge (`PeakPagefileUsage`)
+rises by about 7.5 MB in every `ns-next` case and by 21 MB under
+`parse-corpus`. A megabyte or so of resident memory and some reserved
+commit per process against a fifth of a boot from source and half the
+analyzer's parse: a trade made for these two binaries, which run one
+program or one command and exit, or serve one editor.
+
+mimalloc over snmalloc and rpmalloc, which measured the same: it is the
+most used of the three. It is C (compiled as C++ under MSVC) built by
+`cc`, so the build needs a C compiler, which every target's Rust toolchain
+here already has beside its linker, and it links `advapi32` and a few
+other system libraries on Windows. The corpus benchmark runs on the
+platform's allocator, so that it still shows what the front end allocates.
 
 ## The object space
 

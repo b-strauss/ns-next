@@ -208,8 +208,9 @@ reads an image without loading it, and neither runs the program's code
 "The editor tooling, `crates/ns-analyzer`"); `fmt` is the one command that
 writes, rewriting sources in the formatter's layout
 ([formatting.md](formatting.md)). Each `main.rs` holds only the
-argument parser, the dispatch to the commands and the thread every command
-runs on — a thread of its own because the symbol interner is thread-local,
+argument parser, the dispatch to the commands, the global allocator
+([memory.md](memory.md), "The allocator of the Rust side") and the thread
+every command runs on — a thread of its own because the symbol interner is thread-local,
 spawned with the stack the front end needs ([execution.md](execution.md),
 "The depth limit"). What both binaries share is the crate `ns-tooling`:
 `source.rs` loads and resolves one source file, collects the `.ns` files under

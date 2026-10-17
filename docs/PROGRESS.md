@@ -41,6 +41,7 @@ first.
 | Editor support: hints for initializing a local in its declaration and for a read-only local, with their quick fixes and "Apply all hints in this file" | Complete | 2026-10-14 | [editor-hints](superpowers/plans/2026-10-14-1204-ns-next-editor-hints.md) |
 | The gates: the suite's longest loops split into parallel trials, the round trips, the two-entry cache, the hints' oracle and the benchmark programs in nextest profiles of their own, the benchmarks out of the goldens, one table of which gate runs when, run as `cargo xtask gates <group>` | Complete | 2026-10-14 | — |
 | The boot: the shipped modules' compiled code embedded in the binary, and four of the six built on their first demand | Complete | 2026-10-15 | [precompiled-shipped-code](superpowers/plans/2026-10-14-2207-precompiled-shipped-code.md), [shipped-modules-on-first-demand](superpowers/plans/2026-10-15-0900-shipped-modules-on-first-demand.md) |
+| The front end's cost: a corpus benchmark of the syntax crate, the comment attachment on demand, mimalloc in both binaries | Complete | 2026-10-17 | [attach-on-demand](superpowers/plans/2026-10-17-1049-attach-on-demand.md) |
 | Road step 5 — mirrors and atomic installation, on `become:` as an eager bulk forward | Not started | — | — |
 | Road step 6 — inline allocation in the interpreter | Not started | — | — |
 | Road step 7 — an execution model for compiled code | Not started | — | — |
@@ -5368,3 +5369,35 @@ the finalizer, which comes with the actors' event loop; the image encoder's
 ephemeron fixpoint, which still rescans per round; and
 `Interpreter::instantiate` bypassing `decide_factory`. Road step 5,
 mirrors and atomic installation, is next.
+
+## The front end's cost (2026-10-17)
+
+Plan: [attach-on-demand](superpowers/plans/2026-10-17-1049-attach-on-demand.md);
+[frontend.md](design/frontend.md), "Comments" and "The corpus as a parser gate";
+[memory.md](design/memory.md), "The allocator of the Rust side".
+
+- **A corpus benchmark.** `cargo bench -p ns-syntax --bench corpus` times
+  `lex`, `parse` and `parse_for_editor` over every corpus module, per
+  module and in total, with tokens and time per token. It showed the
+  comment attachment at 38 % of a parse.
+- **The comment attachment on demand.** The tree of every commentable
+  node is gone: a prepass records each node once, one loop over the
+  records writes a 12-byte entry per node, and a descent opens only the
+  nodes a comment lies in. The first algorithm stays, test-only, as the
+  reference in `attach/reference.rs`, and oracle tests hold the descent to
+  it over every source and fifteen prefixes of each. `parse` over the
+  corpus went from 114 ms to 94.8 ms on Windows' heap, and the
+  super-linear corner with many comments among many children is gone.
+- **Equality allocates nothing for a pair its first step decides.**
+  `derived_equality` allocated its work stack for every `=` it reached;
+  Richards went from 83.9 to 71.7 ms.
+- **mimalloc in `ns-next` and `ns-next-analyzer`.** `parse-corpus` went
+  from 164 to 77 ms, a boot from source from 14.9 to 11.8 ms, several
+  benchmarks 3 % to 11 % faster; a boot from the embedded shipped code
+  measured 3 % slower, and each process keeps about 1.2 MB more resident
+  (9 MB more under `parse-corpus`).
+
+What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the runtime
+still pays for the attachment and discards the comments, fewer allocations
+in the syntax tree, and parsing files in parallel. Road step 5, mirrors and
+atomic installation, is still next.

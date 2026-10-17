@@ -3,12 +3,14 @@
 > **Status:** built.
 > **Code:** `crates/ns-syntax/` — lexer, tokens, AST (`ast.rs`, lossless
 > except for layout), recursive-descent and Pratt parser, `Span`,
-> diagnostics; the comment attachment (`attach.rs`) and the comparison
+> diagnostics; the comment attachment (`attach.rs`, held to the test-only
+> reference in `attach/reference.rs`) and the comparison
 > without positions (`positions.rs`); for an editor, `parse_for_editor`
 > (`lib.rs`), the recovery with its work budget (`parser/declaration.rs`,
 > `parser/mod.rs`), the AST's `Delimiters`, and `Send`'s link-by-link drop,
 > clone and `receiver_chain` (`ast.rs`); the recovery's tests in
-> `tests/recovery.rs`, the attachment's in `tests/attachment.rs`. The
+> `tests/recovery.rs`, the attachment's in `tests/attachment.rs`; the
+> corpus benchmark in `benches/corpus.rs`. The
 > printer that writes a module back as source is
 > [formatting.md](formatting.md)'s.
 
@@ -308,7 +310,8 @@ lies between them. A blank line or code starts a new
 block, and so does a `///` after code on its line: that one is a remark on
 its line, so it neither joins the block above nor takes the next line in. A
 `(* ... *)` is always a comment of its own. A reader thereby gets one
-comment, with one text, per block — one fold, one class comment.
+comment, with one text, per block — one fold, one class comment. `run`, and with it `lex`, drops the list; the
+token stream is the same either way.
 
 `Comment::text` answers a comment's content without its markers, its lines
 joined with `\n` whatever the source's line endings, for a reader that shows
@@ -346,8 +349,47 @@ comment stands on its line is layout (anchors stay compared), and reads an
 empty part as absent, so two parses that say the same compare equal however
 they are laid out.
 
-`run`, and with it `lex`, drops the list; the token stream is the same
-either way.
+The attachment does its work in three steps, none recursing over the tree.
+A prepass walks the tree once and records, for every commentable node in
+pre-order, its known span, its shape and its parent's index, and records the
+empty parts and the pattern literals, since which tokens a comment is
+counted among depends on them. One loop over the records, from the last to
+the first, then writes for every commentable node an entry of 12 bytes --
+its first and last token and the size of its subtree: a node's descendants
+follow it in pre-order, so its children are finished when the loop reaches
+it, and no second walk is needed. The loop takes the nodes in roughly
+descending source order, so each of its token searches starts where the
+previous one found its token and gallops from there (`partition_point_near`)
+instead of searching all the tokens. A descent starts at the module and
+expands a node only when a comment lies inside it: a node no comment lies
+in is never opened, so the work follows the comments and the nodes on their
+paths, not the size of the tree. Its buffers are held across the
+expansions, so an expansion allocates only the comment lists it hands its
+children, and an attached comment's lines are split from the source by a
+borrowing splitter (`comment::lines`) and copied once. Where comments stand
+among a holder's children, the `Inner(n)` count is two binary searches over
+prefix sums of the holder's own tokens (`OwnTokens`), built once per holder.
+The first algorithm, which built a tree of every commentable node, stays as
+the test-only reference in `attach/reference.rs`, and oracle tests hold the
+descent to it over every source of the repository and fifteen prefixes of
+each, comment for comment; `the_work_grows_linearly_along_a_chain` and
+`the_work_grows_linearly_with_comments_among_many_children` hold the
+descent and the prepass linear. Measured 2026-10-17 on the measuring
+workstation (Windows 11, release builds with the function-alignment pin,
+three builds per side run three times each, `--rounds 40`, each phase timed
+over all modules before the next) over the 211 modules of `corpus/modules`,
+the total `parse` median is 94.8 ms (spread over the nine runs 94.0-95.4
+ms) and `parse_for_editor` 95.1 ms (93.9-95.4 ms), against 104.8 ms
+(104.2-105.3 ms) and 104.5 ms (104.1-105.2 ms) with the attachment of
+c6448e16: 9.5 % and 9.0 % less.
+Per pass over the corpus (temporary instrumentation, one release build
+without the pin) the prepass takes 9.7 ms, keeping the tokens 2.4 ms, the
+loop over the records 6.0 ms and the descent 8.4 ms, 3.4 ms of it building
+the 8,109 `AttachedComment`s; the prepass and the loop together take 15.7
+ms against 22.3 ms for the prepass and the measuring of c6448e16. The attachment is
+still the second largest cost after the parser's own; `Kernel.ns` parses in
+2.83 ms, 1.52 ms with its `///` lines stripped. The measurement covers one
+machine, Windows' heap allocator and the corpus only.
 
 ## AST
 
@@ -626,6 +668,15 @@ with the user): the corpus is real Newspeak and the parser follows the
 specification's grammar, so a module that fails to parse is either a parser
 defect or a program the specification refuses, and either way a decision to
 take and record here, not a file to set aside.
+
+The corpus is also what the frontend is timed on:
+`cargo bench -p ns-syntax --bench corpus` lexes (`lex`), parses (`parse`)
+and parses for an editor (`parse_for_editor`) every module, one module
+after another in each of 20 rounds, and reports each module's median per
+phase and the minimum, median and maximum of the corpus's total
+(`crates/ns-syntax/benches/corpus.rs`, whose doc comment lists the options;
+`--csv` keeps the medians for a comparison). It is `std` alone, with no
+benchmark framework, and runs in the release profile.
 
 ## Errors
 

@@ -158,6 +158,12 @@ enum Command {
 /// because the symbol interner is thread-local.
 const INTERPRETER_STACK_BYTES: usize = 8 * 1024 * 1024;
 
+/// The allocator for everything Rust allocates; the Newspeak heap is
+/// `ns-memory`'s own reservation and never comes through it. mimalloc rather
+/// than the platform's: the workspace manifest gives the measurement.
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() -> ExitCode {
     let command = Cli::parse().command;
     // The whole command runs on the interpreter's thread, not only its sends:

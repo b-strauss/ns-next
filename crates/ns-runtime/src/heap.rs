@@ -46,8 +46,7 @@ pub(crate) use header::IDENTITY_HASH_LIMIT;
 use header::{Format, Header, MAX_AGE, WORD_COUNT_OVERFLOW};
 pub use object::Element;
 use object::{
-    class_field, closure_field, frame_field, pointer_ranges, trace_block, PackedString, CLASS,
-    FIELDS, HEADER,
+    class_field, closure_field, frame_field, trace_block, PackedString, CLASS, FIELDS, HEADER,
 };
 pub(crate) use object::{ByteArrayData, ByteArrayDataMut};
 use pending::PendingEphemerons;
@@ -4777,7 +4776,7 @@ impl<'gc> Heap<'gc> {
         while position < old.top / 8 {
             let (header, next) = object_at(words, position);
             let block = block_range(words, header);
-            let names_young = pointer_ranges(&words[block.clone()])
+            let names_young = object::pointer_ranges(&words[block.clone()])
                 .into_iter()
                 .any(|range| {
                     words[range.start + block.start..range.end + block.start]

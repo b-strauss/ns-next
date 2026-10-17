@@ -398,11 +398,18 @@ fn derived_equality<'gc>(
             }
         }
     }
-    let mut work = vec![(left, right)];
+    // The root pair is examined before the stack is used, so a pair its
+    // first step decides -- `nil = anObject`, two numbers, two values of
+    // unrelated classes -- allocates nothing: an empty `Vec` allocates
+    // only at its first push, and this leaf runs for every `=` that
+    // reaches it: allocating the stack up front cost Richards 15 % of its
+    // time on Windows' heap.
+    let mut root = Some((left, right));
+    let mut work = Vec::new();
     let mut assumed: HashSet<(usize, usize)> = HashSet::new();
-    // The root pair is on the stack already.
+    // The root pair is charged like a pushed one.
     let mut charged = 1usize;
-    while let Some((first, second)) = work.pop() {
+    while let Some((first, second)) = root.take().or_else(|| work.pop()) {
         // The classes first, for every shape: §3.1.1's equality is equality
         // of state *within* a class, so two values whose classes are unequal
         // are unequal whatever their states look like. Two distinct classes
