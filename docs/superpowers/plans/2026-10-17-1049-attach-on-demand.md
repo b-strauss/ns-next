@@ -28,7 +28,7 @@
 
 1. **Children a recovery made that start at the same token**: the reference orders its children last-declared first, then sorts them stably by first token; the new expansion must list them in the same order, or `child_around` picks another child. Covered by Task 1's prefix oracle (`the_attachment_attaches_as_the_reference_over_every_prefix`).
 2. **A node that receives a `Before` comment from its parent, comments of its own, and an `After` comment from its parent**: its `comments` must stay in source order -- before, own, after -- although they are decided at two different expansions. Pinned by Task 3's `a_node_keeps_its_comments_in_source_order_across_two_expansions`.
-3. **`Inner(n)` on a holder whose children overlap or end right before the comment**: the count leaves out each child's tokens before the gap and the `.` after a child only when the `.` stands before the gap. Pinned by Task 2's `inner_counts_a_period_only_before_the_gap` and the prefix oracle.
+3. **`Inner(n)` on a holder with several children before the comment**: the count leaves out each child's tokens and the `.` after each, whatever the order the children end in. Pinned by Task 2's `inner_counts_the_own_tokens_around_several_children` and the prefix oracle (recovered children can overlap).
 4. **A comment inside a pattern literal** is attached nowhere, and an empty part with a comment between its bars is kept, without it dropped. Covered by the oracle over `goldens/` (pattern literals and empty parts occur there) and by the existing tests `a_comment_before_empty_bars_attaches_as_without_them`, `a_comment_after_an_empty_class_side_attaches_as_without_it`.
 5. **A chain of 100,000 messages and a cascade of 100,000 messages** each with comments: the work grows linearly and nothing overflows the stack. Pinned by Task 3's two work tests, run on a 256 KiB stack.
 
@@ -134,7 +134,7 @@ In `attach.rs`'s `mod tests`, change `fn every_source() -> Vec<PathBuf>` to `pub
 
 - [ ] **Step 3: Move the tree test to the reference**
 
-Move `every_comment_of_every_module_is_attached_once_to_a_tree_of_disjoint_extents` out of `attach.rs`'s tests into a `#[cfg(test)] mod tests { use super::*; use crate::attach::tests::every_source; … }` at the end of `reference.rs`. In it, the call `attach_comments(&mut module, &tokens, &lexed.comments, &source);` now names the reference's `attach_comments` (the `use super::*` brings it). Rename the test `the_reference_attaches_every_comment_once_to_a_tree_of_disjoint_extents`. `attach::tests` must be visible: change `mod tests` in `attach.rs` to `pub(super) mod tests`... it is private to `attach`, and `reference` is a child of `attach`, so `crate::attach::tests::every_source` with `pub(super)` on the function and the module declared `mod tests` is reachable from `attach::reference` (a descendant of `attach`). If the compiler disagrees, declare it `pub(super) mod tests`.
+Move `every_comment_of_every_module_is_attached_once_to_a_tree_of_disjoint_extents` out of `attach.rs`'s tests into a `#[cfg(test)] mod tests { use super::*; use crate::attach::tests::every_source; … }` at the end of `reference.rs`. In it, the call `attach_comments(&mut module, &tokens, &lexed.comments, &source);` now names the reference's `attach_comments` (the `use super::*` brings it). Rename the test `the_reference_attaches_every_comment_once_to_a_tree_of_disjoint_extents`. `crate::attach::tests::every_source` is reachable from `attach::reference`: the private module `tests` and the `pub(super)` function are both visible in `attach` and its descendants.
 
 - [ ] **Step 4: Write the oracle tests**
 
@@ -1201,7 +1201,7 @@ impl OwnTokens {
 }
 ```
 
-- [ ] **Step 5: Add the disjointness test and the `Inner` period test**
+- [ ] **Step 5: Add the disjointness test and the `Inner` count test**
 
 Add to `attach.rs`'s `mod tests`:
 
@@ -1247,14 +1247,14 @@ Add to `attach.rs`'s `mod tests`:
         }
     }
 
-    /// A `.` after a child counts as the child's only when it stands
-    /// before the comment: before `(* c *)` the class body has `(` and the
-    /// `.` after `x`, after it nothing of `x`'s.
+    /// Before a dangling comment the class body's own tokens are `(` --
+    /// and the slot section's bars when it has slots -- each child's
+    /// tokens and the `.` after it not counted.
     #[test]
-    fn inner_counts_a_period_only_before_the_gap() {
+    fn inner_counts_the_own_tokens_around_several_children() {
         for (source, expected) in [
-            ("class A = ( x.\n  (* c *)\n) ()", Anchor::Inner(1)),
-            ("class A = ( x\n  (* c *)\n.) ()", Anchor::Inner(1)),
+            ("class A = ( x. y. z.\n  (* c *)\n) ()", Anchor::Inner(1)),
+            ("class A = ( | a b | x. y.\n  (* c *)\n) ()", Anchor::Inner(3)),
         ] {
             let module = crate::parse(source).expect("parse");
             let side = &module.root_class.instance_side;
@@ -1263,7 +1263,7 @@ Add to `attach.rs`'s `mod tests`:
     }
 ```
 
-If the second source of `inner_counts_a_period_only_before_the_gap` does not parse, or its anchor is not `Inner(1)` under the reference too, replace it with a source of your own where a child's `.` stands after an `Inner` comment, and assert what the reference answers for it (`reference::attach_comments` over `unattached(source)`); report the source you chose.
+If a source of `inner_counts_the_own_tokens_around_several_children` does not parse, or the reference (`reference::attach_comments` over `unattached(source)`) answers another anchor for it, assert what the reference answers and report the difference: the test pins agreement on a holder with several children, the reference decides the number.
 
 - [ ] **Step 6: Run the attachment tests**
 
@@ -1430,18 +1430,16 @@ Three builds of one tree in three target directories differ only if the build is
 
 - [ ] **Step 2: Run them, interleaved**
 
-Each binary three times, before and after alternating, `--rounds 40`, from `crates/ns-syntax` (the benchmark reads `../../corpus/modules` relative to its manifest, so either tree's binary reads this tree's corpus -- the same modules for both):
+Each binary three times, before and after alternating, `--rounds 40`, from `crates/ns-syntax` (each binary reads `corpus/modules` of the tree it was built from, relative to its manifest; the corpus is the same at both commits):
 
 ```powershell
 Set-Location crates/ns-syntax
 foreach ($run in 1..3) { foreach ($build in 1..3) { foreach ($side in "before","after") {
   $exe = Get-ChildItem "D:\Workspace\ns-next\.temp\target-$side-$build\release\deps\corpus-*.exe" | Select-Object -First 1
-  & $exe.FullName --rounds 40 --top 0 2>&1 | Select-String "^(lex|parse|editor) " | ForEach-Object { "$side $build $run $_" }
+  & $exe.FullName --rounds 40 --top 1 2>&1 | Select-String "^(lex|parse|editor) " | ForEach-Object { "$side $build $run $_" }
 } } }
 Set-Location ../..
 ```
-
-(`--top 0` is refused by the benchmark -- a count must be positive -- so use `--top 1` instead.)
 
 Record per build and side the median total of `parse` and `editor`; pool per side (the median of the nine runs); give the spread (min–max of the nine).
 
@@ -1465,7 +1463,7 @@ Map each address to the function `dumpbin` lists above it and aggregate self and
 
 In `docs/design/frontend.md`, section "Comments": after the paragraph that names `attach.rs`, add a paragraph saying how the attachment works now -- the prepass, the one walk into an entry per node (12 bytes), the descent that expands only a node a comment lies in, the reference in `attach/reference.rs` that every source and every prefix of one is held to -- and what it costs, with the pooled numbers of Step 2 (before and after, per side, the spread) and the attachment's share from Step 3.
 
-In `docs/OPEN-WORK.md`, rewrite "Comment attachment: a super-linear corner, and its cost on every boot from source": the corner is gone (an `Inner` count is two searches, and `the_work_grows_linearly_with_comments_among_many_children` holds it); what stays is that the runtime pays for the attachment and discards the comments, with the attachment's cost on `Kernel.ns` measured afresh (`cargo bench -p ns-syntax --bench corpus -- ../runtime/core-library --filter Kernel.ns` from `crates/ns-syntax` gives `parse`; the item's earlier figures are replaced, not kept beside). Add an item "**Fewer allocations in the syntax tree** (sub-project B of the syntax crate's optimization)": the parser's share and dropping the module's (14 % of the baseline profile), what allocates there (a `String` per identifier and selector, a `Box` or `Vec` per node, `parse_keyword_parts` growing its vectors), and that it needs a design of its own, the AST being read by `ns-runtime`, `ns-analyzer`, `ns-tooling` and `ns-cli`.
+In `docs/OPEN-WORK.md`, rewrite "Comment attachment: a super-linear corner, and its cost on every boot from source": the corner is gone (an `Inner` count is two searches, and `the_work_grows_linearly_with_comments_among_many_children` holds it); what stays is that the runtime pays for the attachment and discards the comments, with the attachment's cost on `Kernel.ns` measured afresh (`cargo bench -p ns-syntax --bench corpus -- ../ns-runtime/core-library --filter Kernel.ns` from `crates/ns-syntax` gives `parse`; the item's earlier figures are replaced, not kept beside). Add an item "**Fewer allocations in the syntax tree** (sub-project B of the syntax crate's optimization)": the parser's share and dropping the module's (14 % of the baseline profile), what allocates there (a `String` per identifier and selector, a `Box` or `Vec` per node, `parse_keyword_parts` growing its vectors), and that it needs a design of its own, the AST being read by `ns-runtime`, `ns-analyzer`, `ns-tooling` and `ns-cli`.
 
 - [ ] **Step 5: Remove the measurement's trees**
 
