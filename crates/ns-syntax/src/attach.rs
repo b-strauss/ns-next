@@ -885,6 +885,13 @@ fn descend(module: &mut Module, context: &Context<'_>, placed: Vec<usize>, work:
         before: Vec::new(),
         after: Vec::new(),
     }];
+    // Held across the expansions, so that one allocates only the comment
+    // lists it fills for its children.
+    let mut declared = Vec::new();
+    let mut slots: Vec<Option<Pending<'_>>> = Vec::new();
+    let mut indices = Vec::new();
+    let mut children = Vec::new();
+    let mut decided: Vec<Placed> = Vec::new();
     let mut scratch = Vec::new();
     while let Some(Expansion {
         node,
@@ -894,11 +901,11 @@ fn descend(module: &mut Module, context: &Context<'_>, placed: Vec<usize>, work:
         after,
     }) = expansions.pop()
     {
-        let mut declared = Vec::new();
         let description = describe(node, &mut declared, None);
-        let children = context.children(index, declared.len());
+        context.children(index, declared.len(), &mut indices, &mut children);
         *work += 1 + declared.len() + inside.len();
-        let mut decided: Vec<Placed> = children.iter().map(|_| Placed::default()).collect();
+        decided.clear();
+        decided.resize_with(children.len(), Placed::default);
         let mut own_tokens = None;
         context.push(description.comments, &before, Anchor::Before);
         for comment in inside {
@@ -910,8 +917,9 @@ fn descend(module: &mut Module, context: &Context<'_>, placed: Vec<usize>, work:
             }
         }
         context.push(description.comments, &after, Anchor::After);
-        let mut declared: Vec<Option<Pending<'_>>> = declared.into_iter().map(Some).collect();
-        for (child, decided) in children.iter().zip(decided) {
+        slots.clear();
+        slots.extend(declared.drain(..).map(Some));
+        for (child, decided) in children.iter().zip(decided.drain(..)) {
             let Placed {
                 inside,
                 before,
@@ -920,7 +928,7 @@ fn descend(module: &mut Module, context: &Context<'_>, placed: Vec<usize>, work:
             if inside.is_empty() && before.is_empty() && after.is_empty() {
                 continue;
             }
-            let Some(node) = declared[child.position].take() else {
+            let Some(node) = slots[child.position].take() else {
                 continue;
             };
             if inside.is_empty() {
@@ -942,40 +950,44 @@ fn descend(module: &mut Module, context: &Context<'_>, placed: Vec<usize>, work:
     }
 }
 
-/// The entry indices of the `count` children of the node at `index`, in
-/// the order `describe` appends them.
-fn child_indices(entries: &[Entry], index: usize, count: usize) -> Vec<usize> {
-    let mut indices = vec![0; count];
+/// Fills `indices` with the entry indices of the `count` children of the
+/// node at `index`, in the order `describe` appends them.
+fn child_indices(entries: &[Entry], index: usize, count: usize, indices: &mut Vec<usize>) {
+    indices.clear();
+    indices.resize(count, 0);
     let mut next = index + 1;
     for position in (0..count).rev() {
         indices[position] = next;
         next += entries[next].size as usize;
     }
     debug_assert_eq!(next, index + entries[index].size as usize);
-    indices
 }
 
 impl Context<'_> {
-    /// The children of the node at `index` that have a token, by first
-    /// token. Listed last-appended first before the stable sort, as the
-    /// reference lists them, so that children a recovery made to start at
-    /// the same token keep the reference's order.
-    fn children(&self, index: usize, count: usize) -> Vec<Child> {
-        let indices = child_indices(self.entries, index, count);
-        let mut children: Vec<Child> = (0..count)
-            .rev()
-            .filter_map(|position| {
-                let index = indices[position];
-                self.entries[index].extent().map(|(first, last)| Child {
-                    first,
-                    last,
-                    index,
-                    position,
-                })
+    /// Fills `children` with the children of the node at `index` that have
+    /// a token, by first token, `indices` the buffer for their entries.
+    /// Listed last-appended first before the stable sort, as the reference
+    /// lists them, so that children a recovery made to start at the same
+    /// token keep the reference's order.
+    fn children(
+        &self,
+        index: usize,
+        count: usize,
+        indices: &mut Vec<usize>,
+        children: &mut Vec<Child>,
+    ) {
+        child_indices(self.entries, index, count, indices);
+        children.clear();
+        children.extend((0..count).rev().filter_map(|position| {
+            let index = indices[position];
+            self.entries[index].extent().map(|(first, last)| Child {
+                first,
+                last,
+                index,
+                position,
             })
-            .collect();
+        }));
         children.sort_by_key(|child| child.first);
-        children
     }
 
     /// Where the comment at `comment` goes among the holder at `holder`
@@ -1441,7 +1453,8 @@ mod tests {
             while let Some((node, index)) = stack.pop() {
                 let mut declared = Vec::new();
                 describe(node, &mut declared, None);
-                let indices = child_indices(&entries, index, declared.len());
+                let mut indices = Vec::new();
+                child_indices(&entries, index, declared.len(), &mut indices);
                 let mut extents: Vec<(usize, usize)> = indices
                     .iter()
                     .filter_map(|child| entries[*child].extent())
