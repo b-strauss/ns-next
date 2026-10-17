@@ -259,8 +259,8 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   `NS_NEXT_NO_PRIMITIVE_METHODS`, every boot of a binary built without a
   current artifact, and `cargo xtask shipped-code` itself, which every gate
   run runs. Part of it is the comment attachment the runtime discards
-  ("Comment attachment: a super-linear corner, and its cost on every boot
-  from source" below). [execution.md](design/execution.md), "What the
+  ("Comment attachment: the runtime pays for it and discards the
+  comments" below). [execution.md](design/execution.md), "What the
   precompiled shipped code moved";
   [core-library.md](design/core-library.md), "The embedded shipped code".
 
@@ -1271,20 +1271,32 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
   preserving, but it reads badly; the comment's break should end at the
   operand. [formatting.md](design/formatting.md), rule 21.
   Noted 2026-10-12.
-- **Comment attachment: a super-linear corner, and its cost on every boot
-  from source.** `own_tokens_before` (`crates/ns-syntax/src/attach.rs`)
-  walks every child of the holder for each `Inner` comment, so a cascade
-  with a comment before each `;` attaches in quadratic time; no real source
-  reaches it, and the attachment is linear on every module of the
-  repository. The runtime pays for the attachment and discards the
-  comments: `parse` of `Kernel.ns` takes 2.50 ms with its comments and 1.06
-  ms with its `///` lines stripped (0.14 ms of the difference is lexing
-  them), about 2 ms per start for the three shipped modules then measured,
-  on every boot that compiles the shipped source (`interpreter/kernel.rs`,
+- **Comment attachment: the runtime pays for it and discards the
+  comments.** The attachment is linear in the source and in the comments
+  (an `Inner` count is two binary searches over prefix sums built once per
+  holder; the oracle tests check its numbers, and
+  `the_work_grows_linearly_along_a_chain` and
+  `the_work_grows_linearly_with_comments_among_many_children` hold the
+  descent and the walks linear). What stays is that `parse` attaches every
+  comment and the runtime throws them away: `parse` of `Kernel.ns` takes
+  2.15 ms, 0.31 ms of it lexing (`cargo bench -p ns-syntax --bench corpus
+  -- ../ns-runtime/core-library --filter Kernel.ns` from `crates/ns-syntax`;
+  2026-10-17, the measuring workstation, Windows 11), and the attachment is
+  about a third of a run of the corpus benchmark's three phases. That is paid on
+  every boot that compiles the shipped source (`interpreter/kernel.rs`,
   `interpreter/core_library.rs` call `ns_syntax::parse`); an optimized boot
   from the embedded shipped code parses nothing ("The parser's 3.4 ms for
   `Kernel.ns`" above). A `parse` that skips the attachment for the runtime
-  would recover it. Noted 2026-10-12.
+  would recover it. [frontend.md](design/frontend.md), "Comments".
+- **Fewer allocations in the syntax tree** (sub-project B of the syntax
+  crate's optimization). In the sampled profile of the corpus benchmark
+  (2026-10-17) the parser is 41 % of the run and dropping the module 14 %,
+  the lexer 12 % and
+  the attachment 33 %. What allocates there: a `String` per identifier and
+  selector, a `Box` or `Vec` per node, `parse_keyword_parts` growing its
+  vectors; the allocator's `finish_grow` alone is 14 % of the run. It needs
+  a design of its own, since `ns-runtime`, `ns-analyzer`, `ns-tooling` and
+  `ns-cli` read the AST.
 - **`Interpreter::instantiate`, the host's way to instantiate, bypasses
   `decide_factory`.** It calls `decide_instantiation` directly
   (`interpreter/instantiate.rs`), so a host that instantiates `Ephemeron`,
