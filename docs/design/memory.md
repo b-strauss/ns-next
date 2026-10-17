@@ -1540,14 +1540,17 @@ scavenger trace `strong_pointer_ranges` instead, the class word alone of a
 survive. Each collector lists those objects as it meets them and, once
 its traversal has run dry, settles them in Primordial Soup's order
 (`vm/heap.cc:627-682`): it traces each listed ephemeron whose key has
-since been reached and indexes the rest by key (`heap/pending.rs`), then
-runs the traversal again, looking each object it reaches up in the index
-once and tracing the ephemerons keyed by it, and ephemerons it lists anew
-meet the same check, until the traversal has nothing left to visit; it
-records what it reaches only while the index holds an unresolved
-ephemeron, so the common case, every key reached by the time the first
-check runs, looks nothing up. It sets every field of an ephemeron left in
-the index to `nil` (it is mourned: its key was reached by nothing but
+since been reached, runs the traversal again, and checks again, with the
+ephemerons it listed anew, until the traversal has nothing left to visit.
+The first two checks scan every unresolved ephemeron; a fixpoint still
+running after them indexes those left unresolved by key
+(`heap/pending.rs`), and from then on looks each object it reaches up in
+the index once and traces the ephemerons keyed by it, recording what it
+reaches only while the index holds an unresolved ephemeron -- so a weak
+map's fixpoint, which ends within the two scans, indexes nothing, and a
+chain of ephemerons costs its length. It sets every field of an
+ephemeron left unresolved to `nil` (it is mourned: its key was reached
+by nothing but
 ephemerons); and sets to `nil` every word of a listed weak object whose
 object was not reached. A full collection does so in
 `Heap::finish_marking`, between `drain_marking` and `prune_canonical_symbols`, before compaction, whose
