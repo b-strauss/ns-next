@@ -88,9 +88,13 @@ quarter of its 38 %.
 ## Files
 
 - `crates/ns-syntax/src/attach.rs`: the rules' documentation,
-  `attach_comments`, the helpers both implementations share unchanged
-  (`attached`, `placement`, `closes`, the empty parts' test), and the new
-  `describe`, the two walks and the descent.
+  `attach_comments`, the helpers both implementations share unchanged --
+  the leaves that turn a decided placement into an `AttachedComment`
+  (`attached`, `placement`) and the token predicates and arithmetic
+  (`closes`, `merge`, `Tokens` and its `covering`) -- and the new
+  `describe`, the two walks and the descent. What a node's own spans,
+  shape, children and empty parts are is not shared: the reference keeps
+  its own `flatten` and `drop_if_empty`.
 - `crates/ns-syntax/src/attach/reference.rs`, `#[cfg(test)]` only: today's
   algorithm -- `Builder` with its own `flatten`, `Tree`, `measure`,
   `place` -- moved unchanged, the independent second derivation the new
@@ -110,8 +114,9 @@ quarter of its 38 %.
   unfinished nodes are covered.
 - **Linear work.** A chain of 100,000 unary messages with a comment at its
   innermost receiver, and a cascade of 100,000 messages with a comment
-  before every `;`: a count of the work the descent does (nodes expanded
-  plus children visited) grows linearly with the length -- checked at two
+  before every `;`: a count the new algorithm keeps in test builds of the
+  work the walks and the descent do (nodes visited, nodes expanded and
+  children visited) grows linearly with the length -- checked at two
   lengths -- rather than a time bound.
 - **The existing tests.** The disjoint-extents test
   (`every_comment_of_every_module_is_attached_once_to_a_tree_of_disjoint_extents`)
