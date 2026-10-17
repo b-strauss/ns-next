@@ -27,9 +27,10 @@ libtest-mimic = "0.8"
 # on Windows is the process heap, and the front end allocates and frees a
 # node at a time: `parse-corpus` took 164 ms there against 77 ms under
 # mimalloc, a boot from source 14.9 ms against 11.8 ms. snmalloc and
-# rpmalloc measured the same as mimalloc; mimalloc is the most used of the
-# three and needs no extra system library. C, built by `cc`, so the build
-# needs the C compiler a Rust toolchain on these targets already relies on.
+# rpmalloc measured the same as mimalloc, the most used of the three. It
+# keeps about 1.2 MB more resident per process. C (C++ under MSVC), built
+# by `cc`, so the build needs the C compiler a Rust toolchain on these
+# targets already relies on.
 mimalloc = { version = "0.1", default-features = false }
 
 # Link-time optimization across crate boundaries, and a single codegen unit so the

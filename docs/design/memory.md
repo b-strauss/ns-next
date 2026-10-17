@@ -2018,13 +2018,28 @@ against 11.8 ms; a boot from the embedded shipped code 4.9 ms against 5.0
 ms, the one case mimalloc measures slower. Of the benchmarks, under
 mimalloc: `bench_block` -11 %, Bounce -8 %, Storage -7 %, CD and DeltaBlue
 -5 %, Json and Havlak -5 %, `bench_megamorphic` and DeltaBlueTon80 -3 %,
-List +3 %, the others within their spread. mimalloc over snmalloc and
-rpmalloc, which measured the same: it is the most used of the three and
-needs no further system library (rpmalloc links `advapi32`). It is C,
-compiled by `cc`, so the build needs a C compiler, which every target's
-Rust toolchain here already has beside its linker. The corpus benchmark
-runs on the platform's allocator, so that it still shows what the front end
-allocates.
+List +3 %, the others within their spread.
+
+It costs memory: mimalloc keeps the segments it took resident rather than
+handing them back at once. Peak working set
+(`PROCESS_MEMORY_COUNTERS.PeakWorkingSetSize`, read after the process
+exits; same builds) of `hello.ns`, `bench_loop.ns` and `bench_send.ns`
+under `bench --iterations 10` 6.0 MB against 7.3 MB, `bench_block.ns`
+13.9 MB against 15.1 MB, Richards 30.7 MB against 31.2 MB, `run-corpus
+corpus/modules` 6.3 MB against 7.5 MB, `ns-next-analyzer parse-corpus`
+19.5 MB against 28.7 MB; the peak commit charge (`PeakPagefileUsage`)
+rises by about 7.5 MB in every `ns-next` case and by 21 MB under
+`parse-corpus`. A megabyte or so of resident memory and some reserved
+commit per process against a fifth of a boot from source and half the
+analyzer's parse: a trade made for these two binaries, which run one
+program or one command and exit, or serve one editor.
+
+mimalloc over snmalloc and rpmalloc, which measured the same: it is the
+most used of the three. It is C (compiled as C++ under MSVC) built by
+`cc`, so the build needs a C compiler, which every target's Rust toolchain
+here already has beside its linker, and it links `advapi32` and a few
+other system libraries on Windows. The corpus benchmark runs on the
+platform's allocator, so that it still shows what the front end allocates.
 
 ## The object space
 
