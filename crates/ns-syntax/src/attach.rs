@@ -159,12 +159,180 @@ fn attach(module: &mut Module, tokens: &[Token], comments: &[Comment], source: &
         .collect();
     let context = Context {
         tokens: &kept,
-        entries: &entries,
+        entries: Some(&entries),
         comments,
         source,
     };
     descend(module, &context, placed, &mut work);
     work
+}
+
+/// [`attach_comments`] for a parse without an error, given what the
+/// parser recorded: no prepass and no extents measured ahead, each child's
+/// extent read from the child when its parent is expanded
+/// (`local_extent`). A debug build attaches a copy by the walk as well and
+/// holds the two equal, so that every clean parse of the debug suites
+/// checks the claim `local_extent` rests on.
+pub(crate) fn attach_clean_comments(
+    module: &mut Module,
+    tokens: &[Token],
+    comments: &[Comment],
+    source: &str,
+    exclusions: &Exclusions,
+) {
+    if comments.is_empty() {
+        return;
+    }
+    #[cfg(debug_assertions)]
+    let mut walked = module.clone();
+    attach_clean(module, tokens, comments, source, exclusions);
+    #[cfg(debug_assertions)]
+    {
+        attach(&mut walked, tokens, comments, source);
+        assert!(
+            attached_by_node(module) == attached_by_node(&mut walked),
+            "the clean path attached unlike the walk"
+        );
+    }
+}
+
+/// Every node's comments, by the node's pre-order index, for the debug
+/// comparison of the two paths: the attachment changes nothing else, and
+/// comparing two modules with `==` would recurse along a chain of
+/// messages, so the walk takes the nodes from an explicit stack.
+#[cfg(debug_assertions)]
+fn attached_by_node(module: &mut Module) -> Vec<(usize, Vec<AttachedComment>)> {
+    let mut found = Vec::new();
+    let mut stack = vec![Pending::Module(module)];
+    let mut children = Vec::new();
+    let mut index = 0;
+    while let Some(node) = stack.pop() {
+        let description = describe(node, &mut children, None);
+        if !description.comments.is_empty() {
+            found.push((index, description.comments.clone()));
+        }
+        index += 1;
+        stack.append(&mut children);
+    }
+    found
+}
+
+/// [`attach_clean_comments`] without the debug comparison, answering the
+/// work it did, as [`attach`] does.
+fn attach_clean(
+    module: &mut Module,
+    tokens: &[Token],
+    comments: &[Comment],
+    source: &str,
+    exclusions: &Exclusions,
+) -> usize {
+    if comments.is_empty() {
+        return 0;
+    }
+    let mut work = 0;
+    let (dropped, patterns) = Parts::from_exclusions(tokens, comments, exclusions).sorted();
+    let kept = Tokens::kept(tokens, &dropped);
+    let placed = (0..comments.len())
+        .filter(|index| !inside_a_pattern(&patterns, comments[*index].span))
+        .collect();
+    let context = Context {
+        tokens: &kept,
+        entries: None,
+        comments,
+        source,
+    };
+    descend(module, &context, placed, &mut work);
+    work
+}
+
+/// A node's extent read from the node itself, for the clean path. On a
+/// parse without an error an expression, a block, a class, a method, a
+/// superclass clause and a class side each start at their first token and
+/// end at their last, so the tokens covering what the node knows are its
+/// extent; a statement, a slot, a message and a body know less than they
+/// span and merge their children's extents, each read the same way. An
+/// expression asks no child, so no chain of messages is followed and the
+/// recursion is at most a body, a statement or slot, and an expression
+/// deep.
+fn local_extent(node: Node<'_>, tokens: &Tokens, work: &mut usize) -> Option<(usize, usize)> {
+    *work += 1;
+    let (mut known, shape) = known_and_shape(node);
+    if let Node::Expression(expression) = node {
+        widen_by_the_right_edge(&mut known, expression, work);
+    }
+    let children = match node {
+        Node::Statement(statement) => {
+            let (StatementKind::Return(expression) | StatementKind::Expression(expression)) =
+                &statement.kind;
+            local_extent(Node::Expression(expression), tokens, work)
+        }
+        Node::Slot(slot) => slot
+            .initializer
+            .as_ref()
+            .and_then(|initializer| local_extent(Node::Expression(initializer), tokens, work)),
+        Node::Message(message) => {
+            merged_local_extents(message.arguments.iter().map(Node::Expression), tokens, work)
+        }
+        Node::Body(body) => {
+            // Its children stand in source order, temporaries first: the
+            // first and the last are its extent's ends.
+            let first = body
+                .temporaries
+                .first()
+                .map(Node::Slot)
+                .or_else(|| body.statements.first().map(Node::Statement));
+            let last = body
+                .statements
+                .last()
+                .map(Node::Statement)
+                .or_else(|| body.temporaries.last().map(Node::Slot));
+            merged_local_extents(first.into_iter().chain(last), tokens, work)
+        }
+        _ => None,
+    };
+    extent_of(tokens, &mut Cursors::default(), known, shape, children)
+}
+
+/// Widens an expression's `known` by what can stand past its span at its
+/// right edge: a unary message's type arguments end the send they belong
+/// to, and the parser ends a send's span before them (`x foo[E] bar`'s
+/// receiver ends at `foo`, `x at: 1 foo[E]`'s argument at `foo`). Followed
+/// from the last message to its last argument and on, an iteration, never
+/// a recursion; an argument in parentheses ends it, its parentheses
+/// spanning what is inside. The walk needs none of this: it merges every
+/// child's extent.
+fn widen_by_the_right_edge(known: &mut Option<Span>, expression: &Expression, work: &mut usize) {
+    let mut current = expression;
+    loop {
+        let last = match &current.kind {
+            ExpressionKind::Send(send) => &send.message,
+            ExpressionKind::Cascade(cascade) => cascade.rest.last().unwrap_or(&cascade.first),
+            _ => return,
+        };
+        *work += 1;
+        widen_annotation(known, &last.type_arguments);
+        let Some(argument) = last.arguments.last() else {
+            return;
+        };
+        if let (Some(span), _) = known_and_shape(Node::Expression(argument)) {
+            widen(known, span);
+        }
+        if !argument.parentheses.is_empty() {
+            return;
+        }
+        current = argument;
+    }
+}
+
+/// The merged [`local_extent`]s of `nodes`.
+fn merged_local_extents<'tree>(
+    nodes: impl Iterator<Item = Node<'tree>>,
+    tokens: &Tokens,
+    work: &mut usize,
+) -> Option<(usize, usize)> {
+    nodes
+        .filter_map(|node| local_extent(node, tokens, work))
+        .reduce(merge)
 }
 
 /// A commentable node not yet described: the module or one of the nodes
@@ -274,6 +442,56 @@ impl<'input> Parts<'input> {
         }
         true
     }
+
+    /// Drops the tokens of a class side without a member, `delimiters` its
+    /// `( )`, when no comment stands between them -- its `:` included.
+    fn drop_empty_class_side(&mut self, delimiters: Option<Delimiters>) {
+        if !self.drop_if_empty(delimiters) {
+            return;
+        }
+        // The `:` before the side's `(`.
+        if let Some(Delimiters { open, .. }) = delimiters {
+            let open_index = self
+                .tokens
+                .partition_point(|token| token.span.start < open.start);
+            if let Some(colon) = open_index.checked_sub(1).map(|index| self.tokens[index]) {
+                if colon.kind == TokenKind::Colon {
+                    self.dropped.push(colon.span);
+                }
+            }
+        }
+    }
+
+    /// The parts of a parse without an error, from what the parser
+    /// recorded: each empty part dropped by the test the prepass applies.
+    fn from_exclusions(
+        tokens: &'input [Token],
+        comments: &'input [Comment],
+        exclusions: &Exclusions,
+    ) -> Parts<'input> {
+        let mut parts = Parts::new(tokens, comments);
+        for delimiters in &exclusions.empty_bars {
+            parts.drop_if_empty(Some(*delimiters));
+        }
+        for delimiters in &exclusions.empty_class_sides {
+            parts.drop_empty_class_side(Some(*delimiters));
+        }
+        parts.patterns.extend_from_slice(&exclusions.patterns);
+        parts
+    }
+}
+
+/// What the parser records for the attachment of a parse without an error,
+/// which the walk's prepass otherwise collects: the slot sections and
+/// temporaries without a declaration, the class sides without a member,
+/// and the pattern literals (the outermost only), each in the order parsed.
+/// Whether an empty part's tokens are dropped still depends on the
+/// comments (`Parts::drop_if_empty`).
+#[derive(Debug, Default)]
+pub(crate) struct Exclusions {
+    pub(crate) empty_bars: Vec<Delimiters>,
+    pub(crate) empty_class_sides: Vec<Delimiters>,
+    pub(crate) patterns: Vec<Span>,
 }
 
 /// A commentable node read through a shared reference: what
@@ -482,18 +700,8 @@ fn describe_class<'tree>(
         ..
     } = class;
     if let (Some(parts), Some(side)) = (parts, class_side.as_ref()) {
-        if side.members.is_empty() && parts.drop_if_empty(side.delimiters) {
-            // The `:` before the side's `(`.
-            if let Some(Delimiters { open, .. }) = side.delimiters {
-                let open_index = parts
-                    .tokens
-                    .partition_point(|token| token.span.start < open.start);
-                if let Some(colon) = open_index.checked_sub(1).map(|index| parts.tokens[index]) {
-                    if colon.kind == TokenKind::Colon {
-                        parts.dropped.push(colon.span);
-                    }
-                }
-            }
+        if side.members.is_empty() {
+            parts.drop_empty_class_side(side.delimiters);
         }
     }
     if let Some(clause) = superclass {
@@ -819,7 +1027,9 @@ fn inside_a_pattern(patterns: &[Span], span: Span) -> bool {
 /// What the descent reads.
 struct Context<'input> {
     tokens: &'input Tokens,
-    entries: &'input [Entry],
+    /// The walk's extents, in pre-order; `None` on the clean path, which
+    /// reads each child's extent from the child (`local_extent`).
+    entries: Option<&'input [Entry]>,
     comments: &'input [Comment],
     source: &'input str,
 }
@@ -877,7 +1087,7 @@ fn descend(module: &mut Module, context: &Context<'_>, placed: Vec<usize>, work:
     let mut expansions = vec![Expansion {
         node: Pending::Module(module),
         index: 0,
-        extent: context.entries.first().and_then(|module| module.extent()),
+        extent: context.tokens.len().checked_sub(1).map(|last| (0, last)),
         inside: placed,
         before: Vec::new(),
         after: Vec::new(),
@@ -900,7 +1110,7 @@ fn descend(module: &mut Module, context: &Context<'_>, placed: Vec<usize>, work:
     }) = expansions.pop()
     {
         let description = describe(node, &mut declared, None);
-        context.children(index, declared.len(), &mut indices, &mut children);
+        context.children(index, &declared, &mut indices, &mut children, work);
         *work += 1 + declared.len() + inside.len();
         decided.clear();
         decided.resize_with(children.len(), Placed::default);
@@ -964,29 +1174,49 @@ fn child_indices(entries: &[Entry], index: usize, count: usize, indices: &mut Ve
 }
 
 impl Context<'_> {
-    /// Fills `children` with the children of the node at `index` that have
-    /// a token, by first token, `indices` the buffer for their entries.
-    /// Listed last-appended first before the stable sort, as the reference
-    /// lists them, so that children a recovery made to start at the same
-    /// token keep the reference's order.
+    /// Fills `children` with the `declared` children of the node at
+    /// `index` that have a token, by first token, `indices` the buffer for
+    /// their entries on the walk. Listed last-appended first before the
+    /// stable sort, as the reference lists them, so that children a
+    /// recovery made to start at the same token keep the reference's
+    /// order.
     fn children(
         &self,
         index: usize,
-        count: usize,
+        declared: &[Pending<'_>],
         indices: &mut Vec<usize>,
         children: &mut Vec<Child>,
+        work: &mut usize,
     ) {
-        child_indices(self.entries, index, count, indices);
+        let count = declared.len();
         children.clear();
-        children.extend((0..count).rev().filter_map(|position| {
-            let index = indices[position];
-            self.entries[index].extent().map(|(first, last)| Child {
-                first,
-                last,
-                index,
-                position,
-            })
-        }));
+        match self.entries {
+            Some(entries) => {
+                child_indices(entries, index, count, indices);
+                children.extend((0..count).rev().filter_map(|position| {
+                    let index = indices[position];
+                    entries[index].extent().map(|(first, last)| Child {
+                        first,
+                        last,
+                        index,
+                        position,
+                    })
+                }));
+            }
+            None => {
+                children.extend((0..count).rev().filter_map(|position| {
+                    local_extent(declared[position].as_node(), self.tokens, work).map(
+                        |(first, last)| Child {
+                            first,
+                            last,
+                            // The clean path has no entries to index.
+                            index: usize::MAX,
+                            position,
+                        },
+                    )
+                }));
+            }
+        }
         children.sort_by_key(|child| child.first);
     }
 
@@ -1326,19 +1556,97 @@ mod tests {
     }
 
     /// `source` lexed and parsed as `parse_for_editor` does, nothing
-    /// attached: the module, the parser's tokens and the comments.
-    pub(super) fn unattached(source: &str) -> (Module, Vec<Token>, Vec<Comment>) {
+    /// attached: the module, the parser's tokens, the comments and the
+    /// exclusions the parser recorded.
+    pub(super) fn unattached(source: &str) -> (Module, Vec<Token>, Vec<Comment>, Exclusions) {
         let lexed = crate::lexer::Lexer::new(source).run_keeping_comments();
         let mut parser = crate::parser::Parser::new(source, lexed.tokens);
         let module = parser.parse_module();
+        let exclusions = parser.take_exclusions();
         let (tokens, _) = parser.into_parts();
-        (module, tokens, lexed.comments)
+        (module, tokens, lexed.comments, exclusions)
+    }
+
+    /// The parser records the empty parts and the pattern literals the
+    /// prepass collects, so that a parse without an error drops and skips
+    /// what the walk does.
+    #[test]
+    fn the_parser_records_the_exclusions_the_prepass_collects() {
+        for path in every_source() {
+            let source = std::fs::read_to_string(&path).expect("read");
+            let (mut module, tokens, comments, exclusions) = unattached(&source);
+            let mut parts = Parts::new(&tokens, &comments);
+            let mut work = 0;
+            prepass(&mut module, &mut parts, &mut work);
+            let expected = parts.sorted();
+            let actual = Parts::from_exclusions(&tokens, &comments, &exclusions).sorted();
+            assert!(actual == expected, "{}: exclusions differ", path.display());
+        }
+    }
+
+    /// `source` attached by the clean path and by the reference: equal, or
+    /// the name of the source.
+    fn attaches_cleanly_as_the_reference(source: &str, name: &str) {
+        let (module, tokens, comments, exclusions) = unattached(source);
+        let mut expected = module.clone();
+        super::reference::attach_comments(&mut expected, &tokens, &comments, source);
+        let mut actual = module;
+        attach_clean_comments(&mut actual, &tokens, &comments, source, &exclusions);
+        assert!(actual == expected, "{name}: attached unlike the reference");
+    }
+
+    /// Every whole source parses without an error, so it takes the clean
+    /// path: it attaches as the reference attaches it.
+    #[test]
+    fn the_clean_path_attaches_as_the_reference_over_every_source() {
+        for path in every_source() {
+            let source = std::fs::read_to_string(&path).expect("read");
+            attaches_cleanly_as_the_reference(&source, &path.display().to_string());
+        }
+    }
+
+    /// A body's extent runs from its first child to its last, whichever
+    /// of its temporaries and statements they are.
+    #[test]
+    fn a_body_s_extent_spans_its_first_and_last_child() {
+        for source in [
+            "class A = () ( m = ( | a | (* c *) ) )",
+            "class A = () ( m = ( | a | a (* c *) ) )",
+            "class A = () ( m = ( (* c *) ^1. ^2 ) )",
+            "class A = () ( m = [ :x | | a b | a (* c *). b ] )",
+            "class A = () ( m = ( | a | ) (* c *) )",
+        ] {
+            attaches_cleanly_as_the_reference(source, source);
+        }
+    }
+
+    /// A unary message's type arguments stand past the span of the send
+    /// they end when that send is a receiver or an argument: the send's
+    /// extent takes them in all the same.
+    #[test]
+    fn a_send_s_extent_takes_its_last_message_s_type_arguments() {
+        for source in [
+            "class A = () ( m = ( ^x foo[E (* c *)] (* d *) bar ) )",
+            "class A = () ( m = ( ^x at: 1 foo[E (* c *)] (* d *) ) )",
+            "class A = () ( m = ( ^x foo; bar[E (* c *)] (* d *) ) )",
+        ] {
+            attaches_cleanly_as_the_reference(source, source);
+        }
+    }
+
+    /// A pattern literal inside another is part of the outer one's text:
+    /// only the outer one is recorded, as the prepass records only it.
+    #[test]
+    fn a_nested_pattern_is_recorded_once() {
+        let source = "class A = () ( m = ( ^<at: <x: 1>> ) )";
+        let (_, _, _, exclusions) = unattached(source);
+        assert_eq!(exclusions.patterns.len(), 1);
     }
 
     /// The module `source` parses to, attached by `attach_comments` and by
     /// the reference: equal, or the name of the source and where it was cut.
     fn attaches_as_the_reference(source: &str, name: &str) {
-        let (module, tokens, comments) = unattached(source);
+        let (module, tokens, comments, _) = unattached(source);
         let mut expected = module.clone();
         super::reference::attach_comments(&mut expected, &tokens, &comments, source);
         let mut actual = module;
@@ -1382,7 +1690,7 @@ mod tests {
     fn the_loop_measures_the_extents_the_reference_measures() {
         for path in every_source() {
             let source = std::fs::read_to_string(&path).expect("read");
-            let (mut module, tokens, comments) = unattached(&source);
+            let (mut module, tokens, comments, _) = unattached(&source);
             let mut expected = super::reference::extents(&mut module, &tokens, &comments);
             let mut actual = extents(&mut module, &tokens, &comments);
             expected.sort_unstable();
@@ -1442,7 +1750,7 @@ mod tests {
         for path in every_source() {
             let source = std::fs::read_to_string(&path).expect("read");
             let name = path.display();
-            let (mut module, tokens, comments) = unattached(&source);
+            let (mut module, tokens, comments, _) = unattached(&source);
             let mut work = 0;
             let mut parts = Parts::new(&tokens, &comments);
             let records = prepass(&mut module, &mut parts, &mut work);
@@ -1621,15 +1929,19 @@ mod tests {
 
     /// The work `attach` does for `source`, the attachment run on a
     /// 256 KiB stack: a walk that recursed along a chain would overflow it.
-    fn work_for(source: &str) -> usize {
+    fn work_for(source: &str, clean: bool) -> usize {
         const STACK_BYTES: usize = 256 * 1024;
-        let (module, tokens, comments) = unattached(source);
+        let (module, tokens, comments, exclusions) = unattached(source);
         let source = source.to_string();
         std::thread::Builder::new()
             .stack_size(STACK_BYTES)
             .spawn(move || {
                 let mut module = module;
-                let work = attach(&mut module, &tokens, &comments, &source);
+                let work = if clean {
+                    attach_clean(&mut module, &tokens, &comments, &source, &exclusions)
+                } else {
+                    attach(&mut module, &tokens, &comments, &source)
+                };
                 (work, module)
             })
             .expect("spawn the attaching thread")
@@ -1668,17 +1980,21 @@ mod tests {
 
     #[test]
     fn the_work_grows_linearly_along_a_chain() {
-        let short = work_for(&chain(50_000));
-        let long = work_for(&chain(100_000));
-        assert!(short > 50_000, "every link is visited: {short}");
-        assert_linear(short, long, "a chain");
+        for clean in [false, true] {
+            let short = work_for(&chain(50_000), clean);
+            let long = work_for(&chain(100_000), clean);
+            assert!(short > 50_000, "every link is visited: {short}");
+            assert_linear(short, long, "a chain");
+        }
     }
 
     #[test]
     fn the_work_grows_linearly_with_comments_among_many_children() {
-        let short = work_for(&cascade(50_000));
-        let long = work_for(&cascade(100_000));
-        assert_linear(short, long, "a cascade");
+        for clean in [false, true] {
+            let short = work_for(&cascade(50_000), clean);
+            let long = work_for(&cascade(100_000), clean);
+            assert_linear(short, long, "a cascade");
+        }
     }
 
     /// A method with a comment before it, one among its pattern's tokens
