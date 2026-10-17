@@ -1279,24 +1279,25 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
   `the_work_grows_linearly_with_comments_among_many_children` hold the
   descent and the walks linear). What stays is that `parse` attaches every
   comment and the runtime throws them away: `parse` of `Kernel.ns` takes
-  2.15 ms, 0.31 ms of it lexing (`cargo bench -p ns-syntax --bench corpus
-  -- ../ns-runtime/core-library --filter Kernel.ns` from `crates/ns-syntax`;
-  2026-10-17, the measuring workstation, Windows 11), and the attachment is
-  about a third of a run of the corpus benchmark's three phases. That is paid on
-  every boot that compiles the shipped source (`interpreter/kernel.rs`,
-  `interpreter/core_library.rs` call `ns_syntax::parse`); an optimized boot
-  from the embedded shipped code parses nothing ("The parser's 3.4 ms for
-  `Kernel.ns`" above). A `parse` that skips the attachment for the runtime
-  would recover it. [frontend.md](design/frontend.md), "Comments".
+  2.16 ms, 0.31 ms of it lexing, and 1.39 ms once its comments are
+  stripped, so its 3,230 lines of `///` comments cost 0.77 ms, a third of the parse
+  (`cargo bench -p ns-syntax --bench corpus -- <directory> --filter
+  Kernel.ns` from `crates/ns-syntax`, the file as is and a copy without its
+  `///` lines; 2026-10-17, the measuring workstation, Windows 11, release
+  with the alignment pin). That is paid on every boot that compiles the
+  shipped source (`interpreter/kernel.rs`, `interpreter/core_library.rs`
+  call `ns_syntax::parse`); an optimized boot from the embedded shipped
+  code parses nothing ("The parser's 3.4 ms for `Kernel.ns`" above). A
+  `parse` that skips the attachment for the runtime would recover it.
+  [frontend.md](design/frontend.md), "Comments".
 - **Fewer allocations in the syntax tree** (sub-project B of the syntax
   crate's optimization). In the sampled profile of the corpus benchmark
-  (2026-10-17) the parser is 41 % of the run and dropping the module 14 %,
-  the lexer 12 % and
-  the attachment 33 %. What allocates there: a `String` per identifier and
-  selector, a `Box` or `Vec` per node, `parse_keyword_parts` growing its
-  vectors; the allocator's `finish_grow` alone is 14 % of the run. It needs
-  a design of its own, since `ns-runtime`, `ns-analyzer`, `ns-tooling` and
-  `ns-cli` read the AST.
+  (2026-10-17) the parser is 41 % of the run, dropping the module 14 %, the
+  lexer 12 % and the attachment 33 %. What allocates there: a `String` per
+  identifier and selector, a `Box` or `Vec` per node,
+  `parse_keyword_parts` growing its vectors; the allocator's `finish_grow`
+  alone is 14 % of the run. It needs a design of its own, since
+  `ns-runtime`, `ns-analyzer`, `ns-tooling` and `ns-cli` read the AST.
 - **`Interpreter::instantiate`, the host's way to instantiate, bypasses
   `decide_factory`.** It calls `decide_instantiation` directly
   (`interpreter/instantiate.rs`), so a host that instantiates `Ephemeron`,
