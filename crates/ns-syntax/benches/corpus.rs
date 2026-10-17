@@ -3,10 +3,11 @@
 //! Every module of `corpus/modules` (or of the directory given) is lexed
 //! (`lex`), parsed (`parse`, which lexes, parses and attaches comments) and
 //! parsed for an editor (`parse_for_editor`), each phase timed once per
-//! module per round. The rounds go over the modules in turn rather than
-//! timing one module many times in a row, so a module is not measured with
-//! the caches its own previous run left warm, and every round's sum over the
-//! modules is one sample of the corpus's total. The report gives each
+//! module per round. A round goes over all the modules for one phase before
+//! it turns to the next, and takes the modules in turn rather than timing
+//! one many times in a row, so a module is not measured with the caches its
+//! own previous run, or the run of another phase on it, left warm, and every
+//! round's sum over the modules is one sample of the corpus's total. The report gives each
 //! module's median per phase and the total's minimum, median and maximum.
 //!
 //! A `harness = false` binary on `std::time::Instant` alone, so that it adds
@@ -135,14 +136,14 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    for module in &modules {
-        for phase in PHASES {
+    for phase in PHASES {
+        for module in &modules {
             black_box(phase.time(&module.source));
         }
     }
     for _ in 0..options.rounds {
-        for module in &mut modules {
-            for phase in PHASES {
+        for phase in PHASES {
+            for module in &mut modules {
                 let elapsed = phase.time(&module.source);
                 module.samples[phase.index()].push(elapsed);
             }
