@@ -18,8 +18,9 @@
 //!
 //! - `--rounds <count>`: the rounds timed (default 20), after one round
 //!   that warms up and is not counted;
-//! - `--sort parse|lex|editor|size|name`: the order of the per-module table
-//!   (default `parse`, slowest first);
+//! - `--sort parse|lex|editor|per-token|size|name`: the order of the
+//!   per-module table (default `parse`, slowest first; `per-token`, the
+//!   highest parse time per token first);
 //! - `--top <count>`: only the first `count` modules of the table;
 //! - `--filter <text>`: only the modules whose file name contains `text`;
 //! - `--csv <path>`: also writes every module's medians, in nanoseconds,
@@ -76,6 +77,7 @@ impl Phase {
 
 enum SortKey {
     Phase(Phase),
+    PerToken,
     Size,
     Name,
 }
@@ -92,6 +94,10 @@ struct Options {
 struct Module {
     name: String,
     source: String,
+    /// The lexer's tokens: the measure of how much a module holds, since
+    /// a module of short names and many sends holds more of them per byte
+    /// than one of long names and comments.
+    tokens: usize,
     /// Per phase, one duration per timed round.
     samples: [Vec<Duration>; 3],
 }
@@ -181,6 +187,7 @@ fn parse_options(mut arguments: impl Iterator<Item = String>) -> Result<Options,
                     "lex" => SortKey::Phase(Phase::Lex),
                     "parse" => SortKey::Phase(Phase::Parse),
                     "editor" => SortKey::Phase(Phase::Editor),
+                    "per-token" => SortKey::PerToken,
                     "size" => SortKey::Size,
                     "name" => SortKey::Name,
                     other => return Err(format!("unknown sort key `{other}`")),
@@ -224,9 +231,11 @@ fn read_modules(options: &Options) -> Result<Vec<Module>, String> {
         }
         let source = std::fs::read_to_string(&path)
             .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+        let tokens = ns_syntax::lex(&source).map_or(0, |tokens| tokens.len());
         modules.push(Module {
             name,
             source,
+            tokens,
             samples: [const { Vec::new() }; 3],
         });
     }
@@ -245,6 +254,11 @@ fn print_modules(modules: &[Module], options: &Options) {
         SortKey::Phase(phase) => {
             order.sort_by_key(|module| std::cmp::Reverse(module.median(phase)))
         }
+        SortKey::PerToken => order.sort_by(|first, second| {
+            let per_token =
+                |module: &Module| nanoseconds_per_token(module.tokens, module.median(Phase::Parse));
+            per_token(second).total_cmp(&per_token(first))
+        }),
         SortKey::Size => order.sort_by_key(|module| std::cmp::Reverse(module.source.len())),
         SortKey::Name => {}
     }
@@ -257,19 +271,28 @@ fn print_modules(modules: &[Module], options: &Options) {
         .max("module".len());
 
     println!(
-        "{:<name_width$} {:>9} {:>11} {:>11} {:>11} {:>11}",
-        "module", "bytes", "lex µs", "parse µs", "editor µs", "parse MB/s"
+        "{:<name_width$} {:>9} {:>8} {:>11} {:>11} {:>11} {:>11} {:>13}",
+        "module",
+        "bytes",
+        "tokens",
+        "lex µs",
+        "parse µs",
+        "editor µs",
+        "parse MB/s",
+        "parse ns/tok"
     );
     for module in &order[..shown] {
         let parse = module.median(Phase::Parse);
         println!(
-            "{:<name_width$} {:>9} {:>11.1} {:>11.1} {:>11.1} {:>11.1}",
+            "{:<name_width$} {:>9} {:>8} {:>11.1} {:>11.1} {:>11.1} {:>11.1} {:>13.1}",
             module.name,
             module.source.len(),
+            module.tokens,
             microseconds(module.median(Phase::Lex)),
             microseconds(parse),
             microseconds(module.median(Phase::Editor)),
             megabytes_per_second(module.source.len(), parse),
+            nanoseconds_per_token(module.tokens, parse),
         );
     }
     if shown < order.len() {
@@ -280,14 +303,15 @@ fn print_modules(modules: &[Module], options: &Options) {
 
 fn print_totals(modules: &[Module], rounds: usize) {
     let bytes: usize = modules.iter().map(|module| module.source.len()).sum();
+    let tokens: usize = modules.iter().map(|module| module.tokens).sum();
     println!();
     println!(
-        "total over {} modules, {bytes} bytes, {rounds} rounds:",
+        "total over {} modules, {bytes} bytes, {tokens} tokens, {rounds} rounds:",
         modules.len()
     );
     println!(
-        "{:<8} {:>10} {:>10} {:>10} {:>12}",
-        "phase", "min ms", "median ms", "max ms", "median MB/s"
+        "{:<8} {:>10} {:>10} {:>10} {:>12} {:>14}",
+        "phase", "min ms", "median ms", "max ms", "median MB/s", "median ns/tok"
     );
     for phase in PHASES {
         let mut totals: Vec<Duration> = (0..rounds)
@@ -301,12 +325,13 @@ fn print_totals(modules: &[Module], rounds: usize) {
         totals.sort();
         let median = median(&totals);
         println!(
-            "{:<8} {:>10.2} {:>10.2} {:>10.2} {:>12.1}",
+            "{:<8} {:>10.2} {:>10.2} {:>10.2} {:>12.1} {:>14.1}",
             phase.name(),
             milliseconds(totals[0]),
             milliseconds(median),
             milliseconds(totals[totals.len() - 1]),
             megabytes_per_second(bytes, median),
+            nanoseconds_per_token(tokens, median),
         );
     }
 }
@@ -316,13 +341,14 @@ fn write_csv(path: &Path, modules: &[Module]) -> std::io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
-    writeln!(file, "module,bytes,lex_ns,parse_ns,editor_ns")?;
+    writeln!(file, "module,bytes,tokens,lex_ns,parse_ns,editor_ns")?;
     for module in modules {
         writeln!(
             file,
-            "{},{},{},{},{}",
+            "{},{},{},{},{},{}",
             module.name,
             module.source.len(),
+            module.tokens,
             module.median(Phase::Lex).as_nanos(),
             module.median(Phase::Parse).as_nanos(),
             module.median(Phase::Editor).as_nanos(),
@@ -348,4 +374,8 @@ fn milliseconds(duration: Duration) -> f64 {
 
 fn megabytes_per_second(bytes: usize, duration: Duration) -> f64 {
     bytes as f64 / 1e6 / duration.as_secs_f64()
+}
+
+fn nanoseconds_per_token(tokens: usize, duration: Duration) -> f64 {
+    duration.as_secs_f64() * 1e9 / tokens.max(1) as f64
 }
