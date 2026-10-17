@@ -1300,13 +1300,31 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
   file takes about 3.5 ms under mimalloc, too little for threads to pay.
   Not measured yet. Noted
   2026-10-17.
-- **Fewer allocations in the syntax tree** (sub-project B of the syntax
-  crate's optimization). The parser's own work and dropping the module
-  are the largest costs of the corpus benchmark after the attachment's
-  changes, and both are mostly allocation: a `String` per identifier and
-  selector, a `Box` or `Vec` per node, `parse_keyword_parts` growing its
-  vectors, each node freed one by one. It needs a design of its own, since
-  `ns-runtime`, `ns-analyzer`, `ns-tooling` and `ns-cli` read the AST.
+- **Fewer allocations in the syntax tree: measured, and not worth it
+  yet** (decided with the user on 2026-10-17). Under mimalloc a samply
+  profile of `parse` and `parse_for_editor` over the corpus puts the
+  parser at 46 % (its own work 25, allocation 8, `memcpy` 13), the
+  attachment at 20, the lexer at 18 and dropping the module at 15 (drop
+  glue 10, the allocator 4). The `memcpy` is the nodes' size: an
+  `Expression` is 160 bytes, a `Send` 296, a `Statement` 200, a
+  `MethodDeclaration` 320, moved by value as they are built. A throwaway
+  global allocator that bumps a pointer during each parse and frees
+  nothing measured the corpus's `parse` at 40.6 ms against 45.0 ms when
+  the module is still dropped (10 % less) and at 34.3 ms when it is not
+  walked at all (24 % less; `Kernel.ns` 0.66 ms against 0.85 ms; 13 MB
+  for the largest parse; three runs, release with the alignment pin).
+  The second figure is what an arena of nodes without `Drop`, as oxc's,
+  would approach; it puts a lifetime on every AST type through
+  `ns-runtime`, `ns-tooling`, `ns-analyzer` and `ns-cli`, and makes the
+  language server hold source, arena and tree together. No user notices
+  0.25 ms on the largest file, so it waits for a workload where parsing
+  dominates -- a language server reading large workspaces, say. Smaller
+  nodes (rare, large parts behind a `Box`) need no lifetime and aim at
+  the 13 % of `memcpy`, an estimated 5-8 %, not measured. A different
+  parsing algorithm would not help: the fastest parsers (V8, Clang, swc,
+  oxc) are hand-written recursive descent too, and the cost is building
+  the tree, which any algorithm building this AST pays; how much the
+  parser's speculative parses re-read on a clean source is not measured.
 - **`Interpreter::instantiate`, the host's way to instantiate, bypasses
   `decide_factory`.** It calls `decide_instantiation` directly
   (`interpreter/instantiate.rs`), so a host that instantiates `Ephemeron`,
