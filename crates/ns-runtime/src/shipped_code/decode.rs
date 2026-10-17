@@ -221,7 +221,7 @@ impl Decoder<'_> {
     }
 
     fn mirror_primitive(&mut self) -> MirrorPrimitive {
-        MirrorPrimitive::from_index(self.reader.u8())
+        MirrorPrimitive::from_index(self.reader.u16())
     }
 
     fn code_kind(&mut self) -> CodeKind {

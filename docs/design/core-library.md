@@ -2169,8 +2169,10 @@ refuses a view or a builder whose slots an image crafted with an
   five, and each of `TypedArraysFactory`'s eleven is built when a program
   first reaches it, from the embedded shipped code on an optimized boot
   ("The embedded shipped code" below).
-- **`Primitive` stays two bytes** (`resolve.rs`'s
-  `a_resolution_stays_the_size_the_hot_path_was_measured_at`), so the
+- **`Primitive` is four bytes** (a `MirrorPrimitive` is a `u16`, so the
+  `MIRROR` table may hold 65,536 rows), and every structure holding one keeps
+  its size in the padding it had (`resolve.rs`'s
+  `a_resolution_stays_the_size_the_hot_path_was_measured_at`). So the
   generic element access of the typed arrays and `DataView`,
   `ElementAccess`, is one family whose payload packs the element kind, the
   byte order, the indexing (element or byte position) and read or write

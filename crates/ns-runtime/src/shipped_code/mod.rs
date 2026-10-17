@@ -35,7 +35,7 @@ pub(crate) use encode::encode;
 use bytes::ByteReader;
 
 pub(crate) const MAGIC: [u8; 4] = *b"NSSC";
-pub(crate) const FORMAT_VERSION: u16 = 1;
+pub(crate) const FORMAT_VERSION: u16 = 2;
 
 // `SHIPPED_CODE_FINGERPRINT` is the fingerprint of the sources and the
 // compiler the artifact was generated from, which the boot compares against

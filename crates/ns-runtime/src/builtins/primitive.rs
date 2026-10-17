@@ -784,12 +784,12 @@ pub enum FuturePrimitive {
     Made,
 }
 
-/// A row of `MIRROR`. A `u8`, because `Primitive` must stay two bytes: a
+/// A row of `MIRROR`. A `u16`, so the table may hold 65,536 rows; a
 /// `Resolved::Primitive` carries one, and its size is pinned
 /// (`interpreter::resolve`'s
 /// `a_resolution_stays_the_size_the_hot_path_was_measured_at`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MirrorPrimitive(u8);
+pub struct MirrorPrimitive(u16);
 
 impl MirrorPrimitive {
     pub fn index(self) -> usize {
@@ -798,7 +798,7 @@ impl MirrorPrimitive {
 
     /// The row at `index` of `MIRROR`, for the embedded shipped code, whose
     /// bytes are the binary's own.
-    pub(crate) fn from_index(index: u8) -> MirrorPrimitive {
+    pub(crate) fn from_index(index: u16) -> MirrorPrimitive {
         assert!(
             usize::from(index) < MIRROR.len(),
             "internal: no mirror row {index}"
@@ -2144,7 +2144,7 @@ pub const MIRROR: &[MirrorEntry] = &[
     ),
 ];
 
-const _: () = assert!(MIRROR.len() <= u8::MAX as usize + 1);
+const _: () = assert!(MIRROR.len() <= u16::MAX as usize + 1);
 
 /// The row `primitive` names.
 pub fn mirror_entry(primitive: MirrorPrimitive) -> &'static MirrorEntry {
@@ -2157,7 +2157,7 @@ pub fn mirror_primitive_named(selector: &str) -> Option<MirrorPrimitive> {
     MIRROR
         .iter()
         .position(|entry| entry.selector == selector)
-        .map(|index| MirrorPrimitive(index as u8))
+        .map(|index| MirrorPrimitive(index as u16))
 }
 
 /// The VM mirror's method table: one public `MethodEntry::Primitive` per
@@ -2171,7 +2171,7 @@ pub fn mirror_method_table() -> IdentityMap<Symbol, MethodEntry> {
             (
                 Symbol::intern(entry.selector),
                 MethodEntry::Primitive(PrimitiveMethod {
-                    primitive: Primitive::Mirror(MirrorPrimitive(index as u8)),
+                    primitive: Primitive::Mirror(MirrorPrimitive(index as u16)),
                     access: ast::AccessModifier::Public,
                 }),
             )
@@ -2182,6 +2182,14 @@ pub fn mirror_method_table() -> IdentityMap<Symbol, MethodEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A row index past 255 is representable, so the table can grow past
+    /// 256 rows.
+    #[test]
+    fn the_mirror_table_may_pass_256_rows() {
+        let row: MirrorPrimitive = MirrorPrimitive(300);
+        assert_eq!(row.index(), 300);
+    }
 
     /// `Integer`'s `+` is a `Kernel.ns` method: the leaf it forwards
     /// to is the mirror row named `integer:add:ifFail:`, still the same

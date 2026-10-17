@@ -356,7 +356,7 @@ impl Out {
     }
 
     fn mirror_primitive(&mut self, primitive: crate::builtins::primitive::MirrorPrimitive) {
-        self.u8(u8::try_from(primitive.index()).expect("internal: a mirror row fits a u8"));
+        self.u16(u16::try_from(primitive.index()).expect("internal: a mirror row fits a u16"));
     }
 
     fn code(&mut self, code: &CompiledCode) {
