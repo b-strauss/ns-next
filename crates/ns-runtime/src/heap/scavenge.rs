@@ -294,23 +294,24 @@ impl<'space> Scavenger<'space> {
 
     /// Ends a scavenge whose Cheney loop `drain` has run dry, as
     /// `Heap::finish_marking` ends a marking: scans each listed ephemeron
-    /// whose key has since survived, and indexes the rest by the young
-    /// objects whose copy would resolve them (`pending_keys`); then drains,
-    /// looking every object copied meanwhile up in the index and scanning
-    /// the ephemerons it resolves, until nothing copied waits to be
-    /// scanned; mourns
-    /// every ephemeron left in the index -- its key reached by nothing but
-    /// ephemerons -- by setting its fields to nil; and rewrites every word
-    /// of a listed weak object that names a young object to the copy, or
-    /// to nil where nothing copied it -- a resolved future nothing copied
-    /// first to its value (`see_through_resolved_future`).
+    /// whose key has since survived, drains, and checks again, until
+    /// nothing copied waits to be scanned; mourns every ephemeron left
+    /// unresolved -- its key reached by nothing but ephemerons -- by
+    /// setting its fields to nil; and rewrites every word of a listed weak
+    /// object that names a young object to the copy, or to nil where
+    /// nothing copied it -- a resolved future nothing copied first to its
+    /// value (`see_through_resolved_future`).
     ///
-    /// Each ephemeron is scanned at most once more and each object the
-    /// fixpoint copies looked up once, so a chain of ephemerons each keyed
-    /// by the previous one's value costs its length, not its square.
-    /// Copies are recorded only while the index holds an unresolved
-    /// ephemeron, so a fixpoint whose first check resolves every listed
-    /// one -- every key reachable -- looks nothing up.
+    /// The first `pending::scanned_checks` checks scan every unresolved
+    /// ephemeron; the ones still unresolved after them are indexed by the
+    /// young objects whose copy would resolve them (`pending_keys`), and
+    /// from then on copies are recorded while the index holds one, and
+    /// each check looks them up and scans the ephemerons they resolve.
+    /// Each indexed ephemeron is scanned at most once more and each object
+    /// the fixpoint copies looked up once, so a chain of ephemerons each
+    /// keyed by the previous one's value costs its length, not its square,
+    /// and a fixpoint that ends within the scans -- a weak map's --
+    /// indexes nothing.
     ///
     /// Must run before the nursery is vacated: a weak word left naming it
     /// would name whatever is allocated there next. An old object either
@@ -321,36 +322,58 @@ impl<'space> Scavenger<'space> {
     /// they are the collector's own rewrites and need no write barrier.
     pub(in crate::heap) fn finish(&mut self) {
         if !self.ephemerons.is_empty() {
+            let scanned_checks = crate::heap::pending::scanned_checks();
+            let mut checks = 0;
+            // The unresolved ephemerons while the checks scan them, and
+            // the index of them afterwards.
+            let mut waiting = Vec::new();
             let mut pending = PendingEphemerons::new();
             // Spare buffers the scavenger's lists are swapped with each
             // round, so a long chain allocates nothing per round.
             let mut listed = Vec::new();
             let mut copied = Vec::new();
             loop {
-                // Ephemerons the last drain scanned before their key
-                // survived join the index; one whose key that drain copied
-                // meanwhile was copied before it was indexed, so it is
-                // scanned here.
                 std::mem::swap(&mut self.ephemerons, &mut listed);
-                for ephemeron in listed.drain(..) {
-                    #[cfg(test)]
-                    crate::heap::pending::work::count_examined();
-                    if self.ephemeron_key_survives(ephemeron) {
-                        self.resolve_ephemeron(ephemeron);
-                    } else {
-                        let keys = self.pending_keys(ephemeron);
-                        pending.add(ephemeron, keys.into_iter().flatten());
-                        // From here on a copy may resolve it -- even one
-                        // this check makes resolving a later ephemeron.
-                        self.recording = true;
+                if checks < scanned_checks {
+                    waiting.append(&mut listed);
+                    let mut position = 0;
+                    while position < waiting.len() {
+                        #[cfg(test)]
+                        crate::heap::pending::work::count_examined();
+                        let ephemeron = waiting[position];
+                        if self.ephemeron_key_survives(ephemeron) {
+                            self.resolve_ephemeron(ephemeron);
+                            waiting.swap_remove(position);
+                        } else {
+                            position += 1;
+                        }
                     }
-                }
-                std::mem::swap(&mut self.copied, &mut copied);
-                for offset in copied.drain(..) {
-                    if pending.is_empty() {
-                        break;
+                    checks += 1;
+                } else {
+                    // Ephemerons the last drain scanned before their key
+                    // survived join the index; one whose key that drain
+                    // copied meanwhile was copied before it was indexed,
+                    // so it is scanned here.
+                    for ephemeron in listed.drain(..) {
+                        #[cfg(test)]
+                        crate::heap::pending::work::count_examined();
+                        if self.ephemeron_key_survives(ephemeron) {
+                            self.resolve_ephemeron(ephemeron);
+                        } else {
+                            let keys = self.pending_keys(ephemeron);
+                            pending.add(ephemeron, keys.into_iter().flatten());
+                            // From here on a copy may resolve it -- even one
+                            // this check makes resolving a later ephemeron.
+                            self.recording = true;
+                        }
                     }
-                    pending.take(offset, |ephemeron| self.resolve_ephemeron(ephemeron));
+                    std::mem::swap(&mut self.copied, &mut copied);
+                    for offset in copied.drain(..) {
+                        if pending.is_empty() {
+                            break;
+                        }
+                        pending.take(offset, |ephemeron| self.resolve_ephemeron(ephemeron));
+                    }
                 }
                 // Every copy waits to be scanned, so nothing waiting means
                 // nothing new survived since the last drain.
@@ -359,8 +382,28 @@ impl<'space> Scavenger<'space> {
                     debug_assert!(self.ephemerons.is_empty());
                     break;
                 }
-                // With nothing pending, what the drain copies can resolve
-                // nothing, so it is not recorded: an ephemeron the drain
+                // The scans are over and the fixpoint goes on: what they
+                // left unresolved is indexed before the drain that may
+                // resolve it records what it copies. A scan copies as it
+                // resolves, so a key may have survived after its
+                // ephemeron was passed over: each is checked again, and
+                // from the first one indexed on, what a resolution copies
+                // is recorded.
+                if checks == scanned_checks {
+                    for ephemeron in std::mem::take(&mut waiting) {
+                        #[cfg(test)]
+                        crate::heap::pending::work::count_examined();
+                        if self.ephemeron_key_survives(ephemeron) {
+                            self.resolve_ephemeron(ephemeron);
+                        } else {
+                            let keys = self.pending_keys(ephemeron);
+                            pending.add(ephemeron, keys.into_iter().flatten());
+                            self.recording = true;
+                        }
+                    }
+                }
+                // Only the index needs what a drain copies, and an empty
+                // one can resolve nothing with it: an ephemeron the drain
                 // lists meanwhile meets the check above next round.
                 self.recording = !pending.is_empty();
                 if pending.is_empty() {
@@ -369,7 +412,7 @@ impl<'space> Scavenger<'space> {
                 self.drain();
             }
             self.recording = false;
-            for ephemeron in pending.unresolved() {
+            for ephemeron in waiting.into_iter().chain(pending.unresolved()) {
                 let fields = self.field_range(header_index(ephemeron));
                 self.space.words_mut()[fields].fill(Word::NIL.bits());
             }

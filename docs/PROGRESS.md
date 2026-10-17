@@ -5316,7 +5316,11 @@ fields of an ephemeron whose key is not yet known to survive. Both
 collectors then settle them in Primordial Soup's order: an ephemeron
 fixpoint, the ephemerons whose key nothing else reaches mourned -- every
 field `nil` -- and every weak word naming a dead object cleared, before
-compaction and before the nursery is vacated. The kernel has `WeakArray`, a
+compaction and before the nursery is vacated. The fixpoint scans its
+pending ephemerons in its first two checks and indexes the rest by key
+(`heap/pending.rs`), so a chain of ephemerons costs its length and a weak
+map's fixpoint indexes nothing; a traced object's format is decoded
+once, so a program without ephemerons pauses as long as on `master`. The kernel has `WeakArray`, a
 builtin whose factory `withoutSlots` keeps `WeakArray new` not understood,
 made by its class side's `new:`, which refuses a size it cannot allocate;
 `Ephemeron`, a builtin of three private slots, the key first, its finalizer
@@ -5354,10 +5358,13 @@ was regenerated for the changed shipped modules, its size unchanged.
   standing for a value refused as its key.
 - `25fbb681` -- `WeakMap`.
 - `24d9ab6f` -- weak arrays and ephemerons in the image.
-- This commit -- the documents.
+- `d03c7b18` -- the documents.
+- `1a7680a9`, `b5f955df`, `8a1bae8f`, `51717949` and this commit -- the
+  format decoded once, the fixpoint's index, recorded only while a key is
+  pending, and entered only after two scans.
 
 What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): running
-the finalizer, which comes with the actors' event loop; the ephemeron
-fixpoint's rescan per round; `Interpreter::instantiate` bypassing
-`decide_factory`; and the decoder's `WeakArray` header not held to its
-two bodies. Road step 5, mirrors and atomic installation, is next.
+the finalizer, which comes with the actors' event loop; the image encoder's
+ephemeron fixpoint, which still rescans per round; and
+`Interpreter::instantiate` bypassing `decide_factory`. Road step 5,
+mirrors and atomic installation, is next.

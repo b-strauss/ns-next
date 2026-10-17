@@ -795,24 +795,6 @@ activation.
 
 ## Unexplained measurements and unmeasured decisions
 
-- **Indexing the pending ephemerons costs a map with many dead keys about
-  2 ms of collector pauses.** Measured on 2026-10-17 by the
-  `measuring-performance` protocol, three pinned release builds a side,
-  two sittings, with a throwaway source that fills a `WeakMap` with 20,000
-  held and 20,000 dropped keys and collects once: since the fixpoint
-  resolves pending ephemerons through an index of their keys
-  (`heap/pending.rs`), its scavenges paused 12.3 ms instead of 9.9 and its
-  collections 17.5 instead of 15.2, the run 61.6 ms instead of 60.8 (within
-  the spread); a 4,000-link chain of ephemerons went from 67.5 ms a run
-  to 4.3. Every ephemeron whose key nothing else reaches enters the index
-  before it is mourned, where the rescan touched it once a round. Indexing
-  only from the second round on -- a first rescan resolves what it can,
-  and only what is still pending afterwards enters the index, if the round
-  reached anything -- would keep the chain linear and the map at the
-  rescan's cost. A program without ephemerons pays nothing measurable:
-  against `master` Havlak and CD run within the builds' spread, their
-  pauses equal.
-  [core-library.md](design/core-library.md), "Weak references".
 - **The numeric tower's slow paths are unmeasured on their own.** The Are
   We Fast Yet benchmarks run as fast as without the tower, but none of
   them stresses what still goes the long way: `Float>>hash` of a

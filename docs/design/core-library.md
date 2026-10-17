@@ -2388,23 +2388,30 @@ order (`vm/heap.cc:627-682`):
    every `Ephemeron` whose key is an unmarked object on an ephemeron list
    (`mark::Marker`), tracing its class word only.
 2. Then each listed ephemeron whose key is now marked has its fields
-   pushed, and the others are indexed by their key
-   (`heap/pending.rs`, `PendingEphemerons`; several may share one). The
-   work list is drained again, and every object the drain marks -- only
-   this drain records them, and only while the index holds an unresolved
-   ephemeron, so the main marking pays nothing and neither does a
-   fixpoint whose first check resolved every listed ephemeron -- is
-   looked up in the index once: the ephemerons keyed by it have their
-   fields pushed and leave the index. Ephemerons a drain visits before
-   their key join the index, or are traced at once if their key was
-   marked meanwhile. This repeats until the work list stays empty. A
-   chain of ephemerons whose keys are reached only through each other's
-   values is thus collected whole, and each ephemeron is traced at most once and each
-   object looked up at most once, so the fixpoint costs what it reaches,
-   linear in such a chain's length, where Primordial Soup
-   (`vm/heap.cc:853-911`) and Spur (`processEphemerons`) rescan the whole
-   list per round.
-3. Every ephemeron left in the index is mourned: its fields are set to
+   pushed, the work list is drained again, and the check repeats, with
+   the ephemerons the drain listed, until the work list stays empty. The
+   first two checks (`pending::SCANNED_CHECKS`) scan every unresolved
+   ephemeron, as Primordial Soup (`vm/heap.cc:853-911`) and Spur
+   (`processEphemerons`) do in every round; a fixpoint still running
+   after them indexes the ephemerons left unresolved by their key
+   (`heap/pending.rs`, `PendingEphemerons`; several may share one). From
+   then on every object a drain marks -- only these drains record them,
+   and only while the index holds an unresolved ephemeron, so the main
+   marking pays nothing -- is looked up in the index once: the
+   ephemerons keyed by it have their fields pushed and leave the index.
+   Ephemerons a drain visits before their key join the index, or are
+   traced at once if their key was marked meanwhile. A chain of
+   ephemerons whose keys are reached only through each other's values is
+   thus collected whole, and each indexed ephemeron is traced at most
+   once and each object looked up at most once, so the fixpoint costs
+   what it reaches plus the two scans, linear in such a chain's length,
+   where a rescan per round costs its square. A weak map's fixpoint --
+   the first check resolves the entries whose keys the main marking
+   reached after them, the second finds the dead ones still unmarked --
+   ends within the scans and indexes nothing: the index costs a hash
+   insertion per ephemeron, which a fixpoint of two rounds never earns
+   back.
+3. Every ephemeron left unresolved is mourned: its fields are set to
    `nil`.
 4. Every word of a listed `WeakPointers` object that names an unmarked
    object is set to `nil`.
@@ -2420,16 +2427,22 @@ it is an immediate, old, or already copied (`vm/heap.cc:848-851`). A
 has its class word scanned and goes on a weak list; an `Ephemeron` whose
 key has not survived goes on the ephemeron list with its class word
 scanned alone. After the Cheney loop, each listed ephemeron whose key has
-since survived is scanned, and the others are indexed by the young object
+since survived is scanned (an old one that then names a young object
+remembered once), the loop is drained again, and the check repeats until
+no copy waits to be scanned; the rest are mourned. As in a full
+collection the first two checks scan every unresolved ephemeron, and a
+fixpoint still running after them indexes the rest by the young object
 whose copy would make their key survive -- the key at the end of its
 forwarders, and, for a key that is a resolved future, its value as well
-(`Scavenger::pending_keys`). The loop is drained again, and every object
-copied meanwhile -- only the fixpoint records copies, and only while the
-index holds an unresolved ephemeron -- is looked up once in the index,
-its ephemerons scanned (an old one that then names a young object
-remembered once) and removed, until no copy waits to be scanned; the
-rest are mourned. As in a full collection the fixpoint is linear in what
-it reaches. Then every young word of a listed weak object
+(`Scavenger::pending_keys`). Scanning an ephemeron copies what it names,
+so a key may survive after its ephemeron was passed over in the same
+check: the switch checks each ephemeron once more before indexing it,
+and records copies from the first one indexed on. From then on every
+object copied -- only the fixpoint records copies, and only while the
+index holds an unresolved ephemeron -- is looked up once in the index
+and its ephemerons scanned and removed. As in a full collection the
+fixpoint is linear in what it reaches, and a weak map's indexes
+nothing. Then every young word of a listed weak object
 is forwarded to the copy or, its object not copied, set to `nil` -- all
 before the nursery is vacated, or the word would name whatever is
 allocated there next. An old object leaves the remembered set unless a

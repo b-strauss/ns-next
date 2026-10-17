@@ -6,11 +6,38 @@
 //! when its key is reached rather than found by rescanning every pending
 //! one per round, which costs the square of a chain's length.
 //!
+//! The index costs a hash insertion per ephemeron, which a fixpoint of
+//! one or two rounds -- a weak map's, most of its ephemerons listed only
+//! because the main tracing reached them before their keys, the rest
+//! keyed by dead objects -- never earns back. So the first
+//! `scanned_checks` checks scan the unresolved ephemerons instead, and
+//! only those still unresolved after them are indexed: a fixpoint that
+//! ends within them indexes nothing, and a chain costs at most that many
+//! scans beyond its length -- in a scavenge one check more, since the
+//! switch checks each ephemeron again.
+//!
 //! A child of `heap`; it holds offsets only, as the collector sees them,
 //! and lives no longer than one collection.
 
 use crate::hash::IdentityMap;
 use std::num::NonZeroU64;
+
+/// How many of a fixpoint's checks scan the unresolved ephemerons before
+/// the ones still unresolved are indexed.
+pub(in crate::heap) const SCANNED_CHECKS: usize = 2;
+
+/// `SCANNED_CHECKS`, which a test may lower to reach the index with a
+/// short fixpoint (`work::set_scanned_checks`).
+pub(in crate::heap) fn scanned_checks() -> usize {
+    #[cfg(test)]
+    {
+        work::SCANNED_CHECKS_OVERRIDE.with(std::cell::Cell::get)
+    }
+    #[cfg(not(test))]
+    {
+        SCANNED_CHECKS
+    }
+}
 
 /// The pending ephemerons, each reachable from every object whose survival
 /// resolves it: one for a key, two for a resolved future's key in a
@@ -108,6 +135,15 @@ pub(in crate::heap) mod work {
         static RESOLUTIONS: Cell<usize> = const { Cell::new(0) };
         static EXAMINED: Cell<usize> = const { Cell::new(0) };
         static RECORDED: Cell<usize> = const { Cell::new(0) };
+        pub(in crate::heap) static SCANNED_CHECKS_OVERRIDE: Cell<usize> =
+            const { Cell::new(super::SCANNED_CHECKS) };
+    }
+
+    /// Has the fixpoints on this thread scan `checks` checks before they
+    /// index: 0 indexes from the first check on, so a test reaches the
+    /// index without a fixpoint of three rounds.
+    pub(in crate::heap) fn set_scanned_checks(checks: usize) {
+        SCANNED_CHECKS_OVERRIDE.with(|scanned_checks| scanned_checks.set(checks));
     }
 
     /// The work counted since the last `take`.
@@ -117,8 +153,10 @@ pub(in crate::heap) mod work {
         pub(in crate::heap) lookups: usize,
         /// Ephemerons the index resolved.
         pub(in crate::heap) resolutions: usize,
-        /// Listed ephemerons a round's first check examined, resolving or
-        /// indexing each.
+        /// Unresolved ephemerons a check examined, resolving, keeping or
+        /// indexing each, and in a scavenge each the switch to the index
+        /// checked again; indexing at the marking's switch reads no key
+        /// and is not counted.
         pub(in crate::heap) examined: usize,
         /// Objects a drain recorded for lookup.
         pub(in crate::heap) recorded: usize,

@@ -2283,12 +2283,13 @@ A Cheney copy of the nursery's survivors (`heap/scavenge.rs`), as Spur's
   through; a commit the operating system refuses aborts the process as
   running out of memory before the scavenge begins.
 - **Then the weak objects are settled** (`Scavenger::finish`): the
-  ephemerons whose key was copied meanwhile are scanned and the rest
-  indexed by the young objects whose copy would resolve them; the Cheney
-  loop runs again, each object it copies looked up once in the index --
-  recorded only while the index holds an unresolved ephemeron -- and its
-  ephemerons scanned, until no copy waits to be scanned; the ephemerons
-  left in the index are mourned; and every young word of a weak object is
+  ephemerons whose key was copied meanwhile are scanned and the Cheney
+  loop runs again, until no copy waits to be scanned -- the first two
+  checks scanning every unresolved ephemeron, the rest of the fixpoint
+  indexing those still unresolved by the young objects whose copy would
+  resolve them and looking each object it copies up once, recorded only
+  while the index holds an unresolved ephemeron; the ephemerons left
+  unresolved are mourned; and every young word of a weak object is
   forwarded to the copy or set to `nil` ("Weak references").
 - **Afterwards** the weak symbol table is pruned ("Weak references"), the
   survivor spaces flip, eden is empty, the threshold is recomputed, and the
@@ -2681,19 +2682,27 @@ the groundwork the JIT tiers take over, as Cogit's `genPrimitiveNew` and
   vacated, Primordial Soup's order (`vm/heap.cc:627-682`), since a word
   left naming a dead object would be forwarded to garbage or name what is
   allocated next.
-- **The ephemeron fixpoint indexes its pending ephemerons by key** rather
-  than rescanning them per round, as Primordial Soup
-  (`vm/heap.cc:853-911`) and Spur (`processEphemerons`) do: only the
-  fixpoint's own drains record what they mark or copy, and only while the
-  index holds an unresolved ephemeron, so a fixpoint whose first check
-  resolves every listed ephemeron records nothing; each recorded
-  object is looked up once and each ephemeron resolved once
+- **The ephemeron fixpoint scans its pending ephemerons in its first two
+  checks and, if it goes on, indexes those still unresolved by key**,
+  where Primordial Soup (`vm/heap.cc:853-911`) and Spur
+  (`processEphemerons`) rescan them in every round: only the
+  fixpoint's own drains after the switch record what they mark or copy,
+  and only while the index holds an unresolved ephemeron; each recorded
+  object is looked up once and each indexed ephemeron resolved once
   (`heap/pending.rs`), so a chain of ephemerons each keyed by the previous
   one's value costs its length rather than its square, and the ordinary
   marking and Cheney loop pay nothing for it -- the marking's drain takes
   the recording as a parameter of its type, the scavenger's copy tests one
   flag ([core-library.md](core-library.md), "The heap and the
-  collectors").
+  collectors"). The two scans are what a weak map's fixpoint needs:
+  measured on 2026-10-17 by the `measuring-performance` protocol, three
+  pinned release builds a side, twenty runs of a source that fills a
+  `WeakMap` with 20,000 held and 20,000 dropped keys and collects once,
+  indexing from the first check paused its scavenges 45.0 ms in all and
+  its collections 49.9, the two scans 37.8 and 44.3, as the rescan in
+  every round did (37.6 and 44.8): every dead-keyed ephemeron entered the
+  index before it was mourned. A 4,000-link chain costs 4.4 ms a run
+  with the scans, 4.2 without them, and 67.5 with a rescan per round.
 - **The application cache stays strong until live editing** (decided with
   the user on 2026-10-03). Its key was an address, which needs the strong
   reference to keep it unique; since road step 3a it is a pair of the heap's
