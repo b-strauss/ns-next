@@ -397,11 +397,18 @@ fn decode_described(
     // family's call-site numbers -- a block's depend on where its
     // `MakeClosure` sits in its root's emission order -- can be assigned.
     decode::number_call_site_families(&mut table).map_err(|error| error.to_string())?;
-    let mixins =
-        mixins::decode(reader, &symbols, &table.codes).map_err(|error| error.to_string())?;
-    decode::verify_mixins(&mixins).map_err(|error| error.to_string())?;
-    let decoded_modules = modules::decode_modules(reader, &mixins, header.has_source)
+    let read = mixins::read(reader, &symbols, &table.codes).map_err(|error| error.to_string())?;
+    // The module section follows the mixin table and holds each module's
+    // text, which every mixin of the module holds once built
+    // (`Mixin::module_text`), so it is read before the mixins are built.
+    let decoded_modules = modules::decode_modules(reader, &read.module_rows, header.has_source)
         .map_err(|error| error.to_string())?;
+    let module_texts: Vec<Option<std::rc::Rc<str>>> = decoded_modules
+        .iter()
+        .map(|module| module.source.as_deref().map(std::rc::Rc::from))
+        .collect();
+    let mixins = mixins::build(read, &table.codes, &module_texts);
+    decode::verify_mixins(&mixins).map_err(|error| error.to_string())?;
     let names =
         shipped_names::decode_section(reader, &symbols).map_err(|error| error.to_string())?;
     Ok(Described {

@@ -291,15 +291,21 @@ impl<'gc> Mutator<'gc> {
     /// `Kernel.ns` itself decides which `Closure` may carry unwind markers,
     /// and whether it is another shipped module which methods are
     /// recognized as class accessors of `root`, the module's root
-    /// declaration (`MixinMethod::class_accessor`).
+    /// declaration (`MixinMethod::class_accessor`). `module_text` is the
+    /// module's text, which every mixin of the tree shares
+    /// (`Mixin::module_text`); each mixin's nested ones and its class side
+    /// are linked to it once it is shared (`Mixin::enclosing`).
     pub(crate) fn build_mixin(
         &mut self,
         declaration: &ast::ClassDeclaration,
         root: &ast::ClassDeclaration,
         bindings: &Rc<HashMap<Span, Binding>>,
         source: ModuleSource,
+        module_text: &Rc<str>,
     ) -> Rc<Mixin> {
-        Rc::new(self.mixin_of(declaration, root, bindings, source))
+        let mixin = Rc::new(self.mixin_of(declaration, root, bindings, source, module_text));
+        Mixin::set_enclosing_of_children(&mixin);
+        mixin
     }
 
     /// A module's root mixin, every body compiled, for `load_root_class` and
@@ -310,22 +316,31 @@ impl<'gc> Mutator<'gc> {
         } else {
             ModuleSource::User
         };
-        self.build_root_mixin(&resolved.module.root_class, &resolved.bindings, source)
+        self.build_root_mixin(
+            &resolved.module.root_class,
+            &resolved.bindings,
+            source,
+            &resolved.source,
+        )
     }
 
     /// A module's root mixin: `build_mixin`'s, with the root rule's verdict
     /// recorded on it for `apply_mixin` and the encoder to read.
+    /// `module_text` is the module's text, `ResolvedModule::source`.
     pub(crate) fn build_root_mixin(
         &mut self,
         declaration: &ast::ClassDeclaration,
         bindings: &Rc<HashMap<Span, Binding>>,
         source: ModuleSource,
+        module_text: &Rc<str>,
     ) -> Rc<Mixin> {
-        let mut mixin = self.mixin_of(declaration, declaration, bindings, source);
+        let mut mixin = self.mixin_of(declaration, declaration, bindings, source, module_text);
         mixin.root_clause_defect =
             crate::resolver::root_clause_defect(declaration).map(|(defect, _)| defect);
         mixin.root_shape = crate::resolver::root_shape(declaration);
-        Rc::new(mixin)
+        let mixin = Rc::new(mixin);
+        Mixin::set_enclosing_of_children(&mixin);
+        mixin
     }
 
     /// `build_mixin`'s work, before the mixin is shared.
@@ -335,6 +350,7 @@ impl<'gc> Mutator<'gc> {
         root: &ast::ClassDeclaration,
         bindings: &Rc<HashMap<Span, Binding>>,
         source: ModuleSource,
+        module_text: &Rc<str>,
     ) -> Mixin {
         let kernel = source.is_shipped();
         let slots = build_slots(&declaration.instance_side);
@@ -360,7 +376,7 @@ impl<'gc> Mutator<'gc> {
         let nested = declaration
             .instance_side
             .nested_classes()
-            .map(|nested| self.build_mixin(nested, root, bindings, source))
+            .map(|nested| self.build_mixin(nested, root, bindings, source, module_text))
             .collect();
         // §6's unnumbered introduction, before §6.1 begins: "If the
         // signature is omitted it defaults to `new`" -- a class written
@@ -384,7 +400,7 @@ impl<'gc> Mutator<'gc> {
         let class_side = declaration
             .class_side
             .as_ref()
-            .map(|side| self.build_class_side(side, factory, bindings, kernel));
+            .map(|side| self.build_class_side(side, factory, bindings, kernel, module_text));
         let mut mixin = Mixin {
             name: Symbol::intern(&declaration.name.name),
             access: crate::dispatch::effective_access(declaration.access),
@@ -419,6 +435,9 @@ impl<'gc> Mutator<'gc> {
             root_clause_defect: None,
             root_shape: None,
             shipped: kernel,
+            // Set by the caller once the mixin is shared.
+            enclosing: std::cell::OnceCell::new(),
+            module_text: Some(crate::mixin::ModuleText(Rc::clone(module_text))),
         };
         crate::compiler::compile_mixin_bodies(&mut mixin, bindings, self.lowering);
         mixin
@@ -444,6 +463,7 @@ impl<'gc> Mutator<'gc> {
         factory: Factory,
         bindings: &Rc<HashMap<Span, Binding>>,
         kernel: bool,
+        module_text: &Rc<str>,
     ) -> Rc<Mixin> {
         let slots = build_slots(side);
         let mut methods = build_methods(side, &slots, bindings, kernel, false, None, self.lowering);
@@ -456,6 +476,7 @@ impl<'gc> Mutator<'gc> {
             initializer_expressions: side.initializer_expressions.clone(),
             span: side.span,
             shipped: kernel,
+            module_text: Some(crate::mixin::ModuleText(Rc::clone(module_text))),
             ..Mixin::empty(Symbol::CLASS_SIDE)
         };
         crate::compiler::compile_mixin_bodies(&mut mixin, bindings, self.lowering);
@@ -1716,8 +1737,103 @@ pub(crate) fn mixin_needs_initializer_code(mixin: &crate::mixin::Mixin) -> bool 
 
 #[cfg(test)]
 mod tests {
-    use crate::types::{BuiltinClass, ErrorClass};
+    use std::path::PathBuf;
+    use std::rc::Rc;
+
+    use indoc::indoc;
+
+    use crate::mixin::Mixin;
+    use crate::types::{BuiltinClass, ErrorClass, SourceOrigin};
     use crate::Interpreter;
+
+    /// The nested mixin of `mixin` named `name`.
+    fn nested_named(mixin: &Rc<Mixin>, name: &str) -> Rc<Mixin> {
+        mixin
+            .nested
+            .iter()
+            .find(|nested| nested.name.as_str() == name)
+            .cloned()
+            .unwrap_or_else(|| panic!("{} declares {name}", mixin.name))
+    }
+
+    /// Whether `mixin`'s enclosing mixin is `expected`.
+    fn encloses(expected: &Rc<Mixin>, mixin: &Mixin) -> bool {
+        mixin
+            .enclosing_mixin()
+            .is_some_and(|enclosing| Rc::ptr_eq(&enclosing, expected))
+    }
+
+    /// Every mixin of a module built from source names the one it is
+    /// declared in -- a class side its instance side -- and shares the
+    /// module's one text.
+    #[test]
+    fn a_module_built_from_source_links_every_mixin_to_its_enclosing_one() {
+        let source = indoc! {"
+            class Outer = Object new () (
+              class Inner = Object new () (
+                class Innermost = Object new () ()
+              ) : (
+                make = (^self new)
+              )
+            ) : ()
+        "};
+        let module = ns_syntax::parse(source).expect("parse");
+        let resolved = crate::resolve(
+            module,
+            Rc::from(source),
+            SourceOrigin::File(PathBuf::from("t.ns")),
+        )
+        .expect("resolve");
+        let mut interpreter = Interpreter::bootstrap();
+        let class = interpreter.load_module(&resolved);
+        interpreter.enter(|mutator| {
+            let class = mutator
+                .fetch(&class)
+                .as_object()
+                .expect("a module's root class is an object");
+            let outer = mutator
+                .heap()
+                .class_application(class)
+                .expect("a root class has an application")
+                .mixin
+                .clone();
+            let inner = nested_named(&outer, "Inner");
+            let innermost = nested_named(&inner, "Innermost");
+            let inner_class_side = inner
+                .class_side
+                .clone()
+                .expect("Inner declares a class side");
+            assert!(
+                outer.enclosing_mixin().is_none(),
+                "a module's root has none"
+            );
+            assert!(encloses(&outer, &inner));
+            assert!(encloses(&inner, &innermost));
+            assert!(encloses(&inner, &inner_class_side));
+            for mixin in [&outer, &inner, &innermost, &inner_class_side] {
+                let text = mixin.module_text.as_ref().expect("built from source");
+                assert!(
+                    Rc::ptr_eq(&text.0, &resolved.source),
+                    "{} shares the module's text",
+                    mixin.name
+                );
+            }
+        });
+    }
+
+    /// A class that declares no class side gets one synthesized, which
+    /// names the instance side it was synthesized for and has no text of
+    /// its own.
+    #[test]
+    fn a_synthesized_class_side_names_its_instance_side() {
+        let mut interpreter = Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let instance_side = Rc::new(Mixin::empty(crate::Symbol::intern("Plain")));
+            let class_side = mutator.metaclass_mixin(&instance_side);
+            assert!(encloses(&instance_side, &class_side));
+            assert!(class_side.module_text.is_none());
+        });
+    }
 
     /// The mirror's class is the capability's own class, so the refusal
     /// carries nil as its `behavior`: a handler reading it must not be

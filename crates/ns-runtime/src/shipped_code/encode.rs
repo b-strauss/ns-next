@@ -113,6 +113,10 @@ fn write_mixin(out: &mut Out, mixin: &Mixin) {
         root_clause_defect,
         root_shape,
         shipped,
+        // Set by the decoder: the tree gives the link, and the binary's
+        // own text the module's.
+        enclosing: _,
+        module_text: _,
     } = mixin;
     assert!(
         root_clause_defect.is_none(),

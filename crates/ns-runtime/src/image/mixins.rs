@@ -438,13 +438,34 @@ struct RawSlot {
     access: AccessModifier,
 }
 
-/// Reads the mixin table.
+/// Reads the mixin table and builds its mixins, none of them holding a
+/// module's text: `read`, then `build` with no texts. For a reader that
+/// needs the mixins and not their source -- `inspect` -- and the tests;
+/// `load` reads the module section between the two, for the texts.
+pub fn decode(
+    reader: &mut Reader,
+    symbols: &symbols::Table,
+    codes: &[Rc<CompiledCode>],
+) -> Result<Decoded, DecodeError> {
+    Ok(build(read(reader, symbols, codes)?, codes, &[]))
+}
+
+/// The mixin table as `read` leaves it: every row read and checked, the
+/// trees found, no mixin built yet.
+pub struct ReadTable {
+    raw: Vec<RawRow>,
+    /// Each tree's first row, in table order: the row of each module's root
+    /// declaration, as `check_preorder` found the trees.
+    pub module_rows: Vec<u32>,
+}
+
+/// Reads the mixin table, and checks it, without building it.
 ///
 /// `codes` is the already-decoded code table: every code id a row names is
 /// range-checked against it here, at the point of use, so no later pass can
 /// index it unchecked.
 ///
-/// Three passes, all iterative:
+/// Two passes, both iterative, before `build`'s third:
 ///
 /// 1. read every row, validating each count against the remaining input and
 ///    each symbol and code id against its table;
@@ -453,29 +474,22 @@ struct RawSlot {
 ///    simultaneously establishes the rows form a forest (no row is its own
 ///    ancestor, no row has two parents, no row reaches back into an earlier
 ///    tree), that no tree is deeper than `MAX_MIXIN_DEPTH`, and where each
-///    tree starts;
-/// 3. build the `Rc<Mixin>`s from the last row to the first. Step 2 proved
-///    every child's id is greater than its parent's, so a row's children are
-///    always already built when it is reached, and no back-patching pass or
-///    interior mutability is needed to close the tree.
-pub fn decode(
+///    tree starts.
+pub fn read(
     reader: &mut Reader,
     symbols: &symbols::Table,
     codes: &[Rc<CompiledCode>],
-) -> Result<Decoded, DecodeError> {
+) -> Result<ReadTable, DecodeError> {
     let count = reader.read_u32()? as usize;
     let mut raw: Vec<RawRow> = reserve_for(count, reader);
     for _ in 0..count {
         raw.push(read_row(reader, symbols, codes)?);
     }
-    if raw.is_empty() {
-        return Ok(Decoded::empty());
-    }
     check_ids(&raw)?;
     let module_rows = check_preorder(&raw)?;
     check_member_names(&raw)?;
     check_lazy_slot_getters(&raw)?;
-    Ok(build(raw, codes, module_rows))
+    Ok(ReadTable { raw, module_rows })
 }
 
 fn read_row(
@@ -777,17 +791,42 @@ fn metaclass_factory_entries(raw: &[RawRow]) -> Vec<Option<(Symbol, MethodEntry)
     entries
 }
 
-/// Builds the `Rc<Mixin>`s back to front. `check_preorder` established that
-/// every child's row id is greater than its parent's, so a row's children
-/// are already built by the time the loop reaches it.
+/// Builds the `Rc<Mixin>`s back to front, the third pass after `read`'s
+/// two. `check_preorder` established that every child's row id is greater
+/// than its parent's, so a row's children are already built by the time
+/// the loop reaches it, and no back-patching pass is needed to close the
+/// tree; each child is linked to its parent once the parent's `Rc` exists
+/// (`Mixin::enclosing`).
+///
+/// `module_texts` holds each module's text, in module order, `None` for
+/// one the image carries no source for: every mixin of module `i`'s tree
+/// -- the rows `module_rows[i]` up to the next module's first row --
+/// holds module `i`'s (`Mixin::module_text`). A module past the slice
+/// holds none, which is how `decode` builds without texts.
 ///
 /// Each method and each per-mixin body is handed the code-table entry its
 /// row names -- `read_row` range-checked every id against `codes` already.
 /// Nothing here reconciles a body with what it is attached to:
 /// `decode::verify_mixins` does, on the load path only, so `inspect` can
 /// still display an artifact whose halves disagree.
-fn build(raw: Vec<RawRow>, codes: &[Rc<CompiledCode>], module_rows: Vec<u32>) -> Decoded {
+pub fn build(
+    table: ReadTable,
+    codes: &[Rc<CompiledCode>],
+    module_texts: &[Option<Rc<str>>],
+) -> Decoded {
+    let ReadTable { raw, module_rows } = table;
     let code_at = |id: u32| codes[id as usize].clone();
+    // The module whose tree holds `row`: the last module whose first row
+    // is at or before it. The first tree starts at row 0, so a row of a
+    // non-empty table always has one.
+    let module_text_of = |row: usize| {
+        let module = module_rows.partition_point(|&first| first as usize <= row) - 1;
+        module_texts
+            .get(module)
+            .cloned()
+            .flatten()
+            .map(crate::mixin::ModuleText)
+    };
     let mut factory_entries = metaclass_factory_entries(&raw);
     let mut built: Vec<Option<Rc<Mixin>>> = vec![None; raw.len()];
     let mut code: Vec<Option<MixinCode>> = (0..raw.len()).map(|_| None).collect();
@@ -903,7 +942,11 @@ fn build(raw: Vec<RawRow>, codes: &[Rc<CompiledCode>], module_rows: Vec<u32>) ->
             root_shape: None,
             // An image carries only its own module, never shipped source.
             shipped: false,
+            // Set by the parent's row, built after this one.
+            enclosing: std::cell::OnceCell::new(),
+            module_text: module_text_of(index),
         });
+        Mixin::set_enclosing_of_children(&mixin);
         built[index] = Some(mixin);
     }
     Decoded {

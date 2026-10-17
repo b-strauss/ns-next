@@ -651,8 +651,9 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
     // that disagrees with the mixin table's trees is refused here as it is
     // by `load`: which tree a module's root is held to depends on the
     // count, so a report past it would describe modules that are not there.
-    let decoded_modules = modules::decode_modules(&mut reader, &decoded, header.has_source)
-        .map_err(|error| error.to_string())?;
+    let decoded_modules =
+        modules::decode_modules(&mut reader, &decoded.module_rows, header.has_source)
+            .map_err(|error| error.to_string())?;
     let module_reports = decoded_modules
         .iter()
         .map(|module| {

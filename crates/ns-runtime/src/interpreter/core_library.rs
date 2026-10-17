@@ -125,6 +125,36 @@ thread_local! {
         SHIPPED_MODULES.iter().map(|_| OnceCell::new()).collect();
 }
 
+thread_local! {
+    /// The text of `Kernel`, then of each `SHIPPED_MODULES` entry, in that
+    /// order, each made the first time a decode of the embedded shipped
+    /// code on this thread asks for it: every mixin a decode builds holds
+    /// its module's text (`Mixin::module_text`), and one copy per module
+    /// per thread serves every boot, where one per decode would copy every
+    /// module's text into every interpreter.
+    static SHIPPED_MODULE_TEXTS: Vec<OnceCell<Rc<str>>> =
+        std::iter::once(KERNEL_MODULE)
+            .chain(SHIPPED_MODULES.iter().map(|shipped| shipped.name))
+            .map(|_| OnceCell::new())
+            .collect();
+}
+
+/// The text of `Kernel` or of the `SHIPPED_MODULES` entry `name`, as one
+/// `Rc<str>` per thread (`SHIPPED_MODULE_TEXTS`). A name that is neither
+/// is a defect in the binary, so it panics.
+pub(crate) fn shipped_module_text(name: &str) -> Rc<str> {
+    let (index, text) = if name == KERNEL_MODULE {
+        (0, super::kernel::KERNEL_SOURCE)
+    } else {
+        let index = SHIPPED_MODULES
+            .iter()
+            .position(|shipped| shipped.name == name)
+            .unwrap_or_else(|| panic!("internal: no shipped module is named {name}"));
+        (index + 1, SHIPPED_MODULES[index].source)
+    };
+    SHIPPED_MODULE_TEXTS.with(|texts| Rc::clone(texts[index].get_or_init(|| Rc::from(text))))
+}
+
 /// The shipped module `name`, resolved, for the boot, which names it in
 /// the binary. A name the table does not list is a defect in the binary, as
 /// a module that does not parse or resolve is, so both panic.
@@ -358,9 +388,11 @@ impl<'gc> Mutator<'gc> {
     /// compiles its own: no interpreter shares a mixin with another.
     pub(crate) fn shipped_root_mixin(&mut self, name: &str) -> Rc<Mixin> {
         match self.shipped_code_path {
-            ShippedCodePath::Embedded => {
-                crate::shipped_code::decode_module(crate::shipped_code::embedded(), name)
-            }
+            ShippedCodePath::Embedded => crate::shipped_code::decode_module(
+                crate::shipped_code::embedded(),
+                name,
+                shipped_module_text(name),
+            ),
             ShippedCodePath::Source => self.shipped_root_mixin_from_source(name),
         }
     }
@@ -376,6 +408,7 @@ impl<'gc> Mutator<'gc> {
                 &resolved.module.root_class,
                 &resolved.bindings,
                 super::instantiate::ModuleSource::Kernel,
+                &resolved.source,
             );
             super::kernel::check_kernel_shape(&root_mixin, &resolved);
             root_mixin
@@ -485,6 +518,38 @@ mod tests {
                 assert!(mutator.shipped_world.pending_class(name).is_none());
             }
         });
+    }
+
+    /// `CollectionsFactory`'s root mixin holds the module's text byte for
+    /// byte, and its `List` names the root as its enclosing mixin, whether
+    /// the boot decodes the embedded shipped code or compiles the source.
+    #[test]
+    fn a_shipped_module_decoded_from_the_embedded_code_carries_its_text_and_links() {
+        for path in [ShippedCodePath::Embedded, ShippedCodePath::Source] {
+            let mut interpreter =
+                crate::Interpreter::bootstrap_on(crate::compiler::Lowering::Optimized, path);
+            interpreter.enter(|mutator| {
+                let root = mutator.shipped_root_mixin("CollectionsFactory");
+                let text = root
+                    .module_text
+                    .as_ref()
+                    .expect("a shipped module has its text");
+                assert_eq!(&*text.0, COLLECTIONS_FACTORY_SOURCE);
+                let list = root
+                    .nested
+                    .iter()
+                    .find(|nested| nested.name.as_str() == "List")
+                    .expect("CollectionsFactory declares List");
+                assert!(list
+                    .enclosing_mixin()
+                    .is_some_and(|enclosing| Rc::ptr_eq(&enclosing, &root)));
+                assert!(list
+                    .module_text
+                    .as_ref()
+                    .is_some_and(|list_text| Rc::ptr_eq(&list_text.0, &text.0)));
+                assert!(root.enclosing_mixin().is_none());
+            });
+        }
     }
 
     /// What a host send answered, or a panic naming `step`.

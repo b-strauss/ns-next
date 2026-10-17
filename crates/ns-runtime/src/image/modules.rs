@@ -67,17 +67,19 @@ pub struct DecodedModule {
 }
 
 /// The inverse of `encode_modules`. The declared count must be the mixin
-/// table's tree count -- a surplus tree would be declarations no module
-/// names, a missing one a module without a root -- and is bounded by the
-/// bytes left before anything is reserved for it. A root's id is only read
-/// here: the graph it indexes comes later (`module_root_classes`).
+/// table's tree count, the length of `module_rows` -- each tree's first
+/// row, as `mixins::read` found them; a surplus tree would be declarations
+/// no module names, a missing one a module without a root -- and is
+/// bounded by the bytes left before anything is reserved for it. A root's
+/// id is only read here: the graph it indexes comes later
+/// (`module_root_classes`).
 pub fn decode_modules(
     reader: &mut Reader,
-    mixins: &mixins::Decoded,
+    module_rows: &[u32],
     with_source: bool,
 ) -> Result<Vec<DecodedModule>, DecodeError> {
     let declared = reader.read_u32()?;
-    let trees = u32::try_from(mixins.module_rows.len()).unwrap_or(u32::MAX);
+    let trees = u32::try_from(module_rows.len()).unwrap_or(u32::MAX);
     if declared != trees {
         return Err(DecodeError::ModuleCountMismatch { declared, trees });
     }

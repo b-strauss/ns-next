@@ -118,6 +118,10 @@ impl<'gc> Mutator<'gc> {
             methods: std::iter::once(crate::mixin::factory_entry(mixin.factory)).collect(),
             ..crate::mixin::Mixin::empty(Symbol::CLASS_SIDE)
         });
+        // A synthesized class side names the instance side it stands for,
+        // as a declared one does; it has no text of its own. The cell is
+        // fresh, so the set cannot fail.
+        let _ = synthesized.enclosing.set(Rc::downgrade(mixin));
         self.metaclass_mixins.insert(key, synthesized.clone());
         synthesized
     }

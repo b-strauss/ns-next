@@ -1013,6 +1013,7 @@ mod tests {
                 &resolved.module.root_class,
                 &resolved.bindings,
                 crate::interpreter::instantiate::ModuleSource::Kernel,
+                &resolved.source,
             );
             check(&root, &resolved);
         });

@@ -14,8 +14,8 @@ use crate::bytecode::{
 };
 use crate::mixin::{
     AccessorKind, ClassAccessor, ClauseMessage, Factory, FactoryMethod, MethodEntry,
-    MethodFastPath, Mixin, MixinApplicationClause, MixinMethod, MixinSlot, QuickConstant,
-    SlotAccessor,
+    MethodFastPath, Mixin, MixinApplicationClause, MixinMethod, MixinSlot, ModuleText,
+    QuickConstant, SlotAccessor,
 };
 use crate::resolver::RootShape;
 use crate::types::BuiltinClass;
@@ -24,19 +24,26 @@ use crate::Symbol;
 
 use super::bytes::ByteReader;
 
-/// The root mixin of one module's section.
-pub(crate) fn decode_section(section: &[u8]) -> Rc<Mixin> {
+/// The root mixin of one module's section, every mixin of it holding
+/// `module_text`, the module's text.
+pub(crate) fn decode_section(section: &[u8], module_text: Rc<str>) -> Rc<Mixin> {
     let mut reader = ByteReader::new(section);
     let symbols = (0..reader.length())
         .map(|_| Symbol::intern(reader.str()))
         .collect();
-    let mut decoder = Decoder { reader, symbols };
+    let mut decoder = Decoder {
+        reader,
+        symbols,
+        module_text,
+    };
     decoder.mixin()
 }
 
 struct Decoder<'bytes> {
     reader: ByteReader<'bytes>,
     symbols: Vec<Symbol>,
+    /// The module's text, which every mixin decoded shares.
+    module_text: Rc<str>,
 }
 
 impl Decoder<'_> {
@@ -137,7 +144,10 @@ impl Decoder<'_> {
             }
         });
         mixin.shipped = self.reader.boolean();
-        Rc::new(mixin)
+        mixin.module_text = Some(ModuleText(Rc::clone(&self.module_text)));
+        let mixin = Rc::new(mixin);
+        Mixin::set_enclosing_of_children(&mixin);
+        mixin
     }
 
     fn method_entry(&mut self) -> MethodEntry {

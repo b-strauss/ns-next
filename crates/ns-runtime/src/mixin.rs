@@ -22,8 +22,9 @@
 //! superclass-clause bodies) and on its methods (`MixinMethod::code`), for a
 //! built mixin and a decoded one alike.
 
+use std::cell::OnceCell;
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use ns_syntax::ast;
 use ns_syntax::Span;
@@ -674,6 +675,46 @@ pub struct Mixin {
     /// layout. A decoded mixin is never shipped: an image carries only its
     /// own module.
     pub shipped: bool,
+    /// The mixin this one is declared in, for the mirrors' `enclosingMixin`
+    /// and a class side's `instanceMixin`: a nested declaration's names the
+    /// declaration it is nested in, a class side's -- declared or
+    /// synthesized -- its instance side's. A mixin holds its nested mixins,
+    /// not the one it is nested in, so this is the upward link, `Weak` so
+    /// that a tree is no cycle, and set once, after the enclosing mixin's
+    /// `Rc` exists (`set_enclosing_of_children`). Empty for a module's root
+    /// and a builtin's mixin. Road step 5b moves the link to the mixin's id.
+    pub enclosing: OnceCell<Weak<Mixin>>,
+    /// The source text of the module this mixin is declared in, for the
+    /// mirrors' `source`: the one `Rc<str>` every mixin of the module
+    /// shares, sliced by `span` and each method's `CompiledCode::source`
+    /// through `source_text`. `None` for a builtin's mixin, the VM
+    /// mirror's, a synthesized class side's, which has no text of its
+    /// own, and a mixin of an image that carries no source. Road step 5b
+    /// moves it with the link, to the mixin's id.
+    pub module_text: Option<ModuleText>,
+}
+
+/// A module's source text, as every mixin of the module holds it
+/// (`Mixin::module_text`). A type of its own so that printing a mixin,
+/// whose `Debug` is derived, prints the text's length and not the module.
+#[derive(Clone)]
+pub struct ModuleText(pub Rc<str>);
+
+impl std::fmt::Debug for ModuleText {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "ModuleText({} bytes)", self.0.len())
+    }
+}
+
+/// The part of `text` that `span` covers, or `None` unless `span.start <=
+/// span.end <= text.len()` and both ends fall on character boundaries. The
+/// one way a module's text is sliced: a span read from an image is the
+/// image's to choose, so a span past the text or inside a character
+/// answers no source rather than a panic.
+pub fn source_text(text: &str, span: Span) -> Option<&str> {
+    let start = usize::try_from(span.start).ok()?;
+    let end = usize::try_from(span.end).ok()?;
+    text.get(start..end)
 }
 
 impl Mixin {
@@ -703,6 +744,26 @@ impl Mixin {
             root_clause_defect: None,
             root_shape: None,
             shipped: false,
+            enclosing: OnceCell::new(),
+            module_text: None,
+        }
+    }
+
+    /// The mixin this one is declared in (`Mixin::enclosing`), while it
+    /// lives; `None` for a module's root and a builtin's mixin.
+    pub fn enclosing_mixin(&self) -> Option<Rc<Mixin>> {
+        self.enclosing.get().and_then(Weak::upgrade)
+    }
+
+    /// Links every nested mixin of `parent`, and its class side, to
+    /// `parent`, once `parent`'s `Rc` exists. A child already linked keeps
+    /// its link: the builders build trees, and `image::mixins` proves an
+    /// image's rows are one (`check_preorder`), so no child has two
+    /// parents to choose between.
+    pub fn set_enclosing_of_children(parent: &Rc<Mixin>) {
+        for child in parent.nested.iter().chain(parent.class_side.iter()) {
+            // `Err` is a cell already set, which keeps its link.
+            let _ = child.enclosing.set(Rc::downgrade(parent));
         }
     }
 
@@ -1012,6 +1073,32 @@ pub fn preorder(mixin: &Rc<Mixin>, out: &mut Vec<Rc<Mixin>>) {
     }
     if let Some(class_side) = &mixin.class_side {
         preorder(class_side, out);
+    }
+}
+
+#[cfg(test)]
+mod source_text_tests {
+    use super::source_text;
+    use ns_syntax::Span;
+
+    /// A span from an image is untrusted: only one inside the text and on
+    /// character boundaries answers a slice.
+    #[test]
+    fn a_span_outside_the_text_answers_no_source() {
+        let text = "abc\u{e9}";
+        assert_eq!(text.len(), 5);
+        assert_eq!(source_text(text, Span::new(0, 3)), Some("abc"));
+        assert_eq!(source_text(text, Span::new(0, 5)), Some("abc\u{e9}"));
+        assert_eq!(
+            source_text(text, Span::new(0, 4)),
+            None,
+            "inside the e-acute"
+        );
+        assert_eq!(source_text(text, Span::new(2, 9)), None, "past the end");
+        // `Span::new` refuses a reversed span in a debug build; an image's
+        // bytes are not built through it.
+        let reversed = Span { start: 3, end: 1 };
+        assert_eq!(source_text(text, reversed), None, "reversed");
     }
 }
 

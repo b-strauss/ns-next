@@ -8864,7 +8864,11 @@ fn a_module_count_past_the_bytes_left_is_refused() {
     section.write_u32(2);
     let section = section.into_bytes();
     assert!(matches!(
-        image::modules::decode_modules(&mut decode::Reader::new(&section), &decoded, false),
+        image::modules::decode_modules(
+            &mut decode::Reader::new(&section),
+            &decoded.module_rows,
+            false,
+        ),
         Err(decode::DecodeError::UnexpectedEndOfFile)
     ));
 }
@@ -14047,6 +14051,62 @@ fn a_second_typed_arrays_facet_is_a_record_of_its_shipped_class() {
             "the loaded facet is enclosed by the loading boot's module instance"
         );
     });
+}
+
+/// A module of two classes, for the tests of what a decoded mixin knows
+/// of its enclosing mixin and its module's text.
+const TWO_CLASS_MODULE: &str = indoc! {"
+    class Outer usingPlatform: platform = Object new () (
+      class Inner = Object new () ()
+    ) : ()
+"};
+
+/// The root mixin of a loaded image's one module, and its `Inner`.
+fn outer_and_inner(loaded: &image::LoadedImage) -> (Rc<Mixin>, Rc<Mixin>) {
+    let outer = loaded.modules[0].declaration.clone();
+    let inner = outer
+        .nested
+        .iter()
+        .find(|nested| nested.name.as_str() == "Inner")
+        .cloned()
+        .expect("Outer declares Inner");
+    (outer, inner)
+}
+
+/// An image with source gives every decoded mixin of a module the
+/// module's one text, and each nested mixin its enclosing one.
+#[test]
+fn a_mixin_decoded_from_an_image_with_source_carries_its_text_and_links() {
+    let bytes = snapshot_module(TWO_CLASS_MODULE, Some(TWO_CLASS_MODULE), None);
+    let loaded = image::load(&bytes).expect("load");
+    let (outer, inner) = outer_and_inner(&loaded);
+    let text = outer
+        .module_text
+        .as_ref()
+        .expect("the image carries source");
+    assert_eq!(&*text.0, TWO_CLASS_MODULE);
+    assert!(inner
+        .module_text
+        .as_ref()
+        .is_some_and(|inner_text| Rc::ptr_eq(&inner_text.0, &text.0)));
+    assert!(inner
+        .enclosing_mixin()
+        .is_some_and(|enclosing| Rc::ptr_eq(&enclosing, &outer)));
+    assert!(outer.enclosing_mixin().is_none());
+}
+
+/// An image without source decodes mixins with no text, linked to their
+/// enclosing ones all the same.
+#[test]
+fn a_mixin_decoded_from_an_image_without_source_carries_no_text() {
+    let bytes = snapshot_module(TWO_CLASS_MODULE, None, None);
+    let loaded = image::load(&bytes).expect("load");
+    let (outer, inner) = outer_and_inner(&loaded);
+    assert!(outer.module_text.is_none());
+    assert!(inner.module_text.is_none());
+    assert!(inner
+        .enclosing_mixin()
+        .is_some_and(|enclosing| Rc::ptr_eq(&enclosing, &outer)));
 }
 
 /// An image holding a `List` loads into a fresh process, whose boot built

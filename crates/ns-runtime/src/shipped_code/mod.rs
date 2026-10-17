@@ -134,8 +134,9 @@ const GENERATING_WITHOUT_PRIMITIVE_METHODS: &str =
     "NS_NEXT_NO_PRIMITIVE_METHODS=1 is set: the shipped code is compiled with primitive \
      methods, so it is not generated under it; unset the variable and run again";
 
-/// The root mixin of the module `name` in the artifact `bytes`.
-pub(crate) fn decode_module(bytes: &[u8], name: &str) -> Rc<Mixin> {
+/// The root mixin of the module `name` in the artifact `bytes`, every
+/// mixin of it holding `module_text`, the module's text.
+pub(crate) fn decode_module(bytes: &[u8], name: &str, module_text: Rc<str>) -> Rc<Mixin> {
     let mut reader = ByteReader::new(bytes);
     assert!(
         reader.raw(MAGIC.len()) == MAGIC,
@@ -153,7 +154,7 @@ pub(crate) fn decode_module(bytes: &[u8], name: &str) -> Rc<Mixin> {
         let length = reader.length();
         let section = reader.raw(length);
         if module == name {
-            return decode::decode_section(section);
+            return decode::decode_section(section, module_text);
         }
     }
     panic!("internal: the embedded shipped code holds no module {name}")
@@ -166,7 +167,10 @@ mod tests {
 
     fn decoded_modules(bytes: &[u8]) -> Vec<(&'static str, Rc<Mixin>)> {
         module_names()
-            .map(|name| (name, decode_module(bytes, name)))
+            .map(|name| {
+                let module_text = crate::interpreter::core_library::shipped_module_text(name);
+                (name, decode_module(bytes, name, module_text))
+            })
             .collect()
     }
 
@@ -278,7 +282,11 @@ mod tests {
     /// mirror sends and its primitive methods' fast paths, and that the
     /// kernel root is marked shipped and carries no declaration.
     fn assert_keeps_the_mirror_sends_and_fast_paths(bytes: &[u8]) {
-        let kernel = decode_module(bytes, "Kernel");
+        let kernel = decode_module(
+            bytes,
+            "Kernel",
+            crate::interpreter::core_library::shipped_module_text("Kernel"),
+        );
         let object = kernel
             .nested
             .iter()
