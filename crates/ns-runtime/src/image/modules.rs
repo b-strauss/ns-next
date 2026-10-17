@@ -60,7 +60,9 @@ const MIN_MODULE_BYTES: usize = 1 + 4 + 4;
 /// One module as the module section describes it.
 pub struct DecodedModule {
     pub origin: SourceOrigin,
-    pub source: Option<String>,
+    /// The module's text, when the image carries source: one allocation,
+    /// which every mixin of the module and the host's `LoadedModule` share.
+    pub source: Option<Rc<str>>,
     /// The object id of the graph record that is the module's root class,
     /// held to the module by `module_root_classes` once the graph exists.
     pub root: u32,
@@ -88,7 +90,9 @@ pub fn decode_modules(
     for _ in 0..count {
         let origin = decode::decode_source_origin(reader)?;
         let source = if with_source {
-            Some(reader.read_str()?)
+            // Lent out of the buffer and copied once, into the `Rc` the
+            // mixins and the host share.
+            Some(Rc::from(reader.read_text()?))
         } else {
             None
         };

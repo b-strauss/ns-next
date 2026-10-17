@@ -1376,8 +1376,8 @@ or behind the lookup ([dispatch.md](dispatch.md), "Resolve, then act").
 superclass clause's check.
 
 The entry is derived, never stored twice: `instantiate::build_class_side`
-inserts it as a class side is built from source, `image::mixins::decode`
-derives it for a row another row names as its class side, and
+inserts it as a class side is built from source, `image::mixins::build`
+derives it on load for a row another row names as its class side, and
 `Mutator::metaclass_mixin` puts it in the otherwise empty mixin a class that
 declares no class side gets — memoized per class mixin
 (`Mutator.metaclass_mixins`), so every class object of one declaration shares

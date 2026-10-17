@@ -1256,7 +1256,10 @@ set ("The object space"); the old space the load's tenure commits before
 it copies, for the worst case of everything young being promoted, which
 the nursery bounds rather than the input; and the decoded `Vec<Instruction>` of
 one compiled body at a time while the code table is verified ("The trigger
-and the growth policy" below). Each stays proportional to the input.
+and the growth policy" below); and a module's source text, which an image
+with source holds once, its bytes in one `Rc<str>` that every mixin of the
+module and the host's `LoadedModule` share. Each stays proportional to the
+input.
 
 `bounded_count` is what keeps all of this proportional to the input rather
 than to a 32-bit count -- without it a crafted `u32::MAX` would allocate

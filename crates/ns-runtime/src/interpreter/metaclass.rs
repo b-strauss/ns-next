@@ -98,7 +98,7 @@ impl<'gc> Mutator<'gc> {
     /// A declared class side already carries the factory entry -- it is
     /// inserted where the class side is built, from source
     /// (`instantiate::build_class_side`) and on the way out of an image
-    /// (`image::mixins::decode`) alike. A class that declares none still
+    /// (`image::mixins::build`) alike. A class that declares none still
     /// needs a metaclass to hold that one entry, and gets an otherwise empty
     /// mixin here: the case that covers every builtin, whose behaviour is
     /// native and whose factory is `new` -- the default §6's unnumbered

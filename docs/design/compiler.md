@@ -215,8 +215,10 @@ clause body answers the superclass and every `<:` receiver as one array
 ([object-model.md](object-model.md), "Mixin application"). While the tree is
 built from source, `MixinMethod::from_declaration` compiles each method and
 `compile_mixin_bodies` a mixin's three bodies, before the mixin is wrapped in
-the `Rc` every application shares; `image::mixins::decode` attaches the bodies
-a row names from the image's code table. So a method without a body cannot
+the `Rc` every application shares; on load, `image::mixins::build` attaches
+the bodies a row names from the image's code table, after `mixins::read` has
+checked the rows and `modules::decode_modules` has read the module section,
+and before `verify_mixins` reconciles them. So a method without a body cannot
 exist, and nothing looks code up beside a declaration: a send that found a
 method has found its code. That is how the prior art holds it — Primordial
 Soup's `Method::bytecode()`, SOMns's `SInvokable.invokable`. Lowering turns

@@ -931,10 +931,16 @@ Two structural passes run before anything the image describes can execute:
 each frame's body off the decoded mixins that carry it. Between them,
 `verify_mixins` reconciles every decoded mixin with the bodies its row attached
 — each body's kind and arity against the declaration's, and a body present
-wherever the declaration needs one. `mixins::decode` attaches without checking,
-so `inspect` can still display an artifact whose halves disagree; only `load`
-refuses it. A corrupt but version-matching image is an error there, never a
-panic in the VM later.
+wherever the declaration needs one. `load` reads the mixin table
+(`mixins::read`, which checks the rows and finds the trees), then the module
+section (`modules::decode_modules`), whose texts every mixin of a module
+holds, then builds the mixins (`mixins::build`, which attaches the bodies
+without checking) and only then reconciles them (`verify_mixins`); so a
+defect of the module section is reported before one of the mixins' bodies.
+`inspect` builds through `mixins::decode`, `read` and `build` with no texts,
+and runs no `verify_mixins`, so it can still display an artifact whose halves
+disagree; only `load` refuses it. A corrupt but version-matching image is an
+error there, never a panic in the VM later.
 
 **The loader builds before the graph, and only what the binary has.** After
 the first passes and before the tenure, the loader builds the shipped modules

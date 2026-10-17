@@ -258,8 +258,10 @@ pub struct LoadedModule {
     pub origin: SourceOrigin,
     /// The module's source text, for the debug variant only -- `None` for a
     /// source-free artifact. Never parsed, never resolved, never executed:
-    /// `load` reads it out of the byte stream and hands it over unchanged.
-    pub source: Option<String>,
+    /// `load` reads it out of the byte stream and hands it over unchanged,
+    /// the one allocation every mixin of the module holds as its
+    /// `Mixin::module_text`.
+    pub source: Option<std::rc::Rc<str>>,
 }
 
 pub struct LoadedImage {
@@ -405,7 +407,7 @@ fn decode_described(
         .map_err(|error| error.to_string())?;
     let module_texts: Vec<Option<std::rc::Rc<str>>> = decoded_modules
         .iter()
-        .map(|module| module.source.as_deref().map(std::rc::Rc::from))
+        .map(|module| module.source.clone())
         .collect();
     let mixins = mixins::build(read, &table.codes, &module_texts);
     decode::verify_mixins(&mixins).map_err(|error| error.to_string())?;
