@@ -11,3 +11,10 @@ insta.workspace = true
 
 [lints]
 workspace = true
+
+# The frontend timed over the corpus, per module and in total
+# (`benches/corpus.rs`): a `std`-only binary, so no benchmark framework
+# joins the dependencies.
+[[bench]]
+name = "corpus"
+harness = false

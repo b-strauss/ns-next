@@ -627,6 +627,15 @@ specification's grammar, so a module that fails to parse is either a parser
 defect or a program the specification refuses, and either way a decision to
 take and record here, not a file to set aside.
 
+The corpus is also what the frontend is timed on:
+`cargo bench -p ns-syntax --bench corpus` lexes (`lex`), parses (`parse`)
+and parses for an editor (`parse_for_editor`) every module, one module
+after another in each of 20 rounds, and reports each module's median per
+phase and the minimum, median and maximum of the corpus's total
+(`crates/ns-syntax/benches/corpus.rs`, whose doc comment lists the options;
+`--csv` keeps the medians for a comparison). It is `std` alone, with no
+benchmark framework, and runs in the release profile.
+
 ## Errors
 
 Lexer and parser collect `Diagnostic { span, message, severity }` and report all
