@@ -348,34 +348,47 @@ empty part as absent, so two parses that say the same compare equal however
 they are laid out.
 
 The attachment does its work in three steps, none recursing over the tree.
-A prepass walks the tree once, counts the commentable nodes and records the
+A prepass walks the tree once and records, for every commentable node in
+pre-order, its known span, its shape and its parent's index, and records the
 empty parts and the pattern literals, since which tokens a comment is
-counted among depends on them. One measuring walk then writes, for every
-commentable node, an entry of 12 bytes in pre-order -- its first and last
-token and the size of its subtree. A descent starts at the module and
+counted among depends on them. One loop over the records, from the last to
+the first, then writes for every commentable node an entry of 12 bytes --
+its first and last token and the size of its subtree: a node's descendants
+follow it in pre-order, so its children are finished when the loop reaches
+it, and no second walk is needed. The loop takes the nodes in roughly
+descending source order, so each of its token searches starts where the
+previous one found its token and gallops from there (`partition_point_near`)
+instead of searching all the tokens. A descent starts at the module and
 expands a node only when a comment lies inside it: a node no comment lies
 in is never opened, so the work follows the comments and the nodes on their
-paths, not the size of the tree. Where comments stand among a holder's
-children, the `Inner(n)` count is two binary searches over prefix sums of
-the holder's own tokens (`OwnTokens`), built once per holder. The first
-algorithm, which built a tree of every commentable node, stays as the
-test-only reference in `attach/reference.rs`, and oracle tests hold the
+paths, not the size of the tree. Its buffers are held across the
+expansions, so an expansion allocates only the comment lists it hands its
+children, and an attached comment's lines are split from the source by a
+borrowing splitter (`comment::lines`) and copied once. Where comments stand
+among a holder's children, the `Inner(n)` count is two binary searches over
+prefix sums of the holder's own tokens (`OwnTokens`), built once per holder.
+The first algorithm, which built a tree of every commentable node, stays as
+the test-only reference in `attach/reference.rs`, and oracle tests hold the
 descent to it over every source of the repository and fifteen prefixes of
 each, comment for comment; `the_work_grows_linearly_along_a_chain` and
 `the_work_grows_linearly_with_comments_among_many_children` hold the
-descent and the walks linear. Measured 2026-10-17 on the measuring
+descent and the prepass linear. Measured 2026-10-17 on the measuring
 workstation (Windows 11, release builds with the function-alignment pin,
 three builds per side run three times each, `--rounds 40`, each phase timed
 over all modules before the next) over the 211 modules of `corpus/modules`,
-the total `parse` median is 114.2 ms with the tree-building attachment and
-103.4 ms with this one (spread over the nine runs 113.1-114.5 ms and
-103.2-103.7 ms), `parse_for_editor` 115.3 ms (114.6-115.8 ms) and 104.2 ms
-(103.7-105.0 ms): 9.5 % and 9.7 % less. In a sampled profile the
-attachment's share of the whole run (all three phases) falls from 38 % to
-33 %, of which the prepass is 7 %. The attachment is still the second
-largest cost after the parser's own; `Kernel.ns` parses in 2.16 ms, 1.39 ms
-with its comments stripped. The measurement covers one machine, Windows'
-heap allocator and the corpus only.
+the total `parse` median is 94.8 ms (spread over the nine runs 94.0-95.4
+ms) and `parse_for_editor` 95.1 ms (93.9-95.4 ms), against 104.8 ms
+(104.2-105.3 ms) and 104.5 ms (104.1-105.2 ms) with a second measuring
+walk, searches over all the tokens, each comment line copied three times
+and the descent's buffers allocated per expansion: 9.5 % and 9.0 % less.
+Per pass over the corpus (temporary instrumentation, one release build
+without the pin) the prepass takes 9.7 ms, keeping the tokens 2.4 ms, the
+loop over the records 6.0 ms and the descent 8.4 ms, 3.4 ms of it building
+the 8,109 `AttachedComment`s; the prepass and the loop together take 15.7
+ms where the prepass and the second walk took 22.3 ms. The attachment is
+still the second largest cost after the parser's own; `Kernel.ns` parses in
+2.83 ms, 1.52 ms with its `///` lines stripped. The measurement covers one
+machine, Windows' heap allocator and the corpus only.
 
 ## AST
 

@@ -1277,19 +1277,28 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
   holder; the oracle tests check its numbers, and
   `the_work_grows_linearly_along_a_chain` and
   `the_work_grows_linearly_with_comments_among_many_children` hold the
-  descent and the walks linear). What stays is that `parse` attaches every
+  descent and the prepass linear). What stays is that `parse` attaches every
   comment and the runtime throws them away: `parse` of `Kernel.ns` takes
-  2.16 ms, 0.31 ms of it lexing, and 1.39 ms once its comments are
-  stripped, so its 3,230 lines of `///` comments cost 0.77 ms, a third of the parse
-  (`cargo bench -p ns-syntax --bench corpus -- <directory> --filter
-  Kernel.ns` from `crates/ns-syntax`, the file as is and a copy without its
-  `///` lines; 2026-10-17, the measuring workstation, Windows 11, release
+  2.83 ms, 0.39 ms of it lexing, and 1.52 ms once its comments are
+  stripped, so its 3,230 lines of `///` comments cost 1.31 ms, 46 % of the
+  parse (`cargo bench -p ns-syntax --bench corpus -- <directory> --rounds
+  40` from `crates/ns-syntax`, a directory holding the file as is and one
+  holding a copy without its `///` lines, medians of three builds run three
+  times each; 2026-10-17, the measuring workstation, Windows 11, release
   with the alignment pin). That is paid on every boot that compiles the
   shipped source (`interpreter/kernel.rs`, `interpreter/core_library.rs`
   call `ns_syntax::parse`); an optimized boot from the embedded shipped
   code parses nothing ("The parser's 3.4 ms for `Kernel.ns`" above). A
   `parse` that skips the attachment for the runtime would recover it.
   [frontend.md](design/frontend.md), "Comments".
+- **Parsing files in parallel.** Every module parses independently, so
+  the callers that parse many -- `ns-next-analyzer parse-corpus` and
+  `fmt`, the language server once it reads a whole workspace, `cargo xtask
+  shipped-code` and a boot from source that parses several core-library
+  modules -- can parse them on several threads (`std::thread::scope`, no
+  dependency). Within one file the steps are sequential, and a file takes
+  1-10 ms, too little for threads to pay. Not measured yet. Noted
+  2026-10-17.
 - **Fewer allocations in the syntax tree** (sub-project B of the syntax
   crate's optimization). In the sampled profile of the corpus benchmark
   (2026-10-17) the parser is 41 % of the run, dropping the module 14 %, the
