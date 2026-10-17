@@ -7,8 +7,9 @@
 //! `Kernel.ns` builds over the running activations, `message` for
 //! `Message>>sendTo:`, `module` for `moduleInstanceNamed:`, through which
 //! shipped source reaches another shipped module, and `future` for the
-//! forcing of §6.3.2's pull future, and `weak` for `WeakArray`, the
-//! full collection a program asks for and `Ephemeron`'s check of a key.
+//! forcing of §6.3.2's pull future, `weak` for `WeakArray`, the
+//! full collection a program asks for and `Ephemeron`'s check of a key,
+//! and `reflection` for what the shipped mirrors module reads.
 //! `primitive` names every
 //! one of them as a `Primitive` and lists them as the rows of the VM
 //! mirror, the one builtin
@@ -27,6 +28,7 @@ pub mod module;
 pub mod numbers;
 pub mod object_class;
 pub mod primitive;
+pub mod reflection;
 pub mod text;
 pub mod value;
 pub mod weak;
@@ -116,6 +118,10 @@ pub(crate) fn execute<'gc>(
         Primitive::Future(primitive) => future::execute(mutator, primitive, receiver),
         Primitive::Weak(primitive) => {
             weak::execute(mutator, primitive, receiver, selector, arguments).map(wrap_error)
+        }
+        Primitive::Reflection(primitive) => {
+            reflection::execute(mutator, primitive, receiver, arguments)
+                .map(|answer| Ok(Step::Value(answer)))
         }
         // Always `Some`: a leaf that declines here runs the failure block
         // the send carries, so a mirror row never answers `None`.

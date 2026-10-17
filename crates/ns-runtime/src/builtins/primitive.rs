@@ -47,6 +47,9 @@ pub enum Primitive {
     Future(FuturePrimitive),
     /// `WeakArray`'s leaves and `garbageCollect` (`builtins::weak`).
     Weak(WeakPrimitive),
+    /// What the shipped mirrors module reads of classes, mixins, methods
+    /// and objects (`builtins::reflection`).
+    Reflection(ReflectionPrimitive),
     /// A leaf reached as a send to the VM mirror: a row of `MIRROR`.
     Mirror(MirrorPrimitive),
 }
@@ -299,6 +302,30 @@ impl Primitive {
             // structure must refuse as a key (§6.3.2: a future is
             // transparent).
             Primitive::Weak(WeakPrimitive::IsValue) => true,
+            // Declines, rather than answering `false`, for a subject or an
+            // argument of the wrong kind -- a future among them -- as
+            // `Behavior`'s leaves do. `SlotNamesOf` never declines: it
+            // reads a future as the object it is, whose levels are all the
+            // kernel's, and answers no slot.
+            Primitive::Reflection(
+                ReflectionPrimitive::MixinOf
+                | ReflectionPrimitive::IsMetaclass
+                | ReflectionPrimitive::EnclosingObjectOf
+                | ReflectionPrimitive::SlotNamesOf
+                | ReflectionPrimitive::SlotNamed
+                | ReflectionPrimitive::MixinName
+                | ReflectionPrimitive::MixinIsMeta
+                | ReflectionPrimitive::MixinEnclosing
+                | ReflectionPrimitive::MixinInstanceSide
+                | ReflectionPrimitive::MixinClassSide
+                | ReflectionPrimitive::MixinSlots
+                | ReflectionPrimitive::MixinMethods
+                | ReflectionPrimitive::MixinNested
+                | ReflectionPrimitive::MixinAccess
+                | ReflectionPrimitive::MethodSource
+                | ReflectionPrimitive::MixinSource
+                | ReflectionPrimitive::MixinIsShipped,
+            ) => false,
             // It reaches its own primitive's row through `execute_sent`,
             // whose failure path looks for a future among that row's
             // operands.
@@ -782,6 +809,57 @@ pub enum FuturePrimitive {
     /// Notes that `FutureImplementation`'s factory made a future, which
     /// turns on the runtime's looking for one (`Mutator::futures_made`).
     Made,
+}
+
+/// The leaves the shipped mirrors module reads structure and state
+/// through (`builtins::reflection`). A class leaf's subject is a class or
+/// a metaclass, a mixin leaf's a reified mixin (`Mutator::reified_mixin`);
+/// each declines for any other. A value is answered only through a level
+/// whose mixin is not shipped, and never when it is withheld
+/// (`Mutator::is_withheld`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReflectionPrimitive {
+    /// The reified mixin a class object's application applies.
+    MixinOf,
+    /// Whether a class object is a metaclass.
+    IsMetaclass,
+    /// A class object's enclosing object, `nil` for a module's class;
+    /// declined for a shipped level and a withheld value.
+    EnclosingObjectOf,
+    /// The names of an object's named, non-lazy slots that non-shipped
+    /// levels declare, superclass level first; never declines.
+    SlotNamesOf,
+    /// The value of an object's slot of a name, the nearest non-shipped
+    /// level declaring it non-lazy winning; declined for a withheld value.
+    SlotNamed,
+    /// A mixin's name, a class side's `<instance side's name> class`.
+    MixinName,
+    /// Whether a mixin is a class side.
+    MixinIsMeta,
+    /// The mixin a mixin is declared in, a class side's that of its
+    /// instance side; `nil` at a module's root.
+    MixinEnclosing,
+    /// A mixin's instance side, itself for an instance side.
+    MixinInstanceSide,
+    /// A mixin's class side, declared or synthesized, itself for a class
+    /// side.
+    MixinClassSide,
+    /// A mixin's own slot declarations.
+    MixinSlots,
+    /// A mixin's own declared methods.
+    MixinMethods,
+    /// A mixin's nested mixins.
+    MixinNested,
+    /// The access of a mixin's accessor, a class side's that of its
+    /// instance side.
+    MixinAccess,
+    /// A declared method's source text.
+    MethodSource,
+    /// A class declaration's source text.
+    MixinSource,
+    /// Whether a mixin is shipped, a class side's whether its instance
+    /// side is.
+    MixinIsShipped,
 }
 
 /// A row of `MIRROR`. A `u16`, so the table may hold 65,536 rows; a
@@ -2141,6 +2219,91 @@ pub const MIRROR: &[MirrorEntry] = &[
         "ephemeron:finalizer:ifFail:",
         "finalizer:",
         Primitive::Weak(WeakPrimitive::EphemeronSetFinalizer),
+    ),
+    mirror(
+        "reflectionMixinOf:ifFail:",
+        "mixin",
+        Primitive::Reflection(ReflectionPrimitive::MixinOf),
+    ),
+    mirror(
+        "reflectionIsMetaclass:ifFail:",
+        "isMeta",
+        Primitive::Reflection(ReflectionPrimitive::IsMetaclass),
+    ),
+    mirror(
+        "reflectionEnclosingObjectOf:ifFail:",
+        "enclosingObject",
+        Primitive::Reflection(ReflectionPrimitive::EnclosingObjectOf),
+    ),
+    mirror(
+        "reflectionSlotNamesOf:ifFail:",
+        "slots",
+        Primitive::Reflection(ReflectionPrimitive::SlotNamesOf),
+    ),
+    mirror(
+        "reflectionSlotOf:named:ifFail:",
+        "getSlot:",
+        Primitive::Reflection(ReflectionPrimitive::SlotNamed),
+    ),
+    mirror(
+        "reflectionMixinName:ifFail:",
+        "name",
+        Primitive::Reflection(ReflectionPrimitive::MixinName),
+    ),
+    mirror(
+        "reflectionMixinIsMeta:ifFail:",
+        "isMeta",
+        Primitive::Reflection(ReflectionPrimitive::MixinIsMeta),
+    ),
+    mirror(
+        "reflectionMixinEnclosing:ifFail:",
+        "enclosingMixin",
+        Primitive::Reflection(ReflectionPrimitive::MixinEnclosing),
+    ),
+    mirror(
+        "reflectionMixinInstanceSide:ifFail:",
+        "instanceMixin",
+        Primitive::Reflection(ReflectionPrimitive::MixinInstanceSide),
+    ),
+    mirror(
+        "reflectionMixinClassSide:ifFail:",
+        "classMixin",
+        Primitive::Reflection(ReflectionPrimitive::MixinClassSide),
+    ),
+    mirror(
+        "reflectionMixinSlots:ifFail:",
+        "slots",
+        Primitive::Reflection(ReflectionPrimitive::MixinSlots),
+    ),
+    mirror(
+        "reflectionMixinMethods:ifFail:",
+        "methods",
+        Primitive::Reflection(ReflectionPrimitive::MixinMethods),
+    ),
+    mirror(
+        "reflectionMixinNested:ifFail:",
+        "nestedClasses",
+        Primitive::Reflection(ReflectionPrimitive::MixinNested),
+    ),
+    mirror(
+        "reflectionMixinAccess:ifFail:",
+        "accessModifier",
+        Primitive::Reflection(ReflectionPrimitive::MixinAccess),
+    ),
+    mirror(
+        "reflectionMixin:methodSource:ifFail:",
+        "methodSource:",
+        Primitive::Reflection(ReflectionPrimitive::MethodSource),
+    ),
+    mirror(
+        "reflectionMixinSource:ifFail:",
+        "source",
+        Primitive::Reflection(ReflectionPrimitive::MixinSource),
+    ),
+    mirror(
+        "reflectionMixinIsShipped:ifFail:",
+        "isShipped",
+        Primitive::Reflection(ReflectionPrimitive::MixinIsShipped),
     ),
 ];
 
