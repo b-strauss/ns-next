@@ -2047,6 +2047,33 @@ load-bearing, and whoever wires up re-entry has to decide, deliberately,
 whether `verify_graph` gains the cross-check or the re-entry path treats a
 mismatched `home` as its own untrusted-input case.
 
+## Planned: the reified mixin record
+
+Would change: a reified mixin, the kernel-private `Mixin` object a
+`MixinMirror` reflects (road step 5a,
+[liveness-and-reflection.md](liveness-and-reflection.md), "Planned: road
+step 5a, mirrors that read"), is written as a record of its own,
+`OBJECT_MIXIN`, the next free object-body tag, so that a program holding a
+mirror at a snapshot loads back holding one on the same mixin. Its body is
+the mixin's reference -- `MIXIN_ROW` and a row id for a mixin the image's
+modules carry, `MIXIN_SHIPPED` and a shipped-name index for a shipped one,
+named by the `ShippedKind::Class` entry of the shipped class whose
+application it is, as a class record names its mixin -- and a side byte, 0
+for the instance side, 1 for the class side, the synthesized one of a
+class that declares none included. The id the object holds is never
+written: it is minted afresh on load.
+
+The decoder sizes the record from its bytes in the first pass, refuses a
+row id past the table, a shipped name that is not a class's, a side byte
+other than 0 or 1, a record whose header names a class other than `Mixin`,
+and a second record for the same mixin -- the object is canonical, as a
+symbol is, and the symbol's `DuplicateSymbol` is the model -- before it
+allocates; in the second pass it enters each object into the heap's table.
+A shipped mixin may be named in this position whatever its class's
+accessibility, since the object carries no authority; the encoder refuses
+the reified mixin of the VM mirror's class, which has no name, as it
+refuses the class itself (lock (5)).
+
 ## Planned: edited mixins in the image
 
 Would change: a program a MirrorBuilder edited is written to an image and
