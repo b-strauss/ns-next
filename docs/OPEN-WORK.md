@@ -1279,9 +1279,9 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
   `the_work_grows_linearly_with_comments_among_many_children` hold the
   descent and the prepass linear). What stays is that `parse` attaches every
   comment and the runtime throws them away: under mimalloc, the allocator
-  of both binaries, `parse` of `Kernel.ns` takes 0.80-0.82 ms, and 0.51
+  of both binaries, `parse` of `Kernel.ns` takes 0.81-0.84 ms, and 0.51
   ms with its 3,230 lines of `///` comments stripped, so the comments
-  cost about 0.3 ms, 37 % of the parse (`cargo bench -p ns-syntax --bench
+  cost about 0.3 ms, 38 % of the parse (`cargo bench -p ns-syntax --bench
   corpus -- <directory> --rounds 100` from `crates/ns-syntax`, the
   benchmark built with a `#[global_allocator]` of mimalloc added;
   2026-10-17, the measuring workstation, Windows 11, release with the

@@ -5406,7 +5406,7 @@ Plan: [attach-on-demand](superpowers/plans/2026-10-17-1049-attach-on-demand.md);
   and the loop over every node, and the parser records the empty parts
   and pattern literals; a debug build checks every such attachment
   against the walk. Under mimalloc `parse` over the corpus went from 53
-  to 42.6 ms, `Kernel.ns` from 1.0 to 0.81 ms (plan
+  to 44.2 ms, `Kernel.ns` from 1.0 to 0.83 ms (plan
   [local-extents](superpowers/plans/2026-10-17-1930-local-extents.md)).
 
 What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the runtime

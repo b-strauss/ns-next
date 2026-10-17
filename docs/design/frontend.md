@@ -434,11 +434,11 @@ The clean path, measured 2026-10-17 against the walk on the same
 workstation (release builds with the alignment pin, one build a side run
 three times each, interleaved), under mimalloc, the allocator of both
 binaries ([memory.md](memory.md), "The allocator of the Rust side"):
-`parse` over the corpus 42.6 ms against 53.1-54.5 ms, 20 % less, and of
-`Kernel.ns`, whose 3,230 `///` lines make it the most commented source,
-0.80-0.82 ms against 0.98-1.04 ms, 19 % less; on Windows' heap 81.4-81.8
-ms against 91.4-92.0 ms and 2.15-2.19 ms against 2.44-2.49 ms, 11 % and
-13 % less. `parse_for_editor` moved the same.
+`parse` over the corpus 44.2-44.3 ms against 53.0-54.2 ms, 17 % less, and
+of `Kernel.ns`, whose 3,230 `///` lines make it the most commented
+source, 0.81-0.84 ms against 0.97-1.04 ms, 17 % less; on Windows' heap
+83.1-83.5 ms against 91.1-93.3 ms and 2.16-2.19 ms against 2.42-2.47 ms,
+9 % and 11 % less. `parse_for_editor` moved the same.
 
 ## AST
 
