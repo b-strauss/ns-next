@@ -657,7 +657,7 @@ mod tests {
             assert!(!array.frame_register);
             let array_class = positions_of(world, name("Kernel", "Array", ShippedKind::Metaclass));
             assert!(array_class.value && !array_class.header && array_class.frame_class);
-            for private in ["Top", "Activation", "FutureImplementation"] {
+            for private in ["Top", "Activation", "FutureImplementation", "Mixin"] {
                 let positions = positions_of(world, name("Kernel", private, ShippedKind::Class));
                 assert!(
                     !positions.value && !positions.superclass,

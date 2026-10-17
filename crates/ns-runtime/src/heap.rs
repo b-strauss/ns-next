@@ -597,6 +597,17 @@ pub struct Heap<'gc> {
     /// (`set_activation_class`). A handle the heap holds, so a collection
     /// marks it as a root and forwards it.
     activation_class: Option<ClassReference<'gc>>,
+    /// The one object each mixin is, indexed by `MixinId::index`: an
+    /// instance of the kernel-private `Mixin`, the reflectee of a mixin
+    /// mirror (`docs/design/liveness-and-reflection.md`, "A mixin is
+    /// reified as a kernel-private object"). Filled lazily by
+    /// `Mutator::reified_mixin` (`record_mixin_object`). Strong, unlike
+    /// `canonical_symbols`: a mixin lives as long as the heap's mixin table,
+    /// so its object must too, or a mirror reached later would answer a
+    /// second object for the same mixin and `==` would no longer be the
+    /// mixin's identity. A table of handles, so a collection marks it as a
+    /// root and every move forwards it.
+    mixin_objects: Vec<Option<ObjectReference<'gc>>>,
     /// The one object each symbol is, indexed by `Symbol::index` (§5.1.6:
     /// equal symbols are one object; `docs/design/object-model.md`,
     /// "Values and objects"). Filled lazily by `Mutator::new_symbol`, the one
@@ -942,6 +953,7 @@ impl<'gc> Heap<'gc> {
             scavenge_pause: std::time::Duration::ZERO,
             longest_scavenge_pause: std::time::Duration::ZERO,
             activation_class: None,
+            mixin_objects: Vec::new(),
             canonical_symbols: Vec::new(),
             symbol_of: IdentityMap::default(),
             host_roots: std::cell::RefCell::new(HostRoots {
@@ -1209,6 +1221,32 @@ impl<'gc> Heap<'gc> {
         write_words(
             &mut self.space.words_mut()[fields],
             [numerator.word(), denominator.word()],
+        );
+        object
+    }
+
+    /// A reified mixin of `class`, the kernel-private `Mixin`, standing for
+    /// the mixin `id` names: one field, the id as a `SmallInteger`.
+    /// `Mutator::reified_mixin` is the one caller, and records what this
+    /// answers (`record_mixin_object`), so that no second object stands for
+    /// the same mixin.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "reached only from tests until the mirror leaves and the image codec call it"
+        )
+    )]
+    pub(crate) fn allocate_mixin_object(
+        &mut self,
+        class: ClassReference<'gc>,
+        id: MixinId,
+    ) -> ObjectReference<'gc> {
+        let index = i64::try_from(id.index()).expect("a mixin id is 32 bits");
+        let (object, fields) = self.allocate_object(class, Format::FixedPointers, 0, false, 1);
+        write_words(
+            &mut self.space.words_mut()[fields],
+            [Value::small_integer(index).word()],
         );
         object
     }
@@ -2753,6 +2791,56 @@ impl<'gc> Heap<'gc> {
         ))
     }
 
+    /// The mixin `object` stands for: `Some` only for an object of the
+    /// kernel-private `Mixin` whose one field is a `SmallInteger` naming a
+    /// row of the reified-mixin table that holds `object` itself. An object
+    /// of another class, of another shape, or one the table does not hold
+    /// answers `None`, so that nothing but the canonical object is ever
+    /// read as a mixin.
+    pub fn mixin_object_id(&self, object: ObjectReference<'gc>) -> Option<MixinId> {
+        if self.class_builtin(self.object_class(object)) != Some(BuiltinClass::Mixin)
+            || self.instance_field_count(object) != Some(1)
+        {
+            return None;
+        }
+        let index = self.instance_field(object, 0)?.as_small_integer()?;
+        let id = MixinId::from_index(usize::try_from(index).ok()?)?;
+        self.mixin_object(id)
+            .filter(|recorded| recorded.same(object))
+            .map(|_| id)
+    }
+
+    /// The object recorded as the mixin `id` names; `None` until
+    /// `Mutator::reified_mixin` reifies it.
+    pub(crate) fn mixin_object(&self, id: MixinId) -> Option<ObjectReference<'gc>> {
+        let object = (*self.mixin_objects.get(id.index())?)?;
+        self.check_object_origin(object);
+        Some(object)
+    }
+
+    /// Records `object` as the one object the mixin `id` names. Recorded
+    /// once: a second record for one id would give the mixin two
+    /// identities.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "reached only from tests until the mirror leaves and the image codec call it"
+        )
+    )]
+    pub(crate) fn record_mixin_object(&mut self, id: MixinId, object: ObjectReference<'gc>) {
+        self.check_object_origin(object);
+        let index = id.index();
+        if self.mixin_objects.len() <= index {
+            self.mixin_objects.resize(index + 1, None);
+        }
+        debug_assert!(
+            self.mixin_objects[index].is_none(),
+            "internal: a mixin is reified once"
+        );
+        self.mixin_objects[index] = Some(object);
+    }
+
     /// A `Fraction`'s value; `None` for any other object. Copies out.
     pub(crate) fn fraction(
         &self,
@@ -3032,6 +3120,12 @@ impl<'gc> Heap<'gc> {
                         self.describe(numerator),
                         self.describe(denominator)
                     );
+                }
+                // A reified mixin is named by the mixin it stands for, as a
+                // class is: its one field is an id, which tells a reader
+                // nothing.
+                if let Some(mixin) = self.mixin_object_id(object).and_then(|id| self.mixin(id)) {
+                    return format!("the mixin {}", mixin.reflected_name());
                 }
                 match self.header(object).format() {
                     _ if self.is_string(object) => match self.symbol_value(object) {
@@ -4861,6 +4955,7 @@ impl<'gc> Heap<'gc> {
             space,
             stack,
             activation_class,
+            mixin_objects,
             host_roots,
             canonical_symbols,
             symbol_of,
@@ -4880,6 +4975,9 @@ impl<'gc> Heap<'gc> {
         );
         if let Some(class) = activation_class {
             scavenger.object(class);
+        }
+        for object in mixin_objects.iter_mut().flatten() {
+            scavenger.object(object);
         }
         for entry in &mut stack.entries {
             entry.trace(&mut scavenger);
@@ -4986,13 +5084,14 @@ impl<'gc> Heap<'gc> {
     }
 
     /// How much a move has to rewrite: the objects, the activation stack's
-    /// entries and registers, the canonical symbol table, and the host
-    /// roots. The stress mode paces its moves by it.
+    /// entries and registers, the reified-mixin and canonical symbol
+    /// tables, and the host roots. The stress mode paces its moves by it.
     #[cfg(debug_assertions)]
     pub(crate) fn traced_size(&self) -> usize {
         self.object_count
             + self.stack.entries.len()
             + self.stack.values.len()
+            + self.mixin_objects.len()
             + self.canonical_symbols.len()
             + self.host_roots.borrow().slots.len()
     }
@@ -5233,6 +5332,9 @@ impl<'gc> Heap<'gc> {
         if let Some(class) = &mut self.activation_class {
             forwarder.object(class);
         }
+        for object in self.mixin_objects.iter_mut().flatten() {
+            forwarder.object(object);
+        }
         for entry in &mut self.stack.entries {
             entry.trace(forwarder);
         }
@@ -5436,6 +5538,9 @@ impl<'gc> Heap<'gc> {
         let mut marker = mark::Marker::new();
         if let Some(class) = &mut self.activation_class {
             marker.object(class);
+        }
+        for object in self.mixin_objects.iter_mut().flatten() {
+            marker.object(object);
         }
         for entry in &mut self.stack.entries {
             entry.trace(&mut marker);
@@ -6159,6 +6264,73 @@ mod tests {
             superclass: None,
             builtin,
         })
+    }
+
+    /// The reified mixin of a fresh mixin named `name` in `heap`, recorded
+    /// as `Mutator::reified_mixin` records it, and the mixin, which the
+    /// caller keeps so that its id stays its own.
+    fn recorded_mixin_object<'gc>(
+        heap: &mut Heap<'gc>,
+        class: ClassReference<'gc>,
+        name: &str,
+    ) -> (Rc<Mixin>, MixinId) {
+        let mixin = Rc::new(Mixin::empty(Symbol::intern(name)));
+        let id = heap.mixin_id(&mixin);
+        let object = heap.allocate_mixin_object(class, id);
+        heap.record_mixin_object(id, object);
+        (mixin, id)
+    }
+
+    /// The table of reified mixins is strong and a root: with nothing else
+    /// naming it, a reified mixin survives a scavenge, a full collection and
+    /// a move, and stays the one object the table answers for its id.
+    #[test]
+    fn a_reified_mixin_survives_every_collection_and_move() {
+        let mut heap = Heap::new();
+        let class = builtin_named_class(&mut heap, "Mixin", Some(BuiltinClass::Mixin));
+        let (_mixin, id) = recorded_mixin_object(&mut heap, class, "Reified");
+        let still_reified = |heap: &Heap<'_>| {
+            let object = heap.mixin_object(id).expect("the table holds the object");
+            assert_eq!(heap.mixin_object_id(object), Some(id));
+            assert_eq!(heap.describe(Value::object(object)), "the mixin Reified");
+        };
+        scavenge_bare(&mut heap, false, &mut []);
+        still_reified(&heap);
+        scavenge_bare(&mut heap, true, &mut []);
+        still_reified(&heap);
+        heap.collect_for_test(&mut []);
+        still_reified(&heap);
+        #[cfg(debug_assertions)]
+        {
+            move_bare_heap(&mut heap);
+            still_reified(&heap);
+        }
+    }
+
+    /// Only the canonical object of a mixin is read as one: neither a
+    /// `Fraction` nor an ordinary instance whose one field names a row of
+    /// the table, nor an object of the class `Mixin` that the table does
+    /// not hold.
+    #[test]
+    fn an_object_of_another_class_is_no_reified_mixin() {
+        let mut heap = Heap::new();
+        let mixin_class = builtin_named_class(&mut heap, "Mixin", Some(BuiltinClass::Mixin));
+        let (_mixin, id) = recorded_mixin_object(&mut heap, mixin_class, "Recorded");
+        let row = Value::small_integer(i64::try_from(id.index()).expect("a small id"));
+        let fraction_class =
+            builtin_named_class(&mut heap, "Fraction", Some(BuiltinClass::Fraction));
+        let fraction = heap.allocate_fraction(fraction_class, row, Value::small_integer(2));
+        assert_eq!(heap.mixin_object_id(fraction), None);
+        let ordinary_class = named_class(&mut heap, "Ordinary");
+        let ordinary = heap.allocate_instance(ordinary_class, 1);
+        assert!(heap.instance_set_field(ordinary, 0, row));
+        assert_eq!(heap.mixin_object_id(ordinary), None);
+        let unrecorded = heap.allocate_mixin_object(mixin_class, id);
+        assert_eq!(heap.mixin_object_id(unrecorded), None);
+        assert_ne!(
+            heap.describe(Value::object(unrecorded)),
+            "the mixin Recorded"
+        );
     }
 
     #[test]

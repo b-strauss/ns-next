@@ -1171,6 +1171,16 @@ class Kernel vmMirror: mirror = Value (
   /// capability Newspeak hands out only through mirrors.
   private class Activation = Object () ()
 
+  /// One mixin as an object: an instance stands for exactly one mixin --
+  /// a class's instance side or its class side -- and is the reflectee
+  /// of the mixin mirror on it. It answers nothing of its own; only the
+  /// mirrors read it, through the VM mirror.
+  ///
+  /// The runtime makes the instances, one per mixin, the same instance
+  /// on every request, so `==` is the mixin's identity; `new` is
+  /// refused. Private, so that no program can name it.
+  private class Mixin = Object () ()
+
   /// An object that answers none of `Object`'s public messages itself:
   /// each is overridden as protected, so a message from outside reaches
   /// `doesNotUnderstand:`. A subclass that implements only

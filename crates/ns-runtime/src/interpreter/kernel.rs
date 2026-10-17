@@ -104,6 +104,7 @@ pub(crate) fn kernel_class_name(kind: BuiltinClass) -> &'static str {
         BuiltinClass::ByteArray => "ByteArray",
         BuiltinClass::WeakArray => "WeakArray",
         BuiltinClass::Ephemeron => "Ephemeron",
+        BuiltinClass::Mixin => "Mixin",
         BuiltinClass::VmMirror => {
             unreachable!("internal: the mirror's class is not in Kernel.ns")
         }
@@ -2401,8 +2402,8 @@ mod tests {
     /// mirror's class have none, which is one of the locks that keep the
     /// mirror a capability. Neither have the exception classes, which a
     /// program reaches through `platform kernel`, nor `Proxy` and `Future`,
-    /// which it reaches there too, nor `Activation` and
-    /// `FutureImplementation`, which it does not reach at all, nor
+    /// which it reaches there too, nor `Activation`, `FutureImplementation`
+    /// and `Mixin`, which it does not reach at all, nor
     /// `LargeInteger`, which no program reaches either: `class` is
     /// protected and `Object` declares no accessor for it.
     /// `PlatformFactory.ns`'s class names are listed too: `Object` must
@@ -2464,6 +2465,7 @@ mod tests {
                 "Collection",
                 "WeakArray",
                 "Ephemeron",
+                "Mixin",
             ] {
                 assert!(
                     application
@@ -2477,15 +2479,16 @@ mod tests {
     }
 
     /// The kernel's private classes: `Top`, which §3.2 lets only `Object`
-    /// name, `Activation` and `FutureImplementation`, which no program may
-    /// reach at all, `NonBooleanReceiver`, which a program catches as an
-    /// `Error` (`docs/design/core-library.md`, "Exceptions";
-    /// `docs/design/object-model.md`, "Simultaneous slots"), and
-    /// the two byte-order classes of the data view.
+    /// name, `Activation`, `FutureImplementation` and `Mixin`, which no
+    /// program may reach at all, `NonBooleanReceiver`, which a program
+    /// catches as an `Error` (`docs/design/core-library.md`, "Exceptions";
+    /// `docs/design/object-model.md`, "Simultaneous slots"), and the two
+    /// byte-order classes of the data view.
     const PRIVATE_KERNEL_CLASSES: &[&str] = &[
         "Top",
         "Activation",
         "FutureImplementation",
+        "Mixin",
         "NonBooleanReceiver",
         "LittleEndianDataView",
         "BigEndianDataView",

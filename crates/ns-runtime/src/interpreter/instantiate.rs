@@ -547,6 +547,16 @@ impl<'gc> Mutator<'gc> {
                 Value::object(class),
                 "cannot instantiate Symbol: a Symbol is made only by a literal or by asSymbol",
             ))),
+            // A reified mixin is canonical too, one object per mixin, made
+            // only by `Mutator::reified_mixin`; `new` would mint one no
+            // mixin stands behind. The class is private to the kernel, so
+            // the refusal carries nil rather than hand it out.
+            Some(BuiltinClass::Mixin) => Err(Signal::Error(NewspeakError::cannot_instantiate(
+                Symbol::NEW,
+                Value::object(class),
+                Value::nil(),
+                "cannot instantiate Mixin: a mixin's object is made only by the runtime",
+            ))),
             // A flat String payload, as `Array`'s above: a slotless instance
             // would answer none of `size`, `at:` or `,`.
             Some(BuiltinClass::String) => Ok(Step::Value(Value::object(
@@ -1846,6 +1856,28 @@ mod tests {
             let Err(super::Signal::Error(error)) = mutator.decide_factory(class, &[]) else {
                 panic!("instantiating the VM mirror's class is refused with an error");
             };
+            assert_eq!(error.class, ErrorClass::CannotInstantiate);
+            assert!(error.subject.is_nil(), "the refusal names no behavior");
+        });
+    }
+
+    /// A reified mixin is canonical, one per mixin, made only by the
+    /// runtime: `Mixin new` is refused as `Symbol new` is, and the refusal
+    /// names no behavior, since the class is private to the kernel.
+    #[test]
+    fn mixin_new_is_refused() {
+        let mut interpreter = Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let symbol = mutator.builtin_class(BuiltinClass::Symbol);
+            let Err(super::Signal::Error(symbol_error)) = mutator.decide_factory(symbol, &[])
+            else {
+                panic!("instantiating Symbol is refused with an error");
+            };
+            let class = mutator.builtin_class(BuiltinClass::Mixin);
+            let Err(super::Signal::Error(error)) = mutator.decide_factory(class, &[]) else {
+                panic!("instantiating Mixin is refused with an error");
+            };
+            assert_eq!(error.class, symbol_error.class);
             assert_eq!(error.class, ErrorClass::CannotInstantiate);
             assert!(error.subject.is_nil(), "the refusal names no behavior");
         });

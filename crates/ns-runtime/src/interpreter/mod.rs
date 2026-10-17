@@ -1665,6 +1665,51 @@ impl<'gc> Mutator<'gc> {
         Value::object(object)
     }
 
+    /// The one object `mixin` is in this heap, an instance of the
+    /// kernel-private `Mixin`, allocated and recorded the first time
+    /// anything asks for it, so that every request answers the same object
+    /// (`docs/design/liveness-and-reflection.md`, "A mixin is reified as a
+    /// kernel-private object"). A class side, declared or synthesized, is a
+    /// mixin of its own and has an object of its own.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "reached only from tests until the mirror leaves and the image codec call it"
+        )
+    )]
+    pub(crate) fn reified_mixin(
+        &mut self,
+        mixin: &Rc<crate::mixin::Mixin>,
+    ) -> ObjectReference<'gc> {
+        let id = self.heap.mixin_id(mixin);
+        if let Some(object) = self.heap.mixin_object(id) {
+            return object;
+        }
+        let class = self.builtin_class(BuiltinClass::Mixin);
+        let object = self.heap.allocate_mixin_object(class, id);
+        self.heap.record_mixin_object(id, object);
+        object
+    }
+
+    /// The mixin `object` stands for, when it is a reified mixin
+    /// (`Heap::mixin_object_id`); `None` for any other object.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "reached only from tests until the mirror leaves and the image codec call it"
+        )
+    )]
+    pub(crate) fn mixin_of_reified(
+        &self,
+        object: ObjectReference<'gc>,
+    ) -> Option<Rc<crate::mixin::Mixin>> {
+        self.heap
+            .mixin_object_id(object)
+            .and_then(|id| self.heap.mixin(id))
+    }
+
     pub fn new_closure(&mut self, closure: crate::heap::NewClosure<'gc>) -> ObjectReference<'gc> {
         let class = self.builtin_class(BuiltinClass::Closure);
         self.heap.allocate_closure(class, closure)
@@ -2206,6 +2251,43 @@ mod tests {
                 panic!("{what}: unexpected Newspeak error: {}", error.message)
             }
         }
+    }
+
+    /// A mixin is reified once per heap: every request answers the same
+    /// object, another mixin -- its own class side among them -- another
+    /// one, and each reads back as the mixin it stands for.
+    #[test]
+    fn a_mixin_is_reified_once() {
+        let mut interpreter = Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let first = Rc::new(crate::mixin::Mixin::empty(Symbol::intern("First")));
+            let second = Rc::new(crate::mixin::Mixin::empty(Symbol::intern("Second")));
+            let class_side = mutator.metaclass_mixin(&first);
+            let reified = mutator.reified_mixin(&first);
+            assert!(mutator.reified_mixin(&first).same(reified));
+            let other = mutator.reified_mixin(&second);
+            assert!(!other.same(reified));
+            let reified_class_side = mutator.reified_mixin(&class_side);
+            assert!(!reified_class_side.same(reified));
+            for (object, mixin) in [
+                (reified, &first),
+                (other, &second),
+                (reified_class_side, &class_side),
+            ] {
+                let answered = mutator
+                    .mixin_of_reified(object)
+                    .expect("a reified mixin reads back as its mixin");
+                assert!(Rc::ptr_eq(&answered, mixin));
+            }
+            assert_eq!(
+                mutator.heap().describe(Value::object(reified)),
+                "the mixin First"
+            );
+            assert_eq!(
+                mutator.heap().describe(Value::object(reified_class_side)),
+                "the mixin First class"
+            );
+        });
     }
 
     /// A host reads and allocates through `enter`, which answers what its

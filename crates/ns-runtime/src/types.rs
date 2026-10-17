@@ -178,6 +178,14 @@ pub enum BuiltinClass {
     /// (`docs/design/core-library.md`, "Weak references"). Not a value
     /// class (§3.1.1).
     Ephemeron,
+    /// One mixin as an object, the reflectee of a mixin mirror: one field,
+    /// the mixin's `MixinId` as a `SmallInteger`, one instance per mixin
+    /// per heap, kept in the heap's strong table so that `==` is the
+    /// mixin's identity (`docs/design/liveness-and-reflection.md`, "A
+    /// mixin is reified as a kernel-private object"). Kernel-private: no
+    /// program can name it, `decide_factory` refuses `new`, and only the
+    /// mirrors read it, through leaves.
+    Mixin,
 }
 
 impl BuiltinClass {
@@ -197,7 +205,7 @@ impl BuiltinClass {
     /// `objects_class_accessors_are_exactly_the_nameable_builtins`. An image
     /// names it by its declaration in `Kernel.ns`, like every shipped class
     /// (`image::shipped_names`), so it needs no wire tag.
-    pub const ALL: [BuiltinClass; 37] = [
+    pub const ALL: [BuiltinClass; 38] = [
         BuiltinClass::Object,
         BuiltinClass::Boolean,
         BuiltinClass::True,
@@ -235,6 +243,7 @@ impl BuiltinClass {
         BuiltinClass::ByteArray,
         BuiltinClass::WeakArray,
         BuiltinClass::Ephemeron,
+        BuiltinClass::Mixin,
     ];
 }
 

@@ -755,6 +755,27 @@ impl Mixin {
         self.enclosing.get().and_then(Weak::upgrade)
     }
 
+    /// Whether this mixin is a class side, declared or synthesized: every
+    /// class side, and nothing else, carries `Symbol::CLASS_SIDE` as its
+    /// name, which no declaration can spell.
+    pub fn is_class_side(&self) -> bool {
+        self.name == Symbol::CLASS_SIDE
+    }
+
+    /// The name a reader is shown for this mixin: its declaration's, and a
+    /// class side's `<instance side's name> class`, as a metaclass is
+    /// named. A class side whose instance side no longer lives is named
+    /// `class side`.
+    pub fn reflected_name(&self) -> String {
+        if !self.is_class_side() {
+            return self.name.to_string();
+        }
+        match self.enclosing_mixin() {
+            Some(instance_side) => format!("{} class", instance_side.name),
+            None => self.name.to_string(),
+        }
+    }
+
     /// Links every nested mixin of `parent`, and its class side, to
     /// `parent`, once `parent`'s `Rc` exists. A child already linked keeps
     /// its link: the builders build trees, and `image::mixins` proves an
