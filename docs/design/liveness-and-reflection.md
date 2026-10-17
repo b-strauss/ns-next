@@ -330,9 +330,9 @@ boundaries, `nil` otherwise. A method's source is its declaration from
 the access modifier to the closing parenthesis, comments outside it; a
 class declaration's is its `Mixin::span`.
 
-**`platform mirrors` is exempt from the on-demand rule** (proposed, for
-the user to confirm with the plan), as `platform kernel` and `platform
-typedArrays` are: it hands out the classes of a core-library module and
+**`platform mirrors` is exempt from the on-demand rule** (decided with
+the user on 2026-10-18), as `platform kernel` and `platform typedArrays`
+are: it hands out the classes of a core-library module and
 reaches no host ([core-library.md](core-library.md),
 "The on-demand rule").
 

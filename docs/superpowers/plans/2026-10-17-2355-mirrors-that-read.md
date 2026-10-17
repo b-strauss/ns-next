@@ -321,7 +321,7 @@ Signalled by `MirrorsFactory.ns` (an `Error` through `Error signal:`, or the ker
 ### Task 10: Documentation
 
 **Files:**
-- Modify: `docs/design/liveness-and-reflection.md` ("Planned: road step 5a, mirrors that read" becomes the present-tense section "Mirrors that read"; the status block says what is built; the "(proposed, for the user to confirm with the plan)" mark goes once the user confirmed it)
+- Modify: `docs/design/liveness-and-reflection.md` ("Planned: road step 5a, mirrors that read" becomes the present-tense section "Mirrors that read"; the status block says what is built)
 - Modify: `docs/design/image-format.md` ("Planned: the reified mixin record" becomes present tense, placed in "Sections" or beside the class records; the tag table)
 - Modify: `docs/design/core-library.md` (the module table and its count, "the table has five entries" `:3899-3905`, every list of shipped modules -- `:9`, `:24`, `:31`, `:67`, `:81`, `:721-751`, `:798`, `:858`, `:2649`, `:2675`, `:2682`, `:3232`, `:3954` -- lock (2)'s list, the on-demand rule's exemptions `:1082-1097`, the row count `:631`, `Kernel.ns`'s private class `Mixin`)
 - Modify: `docs/design/object-model.md` (the reified mixin; `Mixin::enclosing` and `Mixin::module_text`; "Source retention and provenance" `:1552-1568`: the text now reaches the heap through the mixins), `docs/design/memory.md` (the table of reified mixins among the traced Rust-side handles), `docs/design/README.md` (`:88`, the golden directory `library/mirror/`)
