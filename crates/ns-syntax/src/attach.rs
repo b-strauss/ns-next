@@ -137,10 +137,12 @@ pub(crate) fn attach_comments(
 }
 
 /// [`attach_comments`], answering the work it did: the nodes its walks
-/// visited, the nodes it expanded, the children those had and the comments
-/// it placed. Only a node a comment lies in is expanded, and every walk is
-/// linear, so a module of many nodes and few comments costs two walks; a
-/// test holds the work to growing linearly with the source.
+/// visited, the nodes it expanded, the children those had, each comment once
+/// per expansion it is carried into, and the nodes that only received a
+/// comment beside them, with the children describing them appended. Only a
+/// node a comment lies in is expanded, and every walk is linear, so a module
+/// of many nodes and few comments costs two walks; a test holds the work to
+/// growing linearly with the source.
 fn attach(module: &mut Module, tokens: &[Token], comments: &[Comment], source: &str) -> usize {
     if comments.is_empty() {
         return 0;
@@ -865,6 +867,7 @@ fn descend(module: &mut Module, context: &Context<'_>, placed: Vec<usize>, work:
             };
             if inside.is_empty() {
                 let description = describe(node, &mut scratch, None);
+                *work += 1 + scratch.len();
                 scratch.clear();
                 context.push(description.comments, &before, Anchor::Before);
                 context.push(description.comments, &after, Anchor::After);
@@ -1505,5 +1508,101 @@ mod tests {
             panic!("a send");
         };
         assert_eq!(send.message.comments[0].anchor, Anchor::Inner(1));
+    }
+
+    /// The work `attach` does for `source`, the attachment run on a
+    /// 256 KiB stack: a walk that recursed along a chain would overflow it.
+    fn work_for(source: &str) -> usize {
+        const STACK_BYTES: usize = 256 * 1024;
+        let (module, tokens, comments) = unattached(source);
+        let source = source.to_string();
+        std::thread::Builder::new()
+            .stack_size(STACK_BYTES)
+            .spawn(move || {
+                let mut module = module;
+                let work = attach(&mut module, &tokens, &comments, &source);
+                (work, module)
+            })
+            .expect("spawn the attaching thread")
+            .join()
+            .expect("the attachment runs on a small stack")
+            .0
+    }
+
+    /// `x (* c *) foo foo ...`: the comment lies as deep as the chain is
+    /// long.
+    fn chain(links: usize) -> String {
+        format!(
+            "class A = () ( m = ( ^x (* c *){} ) )",
+            " foo".repeat(links)
+        )
+    }
+
+    /// `x foo (* c *) ; bar (* c *) ; bar ...`, a comment before every `;`,
+    /// each on a line of its own so that no comment has another beside it.
+    fn cascade(messages: usize) -> String {
+        format!(
+            "class A = () ( m = ( ^x foo{} ) )",
+            " (* c *)
+  ; bar"
+                .repeat(messages)
+        )
+    }
+
+    fn assert_linear(short: usize, long: usize, what: &str) {
+        assert!(long > 0 && short > 0, "{what}: no work counted");
+        assert!(
+            long <= 2 * short + short / 10,
+            "{what}: twice the length took {long} against {short}"
+        );
+    }
+
+    #[test]
+    fn the_work_grows_linearly_along_a_chain() {
+        let short = work_for(&chain(50_000));
+        let long = work_for(&chain(100_000));
+        assert!(short > 50_000, "every link is visited: {short}");
+        assert_linear(short, long, "a chain");
+    }
+
+    #[test]
+    fn the_work_grows_linearly_with_comments_among_many_children() {
+        let short = work_for(&cascade(50_000));
+        let long = work_for(&cascade(100_000));
+        assert_linear(short, long, "a cascade");
+    }
+
+    /// A method with a comment before it, one among its pattern's tokens
+    /// and one after it: the side's expansion places the first and the
+    /// last, the method's own the middle one, and the three stay in
+    /// source order.
+    #[test]
+    fn a_node_keeps_its_comments_in_source_order_across_two_expansions() {
+        let source = indoc::indoc! {"
+            class A = () (
+              (* before *)
+              at: index (* inner *) put: value = ( ^index ) (* after *)
+            )
+        "};
+        let module = crate::parse(source).expect("parse");
+        let method = module
+            .root_class
+            .instance_side
+            .methods()
+            .next()
+            .expect("at:put:");
+        let found: Vec<(&str, Anchor)> = method
+            .comments
+            .iter()
+            .map(|comment| (comment.lines[0].as_str(), comment.anchor))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                ("(* before *)", Anchor::Before),
+                ("(* inner *)", Anchor::Inner(2)),
+                ("(* after *)", Anchor::After),
+            ]
+        );
     }
 }
