@@ -1300,12 +1300,11 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
   1-10 ms, too little for threads to pay. Not measured yet. Noted
   2026-10-17.
 - **Fewer allocations in the syntax tree** (sub-project B of the syntax
-  crate's optimization). In the sampled profile of the corpus benchmark
-  (2026-10-17) the parser is 41 % of the run, dropping the module 14 %, the
-  lexer 12 % and the attachment 33 %. What allocates there: a `String` per
-  identifier and selector, a `Box` or `Vec` per node,
-  `parse_keyword_parts` growing its vectors; the allocator's `finish_grow`
-  alone is 14 % of the run. It needs a design of its own, since
+  crate's optimization). The parser's own work and dropping the module
+  are the largest costs of the corpus benchmark after the attachment's
+  changes, and both are mostly allocation: a `String` per identifier and
+  selector, a `Box` or `Vec` per node, `parse_keyword_parts` growing its
+  vectors, each node freed one by one. It needs a design of its own, since
   `ns-runtime`, `ns-analyzer`, `ns-tooling` and `ns-cli` read the AST.
 - **`Interpreter::instantiate`, the host's way to instantiate, bypasses
   `decide_factory`.** It calls `decide_instantiation` directly

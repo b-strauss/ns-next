@@ -600,9 +600,9 @@ struct Record {
 }
 
 /// Records every commentable node, and the empty parts and the pattern
-/// literals: the tokens a comment is counted among depend on the empty
-/// parts, so the extents are measured once the walk is over, from what it
-/// recorded rather than by a second walk.
+/// literals. The extents depend on the empty parts, which are known only
+/// once the walk is over; the records keep what measuring an extent needs
+/// of each node until then.
 fn prepass(module: &mut Module, parts: &mut Parts<'_>, work: &mut usize) -> Vec<Record> {
     // A module has about as many commentable nodes as tokens; reserving
     // that spares the records' growth its copies.
@@ -1377,10 +1377,11 @@ mod tests {
         }
     }
 
-    /// The new walk measures the same extents as the reference's tree, as
-    /// a multiset: the two number their nodes in different orders.
+    /// The loop over the records measures the same extents as the
+    /// reference's tree, as a multiset: the two number their nodes in
+    /// different orders.
     #[test]
-    fn the_walk_measures_the_extents_the_reference_measures() {
+    fn the_loop_measures_the_extents_the_reference_measures() {
         for path in every_source() {
             let source = std::fs::read_to_string(&path).expect("read");
             let (mut module, tokens, comments) = unattached(&source);
@@ -1392,7 +1393,7 @@ mod tests {
         }
     }
 
-    /// Every extent the walk measures, for the test above.
+    /// Every extent the loop over the records measures, for the test above.
     fn extents(
         module: &mut Module,
         tokens: &[Token],
@@ -1436,7 +1437,7 @@ mod tests {
         }
     }
 
-    /// Over every module the repository holds: in the walk's entries, a
+    /// Over every module the repository holds: in the measured entries, a
     /// node's children lie inside it and apart from each other.
     #[test]
     fn the_walk_measures_a_tree_of_disjoint_extents() {
