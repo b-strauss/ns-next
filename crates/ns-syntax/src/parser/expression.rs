@@ -142,7 +142,13 @@ impl<'a> Parser<'a> {
             TokenKind::Class | TokenKind::Public | TokenKind::Protected | TokenKind::Private => {
                 bare(ExpressionKind::Identifier(self.identifier()))
             }
-            TokenKind::LessThan => bare(ExpressionKind::Literal(self.parse_pattern_literal())),
+            TokenKind::LessThan => {
+                let literal = self.parse_pattern_literal();
+                if let Literal::Pattern { span, .. } = &literal {
+                    self.record_exclusion(|exclusions| exclusions.patterns.push(*span));
+                }
+                bare(ExpressionKind::Literal(literal))
+            }
             _ => {
                 let token = self.current();
                 self.diagnostics.push(crate::diagnostic::Diagnostic::error(
@@ -246,7 +252,9 @@ impl<'a> Parser<'a> {
             self.skip_to_structural();
             return Literal::Nil { span: token.span };
         }
+        self.pattern_depth += 1;
         let literal = self.parse_pattern_literal_inner();
+        self.pattern_depth -= 1;
         self.leave();
         literal
     }

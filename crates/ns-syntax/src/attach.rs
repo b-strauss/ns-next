@@ -159,12 +159,229 @@ fn attach(module: &mut Module, tokens: &[Token], comments: &[Comment], source: &
         .collect();
     let context = Context {
         tokens: &kept,
-        entries: &entries,
+        entries: Some(&entries),
         comments,
         source,
     };
     descend(module, &context, placed, &mut work);
     work
+}
+
+/// [`attach_comments`] for a parse without an error, given what the
+/// parser recorded: no prepass and no extents measured ahead, each child's
+/// extent read from the child when its parent is expanded
+/// (`local_extent`). A debug build attaches a copy by the walk as well and
+/// holds the two equal, so that every clean parse of the debug suites
+/// checks the claim `local_extent` rests on.
+pub(crate) fn attach_clean_comments(
+    module: &mut Module,
+    tokens: &[Token],
+    comments: &[Comment],
+    source: &str,
+    exclusions: &Exclusions,
+) {
+    if comments.is_empty() {
+        return;
+    }
+    #[cfg(debug_assertions)]
+    let mut walked = module.clone();
+    attach_clean(module, tokens, comments, source, exclusions);
+    #[cfg(debug_assertions)]
+    {
+        attach(&mut walked, tokens, comments, source);
+        assert!(
+            attached_by_node(module) == attached_by_node(&mut walked),
+            "the clean path attached unlike the walk"
+        );
+    }
+}
+
+/// Every node's comments, by the node's pre-order index, for the debug
+/// comparison of the two paths: the attachment changes nothing else, and
+/// comparing two modules with `==` would recurse along a chain of
+/// messages, so the walk takes the nodes from an explicit stack.
+#[cfg(debug_assertions)]
+fn attached_by_node(module: &mut Module) -> Vec<(usize, Vec<AttachedComment>)> {
+    let mut found = Vec::new();
+    let mut stack = vec![Pending::Module(module)];
+    let mut children = Vec::new();
+    let mut index = 0;
+    while let Some(node) = stack.pop() {
+        let description = describe(node, &mut children, None);
+        if !description.comments.is_empty() {
+            found.push((index, description.comments.clone()));
+        }
+        index += 1;
+        stack.append(&mut children);
+    }
+    found
+}
+
+/// [`attach_clean_comments`] without the debug comparison, answering the
+/// work it did, as [`attach`] does.
+fn attach_clean(
+    module: &mut Module,
+    tokens: &[Token],
+    comments: &[Comment],
+    source: &str,
+    exclusions: &Exclusions,
+) -> usize {
+    if comments.is_empty() {
+        return 0;
+    }
+    let mut work = 0;
+    let (dropped, patterns) = Parts::from_exclusions(tokens, comments, exclusions).sorted();
+    let kept = Tokens::kept(tokens, &dropped);
+    let placed = (0..comments.len())
+        .filter(|index| !inside_a_pattern(&patterns, comments[*index].span))
+        .collect();
+    let context = Context {
+        tokens: &kept,
+        entries: None,
+        comments,
+        source,
+    };
+    descend(module, &context, placed, &mut work);
+    work
+}
+
+/// A node's extent read from the node itself, for the clean path. On a
+/// parse without an error what an expression, a block, a class, a method,
+/// a superclass clause and a class side know of their own tokens starts at
+/// their first token and reaches their last but at the right edge, which
+/// [`widen_by_the_right_edge`] follows; a statement, a slot, a message and
+/// a body know less than they span and merge their children's extents,
+/// each read the same way. An expression asks no child but along its
+/// right edge, which follows messages and arguments, never a receiver, so
+/// no chain of messages is followed and the recursion is at most a body, a
+/// statement or slot, and an expression deep. The debug comparison in
+/// [`attach_clean_comments`], not this argument, is what holds it.
+fn local_extent(node: Node<'_>, tokens: &Tokens, work: &mut usize) -> Option<(usize, usize)> {
+    *work += 1;
+    let (mut known, shape) = known_and_shape(node);
+    widen_by_the_right_edge(&mut known, node, work);
+    let children = match node {
+        Node::Statement(statement) => {
+            let (StatementKind::Return(expression) | StatementKind::Expression(expression)) =
+                &statement.kind;
+            local_extent(Node::Expression(expression), tokens, work)
+        }
+        Node::Slot(slot) => slot
+            .initializer
+            .as_ref()
+            .and_then(|initializer| local_extent(Node::Expression(initializer), tokens, work)),
+        Node::Message(message) => {
+            merged_local_extents(message.arguments.iter().map(Node::Expression), tokens, work)
+        }
+        Node::Body(body) => {
+            // Its children stand in source order, temporaries first: the
+            // first and the last are its extent's ends.
+            let first = body
+                .temporaries
+                .first()
+                .map(Node::Slot)
+                .or_else(|| body.statements.first().map(Node::Statement));
+            let last = body
+                .statements
+                .last()
+                .map(Node::Statement)
+                .or_else(|| body.temporaries.last().map(Node::Slot));
+            merged_local_extents(first.into_iter().chain(last), tokens, work)
+        }
+        _ => None,
+    };
+    extent_of(tokens, &mut Cursors::default(), known, shape, children)
+}
+
+/// Widens `node`'s `known` by what its descendants know at its right
+/// edge, from its last child to that child's last child and on -- an
+/// iteration, never a recursion. A node's spans can fall short of its
+/// subtree there: a primary's or a unary message's type arguments stand
+/// past the span of the send, the assignment or the superclass clause
+/// they end (`x foo[E] bar`'s receiver ends at `foo`, `x:: y[E]` at `y`).
+/// It stops at a node that closes itself -- parentheses, a block, a
+/// method's body, a class side -- whose closer is the subtree's last
+/// token. The walk needs none of this: it merges every child's extent.
+fn widen_by_the_right_edge(known: &mut Option<Span>, node: Node<'_>, work: &mut usize) {
+    let mut current = node;
+    while let Some(child) = last_child(current) {
+        *work += 1;
+        if let (Some(span), _) = known_and_shape(child) {
+            widen(known, span);
+        }
+        if closes_itself(child) {
+            return;
+        }
+        current = child;
+    }
+}
+
+/// The child [`describe`] appends last: on a parse without an error, the
+/// child that ends last.
+fn last_child(node: Node<'_>) -> Option<Node<'_>> {
+    match node {
+        Node::Module(module) => Some(Node::Class(&module.root_class)),
+        Node::Class(class) => Some(Node::Side(
+            class.class_side.as_ref().unwrap_or(&class.instance_side),
+        )),
+        Node::Side(side) => side
+            .members
+            .last()
+            .map(|member| match member {
+                Member::Class(class) => Node::Class(class),
+                Member::LazySlot(slot) => Node::Slot(slot),
+                Member::Method(method) => Node::Method(method),
+            })
+            .or_else(|| side.initializer_expressions.last().map(Node::Statement))
+            .or_else(|| side.header_slots.last().map(Node::Slot)),
+        Node::Superclass(clause) => clause.messages.last().map(Node::Message),
+        Node::Slot(slot) => slot.initializer.as_ref().map(Node::Expression),
+        Node::Method(method) => Some(Node::Body(&method.body)),
+        Node::Body(body) => body
+            .statements
+            .last()
+            .map(Node::Statement)
+            .or_else(|| body.temporaries.last().map(Node::Slot)),
+        Node::Statement(statement) => {
+            let (StatementKind::Return(expression) | StatementKind::Expression(expression)) =
+                &statement.kind;
+            Some(Node::Expression(expression))
+        }
+        Node::Expression(expression) if expression.synthesized => None,
+        Node::Expression(expression) => match &expression.kind {
+            ExpressionKind::Identifier(_) | ExpressionKind::Literal(_) => None,
+            ExpressionKind::Send(send) => Some(Node::Message(&send.message)),
+            ExpressionKind::Cascade(cascade) => {
+                Some(Node::Message(cascade.rest.last().unwrap_or(&cascade.first)))
+            }
+            ExpressionKind::Assign { value, .. } => Some(Node::Expression(value)),
+            ExpressionKind::Block(block) => Some(Node::Block(block)),
+            ExpressionKind::DynamicArray { elements, .. } => elements.last().map(Node::Expression),
+        },
+        Node::Message(message) => message.arguments.last().map(Node::Expression),
+        Node::Block(block) => Some(Node::Body(&block.body)),
+    }
+}
+
+/// Whether `node` knows its own closer, the last token of its subtree, so
+/// that nothing below it can stand further right.
+fn closes_itself(node: Node<'_>) -> bool {
+    match node {
+        Node::Expression(expression) => !expression.parentheses.is_empty(),
+        Node::Block(_) | Node::Method(_) | Node::Side(_) => true,
+        _ => false,
+    }
+}
+
+/// The merged [`local_extent`]s of `nodes`.
+fn merged_local_extents<'tree>(
+    nodes: impl Iterator<Item = Node<'tree>>,
+    tokens: &Tokens,
+    work: &mut usize,
+) -> Option<(usize, usize)> {
+    nodes
+        .filter_map(|node| local_extent(node, tokens, work))
+        .reduce(merge)
 }
 
 /// A commentable node not yet described: the module or one of the nodes
@@ -274,6 +491,181 @@ impl<'input> Parts<'input> {
         }
         true
     }
+
+    /// Drops the tokens of a class side without a member, `delimiters` its
+    /// `( )`, when no comment stands between them -- its `:` included.
+    fn drop_empty_class_side(&mut self, delimiters: Option<Delimiters>) {
+        if !self.drop_if_empty(delimiters) {
+            return;
+        }
+        // The `:` before the side's `(`.
+        if let Some(Delimiters { open, .. }) = delimiters {
+            let open_index = self
+                .tokens
+                .partition_point(|token| token.span.start < open.start);
+            if let Some(colon) = open_index.checked_sub(1).map(|index| self.tokens[index]) {
+                if colon.kind == TokenKind::Colon {
+                    self.dropped.push(colon.span);
+                }
+            }
+        }
+    }
+
+    /// The parts of a parse without an error, from what the parser
+    /// recorded: each empty part dropped by the test the prepass applies.
+    fn from_exclusions(
+        tokens: &'input [Token],
+        comments: &'input [Comment],
+        exclusions: &Exclusions,
+    ) -> Parts<'input> {
+        let mut parts = Parts::new(tokens, comments);
+        for delimiters in &exclusions.empty_bars {
+            parts.drop_if_empty(Some(*delimiters));
+        }
+        for delimiters in &exclusions.empty_class_sides {
+            parts.drop_empty_class_side(Some(*delimiters));
+        }
+        parts.patterns.extend_from_slice(&exclusions.patterns);
+        parts
+    }
+}
+
+/// What the parser records for the attachment of a parse without an error,
+/// which the walk's prepass otherwise collects: the slot sections and
+/// temporaries without a declaration, the class sides without a member,
+/// and the pattern literals (the outermost only), each in the order parsed.
+/// Whether an empty part's tokens are dropped still depends on the
+/// comments (`Parts::drop_if_empty`).
+#[derive(Debug, Default)]
+pub(crate) struct Exclusions {
+    pub(crate) empty_bars: Vec<Delimiters>,
+    pub(crate) empty_class_sides: Vec<Delimiters>,
+    pub(crate) patterns: Vec<Span>,
+}
+
+/// A commentable node read through a shared reference: what
+/// [`known_and_shape`] reads, so that a node can be read without being
+/// taken for its comments.
+#[derive(Clone, Copy)]
+enum Node<'tree> {
+    Module(&'tree Module),
+    Class(&'tree ClassDeclaration),
+    Side(&'tree ClassBody),
+    Superclass(&'tree SuperclassClause),
+    Slot(&'tree SlotDeclaration),
+    Method(&'tree MethodDeclaration),
+    Body(&'tree CodeBody),
+    Statement(&'tree Statement),
+    Expression(&'tree Expression),
+    Message(&'tree MessageSend),
+    Block(&'tree BlockExpression),
+}
+
+impl Pending<'_> {
+    fn as_node(&self) -> Node<'_> {
+        match self {
+            Pending::Module(module) => Node::Module(module),
+            Pending::Class(class) => Node::Class(class),
+            Pending::Side(side) => Node::Side(side),
+            Pending::Superclass(clause) => Node::Superclass(clause),
+            Pending::Slot(slot) => Node::Slot(slot),
+            Pending::Method(method) => Node::Method(method),
+            Pending::Body(body) => Node::Body(body),
+            Pending::Statement(statement) => Node::Statement(statement),
+            Pending::Expression(expression) => Node::Expression(expression),
+            Pending::Message(message) => Node::Message(message),
+            Pending::Block(block) => Node::Block(block),
+        }
+    }
+}
+
+/// The bytes some of `node`'s own tokens are known to span, and what its
+/// extent takes beyond them and its children: the one place that says
+/// what each kind of node knows of its own tokens.
+fn known_and_shape(node: Node<'_>) -> (Option<Span>, Shape) {
+    let mut known = None;
+    let shape = match node {
+        Node::Module(_) => Shape::Module,
+        Node::Class(class) => {
+            widen(&mut known, class.span);
+            Shape::Plain
+        }
+        Node::Side(side) => {
+            widen_delimiters(&mut known, side.delimiters);
+            widen_delimiters(&mut known, side.slot_delimiters);
+            Shape::Plain
+        }
+        Node::Superclass(clause) => {
+            widen(&mut known, clause.span);
+            widen_annotation(&mut known, &clause.receiver_type_arguments);
+            Shape::Plain
+        }
+        Node::Slot(slot) => {
+            widen(
+                &mut known,
+                Span::new(slot.span.start.min(slot.name.span.end), slot.name.span.end),
+            );
+            widen_annotation(&mut known, &slot.type_annotation);
+            Shape::Plain
+        }
+        Node::Method(method) => {
+            widen(&mut known, method.span);
+            widen_delimiters(&mut known, method.body_delimiters);
+            Shape::Plain
+        }
+        Node::Body(body) => {
+            widen_delimiters(&mut known, body.temporaries_delimiters);
+            Shape::Plain
+        }
+        Node::Statement(statement) => {
+            if let StatementKind::Return(_) = statement.kind {
+                // The `^` the statement starts at.
+                let start = statement.span.start;
+                widen(&mut known, Span::new(start, start.saturating_add(1)));
+            }
+            Shape::Plain
+        }
+        Node::Expression(expression) => {
+            if expression.synthesized {
+                Shape::Empty
+            } else {
+                widen(&mut known, expression.span);
+                widen_annotation(&mut known, &expression.type_arguments);
+                for parenthesis in expression.parentheses.iter() {
+                    widen_delimiters(&mut known, Some(parenthesis.delimiters));
+                    widen_annotation(&mut known, &parenthesis.type_arguments);
+                }
+                match &expression.kind {
+                    ExpressionKind::Identifier(identifier) => widen(&mut known, identifier.span),
+                    ExpressionKind::Literal(literal) => widen(&mut known, literal_span(literal)),
+                    ExpressionKind::Assign { target, .. } => widen(&mut known, target.span),
+                    ExpressionKind::DynamicArray { span, .. } => widen(&mut known, *span),
+                    ExpressionKind::Send(_)
+                    | ExpressionKind::Cascade(_)
+                    | ExpressionKind::Block(_) => {}
+                }
+                Shape::Plain
+            }
+        }
+        Node::Message(message) => {
+            widen_annotation(&mut known, &message.type_arguments);
+            Shape::Message {
+                selector: match message.selector {
+                    Selector::Unary(_) => SelectorShape::Unary,
+                    Selector::Binary(_) => SelectorShape::Binary,
+                    Selector::Keyword(_) => SelectorShape::Keyword,
+                },
+                eventual: message.eventual,
+                end: message.span.end,
+            }
+        }
+        Node::Block(block) => {
+            widen(&mut known, block.span);
+            widen_delimiters(&mut known, block.delimiters);
+            Shape::Plain
+        }
+    };
+    (known, shape)
 }
 
 /// Describes `node` and appends its children to `children` in the order
@@ -287,159 +679,57 @@ fn describe<'tree>(
     children: &mut Vec<Pending<'tree>>,
     parts: Option<&mut Parts<'_>>,
 ) -> Description<'tree> {
-    match node {
+    let (known, shape) = known_and_shape(node.as_node());
+    let comments = match node {
         Pending::Module(module) => {
-            let Module {
-                root_class,
-                comments,
-                ..
-            } = module;
-            children.push(Pending::Class(root_class));
-            Description {
-                comments,
-                shape: Shape::Module,
-                known: None,
-            }
+            children.push(Pending::Class(&mut module.root_class));
+            &mut module.comments
         }
         Pending::Class(class) => describe_class(class, children, parts),
         Pending::Side(side) => describe_side(side, children, parts),
         Pending::Superclass(clause) => {
-            let SuperclassClause {
-                receiver_type_arguments,
-                messages,
-                comments,
-                span,
-                ..
-            } = clause;
-            let mut known = None;
-            widen(&mut known, *span);
-            widen_annotation(&mut known, receiver_type_arguments);
-            children.extend(messages.iter_mut().map(Pending::Message));
-            plain(comments, known)
+            children.extend(clause.messages.iter_mut().map(Pending::Message));
+            &mut clause.comments
         }
         Pending::Slot(slot) => {
-            let SlotDeclaration {
-                name,
-                type_annotation,
-                initializer,
-                comments,
-                span,
-                ..
-            } = slot;
-            let mut known = None;
-            widen(
-                &mut known,
-                Span::new(span.start.min(name.span.end), name.span.end),
-            );
-            widen_annotation(&mut known, type_annotation);
-            if let Some(initializer) = initializer {
+            if let Some(initializer) = &mut slot.initializer {
                 children.push(Pending::Expression(initializer));
             }
-            plain(comments, known)
+            &mut slot.comments
         }
         Pending::Method(method) => {
-            let MethodDeclaration {
-                body,
-                body_delimiters,
-                comments,
-                span,
-                ..
-            } = method;
-            let mut known = None;
-            widen(&mut known, *span);
-            widen_delimiters(&mut known, *body_delimiters);
-            children.push(Pending::Body(body));
-            plain(comments, known)
+            children.push(Pending::Body(&mut method.body));
+            &mut method.comments
         }
         Pending::Body(body) => {
-            let CodeBody {
-                temporaries,
-                temporaries_delimiters,
-                statements,
-                comments,
-                ..
-            } = body;
-            if temporaries.is_empty() {
+            if body.temporaries.is_empty() {
                 if let Some(parts) = parts {
-                    parts.drop_if_empty(*temporaries_delimiters);
+                    parts.drop_if_empty(body.temporaries_delimiters);
                 }
             }
-            let mut known = None;
-            widen_delimiters(&mut known, *temporaries_delimiters);
-            children.extend(temporaries.iter_mut().map(Pending::Slot));
-            children.extend(statements.iter_mut().map(Pending::Statement));
-            plain(comments, known)
+            children.extend(body.temporaries.iter_mut().map(Pending::Slot));
+            children.extend(body.statements.iter_mut().map(Pending::Statement));
+            &mut body.comments
         }
         Pending::Statement(statement) => {
-            let Statement {
-                kind,
-                comments,
-                span,
-            } = statement;
-            let mut known = None;
-            let expression = match kind {
-                StatementKind::Return(expression) => {
-                    // The `^` the statement starts at.
-                    widen(
-                        &mut known,
-                        Span::new(span.start, span.start.saturating_add(1)),
-                    );
-                    expression
-                }
-                StatementKind::Expression(expression) => expression,
-            };
+            let (StatementKind::Return(expression) | StatementKind::Expression(expression)) =
+                &mut statement.kind;
             children.push(Pending::Expression(expression));
-            plain(comments, known)
+            &mut statement.comments
         }
         Pending::Expression(expression) => describe_expression(expression, children, parts),
         Pending::Message(message) => {
-            let MessageSend {
-                selector,
-                arguments,
-                eventual,
-                type_arguments,
-                comments,
-                span,
-            } = message;
-            let mut known = None;
-            widen_annotation(&mut known, type_arguments);
-            let shape = Shape::Message {
-                selector: match selector {
-                    Selector::Unary(_) => SelectorShape::Unary,
-                    Selector::Binary(_) => SelectorShape::Binary,
-                    Selector::Keyword(_) => SelectorShape::Keyword,
-                },
-                eventual: *eventual,
-                end: span.end,
-            };
-            children.extend(arguments.iter_mut().map(Pending::Expression));
-            Description {
-                comments,
-                shape,
-                known,
-            }
+            children.extend(message.arguments.iter_mut().map(Pending::Expression));
+            &mut message.comments
         }
         Pending::Block(block) => {
-            let BlockExpression {
-                body,
-                delimiters,
-                comments,
-                span,
-                ..
-            } = block;
-            let mut known = None;
-            widen(&mut known, *span);
-            widen_delimiters(&mut known, *delimiters);
-            children.push(Pending::Body(body));
-            plain(comments, known)
+            children.push(Pending::Body(&mut block.body));
+            &mut block.comments
         }
-    }
-}
-
-fn plain(comments: &mut Vec<AttachedComment>, known: Option<Span>) -> Description<'_> {
+    };
     Description {
         comments,
-        shape: Shape::Plain,
+        shape,
         known,
     }
 }
@@ -448,33 +738,20 @@ fn describe_class<'tree>(
     class: &'tree mut ClassDeclaration,
     children: &mut Vec<Pending<'tree>>,
     parts: Option<&mut Parts<'_>>,
-) -> Description<'tree> {
+) -> &'tree mut Vec<AttachedComment> {
     let ClassDeclaration {
         superclass,
         mixin_applications,
         instance_side,
         class_side,
         comments,
-        span,
         ..
     } = class;
     if let (Some(parts), Some(side)) = (parts, class_side.as_ref()) {
-        if side.members.is_empty() && parts.drop_if_empty(side.delimiters) {
-            // The `:` before the side's `(`.
-            if let Some(Delimiters { open, .. }) = side.delimiters {
-                let open_index = parts
-                    .tokens
-                    .partition_point(|token| token.span.start < open.start);
-                if let Some(colon) = open_index.checked_sub(1).map(|index| parts.tokens[index]) {
-                    if colon.kind == TokenKind::Colon {
-                        parts.dropped.push(colon.span);
-                    }
-                }
-            }
+        if side.members.is_empty() {
+            parts.drop_empty_class_side(side.delimiters);
         }
     }
-    let mut known = None;
-    widen(&mut known, *span);
     if let Some(clause) = superclass {
         children.push(Pending::Superclass(clause));
     }
@@ -483,19 +760,18 @@ fn describe_class<'tree>(
     if let Some(side) = class_side {
         children.push(Pending::Side(side));
     }
-    plain(comments, known)
+    comments
 }
 
 fn describe_side<'tree>(
     side: &'tree mut ClassBody,
     children: &mut Vec<Pending<'tree>>,
     parts: Option<&mut Parts<'_>>,
-) -> Description<'tree> {
+) -> &'tree mut Vec<AttachedComment> {
     let ClassBody {
         header_slots,
         initializer_expressions,
         members,
-        delimiters,
         slot_delimiters,
         comments,
         ..
@@ -505,9 +781,6 @@ fn describe_side<'tree>(
             parts.drop_if_empty(*slot_delimiters);
         }
     }
-    let mut known = None;
-    widen_delimiters(&mut known, *delimiters);
-    widen_delimiters(&mut known, *slot_delimiters);
     children.extend(header_slots.iter_mut().map(Pending::Slot));
     children.extend(initializer_expressions.iter_mut().map(Pending::Statement));
     children.extend(members.iter_mut().map(|member| match member {
@@ -515,53 +788,30 @@ fn describe_side<'tree>(
         Member::LazySlot(slot) => Pending::Slot(slot),
         Member::Method(method) => Pending::Method(method),
     }));
-    plain(comments, known)
+    comments
 }
 
 fn describe_expression<'tree>(
     expression: &'tree mut Expression,
     children: &mut Vec<Pending<'tree>>,
     parts: Option<&mut Parts<'_>>,
-) -> Description<'tree> {
+) -> &'tree mut Vec<AttachedComment> {
     let Expression {
         kind,
-        parentheses,
-        type_arguments,
         synthesized,
         comments,
-        span,
+        ..
     } = expression;
     if *synthesized {
-        return Description {
-            comments,
-            shape: Shape::Empty,
-            known: None,
-        };
-    }
-    let mut known = None;
-    widen(&mut known, *span);
-    widen_annotation(&mut known, type_arguments);
-    for parenthesis in parentheses.iter() {
-        widen_delimiters(&mut known, Some(parenthesis.delimiters));
-        widen_annotation(&mut known, &parenthesis.type_arguments);
-    }
-    match &*kind {
-        ExpressionKind::Identifier(identifier) => widen(&mut known, identifier.span),
-        ExpressionKind::Literal(literal) => {
-            let span = literal_span(literal);
-            widen(&mut known, span);
-            if matches!(literal, Literal::Pattern { .. }) {
-                if let Some(parts) = parts {
-                    parts.patterns.push(span);
-                }
-            }
-        }
-        ExpressionKind::Assign { target, .. } => widen(&mut known, target.span),
-        ExpressionKind::DynamicArray { span, .. } => widen(&mut known, *span),
-        ExpressionKind::Send(_) | ExpressionKind::Cascade(_) | ExpressionKind::Block(_) => {}
+        return comments;
     }
     match kind {
-        ExpressionKind::Identifier(_) | ExpressionKind::Literal(_) => {}
+        ExpressionKind::Identifier(_) => {}
+        ExpressionKind::Literal(literal) => {
+            if let (Literal::Pattern { span, .. }, Some(parts)) = (&*literal, parts) {
+                parts.patterns.push(*span);
+            }
+        }
         ExpressionKind::Send(send) => {
             let Send {
                 receiver, message, ..
@@ -586,7 +836,7 @@ fn describe_expression<'tree>(
             children.extend(elements.iter_mut().map(Pending::Expression));
         }
     }
-    plain(comments, known)
+    comments
 }
 
 /// What [`measure`] needs of a commentable node, recorded by the prepass in
@@ -825,7 +1075,9 @@ fn inside_a_pattern(patterns: &[Span], span: Span) -> bool {
 /// What the descent reads.
 struct Context<'input> {
     tokens: &'input Tokens,
-    entries: &'input [Entry],
+    /// The walk's extents, in pre-order; `None` on the clean path, which
+    /// reads each child's extent from the child (`local_extent`).
+    entries: Option<&'input [Entry]>,
     comments: &'input [Comment],
     source: &'input str,
 }
@@ -836,6 +1088,8 @@ struct Context<'input> {
 struct Expansion<'tree> {
     node: Pending<'tree>,
     index: usize,
+    /// The node's extent, which its `Inner` counts start from.
+    extent: Option<(usize, usize)>,
     inside: Vec<usize>,
     before: Vec<usize>,
     after: Vec<usize>,
@@ -881,6 +1135,7 @@ fn descend(module: &mut Module, context: &Context<'_>, placed: Vec<usize>, work:
     let mut expansions = vec![Expansion {
         node: Pending::Module(module),
         index: 0,
+        extent: context.tokens.len().checked_sub(1).map(|last| (0, last)),
         inside: placed,
         before: Vec::new(),
         after: Vec::new(),
@@ -896,20 +1151,22 @@ fn descend(module: &mut Module, context: &Context<'_>, placed: Vec<usize>, work:
     while let Some(Expansion {
         node,
         index,
+        extent,
         inside,
         before,
         after,
     }) = expansions.pop()
     {
         let description = describe(node, &mut declared, None);
-        context.children(index, declared.len(), &mut indices, &mut children);
+        context.children(index, &declared, &mut indices, &mut children, work);
         *work += 1 + declared.len() + inside.len();
         decided.clear();
         decided.resize_with(children.len(), Placed::default);
         let mut own_tokens = None;
         context.push(description.comments, &before, Anchor::Before);
         for comment in inside {
-            match context.place(index, &children, comment, &mut own_tokens) {
+            let first = extent.map_or(0, |(first, _)| first);
+            match context.place(first, &children, comment, &mut own_tokens) {
                 Target::Inside(slot) => decided[slot].inside.push(comment),
                 Target::Before(slot) => decided[slot].before.push(comment),
                 Target::After(slot) => decided[slot].after.push(comment),
@@ -941,6 +1198,7 @@ fn descend(module: &mut Module, context: &Context<'_>, placed: Vec<usize>, work:
                 expansions.push(Expansion {
                     node,
                     index: child.index,
+                    extent: Some((child.first, child.last)),
                     inside,
                     before,
                     after,
@@ -964,37 +1222,57 @@ fn child_indices(entries: &[Entry], index: usize, count: usize, indices: &mut Ve
 }
 
 impl Context<'_> {
-    /// Fills `children` with the children of the node at `index` that have
-    /// a token, by first token, `indices` the buffer for their entries.
-    /// Listed last-appended first before the stable sort, as the reference
-    /// lists them, so that children a recovery made to start at the same
-    /// token keep the reference's order.
+    /// Fills `children` with the `declared` children of the node at
+    /// `index` that have a token, by first token, `indices` the buffer for
+    /// their entries on the walk. Listed last-appended first before the
+    /// stable sort, as the reference lists them, so that children a
+    /// recovery made to start at the same token keep the reference's
+    /// order.
     fn children(
         &self,
         index: usize,
-        count: usize,
+        declared: &[Pending<'_>],
         indices: &mut Vec<usize>,
         children: &mut Vec<Child>,
+        work: &mut usize,
     ) {
-        child_indices(self.entries, index, count, indices);
+        let count = declared.len();
         children.clear();
-        children.extend((0..count).rev().filter_map(|position| {
-            let index = indices[position];
-            self.entries[index].extent().map(|(first, last)| Child {
-                first,
-                last,
-                index,
-                position,
-            })
-        }));
+        match self.entries {
+            Some(entries) => {
+                child_indices(entries, index, count, indices);
+                children.extend((0..count).rev().filter_map(|position| {
+                    let index = indices[position];
+                    entries[index].extent().map(|(first, last)| Child {
+                        first,
+                        last,
+                        index,
+                        position,
+                    })
+                }));
+            }
+            None => {
+                children.extend((0..count).rev().filter_map(|position| {
+                    local_extent(declared[position].as_node(), self.tokens, work).map(
+                        |(first, last)| Child {
+                            first,
+                            last,
+                            // The clean path has no entries to index.
+                            index: usize::MAX,
+                            position,
+                        },
+                    )
+                }));
+            }
+        }
         children.sort_by_key(|child| child.first);
     }
 
-    /// Where the comment at `comment` goes among the holder at `holder`
-    /// and its `children`, by rules 1 to 4.
+    /// Where the comment at `comment` goes among a holder whose first token
+    /// is `holder_first` and its `children`, by rules 1 to 4.
     fn place(
         &self,
-        holder: usize,
+        holder_first: usize,
         children: &[Child],
         comment: usize,
         own_tokens: &mut Option<OwnTokens>,
@@ -1042,7 +1320,7 @@ impl Context<'_> {
             (Some(Neighbour::Child(slot)), _) if !next_closes => Target::After(slot),
             _ => {
                 let own_tokens =
-                    own_tokens.get_or_insert_with(|| OwnTokens::new(self, holder, children));
+                    own_tokens.get_or_insert_with(|| OwnTokens::new(self, holder_first, children));
                 Target::Holder(Anchor::Inner(own_tokens.before(gap)))
             }
         }
@@ -1078,7 +1356,7 @@ struct OwnTokens {
 }
 
 impl OwnTokens {
-    fn new(context: &Context<'_>, holder: usize, children: &[Child]) -> OwnTokens {
+    fn new(context: &Context<'_>, first: usize, children: &[Child]) -> OwnTokens {
         let mut by_last = children.to_vec();
         by_last.sort_by_key(|child| child.last);
         let mut tokens = vec![0];
@@ -1089,9 +1367,7 @@ impl OwnTokens {
             periods.push(periods[periods.len() - 1] + usize::from(period));
         }
         OwnTokens {
-            first: context.entries[holder]
-                .extent()
-                .map_or(0, |(first, _)| first),
+            first,
             lasts: by_last.iter().map(|child| child.last).collect(),
             tokens,
             periods,
@@ -1328,19 +1604,193 @@ mod tests {
     }
 
     /// `source` lexed and parsed as `parse_for_editor` does, nothing
-    /// attached: the module, the parser's tokens and the comments.
-    pub(super) fn unattached(source: &str) -> (Module, Vec<Token>, Vec<Comment>) {
+    /// attached: the module, the parser's tokens, the comments and the
+    /// exclusions the parser recorded.
+    pub(super) fn unattached(source: &str) -> (Module, Vec<Token>, Vec<Comment>, Exclusions) {
         let lexed = crate::lexer::Lexer::new(source).run_keeping_comments();
         let mut parser = crate::parser::Parser::new(source, lexed.tokens);
         let module = parser.parse_module();
+        let exclusions = parser.take_exclusions();
         let (tokens, _) = parser.into_parts();
-        (module, tokens, lexed.comments)
+        (module, tokens, lexed.comments, exclusions)
+    }
+
+    /// The parser records the empty parts and the pattern literals the
+    /// prepass collects, so that a parse without an error drops and skips
+    /// what the walk does.
+    #[test]
+    fn the_parser_records_the_exclusions_the_prepass_collects() {
+        for path in every_source() {
+            let source = std::fs::read_to_string(&path).expect("read");
+            let (mut module, tokens, comments, exclusions) = unattached(&source);
+            let mut parts = Parts::new(&tokens, &comments);
+            let mut work = 0;
+            prepass(&mut module, &mut parts, &mut work);
+            let expected = parts.sorted();
+            let actual = Parts::from_exclusions(&tokens, &comments, &exclusions).sorted();
+            assert!(actual == expected, "{}: exclusions differ", path.display());
+        }
+    }
+
+    /// `source` attached by the clean path and by the reference: equal, or
+    /// the name of the source.
+    fn attaches_cleanly_as_the_reference(source: &str, name: &str) {
+        let (module, tokens, comments, exclusions) = unattached(source);
+        let mut expected = module.clone();
+        super::reference::attach_comments(&mut expected, &tokens, &comments, source);
+        let mut actual = module;
+        attach_clean_comments(&mut actual, &tokens, &comments, source, &exclusions);
+        assert!(actual == expected, "{name}: attached unlike the reference");
+        // The clean path is for a parse without an error only.
+        assert!(
+            crate::parse_for_editor(source).diagnostics.is_empty(),
+            "{name}: parses with an error"
+        );
+    }
+
+    /// Every whole source parses without an error, so it takes the clean
+    /// path: it attaches as the reference attaches it.
+    #[test]
+    fn the_clean_path_attaches_as_the_reference_over_every_source() {
+        for path in every_source() {
+            let source = std::fs::read_to_string(&path).expect("read");
+            attaches_cleanly_as_the_reference(&source, &path.display().to_string());
+        }
+    }
+
+    /// A body's extent runs from its first child to its last, whichever
+    /// of its temporaries and statements they are.
+    #[test]
+    fn a_body_s_extent_spans_its_first_and_last_child() {
+        for source in [
+            "class A = () ( m = ( | a | (* c *) ) )",
+            "class A = () ( m = ( | a | a (* c *) ) )",
+            "class A = () ( m = ( (* c *) a. ^2 ) )",
+            "class A = () ( m = ( ^[ :x | | a b | a (* c *). b ] ) )",
+            "class A = () ( m = ( | a | ) (* c *) )",
+        ] {
+            attaches_cleanly_as_the_reference(source, source);
+        }
+    }
+
+    /// A unary message's type arguments stand past the span of the send
+    /// they end when that send is a receiver or an argument: the send's
+    /// extent takes them in all the same.
+    #[test]
+    fn a_send_s_extent_takes_its_last_message_s_type_arguments() {
+        for source in [
+            "class A = () ( m = ( ^x foo[E (* c *)] (* d *) bar ) )",
+            "class A = () ( m = ( ^x at: 1 foo[E (* c *)] (* d *) ) )",
+            "class A = () ( m = ( ^x foo; at: y bar[E (* c *)] (* d *) ) )",
+        ] {
+            attaches_cleanly_as_the_reference(source, source);
+        }
+    }
+
+    /// Wherever type arguments can stand past the span of what they end --
+    /// an assignment's value, a superclass clause's message, a cascade's
+    /// last argument, in every place an expression stands -- a comment
+    /// after them attaches as the reference attaches it.
+    #[test]
+    fn the_clean_path_attaches_as_the_reference_at_every_right_edge() {
+        for body in [
+            "x:: y foo[E] (* c *)",
+            "x:: y[E] (* c *)",
+            "^x:: y[E] (* c *)",
+            "^{ x:: y[E] (* c *) }",
+            "x:: z:: y[E] (* c *)",
+            "x:: y foo; at: z bar[E] (* c *)",
+            "| a = x:: y[E] (* c *) . | ^a",
+            "^[ x:: y foo[E] (* c *) ]",
+            "^x + y foo[E] (* c *)",
+            "^x at: (y foo[E]) (* c *)",
+        ] {
+            let source = format!("class A = () ( m = ( {body} ) )");
+            attaches_cleanly_as_the_reference(&source, &source);
+        }
+        for source in [
+            "class A = () ( lazy a = x:: y[E] (* c *) . )",
+            "class A = ( x:: y[E] (* c *) ) ( )",
+            "class A = Object foo: x bar[E] (* c *) ( ) ( )",
+            "class A = Object + x bar[E] (* c *) ( ) ( )",
+            "class A = B <: C foo: x bar[E] (* c *) ( ) ( )",
+        ] {
+            attaches_cleanly_as_the_reference(source, source);
+        }
+    }
+
+    /// `last_child` answers the child `describe` appends last, for every
+    /// node of every source: the right edge follows the children the walk
+    /// merges.
+    #[test]
+    fn the_last_child_is_the_child_describe_appends_last() {
+        fn address(node: Option<Node<'_>>) -> Option<*const ()> {
+            node.map(|node| match node {
+                Node::Module(module) => std::ptr::from_ref(module).cast(),
+                Node::Class(class) => std::ptr::from_ref(class).cast(),
+                Node::Side(side) => std::ptr::from_ref(side).cast(),
+                Node::Superclass(clause) => std::ptr::from_ref(clause).cast(),
+                Node::Slot(slot) => std::ptr::from_ref(slot).cast(),
+                Node::Method(method) => std::ptr::from_ref(method).cast(),
+                Node::Body(body) => std::ptr::from_ref(body).cast(),
+                Node::Statement(statement) => std::ptr::from_ref(statement).cast(),
+                Node::Expression(expression) => std::ptr::from_ref(expression).cast(),
+                Node::Message(message) => std::ptr::from_ref(message).cast(),
+                Node::Block(block) => std::ptr::from_ref(block).cast(),
+            })
+        }
+        for path in every_source() {
+            let source = std::fs::read_to_string(&path).expect("read");
+            let (mut module, _, _, _) = unattached(&source);
+            let mut stack = vec![Pending::Module(&mut module)];
+            let mut children = Vec::new();
+            while let Some(node) = stack.pop() {
+                let expected = address(last_child(node.as_node()));
+                describe(node, &mut children, None);
+                let actual = address(children.last().map(Pending::as_node));
+                assert!(actual == expected, "{}: another last child", path.display());
+                stack.append(&mut children);
+            }
+        }
+    }
+
+    /// A pattern literal's tuple holds expressions, and with them pattern
+    /// literals and blocks: all of it is the outer literal's text, so none
+    /// of it is recorded, and a comment in it stays in the text.
+    #[test]
+    fn nothing_inside_a_pattern_literal_is_recorded() {
+        for body in [
+            "^<{ <a: 1>. (* c *) 2 }>",
+            "^<{ <a: 1> (* c *) }>",
+            "^<a: { <b: 1>. (* c *) 2 }>",
+            "^(<{ [ | | ] }> (* c *))",
+            "^(<{ [ || ] }> (* c *))",
+        ] {
+            let source = format!("class A = () ( m = ( {body} ) )");
+            let (mut module, tokens, comments, exclusions) = unattached(&source);
+            let mut parts = Parts::new(&tokens, &comments);
+            let mut work = 0;
+            prepass(&mut module, &mut parts, &mut work);
+            let expected = parts.sorted();
+            let actual = Parts::from_exclusions(&tokens, &comments, &exclusions).sorted();
+            assert!(actual == expected, "{source}: exclusions differ");
+            attaches_cleanly_as_the_reference(&source, &source);
+        }
+    }
+
+    /// A pattern literal inside another is part of the outer one's text:
+    /// only the outer one is recorded, as the prepass records only it.
+    #[test]
+    fn a_nested_pattern_is_recorded_once() {
+        let source = "class A = () ( m = ( ^<at: <x: 1>> ) )";
+        let (_, _, _, exclusions) = unattached(source);
+        assert_eq!(exclusions.patterns.len(), 1);
     }
 
     /// The module `source` parses to, attached by `attach_comments` and by
     /// the reference: equal, or the name of the source and where it was cut.
     fn attaches_as_the_reference(source: &str, name: &str) {
-        let (module, tokens, comments) = unattached(source);
+        let (module, tokens, comments, _) = unattached(source);
         let mut expected = module.clone();
         super::reference::attach_comments(&mut expected, &tokens, &comments, source);
         let mut actual = module;
@@ -1384,7 +1834,7 @@ mod tests {
     fn the_loop_measures_the_extents_the_reference_measures() {
         for path in every_source() {
             let source = std::fs::read_to_string(&path).expect("read");
-            let (mut module, tokens, comments) = unattached(&source);
+            let (mut module, tokens, comments, _) = unattached(&source);
             let mut expected = super::reference::extents(&mut module, &tokens, &comments);
             let mut actual = extents(&mut module, &tokens, &comments);
             expected.sort_unstable();
@@ -1444,7 +1894,7 @@ mod tests {
         for path in every_source() {
             let source = std::fs::read_to_string(&path).expect("read");
             let name = path.display();
-            let (mut module, tokens, comments) = unattached(&source);
+            let (mut module, tokens, comments, _) = unattached(&source);
             let mut work = 0;
             let mut parts = Parts::new(&tokens, &comments);
             let records = prepass(&mut module, &mut parts, &mut work);
@@ -1623,15 +2073,19 @@ mod tests {
 
     /// The work `attach` does for `source`, the attachment run on a
     /// 256 KiB stack: a walk that recursed along a chain would overflow it.
-    fn work_for(source: &str) -> usize {
+    fn work_for(source: &str, clean: bool) -> usize {
         const STACK_BYTES: usize = 256 * 1024;
-        let (module, tokens, comments) = unattached(source);
+        let (module, tokens, comments, exclusions) = unattached(source);
         let source = source.to_string();
         std::thread::Builder::new()
             .stack_size(STACK_BYTES)
             .spawn(move || {
                 let mut module = module;
-                let work = attach(&mut module, &tokens, &comments, &source);
+                let work = if clean {
+                    attach_clean(&mut module, &tokens, &comments, &source, &exclusions)
+                } else {
+                    attach(&mut module, &tokens, &comments, &source)
+                };
                 (work, module)
             })
             .expect("spawn the attaching thread")
@@ -1670,17 +2124,21 @@ mod tests {
 
     #[test]
     fn the_work_grows_linearly_along_a_chain() {
-        let short = work_for(&chain(50_000));
-        let long = work_for(&chain(100_000));
-        assert!(short > 50_000, "every link is visited: {short}");
-        assert_linear(short, long, "a chain");
+        for clean in [false, true] {
+            let short = work_for(&chain(50_000), clean);
+            let long = work_for(&chain(100_000), clean);
+            assert!(short > 50_000, "every link is visited: {short}");
+            assert_linear(short, long, "a chain");
+        }
     }
 
     #[test]
     fn the_work_grows_linearly_with_comments_among_many_children() {
-        let short = work_for(&cascade(50_000));
-        let long = work_for(&cascade(100_000));
-        assert_linear(short, long, "a cascade");
+        for clean in [false, true] {
+            let short = work_for(&cascade(50_000), clean);
+            let long = work_for(&cascade(100_000), clean);
+            assert_linear(short, long, "a cascade");
+        }
     }
 
     /// A method with a comment before it, one among its pattern's tokens

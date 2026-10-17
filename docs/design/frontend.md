@@ -356,8 +356,10 @@ comment stands on its line is layout (anchors stay compared), and reads an
 empty part as absent, so two parses that say the same compare equal however
 they are laid out.
 
-The attachment does its work in three steps, none recursing over the tree.
-A prepass walks the tree once and records, for every commentable node in
+The attachment takes one of two paths, neither recursing over the tree:
+the *walk* for a source with an error, which `parse_for_editor` recovers,
+and the *clean path* for one without, which every `parse` and most of an
+editor's parses are. The walk does its work in three steps. A prepass walks the tree once and records, for every commentable node in
 pre-order, its known span, its shape and its parent's index, and records the
 empty parts and the pattern literals, since which tokens a comment is
 counted among depends on them. One loop over the records, from the last to
@@ -381,7 +383,40 @@ the test-only reference in `attach/reference.rs`, and oracle tests hold the
 descent to it over every source of the repository and fifteen prefixes of
 each, comment for comment; `the_work_grows_linearly_along_a_chain` and
 `the_work_grows_linearly_with_comments_among_many_children` hold the
-descent and the prepass linear. Measured 2026-10-17 on the measuring
+descent and the prepass linear, on both paths.
+
+The clean path has neither the prepass nor the loop. On a parse without
+an error what an `Expression`, a block, a class, a method, a superclass
+clause and a class side know of their own tokens (`known_and_shape`,
+which the walk reads too) starts at their first token and reaches their
+last but at the right edge; a statement, a slot, a message and a code
+body know less than they span and merge their children's extents, each
+read the same way (`local_extent`). The descent asks for a child's
+extent only when it expands the child's parent, so a module of many
+nodes and few comments pays for the children of the nodes on the
+comments' paths. At the right edge a node's spans can fall short of its
+subtree: a primary's or a unary message's type arguments stand past the
+span of the send, the assignment or the superclass clause they end
+(`x foo[E] bar`'s receiver ends at `foo`, `x:: y[E]` at `y`). So every
+extent follows the node's last child, that child's last child and on,
+iteratively, until a node that closes itself -- parentheses, a block, a
+method's body, a class side (`widen_by_the_right_edge`, `last_child`,
+which a test holds to the child `describe` appends last). What the
+prepass collected besides, the empty parts and the pattern literals, the
+parser records as it parses them (`attach::Exclusions`), rolled back with
+the speculative parses its checkpoints undo and never inside a pattern
+literal, whose text holds whatever its tuple parses. A recovered tree's
+nodes need not span their children, which is why the walk stays for it.
+The argument is not what holds the clean path: the oracle tests hold it
+to the reference over every source and over hand-written sources for
+every right edge, and a debug build attaches a copy of every clean parse
+by the walk too and compares the two node by node, so every parse of the
+workspace's debug suites checks it, and the golden
+`goldens/language/syntax/comments_at_the_right_edge.ns` holds every shape
+the comparison or a review found there. The right edge's exceptions were
+found that way.
+
+Measured 2026-10-17 on the measuring
 workstation (Windows 11, release builds with the function-alignment pin,
 three builds per side run three times each, `--rounds 40`, each phase timed
 over all modules before the next) over the 211 modules of `corpus/modules`,
@@ -395,12 +430,17 @@ loop over the records 6.0 ms and the descent 8.4 ms, 3.4 ms of it building
 the 8,109 `AttachedComment`s; the prepass and the loop together take 15.7
 ms against 22.3 ms for the prepass and the measuring of c6448e16. The attachment is
 still the second largest cost after the parser's own. The measurement
-covers one machine, Windows' heap allocator and the corpus only. Under
-mimalloc, the allocator of both binaries ([memory.md](memory.md), "The
-allocator of the Rust side"), `parse` over the corpus takes 53 ms and
-`Kernel.ns`, whose 3,230 `///` lines make it the most commented source,
-0.99 ms, 0.51 ms with those lines stripped (`OPEN-WORK.md`, "Comment
-attachment: the runtime pays for it and discards the comments").
+covers one machine, Windows' heap allocator and the corpus only.
+
+The clean path, measured 2026-10-17 against the walk on the same
+workstation (release builds with the alignment pin, one build a side run
+three times each, interleaved), under mimalloc, the allocator of both
+binaries ([memory.md](memory.md), "The allocator of the Rust side"):
+`parse` over the corpus 44.2-44.3 ms against 53.0-54.2 ms, 17 % less, and
+of `Kernel.ns`, whose 3,230 `///` lines make it the most commented
+source, 0.81-0.84 ms against 0.97-1.04 ms, 17 % less; on Windows' heap
+83.1-83.5 ms against 91.1-93.3 ms and 2.16-2.19 ms against 2.42-2.47 ms,
+9 % and 11 % less. `parse_for_editor` moved the same.
 
 ## AST
 

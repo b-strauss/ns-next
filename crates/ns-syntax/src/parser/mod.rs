@@ -73,11 +73,32 @@ pub struct Parser<'a> {
     /// the depth guard cut short depends on the depth it was asked at, so
     /// `member_ends` does not keep it.
     depth_refusals: usize,
+    /// The empty parts and pattern literals parsed so far, for the
+    /// attachment of a parse without an error (`attach::Exclusions`);
+    /// rolled back with the cursor by [`Parser::restore`].
+    exclusions: crate::attach::Exclusions,
+    /// How many pattern literals the parse is inside. A pattern's tuple
+    /// holds expressions, so pattern literals and blocks are parsed inside
+    /// one, but all of it is the outer literal's text, which the tree keeps
+    /// as text: nothing inside is recorded. Balanced by construction, so no
+    /// checkpoint keeps it.
+    pattern_depth: u32,
     /// Every step the parse takes -- each token bumped, each position the
     /// recovery scans or checks for a member, each closer it looks up -- so
     /// a test can hold the parse's work to a bound without timing it.
     #[cfg(test)]
     steps: usize,
+}
+
+/// Where a speculative parse started, so that [`Parser::restore`] undoes
+/// everything it did.
+#[derive(Clone, Copy)]
+pub(crate) struct Checkpoint {
+    pub(crate) position: usize,
+    pub(crate) diagnostics: usize,
+    empty_bars: usize,
+    empty_class_sides: usize,
+    patterns: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -95,6 +116,8 @@ impl<'a> Parser<'a> {
             free_closers: None,
             member_ends: std::collections::HashMap::new(),
             depth_refusals: 0,
+            exclusions: crate::attach::Exclusions::default(),
+            pattern_depth: 0,
             #[cfg(test)]
             steps: 0,
         }
@@ -466,17 +489,45 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Save the cursor position and the current diagnostics length, so a
-    /// speculative parse can be rewound with [`Parser::restore`].
-    pub(crate) fn checkpoint(&self) -> (usize, usize) {
-        (self.position, self.diagnostics.len())
+    /// Save the cursor position, the current diagnostics length and the
+    /// exclusions' lengths, so a speculative parse can be rewound with
+    /// [`Parser::restore`].
+    pub(crate) fn checkpoint(&self) -> Checkpoint {
+        Checkpoint {
+            position: self.position,
+            diagnostics: self.diagnostics.len(),
+            empty_bars: self.exclusions.empty_bars.len(),
+            empty_class_sides: self.exclusions.empty_class_sides.len(),
+            patterns: self.exclusions.patterns.len(),
+        }
     }
 
     /// Rewind to a [`Parser::checkpoint`]: restore the cursor and drop any
-    /// diagnostics pushed since (so speculative errors are discarded).
-    pub(crate) fn restore(&mut self, checkpoint: (usize, usize)) {
-        self.position = checkpoint.0;
-        self.diagnostics.truncate(checkpoint.1);
+    /// diagnostics pushed since (so speculative errors are discarded), and
+    /// any exclusion recorded since, which names a part the tree will not
+    /// hold.
+    pub(crate) fn restore(&mut self, checkpoint: Checkpoint) {
+        self.position = checkpoint.position;
+        self.diagnostics.truncate(checkpoint.diagnostics);
+        self.exclusions.empty_bars.truncate(checkpoint.empty_bars);
+        self.exclusions
+            .empty_class_sides
+            .truncate(checkpoint.empty_class_sides);
+        self.exclusions.patterns.truncate(checkpoint.patterns);
+    }
+
+    /// Records an exclusion, unless the parse is inside a pattern literal,
+    /// whose text holds whatever it parses.
+    pub(crate) fn record_exclusion(&mut self, record: impl FnOnce(&mut crate::attach::Exclusions)) {
+        if self.pattern_depth == 0 {
+            record(&mut self.exclusions);
+        }
+    }
+
+    /// The empty parts and pattern literals recorded so far, for the
+    /// attachment of a parse without an error.
+    pub(crate) fn take_exclusions(&mut self) -> crate::attach::Exclusions {
+        std::mem::take(&mut self.exclusions)
     }
 
     /// The tokens as the parser ended with them (after it split `-4` and

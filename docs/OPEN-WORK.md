@@ -1279,16 +1279,14 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
   `the_work_grows_linearly_with_comments_among_many_children` hold the
   descent and the prepass linear). What stays is that `parse` attaches every
   comment and the runtime throws them away: under mimalloc, the allocator
-  of both binaries, `parse` of `Kernel.ns` takes 0.99 ms, 0.18 ms of it
-  lexing, and 0.51 ms once its comments are stripped, so its 3,230 lines
-  of `///` comments cost 0.48 ms, about half the parse; on Windows' heap
-  2.53 ms against 1.49 ms (`cargo bench -p ns-syntax --bench corpus --
-  <directory> --rounds 100` from `crates/ns-syntax`, a directory holding
-  the file as is and one holding a copy without its `///` lines, the
-  benchmark built once with a `#[global_allocator]` of mimalloc added and
-  once without, medians of three runs each; 2026-10-17, the measuring
-  workstation, Windows 11, release with the alignment pin). That is paid on every boot that compiles the
-  shipped source (`interpreter/kernel.rs`, `interpreter/core_library.rs`
+  of both binaries, `parse` of `Kernel.ns` takes 0.81-0.84 ms, and 0.51
+  ms with its 3,230 lines of `///` comments stripped, so the comments
+  cost about 0.3 ms, 38 % of the parse (`cargo bench -p ns-syntax --bench
+  corpus -- <directory> --rounds 100` from `crates/ns-syntax`, the
+  benchmark built with a `#[global_allocator]` of mimalloc added;
+  2026-10-17, the measuring workstation, Windows 11, release with the
+  alignment pin; [frontend.md](design/frontend.md), "Comments"). That is
+  paid on every boot that compiles the shipped source (`interpreter/kernel.rs`, `interpreter/core_library.rs`
   call `ns_syntax::parse`); an optimized boot from the embedded shipped
   code parses nothing ("The parser's 3.4 ms for `Kernel.ns`" above). A
   `parse` that skips the attachment for the runtime would recover it.

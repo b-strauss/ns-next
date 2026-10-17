@@ -50,11 +50,12 @@ pub fn parse(source: &str) -> Result<Module, Vec<Diagnostic>> {
     }
     let mut parser = parser::Parser::new(source, lexed.tokens);
     let mut module = parser.parse_module();
+    let exclusions = parser.take_exclusions();
     let (tokens, diagnostics) = parser.into_parts();
     if has_error(&diagnostics) {
         return Err(diagnostics);
     }
-    attach::attach_comments(&mut module, &tokens, &lexed.comments, source);
+    attach::attach_clean_comments(&mut module, &tokens, &lexed.comments, source, &exclusions);
     Ok(module)
 }
 
@@ -93,8 +94,15 @@ pub fn parse_for_editor(source: &str) -> EditorParse {
     let lexed = lexer::Lexer::new(source).run_keeping_comments();
     let mut parser = parser::Parser::new(source, lexed.tokens.clone());
     let mut module = parser.parse_module();
+    let exclusions = parser.take_exclusions();
     let (tokens, parser_diagnostics) = parser.into_parts();
-    attach::attach_comments(&mut module, &tokens, &lexed.comments, source);
+    // A recovered tree's nodes need not span their children, which the
+    // clean path's extents rest on: a source with an error takes the walk.
+    if has_error(&lexed.diagnostics) || has_error(&parser_diagnostics) {
+        attach::attach_comments(&mut module, &tokens, &lexed.comments, source);
+    } else {
+        attach::attach_clean_comments(&mut module, &tokens, &lexed.comments, source, &exclusions);
+    }
     let mut diagnostics = lexed.diagnostics;
     diagnostics.extend(parser_diagnostics);
     EditorParse {

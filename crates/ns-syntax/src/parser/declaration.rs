@@ -123,7 +123,7 @@ impl<'a> Parser<'a> {
     fn parse_statement(&mut self) -> Option<Expression> {
         let checkpoint = self.checkpoint();
         let expression = self.parse_expression();
-        let first_error = self.diagnostics[checkpoint.1..]
+        let first_error = self.diagnostics[checkpoint.diagnostics..]
             .iter()
             .find(|diagnostic| diagnostic.severity == crate::diagnostic::Severity::Error)
             .map(|diagnostic| diagnostic.span.start);
@@ -132,7 +132,7 @@ impl<'a> Parser<'a> {
         };
         let reached = self.position;
         let reached_offset = self.current().span.start;
-        let member_start = self.member_holding_error(checkpoint.0, first_error);
+        let member_start = self.member_holding_error(checkpoint.position, first_error);
         // Found by its offset: a negative literal the speculative parses
         // split in two moves the index on.
         self.position = (reached..self.tokens.len())
@@ -142,7 +142,7 @@ impl<'a> Parser<'a> {
             return Some(expression);
         };
         self.restore(checkpoint);
-        if member_start == checkpoint.0 {
+        if member_start == checkpoint.position {
             return None;
         }
         // The member start reads as the end of input while the expression is
@@ -377,7 +377,17 @@ impl<'a> Parser<'a> {
         if !self.at(TokenKind::Bar) && !self.at(TokenKind::DoubleBar) {
             return (Vec::new(), None);
         }
-        self.parse_slot_declarations()
+        let (temporaries, delimiters) = self.parse_slot_declarations();
+        self.record_if_empty(&temporaries, delimiters);
+        (temporaries, delimiters)
+    }
+
+    /// Records a slot section or temporaries without a declaration for the
+    /// attachment (`attach::Exclusions`).
+    fn record_if_empty(&mut self, slots: &[SlotDeclaration], delimiters: Option<Delimiters>) {
+        if let (true, Some(delimiters)) = (slots.is_empty(), delimiters) {
+            self.record_exclusion(|exclusions| exclusions.empty_bars.push(delimiters));
+        }
     }
 
     pub(crate) fn parse_access_modifier(&mut self) -> Option<AccessModifier> {
@@ -602,7 +612,7 @@ impl<'a> Parser<'a> {
         if self.at(TokenKind::DoubleBar) {
             let checkpoint = self.checkpoint();
             let section = self.parse_slot_section(TokenKind::DoubleBar);
-            if self.diagnostics.len() == checkpoint.1 {
+            if self.diagnostics.len() == checkpoint.diagnostics {
                 return section;
             }
             self.restore(checkpoint);
@@ -983,6 +993,9 @@ impl<'a> Parser<'a> {
                 open: open.span,
                 close: close.map(|token| token.span),
             });
+            if let (true, Some(delimiters)) = (body.members.is_empty(), body.delimiters) {
+                self.record_exclusion(|exclusions| exclusions.empty_class_sides.push(delimiters));
+            }
             Some(body)
         } else {
             None
@@ -1136,6 +1149,7 @@ impl<'a> Parser<'a> {
         } else {
             (Vec::new(), None)
         };
+        self.record_if_empty(&slots, slot_delimiters);
         let mut initializer_expressions = Vec::new();
         loop {
             match self.peek() {
