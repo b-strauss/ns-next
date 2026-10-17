@@ -207,6 +207,13 @@ The productions, and what the parser does with each:
 Hand-written, single pass. It handles nested `(* *)` comments and `///` line
 comments, literal-message
 comments, both kinds of string literal, string escapes and radix numbers.
+Comment text is most of some sources' bytes, so the lexer crosses it eight
+bytes at a time to the next byte that can end it -- a line break, or a `(`
+or `*` in a block (`comment::first_of_either`) -- and a run of whitespace
+in one count. Measured 2026-10-17 under mimalloc (one build a side with
+the alignment pin, three runs each, the benchmark of "The corpus as a
+parser gate"), that took
+lexing `Kernel.ns` from 0.30 to 0.18 ms and the corpus from 8.2 to 7.9 ms.
 
 **A string literal is `'...'` or `"..."`** (§5.1.5), and there are no
 character literals (decided with the user on 2026-09-25): §5.1.4 announces
@@ -387,9 +394,13 @@ without the pin) the prepass takes 9.7 ms, keeping the tokens 2.4 ms, the
 loop over the records 6.0 ms and the descent 8.4 ms, 3.4 ms of it building
 the 8,109 `AttachedComment`s; the prepass and the loop together take 15.7
 ms against 22.3 ms for the prepass and the measuring of c6448e16. The attachment is
-still the second largest cost after the parser's own; `Kernel.ns` parses in
-2.83 ms, 1.52 ms with its `///` lines stripped. The measurement covers one
-machine, Windows' heap allocator and the corpus only.
+still the second largest cost after the parser's own. The measurement
+covers one machine, Windows' heap allocator and the corpus only. Under
+mimalloc, the allocator of both binaries ([memory.md](memory.md), "The
+allocator of the Rust side"), `parse` over the corpus takes 53 ms and
+`Kernel.ns`, whose 3,230 `///` lines make it the most commented source,
+0.99 ms, 0.51 ms with those lines stripped (`OPEN-WORK.md`, "Comment
+attachment: the runtime pays for it and discards the comments").
 
 ## AST
 

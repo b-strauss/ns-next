@@ -1,6 +1,8 @@
 //! Single-pass lexer for Newspeak3 source.
 
-use crate::comment::{continues_line_block, Comment, CommentKind};
+use crate::comment::{
+    continues_line_block, first_line_break, first_of_either, Comment, CommentKind,
+};
 use crate::diagnostic::Diagnostic;
 use crate::span::Span;
 use crate::token::{Token, TokenKind};
@@ -68,7 +70,14 @@ impl<'a> Lexer<'a> {
     fn skip_trivia(&mut self) {
         loop {
             match self.peek() {
-                Some(byte) if byte.is_ascii_whitespace() => self.position += 1,
+                // The run counted in a local, not `self.position` stored at
+                // every byte: indentation is most of a source's whitespace.
+                Some(byte) if byte.is_ascii_whitespace() => {
+                    self.position += self.bytes[self.position..]
+                        .iter()
+                        .take_while(|byte| byte.is_ascii_whitespace())
+                        .count();
+                }
                 Some(b'(') if self.peek_at(1) == Some(b'*') => self.skip_block_comment(),
                 Some(b'/') if self.starts_line_comment(0) => self.skip_line_comment(),
                 _ => break,
@@ -96,7 +105,12 @@ impl<'a> Lexer<'a> {
                         });
                     }
                 }
-                (Some(_), _) => self.position += 1,
+                // Straight to the next byte that can open or close a
+                // comment, rather than one byte at a time through the text.
+                (Some(_), _) => {
+                    let rest = &self.bytes[self.position + 1..];
+                    self.position += 1 + first_of_either(rest, b'(', b'*').unwrap_or(rest.len());
+                }
                 (None, _) => {
                     self.diagnostics.push(Diagnostic::error(
                         Span::new(start as u32, self.position as u32),
@@ -135,9 +149,8 @@ impl<'a> Lexer<'a> {
     /// gets one comment, with one text, per block.
     fn skip_line_comment(&mut self) {
         let start = self.position;
-        while matches!(self.peek(), Some(byte) if byte != b'\n' && byte != b'\r') {
-            self.position += 1;
-        }
+        self.position = first_line_break(&self.bytes[start..])
+            .map_or(self.bytes.len(), |length| start + length);
         let span = Span::new(start as u32, self.position as u32);
         if let Some(previous) = self.comments.last_mut() {
             if previous.kind == CommentKind::Line

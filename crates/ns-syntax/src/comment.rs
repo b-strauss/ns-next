@@ -46,9 +46,9 @@ pub(crate) fn lines(text: &str) -> impl Iterator<Item = &str> {
     let mut rest = Some(text);
     std::iter::from_fn(move || {
         let current = rest?;
-        match current.find(['\r', '\n']) {
+        match first_line_break(current.as_bytes()) {
             Some(index) => {
-                let width = if current[index..].starts_with("\r\n") {
+                let width = if current.as_bytes()[index..].starts_with(b"\r\n") {
                     2
                 } else {
                     1
@@ -62,6 +62,41 @@ pub(crate) fn lines(text: &str) -> impl Iterator<Item = &str> {
             }
         }
     })
+}
+
+/// The offset of the first `\r` or `\n` in `bytes`; the lexer and the
+/// attachment run it over every comment line.
+pub(crate) fn first_line_break(bytes: &[u8]) -> Option<usize> {
+    first_of_either(bytes, b'\n', b'\r')
+}
+
+/// The offset of the first `first` or `second` in `bytes`, both ASCII, so
+/// that the offset is a character boundary of the source the bytes are
+/// from. A search over bytes, not characters, and over eight of them at a
+/// time until a word holds one: it runs over the whole text of every
+/// comment.
+pub(crate) fn first_of_either(bytes: &[u8], first: u8, second: u8) -> Option<usize> {
+    const ONES: u64 = u64::from_ne_bytes([0x01; 8]);
+    const HIGHS: u64 = u64::from_ne_bytes([0x80; 8]);
+    debug_assert!(first.is_ascii() && second.is_ascii());
+    let firsts = u64::from_ne_bytes([first; 8]);
+    let seconds = u64::from_ne_bytes([second; 8]);
+    // Whether a byte of `word` is zero: only a zero byte borrows into its
+    // own high bit while that bit is clear.
+    let has_zero_byte = |word: u64| word.wrapping_sub(ONES) & !word & HIGHS != 0;
+    let (words, _) = bytes.as_chunks::<8>();
+    let skipped = words
+        .iter()
+        .take_while(|word| {
+            let word = u64::from_ne_bytes(**word);
+            !has_zero_byte(word ^ firsts) && !has_zero_byte(word ^ seconds)
+        })
+        .count()
+        * 8;
+    bytes[skipped..]
+        .iter()
+        .position(|&byte| byte == first || byte == second)
+        .map(|offset| skipped + offset)
 }
 
 fn line_text(raw: &str) -> String {
@@ -114,12 +149,19 @@ fn block_text(raw: &str) -> String {
 /// line break lies between them. A `///` after code is a remark on that
 /// line, so it neither joins the block above nor takes the next line in.
 pub(crate) fn continues_line_block(source: &str, previous: Span, start: usize) -> bool {
-    let gap = &source[previous.end as usize..start];
-    let line_breaks =
-        gap.matches('\n').count() + gap.matches('\r').count() - gap.matches("\r\n").count();
-    line_breaks == 1
-        && gap.bytes().all(|byte| byte.is_ascii_whitespace())
-        && starts_its_line(source, previous.start as usize)
+    // One pass over the gap's bytes, not a search per line ending: the
+    // lexer asks this for every `///` line.
+    let gap = &source.as_bytes()[previous.end as usize..start];
+    let mut line_breaks = 0usize;
+    for (index, &byte) in gap.iter().enumerate() {
+        match byte {
+            b'\n' => line_breaks += 1,
+            b'\r' if gap.get(index + 1) != Some(&b'\n') => line_breaks += 1,
+            _ if byte.is_ascii_whitespace() => {}
+            _ => return false,
+        }
+    }
+    line_breaks == 1 && starts_its_line(source, previous.start as usize)
 }
 
 /// Whether only whitespace stands between the start of `offset`'s line and
@@ -172,6 +214,58 @@ mod tests {
                 .collect();
             let actual: Vec<&str> = lines(text).collect();
             assert_eq!(actual, expected, "{text:?}");
+        }
+    }
+
+    /// The word-at-a-time search finds the first break wherever it stands
+    /// in or after a word, beside bytes one bit away from `\n` and `\r` and
+    /// their high-bit twins.
+    #[test]
+    fn the_first_line_break_is_found_at_every_offset() {
+        for filler in [b'a', b'\t', 0x0b, 0x0c, 0x0e, 0x8a, 0x8d, 0xff, 0x00] {
+            for length in 0..40 {
+                let mut bytes = vec![filler; length];
+                assert_eq!(first_line_break(&bytes), None, "{filler} {length}");
+                for position in 0..length {
+                    for line_break in *b"\n\r" {
+                        bytes[position] = line_break;
+                        assert_eq!(
+                            first_line_break(&bytes),
+                            Some(position),
+                            "{filler} {length} {position}"
+                        );
+                        bytes[position] = filler;
+                    }
+                }
+            }
+        }
+    }
+
+    /// A `///` line continues the block above it exactly when the gap
+    /// between them is whitespace holding one line break, `\r\n` one break.
+    #[test]
+    fn a_line_block_continues_across_one_line_break_of_any_ending() {
+        for (gap, continues) in [
+            ("\n", true),
+            ("\r", true),
+            ("\r\n", true),
+            ("\n  \t", true),
+            ("  \r\n  ", true),
+            ("\n\n", false),
+            ("\r\r", false),
+            ("\n\r", false),
+            ("\r\n\r\n", false),
+            ("", false),
+            ("  ", false),
+            ("\n x ", false),
+        ] {
+            let source = format!("/// a{gap}/// b");
+            let start = "/// a".len() + gap.len();
+            assert_eq!(
+                continues_line_block(&source, Span::new(0, 5), start),
+                continues,
+                "{gap:?}"
+            );
         }
     }
 

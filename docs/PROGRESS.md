@@ -5396,6 +5396,11 @@ Plan: [attach-on-demand](superpowers/plans/2026-10-17-1049-attach-on-demand.md);
   benchmarks 3 % to 11 % faster; a boot from the embedded shipped code
   measured 3 % slower, and each process keeps about 1.2 MB more resident
   (9 MB more under `parse-corpus`).
+- **Comment text crossed a word at a time.** The lexer jumps through
+  comments and whitespace to the next byte that can end them, eight bytes
+  at a time, instead of storing its position at every byte; under
+  mimalloc `Kernel.ns` lexes in 0.18 ms instead of 0.30 ms and parses in
+  1.01 ms instead of 1.15 ms (branch `perf/comment-scanning`, no plan).
 
 What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the runtime
 still pays for the attachment and discards the comments, fewer allocations
