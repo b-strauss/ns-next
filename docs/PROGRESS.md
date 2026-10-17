@@ -5401,6 +5401,13 @@ Plan: [attach-on-demand](superpowers/plans/2026-10-17-1049-attach-on-demand.md);
   at a time, instead of storing its position at every byte; under
   mimalloc `Kernel.ns` lexes in 0.18 ms instead of 0.30 ms and parses in
   1.01 ms instead of 1.15 ms (branch `perf/comment-scanning`, no plan).
+- **The attachment's clean path.** On a parse without an error the
+  descent reads each child's extent from the child, without the prepass
+  and the loop over every node, and the parser records the empty parts
+  and pattern literals; a debug build checks every such attachment
+  against the walk. Under mimalloc `parse` over the corpus went from 53
+  to 42.6 ms, `Kernel.ns` from 1.0 to 0.81 ms (plan
+  [local-extents](superpowers/plans/2026-10-17-1930-local-extents.md)).
 
 What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the runtime
 still pays for the attachment and discards the comments, fewer allocations
