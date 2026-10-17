@@ -122,6 +122,9 @@ use crate::comment::{lines_of, starts_its_line, Comment, CommentKind};
 use crate::span::Span;
 use crate::token::{Token, TokenKind};
 
+#[cfg(test)]
+mod reference;
+
 /// Attaches each of `comments` (in source order, as the lexer answers
 /// them) to its node of `module`, parsed from `source` into `tokens`.
 pub(crate) fn attach_comments(
@@ -959,7 +962,7 @@ mod tests {
         }
     }
 
-    fn every_source() -> Vec<PathBuf> {
+    pub(super) fn every_source() -> Vec<PathBuf> {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let mut found = Vec::new();
         for directory in [
@@ -975,50 +978,53 @@ mod tests {
         found
     }
 
-    /// Over every module the repository holds: a node's children lie
-    /// inside it and apart from each other, and every comment but those a
-    /// pattern literal holds is attached exactly once.
+    /// `source` lexed and parsed as `parse_for_editor` does, nothing
+    /// attached: the module, the parser's tokens and the comments.
+    pub(super) fn unattached(source: &str) -> (Module, Vec<Token>, Vec<Comment>) {
+        let lexed = crate::lexer::Lexer::new(source).run_keeping_comments();
+        let mut parser = crate::parser::Parser::new(source, lexed.tokens);
+        let module = parser.parse_module();
+        let (tokens, _) = parser.into_parts();
+        (module, tokens, lexed.comments)
+    }
+
+    /// The module `source` parses to, attached by `attach_comments` and by
+    /// the reference: equal, or the name of the source and where it was cut.
+    fn attaches_as_the_reference(source: &str, name: &str) {
+        let (module, tokens, comments) = unattached(source);
+        let mut expected = module.clone();
+        super::reference::attach_comments(&mut expected, &tokens, &comments, source);
+        let mut actual = module;
+        attach_comments(&mut actual, &tokens, &comments, source);
+        assert!(actual == expected, "{name}: attached unlike the reference");
+    }
+
+    /// Every module the repository holds attaches as the reference
+    /// attaches it.
     #[test]
-    fn every_comment_of_every_module_is_attached_once_to_a_tree_of_disjoint_extents() {
+    fn the_attachment_attaches_as_the_reference_over_every_source() {
         for path in every_source() {
             let source = std::fs::read_to_string(&path).expect("read");
-            let name = path.display();
-            let lexed = crate::lexer::Lexer::new(&source).run_keeping_comments();
-            let mut parser = crate::parser::Parser::new(&source, lexed.tokens);
-            let mut module = parser.parse_module();
-            let (tokens, diagnostics) = parser.into_parts();
-            assert!(
-                diagnostics
-                    .iter()
-                    .all(|diagnostic| diagnostic.severity != crate::Severity::Error),
-                "{name}: {diagnostics:?}"
-            );
-            attach_comments(&mut module, &tokens, &lexed.comments, &source);
-            let mut tree = Tree::build(&mut module, &tokens, &lexed.comments);
-            tree.measure();
-            for (index, node) in tree.nodes.iter().enumerate() {
-                let mut previous_last = None;
-                for child in &node.children {
-                    let (first, last) = tree.nodes[*child].extent.expect("a kept child");
-                    let (outer_first, outer_last) = node.extent.expect("a parent");
-                    assert!(
-                        outer_first <= first && last <= outer_last,
-                        "{name}: node {index}'s child {child} lies outside it"
-                    );
-                    assert!(
-                        previous_last.is_none_or(|previous| previous < first),
-                        "{name}: node {index}'s children overlap at {child}"
-                    );
-                    previous_last = Some(last);
+            attaches_as_the_reference(&source, &path.display().to_string());
+        }
+    }
+
+    /// Every module cut at fifteen points spread over its length, parsed
+    /// as an editor parses it: the recovery's unfinished and overlapping
+    /// nodes attach as the reference attaches them.
+    #[test]
+    fn the_attachment_attaches_as_the_reference_over_every_prefix() {
+        const CUTS: usize = 16;
+        for path in every_source() {
+            let source = std::fs::read_to_string(&path).expect("read");
+            for part in 1..CUTS {
+                let mut cut = source.len() * part / CUTS;
+                while !source.is_char_boundary(cut) {
+                    cut -= 1;
                 }
+                let name = format!("{} cut at byte {cut}", path.display());
+                attaches_as_the_reference(&source[..cut], &name);
             }
-            let attached: usize = tree.nodes.iter().map(|node| node.comments.len()).sum();
-            let in_patterns = lexed
-                .comments
-                .iter()
-                .filter(|comment| tree.inside_a_pattern(comment.span))
-                .count();
-            assert_eq!(attached, lexed.comments.len() - in_patterns, "{name}");
         }
     }
 
