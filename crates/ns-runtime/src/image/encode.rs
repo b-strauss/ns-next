@@ -857,11 +857,13 @@ pub struct GraphTable<'gc> {
 
 /// What the graph walk resolves an object against before it enters it: the
 /// shipped world's entries by object (`ShippedWorld::index_by_object`) and
-/// by mixin (`ShippedWorld::index_by_mixin`), and the VM mirror.
+/// by mixin (`ShippedWorld::index_by_mixin`), the VM mirror, and the mixin
+/// of its class, by `mixin::mixin_key`.
 struct Named<'a, 'gc> {
     by_object: &'a HashMap<usize, usize>,
     by_mixin: &'a HashMap<usize, usize>,
     mirror: Option<ObjectReference<'gc>>,
+    mirror_mixin: Option<usize>,
 }
 
 impl<'gc> GraphTable<'gc> {
@@ -1066,6 +1068,26 @@ impl<'gc> GraphTable<'gc> {
                 | ObjectShape::LargeInteger
                 | ObjectShape::Float
                 | ObjectShape::ByteArray => {}
+                // Its field is not followed: the record names the mixin,
+                // whose shipped name, if it has one, the walk lists here.
+                // The VM mirror's class has no declaration, so its mixin
+                // is refused as the class is (lock (5)).
+                ObjectShape::Mixin => {
+                    if let Ok((instance_side, class_side)) = reified_mixin_reference(heap, object) {
+                        let key = crate::mixin::mixin_key(&instance_side);
+                        if named.mirror_mixin == Some(key) {
+                            if self.unnamed.is_none() {
+                                self.unnamed = Some(format!(
+                                    "image encoding refuses the mixin of the VM mirror's \
+                                     class{}: it has no declaration, so no shipped name names it",
+                                    if class_side { " class" } else { "" }
+                                ));
+                            }
+                        } else if let Some(world_index) = named.by_mixin.get(&key) {
+                            self.used.use_name(*world_index);
+                        }
+                    }
+                }
                 // Not followed: a slot names its object only if something
                 // else reaches it (`GraphTable::weakly_held`). Admitted all
                 // the same, so a shipped name a slot holds is listed and
@@ -1719,7 +1741,79 @@ fn encode_object<'gc>(
             }
             encode_values(writer, &fields, NamePosition::Value, context)?;
         }
+        ObjectShape::Mixin => {
+            writer.write_u8(OBJECT_MIXIN);
+            encode_mixin_record(writer, object, context)?;
+        }
     }
+    Ok(())
+}
+
+/// The mixin whose reference an `OBJECT_MIXIN` record of the reified mixin
+/// `object` writes -- its instance side -- and whether `object` stands for
+/// that mixin's class side. A class side, declared or synthesized, names
+/// its instance side as its enclosing mixin, so it is written through it,
+/// and each mixin has one spelling.
+fn reified_mixin_reference<'gc>(
+    heap: &Heap<'gc>,
+    object: ObjectReference<'gc>,
+) -> Result<(Rc<crate::mixin::Mixin>, bool), String> {
+    let Some(mixin) = heap.mixin_object_id(object).and_then(|id| heap.mixin(id)) else {
+        unreachable!("internal: an `ObjectShape::Mixin` stands for a mixin of the table")
+    };
+    if !mixin.is_class_side() {
+        return Ok((mixin, false));
+    }
+    match mixin.enclosing_mixin() {
+        Some(instance_side) => Ok((instance_side, true)),
+        None => Err(
+            "image encoding cannot serialize the reified mixin of a class side whose \
+             instance side no longer exists"
+                .to_string(),
+        ),
+    }
+}
+
+/// An `OBJECT_MIXIN` body (`opcodes::OBJECT_MIXIN` gives the layout): the
+/// instance side's reference, as `encode_class_record` names a class
+/// object's mixin -- a row of the mixin table, or the shipped name of the
+/// class whose mixin it is -- then the side. The id the object holds is
+/// not written: the loader mints its own.
+fn encode_mixin_record<'gc>(
+    writer: &mut Writer,
+    object: ObjectReference<'gc>,
+    context: &EncodeContext<'_, 'gc>,
+) -> Result<(), String> {
+    let (instance_side, class_side) = reified_mixin_reference(context.heap, object)?;
+    let key = crate::mixin::mixin_key(&instance_side);
+    if let Some(row) = context.mixin_ids.get(&key) {
+        writer.write_u8(MIXIN_ROW);
+        writer.write_u32(*row);
+    } else if let Some(&world_index) = context.shipped_by_mixin.get(&key) {
+        let entry = &context.world.entries()[world_index];
+        if !NamePosition::Mixin.allows(entry.positions) {
+            return Err(not_allowed(entry, NamePosition::Mixin));
+        }
+        writer.write_u8(MIXIN_SHIPPED);
+        writer.write_u32(context.table.used.index_of(world_index));
+    } else if instance_side.shipped {
+        return Err(format!(
+            "image encoding refuses the reified mixin {}: it is compiled from shipped source, \
+             and no shipped name names it",
+            instance_side.name
+        ));
+    } else {
+        return Err(format!(
+            "image encoding cannot serialize the reified mixin {}, which is not part of any \
+             module the image carries",
+            instance_side.name
+        ));
+    }
+    writer.write_u8(if class_side {
+        MIXIN_SIDE_CLASS
+    } else {
+        MIXIN_SIDE_INSTANCE
+    });
     Ok(())
 }
 
@@ -1859,6 +1953,9 @@ pub fn encode_graph_section<'gc>(
         by_object: &shipped_by_object,
         by_mixin: &shipped_by_mixin,
         mirror: mutator.vm_mirror.and_then(|mirror| mirror.as_object()),
+        mirror_mixin: heap
+            .class_application(mutator.builtin_class(BuiltinClass::VmMirror))
+            .map(|application| crate::mixin::mixin_key(&application.mixin)),
     };
     let table = GraphTable::build(heap, roots, module_roots, &named);
     // The VM mirror is a capability the bootstrap hands to the core library

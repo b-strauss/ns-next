@@ -64,6 +64,8 @@ pub enum NamePosition {
     FrameClass,
     /// A frame record's receiver or register (`VALUE_SHIPPED_MODULE`).
     FrameRegister,
+    /// The mixin a reified mixin's record names (`OBJECT_MIXIN`).
+    Mixin,
 }
 
 impl NamePosition {
@@ -75,6 +77,7 @@ impl NamePosition {
             NamePosition::Header => positions.header,
             NamePosition::FrameClass => positions.frame_class,
             NamePosition::FrameRegister => positions.frame_register,
+            NamePosition::Mixin => positions.mixin,
         }
     }
 
@@ -86,6 +89,7 @@ impl NamePosition {
             NamePosition::Header => "a record's class",
             NamePosition::FrameClass => "a frame's class",
             NamePosition::FrameRegister => "a frame's register",
+            NamePosition::Mixin => "a reified mixin's mixin",
         }
     }
 }

@@ -450,6 +450,33 @@ pub enum DecodeError {
         expected: usize,
         found: usize,
     },
+    /// An `OBJECT_MIXIN` record under a header whose class is not the
+    /// kernel-private `Mixin`, or a record of any other body, `body`, under
+    /// `Mixin`'s. The first would make an object of that class stand for a
+    /// mixin; the second an object of `Mixin` standing for whatever mixin
+    /// its field's id named, outside the table that keeps one object per
+    /// mixin, and no program makes one.
+    MixinRecordMismatch {
+        body: u8,
+    },
+    /// An `OBJECT_MIXIN` record's side byte is neither `MIXIN_SIDE_INSTANCE`
+    /// nor `MIXIN_SIDE_CLASS`.
+    BadMixinSide(u8),
+    /// An `OBJECT_MIXIN` record names a class side's own row. A class side
+    /// is named through its instance side, with `MIXIN_SIDE_CLASS`, so each
+    /// mixin has one spelling -- which the refusal of a second record for
+    /// one mixin rests on -- and no record names the class side of a class
+    /// side, which no class has.
+    MixinRecordNamesAClassSide,
+    /// An `OBJECT_MIXIN` record's shipped name, shown here, names a module
+    /// instance, a metaclass, a level or a level's metaclass: only a class's
+    /// declaration is a mixin a record names.
+    MixinRecordNamesNoClass(String),
+    /// Two `OBJECT_MIXIN` records for one mixin, or one for a mixin the heap
+    /// has reified already, named here: a reified mixin is the one object
+    /// of its mixin, as a symbol is of its text (`DuplicateSymbol`), so a
+    /// second is refused, not merged.
+    DuplicateMixin(String),
     /// Bytes remain after the last section. Refused rather than ignored:
     /// silently accepting a tail means a padded image loads as something its
     /// author did not write.
@@ -803,6 +830,28 @@ impl std::fmt::Display for DecodeError {
                 f,
                 "an ephemeron record has {found} fields, but an Ephemeron has {expected}"
             ),
+            DecodeError::MixinRecordMismatch { body } if *body == OBJECT_MIXIN => {
+                f.write_str("a mixin record has a class other than Mixin")
+            }
+            DecodeError::MixinRecordMismatch { body } => write!(
+                f,
+                "a record of the class Mixin has object body {body}, but a Mixin is a mixin \
+                 record"
+            ),
+            DecodeError::BadMixinSide(side) => write!(
+                f,
+                "a mixin record has side {side}, but a side is 0, the instance side, or 1, the \
+                 class side"
+            ),
+            DecodeError::MixinRecordNamesAClassSide => f.write_str(
+                "a mixin record names a class side's row; a class side is named by its instance \
+                 side's, with side 1",
+            ),
+            DecodeError::MixinRecordNamesNoClass(name) => write!(
+                f,
+                "a mixin record names {name}, which is no class's shipped name"
+            ),
+            DecodeError::DuplicateMixin(name) => write!(f, "the mixin {name} is recorded twice"),
             DecodeError::TrailingBytes { count } => {
                 write!(f, "{count} trailing byte(s) after the last section")
             }
@@ -2516,7 +2565,9 @@ fn read_shipped_module<'gc>(
 ///   closure record at least 17 for 5 words, 40 bytes, 2.4x; a byte-array
 ///   record of `n` bytes is `14 + n` (a five-byte header, the hash, the
 ///   body tag, the length's 4) for `5 + ⌈n/8⌉` words -- its alignment
-///   reserve is not on the wire -- at most 40 bytes for 14, 2.9x.
+///   reserve is not on the wire -- at most 40 bytes for 14, 2.9x; a mixin
+///   record at least 13 (the two-byte header, the hash, the body tag, a
+///   mixin reference's 5 and the side) for 3 words, 24 bytes, 1.8x.
 /// - The decoder's own tables, per record: the placeholder table (a handle,
 ///   8 or 16 bytes), the first pass's sizes (8 bytes, freed once the
 ///   placeholders exist) and, in the second pass, a metaclass record's
@@ -3511,10 +3562,16 @@ impl Sizing<'_, '_, '_> {
     /// long entry; refusing a second record naming the same entry, or one
     /// the heap already holds, before allocating keeps each entry's text
     /// allocated at most once, and bounded by its own encoding there.
+    ///
+    /// A mixin record's mixin is read and held to what a reified mixin may
+    /// name, and pushed onto `reified` for `decode_graph_section` to
+    /// resolve and hold to being the only one of its mixin, still before
+    /// anything is allocated.
     fn record(
         &self,
         reader: &mut Reader,
         symbols_named: &mut [bool],
+        reified: &mut Vec<(Rc<crate::mixin::Mixin>, bool)>,
     ) -> Result<(PlannedRecord, usize), DecodeError> {
         let (header, shipped_non_builtin) = self.header(reader)?;
         let future = header == Some(BuiltinClass::FutureImplementation);
@@ -3553,6 +3610,12 @@ impl Sizing<'_, '_, '_> {
         }
         if (header == Some(BuiltinClass::Ephemeron)) != (body == OBJECT_EPHEMERON) {
             return Err(DecodeError::EphemeronRecordMismatch { body });
+        }
+        // Likewise `Mixin`'s: an object of it stands for a mixin only as
+        // the table's one object of that mixin, which only a mixin record
+        // makes.
+        if (header == Some(BuiltinClass::Mixin)) != (body == OBJECT_MIXIN) {
+            return Err(DecodeError::MixinRecordMismatch { body });
         }
         let (fields, frame) = match body {
             // A future has exactly its two fields; a record under its header
@@ -3642,6 +3705,10 @@ impl Sizing<'_, '_, '_> {
                 self.class_tag(reader, NamePosition::Header)?;
                 (record_size::CLASS_FIELDS, false)
             }
+            OBJECT_MIXIN => {
+                reified.push(read_mixin_record(reader, self.context)?);
+                (record_size::MIXIN_FIELDS, false)
+            }
             OBJECT_FRAME => {
                 let registers = self.frame_body(reader)?;
                 (
@@ -3713,6 +3780,74 @@ fn builtin_slot_count(mutator: &Mutator<'_>, kind: BuiltinClass) -> usize {
         .map_or(0, |application| application.slot_count)
 }
 
+/// An `OBJECT_MIXIN` body, after its tag: the instance side its reference
+/// names, as a class record names its mixin, and whether the side byte
+/// names that mixin's class side. Refuses a row past the table, a shipped
+/// name that is no class's, a class side's own row and a side other than
+/// 0 or 1. It reads and looks up only, so the first pass and the second
+/// both call it; `resolve_reified_mixin` takes the side.
+fn read_mixin_record(
+    reader: &mut Reader,
+    context: &DecodeContext<'_, '_>,
+) -> Result<(Rc<crate::mixin::Mixin>, bool), DecodeError> {
+    let mixin = match reader.read_u8()? {
+        MIXIN_ROW => {
+            let id = reader.read_u32()?;
+            context
+                .mixins
+                .get(id as usize)
+                .cloned()
+                .ok_or(DecodeError::BadMixinId(id))?
+        }
+        MIXIN_SHIPPED => {
+            let entry = read_shipped_entry(reader, context.shipped)?;
+            if entry.name.kind != ShippedKind::Class {
+                return Err(DecodeError::MixinRecordNamesNoClass(entry.name.describe()));
+            }
+            allowed(entry, NamePosition::Mixin)?;
+            context
+                .mutator
+                .heap
+                .class_application(entry.object)
+                .map(|application| application.mixin.clone())
+                .ok_or(DecodeError::NotAClass)?
+        }
+        tag => {
+            return Err(DecodeError::InvalidTag {
+                what: "mixin reference",
+                tag,
+            })
+        }
+    };
+    if mixin.is_class_side() {
+        return Err(DecodeError::MixinRecordNamesAClassSide);
+    }
+    let class_side = match reader.read_u8()? {
+        MIXIN_SIDE_INSTANCE => false,
+        MIXIN_SIDE_CLASS => true,
+        side => return Err(DecodeError::BadMixinSide(side)),
+    };
+    Ok((mixin, class_side))
+}
+
+/// The mixin an `OBJECT_MIXIN` record stands for: `instance_side`, or with
+/// `class_side` its class side -- the declared one, or the one
+/// `Mutator::metaclass_mixin` keeps for a class that declares none, which
+/// it synthesizes on first demand as a Rust value, allocating nothing in
+/// the object space. The first pass resolves every record's, so the second
+/// only looks it up again.
+fn resolve_reified_mixin(
+    mutator: &mut Mutator<'_>,
+    instance_side: &Rc<crate::mixin::Mixin>,
+    class_side: bool,
+) -> Rc<crate::mixin::Mixin> {
+    if class_side {
+        mutator.metaclass_mixin(instance_side)
+    } else {
+        instance_side.clone()
+    }
+}
+
 /// The graph section in two passes, so that cycles and shared references
 /// round-trip with identity preserved and nothing is allocated before the
 /// whole table has been sized against the bytes that carry it.
@@ -3744,6 +3879,7 @@ pub fn decode_graph_section<'gc>(
     let records_start = reader.position();
     let mut planned: Vec<PlannedRecord> = Vec::with_capacity(object_count);
     let mut counted_words: usize = 0;
+    let mut reified = Vec::new();
     {
         let sizing = Sizing {
             context,
@@ -3752,9 +3888,24 @@ pub fn decode_graph_section<'gc>(
         };
         let mut symbols_named = vec![false; symbols.all().len()];
         for _ in 0..object_count {
-            let (record, words) = sizing.record(reader, &mut symbols_named)?;
+            let (record, words) = sizing.record(reader, &mut symbols_named, &mut reified)?;
             planned.push(record);
             counted_words = counted_words.saturating_add(words);
+        }
+    }
+    // A heap holds one object per mixin, and so does an image of one: a
+    // second record for a mixin, or one for a mixin this heap reified
+    // already, is refused before anything is allocated, as a symbol's is.
+    // Resolving a class side may synthesize it, a Rust value only. The
+    // list and the set are dropped before the placeholders exist.
+    {
+        let mut reified_ids = HashSet::new();
+        for (instance_side, class_side) in reified {
+            let mixin = resolve_reified_mixin(context.mutator, &instance_side, class_side);
+            let id = context.mutator.heap.mixin_id(&mixin);
+            if !reified_ids.insert(id) || context.mutator.heap.mixin_object(id).is_some() {
+                return Err(DecodeError::DuplicateMixin(mixin.reflected_name()));
+            }
         }
     }
     // The premise of the load's amplification bound (`decode_value` has the
@@ -3848,6 +3999,9 @@ pub fn decode_graph_section<'gc>(
         }
         if (builtin == Some(BuiltinClass::Ephemeron)) != (body == OBJECT_EPHEMERON) {
             return Err(DecodeError::EphemeronRecordMismatch { body });
+        }
+        if (builtin == Some(BuiltinClass::Mixin)) != (body == OBJECT_MIXIN) {
+            return Err(DecodeError::MixinRecordMismatch { body });
         }
         if body == OBJECT_FRAME {
             if !activation_header {
@@ -4030,6 +4184,26 @@ pub fn decode_graph_section<'gc>(
             }
             OBJECT_CLOSURE => {
                 decode_closure_record(reader, context, &tables, *object, class, identity_hash)?;
+                None
+            }
+            // Recorded as soon as it is filled, so that the table holds it
+            // before anything reads it back (`Heap::mixin_object_id`). The
+            // first pass refused a second record for its mixin; restated
+            // here as what recording it rests on.
+            OBJECT_MIXIN => {
+                let (instance_side, class_side) = read_mixin_record(reader, context)?;
+                let mixin = resolve_reified_mixin(context.mutator, &instance_side, class_side);
+                let heap = &mut context.mutator.heap;
+                let id = heap.mixin_id(&mixin);
+                if heap.mixin_object(id).is_some() {
+                    return Err(DecodeError::DuplicateMixin(mixin.reflected_name()));
+                }
+                heap.shape_placeholder(*object, class, identity_hash, PlaceholderFormat::Instance);
+                let index = i64::try_from(id.index()).expect("a mixin id is 32 bits");
+                if !heap.fill_placeholder_field(*object, 0, Value::small_integer(index)) {
+                    return Err(DecodeError::UnexpectedEndOfFile);
+                }
+                heap.record_mixin_object(id, *object);
                 None
             }
             OBJECT_CLASS => {

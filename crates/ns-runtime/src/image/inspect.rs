@@ -296,6 +296,29 @@ fn read_class_record(
     })
 }
 
+/// An `OBJECT_MIXIN` body: `mixin row <id>` or `mixin <shipped name>`,
+/// then `, class side` when the record reflects the class side.
+fn read_mixin_record(
+    reader: &mut decode::Reader,
+    targets: &TagTargets<'_>,
+) -> Result<String, decode::DecodeError> {
+    let reference = match reader.read_u8()? {
+        opcodes::MIXIN_ROW => format!("mixin row {}", reader.read_u32()?),
+        opcodes::MIXIN_SHIPPED => format!("mixin {}", read_shipped_name(reader, targets)?),
+        tag => {
+            return Err(decode::DecodeError::InvalidTag {
+                what: "mixin reference",
+                tag,
+            })
+        }
+    };
+    Ok(match reader.read_u8()? {
+        opcodes::MIXIN_SIDE_INSTANCE => reference,
+        opcodes::MIXIN_SIDE_CLASS => format!("{reference}, class side"),
+        side => return Err(decode::DecodeError::BadMixinSide(side)),
+    })
+}
+
 fn read_optional_class(
     reader: &mut decode::Reader,
     targets: &TagTargets<'_>,
@@ -485,6 +508,7 @@ fn walk_graph(
                 format!("metaclass of {}", read_class_tag(reader, targets)?)
             }
             opcodes::OBJECT_FRAME => read_frame_record(reader, symbols, targets)?,
+            opcodes::OBJECT_MIXIN => read_mixin_record(reader, targets)?,
             tag => {
                 return Err(decode::DecodeError::InvalidTag {
                     what: "object body",

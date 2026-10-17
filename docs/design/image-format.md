@@ -740,7 +740,7 @@ an ordinary instance record of its shipped class, its slot holding the
 `StringBuilder` and the views").
 
 **A `WeakArray` and an `Ephemeron` are records of their own**
-(`opcodes.rs`, "Next free number: 14"): `OBJECT_WEAK_ARRAY` (body tag 12),
+(`opcodes.rs`): `OBJECT_WEAK_ARRAY` (body tag 12),
 a `u32` count and that many values, its slots in order, under a header
 naming `Kernel WeakArray`; and `OBJECT_EPHEMERON` (13), a `u32` field count
 and that many values, the key first, under a header naming `Kernel
@@ -1951,6 +1951,7 @@ by the encoder and the decoder alike (`shipped_names::NamePosition`):
 | a record's class | any shipped class but a module's root and `Top`; `Activation` only on a frame record, `FutureImplementation` only on an unresolved future's; never a metaclass or a level |
 | a frame's `current_class` and kind, a class record's declaring class | any shipped class, metaclass or level |
 | `VALUE_SHIPPED_MODULE` | a frame record's receiver or registers only, and never in a started image |
+| a reified mixin's mixin (`OBJECT_MIXIN`) | any shipped class, whatever its accessibility, a module's root included; never a metaclass, a level or a module instance |
 
 It keeps every capability out of a value -- `Top`, `Activation`,
 `FutureImplementation`, the module roots and their instances are no value,

@@ -1165,8 +1165,8 @@ peak during loading, not a leak for the process's life.
 ([image-format.md](image-format.md), "Two passes"). The first pass reads
 every record as the second will and allocates nothing beyond transient,
 bounded buffers; it sizes each record's object from the record's own bytes,
-refuses what the second pass would refuse about counts, ids, a symbol named
-twice and a `FutureImplementation` record of another field count, and refuses before
+refuses what the second pass would refuse about counts, ids, a symbol or a
+mixin named twice and a `FutureImplementation` record of another field count, and refuses before
 anything is allocated when the objects would take more than eight words a
 byte of the input left. Then each record's placeholder is allocated at the
 size the first pass read, and the second pass fills each in place, every
@@ -1195,7 +1195,8 @@ tables), a frame record at least 21 for 96 (4.6x; 5.7x and 6.5x), an
 instance, array, string or symbol record at least 11 for 16 (1.5x), a
 closure record at least 17 for 40 (2.4x), a byte-array record of `n` bytes
 `14 + n` for `8 × (5 + ⌈n/8⌉)`, its alignment reserve not on the wire, at
-most 40 for 14 (2.9x; 4.0x and 4.6x with the decoder's tables). A
+most 40 for 14 (2.9x; 4.0x and 4.6x with the decoder's tables), a reified
+mixin's record at least 13 for 24 (1.8x). A
 placeholder is filled in place, so no record's fields are laid out beside
 it.
 

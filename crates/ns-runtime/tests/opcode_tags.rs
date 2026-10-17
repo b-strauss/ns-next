@@ -224,6 +224,7 @@ fn retired_object_body_tags_are_refused() {
         OBJECT_BYTE_ARRAY,
         OBJECT_WEAK_ARRAY,
         OBJECT_EPHEMERON,
+        OBJECT_MIXIN,
     ];
     for retired in RETIRED_OBJECT_BODIES {
         assert!(!live.contains(&retired), "tag {retired} is retired");
@@ -260,6 +261,7 @@ fn graph_section_tags_are_fixed() {
     assert_eq!(OBJECT_BYTE_ARRAY, 11);
     assert_eq!(OBJECT_WEAK_ARRAY, 12);
     assert_eq!(OBJECT_EPHEMERON, 13);
+    assert_eq!(OBJECT_MIXIN, 14);
 
     assert_eq!(MIXIN_ROW, 0);
     assert_eq!(MIXIN_SHIPPED, 2);
@@ -357,6 +359,7 @@ fn no_two_graph_tags_in_a_family_share_a_number() {
             OBJECT_BYTE_ARRAY,
             OBJECT_WEAK_ARRAY,
             OBJECT_EPHEMERON,
+            OBJECT_MIXIN,
         ],
         &LIVE_MIXIN_TAGS,
         &LIVE_CLASS_TAGS,
@@ -389,6 +392,16 @@ fn slot_kind_tags_are_fixed() {
     assert_eq!(SLOT_MUTABLE, 1);
     assert_eq!(SLOT_LAZY_IMMUTABLE, 2);
     assert_eq!(SLOT_LAZY_MUTABLE, 3);
+}
+
+/// A reified mixin record's side byte: which side of the named mixin the
+/// object reflects. Pinned like every tag, so a stale record's side never
+/// reads as the other one.
+#[test]
+fn mixin_side_tags_are_fixed() {
+    assert_eq!(MIXIN_SIDE_INSTANCE, 0);
+    assert_eq!(MIXIN_SIDE_CLASS, 1);
+    assert_ne!(MIXIN_SIDE_INSTANCE, MIXIN_SIDE_CLASS);
 }
 
 #[test]

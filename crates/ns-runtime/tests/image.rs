@@ -3134,6 +3134,233 @@ fn inspect_shows_a_weak_array_and_an_ephemeron() {
     );
 }
 
+/// A module whose instance's `held` slot the tests below fill with reified
+/// mixins: `X` declares no class side, so its class side is synthesized,
+/// and `Inner` declares one. `listClass:` answers a shipped class.
+const REIFIED_HOLDER: &str = indoc! {"
+    class X = Object new (
+      |
+        public held
+      |
+    ) (
+      public class Inner = (
+      ) (
+      ) : (
+        public make = (
+          ^self new
+        )
+      )
+
+      public listClass: platform = (
+        ^platform collections List
+      )
+    )
+"};
+
+/// The snapshot of an instance of `REIFIED_HOLDER`'s class whose `held`
+/// slot holds an `Array` of what `elements` answers, given the module's
+/// class and `List`; the encoder's refusal if it refuses.
+fn reified_holder_snapshot(
+    elements: impl for<'gc> FnOnce(
+        &mut Mutator<'gc>,
+        ClassReference<'gc>,
+        ClassReference<'gc>,
+    ) -> Vec<Value<'gc>>,
+) -> Result<Vec<u8>, String> {
+    let (mut interpreter, class) = load(REIFIED_HOLDER);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let platform = interpreter.platform();
+    let list = expect_ok(
+        interpreter.send(&instance, Symbol::intern("listClass:"), &[platform]),
+        "listClass:",
+    );
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let list = class_reference(mutator, &list);
+        let values = elements(mutator, class, list);
+        let array = mutator.new_array(values);
+        let instance = object(mutator.fetch(&instance));
+        assert!(mutator
+            .heap_mut()
+            .instance_set_field(instance, 0, Value::object(array)));
+        snapshot_one(
+            mutator,
+            Some(REIFIED_HOLDER),
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &[Value::object(instance)],
+        )
+    })
+}
+
+/// The mixin `class` applies.
+fn applied_mixin<'gc>(heap: &Heap<'gc>, class: ClassReference<'gc>) -> Rc<Mixin> {
+    heap.class_application(class)
+        .expect("a class object")
+        .mixin
+        .clone()
+}
+
+/// The mixin `class`'s metaclass applies: its class side, declared or
+/// synthesized.
+fn class_side_of<'gc>(heap: &Heap<'gc>, class: ClassReference<'gc>) -> Rc<Mixin> {
+    applied_mixin(heap, heap.class_metaclass(class).expect("a metaclass"))
+}
+
+/// The elements of the `held` slot of the loaded image's one root.
+fn held_elements<'gc>(mutator: &Mutator<'gc>, root: &Root) -> Vec<Value<'gc>> {
+    let holder = object(mutator.fetch(root));
+    let held = object(holder_field(mutator, holder, 0));
+    mutator
+        .heap()
+        .array_elements(held)
+        .expect("held is an Array")
+}
+
+/// That `value`, decoded, is the reified mixin of `expected`, and the one
+/// object the loaded heap answers for it.
+fn assert_reifies<'gc>(mutator: &mut Mutator<'gc>, value: Value<'gc>, expected: &Rc<Mixin>) {
+    let reified = object(value);
+    let mixin = mutator
+        .mixin_of_reified(reified)
+        .expect("a reified mixin decodes as one");
+    assert!(
+        Rc::ptr_eq(&mixin, expected),
+        "the mixin {}",
+        expected.reflected_name()
+    );
+    assert!(
+        mutator.reified_mixin(expected).same(reified),
+        "the decoded object is the canonical one of {}",
+        expected.reflected_name()
+    );
+}
+
+/// A reified mixin travels as a reference to its mixin, so it loads onto
+/// the loaded module's own: its class, its synthesized class side and a
+/// nested class's declared class side, each the one object the loaded heap
+/// answers for its mixin.
+#[test]
+fn a_reified_mixin_round_trips_onto_the_same_mixin() {
+    let bytes = reified_holder_snapshot(|mutator, class, _list| {
+        let own = applied_mixin(mutator.heap(), class);
+        let synthesized = class_side_of(mutator.heap(), class);
+        let declared = own.nested[0]
+            .class_side
+            .clone()
+            .expect("Inner declares one");
+        [own, synthesized, declared]
+            .iter()
+            .map(|mixin| Value::object(mutator.reified_mixin(mixin)))
+            .collect()
+    })
+    .expect("snapshot");
+    let mut loaded = image::load(&bytes).expect("load");
+    let declaration = loaded.modules[0].declaration.clone();
+    let class = loaded.modules[0].class.clone();
+    let root = loaded.roots[0].clone();
+    loaded.interpreter.enter(|mutator| {
+        let elements = held_elements(mutator, &root);
+        let class = class_reference(mutator, &class);
+        assert!(Rc::ptr_eq(
+            &applied_mixin(mutator.heap(), class),
+            &declaration
+        ));
+        let synthesized = class_side_of(mutator.heap(), class);
+        assert!(synthesized.is_class_side() && declaration.class_side.is_none());
+        let declared = declaration.nested[0]
+            .class_side
+            .clone()
+            .expect("Inner declares one");
+        assert_reifies(mutator, elements[0], &declaration);
+        assert_reifies(mutator, elements[1], &synthesized);
+        assert_reifies(mutator, elements[2], &declared);
+    });
+}
+
+/// A shipped mixin is named by its class's declaration, so it loads onto
+/// the loading binary's own mixin, a class side as much as a class.
+#[test]
+fn a_reified_shipped_mixin_round_trips_by_name() {
+    let bytes = reified_holder_snapshot(|mutator, _class, list| {
+        let list_mixin = applied_mixin(mutator.heap(), list);
+        let object_class = mutator.builtin_class(BuiltinClass::Object);
+        let object_class_side = class_side_of(mutator.heap(), object_class);
+        vec![
+            Value::object(mutator.reified_mixin(&list_mixin)),
+            Value::object(mutator.reified_mixin(&object_class_side)),
+            Value::object(list),
+        ]
+    })
+    .expect("snapshot");
+    let mut loaded = image::load(&bytes).expect("load");
+    let root = loaded.roots[0].clone();
+    loaded.interpreter.enter(|mutator| {
+        let elements = held_elements(mutator, &root);
+        let list = object(elements[2]);
+        let list_mixin = applied_mixin(mutator.heap(), list);
+        let object_class = mutator.builtin_class(BuiltinClass::Object);
+        let object_class_side = class_side_of(mutator.heap(), object_class);
+        assert_reifies(mutator, elements[0], &list_mixin);
+        assert_reifies(mutator, elements[1], &object_class_side);
+    });
+}
+
+/// The VM mirror's class has no declaration and so no name; its mixin, and
+/// that mixin's class side, are refused as the class is (lock (5)).
+#[test]
+fn the_mirror_class_mixin_is_never_written() {
+    for class_side in [false, true] {
+        let refusal = reified_holder_snapshot(|mutator, _class, _list| {
+            let mirror_class = mutator.builtin_class(BuiltinClass::VmMirror);
+            let mixin = if class_side {
+                class_side_of(mutator.heap(), mirror_class)
+            } else {
+                applied_mixin(mutator.heap(), mirror_class)
+            };
+            vec![Value::object(mutator.reified_mixin(&mixin))]
+        });
+        match refusal {
+            Ok(_) => panic!("a reified mixin of the VM mirror's class was written"),
+            Err(error) => assert!(
+                error.contains("refuses the mixin of the VM mirror's class"),
+                "{error}"
+            ),
+        }
+    }
+}
+
+/// `inspect` reads a reified mixin's record as the loader does: a row or a
+/// shipped name, and the side.
+#[test]
+fn inspect_shows_a_reified_mixin() {
+    let bytes = reified_holder_snapshot(|mutator, class, list| {
+        let own = applied_mixin(mutator.heap(), class);
+        let synthesized = class_side_of(mutator.heap(), class);
+        let list_mixin = applied_mixin(mutator.heap(), list);
+        [own, synthesized, list_mixin]
+            .iter()
+            .map(|mixin| Value::object(mutator.reified_mixin(mixin)))
+            .collect()
+    })
+    .expect("snapshot");
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    for expected in [
+        "Kernel Mixin, hash 0, mixin row 0",
+        "Kernel Mixin, hash 0, mixin row 0, class side",
+        "Kernel Mixin, hash 0, mixin CollectionsFactory List",
+    ] {
+        assert!(
+            report
+                .graph_objects
+                .iter()
+                .any(|object| object.ends_with(expected)),
+            "{expected}: {:?}",
+            report.graph_objects
+        );
+    }
+}
+
 /// Three typed arrays over one `ByteArray`, a big-endian `DataView` over
 /// another, and a `StringBuilder` holding code points of two, three and
 /// four bytes, each in a slot; `report` prints what they answer.
@@ -3677,6 +3904,7 @@ const FIXTURE_NAMES: &[(&str, &str, u8)] = &[
     ("Kernel", "IndexedCollection", 1),      // INDEXED_COLLECTION_NAME = 25
     ("Kernel", "WeakArray", 1),              // WEAK_ARRAY_NAME = 26
     ("Kernel", "Ephemeron", 1),              // EPHEMERON_NAME = 27
+    ("Kernel", "Mixin", 1),                  // MIXIN_NAME = 28
 ];
 const OBJECT_NAME: u32 = 0;
 const ARRAY_NAME: u32 = 1;
@@ -3706,6 +3934,7 @@ const STRING_BUILDER_NAME: u32 = 24;
 const INDEXED_COLLECTION_NAME: u32 = 25;
 const WEAK_ARRAY_NAME: u32 = 26;
 const EPHEMERON_NAME: u32 = 27;
+const MIXIN_NAME: u32 = 28;
 
 /// A section entry's kind byte as the shipped name it stands for.
 fn fixture_kind(kind: u8) -> ShippedKind {
@@ -4174,7 +4403,16 @@ fn one_weak_record(header: u32, body: u8, count: u32, values: usize) -> Vec<u8> 
 /// `bytes` is refused with `expected`, its text `text`, and nothing
 /// allocated: every refusal below is the first pass's.
 fn refused_before_allocating(bytes: &[u8], expected: &decode::DecodeError, text: &str) {
-    let mut fixture = GraphFixture::new();
+    refused_in(&mut GraphFixture::new(), bytes, expected, text);
+}
+
+/// `refused_before_allocating` against `fixture`.
+fn refused_in(
+    fixture: &mut GraphFixture,
+    bytes: &[u8],
+    expected: &decode::DecodeError,
+    text: &str,
+) {
     let before = fixture.interpreter.heap_statistics().live_objects;
     let error = fixture.decode_error(bytes);
     assert_eq!(&error, expected);
@@ -4368,6 +4606,249 @@ fn a_weak_array_count_past_its_bytes_is_refused_before_allocating() {
             &one_weak_record(WEAK_ARRAY_NAME, OBJECT_WEAK_ARRAY, count, 8),
             &decode::DecodeError::UnexpectedEndOfFile,
             &decode::DecodeError::UnexpectedEndOfFile.to_string(),
+        );
+    }
+}
+
+/// A module whose rows the reified-mixin records below name: `X` is row
+/// 0, its declared class side row 1, and no row is past them.
+const MIXIN_ROWS: &str = indoc! {"
+    class X = Object new (
+    ) (
+    ) : (
+      public make = (
+        ^self new
+      )
+    )
+"};
+
+/// A reference an `OBJECT_MIXIN` record names its mixin by.
+type MixinReference = Box<dyn FnOnce(&mut encode::Writer)>;
+
+/// An `OBJECT_MIXIN` record under `header`: the reference `reference`
+/// writes, then `side`.
+fn mixin_record(writer: &mut encode::Writer, header: u32, reference: MixinReference, side: u8) {
+    writer.write_shipped(header);
+    writer.write_u32(0); // identity hash
+    writer.write_u8(OBJECT_MIXIN);
+    reference(writer);
+    writer.write_u8(side);
+}
+
+/// A `MIXIN_ROW` reference to `row`.
+fn row_reference(row: u32) -> MixinReference {
+    Box::new(move |writer| {
+        writer.write_u8(MIXIN_ROW);
+        writer.write_u32(row);
+    })
+}
+
+/// A `MIXIN_SHIPPED` reference to the fixture's name `name`.
+fn shipped_reference(name: u32) -> MixinReference {
+    Box::new(move |writer| {
+        writer.write_u8(MIXIN_SHIPPED);
+        writer.write_u32(name);
+    })
+}
+
+/// A graph of one record under `Kernel Mixin` per `(reference, side)` of
+/// `records`.
+fn mixin_records(records: Vec<(MixinReference, u8)>) -> Vec<u8> {
+    let count = u32::try_from(records.len()).expect("a few records");
+    class_records(count, |writer| {
+        for (reference, side) in records {
+            mixin_record(writer, MIXIN_NAME, reference, side);
+        }
+    })
+}
+
+/// `refused_before_allocating` against `MIXIN_ROWS`'s rows, once `prepare`
+/// has run in the fixture's world.
+fn mixin_record_refused(
+    bytes: &[u8],
+    expected: &decode::DecodeError,
+    text: &str,
+    prepare: impl for<'gc> FnOnce(&mut Mutator<'gc>, &[Rc<Mixin>]),
+) {
+    let mut fixture = GraphFixture::with_source(MIXIN_ROWS);
+    let rows = fixture.mixins.clone();
+    fixture.interpreter.enter(|mutator| prepare(mutator, &rows));
+    refused_in(&mut fixture, bytes, expected, text);
+}
+
+/// A crafted record decodes to the canonical object of the mixin it
+/// names: a row's instance side, its declared class side, and a shipped
+/// class's synthesized one.
+#[test]
+fn a_crafted_mixin_record_decodes_to_the_canonical_object() {
+    let bytes = mixin_records(vec![
+        (row_reference(0), MIXIN_SIDE_INSTANCE),
+        (row_reference(0), MIXIN_SIDE_CLASS),
+        (shipped_reference(ARRAY_NAME), MIXIN_SIDE_CLASS),
+    ]);
+    let mut fixture = GraphFixture::with_source(MIXIN_ROWS);
+    let rows = fixture.mixins.clone();
+    fixture.decoded(&bytes, "three mixin records", |heap, graph| {
+        let mixin_of = |object| {
+            let id = heap.mixin_object_id(object).expect("a reified mixin");
+            heap.mixin(id).expect("a mixin of the table")
+        };
+        assert_eq!(heap.object_shape(graph.objects[0]), ObjectShape::Mixin);
+        assert!(Rc::ptr_eq(&mixin_of(graph.objects[0]), &rows[0]));
+        assert!(Rc::ptr_eq(&mixin_of(graph.objects[1]), &rows[1]));
+        assert!(rows[1].is_class_side());
+        let array_class_side = mixin_of(graph.objects[2]);
+        assert!(array_class_side.is_class_side());
+        assert_eq!(array_class_side.reflected_name(), "Array class");
+    });
+}
+
+/// A reified mixin is canonical, as a symbol is: a second record for one
+/// mixin, or one for a mixin the heap has reified already, would give it
+/// two identities.
+#[test]
+fn two_records_for_one_mixin_are_refused() {
+    for side in [MIXIN_SIDE_INSTANCE, MIXIN_SIDE_CLASS] {
+        let name = if side == MIXIN_SIDE_CLASS {
+            "X class"
+        } else {
+            "X"
+        };
+        mixin_record_refused(
+            &mixin_records(vec![(row_reference(0), side), (row_reference(0), side)]),
+            &decode::DecodeError::DuplicateMixin(name.to_string()),
+            &format!("the mixin {name} is recorded twice"),
+            |_, _| {},
+        );
+    }
+    mixin_record_refused(
+        &mixin_records(vec![
+            (shipped_reference(OBJECT_NAME), MIXIN_SIDE_INSTANCE),
+            (shipped_reference(OBJECT_NAME), MIXIN_SIDE_INSTANCE),
+        ]),
+        &decode::DecodeError::DuplicateMixin("Object".to_string()),
+        "the mixin Object is recorded twice",
+        |_, _| {},
+    );
+    mixin_record_refused(
+        &mixin_records(vec![(row_reference(0), MIXIN_SIDE_INSTANCE)]),
+        &decode::DecodeError::DuplicateMixin("X".to_string()),
+        "the mixin X is recorded twice",
+        |mutator, rows| {
+            mutator.reified_mixin(&rows[0]);
+        },
+    );
+}
+
+#[test]
+fn a_mixin_record_past_the_table_is_refused() {
+    for past in [2, u32::MAX] {
+        mixin_record_refused(
+            &mixin_records(vec![(row_reference(past), MIXIN_SIDE_INSTANCE)]),
+            &decode::DecodeError::BadMixinId(past),
+            &format!("mixin id {past} out of range"),
+            |_, _| {},
+        );
+    }
+}
+
+#[test]
+fn a_mixin_record_with_side_two_is_refused() {
+    for side in [2, u8::MAX] {
+        mixin_record_refused(
+            &mixin_records(vec![(row_reference(0), side)]),
+            &decode::DecodeError::BadMixinSide(side),
+            &format!(
+                "a mixin record has side {side}, but a side is 0, the instance side, or 1, \
+                 the class side"
+            ),
+            |_, _| {},
+        );
+    }
+}
+
+/// A class side is named through its instance side, with side 1, so that
+/// each mixin has one spelling: a class side's own row is refused at
+/// either side.
+#[test]
+fn a_mixin_record_naming_a_class_side_row_is_refused() {
+    for side in [MIXIN_SIDE_INSTANCE, MIXIN_SIDE_CLASS] {
+        mixin_record_refused(
+            &mixin_records(vec![(row_reference(1), side)]),
+            &decode::DecodeError::MixinRecordNamesAClassSide,
+            "a mixin record names a class side's row; a class side is named by its instance \
+             side's, with side 1",
+            |_, _| {},
+        );
+    }
+}
+
+/// Only a class's shipped name names a mixin: a module instance or a
+/// metaclass is no declaration of one.
+#[test]
+fn a_mixin_record_naming_a_shipped_module_instance_is_refused() {
+    for (name, shown) in [
+        (KERNEL_INSTANCE_NAME, "Kernel instance"),
+        (INTEGER_CLASS_NAME, "Kernel Integer class"),
+    ] {
+        mixin_record_refused(
+            &mixin_records(vec![(shipped_reference(name), MIXIN_SIDE_INSTANCE)]),
+            &decode::DecodeError::MixinRecordNamesNoClass(shown.to_string()),
+            &format!("a mixin record names {shown}, which is no class's shipped name"),
+            |_, _| {},
+        );
+    }
+}
+
+/// A mixin record under any class but `Mixin` would make an object of that
+/// class stand for a mixin. Under `WeakArray`'s header the weak-array check
+/// refuses it first.
+#[test]
+fn a_mixin_record_on_another_class_is_refused() {
+    for header in [OBJECT_NAME, ARRAY_NAME, WEAK_ARRAY_NAME] {
+        let bytes = class_records(1, |writer| {
+            mixin_record(writer, header, row_reference(0), MIXIN_SIDE_INSTANCE);
+        });
+        let (expected, text) = if header == WEAK_ARRAY_NAME {
+            (
+                decode::DecodeError::WeakArrayRecordMismatch { body: OBJECT_MIXIN },
+                format!(
+                    "a record of the class WeakArray has object body {OBJECT_MIXIN}, but a \
+                     WeakArray is a weak-array record or a slotless instance record"
+                ),
+            )
+        } else {
+            (
+                decode::DecodeError::MixinRecordMismatch { body: OBJECT_MIXIN },
+                "a mixin record has a class other than Mixin".to_string(),
+            )
+        };
+        mixin_record_refused(&bytes, &expected, &text, |_, _| {});
+    }
+}
+
+/// `Mixin`'s header carries a mixin record and nothing else: an instance
+/// record of it, its one field an id, would stand for whatever mixin the
+/// id named, outside the canonical table.
+#[test]
+fn an_instance_record_of_the_mixin_class_is_refused() {
+    for body in [OBJECT_INSTANCE, OBJECT_ARRAY] {
+        let bytes = class_records(1, |writer| {
+            writer.write_shipped(MIXIN_NAME);
+            writer.write_u32(0); // identity hash
+            writer.write_u8(body);
+            writer.write_u32(1);
+            writer.write_u8(VALUE_SMALL_INTEGER);
+            writer.write_i64(0);
+        });
+        mixin_record_refused(
+            &bytes,
+            &decode::DecodeError::MixinRecordMismatch { body },
+            &format!(
+                "a record of the class Mixin has object body {body}, but a Mixin is a mixin \
+                 record"
+            ),
+            |_, _| {},
         );
     }
 }

@@ -69,10 +69,13 @@ pub(crate) use world::World;
 /// The sizes `image::decode::decode_graph_section`'s first pass gives each
 /// record before it allocates anything, stated beside the payloads they
 /// must agree with: a class object's fields, a closure's and a frame's
-/// fixed fields, a string's field words, and the words a block of so many
-/// fields occupies in all, its header and class word included.
+/// fixed fields, a reified mixin's one field, a string's field words, and
+/// the words a block of so many fields occupies in all, its header and
+/// class word included.
 pub(crate) mod record_size {
     pub(crate) const CLASS_FIELDS: usize = super::class_field::COUNT;
+    /// The id of the mixin it stands for (`Heap::allocate_mixin_object`).
+    pub(crate) const MIXIN_FIELDS: usize = 1;
     pub(crate) const CLOSURE_FIXED_FIELDS: usize = super::closure_field::COUNT;
     pub(crate) const FRAME_FIXED_FIELDS: usize = super::frame_field::COUNT;
 
@@ -1230,20 +1233,19 @@ impl<'gc> Heap<'gc> {
     /// `Mutator::reified_mixin` is the one caller, and records what this
     /// answers (`record_mixin_object`), so that no second object stands for
     /// the same mixin.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "reached only from tests until the mirror leaves and the image codec call it"
-        )
-    )]
     pub(crate) fn allocate_mixin_object(
         &mut self,
         class: ClassReference<'gc>,
         id: MixinId,
     ) -> ObjectReference<'gc> {
         let index = i64::try_from(id.index()).expect("a mixin id is 32 bits");
-        let (object, fields) = self.allocate_object(class, Format::FixedPointers, 0, false, 1);
+        let (object, fields) = self.allocate_object(
+            class,
+            Format::FixedPointers,
+            0,
+            false,
+            record_size::MIXIN_FIELDS,
+        );
         write_words(
             &mut self.space.words_mut()[fields],
             [Value::small_integer(index).word()],
@@ -2269,6 +2271,7 @@ impl<'gc> Heap<'gc> {
     /// that kind.
     pub fn object_shape(&self, object: ObjectReference<'gc>) -> ObjectShape {
         match self.header(object).format() {
+            Format::FixedPointers if self.mixin_object_id(object).is_some() => ObjectShape::Mixin,
             Format::FixedPointers => ObjectShape::Instance,
             Format::IndexablePointers => ObjectShape::Array,
             Format::WeakPointers => ObjectShape::WeakArray,
@@ -2821,13 +2824,6 @@ impl<'gc> Heap<'gc> {
     /// Records `object` as the one object the mixin `id` names. Recorded
     /// once: a second record for one id would give the mixin two
     /// identities.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "reached only from tests until the mirror leaves and the image codec call it"
-        )
-    )]
     pub(crate) fn record_mixin_object(&mut self, id: MixinId, object: ObjectReference<'gc>) {
         self.check_object_origin(object);
         let index = id.index();

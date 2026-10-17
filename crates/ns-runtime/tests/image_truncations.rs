@@ -1,9 +1,9 @@
 //! Every truncation of an image is refused with an error, never a panic:
 //! an image is untrusted input (`docs/design/image-format.md`,
-//! "Verification"). Four images -- a snapshot holding a closure and a
+//! "Verification"). Five images -- a snapshot holding a closure and a
 //! `ByteArray`, its packaged application, a second packaged application,
-//! and a snapshot holding a weak array and an ephemeron -- each cut at
-//! every length short of its own.
+//! a snapshot holding a weak array and an ephemeron, and one holding
+//! reified mixins -- each cut at every length short of its own.
 //!
 //! One trial per image and per part of its lengths (`libtest-mimic`, so
 //! `harness = false`): as one test, the loads of every length ran alone at
@@ -28,11 +28,12 @@ const PARTS: usize = 8;
 type Build = fn() -> Vec<u8>;
 
 /// The images, by name, each with the function that builds it.
-const IMAGES: [(&str, Build); 4] = [
+const IMAGES: [(&str, Build); 5] = [
     ("snapshot", snapshot),
     ("packaged", packaged),
     ("packaged_application", packaged_application),
     ("weak", weak),
+    ("reified_mixin", reified_mixin),
 ];
 
 fn main() {
@@ -179,6 +180,72 @@ fn weak() -> Vec<u8> {
             class,
             origin: &origin,
             source: Some(WEAK_SOURCE),
+        }];
+        image::snapshot(mutator, &modules, &[instance]).expect("snapshot")
+    })
+}
+
+/// A module whose instance's `held` slot `reified_mixin` fills with
+/// reified mixins: its own, its synthesized class side's and `List`'s.
+const REIFIED_SOURCE: &str = indoc! {"
+    class X = Object new (
+      |
+        public held
+      |
+    ) (
+      public listClass: platform = (
+        ^platform collections List
+      )
+    )
+"};
+
+/// A snapshot of an instance of `REIFIED_SOURCE`'s class holding reified
+/// mixins of a row, of a synthesized class side and of a shipped class, so
+/// that each kind of mixin record is cut at every byte.
+fn reified_mixin() -> Vec<u8> {
+    let (mut interpreter, class) = load(REIFIED_SOURCE);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let platform = interpreter.platform();
+    let list = expect_ok(
+        interpreter.send(
+            &instance,
+            ns_runtime::Symbol::intern("listClass:"),
+            std::slice::from_ref(&platform),
+        ),
+        "listClass:",
+    );
+    let origin = SourceOrigin::File(PathBuf::from("t.ns"));
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let list = class_reference(mutator, &list);
+        let heap = mutator.heap();
+        let mixin_of = |class| {
+            heap.class_application(class)
+                .expect("a class object")
+                .mixin
+                .clone()
+        };
+        let mixins = [
+            mixin_of(class),
+            mixin_of(heap.class_metaclass(class).expect("a metaclass")),
+            mixin_of(list),
+        ];
+        let reified: Vec<Value> = mixins
+            .iter()
+            .map(|mixin| Value::object(mutator.reified_mixin(mixin)))
+            .collect();
+        let held = mutator.new_array(reified);
+        let instance = mutator.fetch(&instance);
+        let Some(holder) = instance.as_object() else {
+            panic!("an instance is an object")
+        };
+        assert!(mutator
+            .heap_mut()
+            .instance_set_field(holder, 0, Value::object(held)));
+        let modules = [image::ModuleSource {
+            class,
+            origin: &origin,
+            source: Some(REIFIED_SOURCE),
         }];
         image::snapshot(mutator, &modules, &[instance]).expect("snapshot")
     })

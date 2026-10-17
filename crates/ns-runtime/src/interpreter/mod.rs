@@ -1671,17 +1671,7 @@ impl<'gc> Mutator<'gc> {
     /// (`docs/design/liveness-and-reflection.md`, "A mixin is reified as a
     /// kernel-private object"). A class side, declared or synthesized, is a
     /// mixin of its own and has an object of its own.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "reached only from tests until the mirror leaves and the image codec call it"
-        )
-    )]
-    pub(crate) fn reified_mixin(
-        &mut self,
-        mixin: &Rc<crate::mixin::Mixin>,
-    ) -> ObjectReference<'gc> {
+    pub fn reified_mixin(&mut self, mixin: &Rc<crate::mixin::Mixin>) -> ObjectReference<'gc> {
         let id = self.heap.mixin_id(mixin);
         if let Some(object) = self.heap.mixin_object(id) {
             return object;
@@ -1694,14 +1684,7 @@ impl<'gc> Mutator<'gc> {
 
     /// The mixin `object` stands for, when it is a reified mixin
     /// (`Heap::mixin_object_id`); `None` for any other object.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "reached only from tests until the mirror leaves and the image codec call it"
-        )
-    )]
-    pub(crate) fn mixin_of_reified(
+    pub fn mixin_of_reified(
         &self,
         object: ObjectReference<'gc>,
     ) -> Option<Rc<crate::mixin::Mixin>> {

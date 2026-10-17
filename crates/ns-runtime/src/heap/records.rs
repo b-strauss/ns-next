@@ -34,6 +34,10 @@ pub enum ObjectShape {
     /// format (`Heap::ephemeron_fields`), the value and finalizer held only
     /// through a live key.
     Ephemeron,
+    /// A reified mixin, the canonical object of the kernel-private `Mixin`
+    /// standing for one mixin (`Heap::mixin_object_id`): an instance of
+    /// one field, written as the mixin it stands for, not as that field.
+    Mixin,
 }
 
 /// A class object to build (`Heap::allocate_class`,

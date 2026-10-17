@@ -229,7 +229,7 @@ pub const VALUE_SHIPPED_MODULE: u8 = 11;
 pub const RETIRED_VALUE_TAGS: [u8; 2] = [7, 8];
 
 /// An object record's body, following its class tag and identity hash.
-/// Next free number: 14.
+/// Next free number: 15.
 pub const OBJECT_INSTANCE: u8 = 0;
 pub const OBJECT_STRING: u8 = 1;
 pub const OBJECT_SYMBOL: u8 = 2;
@@ -280,6 +280,15 @@ pub const OBJECT_WEAK_ARRAY: u8 = 12;
 /// body. An ephemeron whose key the graph never reaches strongly is written
 /// with every field `nil`, as a collection would leave it.
 pub const OBJECT_EPHEMERON: u8 = 13;
+/// A reified mixin, the kernel-private `Mixin` object a mixin mirror
+/// reflects: the mixin's reference, as a class record names its mixin
+/// (`MIXIN_ROW` and a row id, or `MIXIN_SHIPPED` and the index of a shipped
+/// class's name, the instance side in either case), then a side byte
+/// (`MIXIN_SIDE_*`). Only a record whose header is `Kernel Mixin` carries
+/// it, and that header carries no other body. The id the object holds is
+/// not written: the decoder mints it afresh, and refuses a second record
+/// for one mixin, since the object is canonical as a symbol is.
+pub const OBJECT_MIXIN: u8 = 14;
 
 /// Object-body tags that no longer name anything and are never reused: 4 was
 /// the closure record while it carried its parameter names and its home
@@ -306,7 +315,8 @@ pub const RETIRED_OBJECT_BODIES: [u8; 3] = [4, 5, 9];
 /// the shipped class's entry in the shipped-name section -- a class, allowed
 /// as a superclass -- followed by the superclass and the clause only. Its
 /// enclosing object and declaring class are the shipped class's, which no
-/// image carries.
+/// image carries. An `OBJECT_MIXIN` record names a mixin the same two
+/// ways, an instance side only, and only its side byte follows.
 pub const MIXIN_ROW: u8 = 0;
 pub const MIXIN_SHIPPED: u8 = 2;
 
@@ -316,6 +326,12 @@ pub const MIXIN_SHIPPED: u8 = 2;
 /// (`MIXIN_SHIPPED`), which names any shipped class's mixin by declaration.
 /// Next free number: 3.
 pub const RETIRED_MIXIN_TAGS: [u8; 1] = [1];
+
+/// Which side of the mixin an `OBJECT_MIXIN` record names reflects: the
+/// mixin itself, or its class side -- the declared one, or the one
+/// synthesized for a class that declares none. Next free number: 2.
+pub const MIXIN_SIDE_INSTANCE: u8 = 0;
+pub const MIXIN_SIDE_CLASS: u8 = 1;
 
 /// How a class reference is named. A shipped class, metaclass or level is
 /// not in the graph at all -- the loading binary produces it -- so it is

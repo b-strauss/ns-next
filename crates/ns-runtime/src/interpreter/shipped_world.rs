@@ -70,7 +70,8 @@ impl ShippedName {
 /// `superclass` as a class record's superclass or the mixin it applies;
 /// `header` as a record's class; `frame_class` as a frame's
 /// `current_class` or a class record's declaring class; `frame_register`
-/// as a frame record's receiver or register.
+/// as a frame record's receiver or register; `mixin` as the class whose
+/// mixin a reified mixin's record names.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Positions {
     pub value: bool,
@@ -78,6 +79,7 @@ pub struct Positions {
     pub header: bool,
     pub frame_class: bool,
     pub frame_register: bool,
+    pub mixin: bool,
 }
 
 impl Positions {
@@ -89,6 +91,7 @@ impl Positions {
         header: false,
         frame_class: true,
         frame_register: false,
+        mixin: false,
     };
 }
 
@@ -349,7 +352,12 @@ impl<'gc> Mutator<'gc> {
             module,
             module,
             heap.object_class(instance),
-            Positions::FRAME_CLASS_ONLY,
+            // A reified mixin carries no authority, so the root's mixin is
+            // named like every shipped class's.
+            Positions {
+                mixin: true,
+                ..Positions::FRAME_CLASS_ONLY
+            },
         );
         self.shipped_world.accessed.insert(module, accessed);
         self.shipped_world.record_entries(entries);
@@ -481,12 +489,15 @@ fn class_positions<'gc>(
     // a record of it is refused as `Top` is refused as a value (lock
     // (4) of the VM mirror).
     let header = heap.class_builtin(class) != Some(BuiltinClass::Top);
+    // A reified mixin carries no authority, so every shipped class's mixin
+    // may be named, whatever the class's accessibility.
     Positions {
         value,
         superclass,
         header,
         frame_class: true,
         frame_register: false,
+        mixin: true,
     }
 }
 
@@ -655,8 +666,10 @@ mod tests {
             let array = positions_of(world, name("Kernel", "Array", ShippedKind::Class));
             assert!(array.value && array.superclass && array.header && array.frame_class);
             assert!(!array.frame_register);
+            assert!(array.mixin, "a class's mixin may be named");
             let array_class = positions_of(world, name("Kernel", "Array", ShippedKind::Metaclass));
             assert!(array_class.value && !array_class.header && array_class.frame_class);
+            assert!(!array_class.mixin, "a metaclass names no mixin of its own");
             for private in ["Top", "Activation", "FutureImplementation", "Mixin"] {
                 let positions = positions_of(world, name("Kernel", private, ShippedKind::Class));
                 assert!(
@@ -664,6 +677,7 @@ mod tests {
                     "{private} is no value"
                 );
                 assert!(positions.frame_class);
+                assert!(positions.mixin, "{private}'s mixin, whatever its access");
                 assert_eq!(
                     positions.header,
                     private != "Top",
@@ -771,6 +785,7 @@ mod tests {
             ] {
                 let positions = positions_of(world, name(root, root, ShippedKind::Class));
                 assert!(!positions.value && !positions.header && positions.frame_class);
+                assert!(positions.mixin, "a root's mixin may be named");
                 // Every root is `= Value`, so it applies no mixin and adds
                 // no level to name.
                 assert!(world
