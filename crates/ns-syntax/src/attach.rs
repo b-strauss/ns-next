@@ -136,23 +136,24 @@ pub(crate) fn attach_comments(
     attach(module, tokens, comments, source);
 }
 
-/// [`attach_comments`], answering the work it did: the nodes its walks
-/// visited, the nodes it expanded, the children those had, each comment once
-/// per expansion it is carried into, and the nodes that only received a
-/// comment beside them, with the children describing them appended. Only a
-/// node a comment lies in is expanded, and every walk is linear, so a module
-/// of many nodes and few comments costs two walks; a test holds the work to
-/// growing linearly with the source.
+/// [`attach_comments`], answering the work it did: the nodes its walk
+/// visited, the entries it measured, the nodes it expanded, the children
+/// those had, each comment once per expansion it is carried into, and the
+/// nodes that only received a comment beside them, with the children
+/// describing them appended. Only a node a comment lies in is expanded, and
+/// the walk and the loop over its records are linear, so a module of many
+/// nodes and few comments costs one walk and one loop; a test holds the
+/// work to growing linearly with the source.
 fn attach(module: &mut Module, tokens: &[Token], comments: &[Comment], source: &str) -> usize {
     if comments.is_empty() {
         return 0;
     }
     let mut work = 0;
     let mut parts = Parts::new(tokens, comments);
-    let count = prepass(module, &mut parts, &mut work);
+    let records = prepass(module, &mut parts, &mut work);
     let (dropped, patterns) = parts.sorted();
     let kept = Tokens::kept(tokens, &dropped);
-    let entries = measure(module, &kept, count, &mut work);
+    let entries = measure(&records, &kept, &mut work);
     let placed = (0..comments.len())
         .filter(|index| !inside_a_pattern(&patterns, comments[*index].span))
         .collect();
@@ -276,11 +277,11 @@ impl<'input> Parts<'input> {
 }
 
 /// Describes `node` and appends its children to `children` in the order
-/// the walks number them (the last appended is numbered first); given
+/// the prepass numbers them (the last appended is numbered first); given
 /// `parts`, records the empty parts and the pattern literal the node
 /// carries. The one place that says what each kind of node is made of:
-/// the prepass, the walk and the descent all read it, so that the descent
-/// finds a child at the index the walk gave it.
+/// the prepass and the descent both read it, so that the descent finds a
+/// child at the index the prepass gave it.
 fn describe<'tree>(
     node: Pending<'tree>,
     children: &mut Vec<Pending<'tree>>,
@@ -588,22 +589,42 @@ fn describe_expression<'tree>(
     plain(comments, known)
 }
 
-/// Counts the commentable nodes and records the empty parts and the
-/// pattern literals: the tokens a comment is counted among depend on the
-/// first, so they are known before anything is measured.
-fn prepass(module: &mut Module, parts: &mut Parts<'_>, work: &mut usize) -> usize {
-    let mut stack = vec![Pending::Module(module)];
-    let mut count = 0;
-    while let Some(node) = stack.pop() {
-        count += 1;
-        describe(node, &mut stack, Some(&mut *parts));
+/// What [`measure`] needs of a commentable node, recorded by the prepass in
+/// the order of the entries.
+#[derive(Clone, Copy)]
+struct Record {
+    known: Option<Span>,
+    shape: Shape,
+    /// The index of the node's parent, [`NO_PARENT`] for the module.
+    parent: usize,
+}
+
+/// Records every commentable node, and the empty parts and the pattern
+/// literals: the tokens a comment is counted among depend on the empty
+/// parts, so the extents are measured once the walk is over, from what it
+/// recorded rather than by a second walk.
+fn prepass(module: &mut Module, parts: &mut Parts<'_>, work: &mut usize) -> Vec<Record> {
+    // A module has about as many commentable nodes as tokens; reserving
+    // that spares the records' growth its copies.
+    let mut records = Vec::with_capacity(parts.tokens.len());
+    let mut stack = vec![(Pending::Module(module), NO_PARENT)];
+    let mut children = Vec::new();
+    while let Some((node, parent)) = stack.pop() {
+        let index = records.len();
+        let Description { shape, known, .. } = describe(node, &mut children, Some(&mut *parts));
+        records.push(Record {
+            known,
+            shape,
+            parent,
+        });
+        stack.extend(children.drain(..).map(|child| (child, index)));
     }
-    *work += count;
-    count
+    *work += records.len();
+    records
 }
 
 /// A commentable node's extent and the size of its subtree, itself
-/// included. The entries stand in the order the walks visit the nodes --
+/// included. The entries stand in the order the prepass visits the nodes --
 /// a node, then its children's subtrees, the last appended child's first --
 /// so that a node's children follow from its index and their sizes.
 #[derive(Clone, Copy)]
@@ -645,82 +666,118 @@ fn index_word(index: usize) -> u32 {
     u32::try_from(index).unwrap_or(NO_TOKEN - 1)
 }
 
-enum Step<'tree> {
-    Visit {
-        node: Pending<'tree>,
-        parent: usize,
-    },
-    Finish {
-        index: usize,
-        parent: usize,
-        shape: Shape,
-        known: Option<Span>,
-    },
-}
-
 /// Every commentable node's extent, by the rules the module documentation
-/// gives: one walk, children before their parent, each child's extent
-/// merged into its parent's entry until the parent finishes.
-fn measure(module: &mut Module, tokens: &Tokens, count: usize, work: &mut usize) -> Vec<Entry> {
-    let mut entries = Vec::with_capacity(count);
-    let mut steps = vec![Step::Visit {
-        node: Pending::Module(module),
-        parent: NO_PARENT,
-    }];
-    let mut children = Vec::new();
-    while let Some(step) = steps.pop() {
-        match step {
-            Step::Visit { node, parent } => {
-                let index = entries.len();
-                entries.push(Entry::EMPTY);
-                let Description { shape, known, .. } = describe(node, &mut children, None);
-                steps.push(Step::Finish {
-                    index,
-                    parent,
-                    shape,
-                    known,
-                });
-                steps.extend(children.drain(..).map(|node| Step::Visit {
-                    node,
-                    parent: index,
-                }));
-            }
-            Step::Finish {
-                index,
-                parent,
-                shape,
-                known,
-            } => {
-                let children_extent = entries[index].extent();
-                let mut entry = Entry {
-                    size: index_word(entries.len() - index),
-                    ..Entry::EMPTY
-                };
-                if let Some(extent) = extent_of(tokens, known, shape, children_extent) {
-                    entry.widen(extent);
-                    if parent != NO_PARENT {
-                        entries[parent].widen(extent);
-                    }
-                }
-                entries[index] = entry;
+/// gives, from the prepass's `records`: one loop from the last index down.
+/// A node's descendants follow it in the entries, so its children are
+/// finished when it is reached, each having merged its extent and added its
+/// size into the node's entry.
+fn measure(records: &[Record], tokens: &Tokens, work: &mut usize) -> Vec<Entry> {
+    let mut entries = vec![
+        Entry {
+            size: 1,
+            ..Entry::EMPTY
+        };
+        records.len()
+    ];
+    let mut cursors = Cursors::default();
+    for (index, record) in records.iter().enumerate().rev() {
+        let children_extent = entries[index].extent();
+        let mut entry = Entry {
+            size: entries[index].size,
+            ..Entry::EMPTY
+        };
+        let extent = extent_of(
+            tokens,
+            &mut cursors,
+            record.known,
+            record.shape,
+            children_extent,
+        );
+        if let Some(extent) = extent {
+            entry.widen(extent);
+        }
+        entries[index] = entry;
+        if record.parent != NO_PARENT {
+            let parent = &mut entries[record.parent];
+            parent.size += entry.size;
+            if let Some(extent) = extent {
+                parent.widen(extent);
             }
         }
     }
-    debug_assert_eq!(entries.len(), count);
+    debug_assert_eq!(
+        entries.first().map_or(0, |module| module.size as usize),
+        records.len()
+    );
     *work += entries.len();
     entries
+}
+
+/// Where each of [`extent_of`]'s searches found its token last. The loop
+/// takes the nodes in roughly descending source order, so the next answer
+/// lies near the last one, and a search from there costs the logarithm of
+/// the distance rather than of the module's tokens.
+#[derive(Default)]
+struct Cursors {
+    first: usize,
+    past: usize,
+    lead: usize,
+}
+
+/// `slice.partition_point(predicate)`, searched from `from` outwards: by
+/// steps of 1, 2, 4, ... towards the answer, then by halves within the last
+/// step. Like `partition_point`, it requires `slice` partitioned by
+/// `predicate`.
+fn partition_point_near<Item>(
+    slice: &[Item],
+    from: usize,
+    predicate: impl Fn(&Item) -> bool,
+) -> usize {
+    let from = from.min(slice.len());
+    let (low, high) = if slice.get(from).is_some_and(&predicate) {
+        // The answer lies after `from`.
+        let mut low = from + 1;
+        let mut step = 1;
+        loop {
+            let probe = low + step - 1;
+            match slice.get(probe) {
+                Some(item) if predicate(item) => {
+                    low = probe + 1;
+                    step *= 2;
+                }
+                Some(_) => break (low, probe),
+                None => break (low, slice.len()),
+            }
+        }
+    } else {
+        // The answer lies at `from` or before it.
+        let mut high = from;
+        let mut step = 1;
+        loop {
+            let Some(probe) = high.checked_sub(step) else {
+                break (0, high);
+            };
+            if predicate(&slice[probe]) {
+                break (probe + 1, high);
+            }
+            high = probe;
+            step *= 2;
+        }
+    };
+    low + slice[low..high].partition_point(predicate)
 }
 
 /// A node's extent from its known span, its shape and its children's
 /// merged extent.
 fn extent_of(
     tokens: &Tokens,
+    cursors: &mut Cursors,
     known: Option<Span>,
     shape: Shape,
     children: Option<(usize, usize)>,
 ) -> Option<(usize, usize)> {
     let mut extent = known
-        .and_then(|known| tokens.covering(known))
+        .and_then(|known| tokens.covering_near(known, cursors))
         .into_iter()
         .chain(children)
         .reduce(merge);
@@ -734,10 +791,11 @@ fn extent_of(
             end,
         } => {
             let lead = match selector {
-                SelectorShape::Unary => tokens
-                    .starts
-                    .partition_point(|start| *start < end)
-                    .checked_sub(1),
+                SelectorShape::Unary => {
+                    cursors.lead =
+                        partition_point_near(&tokens.starts, cursors.lead, |start| *start < end);
+                    cursors.lead.checked_sub(1)
+                }
                 SelectorShape::Binary | SelectorShape::Keyword => {
                     children.and_then(|(first, _)| first.checked_sub(1))
                 }
@@ -1075,7 +1133,9 @@ impl Tokens {
         self.starts.len()
     }
 
-    /// The first and the last token overlapping `span`.
+    /// The first and the last token overlapping `span`, as the reference
+    /// measures them.
+    #[cfg(test)]
     fn covering(&self, span: Span) -> Option<(usize, usize)> {
         if span.start >= span.end {
             return None;
@@ -1083,6 +1143,16 @@ impl Tokens {
         let first = self.ends.partition_point(|end| *end <= span.start);
         let past = self.starts.partition_point(|start| *start < span.end);
         (first < past).then(|| (first, past - 1))
+    }
+
+    /// [`Tokens::covering`], each search started where `cursors` left it.
+    fn covering_near(&self, span: Span, cursors: &mut Cursors) -> Option<(usize, usize)> {
+        if span.start >= span.end {
+            return None;
+        }
+        cursors.first = partition_point_near(&self.ends, cursors.first, |end| *end <= span.start);
+        cursors.past = partition_point_near(&self.starts, cursors.past, |start| *start < span.end);
+        (cursors.first < cursors.past).then(|| (cursors.first, cursors.past - 1))
     }
 }
 
@@ -1319,12 +1389,40 @@ mod tests {
     ) -> Vec<Option<(usize, usize)>> {
         let mut work = 0;
         let mut parts = Parts::new(tokens, comments);
-        let count = prepass(module, &mut parts, &mut work);
+        let records = prepass(module, &mut parts, &mut work);
         let kept = Tokens::kept(tokens, &parts.sorted().0);
-        measure(module, &kept, count, &mut work)
+        measure(&records, &kept, &mut work)
             .iter()
             .map(|entry| entry.extent())
             .collect()
+    }
+
+    /// The search from a starting point answers what `partition_point`
+    /// answers, from every starting point, past the end included, and for
+    /// every bound: below, between, at a run of duplicates and above.
+    #[test]
+    fn the_search_near_a_point_answers_as_partition_point() {
+        let slices: [&[u32]; 6] = [
+            &[],
+            &[5],
+            &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
+            &[2, 2, 2, 4, 4, 6, 8, 8, 8, 8, 10],
+            &[7, 7, 7, 7, 7],
+            &[0, 3, 3, 9, 20, 21, 22, 40, 41, 100],
+        ];
+        for slice in slices {
+            for bound in 0..=101 {
+                let predicate = |item: &u32| *item < bound;
+                let expected = slice.partition_point(predicate);
+                for from in 0..=slice.len() + 2 {
+                    assert_eq!(
+                        partition_point_near(slice, from, predicate),
+                        expected,
+                        "{slice:?}, below {bound}, from {from}"
+                    );
+                }
+            }
+        }
     }
 
     /// Over every module the repository holds: in the walk's entries, a
@@ -1337,9 +1435,9 @@ mod tests {
             let (mut module, tokens, comments) = unattached(&source);
             let mut work = 0;
             let mut parts = Parts::new(&tokens, &comments);
-            let count = prepass(&mut module, &mut parts, &mut work);
+            let records = prepass(&mut module, &mut parts, &mut work);
             let kept = Tokens::kept(&tokens, &parts.sorted().0);
-            let entries = measure(&mut module, &kept, count, &mut work);
+            let entries = measure(&records, &kept, &mut work);
             let mut stack = vec![(Pending::Module(&mut module), 0)];
             while let Some((node, index)) = stack.pop() {
                 let mut declared = Vec::new();
