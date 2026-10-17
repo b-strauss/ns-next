@@ -276,6 +276,132 @@ impl<'input> Parts<'input> {
     }
 }
 
+/// A commentable node read through a shared reference: what
+/// [`known_and_shape`] reads, so that a node can be read without being
+/// taken for its comments.
+#[derive(Clone, Copy)]
+enum Node<'tree> {
+    /// The module, whose extent is every token.
+    Module,
+    Class(&'tree ClassDeclaration),
+    Side(&'tree ClassBody),
+    Superclass(&'tree SuperclassClause),
+    Slot(&'tree SlotDeclaration),
+    Method(&'tree MethodDeclaration),
+    Body(&'tree CodeBody),
+    Statement(&'tree Statement),
+    Expression(&'tree Expression),
+    Message(&'tree MessageSend),
+    Block(&'tree BlockExpression),
+}
+
+impl Pending<'_> {
+    fn as_node(&self) -> Node<'_> {
+        match self {
+            Pending::Module(_) => Node::Module,
+            Pending::Class(class) => Node::Class(class),
+            Pending::Side(side) => Node::Side(side),
+            Pending::Superclass(clause) => Node::Superclass(clause),
+            Pending::Slot(slot) => Node::Slot(slot),
+            Pending::Method(method) => Node::Method(method),
+            Pending::Body(body) => Node::Body(body),
+            Pending::Statement(statement) => Node::Statement(statement),
+            Pending::Expression(expression) => Node::Expression(expression),
+            Pending::Message(message) => Node::Message(message),
+            Pending::Block(block) => Node::Block(block),
+        }
+    }
+}
+
+/// The bytes some of `node`'s own tokens are known to span, and what its
+/// extent takes beyond them and its children: the one place that says
+/// what each kind of node knows of its own tokens.
+fn known_and_shape(node: Node<'_>) -> (Option<Span>, Shape) {
+    let mut known = None;
+    let shape = match node {
+        Node::Module => Shape::Module,
+        Node::Class(class) => {
+            widen(&mut known, class.span);
+            Shape::Plain
+        }
+        Node::Side(side) => {
+            widen_delimiters(&mut known, side.delimiters);
+            widen_delimiters(&mut known, side.slot_delimiters);
+            Shape::Plain
+        }
+        Node::Superclass(clause) => {
+            widen(&mut known, clause.span);
+            widen_annotation(&mut known, &clause.receiver_type_arguments);
+            Shape::Plain
+        }
+        Node::Slot(slot) => {
+            widen(
+                &mut known,
+                Span::new(slot.span.start.min(slot.name.span.end), slot.name.span.end),
+            );
+            widen_annotation(&mut known, &slot.type_annotation);
+            Shape::Plain
+        }
+        Node::Method(method) => {
+            widen(&mut known, method.span);
+            widen_delimiters(&mut known, method.body_delimiters);
+            Shape::Plain
+        }
+        Node::Body(body) => {
+            widen_delimiters(&mut known, body.temporaries_delimiters);
+            Shape::Plain
+        }
+        Node::Statement(statement) => {
+            if let StatementKind::Return(_) = statement.kind {
+                // The `^` the statement starts at.
+                let start = statement.span.start;
+                widen(&mut known, Span::new(start, start.saturating_add(1)));
+            }
+            Shape::Plain
+        }
+        Node::Expression(expression) => {
+            if expression.synthesized {
+                Shape::Empty
+            } else {
+                widen(&mut known, expression.span);
+                widen_annotation(&mut known, &expression.type_arguments);
+                for parenthesis in expression.parentheses.iter() {
+                    widen_delimiters(&mut known, Some(parenthesis.delimiters));
+                    widen_annotation(&mut known, &parenthesis.type_arguments);
+                }
+                match &expression.kind {
+                    ExpressionKind::Identifier(identifier) => widen(&mut known, identifier.span),
+                    ExpressionKind::Literal(literal) => widen(&mut known, literal_span(literal)),
+                    ExpressionKind::Assign { target, .. } => widen(&mut known, target.span),
+                    ExpressionKind::DynamicArray { span, .. } => widen(&mut known, *span),
+                    ExpressionKind::Send(_)
+                    | ExpressionKind::Cascade(_)
+                    | ExpressionKind::Block(_) => {}
+                }
+                Shape::Plain
+            }
+        }
+        Node::Message(message) => {
+            widen_annotation(&mut known, &message.type_arguments);
+            Shape::Message {
+                selector: match message.selector {
+                    Selector::Unary(_) => SelectorShape::Unary,
+                    Selector::Binary(_) => SelectorShape::Binary,
+                    Selector::Keyword(_) => SelectorShape::Keyword,
+                },
+                eventual: message.eventual,
+                end: message.span.end,
+            }
+        }
+        Node::Block(block) => {
+            widen(&mut known, block.span);
+            widen_delimiters(&mut known, block.delimiters);
+            Shape::Plain
+        }
+    };
+    (known, shape)
+}
+
 /// Describes `node` and appends its children to `children` in the order
 /// the prepass numbers them (the last appended is numbered first); given
 /// `parts`, records the empty parts and the pattern literal the node
@@ -287,159 +413,57 @@ fn describe<'tree>(
     children: &mut Vec<Pending<'tree>>,
     parts: Option<&mut Parts<'_>>,
 ) -> Description<'tree> {
-    match node {
+    let (known, shape) = known_and_shape(node.as_node());
+    let comments = match node {
         Pending::Module(module) => {
-            let Module {
-                root_class,
-                comments,
-                ..
-            } = module;
-            children.push(Pending::Class(root_class));
-            Description {
-                comments,
-                shape: Shape::Module,
-                known: None,
-            }
+            children.push(Pending::Class(&mut module.root_class));
+            &mut module.comments
         }
         Pending::Class(class) => describe_class(class, children, parts),
         Pending::Side(side) => describe_side(side, children, parts),
         Pending::Superclass(clause) => {
-            let SuperclassClause {
-                receiver_type_arguments,
-                messages,
-                comments,
-                span,
-                ..
-            } = clause;
-            let mut known = None;
-            widen(&mut known, *span);
-            widen_annotation(&mut known, receiver_type_arguments);
-            children.extend(messages.iter_mut().map(Pending::Message));
-            plain(comments, known)
+            children.extend(clause.messages.iter_mut().map(Pending::Message));
+            &mut clause.comments
         }
         Pending::Slot(slot) => {
-            let SlotDeclaration {
-                name,
-                type_annotation,
-                initializer,
-                comments,
-                span,
-                ..
-            } = slot;
-            let mut known = None;
-            widen(
-                &mut known,
-                Span::new(span.start.min(name.span.end), name.span.end),
-            );
-            widen_annotation(&mut known, type_annotation);
-            if let Some(initializer) = initializer {
+            if let Some(initializer) = &mut slot.initializer {
                 children.push(Pending::Expression(initializer));
             }
-            plain(comments, known)
+            &mut slot.comments
         }
         Pending::Method(method) => {
-            let MethodDeclaration {
-                body,
-                body_delimiters,
-                comments,
-                span,
-                ..
-            } = method;
-            let mut known = None;
-            widen(&mut known, *span);
-            widen_delimiters(&mut known, *body_delimiters);
-            children.push(Pending::Body(body));
-            plain(comments, known)
+            children.push(Pending::Body(&mut method.body));
+            &mut method.comments
         }
         Pending::Body(body) => {
-            let CodeBody {
-                temporaries,
-                temporaries_delimiters,
-                statements,
-                comments,
-                ..
-            } = body;
-            if temporaries.is_empty() {
+            if body.temporaries.is_empty() {
                 if let Some(parts) = parts {
-                    parts.drop_if_empty(*temporaries_delimiters);
+                    parts.drop_if_empty(body.temporaries_delimiters);
                 }
             }
-            let mut known = None;
-            widen_delimiters(&mut known, *temporaries_delimiters);
-            children.extend(temporaries.iter_mut().map(Pending::Slot));
-            children.extend(statements.iter_mut().map(Pending::Statement));
-            plain(comments, known)
+            children.extend(body.temporaries.iter_mut().map(Pending::Slot));
+            children.extend(body.statements.iter_mut().map(Pending::Statement));
+            &mut body.comments
         }
         Pending::Statement(statement) => {
-            let Statement {
-                kind,
-                comments,
-                span,
-            } = statement;
-            let mut known = None;
-            let expression = match kind {
-                StatementKind::Return(expression) => {
-                    // The `^` the statement starts at.
-                    widen(
-                        &mut known,
-                        Span::new(span.start, span.start.saturating_add(1)),
-                    );
-                    expression
-                }
-                StatementKind::Expression(expression) => expression,
-            };
+            let (StatementKind::Return(expression) | StatementKind::Expression(expression)) =
+                &mut statement.kind;
             children.push(Pending::Expression(expression));
-            plain(comments, known)
+            &mut statement.comments
         }
         Pending::Expression(expression) => describe_expression(expression, children, parts),
         Pending::Message(message) => {
-            let MessageSend {
-                selector,
-                arguments,
-                eventual,
-                type_arguments,
-                comments,
-                span,
-            } = message;
-            let mut known = None;
-            widen_annotation(&mut known, type_arguments);
-            let shape = Shape::Message {
-                selector: match selector {
-                    Selector::Unary(_) => SelectorShape::Unary,
-                    Selector::Binary(_) => SelectorShape::Binary,
-                    Selector::Keyword(_) => SelectorShape::Keyword,
-                },
-                eventual: *eventual,
-                end: span.end,
-            };
-            children.extend(arguments.iter_mut().map(Pending::Expression));
-            Description {
-                comments,
-                shape,
-                known,
-            }
+            children.extend(message.arguments.iter_mut().map(Pending::Expression));
+            &mut message.comments
         }
         Pending::Block(block) => {
-            let BlockExpression {
-                body,
-                delimiters,
-                comments,
-                span,
-                ..
-            } = block;
-            let mut known = None;
-            widen(&mut known, *span);
-            widen_delimiters(&mut known, *delimiters);
-            children.push(Pending::Body(body));
-            plain(comments, known)
+            children.push(Pending::Body(&mut block.body));
+            &mut block.comments
         }
-    }
-}
-
-fn plain(comments: &mut Vec<AttachedComment>, known: Option<Span>) -> Description<'_> {
+    };
     Description {
         comments,
-        shape: Shape::Plain,
+        shape,
         known,
     }
 }
@@ -448,14 +472,13 @@ fn describe_class<'tree>(
     class: &'tree mut ClassDeclaration,
     children: &mut Vec<Pending<'tree>>,
     parts: Option<&mut Parts<'_>>,
-) -> Description<'tree> {
+) -> &'tree mut Vec<AttachedComment> {
     let ClassDeclaration {
         superclass,
         mixin_applications,
         instance_side,
         class_side,
         comments,
-        span,
         ..
     } = class;
     if let (Some(parts), Some(side)) = (parts, class_side.as_ref()) {
@@ -473,8 +496,6 @@ fn describe_class<'tree>(
             }
         }
     }
-    let mut known = None;
-    widen(&mut known, *span);
     if let Some(clause) = superclass {
         children.push(Pending::Superclass(clause));
     }
@@ -483,19 +504,18 @@ fn describe_class<'tree>(
     if let Some(side) = class_side {
         children.push(Pending::Side(side));
     }
-    plain(comments, known)
+    comments
 }
 
 fn describe_side<'tree>(
     side: &'tree mut ClassBody,
     children: &mut Vec<Pending<'tree>>,
     parts: Option<&mut Parts<'_>>,
-) -> Description<'tree> {
+) -> &'tree mut Vec<AttachedComment> {
     let ClassBody {
         header_slots,
         initializer_expressions,
         members,
-        delimiters,
         slot_delimiters,
         comments,
         ..
@@ -505,9 +525,6 @@ fn describe_side<'tree>(
             parts.drop_if_empty(*slot_delimiters);
         }
     }
-    let mut known = None;
-    widen_delimiters(&mut known, *delimiters);
-    widen_delimiters(&mut known, *slot_delimiters);
     children.extend(header_slots.iter_mut().map(Pending::Slot));
     children.extend(initializer_expressions.iter_mut().map(Pending::Statement));
     children.extend(members.iter_mut().map(|member| match member {
@@ -515,53 +532,30 @@ fn describe_side<'tree>(
         Member::LazySlot(slot) => Pending::Slot(slot),
         Member::Method(method) => Pending::Method(method),
     }));
-    plain(comments, known)
+    comments
 }
 
 fn describe_expression<'tree>(
     expression: &'tree mut Expression,
     children: &mut Vec<Pending<'tree>>,
     parts: Option<&mut Parts<'_>>,
-) -> Description<'tree> {
+) -> &'tree mut Vec<AttachedComment> {
     let Expression {
         kind,
-        parentheses,
-        type_arguments,
         synthesized,
         comments,
-        span,
+        ..
     } = expression;
     if *synthesized {
-        return Description {
-            comments,
-            shape: Shape::Empty,
-            known: None,
-        };
-    }
-    let mut known = None;
-    widen(&mut known, *span);
-    widen_annotation(&mut known, type_arguments);
-    for parenthesis in parentheses.iter() {
-        widen_delimiters(&mut known, Some(parenthesis.delimiters));
-        widen_annotation(&mut known, &parenthesis.type_arguments);
-    }
-    match &*kind {
-        ExpressionKind::Identifier(identifier) => widen(&mut known, identifier.span),
-        ExpressionKind::Literal(literal) => {
-            let span = literal_span(literal);
-            widen(&mut known, span);
-            if matches!(literal, Literal::Pattern { .. }) {
-                if let Some(parts) = parts {
-                    parts.patterns.push(span);
-                }
-            }
-        }
-        ExpressionKind::Assign { target, .. } => widen(&mut known, target.span),
-        ExpressionKind::DynamicArray { span, .. } => widen(&mut known, *span),
-        ExpressionKind::Send(_) | ExpressionKind::Cascade(_) | ExpressionKind::Block(_) => {}
+        return comments;
     }
     match kind {
-        ExpressionKind::Identifier(_) | ExpressionKind::Literal(_) => {}
+        ExpressionKind::Identifier(_) => {}
+        ExpressionKind::Literal(literal) => {
+            if let (Literal::Pattern { span, .. }, Some(parts)) = (&*literal, parts) {
+                parts.patterns.push(*span);
+            }
+        }
         ExpressionKind::Send(send) => {
             let Send {
                 receiver, message, ..
@@ -586,7 +580,7 @@ fn describe_expression<'tree>(
             children.extend(elements.iter_mut().map(Pending::Expression));
         }
     }
-    plain(comments, known)
+    comments
 }
 
 /// What [`measure`] needs of a commentable node, recorded by the prepass in
@@ -836,6 +830,8 @@ struct Context<'input> {
 struct Expansion<'tree> {
     node: Pending<'tree>,
     index: usize,
+    /// The node's extent, which its `Inner` counts start from.
+    extent: Option<(usize, usize)>,
     inside: Vec<usize>,
     before: Vec<usize>,
     after: Vec<usize>,
@@ -881,6 +877,7 @@ fn descend(module: &mut Module, context: &Context<'_>, placed: Vec<usize>, work:
     let mut expansions = vec![Expansion {
         node: Pending::Module(module),
         index: 0,
+        extent: context.entries.first().and_then(|module| module.extent()),
         inside: placed,
         before: Vec::new(),
         after: Vec::new(),
@@ -896,6 +893,7 @@ fn descend(module: &mut Module, context: &Context<'_>, placed: Vec<usize>, work:
     while let Some(Expansion {
         node,
         index,
+        extent,
         inside,
         before,
         after,
@@ -909,7 +907,8 @@ fn descend(module: &mut Module, context: &Context<'_>, placed: Vec<usize>, work:
         let mut own_tokens = None;
         context.push(description.comments, &before, Anchor::Before);
         for comment in inside {
-            match context.place(index, &children, comment, &mut own_tokens) {
+            let first = extent.map_or(0, |(first, _)| first);
+            match context.place(first, &children, comment, &mut own_tokens) {
                 Target::Inside(slot) => decided[slot].inside.push(comment),
                 Target::Before(slot) => decided[slot].before.push(comment),
                 Target::After(slot) => decided[slot].after.push(comment),
@@ -941,6 +940,7 @@ fn descend(module: &mut Module, context: &Context<'_>, placed: Vec<usize>, work:
                 expansions.push(Expansion {
                     node,
                     index: child.index,
+                    extent: Some((child.first, child.last)),
                     inside,
                     before,
                     after,
@@ -990,11 +990,11 @@ impl Context<'_> {
         children.sort_by_key(|child| child.first);
     }
 
-    /// Where the comment at `comment` goes among the holder at `holder`
-    /// and its `children`, by rules 1 to 4.
+    /// Where the comment at `comment` goes among a holder whose first token
+    /// is `holder_first` and its `children`, by rules 1 to 4.
     fn place(
         &self,
-        holder: usize,
+        holder_first: usize,
         children: &[Child],
         comment: usize,
         own_tokens: &mut Option<OwnTokens>,
@@ -1042,7 +1042,7 @@ impl Context<'_> {
             (Some(Neighbour::Child(slot)), _) if !next_closes => Target::After(slot),
             _ => {
                 let own_tokens =
-                    own_tokens.get_or_insert_with(|| OwnTokens::new(self, holder, children));
+                    own_tokens.get_or_insert_with(|| OwnTokens::new(self, holder_first, children));
                 Target::Holder(Anchor::Inner(own_tokens.before(gap)))
             }
         }
@@ -1078,7 +1078,7 @@ struct OwnTokens {
 }
 
 impl OwnTokens {
-    fn new(context: &Context<'_>, holder: usize, children: &[Child]) -> OwnTokens {
+    fn new(context: &Context<'_>, first: usize, children: &[Child]) -> OwnTokens {
         let mut by_last = children.to_vec();
         by_last.sort_by_key(|child| child.last);
         let mut tokens = vec![0];
@@ -1089,9 +1089,7 @@ impl OwnTokens {
             periods.push(periods[periods.len() - 1] + usize::from(period));
         }
         OwnTokens {
-            first: context.entries[holder]
-                .extent()
-                .map_or(0, |(first, _)| first),
+            first,
             lasts: by_last.iter().map(|child| child.last).collect(),
             tokens,
             periods,
