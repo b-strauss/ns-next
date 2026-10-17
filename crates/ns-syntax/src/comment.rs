@@ -38,35 +38,49 @@ impl Comment {
     }
 }
 
-/// `text` with each of `\r\n`, `\r` and `\n` read as one line break, so a
-/// source's line endings never reach the text.
-pub(crate) fn lines_of(text: &str) -> Vec<String> {
-    text.replace("\r\n", "\n")
-        .replace('\r', "\n")
-        .split('\n')
-        .map(str::to_string)
-        .collect()
+/// The lines of `text`, each of `\r\n`, `\r` and `\n` read as one line
+/// break, so a source's line endings never reach the text: one line more
+/// than there are breaks, the last empty after a final break. Borrowed, so
+/// that a caller copies only what it keeps of each line.
+pub(crate) fn lines(text: &str) -> impl Iterator<Item = &str> {
+    let mut rest = Some(text);
+    std::iter::from_fn(move || {
+        let current = rest?;
+        match current.find(['\r', '\n']) {
+            Some(index) => {
+                let width = if current[index..].starts_with("\r\n") {
+                    2
+                } else {
+                    1
+                };
+                rest = Some(&current[index + width..]);
+                Some(&current[..index])
+            }
+            None => {
+                rest = None;
+                Some(current)
+            }
+        }
+    })
 }
 
 fn line_text(raw: &str) -> String {
-    lines_of(raw)
-        .iter()
-        .map(|line| {
-            let line = line.trim_start();
-            let line = line.strip_prefix("///").unwrap_or(line);
-            line.strip_prefix(' ')
-                .unwrap_or(line)
-                .trim_end()
-                .to_string()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut text = String::with_capacity(raw.len());
+    for (index, line) in lines(raw).enumerate() {
+        if index > 0 {
+            text.push('\n');
+        }
+        let line = line.trim_start();
+        let line = line.strip_prefix("///").unwrap_or(line);
+        text.push_str(line.strip_prefix(' ').unwrap_or(line).trim_end());
+    }
+    text
 }
 
 fn block_text(raw: &str) -> String {
     let inner = raw.strip_prefix("(*").unwrap_or(raw);
     let inner = inner.strip_suffix("*)").unwrap_or(inner);
-    let lines = lines_of(inner);
+    let lines: Vec<&str> = lines(inner).collect();
     let Some((first, rest)) = lines.split_first() else {
         return String::new();
     };
@@ -78,18 +92,18 @@ fn block_text(raw: &str) -> String {
         .map(|line| line.len() - line.trim_start_matches([' ', '\t']).len())
         .min()
         .unwrap_or(0);
-    let mut text: Vec<String> = Vec::with_capacity(lines.len());
-    text.push(first.trim().to_string());
+    let mut text: Vec<&str> = Vec::with_capacity(lines.len());
+    text.push(first.trim());
     for line in rest {
         if line.trim().is_empty() {
-            text.push(String::new());
+            text.push("");
         } else {
-            text.push(line[shared_indentation..].trim_end().to_string());
+            text.push(line[shared_indentation..].trim_end());
         }
     }
     let leading_blanks = text.iter().take_while(|line| line.is_empty()).count();
     text.drain(..leading_blanks);
-    while text.last().is_some_and(String::is_empty) {
+    while text.last().is_some_and(|line| line.is_empty()) {
         text.pop();
     }
     text.join("\n")
@@ -128,6 +142,37 @@ mod tests {
             span: Span::new(0, source.len() as u32),
         }
         .text(source)
+    }
+
+    /// The lines answer what replacing each `\r\n` and then each `\r` by
+    /// `\n` and splitting at `\n` answers.
+    #[test]
+    fn the_lines_break_as_the_line_endings_read_as_newlines() {
+        for text in [
+            "",
+            "no break",
+            "\n",
+            "\r",
+            "\r\n",
+            "\n\n\r\r\n\r\n",
+            "one\r\ntwo\rthree\nfour",
+            "a\r\r\nb",
+            "a\n\rb",
+            "trailing\n",
+            "trailing\r",
+            "trailing\r\n",
+            "\r\nleading",
+            "  (* x *)  \r\n\t///  y \r",
+        ] {
+            let expected: Vec<String> = text
+                .replace("\r\n", "\n")
+                .replace('\r', "\n")
+                .split('\n')
+                .map(str::to_string)
+                .collect();
+            let actual: Vec<&str> = lines(text).collect();
+            assert_eq!(actual, expected, "{text:?}");
+        }
     }
 
     #[test]

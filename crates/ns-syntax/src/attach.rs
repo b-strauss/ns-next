@@ -118,7 +118,7 @@
 //! taken as they come, and a comment no node holds goes to the module.
 
 use crate::ast::*;
-use crate::comment::{lines_of, starts_its_line, Comment, CommentKind};
+use crate::comment::{lines, starts_its_line, Comment, CommentKind};
 use crate::span::Span;
 use crate::token::{Token, TokenKind};
 
@@ -1215,8 +1215,7 @@ fn attached(
 ) -> AttachedComment {
     let start = comment.span.start as usize;
     let text = comment.span.text(source);
-    let lines = lines_of(text)
-        .into_iter()
+    let lines = lines(text)
         .map(|line| match comment.kind {
             CommentKind::Line => {
                 let line = line.trim_start();
