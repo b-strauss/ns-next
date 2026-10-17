@@ -144,9 +144,8 @@ impl<'a> Parser<'a> {
             }
             TokenKind::LessThan => {
                 let literal = self.parse_pattern_literal();
-                // The outermost literal only: one inside it is its text.
                 if let Literal::Pattern { span, .. } = &literal {
-                    self.exclusions.patterns.push(*span);
+                    self.record_exclusion(|exclusions| exclusions.patterns.push(*span));
                 }
                 bare(ExpressionKind::Literal(literal))
             }
@@ -253,7 +252,9 @@ impl<'a> Parser<'a> {
             self.skip_to_structural();
             return Literal::Nil { span: token.span };
         }
+        self.pattern_depth += 1;
         let literal = self.parse_pattern_literal_inner();
+        self.pattern_depth -= 1;
         self.leave();
         literal
     }

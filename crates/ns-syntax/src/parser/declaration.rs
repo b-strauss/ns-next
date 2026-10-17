@@ -386,7 +386,7 @@ impl<'a> Parser<'a> {
     /// attachment (`attach::Exclusions`).
     fn record_if_empty(&mut self, slots: &[SlotDeclaration], delimiters: Option<Delimiters>) {
         if let (true, Some(delimiters)) = (slots.is_empty(), delimiters) {
-            self.exclusions.empty_bars.push(delimiters);
+            self.record_exclusion(|exclusions| exclusions.empty_bars.push(delimiters));
         }
     }
 
@@ -994,7 +994,7 @@ impl<'a> Parser<'a> {
                 close: close.map(|token| token.span),
             });
             if let (true, Some(delimiters)) = (body.members.is_empty(), body.delimiters) {
-                self.exclusions.empty_class_sides.push(delimiters);
+                self.record_exclusion(|exclusions| exclusions.empty_class_sides.push(delimiters));
             }
             Some(body)
         } else {

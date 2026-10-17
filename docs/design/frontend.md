@@ -386,29 +386,33 @@ each, comment for comment; `the_work_grows_linearly_along_a_chain` and
 descent and the prepass linear, on both paths.
 
 The clean path has neither the prepass nor the loop. On a parse without
-an error an `Expression`, a block, a class, a method, a superclass clause
-and a class side each start at their first token and end at their last,
-so the tokens covering what such a node knows of its own tokens
-(`known_and_shape`, which the walk reads too) are its extent; a
-statement, a slot, a message and a code body know less than they span
-and merge their children's extents, each read the same way
-(`local_extent`). The descent asks for a child's extent only when it
-expands the child's parent, so a module of many nodes and few comments
-pays for the children of the nodes on the comments' paths. One exception
-stands at an expression's right edge: a unary message's type arguments
-can stand past the span of the send they end (`x foo[E] bar`'s receiver
-ends at `foo`), so an expression's extent follows its last message to
-that message's last argument and on, iteratively, until an argument in
-parentheses or a message without arguments (`widen_by_the_right_edge`).
-What the prepass collected besides, the empty parts and the pattern
-literals, the parser records as it parses them (`attach::Exclusions`),
-rolled back with the speculative parses its checkpoints undo. A recovered
-tree's nodes need not span their children, which is why the walk stays
-for it. The oracle tests hold the clean path to the reference over every
-source, and a debug build attaches a copy of every clean parse by the
-walk too and compares the two node by node, so every parse of the
-workspace's debug suites checks the claim the clean path rests on; that
-is how the exception at the right edge was found.
+an error what an `Expression`, a block, a class, a method, a superclass
+clause and a class side know of their own tokens (`known_and_shape`,
+which the walk reads too) starts at their first token and reaches their
+last but at the right edge; a statement, a slot, a message and a code
+body know less than they span and merge their children's extents, each
+read the same way (`local_extent`). The descent asks for a child's
+extent only when it expands the child's parent, so a module of many
+nodes and few comments pays for the children of the nodes on the
+comments' paths. At the right edge a node's spans can fall short of its
+subtree: a primary's or a unary message's type arguments stand past the
+span of the send, the assignment or the superclass clause they end
+(`x foo[E] bar`'s receiver ends at `foo`, `x:: y[E]` at `y`). So every
+extent follows the node's last child, that child's last child and on,
+iteratively, until a node that closes itself -- parentheses, a block, a
+method's body, a class side (`widen_by_the_right_edge`, `last_child`,
+which a test holds to the child `describe` appends last). What the
+prepass collected besides, the empty parts and the pattern literals, the
+parser records as it parses them (`attach::Exclusions`), rolled back with
+the speculative parses its checkpoints undo and never inside a pattern
+literal, whose text holds whatever its tuple parses. A recovered tree's
+nodes need not span their children, which is why the walk stays for it.
+The argument is not what holds the clean path: the oracle tests hold it
+to the reference over every source and over hand-written sources for
+every right edge, and a debug build attaches a copy of every clean parse
+by the walk too and compares the two node by node, so every parse of the
+workspace's debug suites checks it. The right edge's exceptions were
+found that way, by the comparison and by the branch's review.
 
 Measured 2026-10-17 on the measuring
 workstation (Windows 11, release builds with the function-alignment pin,

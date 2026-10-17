@@ -77,6 +77,12 @@ pub struct Parser<'a> {
     /// attachment of a parse without an error (`attach::Exclusions`);
     /// rolled back with the cursor by [`Parser::restore`].
     exclusions: crate::attach::Exclusions,
+    /// How many pattern literals the parse is inside. A pattern's tuple
+    /// holds expressions, so pattern literals and blocks are parsed inside
+    /// one, but all of it is the outer literal's text, which the tree keeps
+    /// as text: nothing inside is recorded. Balanced by construction, so no
+    /// checkpoint keeps it.
+    pattern_depth: u32,
     /// Every step the parse takes -- each token bumped, each position the
     /// recovery scans or checks for a member, each closer it looks up -- so
     /// a test can hold the parse's work to a bound without timing it.
@@ -111,6 +117,7 @@ impl<'a> Parser<'a> {
             member_ends: std::collections::HashMap::new(),
             depth_refusals: 0,
             exclusions: crate::attach::Exclusions::default(),
+            pattern_depth: 0,
             #[cfg(test)]
             steps: 0,
         }
@@ -507,6 +514,14 @@ impl<'a> Parser<'a> {
             .empty_class_sides
             .truncate(checkpoint.empty_class_sides);
         self.exclusions.patterns.truncate(checkpoint.patterns);
+    }
+
+    /// Records an exclusion, unless the parse is inside a pattern literal,
+    /// whose text holds whatever it parses.
+    pub(crate) fn record_exclusion(&mut self, record: impl FnOnce(&mut crate::attach::Exclusions)) {
+        if self.pattern_depth == 0 {
+            record(&mut self.exclusions);
+        }
     }
 
     /// The empty parts and pattern literals recorded so far, for the

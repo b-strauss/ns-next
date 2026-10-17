@@ -246,20 +246,20 @@ fn attach_clean(
 }
 
 /// A node's extent read from the node itself, for the clean path. On a
-/// parse without an error an expression, a block, a class, a method, a
-/// superclass clause and a class side each start at their first token and
-/// end at their last, so the tokens covering what the node knows are its
-/// extent; a statement, a slot, a message and a body know less than they
-/// span and merge their children's extents, each read the same way. An
-/// expression asks no child, so no chain of messages is followed and the
-/// recursion is at most a body, a statement or slot, and an expression
-/// deep.
+/// parse without an error what an expression, a block, a class, a method,
+/// a superclass clause and a class side know of their own tokens starts at
+/// their first token and reaches their last but at the right edge, which
+/// [`widen_by_the_right_edge`] follows; a statement, a slot, a message and
+/// a body know less than they span and merge their children's extents,
+/// each read the same way. An expression asks no child but along its
+/// right edge, which follows messages and arguments, never a receiver, so
+/// no chain of messages is followed and the recursion is at most a body, a
+/// statement or slot, and an expression deep. The debug comparison in
+/// [`attach_clean_comments`], not this argument, is what holds it.
 fn local_extent(node: Node<'_>, tokens: &Tokens, work: &mut usize) -> Option<(usize, usize)> {
     *work += 1;
     let (mut known, shape) = known_and_shape(node);
-    if let Node::Expression(expression) = node {
-        widen_by_the_right_edge(&mut known, expression, work);
-    }
+    widen_by_the_right_edge(&mut known, node, work);
     let children = match node {
         Node::Statement(statement) => {
             let (StatementKind::Return(expression) | StatementKind::Expression(expression)) =
@@ -293,34 +293,83 @@ fn local_extent(node: Node<'_>, tokens: &Tokens, work: &mut usize) -> Option<(us
     extent_of(tokens, &mut Cursors::default(), known, shape, children)
 }
 
-/// Widens an expression's `known` by what can stand past its span at its
-/// right edge: a unary message's type arguments end the send they belong
-/// to, and the parser ends a send's span before them (`x foo[E] bar`'s
-/// receiver ends at `foo`, `x at: 1 foo[E]`'s argument at `foo`). Followed
-/// from the last message to its last argument and on, an iteration, never
-/// a recursion; an argument in parentheses ends it, its parentheses
-/// spanning what is inside. The walk needs none of this: it merges every
-/// child's extent.
-fn widen_by_the_right_edge(known: &mut Option<Span>, expression: &Expression, work: &mut usize) {
-    let mut current = expression;
-    loop {
-        let last = match &current.kind {
-            ExpressionKind::Send(send) => &send.message,
-            ExpressionKind::Cascade(cascade) => cascade.rest.last().unwrap_or(&cascade.first),
-            _ => return,
-        };
+/// Widens `node`'s `known` by what its descendants know at its right
+/// edge, from its last child to that child's last child and on -- an
+/// iteration, never a recursion. A node's spans can fall short of its
+/// subtree there: a primary's or a unary message's type arguments stand
+/// past the span of the send, the assignment or the superclass clause
+/// they end (`x foo[E] bar`'s receiver ends at `foo`, `x:: y[E]` at `y`).
+/// It stops at a node that closes itself -- parentheses, a block, a
+/// method's body, a class side -- whose closer is the subtree's last
+/// token. The walk needs none of this: it merges every child's extent.
+fn widen_by_the_right_edge(known: &mut Option<Span>, node: Node<'_>, work: &mut usize) {
+    let mut current = node;
+    while let Some(child) = last_child(current) {
         *work += 1;
-        widen_annotation(known, &last.type_arguments);
-        let Some(argument) = last.arguments.last() else {
-            return;
-        };
-        if let (Some(span), _) = known_and_shape(Node::Expression(argument)) {
+        if let (Some(span), _) = known_and_shape(child) {
             widen(known, span);
         }
-        if !argument.parentheses.is_empty() {
+        if closes_itself(child) {
             return;
         }
-        current = argument;
+        current = child;
+    }
+}
+
+/// The child [`describe`] appends last: on a parse without an error, the
+/// child that ends last.
+fn last_child(node: Node<'_>) -> Option<Node<'_>> {
+    match node {
+        Node::Module(module) => Some(Node::Class(&module.root_class)),
+        Node::Class(class) => Some(Node::Side(
+            class.class_side.as_ref().unwrap_or(&class.instance_side),
+        )),
+        Node::Side(side) => side
+            .members
+            .last()
+            .map(|member| match member {
+                Member::Class(class) => Node::Class(class),
+                Member::LazySlot(slot) => Node::Slot(slot),
+                Member::Method(method) => Node::Method(method),
+            })
+            .or_else(|| side.initializer_expressions.last().map(Node::Statement))
+            .or_else(|| side.header_slots.last().map(Node::Slot)),
+        Node::Superclass(clause) => clause.messages.last().map(Node::Message),
+        Node::Slot(slot) => slot.initializer.as_ref().map(Node::Expression),
+        Node::Method(method) => Some(Node::Body(&method.body)),
+        Node::Body(body) => body
+            .statements
+            .last()
+            .map(Node::Statement)
+            .or_else(|| body.temporaries.last().map(Node::Slot)),
+        Node::Statement(statement) => {
+            let (StatementKind::Return(expression) | StatementKind::Expression(expression)) =
+                &statement.kind;
+            Some(Node::Expression(expression))
+        }
+        Node::Expression(expression) if expression.synthesized => None,
+        Node::Expression(expression) => match &expression.kind {
+            ExpressionKind::Identifier(_) | ExpressionKind::Literal(_) => None,
+            ExpressionKind::Send(send) => Some(Node::Message(&send.message)),
+            ExpressionKind::Cascade(cascade) => {
+                Some(Node::Message(cascade.rest.last().unwrap_or(&cascade.first)))
+            }
+            ExpressionKind::Assign { value, .. } => Some(Node::Expression(value)),
+            ExpressionKind::Block(block) => Some(Node::Block(block)),
+            ExpressionKind::DynamicArray { elements, .. } => elements.last().map(Node::Expression),
+        },
+        Node::Message(message) => message.arguments.last().map(Node::Expression),
+        Node::Block(block) => Some(Node::Body(&block.body)),
+    }
+}
+
+/// Whether `node` knows its own closer, the last token of its subtree, so
+/// that nothing below it can stand further right.
+fn closes_itself(node: Node<'_>) -> bool {
+    match node {
+        Node::Expression(expression) => !expression.parentheses.is_empty(),
+        Node::Block(_) | Node::Method(_) | Node::Side(_) => true,
+        _ => false,
     }
 }
 
@@ -499,8 +548,7 @@ pub(crate) struct Exclusions {
 /// taken for its comments.
 #[derive(Clone, Copy)]
 enum Node<'tree> {
-    /// The module, whose extent is every token.
-    Module,
+    Module(&'tree Module),
     Class(&'tree ClassDeclaration),
     Side(&'tree ClassBody),
     Superclass(&'tree SuperclassClause),
@@ -516,7 +564,7 @@ enum Node<'tree> {
 impl Pending<'_> {
     fn as_node(&self) -> Node<'_> {
         match self {
-            Pending::Module(_) => Node::Module,
+            Pending::Module(module) => Node::Module(module),
             Pending::Class(class) => Node::Class(class),
             Pending::Side(side) => Node::Side(side),
             Pending::Superclass(clause) => Node::Superclass(clause),
@@ -537,7 +585,7 @@ impl Pending<'_> {
 fn known_and_shape(node: Node<'_>) -> (Option<Span>, Shape) {
     let mut known = None;
     let shape = match node {
-        Node::Module => Shape::Module,
+        Node::Module(_) => Shape::Module,
         Node::Class(class) => {
             widen(&mut known, class.span);
             Shape::Plain
@@ -1593,6 +1641,11 @@ mod tests {
         let mut actual = module;
         attach_clean_comments(&mut actual, &tokens, &comments, source, &exclusions);
         assert!(actual == expected, "{name}: attached unlike the reference");
+        // The clean path is for a parse without an error only.
+        assert!(
+            crate::parse_for_editor(source).diagnostics.is_empty(),
+            "{name}: parses with an error"
+        );
     }
 
     /// Every whole source parses without an error, so it takes the clean
@@ -1612,8 +1665,8 @@ mod tests {
         for source in [
             "class A = () ( m = ( | a | (* c *) ) )",
             "class A = () ( m = ( | a | a (* c *) ) )",
-            "class A = () ( m = ( (* c *) ^1. ^2 ) )",
-            "class A = () ( m = [ :x | | a b | a (* c *). b ] )",
+            "class A = () ( m = ( (* c *) a. ^2 ) )",
+            "class A = () ( m = ( ^[ :x | | a b | a (* c *). b ] ) )",
             "class A = () ( m = ( | a | ) (* c *) )",
         ] {
             attaches_cleanly_as_the_reference(source, source);
@@ -1628,9 +1681,100 @@ mod tests {
         for source in [
             "class A = () ( m = ( ^x foo[E (* c *)] (* d *) bar ) )",
             "class A = () ( m = ( ^x at: 1 foo[E (* c *)] (* d *) ) )",
-            "class A = () ( m = ( ^x foo; bar[E (* c *)] (* d *) ) )",
+            "class A = () ( m = ( ^x foo; at: y bar[E (* c *)] (* d *) ) )",
         ] {
             attaches_cleanly_as_the_reference(source, source);
+        }
+    }
+
+    /// Wherever type arguments can stand past the span of what they end --
+    /// an assignment's value, a superclass clause's message, a cascade's
+    /// last argument, in every place an expression stands -- a comment
+    /// after them attaches as the reference attaches it.
+    #[test]
+    fn the_clean_path_attaches_as_the_reference_at_every_right_edge() {
+        for body in [
+            "x:: y foo[E] (* c *)",
+            "x:: y[E] (* c *)",
+            "^x:: y[E] (* c *)",
+            "^{ x:: y[E] (* c *) }",
+            "x:: z:: y[E] (* c *)",
+            "x:: y foo; at: z bar[E] (* c *)",
+            "| a = x:: y[E] (* c *) . | ^a",
+            "^[ x:: y foo[E] (* c *) ]",
+            "^x + y foo[E] (* c *)",
+            "^x at: (y foo[E]) (* c *)",
+        ] {
+            let source = format!("class A = () ( m = ( {body} ) )");
+            attaches_cleanly_as_the_reference(&source, &source);
+        }
+        for source in [
+            "class A = () ( lazy a = x:: y[E] (* c *) . )",
+            "class A = ( x:: y[E] (* c *) ) ( )",
+            "class A = Object foo: x bar[E] (* c *) ( ) ( )",
+            "class A = Object + x bar[E] (* c *) ( ) ( )",
+            "class A = B <: C foo: x bar[E] (* c *) ( ) ( )",
+        ] {
+            attaches_cleanly_as_the_reference(source, source);
+        }
+    }
+
+    /// `last_child` answers the child `describe` appends last, for every
+    /// node of every source: the right edge follows the children the walk
+    /// merges.
+    #[test]
+    fn the_last_child_is_the_child_describe_appends_last() {
+        fn address(node: Option<Node<'_>>) -> Option<*const ()> {
+            node.map(|node| match node {
+                Node::Module(module) => std::ptr::from_ref(module).cast(),
+                Node::Class(class) => std::ptr::from_ref(class).cast(),
+                Node::Side(side) => std::ptr::from_ref(side).cast(),
+                Node::Superclass(clause) => std::ptr::from_ref(clause).cast(),
+                Node::Slot(slot) => std::ptr::from_ref(slot).cast(),
+                Node::Method(method) => std::ptr::from_ref(method).cast(),
+                Node::Body(body) => std::ptr::from_ref(body).cast(),
+                Node::Statement(statement) => std::ptr::from_ref(statement).cast(),
+                Node::Expression(expression) => std::ptr::from_ref(expression).cast(),
+                Node::Message(message) => std::ptr::from_ref(message).cast(),
+                Node::Block(block) => std::ptr::from_ref(block).cast(),
+            })
+        }
+        for path in every_source() {
+            let source = std::fs::read_to_string(&path).expect("read");
+            let (mut module, _, _, _) = unattached(&source);
+            let mut stack = vec![Pending::Module(&mut module)];
+            let mut children = Vec::new();
+            while let Some(node) = stack.pop() {
+                let expected = address(last_child(node.as_node()));
+                describe(node, &mut children, None);
+                let actual = address(children.last().map(Pending::as_node));
+                assert!(actual == expected, "{}: another last child", path.display());
+                stack.append(&mut children);
+            }
+        }
+    }
+
+    /// A pattern literal's tuple holds expressions, and with them pattern
+    /// literals and blocks: all of it is the outer literal's text, so none
+    /// of it is recorded, and a comment in it stays in the text.
+    #[test]
+    fn nothing_inside_a_pattern_literal_is_recorded() {
+        for body in [
+            "^<{ <a: 1>. (* c *) 2 }>",
+            "^<{ <a: 1> (* c *) }>",
+            "^<a: { <b: 1>. (* c *) 2 }>",
+            "^(<{ [ | | ] }> (* c *))",
+            "^(<{ [ || ] }> (* c *))",
+        ] {
+            let source = format!("class A = () ( m = ( {body} ) )");
+            let (mut module, tokens, comments, exclusions) = unattached(&source);
+            let mut parts = Parts::new(&tokens, &comments);
+            let mut work = 0;
+            prepass(&mut module, &mut parts, &mut work);
+            let expected = parts.sorted();
+            let actual = Parts::from_exclusions(&tokens, &comments, &exclusions).sorted();
+            assert!(actual == expected, "{source}: exclusions differ");
+            attaches_cleanly_as_the_reference(&source, &source);
         }
     }
 
