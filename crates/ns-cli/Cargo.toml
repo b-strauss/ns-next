@@ -10,6 +10,7 @@ name = "ns-next"
 path = "src/main.rs"
 
 [dependencies]
+mimalloc.workspace = true
 ns-syntax = { path = "../ns-syntax" }
 ns-runtime = { path = "../ns-runtime" }
 ns-tooling = { path = "../ns-tooling" }

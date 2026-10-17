@@ -1993,6 +1993,39 @@ and an interpreter, which holds `Rc`s throughout, is not `Send` either.
 - **Executable memory for the JIT tiers** comes to the same crate when they
   do, with its `unsafe` entry into generated code.
 
+### The allocator of the Rust side
+
+Everything Rust allocates -- the syntax tree, the resolver's and the
+compiler's tables, the compiled code, the image decoder's buffers, the
+analyzer's documents -- goes through the global allocator; the Newspeak
+heap is the reservation above and never does. Both binaries, `ns-next` and
+`ns-next-analyzer`, set it to mimalloc (`#[global_allocator]` in each
+`main.rs`; the dependency in the workspace manifest). A library crate sets
+none: a global allocator is the whole program's, so one set in
+`ns-syntax` or `ns-runtime` would be imposed on every program linking it,
+the test binaries included, which run on the platform's allocator.
+
+Rust's default on Windows is the process heap (`HeapAlloc`), which the
+front end, allocating and freeing a node at a time, pays for heavily.
+Measured on 2026-10-17 on the measuring workstation (Windows 11, release
+builds with the alignment pin, three builds a side): `parse` over the 211
+corpus modules (`cargo bench -p ns-syntax --bench corpus`) takes 92-96 ms
+on the process heap, 54 ms under mimalloc, 56 ms under snmalloc, 53 ms
+under rpmalloc and 168 ms under the segment heap a manifest can select;
+`ns-next-analyzer parse-corpus corpus/modules` 164 ms against 77 ms; a boot
+from source (`hello.ns` under `NS_NEXT_NO_PRIMITIVE_METHODS=1`) 14.9 ms
+against 11.8 ms; a boot from the embedded shipped code 4.9 ms against 5.0
+ms, the one case mimalloc measures slower. Of the benchmarks, under
+mimalloc: `bench_block` -11 %, Bounce -8 %, Storage -7 %, CD and DeltaBlue
+-5 %, Json and Havlak -5 %, `bench_megamorphic` and DeltaBlueTon80 -3 %,
+List +3 %, the others within their spread. mimalloc over snmalloc and
+rpmalloc, which measured the same: it is the most used of the three and
+needs no further system library (rpmalloc links `advapi32`). It is C,
+compiled by `cc`, so the build needs a C compiler, which every target's
+Rust toolchain here already has beside its linker. The corpus benchmark
+runs on the platform's allocator, so that it still shows what the front end
+allocates.
+
 ## The object space
 
 Built by road step 3b on 2026-10-03
