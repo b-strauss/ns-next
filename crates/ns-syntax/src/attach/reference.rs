@@ -44,10 +44,6 @@ pub(super) fn attach_comments(
 }
 
 /// Every commentable node's extent, in the tree's order.
-#[expect(
-    dead_code,
-    reason = "the new measurement is compared against it from the next commit on"
-)]
 pub(super) fn extents(
     module: &mut Module,
     tokens: &[Token],
