@@ -3,12 +3,14 @@
 > **Status:** built.
 > **Code:** `crates/ns-syntax/` — lexer, tokens, AST (`ast.rs`, lossless
 > except for layout), recursive-descent and Pratt parser, `Span`,
-> diagnostics; the comment attachment (`attach.rs`) and the comparison
+> diagnostics; the comment attachment (`attach.rs`, held to the test-only
+> reference in `attach/reference.rs`) and the comparison
 > without positions (`positions.rs`); for an editor, `parse_for_editor`
 > (`lib.rs`), the recovery with its work budget (`parser/declaration.rs`,
 > `parser/mod.rs`), the AST's `Delimiters`, and `Send`'s link-by-link drop,
 > clone and `receiver_chain` (`ast.rs`); the recovery's tests in
-> `tests/recovery.rs`, the attachment's in `tests/attachment.rs`. The
+> `tests/recovery.rs`, the attachment's in `tests/attachment.rs`; the
+> corpus benchmark in `benches/corpus.rs`. The
 > printer that writes a module back as source is
 > [formatting.md](formatting.md)'s.
 

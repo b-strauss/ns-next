@@ -1807,7 +1807,7 @@ nothing one by one -- it slides the survivors down and moves the top.
 slot, by swapping the
 global allocator of `ns-cli` in scratch builds (three builds a side, two
 sittings, medians, the measurement protocol of [execution.md](execution.md)),
-against the Windows heap the shipped build uses:
+against the Windows heap:
 
 | Source | mimalloc | A bump allocator that never frees |
 |---|---|---|
@@ -1817,7 +1817,7 @@ against the Windows heap the shipped build uses:
 | `bench_megamorphic.ns` | level | +6.6% |
 | A scratch source churning short-lived lists, instances and strings | **−8.9%** | −5.6% |
 
-An xperf profile of the shipped allocator put 16.9% of `bench_block.ns`'s
+An xperf profile of the Windows heap put 16.9% of `bench_block.ns`'s
 samples and 11.0% of the churning source's in `ntdll.dll`'s heap; under
 mimalloc about 3% and 2% remained in the allocator's own functions, with about
 1.3% more in the drop glue of the payload types the slots then held. The bump
