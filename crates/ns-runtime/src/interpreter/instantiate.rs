@@ -1053,10 +1053,9 @@ impl<'gc> Mutator<'gc> {
         });
         // `InitializeSlot`'s `own_index` is relative to the mixin's own slots,
         // not an absolute field index, because the compiled body is shared by
-        // every application of the mixin. The activation runs with `level` as
-        // its `current_class`, whose own `MixinApplication.own_slot_base`
-        // turns it into an absolute index at run time
-        // (`Heap::activation_slot_base`).
+        // every application of the mixin. The activation is entered at `level`,
+        // whose own `MixinApplication.own_slot_base` turns it into an absolute
+        // index at run time (`Heap::activation_slot_base`).
         code
     }
 

@@ -998,9 +998,9 @@ pub struct MixinApplication {
     pub declared_slots: Vec<usize>,
     pub slot_count: usize,
     /// Where this application's *own* slots start -- `superclass.slot_count`,
-    /// or 0 with none. Read at run time (`Heap::activation_slot_base`, off the
-    /// application the activation was entered at) to turn a compiled `InitializeSlot`'s
-    /// mixin-relative `own_index` into this application's absolute field index:
+    /// or 0 with none. Read at run time (`Heap::activation_slot_base`, off
+    /// the application the activation was entered at) to turn a compiled
+    /// `InitializeSlot`'s mixin-relative `own_index` into this application's absolute field index:
     /// the compiled initializer is shared by every application of the mixin
     /// (keying code by mixin without this would bake ONE application's offset
     /// into code every application runs), while this field is computed fresh
