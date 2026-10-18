@@ -5,6 +5,14 @@
 //! bootstrap and class instantiation are in `instantiate.rs`.
 
 pub(crate) mod core_library;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "road step 5b2a's install and its leaves call it; until then only the tests do"
+    )
+)]
+mod edit;
 pub mod future;
 pub(crate) mod inline_cache;
 pub mod instantiate;

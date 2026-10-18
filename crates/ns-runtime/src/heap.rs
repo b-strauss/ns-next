@@ -3367,6 +3367,37 @@ impl<'gc> Heap<'gc> {
         self.tables.module_texts.get(id.index())?.clone()
     }
 
+    /// The current text of the module whose root mixin `module_root`
+    /// names: the text its last edit made it, else the text the root was
+    /// read in (`mixin_module_text`). `None` for a module with no text.
+    pub(crate) fn current_module_text(
+        &self,
+        module_root: MixinId,
+    ) -> Option<crate::mixin::ModuleText> {
+        match self.tables.current_module_texts.get(&module_root) {
+            Some(text) => Some(text.clone()),
+            None => self.mixin_module_text(module_root),
+        }
+    }
+
+    /// Makes `text` the current text of the module whose root mixin
+    /// `module_root` names, which the next edit of any of its classes
+    /// starts from.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "road step 5b2a's install calls it; until then only the tests do"
+        )
+    )]
+    pub(crate) fn set_current_module_text(
+        &mut self,
+        module_root: MixinId,
+        text: crate::mixin::ModuleText,
+    ) {
+        self.tables.current_module_texts.insert(module_root, text);
+    }
+
     /// Makes `replacement` the current version of the mixin `id`, read in
     /// `module_text`: from here on `replacement`'s address answers `id`,
     /// as every earlier version's still does, and the id keeps the

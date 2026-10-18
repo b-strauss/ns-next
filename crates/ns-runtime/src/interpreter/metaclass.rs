@@ -119,14 +119,7 @@ impl<'gc> Mutator<'gc> {
         if let Some(existing) = self.metaclass_mixins.get(&key) {
             return existing.clone();
         }
-        let synthesized = Rc::new(crate::mixin::Mixin {
-            methods: std::iter::once(crate::mixin::factory_entry(mixin.factory)).collect(),
-            ..crate::mixin::Mixin::empty(Symbol::CLASS_SIDE)
-        });
-        // A synthesized class side names the instance side it stands for,
-        // as a declared one does; it has no text of its own. The cell is
-        // fresh, so the set cannot fail.
-        let _ = synthesized.enclosing.set(Rc::downgrade(mixin));
+        let synthesized = synthesized_class_side(mixin);
         self.metaclass_mixins.insert(key, synthesized.clone());
         synthesized
     }
@@ -156,6 +149,22 @@ impl<'gc> Mutator<'gc> {
         }
         self.metaclasses_ready = true;
     }
+}
+
+/// The class side `metaclass_mixin` synthesizes for `mixin`, which
+/// declares none: the factory entry alone, linked to `mixin` as a declared
+/// class side is. Uncached, so that an edit can build the one its fresh
+/// instance side needs without registering or recording anything.
+pub(crate) fn synthesized_class_side(mixin: &Rc<crate::mixin::Mixin>) -> Rc<crate::mixin::Mixin> {
+    let synthesized = Rc::new(crate::mixin::Mixin {
+        methods: std::iter::once(crate::mixin::factory_entry(mixin.factory)).collect(),
+        ..crate::mixin::Mixin::empty(Symbol::CLASS_SIDE)
+    });
+    // A synthesized class side names the instance side it stands for, as a
+    // declared one does; it has no text of its own. The cell is fresh, so
+    // the set cannot fail.
+    let _ = synthesized.enclosing.set(Rc::downgrade(mixin));
+    synthesized
 }
 
 #[cfg(test)]

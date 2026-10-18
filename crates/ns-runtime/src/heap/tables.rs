@@ -91,6 +91,14 @@ pub(crate) struct Tables {
     /// (`Mixin::module_text`), read when the mixin is registered and given
     /// anew by a replacement.
     pub(crate) module_texts: Vec<Option<ModuleText>>,
+    /// Per module, by its root mixin's id, the text an edit last made the
+    /// module's: the next edit of any of its classes starts from it, so it
+    /// carries every earlier one. Kept apart from `module_texts`, because
+    /// the root's row keeps the text its own version's spans point into,
+    /// which an edit of a nested class leaves the root's
+    /// (`docs/design/liveness-and-reflection.md`, "Compiling: the module's
+    /// text is what an edit edits").
+    pub(crate) current_module_texts: IdentityMap<MixinId, ModuleText>,
     pub(crate) applications: Vec<Rc<MixinApplication>>,
     pub(crate) codes: Vec<CodeEntry>,
     pub(crate) code_ids: IdentityMap<usize, CodeId>,
