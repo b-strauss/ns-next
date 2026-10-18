@@ -334,8 +334,10 @@ impl<'gc> Mutator<'gc> {
     /// whatever level they reached it through -- behind the rule by level,
     /// so that a defect in the mirrors module cannot hand one out
     /// (`docs/design/liveness-and-reflection.md`, "No mirror hands out a
-    /// value it reached through a shipped level").
-    pub(crate) fn is_withheld(&self, value: Value<'gc>) -> bool {
+    /// value it reached through a shipped level"). Public for the host
+    /// tests that hold the mirrors to the rule; it answers, never changes.
+    #[doc(hidden)]
+    pub fn is_withheld(&self, value: Value<'gc>) -> bool {
         self.is_vm_mirror(value)
             || value
                 .as_object()

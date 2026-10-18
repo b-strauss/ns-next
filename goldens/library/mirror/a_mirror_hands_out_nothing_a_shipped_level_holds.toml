@@ -1,0 +1,19 @@
+stdout = '''
+enclosingObject: the enclosing object of a core-library class is not reflected
+reflectee: a core-library class reached by navigation is not handed out
+Transcript slots 0 names 0 refused 0 enclosingObject refused reflectee refused
+Time slots 0 names 0 refused 0 enclosingObject refused reflectee refused
+Collections slots 0 names 0 refused 0 enclosingObject refused reflectee refused
+TypedArrays slots 0 names 0 refused 0 enclosingObject refused reflectee refused
+KernelNamespace slots 0 names 0 refused 0 enclosingObject refused reflectee refused
+Mirrors slots 0 names 0 refused 0 enclosingObject refused reflectee refused
+Platform slots 0 names 0 refused 0 enclosingObject refused reflectee refused
+List slots 0 names 4 refused 4 enclosingObject refused reflectee refused
+Int8Array slots 0 names 1 refused 1 enclosingObject refused reflectee refused
+Stopwatch slots 0 names 2 refused 2 enclosingObject refused reflectee refused
+List enclosingObject refused reflectee true superclasses 3 refused 3
+Map enclosingObject refused reflectee true superclasses 3 refused 3
+Int8Array enclosingObject refused reflectee true superclasses 5 refused 5
+Stopwatch enclosingObject refused reflectee true superclasses 2 refused 2
+Collection enclosingObject refused reflectee true superclasses 2 refused 2
+'''

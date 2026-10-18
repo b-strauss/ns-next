@@ -1,0 +1,110 @@
+/// A mirror hands out no value it reaches through a core-library level.
+/// Over every facet the platform hands out, the platform itself and an
+/// instance of List, Int8Array and Stopwatch, an object mirror lists no
+/// slot, refuses `getSlot:` of every slot its class declares, and its
+/// class mirror, reached by navigation, refuses both the class's
+/// enclosing object and the class itself. Over every class the facets
+/// hand out, a class mirror the program made answers the class back but
+/// refuses its enclosing object, and every superclass it navigates to
+/// refuses to hand its class out.
+class AMirrorHandsOutNothingAShippedLevelHolds = Object new (
+  |
+    private ObjectMirror ::= nil.
+    private ClassMirror ::= nil.
+  |
+) (
+  outcome: action = (
+    ^[
+      action value.
+      'answered'.
+    ] on: Error do: [:error | 'refused'].
+  )
+
+  refusals: actions = (
+    |
+      count ::= 0.
+    |
+    actions do: [:action | (outcome: action) = 'refused' ifTrue: [count:: count + 1]].
+    ^count.
+  )
+
+  reportObject: subject on: transcript = (
+    |
+      mirror = ObjectMirror reflecting: subject.
+      names = mirror getClass slots collect: [:each | each name].
+    |
+    transcript
+        show: mirror getClass name;
+        show: ' slots ';
+        print: mirror slots size;
+        show: ' names ';
+        print: names size;
+        show: ' refused ';
+        print: (refusals: (names collect: [:name | [mirror getSlot: name]]));
+        show: ' enclosingObject ';
+        show: (outcome: [mirror getClass enclosingObject]);
+        show: ' reflectee ';
+        show: (outcome: [mirror getClass reflectee]);
+        newLine.
+  )
+
+  reportClass: aClass on: transcript = (
+    |
+      mirror = ClassMirror reflecting: aClass.
+      levels ::= {}.
+      level ::= mirror superclass.
+    |
+    [level isNil] whileFalse: [
+      levels:: levels , {level}.
+      level:: level superclass.
+    ].
+    transcript
+        show: mirror name;
+        show: ' enclosingObject ';
+        show: (outcome: [mirror enclosingObject]);
+        show: ' reflectee ';
+        print: mirror reflectee == aClass;
+        show: ' superclasses ';
+        print: levels size;
+        show: ' refused ';
+        print: (refusals: (levels collect: [:each | [each reflectee]]));
+        newLine.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      collections = platform collections.
+      typedArrays = platform typedArrays.
+      time = platform time.
+      reached = (platform mirrors ObjectMirror reflecting: transcript) getClass.
+    |
+    ObjectMirror:: platform mirrors ObjectMirror.
+    ClassMirror:: platform mirrors ClassMirror.
+    transcript
+        show: ([reached enclosingObject] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: ([reached reflectee] on: Error do: [:error | error messageText]);
+        newLine.
+    {
+      transcript.
+      time.
+      collections.
+      typedArrays.
+      platform kernel.
+      platform mirrors.
+      platform.
+      collections List new.
+      typedArrays Int8Array new: 2.
+      time Stopwatch new.
+    } do: [:each | reportObject: each on: transcript].
+    {
+      collections List.
+      collections Map.
+      typedArrays Int8Array.
+      time Stopwatch.
+      platform kernel Collection.
+    } do: [:each | reportClass: each on: transcript].
+  )
+)

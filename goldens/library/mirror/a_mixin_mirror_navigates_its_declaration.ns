@@ -6,12 +6,14 @@
 /// declaration, the module's having none. A declaration is never equal to
 /// either of its sides, but is equal to the declaration reached from its
 /// class side or from its enclosing class's nested classes, which come in
-/// declaration order, each with its access.
+/// declaration order, each with its access, an unmarked one's protected.
 class AMixinMirrorNavigatesItsDeclaration = Object new () (
   class Holder = Object new () (
     public class First = Object new () ()
 
     private class Second = Object new () ()
+
+    class Third = Object new () ()
   )
 
   public main: platform args: arguments = (

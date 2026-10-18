@@ -1269,6 +1269,166 @@ mod tests {
         );
     }
 
+    /// A program slot holding the kernel's instance, or the platform
+    /// module's, declines as one holding the transcript module's does: the
+    /// leaf withholds every recorded root instance, not one alone.
+    #[test]
+    fn a_program_slot_holding_any_shipped_root_declines() {
+        let (mut interpreter, fixture) = a_fixture();
+        for module in ["Kernel", "PlatformFactory", "TranscriptFactory"] {
+            let derived = send(&mut interpreter, &fixture, "derived");
+            interpreter.enter(|mutator| {
+                let Some(object) = mutator.fetch(&derived).as_object() else {
+                    panic!("a Derived is an object");
+                };
+                let Some(instance) = mutator
+                    .shipped_world
+                    .module_instance(Symbol::intern(module))
+                else {
+                    panic!("{module} is recorded");
+                };
+                let class = mutator.heap().object_class(object);
+                let Some(application) = mutator.heap().class_application(class) else {
+                    panic!("a Derived's class is a class");
+                };
+                let Some(position) = application
+                    .mixin
+                    .slots
+                    .iter()
+                    .position(|slot| slot.name.as_str() == "own")
+                else {
+                    panic!("Derived declares own");
+                };
+                assert!(mutator.heap.instance_set_field(
+                    object,
+                    application.own_slot_base + position,
+                    Value::object(instance)
+                ));
+            });
+            let own = a_symbol(&mut interpreter, "own");
+            assert_eq!(
+                rendered(
+                    &mut interpreter,
+                    "reflectionSlotOf:named:ifFail:",
+                    &derived,
+                    &[own]
+                ),
+                "declined",
+                "{module}"
+            );
+            // The name is still listed: the slot is the program's, only its
+            // value is withheld.
+            assert_eq!(
+                rendered(
+                    &mut interpreter,
+                    "reflectionSlotNamesOf:ifFail:",
+                    &derived,
+                    &[]
+                ),
+                "{#inherited. #own. #secret}",
+                "{module}"
+            );
+        }
+    }
+
+    /// A module whose classes stand over the collections module's `List`,
+    /// which declares `size_`, `firstIndex`, `data` and `modifications`:
+    /// `Redeclaring` declares `data` again, and `Extending` none of
+    /// `List`'s names.
+    fn an_over_list_fixture() -> (Interpreter, Root) {
+        let source = indoc! {"
+            class OverList usingPlatform: platform = Object new (
+              | public List = platform collections List. |
+            ) (
+              public class Redeclaring = List new: 2 (
+                | public data ::= 5. public extra ::= 6. |
+              ) ()
+              public class Extending = List new: 2 (
+                | public extra ::= 7. |
+              ) ()
+              public redeclaring = (^Redeclaring new)
+              public extending = (^Extending new)
+            ) : ()
+        "};
+        let module = ns_syntax::parse(source).expect("the fixture parses");
+        let resolved = match crate::resolve(
+            module,
+            std::rc::Rc::from(source),
+            crate::SourceOrigin::File(std::path::PathBuf::from("over_list_fixture.ns")),
+        ) {
+            Ok(resolved) => resolved,
+            Err(_) => panic!("the fixture resolves"),
+        };
+        let mut interpreter = Interpreter::bootstrap();
+        let class = interpreter.load_module(&resolved);
+        let platform = interpreter.platform();
+        let fixture = expect_ok(
+            interpreter.instantiate(&class, &[platform]),
+            "OverList usingPlatform:",
+        );
+        (interpreter, fixture)
+    }
+
+    /// A program level that redeclares a name a shipped level farther up
+    /// declares is the nearest declaration, so its slot is listed and read;
+    /// a name only the shipped level declares is neither listed nor read.
+    #[test]
+    fn a_program_level_over_a_shipped_one_answers_only_its_own_names() {
+        let (mut interpreter, fixture) = an_over_list_fixture();
+        let redeclaring = send(&mut interpreter, &fixture, "redeclaring");
+        assert_eq!(
+            rendered(
+                &mut interpreter,
+                "reflectionSlotNamesOf:ifFail:",
+                &redeclaring,
+                &[]
+            ),
+            "{#data. #extra}"
+        );
+        for (name, expected) in [
+            ("data", "5"),
+            ("extra", "6"),
+            ("size_", "declined"),
+            ("firstIndex", "declined"),
+            ("modifications", "declined"),
+        ] {
+            let symbol = a_symbol(&mut interpreter, name);
+            assert_eq!(
+                rendered(
+                    &mut interpreter,
+                    "reflectionSlotOf:named:ifFail:",
+                    &redeclaring,
+                    &[symbol]
+                ),
+                expected,
+                "Redeclaring {name}"
+            );
+        }
+        let extending = send(&mut interpreter, &fixture, "extending");
+        assert_eq!(
+            rendered(
+                &mut interpreter,
+                "reflectionSlotNamesOf:ifFail:",
+                &extending,
+                &[]
+            ),
+            "{#extra}"
+        );
+        for (name, expected) in [("extra", "7"), ("data", "declined"), ("size_", "declined")] {
+            let symbol = a_symbol(&mut interpreter, name);
+            assert_eq!(
+                rendered(
+                    &mut interpreter,
+                    "reflectionSlotOf:named:ifFail:",
+                    &extending,
+                    &[symbol]
+                ),
+                expected,
+                "Extending {name}"
+            );
+        }
+    }
+
     #[test]
     fn a_mixin_reports_whether_it_is_shipped() {
         let (mut interpreter, fixture) = a_fixture();

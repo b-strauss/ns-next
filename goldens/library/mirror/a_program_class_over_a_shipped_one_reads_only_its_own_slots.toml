@@ -1,0 +1,9 @@
+stdout = '''
+size_ firstIndex data modifications extra
+extra=7
+7
+getSlot: no slot named data that a mirror may read
+Viewed Collection Object Top
+true
+enclosingObject: the enclosing object of a core-library class is not reflected
+'''

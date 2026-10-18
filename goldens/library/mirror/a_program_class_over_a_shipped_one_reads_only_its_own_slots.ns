@@ -1,0 +1,69 @@
+/// A program's class over a core-library class reads only its own levels'
+/// values. Its class mirror lists the slot declarations of every level,
+/// List's before its own, since a declaration is structure; its object
+/// mirror lists and reads only the slot the program declares, and refuses
+/// a slot List declares. A class that applies a core-library mixin
+/// through `<:` gets a level whose mixin is that core-library one, and the
+/// class mirror of that level refuses its enclosing object, while the
+/// program's own level answers its own.
+class AProgramClassOverAShippedOneReadsOnlyItsOwnSlots = Object new (
+  |
+    private List ::= nil.
+    private Collection ::= nil.
+  |
+) (
+  class Listed = List new: 3 (
+    |
+      public extra ::= 7.
+    |
+  ) ()
+
+  class Viewed = Object <: Collection () ()
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      ObjectMirror = platform mirrors ObjectMirror.
+      listed
+      viewed
+      level
+    |
+    List:: platform collections List.
+    Collection:: platform kernel Collection.
+    listed:: ObjectMirror reflecting: Listed new.
+    ((ClassMirror reflecting: Listed) slots collect: [:each | each name]) do: [:name |
+      transcript show: name.
+    ] separatedBy: [
+      transcript show: ' '.
+    ].
+    transcript newLine.
+    listed slots do: [:slot |
+      transcript
+          show: slot name;
+          show: '=';
+          print: slot value reflectee;
+          newLine.
+    ].
+    transcript
+        print: (listed getSlot: #extra);
+        newLine.
+    transcript
+        show: ([listed getSlot: #data] on: Error do: [:error | error messageText]);
+        newLine.
+    viewed:: ClassMirror reflecting: Viewed.
+    level:: viewed.
+    [level isNil] whileFalse: [
+      transcript show: level name.
+      level:: level superclass.
+      level isNil ifFalse: [transcript show: ' '].
+    ].
+    transcript newLine.
+    transcript
+        print: viewed enclosingObject reflectee == self;
+        newLine.
+    transcript
+        show: ([viewed superclass enclosingObject] on: Error do: [:error | error messageText]);
+        newLine.
+  )
+)

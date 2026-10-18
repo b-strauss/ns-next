@@ -5,7 +5,7 @@
 /// answer their text only when the program's source is at hand, nil from
 /// an image built without it, so a host test holds those
 /// (`crates/ns-runtime/tests/platform.rs`).
-class AMethodAndAClassAnswerTheirSource = Object new () (
+class ACoreLibraryMethodAnswersItsSource = Object new () (
   public main: platform args: arguments = (
     |
       transcript = platform transcript.
