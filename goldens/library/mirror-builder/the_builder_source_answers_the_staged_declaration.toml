@@ -1,0 +1,14 @@
+stdout = '''
+true
+[class Subject = Object new (
+    |
+      /// A slot whose comment holds a parenthesis ( and a quote '.
+      public kept = 'a (string)'.
+    |
+  ) ]
+true false
+true true true
+true true true
+[class Subject = Object new (| public kept = 1. public extra = 2. |)]
+'''
+skipped_in_images = "a program loaded from an image cannot be edited until road step 5b2b"

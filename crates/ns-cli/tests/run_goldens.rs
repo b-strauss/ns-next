@@ -98,11 +98,12 @@ fn matches_with_a_two_entry_global_cache(source: &Path) -> Result<(), Failed> {
     common::compare(&output, &expectation, "with a two-entry global cache").map_err(Failed::from)
 }
 
-/// The two guards on `skipped` itself, which nothing else exercises. Either
-/// failure would take a golden out of the suite without saying so: a reason
-/// left blank in a hurry leaves nothing behind that says what would switch
-/// the golden back on, and a misspelled key would be ignored rather than
-/// refused, so an expectation would quietly stop being checked.
+/// The two guards on `skipped` and `skipped_in_images` themselves, which
+/// nothing else exercises. Either failure would take a golden out of a
+/// sweep without saying so: a reason left blank in a hurry leaves nothing
+/// behind that says what would switch the golden back on, and a misspelled
+/// key would be ignored rather than refused, so an expectation would
+/// quietly stop being checked.
 fn the_guards_on_skipped_refuse_what_they_promise_to() -> Result<(), Failed> {
     let refused = toml::from_str::<common::Expectation>(
         "statuss = 1
@@ -127,8 +128,21 @@ fn the_guards_on_skipped_refuse_what_they_promise_to() -> Result<(), Failed> {
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
     let refused = std::panic::catch_unwind(|| common::expectation_of(&source));
+    let blank_in_images = directory.join("blank_in_images.ns");
+    std::fs::write(&blank_in_images, "").expect("write source");
+    std::fs::write(
+        blank_in_images.with_extension("toml"),
+        "skipped_in_images = \"\"
+",
+    )
+    .expect("write expectation");
+    let refused_in_images = std::panic::catch_unwind(|| common::expectation_of(&blank_in_images));
     std::panic::set_hook(hook);
     assert!(refused.is_err(), "a blank `skipped` must be refused");
+    assert!(
+        refused_in_images.is_err(),
+        "a blank `skipped_in_images` must be refused"
+    );
     Ok(())
 }
 

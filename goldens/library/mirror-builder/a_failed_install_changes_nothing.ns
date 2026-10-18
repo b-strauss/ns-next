@@ -1,0 +1,57 @@
+/// An install that fails changes nothing. Two builders over one class
+/// each stage an edit their own check accepts: the first a method `x`,
+/// the second a header with a slot `x`. The second installs; the first's
+/// install then meets a class that declares `x` twice and signals the
+/// resolver's diagnostic, after which the class is as the second left
+/// it -- its declaration, its slot `x`, its one method -- and the first
+/// builder still holds what it staged.
+class AFailedInstallChangesNothing = Object new () (
+  class Subject = Object new (
+    |
+      public kept = 1.
+    |
+  ) (
+    public answer = (
+      ^42.
+    )
+  )
+
+  outcome: action = (
+    ^[action value printString] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      instance = Subject new.
+      declaration = (ClassMirror reflecting: Subject) mixin declaration.
+      first = declaration asBuilder.
+      second = declaration asBuilder.
+      staged
+    |
+    first instanceSide methods addFromSource: 'public x = (^#method)'.
+    second header source: 'class Subject = Object new (| public kept = 1. public x = 2. |)'.
+    second install.
+    staged:: first source.
+    transcript
+        show: (outcome: [first install]);
+        newLine.
+    transcript
+        print: first source = staged;
+        newLine.
+    transcript
+        print: declaration source = second source;
+        newLine.
+    transcript
+        show: (outcome: [instance x]);
+        show: ' ';
+        show: (outcome: [Subject new x]);
+        show: ' ';
+        show: (outcome: [instance answer]);
+        newLine.
+    transcript
+        print: (ClassMirror reflecting: Subject) mixin methods size;
+        newLine.
+  )
+)

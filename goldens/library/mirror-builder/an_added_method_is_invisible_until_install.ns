@@ -1,0 +1,34 @@
+/// A method `addFromSource:` stages is invisible until `install`: an
+/// instance made before the edit does not understand it while the edit is
+/// only staged, and answers it once the builder installs, as does an
+/// instance made after the install.
+class AnAddedMethodIsInvisibleUntilInstall = Object new () (
+  class Subject = Object new () ()
+
+  outcome: action = (
+    ^[action value printString] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      instance = Subject new.
+      builder = (ClassMirror reflecting: Subject) mixin declaration asBuilder.
+    |
+    transcript
+        show: (outcome: [instance square: 3]);
+        newLine.
+    builder instanceSide methods addFromSource: 'public square: x = (^x * x)'.
+    transcript
+        show: (outcome: [instance square: 3]);
+        newLine.
+    builder install.
+    transcript
+        show: (outcome: [instance square: 3]);
+        newLine.
+    transcript
+        show: (outcome: [Subject new square: 4]);
+        newLine.
+  )
+)

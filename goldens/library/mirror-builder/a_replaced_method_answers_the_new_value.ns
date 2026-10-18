@@ -1,0 +1,33 @@
+/// `addFromSource:` of a selector the class declares replaces that method:
+/// the old one answers until `install`, the new one after it, and the
+/// class still declares the selector once.
+class AReplacedMethodAnswersTheNewValue = Object new () (
+  class Subject = Object new () (
+    public answer = (
+      ^#before.
+    )
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      instance = Subject new.
+      builder = (ClassMirror reflecting: Subject) mixin declaration asBuilder.
+    |
+    transcript
+        print: instance answer;
+        newLine.
+    builder instanceSide methods addFromSource: 'public answer = (^#after)'.
+    transcript
+        print: instance answer;
+        newLine.
+    builder install.
+    transcript
+        print: instance answer;
+        newLine.
+    transcript
+        print: (ClassMirror reflecting: Subject) mixin methods size;
+        newLine.
+  )
+)

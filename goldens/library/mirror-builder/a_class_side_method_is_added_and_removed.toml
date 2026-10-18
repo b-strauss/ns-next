@@ -1,0 +1,10 @@
+stdout = '''
+an object does not understand #tag an object does not understand #other
+#bare 2 #sided
+an object does not understand #tag
+1 2
+#bare #sided
+an object does not understand #tag an object does not understand #kind 2
+0 1
+'''
+skipped_in_images = "a program loaded from an image cannot be edited until road step 5b2b"

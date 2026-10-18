@@ -1,0 +1,28 @@
+/// `asBuilder` refuses a class of the shipped core library, whose code is
+/// the binary's: `List`, `Object` and the platform's own class each
+/// signal an Error naming the class.
+class AShippedClassIsRefused = Object new () (
+  outcome: action = (
+    ^[
+      action value.
+      'answered'.
+    ] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      ObjectMirror = platform mirrors ObjectMirror.
+    |
+    {
+      (ClassMirror reflecting: platform collections List) mixin.
+      (ClassMirror reflecting: Object) mixin.
+      (ObjectMirror reflecting: platform) getClass mixin.
+    } do: [:mixin |
+      transcript
+          show: (outcome: [mixin declaration asBuilder]);
+          newLine.
+    ].
+  )
+)

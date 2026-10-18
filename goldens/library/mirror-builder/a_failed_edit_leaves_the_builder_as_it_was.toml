@@ -1,0 +1,10 @@
+stdout = '''
+Subject's edited source does not parse: expected an expression, found RightParenthesis (line 12)
+addFromSource: of Subject's methods takes one method declaration
+true
+#good
+#kept
+an object does not understand #broken
+an object does not understand #cached
+'''
+skipped_in_images = "a program loaded from an image cannot be edited until road step 5b2b"

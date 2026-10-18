@@ -1,0 +1,8 @@
+stdout = '''
+Subject's edited source does not resolve: class `Subject` has multiple definitions of `x` (line 9)
+true
+true
+nil 2 42
+1
+'''
+skipped_in_images = "a program loaded from an image cannot be edited until road step 5b2b"

@@ -1,0 +1,49 @@
+/// An edit the builder refuses leaves it as it was: `addFromSource:` of a
+/// method that does not parse, and of a lazy slot handed to the methods,
+/// each signal an Error with the diagnostic and stage nothing, so the
+/// staged declaration is still the declaration's own text; the good edit
+/// after them is the only one `install` makes visible.
+class AFailedEditLeavesTheBuilderAsItWas = Object new () (
+  class Subject = Object new () (
+    public kept = (
+      ^#kept.
+    )
+  )
+
+  outcome: action = (
+    ^[action value printString] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      instance = Subject new.
+      declaration = (ClassMirror reflecting: Subject) mixin declaration.
+      builder = declaration asBuilder.
+    |
+    transcript
+        show: (outcome: [builder instanceSide methods addFromSource: 'public broken = (^)']);
+        newLine.
+    transcript
+        show: (outcome: [builder instanceSide methods addFromSource: 'lazy public cached = 1.']);
+        newLine.
+    transcript
+        print: builder source = declaration source;
+        newLine.
+    builder instanceSide methods addFromSource: 'public good = (^#good)'.
+    builder install.
+    transcript
+        show: (outcome: [instance good]);
+        newLine.
+    transcript
+        show: (outcome: [instance kept]);
+        newLine.
+    transcript
+        show: (outcome: [instance broken]);
+        newLine.
+    transcript
+        show: (outcome: [instance cached]);
+        newLine.
+  )
+)

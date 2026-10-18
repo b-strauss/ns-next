@@ -1,0 +1,73 @@
+/// The class side's `methods` edit the class side alone: a method added to
+/// a class that declares no class side, and one added beside a declared
+/// class-side method, each answer after `install` and not before; the
+/// builder, standing for the installed state, removes one of each again,
+/// which a second `install` makes not understood. An instance does not
+/// understand a class-side method.
+class AClassSideMethodIsAddedAndRemoved = Object new () (
+  class Bare = Object new () ()
+
+  class Sided = Object new () () : (
+    public kind = (
+      ^#sided.
+    )
+  )
+
+  outcome: action = (
+    ^[action value printString] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      bare = (ClassMirror reflecting: Bare) mixin declaration asBuilder.
+      sided = (ClassMirror reflecting: Sided) mixin declaration asBuilder.
+    |
+    bare classSide methods addFromSource: 'public tag = (^#bare)'.
+    sided classSide methods addFromSource: 'public other = (^2)'.
+    transcript
+        show: (outcome: [Bare tag]);
+        show: ' ';
+        show: (outcome: [Sided other]);
+        newLine.
+    bare install.
+    sided install.
+    transcript
+        show: (outcome: [Bare tag]);
+        show: ' ';
+        show: (outcome: [Sided other]);
+        show: ' ';
+        show: (outcome: [Sided kind]);
+        newLine.
+    transcript
+        show: (outcome: [Bare new tag]);
+        newLine.
+    transcript
+        print: (ClassMirror reflecting: Bare) mixin classMixin methods size;
+        show: ' ';
+        print: (ClassMirror reflecting: Sided) mixin classMixin methods size;
+        newLine.
+    bare classSide methods removeMirrorNamed: #tag.
+    sided classSide methods removeMirrorNamed: #kind.
+    transcript
+        show: (outcome: [Bare tag]);
+        show: ' ';
+        show: (outcome: [Sided kind]);
+        newLine.
+    bare install.
+    sided install.
+    transcript
+        show: (outcome: [Bare tag]);
+        show: ' ';
+        show: (outcome: [Sided kind]);
+        show: ' ';
+        show: (outcome: [Sided other]);
+        newLine.
+    transcript
+        print: (ClassMirror reflecting: Bare) mixin classMixin methods size;
+        show: ' ';
+        print: (ClassMirror reflecting: Sided) mixin classMixin methods size;
+        newLine.
+  )
+)

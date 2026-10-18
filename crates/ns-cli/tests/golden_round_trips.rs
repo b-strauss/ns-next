@@ -25,8 +25,10 @@ fn main() {
     for program in common::golden_programs() {
         let name = common::golden_name(&program);
         // A skipped golden records what the runtime does not answer yet, so
-        // the artifact cannot be held to `run` on it.
-        let skipped = common::expectation_of(&program).skipped().is_some();
+        // the artifact cannot be held to `run` on it; one skipped in images
+        // runs under `run` but not from an image.
+        let expectation = common::expectation_of(&program);
+        let skipped = expectation.skipped().is_some() || expectation.skipped_in_images().is_some();
         if !skipped {
             swept += 1;
         }

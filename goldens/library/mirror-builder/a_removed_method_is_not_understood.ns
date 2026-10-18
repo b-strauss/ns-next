@@ -1,0 +1,49 @@
+/// `removeMirrorNamed:` stages the removal of a method: the method still
+/// answers until `install`, and after it the instance does not understand
+/// it, while the class's other method answers as before.
+class ARemovedMethodIsNotUnderstood = Object new () (
+  class Subject = Object new () (
+    public foo = (
+      ^91.
+    )
+
+    public bar = (
+      ^42.
+    )
+  )
+
+  outcome: action = (
+    ^[action value printString] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      instance = Subject new.
+      builder = (ClassMirror reflecting: Subject) mixin declaration asBuilder.
+    |
+    transcript
+        show: (outcome: [instance foo]);
+        show: ' ';
+        show: (outcome: [instance bar]);
+        newLine.
+    builder instanceSide methods removeMirrorNamed: #foo.
+    transcript
+        show: (outcome: [instance foo]);
+        show: ' ';
+        show: (outcome: [instance bar]);
+        newLine.
+    builder install.
+    transcript
+        show: (outcome: [instance foo]);
+        show: ' ';
+        show: (outcome: [instance bar]);
+        newLine.
+    (ClassMirror reflecting: Subject) mixin methods do: [:each |
+      transcript
+          print: each name;
+          newLine.
+    ].
+  )
+)

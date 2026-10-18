@@ -1,0 +1,43 @@
+/// `removeMirrorNamed:` of a selector the side does not declare does
+/// nothing, on either side and for a lazy slot as for a method: it
+/// signals nothing, the staged declaration stays the declaration's own
+/// text, and installing it leaves every method answering as before.
+class RemovingAMissingMethodChangesNothing = Object new () (
+  class Subject = Object new () (
+    public foo = (
+      ^91.
+    )
+
+    public bar = (
+      ^42.
+    )
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      instance = Subject new.
+      declaration = (ClassMirror reflecting: Subject) mixin declaration.
+      builder = declaration asBuilder.
+    |
+    builder instanceSide methods removeMirrorNamed: #baz.
+    builder classSide methods removeMirrorNamed: #baz.
+    builder instanceSide lazySlots removeMirrorNamed: #baz.
+    transcript
+        print: builder source = declaration source;
+        newLine.
+    builder install.
+    transcript
+        print: builder source = declaration source;
+        newLine.
+    transcript
+        print: instance foo;
+        show: ' ';
+        print: instance bar;
+        newLine.
+    transcript
+        print: (ClassMirror reflecting: Subject) mixin methods size;
+        newLine.
+  )
+)

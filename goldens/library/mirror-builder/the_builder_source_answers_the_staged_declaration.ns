@@ -1,0 +1,66 @@
+/// A builder's `source` answers the declaration it stages: at first the
+/// declaration's own text, whose header, up to the members' parenthesis,
+/// is what `header source` answers; after `addFromSource:` the text with
+/// the method in it, which the live declaration does not hold until
+/// `install`; after `header source:` the text starting with the new
+/// header, which `header source` answers back as it was given. After
+/// `install` the declaration's text is the builder's, and a new builder
+/// starts from it.
+class TheBuilderSourceAnswersTheStagedDeclaration = Object new () (
+  class Subject = Object new (
+    |
+      /// A slot whose comment holds a parenthesis ( and a quote '.
+      public kept = 'a (string)'.
+    |
+  ) (
+    public answer = (
+      ^42.
+    )
+  ) : (
+    public kind = (
+      ^#subject.
+    )
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      declaration = (ClassMirror reflecting: Subject) mixin declaration.
+      builder = declaration asBuilder.
+      method = 'public added = (^#added)'.
+      header = 'class Subject = Object new (| public kept = 1. public extra = 2. |)'.
+    |
+    transcript
+        print: builder source = declaration source;
+        newLine.
+    transcript
+        show: '[' , builder header source , ']';
+        newLine.
+    builder instanceSide methods addFromSource: method.
+    transcript
+        print: (builder source indexOf: method) > 0;
+        show: ' ';
+        print: (declaration source indexOf: method) > 0;
+        newLine.
+    builder header source: header.
+    transcript
+        print: (builder source startsWith: header);
+        show: ' ';
+        print: builder header source = header;
+        show: ' ';
+        print: (builder source indexOf: method) > 0;
+        newLine.
+    builder install.
+    transcript
+        print: declaration source = builder source;
+        show: ' ';
+        print: (declaration source indexOf: method) > 0;
+        show: ' ';
+        print: declaration asBuilder header source = header;
+        newLine.
+    transcript
+        show: '[' , builder header source , ']';
+        newLine.
+  )
+)

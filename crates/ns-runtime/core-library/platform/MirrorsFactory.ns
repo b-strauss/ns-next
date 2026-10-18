@@ -824,6 +824,21 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
       ^vmMirror reflectionMixinSource: subject ifFail: [nil].
     )
 
+    /// Answers a new ClassDeclarationBuilder over the declaration, which
+    /// stages edits of its header, its methods and its lazy slots apart
+    /// from the live class until its `install`.
+    ///
+    /// Signals an Error with the VM's diagnostic, and answers no builder,
+    /// when the declaration may not be edited: '<name> belongs to the
+    /// shipped core library, which no MirrorBuilder edits' for a class of
+    /// a shipped core-library module, this one and the kernel among them;
+    /// '<name> was loaded from an image, and a loaded program cannot be
+    /// edited yet' for a class an image decoded; and '<name> has no source
+    /// text to edit' for one built without its module's text.
+    public asBuilder = (
+      ^ClassDeclarationBuilder reflecting: subject.
+    )
+
     /// Answers whether `other` is a class declaration mirror on the same
     /// declaration: one whose instance side is the receiver's. A
     /// declaration is never equal to either of its sides.
@@ -989,6 +1004,489 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// the one slot declaration.
     public hash = (
       ^(vmMirror objectHash: mixin ifFail: [0]) bitXor: (vmMirror objectHash: slotName ifFail: [0]).
+    )
+  )
+
+  /// A builder over one class declaration of a program, the MirrorBuilder
+  /// `ClassDeclarationMirror>>asBuilder` answers: it stages edits of the
+  /// declaration's header, of its instance side's methods and lazy slots
+  /// and of its class side's methods, and `install` makes them visible at
+  /// once to every class that applies the declaration's mixin, migrating
+  /// the instances whose slots changed, or changes nothing. Until then
+  /// nothing a program observes changes.
+  ///
+  /// Every edit is checked as it is staged: the VM splices it, with every
+  /// edit staged before it, into the module's current text, then parses
+  /// and resolves the module, and an edit it refuses -- a syntax error, a
+  /// member that collides with another, a header that renames the class
+  /// or changes its superclass -- signals an Error with the diagnostic and
+  /// leaves the builder as it was, so a later `install` installs only the
+  /// edits that were accepted.
+  ///
+  /// aReifiedMixin: the reified mixin of the declaration's instance side.
+  ///
+  /// Signals an Error with the VM's diagnostic when the declaration may
+  /// not be edited at all (`ClassDeclarationMirror>>asBuilder` lists
+  /// them).
+  ///
+  /// The staged state is Strings and Symbols, never a compiled member, so
+  /// nothing exists outside the object space before `install`. Each check
+  /// and the install start from the module's current text, so an install
+  /// another builder made meanwhile is under this one's: two edits that
+  /// each pass their own check can still fail together at the second
+  /// install.
+  private class ClassDeclarationBuilder reflecting: aReifiedMixin = Object (
+    |
+      /// The reified mixin of the declaration's instance side; never
+      /// handed out.
+      private subject = aReifiedMixin.
+      /// The staged header's text, a String, or nil to keep the
+      /// declaration's.
+      private headerText ::= nil.
+      /// The staged operations on the instance side, in the order they
+      /// were staged: an Array of two-element Arrays, an operation's
+      /// Symbol and its text or name, as the VM reads an edit.
+      private instanceOperations ::= {}.
+      /// The staged operations on the class side, method operations only,
+      /// as `instanceOperations` holds them.
+      private classOperations ::= {}.
+      /// The staged declaration's text, a String, as the last check or
+      /// install answered it.
+      private stagedSource ::= nil.
+      /// The declaration's header, a ClassHeaderBuilder, which stages a
+      /// new header through the receiver.
+      public header = ClassHeaderBuilder of: self staging: [:text | self stageHeader: text].
+      /// The declaration's instance side, a MixinBuilder whose methods and
+      /// lazy slots stage through the receiver.
+      public instanceSide = MixinBuilder methods: (MutableMemberGroup adding: #addMethod
+          removing: #removeMethod
+          staging: [:operation | self stage: operation onClassSide: false])
+          lazySlots: (MutableMemberGroup adding: #addLazySlot
+              removing: #removeLazySlot
+              staging: [:operation | self stage: operation onClassSide: false])
+          mixin: (MixinMirror reflecting: aReifiedMixin).
+      /// The declaration's class side, a MixinBuilder whose methods stage
+      /// through the receiver; it has no lazy slots.
+      public classSide = MixinBuilder methods: (MutableMemberGroup adding: #addMethod
+          removing: #removeMethod
+          staging: [:operation | self stage: operation onClassSide: true])
+          lazySlots: nil
+          mixin: (MixinMirror reflecting: (vmMirror reflectionMixinClassSide: aReifiedMixin
+              ifFail: [nil])).
+    |
+    self check: {nil. {}. {}}.
+  ) (
+    /// Answers the staged declaration's text, a String: the declaration's
+    /// text, from its access modifier, or `class` when it has none, to its
+    /// closing parenthesis, with every edit staged since the builder was
+    /// made or last installed spliced in, as the last check answered it.
+    /// With nothing staged it is the text the declaration mirror's
+    /// `source` answers. A staged header starts it; a staged method or
+    /// lazy slot that replaces a member stands where the member stood,
+    /// and one that adds a member stands last on its side.
+    public source = (
+      ^stagedSource.
+    )
+
+    /// Installs every staged edit at once and answers the receiver, which
+    /// then stands for the installed declaration, with nothing staged:
+    /// every class that applies the declaration's mixin answers the new
+    /// methods from the next send on, and every instance whose class's
+    /// slots changed is replaced, keeping its identity, by one of the new
+    /// layout whose slots of an old name keep their values and whose new
+    /// slots are nil, their initializers not run. A method or a closure
+    /// already running finishes with the code it was running.
+    ///
+    /// Signals an Error with the VM's diagnostic, changing nothing --
+    /// neither the class, nor its instances, nor what the receiver stages
+    /// -- when the staged edits no longer apply to the module's current
+    /// text, as when another builder's install gave the class a slot of
+    /// the name of a staged method; and 'cannot migrate an instance of
+    /// <class name>, which is not an ordinary object' when an instance
+    /// whose layout would change cannot be copied into the new one.
+    public install = (
+      |
+        answer = vmMirror reflectionMixin: subject installEdit: self edit ifFail: [
+          ^self refuseEdit.
+        ].
+      |
+      (answer at: 1) ifFalse: [^Error signal: (answer at: 2)].
+      headerText:: nil.
+      instanceOperations:: {}.
+      classOperations:: {}.
+      stagedSource:: answer at: 2.
+    )
+
+    /// Answers the staged edit as the VM reads it: a new Array of the
+    /// header's text or nil, the instance side's operations and the class
+    /// side's.
+    private edit = (
+      ^{headerText. instanceOperations. classOperations}.
+    )
+
+    /// Stages `operation` on one side, after every operation staged
+    /// there before it, when the check accepts the result.
+    ///
+    /// operation: a two-element Array, an operation's Symbol and its text
+    ///     or name.
+    /// classSide: true for the class side, false for the instance side.
+    ///
+    /// Signals what `check:` signals, staging nothing.
+    private stage: operation onClassSide: classSide = (
+      classSide ifTrue: [
+        self check: {headerText. instanceOperations. classOperations , {operation}}.
+      ] ifFalse: [
+        self check: {headerText. instanceOperations , {operation}. classOperations}.
+      ].
+    )
+
+    /// Stages `text` as the declaration's header, in place of any header
+    /// staged before, when the check accepts the result.
+    ///
+    /// text: a String, the header as `ClassHeaderBuilder>>source:` takes
+    ///     it.
+    ///
+    /// Signals what `check:` signals, staging nothing.
+    private stageHeader: text = (
+      self check: {text. instanceOperations. classOperations}.
+    )
+
+    /// Checks `newState` against the module's current text and, when the
+    /// VM accepts it, makes it the staged state, the declaration's text
+    /// the check answers becoming `source`. Nothing else changes either
+    /// way.
+    ///
+    /// newState: an Array of the header's text or nil, the instance
+    ///     side's operations and the class side's, as `edit` answers them.
+    ///
+    /// Signals an Error with the VM's diagnostic, leaving the staged state
+    /// as it was, when the check refuses the edit; and what `refuseEdit`
+    /// signals when the VM cannot read it.
+    private check: newState = (
+      |
+        answer = vmMirror reflectionMixin: subject checkEdit: newState ifFail: [^self refuseEdit].
+      |
+      (answer at: 1) ifFalse: [^Error signal: (answer at: 2)].
+      headerText:: newState at: 1.
+      instanceOperations:: newState at: 2.
+      classOperations:: newState at: 3.
+      stagedSource:: answer at: 2.
+    )
+
+    /// Signals an Error, 'a MirrorBuilder takes a member or a header as a
+    /// String and a name as a Symbol', for an edit the VM cannot read:
+    /// one whose text, after `asString`, is no String, or whose name,
+    /// after `asSymbol`, is no Symbol.
+    private refuseEdit = (
+      ^Error signal: 'a MirrorBuilder takes a member or a header as a String and a name as a Symbol'.
+    )
+  )
+
+  /// The header of a declaration a ClassDeclarationBuilder edits: its text
+  /// -- the class's access modifier, name, factory, superclass clause,
+  /// slots and initializer -- read from the builder's staged declaration,
+  /// and replaced through the builder.
+  ///
+  /// aBuilder: the ClassDeclarationBuilder whose declaration's header the
+  ///     receiver stands for.
+  /// aBlock: a one-argument block that stages a header's text, a String,
+  ///     through `aBuilder`, signalling what the builder's check signals.
+  private class ClassHeaderBuilder of: aBuilder staging: aBlock = Object (
+    |
+      /// The builder whose staged declaration holds the header.
+      private builder = aBuilder.
+      /// The block that stages a new header through the builder.
+      private staging = aBlock.
+    |
+  ) (
+    /// Answers the staged header's text, a new String: the builder's
+    /// `source` from its start up to, not including, the parenthesis that
+    /// opens the declaration's members -- the text `source:` was last
+    /// given, as it was given, or the declaration's own header when none
+    /// is staged. All of `source` for a declaration with no members of
+    /// its own.
+    public source = (
+      |
+        text = builder source.
+        open = self membersOpenIn: text.
+      |
+      open = 0 ifTrue: [^text].
+      ^text copyFrom: 1 to: open - 1.
+    )
+
+    /// Stages `aString` as the declaration's header and answers the
+    /// receiver. The header replaces the declaration's text from its
+    /// start up to its members' parenthesis, so it starts exactly where
+    /// the declaration does -- with its access modifier, or `class` when
+    /// it has none, with no whitespace or comment before it -- and holds
+    /// the class's name, factory, superclass clause, slots and
+    /// initializer: `public class Foo = Bar (| x |)`.
+    ///
+    /// aString: the header's text, a String or a Symbol, sent `asString`.
+    ///
+    /// Signals an Error with the VM's diagnostic, staging nothing, for a
+    /// header that does not parse or does not end where the members begin,
+    /// one that renames the class ('the header renames <name> to <new
+    /// name>; an edit keeps a class's name'), one that changes its
+    /// superclass clause or its `<:` clauses ('the header changes the
+    /// superclass of <name>; an edit keeps it'), and one whose slots
+    /// collide with a member staged or declared.
+    public source: aString = (
+      staging value: aString asString.
+    )
+
+    /// Answers the index in `text` of the parenthesis that opens the
+    /// declaration's members, or 0 when it has none: the last parenthesis
+    /// that opens a group outside every other, before the colon of a
+    /// class side if there is one. Strings and comments are skipped, so a
+    /// parenthesis in them counts for nothing.
+    ///
+    /// text: a declaration's text, as `ClassDeclarationBuilder>>source`
+    ///     answers it.
+    private membersOpenIn: text = (
+      |
+        index ::= self significantIndexIn: text from: 1.
+        depth ::= 0.
+        lastOpen ::= 0.
+        afterGroup ::= false.
+        code ::= 0.
+      |
+      [index <= text size] whileTrue: [
+        code:: text at: index.
+        (afterGroup and: [code = 58]) ifTrue: [^lastOpen].
+        afterGroup:: false.
+        code = 40 ifTrue: [
+          depth = 0 ifTrue: [lastOpen:: index].
+          depth:: depth + 1.
+        ].
+        code = 41 ifTrue: [
+          depth:: depth - 1.
+          afterGroup:: depth = 0.
+        ].
+        index:: self significantIndexIn: text from: (self indexAfterTokenIn: text at: index).
+      ].
+      ^lastOpen.
+    )
+
+    /// Answers the index in `text` just after the token, or the part of
+    /// one, that starts at `start`: a whole string literal, single-quoted
+    /// with its doubled quotes or double-quoted, and one code point of
+    /// anything else.
+    ///
+    /// text: a String.
+    /// start: an Integer from 1 to `text size`.
+    private indexAfterTokenIn: text at: start = (
+      |
+        code = text at: start.
+        index ::= start + 1.
+      |
+      code = 39 ifTrue: [
+        [index <= text size] whileTrue: [
+          (text at: index) = 39 ifTrue: [
+            (self codeIn: text at: index + 1) = 39 ifFalse: [^index + 1].
+            index:: index + 1.
+          ].
+          index:: index + 1.
+        ].
+        ^index.
+      ].
+      code = 34 ifTrue: [
+        (self codeIn: text at: start + 2) = 34 ifTrue: [^start + 3].
+        [index <= text size and: [((text at: index) = 34) not]] whileTrue: [index:: index + 1].
+        ^index + 1.
+      ].
+      ^index.
+    )
+
+    /// Answers the index of the first code point at or after `start` in
+    /// `text` that is no whitespace and stands in no comment, a `(* *)`
+    /// one, nested ones included, or a `///` one; past the end when there
+    /// is none.
+    ///
+    /// text: a String.
+    /// start: an Integer from 1 to `text size + 1`.
+    private significantIndexIn: text from: start = (
+      |
+        index ::= start.
+        code ::= 0.
+      |
+      [index <= text size] whileTrue: [
+        code:: text at: index.
+        (self isWhitespace: code) ifTrue: [
+          index:: index + 1.
+        ] ifFalse: [
+          (code = 40 and: [(self codeIn: text at: index + 1) = 42]) ifTrue: [
+            index:: self indexAfterCommentIn: text at: index.
+          ] ifFalse: [
+            (self startsLineCommentIn: text at: index) ifFalse: [^index].
+            [index <= text size and: [((text at: index) = 10) not]] whileTrue: [index:: index + 1].
+          ].
+        ].
+      ].
+      ^index.
+    )
+
+    /// Answers the index in `text` just after the `(* *)` comment that
+    /// starts at `start`, the comments nested in it included; past the
+    /// end for one never closed.
+    ///
+    /// text: a String.
+    /// start: the index of the comment's `(`.
+    private indexAfterCommentIn: text at: start = (
+      |
+        index ::= start + 2.
+        depth ::= 1.
+      |
+      [depth > 0 and: [index <= text size]] whileTrue: [
+        ((text at: index) = 40 and: [(self codeIn: text at: index + 1) = 42]) ifTrue: [
+          depth:: depth + 1.
+          index:: index + 2.
+        ] ifFalse: [
+          ((text at: index) = 42 and: [(self codeIn: text at: index + 1) = 41]) ifTrue: [
+            depth:: depth - 1.
+            index:: index + 2.
+          ] ifFalse: [
+            index:: index + 1.
+          ].
+        ].
+      ].
+      ^index.
+    )
+
+    /// Answers whether a `///` comment starts at `index` in `text`.
+    ///
+    /// text: a String.
+    /// index: an Integer from 1 to `text size`.
+    private startsLineCommentIn: text at: index = (
+      ^(text at: index) = 47 and: [
+        (self codeIn: text at: index + 1) = 47 and: [(self codeIn: text at: index + 2) = 47].
+      ].
+    )
+
+    /// Answers whether `code` is a whitespace code point: a space, a tab,
+    /// a line feed, a form feed or a carriage return.
+    ///
+    /// code: an Integer.
+    private isWhitespace: code = (
+      ^code = 32 or: [code = 9 or: [code = 10 or: [code = 12 or: [code = 13]]]].
+    )
+
+    /// Answers the code point at `index` in `text`, or 0 past its end.
+    ///
+    /// text: a String.
+    /// index: an Integer of 1 or more.
+    private codeIn: text at: index = (
+      index > text size ifTrue: [^0].
+      ^text at: index.
+    )
+  )
+
+  /// One side of a declaration a ClassDeclarationBuilder edits, the
+  /// instance side or the class side: its methods and, on the instance
+  /// side, its lazy slots, each a MutableMemberGroup that stages through
+  /// the builder; and the live side's slots, which an edit changes only
+  /// through the header.
+  ///
+  /// aMethodGroup: the MutableMemberGroup of the side's methods.
+  /// aLazySlotGroup: the MutableMemberGroup of the side's lazy slots, or
+  ///     nil for a class side, which declares none.
+  /// aMixinMirror: a mixin mirror on the side's live mixin.
+  private class MixinBuilder methods: aMethodGroup lazySlots: aLazySlotGroup mixin: aMixinMirror
+      = Object (
+    |
+      /// The group of the side's methods.
+      private methodGroup = aMethodGroup.
+      /// The group of the side's lazy slots, nil for a class side.
+      private lazySlotGroup = aLazySlotGroup.
+      /// A mixin mirror on the side's live mixin.
+      private mixin = aMixinMirror.
+    |
+  ) (
+    /// Answers the side's methods, a MutableMemberGroup that stages the
+    /// addition, replacement and removal of a method.
+    public methods = (
+      ^methodGroup.
+    )
+
+    /// Answers the instance side's lazy slots, a MutableMemberGroup that
+    /// stages the addition, replacement and removal of a lazy slot.
+    ///
+    /// Signals an Error, 'lazySlots: a class side declares no lazy
+    /// slots', on the class side.
+    public lazySlots = (
+      nil == lazySlotGroup ifTrue: [
+        ^Error signal: 'lazySlots: a class side declares no lazy slots'.
+      ].
+      ^lazySlotGroup.
+    )
+
+    /// Answers a new MirrorGroup of slot declaration mirrors on the live
+    /// side's own eager slots, in declaration order, as `MixinMirror>>slots`
+    /// answers them: what the last install made, never a staged header's;
+    /// empty for a class side.
+    public slots = (
+      ^mixin slots.
+    )
+  )
+
+  /// One group of a side's members a ClassDeclarationBuilder edits -- a
+  /// side's methods, or the instance side's lazy slots: it stages, through
+  /// the builder, the addition or replacement of a member from its text
+  /// and the removal of one by its name. It answers no mirrors; the
+  /// builder's `source` answers what is staged.
+  ///
+  /// anAddSymbol: the Symbol of the operation that adds or replaces a
+  ///     member, `#addMethod` or `#addLazySlot`.
+  /// aRemoveSymbol: the Symbol of the operation that removes one,
+  ///     `#removeMethod` or `#removeLazySlot`.
+  /// aBlock: a one-argument block that stages an operation, an Array of
+  ///     the operation's Symbol and its text or name, through the builder,
+  ///     signalling what the builder's check signals.
+  private class MutableMemberGroup adding: anAddSymbol removing: aRemoveSymbol staging: aBlock
+      = Object (
+    |
+      /// The Symbol of the operation that adds or replaces a member.
+      private addOperation = anAddSymbol.
+      /// The Symbol of the operation that removes a member.
+      private removeOperation = aRemoveSymbol.
+      /// The block that stages an operation through the builder.
+      private staging = aBlock.
+    |
+  ) (
+    /// Stages the member `aString` declares and answers the receiver: it
+    /// replaces the member of the group's kind and of the same name the
+    /// side declares or has staged, standing where that one stood, or is
+    /// added last on the side when there is none.
+    ///
+    /// aString: one member's text, a String or a Symbol, sent `asString`:
+    ///     one method declaration, `public foo: x = (^x)`, for a group of
+    ///     methods, one lazy slot declaration, `lazy public cache = 1.`,
+    ///     for a group of lazy slots.
+    ///
+    /// Signals an Error with the VM's diagnostic, staging nothing, for a
+    /// text that does not parse ('<name>'s edited source does not parse:
+    /// … (line <n>)'), one that declares no single member of the group's
+    /// kind ('addFromSource: of <name>'s methods takes one method
+    /// declaration', '… lazy slots takes one lazy slot declaration'), and
+    /// a member that collides with a slot, a nested class, the factory or
+    /// a member of another kind ('<name>'s edited source does not
+    /// resolve: … (line <n>)').
+    public addFromSource: aString = (
+      staging value: {addOperation. aString asString}.
+    )
+
+    /// Stages the removal of the side's member of the group's kind named
+    /// `aName` and answers the receiver; a name the side neither declares
+    /// nor has staged stages nothing and signals nothing.
+    ///
+    /// aName: the member's name, a Symbol or a String, sent `asSymbol`.
+    ///
+    /// Signals an Error with the VM's diagnostic, staging nothing, should
+    /// the check refuse the declaration without the member. Another
+    /// member's send to it never makes it refuse: a send is bound late,
+    /// and fails only when it runs.
+    public removeMirrorNamed: aName = (
+      staging value: {removeOperation. aName asSymbol}.
     )
   )
 
