@@ -2170,14 +2170,19 @@ declaring level -- forwarded to an instance of a subclass, say -- keeps the
 one class of the declaration it has: a class already cached there is
 answered, a creation of its own underway further down the stack raises the
 cyclic-definition error, and only an empty slot takes the class built here,
-whose declaring class is the level of the replacement's own chain that
-declares it (`current_declaring_class`) -- another class object than the
+whose declaring class (`current_declaring_class`) is the one the lookup
+chose before the clause ran, if the replacement's chain still holds that
+very class object, found by identity -- which keeps the level the
+original lookup chose, for `super Inner` one below the topmost declarer
+-- and otherwise the level of the replacement's chain whose mixin
+declares the declaration, by id -- another class object than the
 forwarded object's when the replacement was built in another enclosing
 instance -- so that the class's `outer` walk follows the chain of the
-object it is cached in. One that has not gets no class, and the access raises an ordinary Newspeak error in the
-own-slot check's words, since the class would have neither a slot to be
-cached in nor an enclosing object with the declaring level's slots to run
-in:
+object it is cached in. One that has not gets no class, and the access
+raises an ordinary Newspeak error in the own-slot check's words, since
+the class would have neither a slot to be cached in nor an enclosing
+object with the declaring level's slots to
+run in:
 
 > `<receiver> no longer has the slots of <class>, which the nested class <name> is cached in`
 
