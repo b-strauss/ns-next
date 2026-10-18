@@ -2573,7 +2573,8 @@ mod tests {
 
     /// The mirrors read a replaced mixin's enclosing mixin and text from
     /// its id's row, not from the replacement, whose own link and text a
-    /// builder set for wherever it was built.
+    /// builder set for wherever it was built. The text it is read in
+    /// becomes its module's current text, as an install makes it.
     #[test]
     fn a_replaced_mixin_reads_its_enclosing_mixin_and_text_through_the_id() {
         let (mut interpreter, outer) = load(OUTER);
@@ -2582,7 +2583,15 @@ mod tests {
             .expect("the replacement's span lies in its text")
             .to_string();
         assert!(expected.contains("^2"), "{expected}");
-        let id = replace_inner(&mut interpreter, &outer, replacement, text);
+        let id = replace_inner(&mut interpreter, &outer, replacement, text.clone());
+        interpreter.enter(|mutator| {
+            let root = root_mixin(mutator, &outer);
+            let root_id = mutator
+                .heap()
+                .known_mixin_id(&root)
+                .expect("loading Outer registered it");
+            mutator.heap.set_current_module_text(root_id, text);
+        });
         let (inner, outer_mixin) = interpreter.enter(|mutator| {
             let inner = mutator.heap().mixin(id).expect("the id has a row");
             let inner = mutator.reified_mixin(&inner);

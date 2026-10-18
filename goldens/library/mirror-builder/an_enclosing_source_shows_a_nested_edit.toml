@@ -1,0 +1,24 @@
+stdout = '''
+class Outer = Object new () (
+    public class Inner = Object new () (
+public tag = (^#nested)
+)
+
+    public after = (
+      ^#after.
+    )
+  )
+public after = (
+      ^#after.
+    )
+class Outer = Object new () (
+    public class Inner = Object new () (
+public tag = (^#nested)
+)
+
+    public after = (
+      ^#after.
+    )
+  )
+'''
+skipped_in_images = "a program loaded from an image cannot be edited until road step 5b2b"

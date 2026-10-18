@@ -286,6 +286,29 @@ impl<'gc> Mutator<'gc> {
         })
     }
 
+    /// The text of the declaration of the mixin `id`, an instance side,
+    /// from its access modifier (or `class`) to its closing parenthesis,
+    /// as its module's current text holds it; `None` where its version
+    /// has no text. A mixin outside an installed edit's subtree keeps the
+    /// text it was read in, which no longer holds what the edit changed
+    /// inside it, so its declaration is found again by its path of names
+    /// in the current text.
+    pub(crate) fn current_declaration_source(&self, id: MixinId) -> Option<String> {
+        let version_text = self.heap.mixin_module_text(id)?;
+        let (module_root, path) = self.path_from_module_root(id);
+        match self.heap.current_module_text(module_root) {
+            Some(current) if !Rc::ptr_eq(&current.0, &version_text.0) => {
+                let module = ns_syntax::parse(&current.0).ok()?;
+                let declaration = find_declaration(&module.root_class, &path)?;
+                crate::mixin::source_text(&current.0, declaration.span).map(str::to_string)
+            }
+            _ => {
+                let mixin = self.heap.mixin(id)?;
+                crate::mixin::source_text(&version_text.0, mixin.span).map(str::to_string)
+            }
+        }
+    }
+
     /// The id of the module root the mixin `id` is declared in, and the
     /// names of the declarations from below the root down to `id`'s.
     fn path_from_module_root(&self, id: MixinId) -> (MixinId, Vec<Symbol>) {

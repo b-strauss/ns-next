@@ -1,0 +1,34 @@
+/// A declaration's `source` answers its module's current text: after an
+/// edit of a nested class, the class enclosing it, which the install left
+/// at its version, answers a source holding the nested edit, as does a
+/// builder made from it afterwards; a method of the enclosing class
+/// declared after the nested one still answers its own text.
+class AnEnclosingSourceShowsANestedEdit = Object new () (
+  class Outer = Object new () (
+    public class Inner = Object new () ()
+
+    public after = (
+      ^#after.
+    )
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      subject = Outer new.
+      nested = (ClassMirror reflecting: subject Inner) mixin declaration asBuilder.
+    |
+    nested instanceSide methods addFromSource: 'public tag = (^#nested)'.
+    nested install.
+    transcript
+        show: (ClassMirror reflecting: Outer) mixin declaration source;
+        newLine.
+    transcript
+        show: ((ClassMirror reflecting: Outer) mixin methods findMirrorNamed: #after) source;
+        newLine.
+    transcript
+        show: (ClassMirror reflecting: Outer) mixin declaration asBuilder source;
+        newLine.
+  )
+)

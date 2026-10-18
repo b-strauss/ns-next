@@ -109,12 +109,8 @@ pub(crate) fn execute<'gc>(
         ReflectionPrimitive::MethodSource => method_source(mutator, receiver, arguments),
         ReflectionPrimitive::MixinSource => {
             let id = reified_id(mutator, receiver)?;
-            let heap = &mutator.heap;
-            let text = instance_side_id(heap, id).and_then(|instance| {
-                let text = heap.mixin_module_text(instance)?;
-                let declaration = heap.mixin(instance)?;
-                source_text(&text.0, declaration.span).map(str::to_string)
-            });
+            let text = instance_side_id(&mutator.heap, id)
+                .and_then(|instance| mutator.current_declaration_source(instance));
             Some(string_or_nil(mutator, text))
         }
         ReflectionPrimitive::MixinIsShipped => {

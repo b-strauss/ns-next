@@ -696,10 +696,16 @@ does so from the module's text:
    and the declaration's and its header's text, sliced from the new text
    by the spans of its parse. On an install the new text becomes the
    module's current text and the text of every fresh mixin, whose spans
-   point into it. A mixin outside the subtree keeps its version and its
-   text, which still describes it; the next edit, of any class of the
-   module, starts from the current text and so carries every earlier
-   edit.
+   point into it. A mixin outside the subtree keeps its version and the
+   text it was read in. Its methods' spans still describe them there,
+   since an edit inside a nested class touches no method of the class
+   enclosing it, but its own declaration's text no longer holds the
+   edit, so a declaration mirror's `source` reads the module's current
+   text whenever it is not the version's, finding the declaration again
+   by its path of names from the module's root
+   (`Mutator::current_declaration_source`). The next edit, of any class
+   of the module, starts from the current text and so carries every
+   earlier edit.
 
 Every failure -- a syntax error, a resolver error, a refused header, a
 refused mixin -- comes from these steps, before anything is replaced, and
