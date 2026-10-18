@@ -15,67 +15,51 @@ when they were written.
 
 ## Next
 
-**Road step 5b2a, MirrorBuilder and atomic installation** ("Step 5, mirrors
-and atomic installation" below; decided with the user on 2026-10-05, split
-from road step 5a on 2026-10-17, from road step 5b1 on 2026-10-18 and into
-5b2a and 5b2b the same day, when its design was settled with the user:
-[liveness-and-reflection.md](design/liveness-and-reflection.md), "Planned:
-road step 5b2a, MirrorBuilder and atomic installation", which says what
-the step builds, how and why). It builds on what road steps 5a and 5b1
-built: the mirrors that read behind `platform mirrors`, the reified mixin
-and the shipped-level rule (5a); one id for every version of a mixin,
-`Mutator::replace_mixin`, `become:` as an eager bulk forward and the
-recorded guards (5b1). In short:
-
-- **A builder in `MirrorsFactory.ns`**, `ClassDeclarationMirror>>asBuilder`,
-  holding only source text: `header source:` for the slots, the factory
-  and the initializer; `instanceSide` and `classSide`'s `methods
-  addFromSource:` and `removeMirrorNamed:`; each edit checked at once by a
-  dry run of the install's preparation; `install`, one VM-mirror leaf.
-- **Compiling from the module's current text**: the edits spliced into it,
-  the whole module parsed and resolved again, the edited declaration's
-  subtree compiled fresh and installed under its old ids, since an added
-  or removed member rebinds the implicit sends of the class and of every
-  class nested in it (`Binding::LexicalSend { depth }`).
-- **The commit, in that leaf with no safepoint**: the mixins replaced
-  under their ids, a synthesized class side's included; one walk of the
-  object space for every class object of a replaced id and the instances
-  to migrate; new applications, superclasses first, with a successor
-  recorded for every level whose slots stayed, which the slot check's
-  cold path accepts; the instances migrated by name, a new slot `nil`;
-  one forward on the Rust side; the caches invalidated.
-- **5b1's places keyed by address that the install needs**:
-  `inherits_mixin_of` and `Heap::with_level_applying_mixin_of` compare by
-  id; the encoder refuses an edited program with an error.
-
-Its implementation plan is
-[2026-10-18-2138-mirror-builder-and-atomic-install](superpowers/plans/2026-10-18-2138-mirror-builder-and-atomic-install.md),
-on the branch `road-step-5b2a`.
-
-**Road step 5b2b, after it** ([liveness-and-reflection.md](design/liveness-and-reflection.md),
+**Road step 5b2b, edited programs in images, and reclaiming ids** ("Step
+5, mirrors and atomic installation" below; split from road step 5b2a on
+2026-10-18, when the design of both was settled with the user:
+[liveness-and-reflection.md](design/liveness-and-reflection.md),
 "Planned: road step 5b2b, edited programs in images, and reclaiming
-ids"): an edited program written to an image and loaded back edited
-([image-format.md](design/image-format.md), "Planned: edited mixins in the
-image"), with the code an older version still runs and the module's
-current text as its source; editing a program loaded from an image with
-source; the weak application cache and the ids' reuse rules
-([object-model.md](design/object-model.md), "An application has two
-ids"; [memory.md](design/memory.md), "Weak references"); and what road
-step 5b1 left otherwise: `Mixin::nested` still `Vec<Rc<Mixin>>`, and a
-cycle diagnosis a forward can lose -- a nested class's superclass clause
-that forwards its enclosing object to one whose own creation of the same
-class is underway at the same slot index resets that creation's
-in-progress marker when it ends, so a cyclic definition in the other
-clause after that point is not diagnosed
-([object-model.md](design/object-model.md), "What a slot access checks",
-"The nested-class cache slot"); a per-creation marker would close it.
+ids"). It builds on what road step 5b2a built: the MirrorBuilder, the
+module's current text and the atomic install
+([liveness-and-reflection.md](design/liveness-and-reflection.md), "A
+MirrorBuilder and an atomic install"). In short:
+
+- **An edited program written to an image and loaded back edited**
+  ([image-format.md](design/image-format.md), "Planned: edited mixins in
+  the image"): the encoder's rows taken through the ids from the mixins
+  the program names now, with the code an older version still runs and
+  the module's current text as its source. The encoder's refusal of an
+  edited program goes (`image/mod.rs`'s `encode_describing`), and with it,
+  together with the refusal of a mixin decoded from an image, the
+  `skipped_in_images` line of every golden under
+  `goldens/library/mirror-builder/` and the key and its mechanism from
+  `crates/ns-cli/tests/common/mod.rs`, `golden_round_trips.rs` and
+  `run_goldens.rs`'s guard on it, so that
+  every golden goes through `build` then `load` again.
+- **Editing a program loaded from an image with source**: the builder
+  parses an image's module text at the first edit of one of its mixins,
+  so the load path stays free of the parser.
+- **The weak application cache and the ids' reuse rules**
+  ([object-model.md](design/object-model.md), "An application has two
+  ids"; [memory.md](design/memory.md), "Weak references"), so the
+  applications, guard ids and successors an install supersedes are
+  reclaimed.
+- **What road step 5b1 left otherwise**: `Mixin::nested` still
+  `Vec<Rc<Mixin>>`, and a cycle diagnosis a forward can lose -- a nested
+  class's superclass clause that forwards its enclosing object to one
+  whose own creation of the same class is underway at the same slot index
+  resets that creation's in-progress marker when it ends, so a cyclic
+  definition in the other clause after that point is not diagnosed
+  ([object-model.md](design/object-model.md), "What a slot access checks",
+  "The nested-class cache slot"); a per-creation marker would close it.
 
 **What 5b1 cost.** Measured in release, three pinned builds a side, against
 master (`733c15bd`) and task by task: every program within noise, but
 `bench_megamorphic.ns`, +1.3-2.1% after the private and super accessor
 check, at the edge of build noise and not diagnosed ("Planned: performance
-and representation" below). Everything before road step 5b2a on the road
-is built, road step 5b1 last; each step has its entry in
+and representation" below). Everything before road step 5b2b on the road
+is built, road step 5b2a last; each step has its entry in
 [PROGRESS.md](PROGRESS.md), and the whole road is below.
 
 **Measuring.** The protocol is [execution.md](design/execution.md)'s "What
@@ -217,19 +201,23 @@ and `prior-art/newspeak-benchmarks`.
   forward", "What a slot access checks";
   [liveness-and-reflection.md](design/liveness-and-reflection.md), "An
   edit replaces the mixin under its id". **5b2a, MirrorBuilder and atomic
-  installation -- next** ("Next" above): a minimal MirrorBuilder after
-  Primordial Soup's `Mirrors.ns` and the canonical Newspeak's
-  `AtomicInstaller.ns`, reached from the mirrors of 5a: edits of a
-  class's slots, through its header, and of its instance-side and
-  class-side methods, staged as source apart from the live system and
-  compiled at run time from the module's current text; an atomic install,
-  one leaf with no safepoint in its commit, that reaches every
-  application of an edited mixin and their subclasses (§6.2), records a
-  successor for every level whose slots stayed, migrates the instances
-  whose layout changed and forwards them on the Rust side; every edit to
-  a shipped mixin refused. **5b2b**: an edited program, its edited mixins
-  and their code included, written to an image and loaded back edited
-  (decided with the user on 2026-10-05;
+  installation -- built** (2026-10-18,
+  [its plan](superpowers/plans/2026-10-18-2138-mirror-builder-and-atomic-install.md)):
+  a minimal MirrorBuilder after Primordial Soup's `Mirrors.ns` and the
+  canonical Newspeak's `AtomicInstaller.ns`, reached from the mirrors of
+  5a: edits of a class's slots, factory and initializer, through its
+  header, of its instance-side and class-side methods and of its lazy
+  slots, staged as source apart from the live system, each checked as it
+  is staged, and compiled at run time from the module's current text; an
+  atomic install, one leaf with no safepoint in its commit, that reaches
+  every application of an edited mixin and their subclasses (§6.2),
+  records a successor for every level whose slots stayed, migrates the
+  instances whose layout changed by their fields' declaring level and name
+  and forwards them on the Rust side; every edit to a shipped mixin and to
+  a mixin decoded from an image refused, and the encoder refusing an
+  edited program. **5b2b -- next** ("Next" above): an edited program,
+  its edited mixins and their code included, written to an image and
+  loaded back edited (decided with the user on 2026-10-05;
   [image-format.md](design/image-format.md), "Planned: edited mixins in
   the image"), and editable again after the load; the application cache,
   kept strong since road step 3a, reclaiming no mixin id, application
@@ -242,7 +230,7 @@ and `prior-art/newspeak-benchmarks`.
   `ActivationMirror` and edit-and-continue, scoped invalidation
   ("Planned: images, liveness and reflection" below).
   [liveness-and-reflection.md](design/liveness-and-reflection.md),
-  "Planned: road step 5b2a, MirrorBuilder and atomic installation",
+  "A MirrorBuilder and an atomic install",
   "Planned: road step 5b2b, edited programs in images, and reclaiming
   ids"; [memory.md](design/memory.md), "Weak references".
 - **Step 6, inline allocation in the interpreter**: a bump in eden for `new`,
@@ -635,13 +623,13 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   boundaries, restart frame, breakpoints; `defaultAction` is where it plugs in
   (a test-only `resume_unhandled_exceptions` hook stands in today). Blocked on
   the yield path above. [liveness-and-reflection.md](design/liveness-and-reflection.md).
-- **Reflection beyond road step 5b2**: a class declared from source with
+- **Reflection beyond road step 5b2a**: a class declared from source with
   no predecessor (`ClassDeclarationBuilder fromSource:`, loading a module
   at run time), a shape-changing `setClass:`, a superclass change, adding,
   replacing and removing nested classes, and `installAtomically:` over
   several builders.
-  [liveness-and-reflection.md](design/liveness-and-reflection.md), "Planned:
-  road step 5b2a, MirrorBuilder and atomic installation".
+  [liveness-and-reflection.md](design/liveness-and-reflection.md), "A
+  MirrorBuilder and an atomic install".
 - **The activation and thread mirrors** (2026-10-18): road step 5a reads
   classes, mixins, methods and objects, not activations. §8.2 asks for
   "access to the current activation" through mirrors
@@ -703,9 +691,9 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   mirror forces no future".
 - **Scoped invalidation.** Every invalidation flushes every inline cache:
   the bulk forward's (`InlineCaches::invalidate`), the cache stress mode's
-  and the tests' (`Interpreter::invalidate_caches`), and road step 5b2's
-  install will flush them through the forward. Scoping an invalidation to
-  the applications an edit affects is deferred beyond that step.
+  and the tests' (`Interpreter::invalidate_caches`), and the atomic install
+  flushes them through the forward, or itself when it forwarded nothing.
+  Scoping an invalidation to the applications an edit affects is deferred.
   [liveness-and-reflection.md](design/liveness-and-reflection.md), "Caches
   and their dependency keys".
 - **A `SourceOrigin` for code entered in the debugger.** `SourceOrigin` has
@@ -814,10 +802,14 @@ a modifier needs no whitespace after it (§6.3.3,
 §6.3.4); `///` starts a line comment wherever it stands, so a binary
 selector ends before it (§4.2); `outer N` without a message answers the
 enclosing object (§5.9);
-value objects are never copied across an actor boundary (§3.1.1); there is
-no MirrorBuilder (§8.2): mirrors read but do not change, which road step
-5b2 closes but for changing the class of an individual object and access
-to the current activation ("The activation and thread mirrors" above).
+value objects are never copied across an actor boundary (§3.1.1); the
+MirrorBuilder changes one class at a time and not every part of it
+(§8.2): no mirror changes the class of an individual object or reaches
+the current activation ("The activation and thread mirrors" above),
+several builders are not installed as one, a superclass, the nested
+classes and a class from source with no predecessor are not edited
+("Reflection beyond road step 5b2a" above), and a program loaded from an
+image is not edited until road step 5b2b.
 
 ## Open design questions
 
@@ -850,7 +842,7 @@ to the current activation ("The activation and thread mirrors" above).
 - **How a replaced kernel method is compiled.** Its primitive-method mark and
   `SendMirror` rest on `Binding::MirrorSend`, which only shipped source gets;
   recording it for an edit would hand the edit the whole Rust boundary.
-  Road step 5b2 refuses every edit to a shipped mixin, so the question stays
+  Road step 5b2a refuses every edit to a shipped mixin, so the question stays
   open until editing kernel methods is offered.
   [liveness-and-reflection.md](design/liveness-and-reflection.md).
 - **Whether a shape-changing `setClass:` is ever offered, and at what
@@ -858,7 +850,7 @@ to the current activation ("The activation and thread mirrors" above).
   object; with `become:` an eager bulk forward, changing one object to a
   class of another shape would pay a walk of the whole heap for one object.
   The canonical Newspeak's `setClass:` rewrites the class word in place
-  (`changeClassOf:to:`), and Primordial Soup offers none. Road step 5b2
+  (`changeClassOf:to:`), and Primordial Soup offers none. Road step 5b2a
   leaves it out.
   [object-model.md](design/object-model.md), "`become:` is an eager bulk
   forward".
@@ -917,6 +909,21 @@ to the current activation ("The activation and thread mirrors" above).
   stage 3.
 
 ## Unexplained measurements and unmeasured decisions
+
+- **`Heap::same_mixin` looks an id up for every level that differs by
+  reference** (2026-10-18). Since road step 5b2a an old and a new
+  application of one id match, so `Heap::with_level_applying_mixin_of`
+  (behind `Mutator::kernel_slot` and an ephemeron's slot base,
+  `builtins/weak.rs`) and `builtins/activation.rs`'s `inherits_mixin_of`
+  (an exception handler's class test) compare each level of a chain by
+  reference and then, where that fails, by `known_mixin_id`, a hash
+  lookup per non-matching level, which the pointer compare alone never
+  paid. It is unmeasured; a release measurement of an exception-heavy
+  program decides whether to narrow it, for example to look the
+  candidate's id up only when the id was edited (`Heap::mixin_is_edited`),
+  since an id never edited has one version.
+  [liveness-and-reflection.md](design/liveness-and-reflection.md), "A
+  MirrorBuilder and an atomic install".
 
 - **The numeric tower's slow paths are unmeasured on their own.** The Are
   We Fast Yet benchmarks run as fast as without the tower, but none of

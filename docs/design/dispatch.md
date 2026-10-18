@@ -586,17 +586,20 @@ act" below).
 them once from `MIRROR`, and nothing can add to or override them: no program
 can name the mirror's class to subclass it, the decoder refuses its tag
 wherever a program names a class ([image-format.md](image-format.md),
-"Verification"), and there is no MirrorBuilder yet. That is what lets the
+"Verification"), and the MirrorBuilder refuses every edit of a shipped
+mixin. That is what lets the
 compiler bind a mirror send to its row at compile time — `SendMirror` carries
 the row and runs it with no lookup, checking only that its receiver register
 holds the mirror ([compiler.md](compiler.md), "Mirror sends") — and what
-lets a primitive method carry its row ("Primitive methods" below). **A
-MirrorBuilder must seal the mirror's class when it arrives**: a method added
-to or replaced on it would be found by a sent mirror send and bypassed by
-every `SendMirror` and primitive method, and the two would then disagree.
-Road step 5b2's MirrorBuilder seals it by refusing every edit to a shipped
-mixin ([liveness-and-reflection.md](liveness-and-reflection.md), "Mirrors
-and MirrorBuilder").
+lets a primitive method carry its row ("Primitive methods" below). **The
+MirrorBuilder seals the mirror's class**: a method added to or replaced on
+it would be found by a sent mirror send and bypassed by every `SendMirror`
+and primitive method, and the two would then disagree. Road step 5b2a's
+MirrorBuilder seals it by refusing every edit to a shipped mixin, in
+`ClassDeclarationMirror>>asBuilder` and again in `Mutator::prepare_edit`
+([liveness-and-reflection.md](liveness-and-reflection.md), "The VM
+mirror's class must be sealed against it", "A MirrorBuilder and an atomic
+install").
 
 **A primitive can fail.** `builtins::execute` answers `None` when a leaf
 declines: a receiver of the wrong variant or payload — an instance of a user
@@ -1300,10 +1303,10 @@ invalidation run under the whole suite; `Interpreter::cache_invalidations`
 counts them. The bulk forward invalidates every cache this way after its
 walk ([object-model.md](object-model.md), "`become:` is an eager bulk
 forward"), the private and super slot accessors' verified pair included
-("Slot accessors" above), so road step 5b2's atomic install, the first
-mutation, invalidates through it, and invalidates again after whatever it
-changes of a class object's application or chain under an unchanged
-guard. Scoping an invalidation to the application a change affects — the
+("Slot accessors" above), so the atomic install, the first mutation,
+invalidates through it, and invalidates all the same when it forwarded
+nothing, since it changed class objects' applications under unchanged
+guards. Scoping an invalidation to the application a change affects — the
 dependency key of [liveness-and-reflection.md](liveness-and-reflection.md),
 "Caches and their dependency keys" — is deferred beyond that step.
 

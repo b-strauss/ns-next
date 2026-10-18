@@ -11,11 +11,18 @@
 > forward behind one VM-mirror leaf, with the recorded guards that keep a
 > forwarded receiver from being written in the old layout
 > ([object-model.md](object-model.md), "`become:` is an eager bulk
-> forward", "What a slot access checks"). **Planned:** a MirrorBuilder and
-> an atomic install, road step 5b2a ("Planned: road step 5b2a,
-> MirrorBuilder and atomic installation"), then edited programs in images
-> and the reclaiming of ids, road step 5b2b; the debugger, edit-and-continue and actors
-> after it.
+> forward", "What a slot access checks"). A MirrorBuilder and an atomic
+> install are built, road step 5b2a ("A MirrorBuilder and an atomic
+> install"): `ClassDeclarationMirror>>asBuilder` stages edits of a
+> program's class -- its header, its methods on either side, its lazy
+> slots -- as source, and `install` recompiles the class from its
+> module's edited text and commits in one leaf with no safepoint, every
+> application of the edited mixin re-applied and the instances whose
+> layout changed migrated by one bulk forward, or changes nothing.
+> **Planned:** edited programs in images, editing a loaded program and
+> the reclaiming of ids, road step 5b2b ("Planned: road step 5b2b, edited
+> programs in images, and reclaiming ids"); the debugger,
+> edit-and-continue and actors after it.
 > What else is built is the groundwork every part of it depends on —
 > reified activations and the kernel-private activation objects the
 > exceptions are built on ([core-library.md](core-library.md),
@@ -28,8 +35,10 @@
 > leaves), the reified mixin (`Mutator::reified_mixin`, `Heap`'s
 > `mixin_objects`, `Kernel.ns`'s private class `Mixin`), the mixin table's
 > rows (`heap/tables.rs`; `Heap::mixin_id`, `replace_mixin`,
-> `enclosing_mixin_id`, `mixin_module_text`; `Mutator::replace_mixin`),
-> the image's `OBJECT_MIXIN` (`image/encode.rs`, `image/decode.rs`).
+> `enclosing_mixin_id`, `mixin_module_text`, `current_module_text`;
+> `Mutator::replace_mixin`), the edit and the install
+> (`interpreter/edit.rs`, `interpreter/install.rs`), the image's
+> `OBJECT_MIXIN` (`image/encode.rs`, `image/decode.rs`).
 
 This is the constraints document. It binds every milestone even though it
 implements none of them: the point is that the runtime's shape must not foreclose
@@ -108,10 +117,11 @@ emptying its global cache, with every code family's range kept for the
 activations still running; a debug-build stress mode, `NS_NEXT_STRESS_CACHES`,
 does exactly that at every safepoint. The bulk forward invalidates every
 cache the same way after its walk (`InlineCaches::invalidate`, from
-`heap::world::forward_identity`), so road step 5b2's atomic install, which
-forwards, flushes them; nothing else mutates a method table at run time
-yet. Scoping an invalidation to the applications a change affects is
-deferred beyond that step. The dispatch id a cache guards on is a copy in the
+`heap::world::forward_identity`), so the atomic install ("A MirrorBuilder
+and an atomic install" below), which forwards, flushes them, and flushes
+them itself when it migrated nothing; nothing else mutates a method table
+at run time. Scoping an invalidation to the applications a change affects
+is deferred beyond road step 5b2a. The dispatch id a cache guards on is a copy in the
 object header ([dispatch.md](dispatch.md), "The dispatch id"), so `become:`
 must not let a stale guard hit, and a class change must restamp it, as
 `Heap::class_set_application` already does when a class's application changes;
@@ -124,7 +134,7 @@ The caches also rest on a guard naming one application whose chain does
 not change while they persist -- the private and super slot accessors'
 verified pair most directly ([object-model.md](object-model.md), "What a
 slot access checks") -- so whatever changes a class object's application
-or chain under an unchanged guard, as 5b2's install will, invalidates the
+or chain under an unchanged guard, as the install does, invalidates the
 caches after it.
 
 ## Debugger
@@ -435,6 +445,10 @@ else, and none raises: what a program sees is the `Error` or
 declared method is a compiled method whose selector is not a lazy slot's
 name of the same mixin, ordered by its body's source start, then its
 selector, so the order does not depend on the method table's hashing.
+The same family holds 5b1's forward and the two leaves of the
+MirrorBuilder, `reflectionMixin:checkEdit:ifFail:` and
+`reflectionMixin:installEdit:ifFail:`, the table's last rows ("A
+MirrorBuilder and an atomic install" below).
 
 **A mixin is reified as a kernel-private object.** A mixin is an immutable
 Rust value in the heap's mixin table, named by its `MixinId`
@@ -511,65 +525,116 @@ the classes the walk was given; and `tests/image.rs`, which round-trips reified
 mixins -- a program's, a shipped one's and one of a class not yet built --
 and a program holding mirrors, and refuses every crafted mixin record.
 
-### Planned: road step 5b2a, MirrorBuilder and atomic installation
+### A MirrorBuilder and an atomic install
 
-Would change: a minimal MirrorBuilder exists, with an atomic install, as
-the second plan of road step 5b of the road to a high-performance VM
+A program holding `platform mirrors` edits a class -- its header's slots,
+factory and initializer, its instance-side and class-side methods, its
+lazy slots -- through a `ClassDeclarationBuilder`, and `install` makes the
+edit visible at once to every application of the edited mixin, migrating
+the instances whose layout changed, or changes nothing. This is road step
+5b2a, the second plan of road step 5b of the road to a high-performance VM
 (decided with the user on 2026-10-05; split from road step 5b1 on
-2026-10-18, and into 5b2a and 5b2b on 2026-10-18, the design below
-settled with the user that day). Road step 5b1 built what it stands on:
-every version of a mixin answers one id, so a fresh mixin is installed
-under an old one's id ("An edit replaces the mixin under its id" below),
-and `become:` as an eager bulk forward, with the recorded guards that
-keep an activation or a cached private or super accessor from writing a
-forwarded receiver in the old layout ([object-model.md](object-model.md),
-"`become:` is an eager bulk forward", "What a slot access checks"). It
-follows Primordial Soup's `Mirrors.ns`
-(`prior-art/primordialsoup/newspeak/Mirrors.ns`, the builders at
-`:566-824` and `:1310-1573`, `AtomicInstaller` at `:264-563`) and the
+2026-10-18, and into 5b2a and 5b2b on 2026-10-18, the design settled with
+the user that day; built on 2026-10-18,
+[its plan](../superpowers/plans/2026-10-18-2138-mirror-builder-and-atomic-install.md)).
+Road step 5b1 built what it stands on: every version of a mixin answers
+one id, so a fresh mixin is installed under an old one's id ("An edit
+replaces the mixin under its id" below), and `become:` as an eager bulk
+forward, with the recorded guards that keep an activation or a cached
+private or super accessor from writing a forwarded receiver in the old
+layout ([object-model.md](object-model.md), "`become:` is an eager bulk
+forward", "What a slot access checks"). It follows Primordial Soup's
+`Mirrors.ns` (`prior-art/primordialsoup/newspeak/Mirrors.ns`, the builders
+at `:566-824` and `:1310-1573`, `AtomicInstaller` at `:264-563`) and the
 canonical Newspeak's `prior-art/newspeak/AtomicInstaller.ns`, and takes
 its behaviour from their `MirrorBuilderTesting.ns` and
-`AtomicInstallTesting.ns`. The specification asks only that several
-reflective changes apply "simultaneously and atomically ... if any change
-fails, none take place" (§8.2, `newspeak-spec.pdf` p. 47) and that a
-change to a mixin affect all of its applications (§6.2); what happens to
-existing instances and running activations it leaves to the
+`AtomicInstallTesting.ns`; no code is copied. The specification asks only
+that several reflective changes apply "simultaneously and atomically ...
+if any change fails, none take place" (§8.2, `newspeak-spec.pdf` p. 47)
+and that a change to a mixin affect all of its applications (§6.2); what
+happens to existing instances and running activations it leaves to the
 implementation.
 
 **The protocol, in `MirrorsFactory.ns`.** `ClassDeclarationMirror>>asBuilder`
-answers a `ClassDeclarationBuilder` over the reflected mixin, and refuses,
-with an `Error` naming the reason, a shipped mixin -- a mixin of a shipped
-core-library module, `Kernel.ns` and the mirrors module among them, which
-also seals the VM mirror's class ("The VM mirror's class must be sealed
-against it" below) -- and a mixin decoded from an image, which has no
-declaration (`Mixin::declaration` is `None`), even when the image carries
-its module's text: editing a loaded program is road step 5b2b's. The builder answers `header`,
-`instanceSide`, `classSide` and `install`:
+answers a `ClassDeclarationBuilder` over the reflected mixin. The builder
+checks its empty edit as it is made, so `asBuilder` signals an `Error`
+with the VM's diagnostic, and answers no builder, for a shipped mixin --
+a mixin of a shipped core-library module, `Kernel.ns` and the mirrors
+module among them, which also seals the VM mirror's class ("The VM
+mirror's class must be sealed against it" below) -- for a mixin decoded
+from an image, which has no declaration (`Mixin::declaration` is `None`),
+even when the image carries its module's text, since editing a loaded
+program is road step 5b2b's, and for a mixin with no module text. The
+builder answers `source`, `header`, `instanceSide`, `classSide` and
+`install`:
 
-- `header`, a `ClassHeaderBuilder`: `source` and `source: aString`, which
-  replaces the class header -- its factory, its slots and its initializer
-  -- and refuses a header that renames the class or changes its
-  superclass or `<:` clauses (changing a superclass is deferred).
+- `source`, the staged declaration's text, from its access modifier (or
+  `class`) to its closing parenthesis, with every staged edit spliced in:
+  a replacing member stands where the member it replaces stood, an added
+  one last on its side. With nothing staged it is what the declaration
+  mirror's `source` answers.
+- `header`, a `ClassHeaderBuilder`: `source`, the staged header, and
+  `source: aString`, which replaces the class header -- its factory, its
+  slots and its initializer -- and refuses a header that renames the
+  class or changes its superclass or `<:` clauses (changing a superclass
+  is deferred). The header is the declaration's text from its start up
+  to, not including, the parenthesis that opens its members, whitespace
+  before that parenthesis included, so a header given to `source:` starts
+  exactly where the declaration does, at its access modifier or `class`,
+  with no whitespace or comment before it.
 - `instanceSide` and `classSide`, each a `MixinBuilder`: `methods`, a
-  `MutableMethodGroup` with `addFromSource: aString` -- adds the method,
+  `MutableMemberGroup` with `addFromSource: aString` -- adds the method,
   or replaces the one of the same selector -- and `removeMirrorNamed:
   aSymbol`, which removes a method and does nothing for a selector the
-  side does not declare; and `slots`, which only reads, since slots are
-  edited through the header, as in both prior arts.
+  side does not declare; on the instance side `lazySlots`, a group with
+  the same two messages for lazy slots, since a lazy slot is a member
+  (`ast::Member::LazySlot`) and so not reached through the header, while
+  the class side's `lazySlots` signals an `Error`, as §6.3's class side
+  declares none; and `slots`, which reads the live side's eager slots,
+  since slots are edited through the header, as in both prior arts.
 
 The builder stages its edits apart from the live system: its state is
 Newspeak strings and symbols -- the header's text, and for each side the
-method texts added or replaced and the selectors removed -- so nothing
-outside the object space is created, and nothing a program observes
-changes before `install`. The builder's own groups answer the staged
-state. `addFromSource:` and `source:` check the staged state at once,
-through a leaf that runs the install's preparation without its commit
-(below), and signal an `Error` with the diagnostic, leaving the builder as
-it was, for a syntax error, a selector that collides with a slot, a
-nested class or the factory, or a refused header; so an `install` after a
-failed edit installs only the edits that succeeded. `install` sends one
-VM-mirror leaf, and afterwards the builder stands for the installed state
-and can be edited again.
+member operations in the order they were staged -- so nothing outside the
+object space is created, and nothing a program observes changes before
+`install`. Every `addFromSource:`, `removeMirrorNamed:` and `source:`
+checks the whole staged state with it added, through the leaf
+`reflectionMixin:checkEdit:ifFail:`, which runs the install's preparation
+without its commit (below), and signals an `Error` with the diagnostic,
+leaving the builder as it was, for a syntax error, a member text that is
+not one member of the group's kind, a member that collides with a slot, a
+nested class, the factory or a member of another kind, or a refused
+header; so an `install` after a failed edit installs only the edits that
+succeeded. `install` sends the leaf `reflectionMixin:installEdit:ifFail:`,
+and afterwards the builder stands for the installed state, with nothing
+staged, and can be edited again. The builder's `source` and its header's
+`source` answer the texts the last successful check or install answered,
+so the builder never reads Newspeak syntax itself: the extent of a header
+is the parse's, which a scanner written in Newspeak would have to follow
+every rule of the lexer to agree with. Because each check and the install
+start from the module's current text, an install another builder made
+meanwhile is under this one's: two edits that each pass their own check
+can still fail together at the second install.
+
+**The edit on the wire, and the leaves' answers.** Both leaves take the
+reified mixin of either side of the edited declaration -- a class side
+stands for its instance side's declaration -- and the same `Array`,
+`{ header. instanceOperations. classOperations }`, which
+`interpreter::edit::Edit::from_value` decodes: `header` a `String`, or
+`nil` to keep it; each operations entry an `Array` of two-element
+`Array`s applied in order, `{#addMethod. aString}`, `{#removeMethod.
+aSymbol}`, `{#addLazySlot. aString}` and `{#removeLazySlot. aSymbol}`, the
+class side's method operations only. Both answer `{true. declarationText.
+headerText}` on success and `{false. diagnostic}` on failure, one shape
+for both, because a leaf passes no argument to its `ifFail:` block
+(`interpreter/mirror.rs`'s `failure_step`), so a diagnostic has to travel
+in the answer; they decline -- the block runs -- only for a subject that
+is no reified mixin and for an edit `from_value` cannot read, which the
+builder reports as `a MirrorBuilder takes a member or a header as a
+String and a name as a Symbol`. They are the last two rows of `MIRROR`,
+appended after `elementsOf:forwardIdentityToElementsOf:ifFail:`, reported
+as `checkEdit:` and `installEdit:` ([core-library.md](core-library.md),
+"The VM mirror is the whole Rust boundary").
 
 **Compiling: the module's text is what an edit edits.** The resolver
 binds an implicit-receiver send's depth at compile time
@@ -583,92 +648,158 @@ which it can because all its slot access goes through accessors and its
 sends are bound late
 (`prior-art/primordialsoup/newspeak/Intermediates.ns:77`); here, an unchanged body sent
 an implicit selector whose declaring class changed would send at the
-wrong depth, silently. So the install recompiles the edited declaration
-and everything nested in it, and it does so from the module's text:
+wrong depth, silently. So `Mutator::prepare_edit` (`interpreter/edit.rs`)
+recompiles the edited declaration and everything nested in it, and it
+does so from the module's text:
 
-1. Every module has a *current text*, the text it was loaded from
-   (`Mixin::module_text`) until an edit replaces it. The install parses
-   the current text and finds the edited declaration by its path of
-   names from the module's root class.
-2. It splices the staged edits into the text by their spans: the header
-   replaced, a method replaced or removed, an added method appended to
-   its side.
+1. Every module has a *current text*: the text its last install made it,
+   kept per module by its root mixin's id (`Tables::current_module_texts`,
+   `Heap::current_module_text`), and until then the text it was loaded
+   from (`Heap::mixin_module_text` of the root). It is a table of its own
+   because the root's row keeps the text its own version's spans point
+   into, which an edit of a nested class leaves the root's. The
+   preparation parses the current text and finds the edited declaration
+   by its path of names from the module's root class.
+2. It splices the staged edits into the text by the spans of the parse,
+   byte offsets that always fall on character boundaries: the instance
+   side's operations in order, then the class side's, then the header,
+   last, since every operation before it finds the declaration by its
+   name. A member text is first read alone in a scratch module and must
+   be exactly one member of the group's kind that ends where the members
+   do, or a text that closed the group early would splice members, or a
+   class side, of its own into the declaration; it replaces the member of
+   its kind and name, attached comments included, or is appended before
+   its side's closing parenthesis, and a class-side method of a class
+   that declares no class side opens one. A removal cuts the member and
+   its comments. The header replaces the text from the declaration's
+   start to its members' parenthesis, and must end where the members
+   begin; its name and its superclass and `<:` clauses, compared as text,
+   must be the old ones.
 3. It parses the new text whole (`ns_syntax::parse`) and resolves the
-   whole module (`resolver::resolve`), so every binding on the lexical
+   whole module (`resolver::resolve`, never `resolve_kernel`, since only
+   shipped source records mirror sends), so every binding on the lexical
    chain comes from one text and no new entry into the parser or the
    resolver is needed.
 4. It compiles the edited declaration's subtree through the existing
-   `mixin_of` path: the instance side, the declared class side and every
-   nested mixin, each fresh. A nested mixin takes the id of the old
-   nested mixin of the same name under the same parent; nested classes
-   are not edited in this step, so the two sets of names agree.
-5. The new text becomes the module's current text and the text of every
-   fresh mixin, whose spans point into it. A mixin outside the subtree
-   keeps its version and its text, which still describes it; the next
-   edit, of any class of the module, starts from the current text and so
-   carries every earlier edit.
+   `build_mixin` path (`build_root_mixin` for a module's root): the
+   instance side, the declared class side and every nested mixin, each
+   fresh and registered under no id. A nested mixin is paired with the
+   current version of the old nested mixin of the same name under the same
+   parent; nested classes are not edited in this step, so the two sets of
+   names agree. Every mixin of the subtree whose fresh version declares
+   no class side, while its old one had a registered class side, gets a
+   fresh synthesized class side under that class side's id
+   (`PreparedEdit::synthesized`), so every metaclass of the subtree keeps
+   its mixin's id.
+5. It answers the new text, the fresh mixins with the ids they replace,
+   and the declaration's and its header's text, sliced from the new text
+   by the spans of its parse. On an install the new text becomes the
+   module's current text and the text of every fresh mixin, whose spans
+   point into it. A mixin outside the subtree keeps its version and its
+   text, which still describes it; the next edit, of any class of the
+   module, starts from the current text and so carries every earlier
+   edit.
 
 Every failure -- a syntax error, a resolver error, a refused header, a
-refused mixin -- comes from these steps, before anything is replaced.
-Compiling the resolved module stays a total lowering that never raises a
-`NewspeakError`. A replacement of a shipped mixin's code would bypass the
-compile-time binding of its `SendMirror`s and primitive methods, so the
-install refuses one on the Rust side too, beside `asBuilder`.
+refused mixin -- comes from these steps, before anything is replaced, and
+is answered as a `String`, never a panic or a `NewspeakError`; compiling
+the resolved module stays a total lowering. A replacement of a shipped
+mixin's code would bypass the compile-time binding of its `SendMirror`s
+and primitive methods, so `prepare_edit` refuses one on the Rust side too,
+beside `asBuilder`. A header that drops a slot an added or kept method
+sends to is no failure: the send is bound late, and fails only when it
+runs. The diagnostics, read from `interpreter/edit.rs` and
+`interpreter/install.rs`, with `<name>` the edited mixin's
+`reflected_name` and `<n>` the 1-based line of the diagnostic's start in
+the edited module text:
 
-**The install is one leaf, and its commit has no safepoint.** The leaf
-prepares, then commits, and never runs Newspeak code or sends to a user
-object between the two or during the commit, so no program observes a
+| Where | Text |
+|---|---|
+| a mixin unknown to the heap | `the edited mixin is unknown to this heap` |
+| a shipped mixin | `<name> belongs to the shipped core library, which no MirrorBuilder edits` |
+| a class side named directly | `<name> is a class side; an edit names its instance side` (the leaves map a class side to its instance side first, so no program reaches it) |
+| a mixin with no declaration | `<name> was loaded from an image, and a loaded program cannot be edited yet` |
+| a mixin with no module text | `<name> has no source text to edit` |
+| a declaration its module's text does not hold | `<name>'s source text does not hold its declaration`; after the edit, `<name>'s edited source does not hold its declaration` |
+| a member text of the wrong kind | `addFromSource: of <name>'s methods takes one method declaration`; `addFromSource: of <name>'s lazy slots takes one lazy slot declaration` |
+| a member added to, or a header replaced on, a mixin application with no body | `<name> is a mixin application without a body, which an edit cannot add members to`; `<name> is a mixin application without a body, whose header an edit cannot replace` |
+| a syntax error | `<name>'s edited source does not parse: <message> (line <n>)`, the message the parser's, or `the header must declare the class and end where its members begin` for a header that does not end where the members begin |
+| a header that renames | `the header renames <name> to <new name>; an edit keeps a class's name` |
+| a header that changes a superclass or `<:` clause | `the header changes the superclass of <name>; an edit keeps it` |
+| a resolver error | `<name>'s edited source does not resolve: <message> (line <n>)` |
+| an instance whose layout would change that the forward refuses | `cannot migrate an instance of <name>, which is not an ordinary object` |
+
+**The install is one leaf, and its commit has no safepoint.**
+`Mutator::install_edit` (`interpreter/install.rs`) prepares, then
+commits, and never runs Newspeak code, sends to a user object or polls a
+safepoint between the two or during the commit, so no program observes a
 half-installed edit, not even a mourned ephemeron's handler at a
 safepoint:
 
-- *Prepare*: the compilation above, which is where everything that can
-  fail fails.
+- *Prepare*: the compilation above.
+- *Find*: one walk of the object space (`Heap::classes_and_instances_over`)
+  collects every class object whose application chain holds an
+  application of a replaced id -- a subclass in another module, a `<:`
+  clause's level, a metaclass, and the class object of a nested mixin in
+  every enclosing instance -- and every object whose class is one of
+  them. §6.2 requires every application to see the edit; the walk finds
+  them without a weak list of applications, which road step 5b2b brings.
+  An instance whose layout may change -- a replaced level of its class's
+  chain declares another slot list or another nested list -- and which the
+  bulk forward would refuse is refused here, the last place anything
+  fails.
 - *Replace*: every fresh mixin under its old id (`Mutator::replace_mixin`),
-  the declared class side included; a synthesized class side keeps its
-  old id too, instead of getting a fresh one.
-- *Find*: one walk of the object space collects every class object whose
-  application chain holds an application of a replaced id -- a subclass
-  in another module, a `<:` clause's level, a metaclass, and the class
-  object of a nested mixin in every enclosing instance -- and the
-  instances of those whose layout changes. §6.2 requires every
-  application to see the edit; the walk finds them without a weak list
-  of applications, which road step 5b2b brings.
-- *Re-apply*, superclasses first: each class object found gets
-  `apply_mixin(id, its superclass's new application)` written into its
-  `APPLICATION` field, so it keeps its identity, as every class object
-  does ([object-model.md](object-model.md), "Everything stays editable");
-  its superclass clause is not evaluated again, as in both prior arts.
-  The application cache misses for each, since `replace_mixin` forgets
-  the id's keys and a subclass's superclass application is new.
+  the declared class side included, and every fresh synthesized class
+  side under the old one's id through the same call, which also forgets
+  the old class side's applications, so a metaclass over the unchanged
+  `Class` is not answered the old application from the cache; the new
+  text becomes the module's current text. A replaced id is marked edited
+  (`Heap::mixin_is_edited`).
+- *Re-apply*, superclasses first, by the length of each chain: each class
+  object found gets an application of its id's current version over its
+  superclass's application now (`Heap::class_install_application`), so it
+  keeps its identity, as every class object does
+  ([object-model.md](object-model.md), "Everything stays editable"); its
+  superclass clause is not evaluated again, as in both prior arts. The
+  application cache misses for each, since `replace_mixin` forgets the
+  id's keys and a subclass's superclass application is new.
 - *Record successors*: an old application whose level keeps its slot
   base and its own slots, by name and in order, records the new one as
-  its successor, and every earlier predecessor of it is pointed at the
-  newest, so an activation entered before the install finds its level
-  in one step ("What an activation entered before the install does
-  next" below).
-- *Migrate*: each instance of a class object whose slot list changed is
-  allocated in the new shape and its slots are copied by their declaring
-  level's mixin id, that id's occurrence in the chain (one chain may
-  apply a mixin twice) and their name -- a subclass's slot may shadow a
-  superclass's of the same name, and the canonical
-  `AtomicInstallTesting.ns:77-145` keeps the two apart, so a slot moved to
-  another level is `nil` (`:278-317`) -- and its
-  hidden nested-class slots by mixin id and occurrence; a slot the edit added is `nil`
-  and its initializer does not run, so a new lazy slot is computed on its
-  first read. The instances that keep their shape are restamped with
-  their class's new guard in the same walk, rather than by a walk per
-  class as `Heap::class_set_application` does.
-- *Forward*: one bulk forward, `world::forward_identity`, replaces every
+  its successor (`Heap::record_successor`), and every earlier predecessor
+  of it is pointed at the newest, so an activation entered before the
+  install finds its level in one step ("What an activation entered
+  before the install does next" below).
+- *Migrate*: each instance of a class object whose fields changed is
+  allocated in the new shape, and its fields are copied by what they are
+  named (`mixin.rs`'s `FieldName`, `MixinApplication::field_names`): a
+  slot by the id of the level declaring it, that id's occurrence counted
+  from the chain's root -- one chain may apply a mixin twice through `<:`
+  clauses, and an install evaluates no clause again, so an occurrence is
+  the same before and after it -- and its name; a hidden nested-class slot
+  by the nested declaration's id and the occurrence of the level caching
+  it. A slot the edit adds, or moves to another level, is `nil`, and its
+  initializer does not run, so a new lazy slot is computed on its first
+  read. The level is part of a slot's name because a subclass's slot may
+  shadow a superclass's of the same name: the canonical
+  `AtomicInstallTesting.ns` (`testAddShadowedSlotSubclass` and
+  `testAddShadowedSlotSuperclass`, `:77-145`) asserts that the two are kept
+  apart, where taking the last slot of a name would overwrite the
+  shadowed one. The fields are written through `Heap::instance_set_field`
+  and nothing is sent. The instances that keep their shape -- among them
+  every class object whose metaclass was re-applied -- are restamped with
+  their class's new guard in the same pass (`Heap::stamp_dispatch_ids`),
+  rather than by a walk per class as `Heap::class_set_application` does.
+- *Forward*: one bulk forward, `heap::forward_identity`, replaces every
   migrated instance by its new-shape copy, keeping its identity hash, and
-  the caches are invalidated, also when nothing migrated, since class
-  objects' applications changed under unchanged guards ("Caches and
-  their dependency keys" above). Only instances are forwarded, never a
-  class object or a mixin. The 5b1 leaf
+  invalidates the caches; when nothing migrated the caches are
+  invalidated all the same, since class objects' applications changed
+  under unchanged guards ("Caches and their dependency keys" above). Only
+  instances are forwarded, never a class object or a mixin. The 5b1 leaf
   `elementsOf:forwardIdentityToElementsOf:ifFail:` stays, without a
-  caller in shipped code yet; the install calls the forward on the Rust
-  side, because a Newspeak caller would leave a window, between the
-  rebuilt classes and the forward, in which a safepoint could run a
-  program's code against classes whose instances have not migrated.
+  caller in shipped code; the install calls the forward on the Rust side,
+  because a Newspeak caller would leave a window, between the rebuilt
+  classes and the forward, in which a safepoint could run a program's
+  code against classes whose instances have not migrated.
 
 **What an activation entered before the install does next.** A method's
 body and a closure keep the code they were running and finish with it,
@@ -679,41 +810,66 @@ entered at, and its own-slot accesses check that the receiver's chain
 still holds it ([object-model.md](object-model.md), "What a slot access
 checks"). The install builds new applications even for an edit that
 changes only methods, since an application holds the mixin version it
-was built from; the cold path of that check also accepts the entered
-level's successor, so such an activation runs to its end when its
-level's slots did not change, and raises the existing error when they
-did. The hot path is unchanged. This keeps a debugger's edit of a method
-from failing an initializer it is stopped in, which edit-and-continue
-needs.
+was built from; the cold path of that check (`Heap::receiver_has_level`)
+also accepts the entered level's successor, so such an activation runs to
+its end when its level's slots did not change, and raises the existing
+error when they did. The hot path is unchanged. This keeps a debugger's
+edit of a method from failing an initializer it is stopped in, which
+edit-and-continue needs.
 
-**What the step changes of 5b1's places keyed by address.**
+**What the step changed of 5b1's places keyed by address.**
 `builtins/activation.rs`'s `inherits_mixin_of` and
-`Heap::with_level_applying_mixin_of` compare mixins by id instead of by
-`Rc` identity, so an old and a new application of one id match.
-`reflection.rs`'s `instance_side`, `Mixin::reflected_name` and
-`is_shipped` keep following the builder's `Weak` link: an edit keeps a
-mixin's name, its access and its shipped flag. The image encoder, still
-keyed by address, refuses a program with an edited mixin with an error,
-never a panic, until road step 5b2b.
+`Heap::with_level_applying_mixin_of` compare mixins with `Heap::same_mixin`
+-- by reference first, then by id -- so an old and a new application of
+one id match: a handler for an exception class catches an instance made
+before its class was edited. `reflection.rs`'s `instance_side`,
+`Mixin::reflected_name` and `is_shipped` keep following the builder's
+`Weak` link: an edit keeps a mixin's name, its access and its shipped
+flag. The image encoder, still keyed by address, refuses a program with
+an edited mixin before it plans any row (`image/mod.rs`'s
+`encode_describing`), with the error ``image encoding cannot yet
+serialize mixin `<name>`, which a MirrorBuilder edited``, never a panic:
+an edited mixin's code and layout live in the heap's tables, not in the
+tree the rows are planned from, so an image would load as the program
+before the edit. Road step 5b2b lifts it.
 
-**The step pins** its behaviour with goldens under
-`goldens/reflection/builder/`, held to their outcomes under both
-lowerings, written after the two prior-art suites rather than copied:
-adding, replacing and removing instance-side and class-side methods;
-adding, changing, removing and replacing slots through the header, with
-old instances `nil` in a new slot, new ones initialized, the other slots
-kept, a superclass's new slot seen by a subclass's instances, the
-identity hash kept and a hostile `=` never sent; a subclass in another
-module migrated; two class objects of one nested mixin both seeing an
-edit (§6.2); an implicit send of a nested class rebound when an
-enclosing class gains or loses the method; a failed edit followed by an
-install changing nothing; the refusals; and running activations -- a
-method that installs finishing with its old code, an initializer
-interrupted by an install running on or raising, an old closure keeping
-its code. Rust tests pin that a failed preparation changes no table,
-application or guard, the successor chain over several edits, the
-synthesized class side's id, and that a class object's current
-application may differ from an activation's entered level.
+**What pins it.** The goldens under `goldens/library/mirror-builder/`,
+held to their outcomes under both lowerings, written after the two
+prior-art suites rather than copied: adding, replacing and removing
+instance-side and class-side methods, an added method invisible until
+`install`, removing a missing one changing nothing; adding, changing,
+removing and replacing slots through the header, with old instances
+`nil` in a new slot, new ones initialized, the other slots kept, a
+superclass's new slot seen by a subclass's instances, a shadowing slot
+added to a subclass and a slot added to a superclass under a shadowing
+one each starting `nil`, a mixin applied twice keeping both levels'
+slots, the identity hash kept and a hostile `=` never sent; an added lazy
+slot computed on its first read; a subclass in another module and an
+`Error` subclass migrated; two class objects of one nested mixin both
+seeing an edit (§6.2), and a nested class object surviving its enclosing
+class's slot edit; an implicit send of a nested class rebound when an
+enclosing class gains the method; an enclosing class's edit keeping a
+nested class's; the builder's `source`; a failed edit leaving the builder
+as it was, and a failed install changing nothing -- with two builders
+over one class, since one builder's checks include everything it staged;
+the refusals; and running activations -- a method that installs
+finishing with its old code, an initializer interrupted by an install
+running on or raising, an old closure keeping its code. Every one of
+them carries `skipped_in_images`, a key of its own in the `.toml`
+(`crates/ns-cli/tests/common/mod.rs`, honoured by `golden_round_trips.rs`),
+since a program that edits itself cannot go through `build` then `load`
+until road step 5b2b; every other sweep runs them. Rust tests pin the
+splices and the refusals (`interpreter/edit.rs`: a second edit keeping
+the first, a splice around multi-byte text keeping every character,
+every refusal's diagnostic, a failed preparation changing nothing), the
+install (`interpreter/install.rs`: a failed install changing no version,
+application or guard, every level over an edited mixin re-applied, a
+migrated instance replaced in every holder, the synthesized class side's
+id, a class object's current application differing from an activation's
+entered level, the encoder's refusal), the successor chain over several
+edits (`interpreter/mod.rs`), the two leaves under both lowerings
+(`builtins/reflection.rs`) and the id match of `inherits_mixin_of`
+(`builtins/activation.rs`).
 
 Deferred beyond the step: everything of road step 5b2b below; a class
 declared from source with no predecessor (`ClassDeclarationBuilder
@@ -738,7 +894,11 @@ from it on 2026-10-18):
   image"): the encoder's row ids, still keyed by address, the old code a
   closure or a frame still runs, and the source of an edited mixin --
   which 5b2a's current module text answers for an image written with
-  source.
+  source. The encoder's refusal of an edited program goes, and with it
+  `skipped_in_images` from the goldens under
+  `goldens/library/mirror-builder/` and the key itself from
+  `crates/ns-cli/tests/common/mod.rs`, together with the refusal of a
+  mixin decoded from an image below.
 - **Editing a program loaded from an image.** An image written with
   `--debug-source` carries each module's text, which load never parses
   ([image-format.md](image-format.md), "Source"); the builder would parse
@@ -775,8 +935,9 @@ and a primitive method carries its leaf on the method, both on the ground
 that the mirror's class and table are fixed at bootstrap
 ([dispatch.md](dispatch.md), "Primitives"). A MirrorBuilder that added or
 replaced a method there would be seen by a sent mirror send and bypassed by
-both, so the two paths would disagree; road step 5b2's refusal of every edit
-to a shipped mixin is what seals it. **Open:** how a replaced *kernel*
+both, so the two paths would disagree; the MirrorBuilder's refusal of
+every edit to a shipped mixin, in `asBuilder` and again in
+`Mutator::prepare_edit`, is what seals it. **Open:** how a replaced *kernel*
 method is compiled, should editing kernel methods ever be offered. Its
 primitive-method mark and its `SendMirror` rest on
 `Binding::MirrorSend`, which only shipped core-library source's
@@ -793,10 +954,9 @@ identity is its `MixinId`, the row of the heap's mixin table
 it under the old mixin's id, so everything that names the mixin by id sees
 the edited one at once (decided with the user on 2026-10-05). The id's half
 is built by road step 5b1 (2026-10-18,
-[its plan](../superpowers/plans/2026-10-18-1236-become-and-recorded-guards.md));
-nothing but tests edits a live class yet, since the install that does is
-road step 5b2a's ("Planned: road step 5b2a, MirrorBuilder and atomic
-installation" above).
+[its plan](../superpowers/plans/2026-10-18-1236-become-and-recorded-guards.md)),
+the install that edits a live class through it by road step 5b2a ("A
+MirrorBuilder and an atomic install" above).
 
 **Every version answers one id.** `Heap::mixin_id` answers the id a mixin
 -- any version of it -- was first registered under, registering the
@@ -814,7 +974,8 @@ round. `Mutator::replace_mixin` calls it and forgets the applications and
 the synthesized class side built from the previous version, so the next
 application of the id applies the replacement; applications already built,
 and the class objects naming them, keep the version they were built from,
-which road step 5b2's install rewrites. The application cache is keyed by
+which the install rewrites ("A MirrorBuilder and an atomic install"
+above). The application cache is keyed by
 the id and applies the id's current version on a miss.
 
 §6.2 requires an edit to a mixin to affect all of its applications, so the
@@ -862,20 +1023,25 @@ where a mirror needs one as its reflectee.
 **What the id has to carry.** On the id now: the hidden nested-class slot
 (`MixinApplication::nested_slot`, keyed by `MixinId`), the shipped world's
 two maps (`ShippedWorld::index_by_mixin`, `declared_by_mixin`), the
-application cache, and a mixin's enclosing link and module text, which the
-reflection leaves read through the id. Still on a mixin's address or its
-builder's link: `builtins/activation.rs`'s `inherits_mixin_of`, and
-`Heap::with_level_applying_mixin_of`, which compares mixins by `Rc`
-identity, so an old and a new application of one id do not match, and a
-synthesized class side, which gets a fresh id after a replacement -- both
-road step 5b2a's; `reflection.rs`'s `instance_side`,
+application cache, a mixin's enclosing link and module text, which the
+reflection leaves read through the id, a module's current text, keyed by
+its root mixin's id (`Tables::current_module_texts`), whether an id was
+edited (`Heap::mixin_is_edited`), the names an install migrates a field
+by (`FieldName`), and `builtins/activation.rs`'s `inherits_mixin_of` and
+`Heap::with_level_applying_mixin_of`, which compare mixins with
+`Heap::same_mixin`, by reference and then by id, so an old and a new
+application of one id match. A synthesized class side keeps its id across
+an edit: the install replaces it under the old one's id rather than
+letting the next application mint a fresh one. Still on a mixin's address
+or its builder's link: `reflection.rs`'s `instance_side`,
 `Mixin::reflected_name` and `is_shipped`, which follow the builder's
 `Weak` link and stay so -- what they answer, a name, an access and the
 shipped flag, no replacement changes; and, road step 5b2b's, the image
 encoder's row ids (`image/mixins.rs`, and `image/encode.rs`'s
 `mixin_ids`, keyed by `mixin::mixin_key`, which looks a row up by the
-current version's address) and a mixin's nested declarations, still
-`Vec<Rc<Mixin>>` (`Mixin::nested`). The application cache, today strong
+current version's address), which is why the encoder refuses an edited
+program, and a mixin's nested declarations, still `Vec<Rc<Mixin>>`
+(`Mixin::nested`). The application cache, today strong
 and growing with every re-application, gets the reuse rules of the ids
 and becomes weak with road step 5b2b
 (decided with the user on 2026-10-03; [object-model.md](object-model.md),

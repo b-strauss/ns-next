@@ -1674,10 +1674,11 @@ own:
 5. **Mirrors and atomic installation**, built on `become:` as an eager bulk
    forward ("`become:` is an eager bulk forward" below;
    [liveness-and-reflection.md](liveness-and-reflection.md), "Mirrors and
-   MirrorBuilder"; decided with the user on 2026-10-05), in three plans:
+   MirrorBuilder"; decided with the user on 2026-10-05), in four plans:
    5a, mirrors that read, and 5b1, the VM's half of live editing -- the
    mixin id that carries every version, the forward and the recorded
-   guards -- built; 5b2, the MirrorBuilder and the atomic install, next.
+   guards -- built; 5b2a, the MirrorBuilder and the atomic install,
+   built; 5b2b, edited programs in images and the reclaiming of ids, next.
 6. **Inline allocation in the interpreter** ([memory.md](memory.md),
    "Planned: inline allocation").
 7. **The execution model for compiled code** ([execution.md](execution.md),
@@ -1803,9 +1804,10 @@ a version's id (`mixin::mixin_key`) never names a dropped one
 ([liveness-and-reflection.md](liveness-and-reflection.md), "An edit
 replaces the mixin under its id"). None of it is reclaimed: nothing drops a
 mixin, superseded versions included, and the application cache, keyed by
-the ids, stays strong; the reuse rules and a weak cache come with the first
-edit (decided with the user on 2026-10-03), which is road step 5b2's atomic
-install ([OPEN-WORK.md](../OPEN-WORK.md), "Next").
+the ids, stays strong; the reuse rules and a weak cache come with live
+editing (decided with the user on 2026-10-03), with road step 5b2b, after
+road step 5b2a's atomic install, which supersedes applications and guards
+without reclaiming them ([OPEN-WORK.md](../OPEN-WORK.md), "Next").
 
 **The class word** is an ordinary stored word naming the object's class
 object, written through `Heap::store` and read through `Heap::load` like a
@@ -2081,8 +2083,8 @@ answers its usual error. A receiver replaced by another instance of the
 level's own application keeps the guard and never reaches the cold path.
 
 The level is the one the activation was *entered* at, by its full-width
-`ApplicationIndex`, not the class object's *current* application: road
-step 5b2's install rewrites a class object's application in place while an
+`ApplicationIndex`, not the class object's *current* application: the
+atomic install rewrites a class object's application in place while an
 activation entered before it still runs code compiled against the old
 mixin's slot list. So the slot base comes from the same place
 (`Heap::activation_slot_base` reads the entered level's `own_slot_base`),
@@ -2092,19 +2094,20 @@ could hold -- runs with `NONE` and `UNREGISTERED` and raises for every
 object receiver, as does own-slot code run in an activation with no
 `current_class`.
 
-**Planned: the entered level's successor** (road step 5b2a, decided with
-the user on 2026-10-18; [liveness-and-reflection.md](liveness-and-reflection.md),
-"Planned: road step 5b2a, MirrorBuilder and atomic installation"). The
-install builds new applications for every class it reaches, even for an
-edit that changes only methods, since an application holds the mixin
-version it was built from. For each old level whose slot base and own
-slots, by name and in order, the edit keeps, it records the new
-application as the old one's successor, pointing every earlier
-predecessor at the newest; the cold path of `Heap::receiver_has_level`
-then accepts the entered level or its successor. So an initializer or a
-lazy getter entered before the install runs to its end when its level's
-slots did not change, and raises the error above when they did; the hot
-path is unchanged.
+**The entered level's successor** (road step 5b2a, decided with the user
+on 2026-10-18; [liveness-and-reflection.md](liveness-and-reflection.md),
+"A MirrorBuilder and an atomic install"). The install builds new
+applications for every class it reaches, even for an edit that changes
+only methods, since an application holds the mixin version it was built
+from. For each old level whose slot base and own slots, by name and in
+order, the edit keeps, it records the new application as the old one's
+successor (`Heap::record_successor`, into `Tables::successors`), pointing
+every earlier predecessor at the newest; the cold path of
+`Heap::receiver_has_level` accepts the entered level or its successor. So
+an initializer or a lazy getter entered before the install runs to its
+end when its level's slots did not change, and raises the error above
+when they did; the hot path is unchanged. No successor is dropped; the
+rule for reusing an application's index is road step 5b2b's.
 
 **Private and super slot accessors.** `Lookup::SlotAccessor` answers the
 level whose own slot the field is, and `Resolved::Slot` and
@@ -2148,7 +2151,7 @@ location through every cached send and cost every program 2.5-7.4%.
 chain does not change while the caches persist. Whatever changes a class
 object's application or chain under an unchanged guard must invalidate the
 caches after it -- `Heap::class_set_application` on a superclass is the
-case -- which road step 5b2's install does. Recorded guards follow the
+case -- which the atomic install does. Recorded guards follow the
 guard id's reuse rule ("An application has two ids" above).
 
 **A reified frame has no field for it.** The recorded guard and the entered
@@ -2219,12 +2222,13 @@ an array of new ones, done eagerly, as Primordial Soup does, and only
 mirrors reach it: it is a leaf on the VM mirror. Built by road step 5b1
 (2026-10-18,
 [its plan](../superpowers/plans/2026-10-18-1236-become-and-recorded-guards.md));
-road step 5b2a's atomic install calls the forward on the Rust side, from
-its one leaf, with no safepoint between rebuilding the classes and
-forwarding their instances ([liveness-and-reflection.md](liveness-and-reflection.md),
-"Planned: road step 5b2a, MirrorBuilder and atomic installation"), so the
-leaf has no caller in shipped code, and only tests reach it, handing the VM mirror to a test program from the host, which no
-program can do. Eager forwarding and its reach only through mirrors were
+its caller is road step 5b2a's atomic install, which calls the forward on
+the Rust side, from its own leaf, with no safepoint between rebuilding the
+classes and forwarding their instances
+([liveness-and-reflection.md](liveness-and-reflection.md), "A
+MirrorBuilder and an atomic install"), so the leaf has no caller in
+shipped code, and only tests reach it, handing the VM mirror to a test
+program from the host, which no program can do. Eager forwarding and its reach only through mirrors were
 decided with the user on 2026-10-05.
 
 **The forward.** Primordial Soup's `Heap::BecomeForward`
@@ -2379,15 +2383,21 @@ the new ones after the instances (`Mirrors.ns:320-326`); a mixin is
 replaced under its id instead (`Mutator::replace_mixin`;
 [liveness-and-reflection.md](liveness-and-reflection.md), "An edit
 replaces the mixin under its id"). When the slots change, the instances
-migrate: road step 5b2's install allocates each in the new shape, copies
-its slots by declaring level and name, leaves a slot the edit added `nil` without running its
-initializer, keeps its identity hash, and sends nothing to a user object
-while it does; then one bulk forward replaces all of them at once. A live
-frame gains locals by being divorced into a newly allocated, larger frame
-object, allocated old and born remembered, through the same walk, and
-execution continues from the divorced frame ("The object layout" above).
-Closures keep their old code, as in Smalltalk, and new ones get the new
-code. A value class's instances migrate the same way, inside the VM, which
+migrate: the atomic install allocates each in the new shape, copies its
+fields by what they are named -- a slot by its declaring level's mixin id,
+that id's occurrence in the chain and its name, a hidden nested-class slot
+by its declaration's id and occurrence (`mixin.rs`'s `FieldName`) --
+leaves a slot the edit added, or moved to another level, `nil` without
+running its initializer, keeps its identity hash, and sends nothing to a
+user object while it does; then one bulk forward replaces all of them at
+once ([liveness-and-reflection.md](liveness-and-reflection.md), "A
+MirrorBuilder and an atomic install"). The install touches no frame: a
+running activation finishes with the code it was running. Edit-and-continue,
+which is to give a live frame locals, will divorce it into a newly
+allocated, larger frame object, allocated old and born remembered,
+through the same walk, and continue from the divorced frame ("The object
+layout" above). Closures keep their old code, as in Smalltalk, and new
+ones get the new code. A value class's instances migrate the same way, inside the VM, which
 no program can observe, since a value has no identity.
 
 ## Decisions
@@ -2520,7 +2530,11 @@ no program can observe, since a value has no identity.
   and 5b2 the MirrorBuilder, the atomic install, the weak application
   cache, the image's edited mixins and run-time compilation**, 5b1 built
   (four decisions taken with the user on 2026-10-18,
-  [its plan](../superpowers/plans/2026-10-18-1236-become-and-recorded-guards.md)).
+  [its plan](../superpowers/plans/2026-10-18-1236-become-and-recorded-guards.md)),
+  and 5b2 split in turn into 5b2a, the MirrorBuilder, run-time
+  compilation and the atomic install, built
+  ([its plan](../superpowers/plans/2026-10-18-2138-mirror-builder-and-atomic-install.md)),
+  and 5b2b, the image's edited mixins and the weak application cache.
   The bulk forward runs inside its leaf, in the middle of a step, not at
   the next safepoint, so no instruction runs between the forward and the
   leaf's answer and it is atomic; nothing live moves, so no move epoch
@@ -2535,7 +2549,7 @@ no program can observe, since a value has no identity.
   shipped ("What the forward refuses" above). Refined while planning: the
   accessing level a cold check asks for is the application an activation
   was *entered* at, by its full-width index, recorded beside the guard,
-  not the class object's current application, which 5b2's install
+  not the class object's current application, which the atomic install
   rewrites in place under a running activation; and it is recorded only
   for code that addresses its own slots, so an ordinary send pays one
   flag test at its push ("What a slot access checks" above). Chosen by

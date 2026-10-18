@@ -2116,7 +2116,16 @@ row of the mixin table, whether a module declared it or an install put it
 there (decided with the user on 2026-10-05; road step 5b2b,
 [liveness-and-reflection.md](liveness-and-reflection.md), "Planned: road
 step 5b2b, edited programs in images, and reclaiming ids"). Until then the
-encoder refuses a program with an edited mixin, with an error.
+encoder refuses a program with an edited mixin, with an error, never a
+panic: `image/mod.rs`'s `encode_describing` walks every module's tree
+before it plans a row and refuses the first mixin whose id an install
+replaced (`Heap::mixin_is_edited`), with ``image encoding cannot yet
+serialize mixin `<name>`, which a MirrorBuilder edited``, since an edited
+mixin's code and layout live in the heap's tables, not in the tree the
+rows are planned from, and an image planned from the tree would load as
+the program before the edit
+([liveness-and-reflection.md](liveness-and-reflection.md), "A
+MirrorBuilder and an atomic install").
 
 Today the rows come from what the modules declared: `image::mixins::encode`
 takes the module roots' mixins and plans one tree per module from them
@@ -2178,9 +2187,9 @@ edges, and reuses one format for isolate messages. We get artifacts in kilobytes
 rather than a ~1.27 MB floor, and hold the untrusted-input invariant cheaply
 because a hostile file cannot replace a shipped class. **The decision is to
 stay with the table style**, and to move the line one step toward the graph
-style for *user-defined* behaviour only -- with road step 5b2's edits, as rows
-of the mixin table ("Planned: edited mixins in the image") -- never for the
-shipped world.
+style for *user-defined* behaviour only -- with road step 5b2b's edited
+mixins, as rows of the mixin table ("Planned: edited mixins in the
+image") -- never for the shipped world.
 
 ## Decisions
 

@@ -44,7 +44,7 @@ first.
 | The front end's cost: a corpus benchmark of the syntax crate, the comment attachment on demand, mimalloc in both binaries | Complete | 2026-10-17 | [attach-on-demand](superpowers/plans/2026-10-17-1049-attach-on-demand.md) |
 | Road step 5a — mirrors that read | Complete | 2026-10-18 | [mirrors-that-read](superpowers/plans/2026-10-17-2355-mirrors-that-read.md) |
 | Road step 5b1 — the VM's half of live editing: one id for every version of a mixin, `become:` as an eager bulk forward, recorded guards | Complete | 2026-10-18 | [become-and-recorded-guards](superpowers/plans/2026-10-18-1236-become-and-recorded-guards.md) |
-| Road step 5b2a — MirrorBuilder and atomic installation | Not started | — | — |
+| Road step 5b2a — MirrorBuilder and atomic installation: a `ClassDeclarationBuilder` over source, run-time compilation from the module's current text, an atomic install that migrates instances by their fields' level and name | Complete | 2026-10-18 | [mirror-builder-and-atomic-install](superpowers/plans/2026-10-18-2138-mirror-builder-and-atomic-install.md) |
 | Road step 5b2b — edited programs in images, and reclaiming ids | Not started | — | — |
 | Road step 6 — inline allocation in the interpreter | Not started | — | — |
 | Road step 7 — an execution model for compiled code | Not started | — | — |
@@ -5560,9 +5560,77 @@ fingerprint changed.
   again after the clause and read before the class is stored there, and
   the documents.
 
-What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "Next":
-road step 5b2, with the places still keyed by a mixin's address, the
-question whether an edit of methods alone keeps a class's applications,
-a test not written, and `bench_megamorphic.ns`'s undiagnosed
-1.3-2.1%. Road step 5b2, the MirrorBuilder and the atomic install, is
-next.
+What the batch left open -- the places still keyed by a mixin's address,
+the question whether an edit of methods alone keeps a class's
+applications, and a test not written -- road step 5b2a closed below, but
+for the image encoder's row ids, which it refuses an edited program on
+until road step 5b2b; `bench_megamorphic.ns`'s undiagnosed 1.3-2.1% is
+still in
+[OPEN-WORK.md](OPEN-WORK.md), "Next".
+
+## A MirrorBuilder and an atomic install, road step 5b2a (2026-10-18)
+
+Plan: [mirror-builder-and-atomic-install](superpowers/plans/2026-10-18-2138-mirror-builder-and-atomic-install.md);
+[liveness-and-reflection.md](design/liveness-and-reflection.md), "A
+MirrorBuilder and an atomic install"; [object-model.md](design/object-model.md),
+"What a slot access checks", "Everything stays editable";
+[image-format.md](design/image-format.md), "Planned: edited mixins in the
+image".
+
+The first of road step 5b2's two plans (decided with the user on
+2026-10-18), the second edited programs in images, editing a loaded
+program and the reclaiming of ids. `ClassDeclarationMirror>>asBuilder`
+answers a `ClassDeclarationBuilder` in `MirrorsFactory.ns`, which stages,
+as strings and symbols only, a new header -- slots, factory, initializer,
+never a new name, superclass or `<:` clause -- and the addition,
+replacement and removal of methods on either side and of lazy slots on
+the instance side; each edit is checked as it is staged by the leaf
+`reflectionMixin:checkEdit:ifFail:`, and `install` sends
+`reflectionMixin:installEdit:ifFail:`, the `MIRROR` table's two new last
+rows, both answering `{true. declarationText. headerText}` or `{false.
+diagnostic}`. An edit is spliced into its module's current text, kept per
+module by its root mixin's id, the whole module parsed and resolved
+again and the edited declaration's subtree compiled fresh, so every
+implicit send it rebinds comes from one text; every failure is a
+diagnostic before anything changes. The install, one leaf with no
+safepoint in its commit, replaces every fresh mixin under its old id, a
+synthesized class side's included, finds every class object over a
+replaced id and their instances in one walk of the space, re-applies the
+class objects in place, superclasses first, records a successor for
+every level whose slots stayed -- which the slot check's cold path
+accepts, so an initializer entered before an edit that kept its slots
+runs on -- copies each instance whose layout changed into the new one by
+its fields' declaring level, that level's occurrence in the chain and
+name (`FieldName`), restamps the rest, and forwards the copies in one
+bulk forward. A shipped mixin and one decoded from an image are refused;
+`inherits_mixin_of` and `Heap::with_level_applying_mixin_of` match
+applications of one id; the image encoder refuses an edited program with
+an error until road step 5b2b.
+
+No existing golden's outcome changed. New goldens under
+`goldens/library/mirror-builder/`, each with `skipped_in_images`, a new
+key of a golden's `.toml` that the round trip honours; new tests in
+`interpreter/edit.rs`, `interpreter/install.rs`, `interpreter/mod.rs`,
+`builtins/reflection.rs` and `builtins/activation.rs`. The golden image
+fixture was regenerated for the changed shipped world, only its
+fingerprint changed.
+
+- `8b20e6fe`, `dbbb3d4c`, `fe0d4a50` -- the design and the plan.
+- `21687b3b`, `58028315` -- preparing an edit from its module's current
+  text, every synthesized class side of the edited subtree paired.
+- `c72276a5` -- a level's successor passes the slot check, and
+  applications of one id match.
+- `033dbbb8` -- the atomic install, migrating the instances whose layout
+  changed.
+- `a406dc01` -- the encoder refusing an edited program.
+- `4c9fdea0` -- the VM-mirror leaves that check and install an edit.
+- `0389b697`, `1f5dd0bd` -- the MirrorBuilder for a class's header,
+  methods and lazy slots, its header text answered from the parse.
+- `9c4c6d2c`, `fd43a154`, `f9a0c609` -- the goldens, and a slot migrated
+  by its declaring level and its occurrence in the chain, not by its name
+  alone.
+- This commit -- the documents.
+
+What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): road step
+5b2b, "Next", and the hash lookup `Heap::same_mixin` adds per
+non-matching level, unmeasured.

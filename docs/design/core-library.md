@@ -633,7 +633,10 @@ boundary that gives all of this its purpose does not exist
 ([liveness-and-reflection.md](liveness-and-reflection.md), "Value objects
 exist; the boundary they cross does not").
 
-The leaves are the 267 rows of `builtins/primitive.rs`'s `MIRROR` table. A
+The leaves are the 270 rows of `builtins/primitive.rs`'s `MIRROR` table, the
+last two the MirrorBuilder's, `reflectionMixin:checkEdit:ifFail:` and
+`reflectionMixin:installEdit:ifFail:` ([liveness-and-reflection.md](liveness-and-reflection.md),
+"A MirrorBuilder and an atomic install"). A
 row names the **mirror selector** (`collection:at:put:ifFail:`), the
 **reported selector** — the kernel selector every error text of that leaf
 names, `at:put:` — and the `Primitive` it runs. Every mirror selector ends
@@ -2690,12 +2693,13 @@ modules it builds on first demand -- `TranscriptFactory`'s, `TimeFactory`'s,
 shipped module passed it on to one, which none does: each root keeps it in
 a private slot. `become:` ([object-model.md](object-model.md),
 "`become:` is an eager bulk forward") keeps it that way, because no program
-sends it: it is a leaf on the mirror, which no shipped module sends yet,
-and road step 5b2a's atomic install forwards on the Rust side, only the
-instances it migrates, of classes a program edited -- never of a shipped
-mixin, since the mirrors refuse every edit to one
-([liveness-and-reflection.md](liveness-and-reflection.md), "Planned: road
-step 5b2a, MirrorBuilder and atomic installation"); the leaf itself refuses
+sends it: it is a leaf on the mirror, which no shipped module sends,
+and the atomic install forwards on the Rust side, only the instances it
+migrates, of classes a program edited -- never of a shipped mixin, since
+the MirrorBuilder refuses every edit to one, in `asBuilder` and again in
+`Mutator::prepare_edit`
+([liveness-and-reflection.md](liveness-and-reflection.md), "A
+MirrorBuilder and an atomic install"); the leaf itself refuses
 every instance of a shipped mixin or a builtin class and every withheld
 value, the mirror among them ([object-model.md](object-model.md), "What
 the forward refuses"). So no object a shipped name
@@ -2752,6 +2756,17 @@ lets a program claim every primitive:
   The embedded shipped code carries the kernel's, in a codec of its own
   that only the boot reaches with the binary's own bytes, so this lock
   stays structural ("The embedded shipped code" below).
+
+Beside the six, the mirrors module's two edit leaves,
+`reflectionMixin:checkEdit:ifFail:` and
+`reflectionMixin:installEdit:ifFail:`, which only `MirrorsFactory.ns`'s
+`ClassDeclarationBuilder` sends, refuse every edit of a shipped mixin
+(`Mutator::prepare_edit`, after `asBuilder`), and resolve an edited module
+through `resolve`, never `resolve_kernel`, so no edit records a
+`MirrorSend` or changes the mirror's class, whose table stays the one the
+bootstrap built ([dispatch.md](dispatch.md), "Primitives";
+[liveness-and-reflection.md](liveness-and-reflection.md), "The VM
+mirror's class must be sealed against it").
 
 The activation objects the exceptions are built on are a capability of the
 same kind — one reads another frame's registers and unwinds the stack — and
@@ -3236,7 +3251,7 @@ Rust beside them.
 
 - **Compiling each method on its first call.** It touches only the half of
   the boot that compiling took, leaves parsing at every start, and puts a
-  "not yet compiled" state into the lookup, the image, road step 5b2's
+  "not yet compiled" state into the lookup, the image, the MirrorBuilder's
   atomic install and a later JIT; a large application reaches much of the
   kernel anyway.
 - **An embedded heap snapshot of the shipped world**, as Primordial Soup
@@ -4303,9 +4318,9 @@ needs a name for.
   value's `==` is `=` and its `identityHash` its `hash`. It is a subclass
   of `Map`, not a kernel class of its own beside it, because the two differ
   in how a key is found and compared and by those three selectors, not in
-  representation, and nothing in the kernel needs one: its first user is
-  to be road step 5b2's atomic install, which maps old objects to new ones
-  and must not run a program's `=`. A class side is not inherited, so
+  representation, and nothing in the kernel needs one: the atomic install,
+  which maps old objects to new ones and must not run a program's `=`,
+  does so on the Rust side, inside its one leaf. A class side is not inherited, so
   `IdentityMap` declares its own `new` and `withAll:`
   (`goldens/library/collection/an_identity_map_compares_keys_by_identity`).
 - **`Set` under `Collection`, with removal, built; the collections module

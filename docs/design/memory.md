@@ -1110,8 +1110,10 @@ creator's frame record without registers.
   run. This is recorded because a collector's design should know the interim
   may have a latency cost as well as a memory one.
 - **The application cache grows without bound** in the presence of live editing,
-  because every re-application mints a fresh entry that nothing evicts. It is
-  settled with road step 5b2's edits, which replace a mixin under its id
+  because every re-application mints a fresh entry that nothing evicts, and
+  road step 5b2a's install re-applies every class object of an edited
+  mixin. It is settled with road step 5b2b, after those edits, which
+  replace a mixin under its id
   ([liveness-and-reflection.md](liveness-and-reflection.md), "An edit
   replaces the mixin under its id"). Its key is a pair
   of the heap's ids since road step 3a, so evicting weakly is decidable; it
@@ -1899,9 +1901,11 @@ space needs no growth-in-place case. What changes an
 object's size is reflective and rare -- edit-and-continue adding locals to a
 live activation, a MirrorBuilder adding or removing slots of live instances
 (requirements 2 and 3 of
-[liveness-and-reflection.md](liveness-and-reflection.md)) -- and will take a
-new object: for instances, road step 5b2's atomic install will forward the old
-ones to their replacements in one bulk forward, which exists: a walk of every
+[liveness-and-reflection.md](liveness-and-reflection.md)) -- and takes a
+new object: for instances, road step 5b2a's atomic install forwards the old
+ones to their replacements in one bulk forward
+([liveness-and-reflection.md](liveness-and-reflection.md), "A
+MirrorBuilder and an atomic install"): a walk of every
 root the collector traces (`trace.rs`) and every heap object that rewrites
 every reference ([object-model.md](object-model.md), "`become:` is an eager
 bulk forward"); for a frame, the activation will be divorced into the
