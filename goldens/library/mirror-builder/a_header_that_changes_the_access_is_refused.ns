@@ -1,0 +1,41 @@
+/// `header source:` refuses a header that changes the class's access, with
+/// an Error naming the class, and stages nothing: the class's accessor in
+/// its enclosing class keeps the access it was declared with, so an edit
+/// keeps it as it keeps the name. A header that writes out the access the
+/// class already had, `protected` for one declared without a modifier, is
+/// staged.
+class AHeaderThatChangesTheAccessIsRefused = Object new () (
+  class Subject = Object new () ()
+
+  outcome: action = (
+    ^[
+      action value.
+      'staged'.
+    ] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      builder = (ClassMirror reflecting: Subject) mixin declaration asBuilder.
+      original = builder header source.
+    |
+    transcript
+        show: (outcome: [builder header source: 'public class Subject = Object new ()']);
+        newLine.
+    transcript
+        show: (outcome: [builder header source: 'private class Subject = Object new ()']);
+        newLine.
+    transcript
+        print: builder header source = original;
+        newLine.
+    transcript
+        show: (outcome: [builder header source: 'protected class Subject = Object new ()']);
+        newLine.
+    builder install.
+    transcript
+        print: (ClassMirror reflecting: Subject) mixin declaration accessModifier;
+        newLine.
+  )
+)

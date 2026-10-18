@@ -576,8 +576,9 @@ builder answers `source`, `header`, `instanceSide`, `classSide` and
 - `header`, a `ClassHeaderBuilder`: `source`, the staged header, and
   `source: aString`, which replaces the class header -- its factory, its
   slots and its initializer -- and refuses a header that renames the
-  class or changes its superclass or `<:` clauses (changing a superclass
-  is deferred). The header is the declaration's text from its start up
+  class or changes its access, its superclass or its `<:` clauses
+  (changing a superclass is deferred; the clauses are compared as text,
+  so a change of whitespace inside one is refused too). The header is the declaration's text from its start up
   to, not including, the parenthesis that opens its members, whitespace
   before that parenthesis included, so a header given to `source:` starts
   exactly where the declaration does, at its access modifier or `class`,
@@ -725,6 +726,7 @@ the edited module text:
 | a member added to, or a header replaced on, a mixin application with no body | `<name> is a mixin application without a body, which an edit cannot add members to`; `<name> is a mixin application without a body, whose header an edit cannot replace` |
 | a syntax error | `<name>'s edited source does not parse: <message> (line <n>)`, the message the parser's, or `the header must declare the class and end where its members begin` for a header that does not end where the members begin |
 | a header that renames | `the header renames <name> to <new name>; an edit keeps a class's name` |
+| a header that changes the class's access | `the header changes the access of <name>; an edit keeps it` |
 | a header that changes a superclass or `<:` clause | `the header changes the superclass of <name>; an edit keeps it` |
 | a resolver error | `<name>'s edited source does not resolve: <message> (line <n>)` |
 | an instance whose layout would change that the forward refuses | `cannot migrate an instance of <name>, which is not an ordinary object` |

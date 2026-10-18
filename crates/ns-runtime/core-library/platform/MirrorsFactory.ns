@@ -1019,7 +1019,7 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
   /// edit staged before it, into the module's current text, then parses
   /// and resolves the module, and an edit it refuses -- a syntax error, a
   /// member that collides with another, a header that renames the class
-  /// or changes its superclass -- signals an Error with the diagnostic and
+  /// or changes its access or its superclass -- signals an Error with the diagnostic and
   /// leaves the builder as it was, so a later `install` installs only the
   /// edits that were accepted.
   ///
@@ -1238,9 +1238,13 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// header that does not parse or does not end where the members begin,
     /// one that renames the class ('the header renames <name> to <new
     /// name>; an edit keeps a class's name'), one that changes its
-    /// superclass clause or its `<:` clauses ('the header changes the
+    /// access ('the header changes the access of <name>; an edit keeps
+    /// it'; no modifier and `protected` are one access), one that changes
+    /// its superclass clause or its `<:` clauses ('the header changes the
     /// superclass of <name>; an edit keeps it'), and one whose slots
-    /// collide with a member staged or declared.
+    /// collide with a member staged or declared. The superclass and `<:`
+    /// clauses are compared as text, so a header that changes only the
+    /// whitespace or comments inside them is refused as well.
     public source: aString = (
       staging value: aString asString.
     )

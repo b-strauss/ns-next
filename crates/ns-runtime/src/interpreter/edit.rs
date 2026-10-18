@@ -621,7 +621,7 @@ fn replace_header(text: &str, path: &[Symbol], header: &str, name: &str) -> Resu
 }
 
 /// Refuses an edited module whose declaration lost its place, its name,
-/// its superclass clause or its `<:` clauses. Everything before the
+/// its access, its superclass clause or its `<:` clauses. Everything before the
 /// declaration's start is untouched by the splices, so the edited
 /// declaration is the class that starts where the old one did; a header
 /// edit must end where its members' `(` begins, or it spliced a
@@ -670,6 +670,17 @@ fn check_kept_header(
         return Err(format!(
             "the header renames {name} to {}; an edit keeps a class's name",
             declaration.name.name
+        ));
+    }
+    // The class's accessor in its enclosing class's method table carries
+    // the access, and the enclosing class keeps its version: an edit
+    // that changed it would answer one access from the mirror and honour
+    // another in every send.
+    if crate::dispatch::effective_access(declaration.access)
+        != crate::dispatch::effective_access(original.access)
+    {
+        return Err(format!(
+            "the header changes the access of {name}; an edit keeps it"
         ));
     }
     let clause_text =
@@ -1120,6 +1131,10 @@ mod tests {
             (
                 header_edit("public class Renamed = ()"),
                 "the header renames Inner to Renamed; an edit keeps a class's name",
+            ),
+            (
+                header_edit("private class Inner = ()"),
+                "the header changes the access of Inner; an edit keeps it",
             ),
             (
                 header_edit("public class Inner = Object new ()"),
