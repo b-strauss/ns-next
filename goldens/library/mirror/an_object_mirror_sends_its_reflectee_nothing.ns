@@ -1,0 +1,54 @@
+/// An object mirror asks the VM, never its object: comparing two mirrors,
+/// hashing one, reading the object's class and its slots send the object
+/// nothing, so an object whose `=`, `hash` and `class` signal, and which
+/// understands nothing else, reflects as itself.
+class AnObjectMirrorSendsItsReflecteeNothing = Object new () (
+  class Hostile = Object new (
+    |
+      public contents = 5.
+    |
+  ) (
+    public = other = (
+      ^Error signal: 'sent ='.
+    )
+
+    public hash = (
+      ^Error signal: 'sent hash'.
+    )
+
+    public class = (
+      ^Error signal: 'sent class'.
+    )
+
+    protected doesNotUnderstand: message = (
+      ^Error signal: 'sent ' , message selector asString.
+    )
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ObjectMirror = platform mirrors ObjectMirror.
+      hostile = Hostile new.
+      mirror = ObjectMirror reflecting: hostile.
+      twin = ObjectMirror reflecting: hostile.
+    |
+    transcript
+        print: mirror = twin;
+        show: ' ';
+        print: mirror hash = twin hash;
+        newLine.
+    transcript
+        show: mirror getClass name;
+        show: ' ';
+        print: mirror getClass reflectee == Hostile;
+        newLine.
+    mirror slots do: [:slot |
+      transcript
+          show: slot name;
+          show: '=';
+          print: slot value reflectee;
+          newLine.
+    ].
+  )
+)

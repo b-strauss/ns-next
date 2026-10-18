@@ -1,0 +1,8 @@
+stdout = '''
+true
+reflectee: a core-library class reached by navigation is not handed out
+List true true true
+true
+reflectee: a core-library class reached by navigation is not handed out
+Object
+'''

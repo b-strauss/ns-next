@@ -1,0 +1,9 @@
+stdout = '''
+true true
+1 'secret' 2 #three
+first=1 hidden='secret' second=2 third=#three
+getSlot: no slot named missing that a mirror may read
+getSlot: requires a Symbol
+true true
+true false false
+'''

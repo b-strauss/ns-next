@@ -1,0 +1,624 @@
+/// The mirrors' module: `ObjectMirror` and `ClassMirror`, through which a
+/// program reads the structure of its objects and classes, reached
+/// through `platform mirrors`, and the private mirrors a program reaches
+/// only by navigating from those two. Built once, on first demand, over
+/// the VM mirror and the kernel, from which it takes `Error` and
+/// `ArgumentError`.
+///
+/// mirror: the VM mirror, through which every mirror reads what it
+///     reflects; a mirror sends its reflectee nothing.
+/// kernel: the kernel module instance; its `Error` is what a mirror
+///     signals for what it may not read, its `ArgumentError` what
+///     `ClassMirror reflecting:` signals for anything that is no class.
+///
+/// The factory pattern `PlatformFactory.ns` is written in: this root holds
+/// the VM mirror, which the platform's root hands it, and of the kernel only
+/// the two classes it needs, never the kernel instance; nothing hands
+/// its instance to a program. The platform's root builds it once, through
+/// the mirror, on its first use and keeps it in a private lazy slot,
+/// and each platform's `mirrors` getter sends it `build`, its one
+/// public member. What a program gets is the `Mirrors` facet `build`
+/// answers, which hands out this module's two public classes by class
+/// accessors, each exactly `^outer MirrorsFactory <Name>` -- a lexical
+/// send, which lets an image name the class by its declaration
+/// (`docs/design/image-format.md`, "Shipped names"). Its nested classes
+/// reach the mirror lexically, as members of this root, never through a
+/// slot of their own. Nothing a program can name answers this root's
+/// instance or its class, so no program can build one over something that
+/// is not the mirror. Keep it so: no code whose receiver is this root's
+/// instance may send it anything it does not understand, since a
+/// `MessageNotUnderstood` hands its receiver to whoever catches it.
+///
+/// The shipped-level rule, which every refusal below follows: a mirror
+/// hands out a value only through a level whose mixin is not shipped. A
+/// slot a core-library mixin declares is neither read by `getSlot:` nor
+/// listed by `slots`; the enclosing object of a core-library class is not
+/// reflected; and a class mirror reached by navigation -- an object's
+/// class, a superclass -- does not hand out a core-library class, which a
+/// program that can name the class gets back from the mirror it made
+/// itself with `ClassMirror reflecting:`. What stays readable of a
+/// core-library class is its structure: names, selectors, access
+/// modifiers, slot declarations and the superclass chain as further
+/// mirrors. Otherwise a mirror would hand a program the VM mirror, which
+/// a shipped module's root holds, or a shipped module's root itself, a
+/// core-library class's enclosing object. The leaves refuse the VM mirror
+/// and every shipped module instance whatever the level, behind this
+/// rule.
+///
+/// Mirrors read private and protected members alike: holding the
+/// capability, `platform mirrors`, is the access check.
+///
+/// The factory's parameters are copied into slots because neither a lazy
+/// slot nor a method may name them (§6). A send to `vmMirror` here is a
+/// mirror send, as in `Kernel.ns`: this module is resolved with
+/// `resolve_kernel`, which only shipped source is.
+///
+/// A value (§3.1.1), so that every platform shares the one module and its
+/// classes -- `platform mirrors ClassMirror` is one class however many
+/// platforms a program makes; a mirror holds what it reflects, so it is
+/// an object.
+class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
+  |
+    /// The VM mirror the factory was given: the one object through which
+    /// a mirror reads what it reflects. Never handed out.
+    private vmMirror = mirror.
+    /// The kernel's `Error`, which a mirror signals for what the
+    /// shipped-level rule keeps it from reading.
+    private Error = kernel Error.
+    /// The kernel's `ArgumentError`, which `ClassMirror reflecting:`
+    /// signals for anything that is no class or metaclass.
+    private ArgumentError = kernel ArgumentError.
+  |
+) (
+  /// `platform mirrors`: the namespace of this module's two public
+  /// classes, `ObjectMirror` and `ClassMirror`, one accessor each;
+  /// nothing else. Its own class is not among them, so a program makes no
+  /// second namespace.
+  private class Mirrors = Value () (
+    /// Answers this module's class `ObjectMirror`, which a program
+    /// instantiates with `reflecting:` any object.
+    public ObjectMirror = (
+      ^outer MirrorsFactory ObjectMirror.
+    )
+
+    /// Answers this module's class `ClassMirror`, which a program
+    /// instantiates with `reflecting:` a class or a metaclass.
+    public ClassMirror = (
+      ^outer MirrorsFactory ClassMirror.
+    )
+  )
+
+  /// A mirror on one object: its class, as a class mirror, and the values
+  /// of its slots. It sends the object nothing -- its class, its equality
+  /// and its hash are asked of the VM -- so an object that overrides `=`,
+  /// `hash` or `class`, or a proxy, reflects as itself.
+  ///
+  /// anObject: any object.
+  public class ObjectMirror reflecting: anObject = Object (
+    |
+      /// The object the mirror reflects, as `reflecting:` was given it.
+      public reflectee = anObject.
+    |
+  ) (
+    /// Answers true: the receiver is an object mirror.
+    public isKindOfObjectMirror = (
+      ^true.
+    )
+
+    /// Answers a class mirror on the reflectee's class, read through the
+    /// VM rather than by sending `class`. The mirror was reached by
+    /// navigation, so its `reflectee` hands out the class only when the
+    /// class is the program's own (the module's shipped-level rule).
+    public getClass = (
+      ^NavigatedClassMirror reflecting: (vmMirror objectClass: reflectee ifFail: [nil]).
+    )
+
+    /// Answers the value of the reflectee's slot named `aSymbol`; when
+    /// several levels of its class declare the name, the nearest one's.
+    ///
+    /// aSymbol: a Symbol, the slot's name.
+    ///
+    /// Signals an ArgumentError carrying `aSymbol`, 'getSlot: requires a
+    /// Symbol', when it is no Symbol; and an Error, 'getSlot: no slot
+    /// named <name> that a mirror may read', when no level declares a
+    /// slot of that name that the module's shipped-level rule lets a
+    /// mirror read: none at all, a lazy one, one a core-library mixin
+    /// declares, or one holding what no mirror hands out.
+    public getSlot: aSymbol = (
+      ^vmMirror reflectionSlotOf: reflectee named: aSymbol ifFail: [^self refuseSlotNamed: aSymbol].
+    )
+
+    /// Signals what `getSlot:` signals for a slot it may not read.
+    ///
+    /// aName: the name `getSlot:` was given.
+    ///
+    /// The name's text is read through the VM, which reads only a Symbol,
+    /// so that refusing runs no code of the program's.
+    private refuseSlotNamed: aName = (
+      |
+        text = vmMirror symbolAsString: aName ifFail: [
+          ^(ArgumentError value: aName) signal: 'getSlot: requires a Symbol'.
+        ].
+      |
+      ^Error signal: 'getSlot: no slot named ' , text , ' that a mirror may read'.
+    )
+
+    /// Answers a new MirrorGroup of SlotMirrors, one per slot of the
+    /// reflectee a mirror may read: superclass level first, each level's
+    /// slots in declaration order. Lazy slots, the slots a core-library
+    /// mixin declares (the module's shipped-level rule) and the indexed
+    /// elements of an Array or a String are left out; an object with no
+    /// such slot answers an empty group.
+    public slots = (
+      |
+        names = vmMirror reflectionSlotNamesOf: reflectee ifFail: [{}].
+        result ::= {}.
+      |
+      names do: [:slotName |
+        |
+          readable ::= true.
+          slotValue = vmMirror reflectionSlotOf: reflectee named: slotName ifFail: [
+            readable:: false.
+          ].
+        |
+        readable ifTrue: [result:: result , {SlotMirror name: slotName value: slotValue}].
+      ].
+      ^MirrorGroup over: result.
+    )
+
+    /// Answers whether `other` is an object mirror on the reflectee
+    /// itself, by identity: two mirrors on two distinct objects are never
+    /// equal, however equal the objects are.
+    ///
+    /// other: any object; sent `isKindOfObjectMirror`, and `reflectee`
+    /// when it answers true.
+    public = other = (
+      other isKindOfObjectMirror ifFalse: [^false].
+      ^vmMirror object: reflectee identicalTo: other reflectee ifFail: [false].
+    )
+
+    /// Answers the reflectee's identity hash, alike for two mirrors on
+    /// the one object.
+    public hash = (
+      ^vmMirror objectHash: reflectee ifFail: [0].
+    )
+  )
+
+  /// A mirror on one class or metaclass: its name, its mixin, its
+  /// superclass chain, its enclosing object and the slots, methods and
+  /// nested classes it has, the inherited ones included, superclass
+  /// first, the level a `<:` clause adds where it stands in the chain.
+  /// Everything is read through the VM; the class is sent nothing.
+  ///
+  /// aClass: a class or a metaclass.
+  ///
+  /// Signals an ArgumentError carrying `aClass`, 'reflecting: requires a
+  /// class or a metaclass', for anything else.
+  public class ClassMirror reflecting: aClass = Object (
+    |
+      /// The class the mirror reflects, as `reflecting:` was given it.
+      private subject = aClass.
+    |
+    vmMirror reflectionIsMetaclass: aClass ifFail: [
+      (ArgumentError value: aClass) signal: 'reflecting: requires a class or a metaclass'.
+    ].
+  ) (
+    /// Answers true: the receiver is a class mirror.
+    public isKindOfClassMirror = (
+      ^true.
+    )
+
+    /// Answers the class the mirror reflects.
+    public reflectee = (
+      ^subject.
+    )
+
+    /// Answers whether the receiver reflects `anObject`, by identity; it
+    /// sends `anObject` nothing.
+    ///
+    /// anObject: any object.
+    ///
+    /// The comparison `=` makes of two class mirrors, which reads the
+    /// class without handing it out: a mirror reached by navigation keeps
+    /// its class back (the module's shipped-level rule).
+    public reflects: anObject = (
+      ^vmMirror object: subject identicalTo: anObject ifFail: [false].
+    )
+
+    /// Answers the class's name, a new String: the name its declaration
+    /// gives it, a metaclass's that name followed by ' class'.
+    public name = (
+      ^self mixin name.
+    )
+
+    /// Answers the class's name, as `name` does: a class's name is its
+    /// declaration's, never qualified by the classes it is nested in.
+    public simpleName = (
+      ^self name.
+    )
+
+    /// Answers a mixin mirror on the mixin the class applies: a class's
+    /// instance side, a metaclass's class side.
+    public mixin = (
+      ^MixinMirror reflecting: (vmMirror reflectionMixinOf: subject ifFail: [nil]).
+    )
+
+    /// Answers a class mirror on the class's superclass, or nil for `Top`,
+    /// which has none. The mirror was reached by navigation, so its
+    /// `reflectee` hands out the superclass only when it is the program's
+    /// own (the module's shipped-level rule).
+    public superclass = (
+      |
+        parent = vmMirror behaviorSuperclass: subject ifFail: [nil].
+      |
+      nil == parent ifTrue: [^nil].
+      ^NavigatedClassMirror reflecting: parent.
+    )
+
+    /// Answers an object mirror on the class's enclosing object: the
+    /// object whose class declares it, nil for a module's class.
+    ///
+    /// Signals an Error, 'enclosingObject: the enclosing object of a
+    /// core-library class is not reflected', for a class whose mixin is
+    /// a core-library one (the module's shipped-level rule).
+    public enclosingObject = (
+      ^ObjectMirror reflecting: (vmMirror reflectionEnclosingObjectOf: subject ifFail: [
+        ^Error signal: 'enclosingObject: the enclosing object of a core-library class is not reflected'.
+      ]).
+    )
+
+    /// Answers whether the class is a metaclass.
+    public isMeta = (
+      ^vmMirror reflectionIsMetaclass: subject ifFail: [false].
+    )
+
+    /// Answers a new MirrorGroup of the slot declarations of every level
+    /// of the class, lazy ones left out: superclass level first, each
+    /// level's in declaration order. A core-library level's are listed
+    /// too: a declaration is structure, not a value.
+    public slots = (
+      ^self gathered: [:mixinMirror | mixinMirror slots].
+    )
+
+    /// Answers a new MirrorGroup of method mirrors on the methods every
+    /// level of the class declares: superclass level first, each level's
+    /// by their position in the source, then by selector. A method a
+    /// subclass overrides is listed at both levels. Slot accessors, the
+    /// factory and nested classes' accessors are not methods a
+    /// declaration writes, so none is listed.
+    public methods = (
+      ^self gathered: [:mixinMirror | mixinMirror methods].
+    )
+
+    /// Answers a new MirrorGroup of class declaration mirrors on the
+    /// classes every level of the class declares nested in it: superclass
+    /// level first, each level's in declaration order.
+    public nestedClasses = (
+      ^self gathered: [:mixinMirror | mixinMirror nestedClasses].
+    )
+
+    /// Answers a new MirrorGroup of the mirrors `members` answers for
+    /// each level of the class, from `Top` down to the class itself, in
+    /// that order.
+    ///
+    /// members: a one-argument block, given a mixin mirror on one level's
+    ///     mixin and answering a MirrorGroup of that mixin's own members.
+    private gathered: members = (
+      |
+        levels ::= {}.
+        level ::= subject.
+        result ::= {}.
+      |
+      [nil == level] whileFalse: [
+        levels:: {level} , levels.
+        level:: vmMirror behaviorSuperclass: level ifFail: [nil].
+      ].
+      levels do: [:each |
+        |
+          mixinMirror = MixinMirror reflecting: (vmMirror reflectionMixinOf: each ifFail: [nil]).
+        |
+        result:: result , (members value: mixinMirror) asArray.
+      ].
+      ^MirrorGroup over: result.
+    )
+
+    /// Answers whether `other` is a class mirror on the same class, by
+    /// identity, however each was reached; two applications of one mixin
+    /// are two classes.
+    ///
+    /// other: any object; sent `reflects:` only when it is a class mirror
+    /// of this module's own classes or of the receiver's class, so that
+    /// the class is handed to no other code.
+    public = other = (
+      (vmMirror object: self identicalTo: other ifFail: [false]) ifTrue: [^true].
+      (self trusts: (vmMirror objectClass: other ifFail: [nil])) ifFalse: [^false].
+      ^other reflects: subject.
+    )
+
+    /// Answers whether `aClass` is a class whose instances `=` may hand
+    /// the reflected class to: this module's `ClassMirror` or
+    /// `NavigatedClassMirror`, whose code is this module's, or the
+    /// receiver's own class, whose instances a program made only over
+    /// classes it holds.
+    ///
+    /// aClass: the class of the object `=` compares the receiver with.
+    private trusts: aClass = (
+      (vmMirror object: aClass identicalTo: outer MirrorsFactory ClassMirror ifFail: [
+        false.
+      ]) ifTrue: [^true].
+      (vmMirror object: aClass identicalTo: outer MirrorsFactory NavigatedClassMirror ifFail: [
+        false.
+      ]) ifTrue: [^true].
+      ^vmMirror object: aClass identicalTo: (vmMirror objectClass: self ifFail: [nil]) ifFail: [
+        false.
+      ].
+    )
+
+    /// Answers the class's identity hash, alike for two mirrors on the
+    /// one class.
+    public hash = (
+      ^vmMirror objectHash: subject ifFail: [0].
+    )
+  )
+
+  /// A class mirror a program reached by navigation -- an object's class,
+  /// a superclass -- rather than made itself: it reads the class as a
+  /// `ClassMirror` does, but hands the class out only when its mixin is
+  /// not a core-library one (the module's shipped-level rule). Every
+  /// navigation answers one of these, never a `ClassMirror`.
+  ///
+  /// aClass: a class or a metaclass, as for `ClassMirror reflecting:`.
+  private class NavigatedClassMirror reflecting: aClass = ClassMirror reflecting: aClass () (
+    /// Answers the class the mirror reflects.
+    ///
+    /// Signals an Error, 'reflectee: a core-library class reached by
+    /// navigation is not handed out', for a class whose mixin is a
+    /// core-library one; its structure stays readable.
+    public reflectee = (
+      |
+        held = super reflectee.
+        reifiedMixin = vmMirror reflectionMixinOf: held ifFail: [nil].
+      |
+      (vmMirror reflectionMixinIsShipped: reifiedMixin ifFail: [true]) ifTrue: [
+        ^Error signal: 'reflectee: a core-library class reached by navigation is not handed out'.
+      ].
+      ^held.
+    )
+  )
+
+  /// One slot of an object an object mirror reflects: its name and, as an
+  /// object mirror, its value, read when the object's `slots` were.
+  ///
+  /// aSymbol: the slot's name.
+  /// anObject: the slot's value.
+  private class SlotMirror name: aSymbol value: anObject = Object (
+    |
+      /// The slot's name, a Symbol.
+      public name = aSymbol.
+      /// An object mirror on the slot's value.
+      public value = ObjectMirror reflecting: anObject.
+    |
+  ) ()
+
+  /// A fixed sequence of mirrors, in the order the mirror that answered
+  /// it gives: slots in declaration order, superclass first; methods by
+  /// their position in the source, then by selector; nested classes in
+  /// declaration order. It never changes.
+  ///
+  /// anArray: an Array of mirrors, each answering `name`; kept, not
+  ///     copied, so whoever builds the group hands it over.
+  private class MirrorGroup over: anArray = Object (
+    |
+      /// The mirrors, in the group's order.
+      private mirrors = anArray.
+    |
+  ) (
+    /// Answers the number of mirrors.
+    public size = (
+      ^mirrors size.
+    )
+
+    /// Answers whether the group holds no mirror.
+    public isEmpty = (
+      ^mirrors isEmpty.
+    )
+
+    /// Evaluates `action` with each mirror in turn, in the group's order;
+    /// answers the receiver.
+    ///
+    /// action: a one-argument block.
+    public do: action = (
+      mirrors do: action.
+    )
+
+    /// Answers a new Array of what `transform` answers for each mirror, in
+    /// the group's order.
+    ///
+    /// transform: a one-argument block.
+    public collect: transform = (
+      ^mirrors collect: transform.
+    )
+
+    /// Answers the first mirror, in the group's order, for which
+    /// `predicate` answers true, or what `onNone` answers when there is
+    /// none.
+    ///
+    /// predicate: a one-argument block answering a Boolean.
+    /// onNone: a block of no arguments.
+    public detect: predicate ifNone: onNone = (
+      ^mirrors detect: predicate ifNone: onNone.
+    )
+
+    /// Answers the first mirror, in the group's order, whose name has the
+    /// text of `aName`, or nil when there is none.
+    ///
+    /// aName: a String or a Symbol; a Symbol and a String of one text
+    ///     name the same mirror.
+    public findMirrorNamed: aName = (
+      |
+        text = aName asString.
+      |
+      ^mirrors detect: [:each | each name asString = text] ifNone: [nil].
+    )
+
+    /// Answers whether a mirror of the group has the name `aName`, as
+    /// `findMirrorNamed:` compares it.
+    ///
+    /// aName: a String or a Symbol.
+    public includesMirrorNamed: aName = (
+      ^(self findMirrorNamed: aName) isNil not.
+    )
+
+    /// Answers a new Array of the mirrors, in the group's order: a copy,
+    /// so changing it leaves the group as it was.
+    public asArray = (
+      ^Array withAll: mirrors.
+    )
+  )
+
+  /// A mirror on one mixin: the members its own declaration declares,
+  /// never inherited ones.
+  ///
+  /// aReifiedMixin: the kernel's reified mixin, as the VM answers it for
+  ///     a class's mixin.
+  private class MixinMirror reflecting: aReifiedMixin = Object (
+    |
+      /// The reified mixin the mirror reflects.
+      private subject = aReifiedMixin.
+    |
+  ) (
+    /// Answers the mixin's name, a new String: its declaration's, a class
+    /// side's that name followed by ' class'.
+    public name = (
+      ^vmMirror reflectionMixinName: subject ifFail: [nil].
+    )
+
+    /// Answers whether the mixin is a class side.
+    public isMeta = (
+      ^vmMirror reflectionMixinIsMeta: subject ifFail: [false].
+    )
+
+    /// Answers a new MirrorGroup of the mixin's slot declarations, lazy
+    /// ones left out, in declaration order.
+    public slots = (
+      |
+        declarations = vmMirror reflectionMixinSlots: subject ifFail: [{}].
+        result ::= {}.
+      |
+      declarations do: [:declaration |
+        (declaration at: 4) ifFalse: [
+          result:: result
+              , {
+                SlotDeclarationMirror in: subject
+                    name: (declaration at: 1)
+                    mutable: (declaration at: 2)
+                    access: (declaration at: 3)
+                    lazy: (declaration at: 4).
+              }.
+        ].
+      ].
+      ^MirrorGroup over: result.
+    )
+
+    /// Answers a new MirrorGroup of method mirrors on the methods the
+    /// mixin's declaration writes, by their position in the source, then
+    /// by selector.
+    public methods = (
+      |
+        entries = vmMirror reflectionMixinMethods: subject ifFail: [{}].
+      |
+      ^MirrorGroup over: (entries collect: [:entry |
+        MethodMirror in: subject selector: (entry at: 1) access: (entry at: 2).
+      ]).
+    )
+
+    /// Answers a new MirrorGroup of class declaration mirrors on the
+    /// classes the mixin declares nested in it, in declaration order;
+    /// empty for a class side.
+    public nestedClasses = (
+      |
+        nested = vmMirror reflectionMixinNested: subject ifFail: [{}].
+      |
+      ^MirrorGroup over: (nested collect: [:each | ClassDeclarationMirror reflecting: each]).
+    )
+  )
+
+  /// A mirror on one class declaration, named by the reified mixin of its
+  /// instance side.
+  ///
+  /// aReifiedMixin: the reified mixin of the declaration's instance side.
+  private class ClassDeclarationMirror reflecting: aReifiedMixin = Object (
+    |
+      /// The reified mixin of the declaration's instance side.
+      private subject = aReifiedMixin.
+    |
+  ) (
+    /// Answers the name the declaration gives the class, a new String.
+    public name = (
+      ^vmMirror reflectionMixinName: subject ifFail: [nil].
+    )
+  )
+
+  /// A mirror on one method a mixin's declaration writes.
+  ///
+  /// aReifiedMixin: the reified mixin that declares the method.
+  /// aSymbol: the method's selector.
+  /// anAccessSymbol: the method's access, `#public`, `#protected` or
+  ///     `#private`.
+  private class MethodMirror in: aReifiedMixin selector: aSymbol access: anAccessSymbol = Object (
+    |
+      /// The reified mixin that declares the method.
+      private mixin = aReifiedMixin.
+      /// The method's selector, a Symbol.
+      private selector = aSymbol.
+      /// The method's access, `#public`, `#protected` or `#private`.
+      private access = anAccessSymbol.
+    |
+  ) (
+    /// Answers the method's selector, a Symbol.
+    public name = (
+      ^selector.
+    )
+  )
+
+  /// A mirror on one slot a mixin's declaration declares.
+  ///
+  /// aReifiedMixin: the reified mixin that declares the slot.
+  /// aSymbol: the slot's name.
+  /// aBoolean: whether the slot is mutable.
+  /// anAccessSymbol: the slot's access, `#public`, `#protected` or
+  ///     `#private`.
+  /// isLazy: whether the slot is lazy.
+  private class SlotDeclarationMirror
+      in: aReifiedMixin
+      name: aSymbol
+      mutable: aBoolean
+      access: anAccessSymbol
+      lazy: isLazy
+      = Object (
+    |
+      /// The reified mixin that declares the slot.
+      private mixin = aReifiedMixin.
+      /// The slot's name, a Symbol.
+      private slotName = aSymbol.
+      /// Whether the slot is mutable.
+      private mutable = aBoolean.
+      /// The slot's access, `#public`, `#protected` or `#private`.
+      private access = anAccessSymbol.
+      /// Whether the slot is lazy.
+      private lazySlot = isLazy.
+    |
+  ) (
+    /// Answers the slot's name, a Symbol.
+    public name = (
+      ^slotName.
+    )
+  )
+
+  /// Answers a new `Mirrors` namespace: the facet `platform mirrors`
+  /// answers, and the one public member of the module, named `build` like
+  /// every shipped factory's.
+  public build = (
+    ^Mirrors new.
+  )
+)

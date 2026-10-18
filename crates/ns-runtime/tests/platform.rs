@@ -260,6 +260,12 @@ fn the_typed_arrays_module_is_built_once_on_first_demand() {
     assert_built_once_on_first_demand("TypedArraysFactory", "typedArrays");
 }
 
+/// The mirrors module, like the collections module.
+#[test]
+fn the_mirrors_module_is_built_once_on_first_demand() {
+    assert_built_once_on_first_demand("MirrorsFactory", "mirrors");
+}
+
 /// `platform kernel WeakArray` and `platform collections WeakArray` are
 /// both the kernel's builtin `WeakArray`: the corpus asks the collections
 /// facet for it (`corpus/modules/Brazil.ns`), and a second class there
@@ -659,6 +665,46 @@ fn the_typed_arrays_facet_is_a_value() {
     );
 }
 
+/// The mirrors facet is a value like the typed arrays facet: a second
+/// platform's equals the first's, hashes alike and, a value having no
+/// identity, is identical; and every platform's facet comes from the one
+/// mirrors module, so it hands out the same `ClassMirror`.
+#[test]
+fn the_mirrors_facet_is_a_value() {
+    let mut interpreter = Interpreter::bootstrap();
+    let platform = interpreter.platform();
+    let platform_class = class_of(&mut interpreter, &platform);
+    let second = expect_ok(
+        interpreter.send(&platform_class, Symbol::NEW, &[]),
+        "platform class new",
+    );
+    let member = |interpreter: &mut Interpreter, receiver: &Root, name: &str| {
+        expect_ok(interpreter.send(receiver, Symbol::intern(name), &[]), name)
+    };
+    let mirrors = member(&mut interpreter, &platform, "mirrors");
+    let second_mirrors = member(&mut interpreter, &second, "mirrors");
+    assert!(
+        equals(&mut interpreter, &second_mirrors, &mirrors),
+        "a second platform's facet equals the first's"
+    );
+    let hash = member(&mut interpreter, &mirrors, "hash");
+    let second_hash = member(&mut interpreter, &second_mirrors, "hash");
+    assert!(
+        identical(&mut interpreter, &hash, &second_hash),
+        "a second platform's facet hashes as the first's"
+    );
+    assert!(
+        identical(&mut interpreter, &second_mirrors, &mirrors),
+        "a second platform's facet is the first's, a value"
+    );
+    let class_mirror = member(&mut interpreter, &mirrors, "ClassMirror");
+    let second_class_mirror = member(&mut interpreter, &second_mirrors, "ClassMirror");
+    assert!(
+        identical(&mut interpreter, &second_class_mirror, &class_mirror),
+        "every platform's facet hands out the one ClassMirror"
+    );
+}
+
 /// The module instance behind the platform: the enclosing object of the
 /// platform's class, which no program can name. Only a host test reaches it,
 /// through the heap.
@@ -792,6 +838,10 @@ fn the_platform_hands_out_none_of_its_modules_classes() {
         interpreter.send(&platform, Symbol::intern("typedArrays"), &[]),
         "platform typedArrays",
     );
+    let mirrors = expect_ok(
+        interpreter.send(&platform, Symbol::intern("mirrors"), &[]),
+        "platform mirrors",
+    );
     expect_ok(
         interpreter.send(&platform, Symbol::intern("transcript"), &[]),
         "platform transcript",
@@ -812,6 +862,7 @@ fn the_platform_hands_out_none_of_its_modules_classes() {
         (&platform, "TimeFactory", "Stopwatch"),
         (&collections, "CollectionsFactory", "Collections"),
         (&typed_arrays, "TypedArraysFactory", "TypedArrays"),
+        (&mirrors, "MirrorsFactory", "Mirrors"),
     ] {
         let message = refusal(
             interpreter.send(receiver, Symbol::intern(name), &[]),

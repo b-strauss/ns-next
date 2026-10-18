@@ -12,7 +12,7 @@ fn core_library_sources() -> Vec<std::path::PathBuf> {
     ns_tooling::source::collect_ns_files(&root.join(CORE_LIBRARY), &mut files);
     files.sort();
     assert!(
-        files.len() >= 7,
+        files.len() >= 8,
         "the gate found only {} sources",
         files.len()
     );

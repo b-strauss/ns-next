@@ -1,7 +1,8 @@
 /// The platform's module: answers, to `build`, the platform the
 /// host hands every program, whose members are the program's standard
 /// output, the collections, the kernel classes a program may name, a
-/// stopwatch and the typed arrays. The host instantiates it once, at boot.
+/// stopwatch, the typed arrays and the mirrors. The host instantiates it
+/// once, at boot.
 ///
 /// mirror: the VM mirror, which the host alone holds.
 /// kernel: the kernel module's instance, whose classes `KernelNamespace`
@@ -13,8 +14,9 @@
 /// the boot").
 ///
 /// The factory pattern: this root holds what is privileged -- the mirror,
-/// the kernel instance, which it builds the collections and typed arrays
-/// modules over, and the kernel's classes `KernelNamespace` hands out --
+/// the kernel instance, which it builds the collections, typed arrays and
+/// mirrors modules over, and the kernel's classes `KernelNamespace` hands
+/// out --
 /// and the host never hands its instance to anyone. It
 /// instantiates the root once, sends it `build`, its one public member, and
 /// hands every program that platform, an instance of the nested class
@@ -25,10 +27,11 @@
 /// them writes through the one mirror. The nested classes are private, so
 /// even a holder of this root's instance could send it nothing but `build`:
 /// a second line of defence behind the instance being unreachable. The
-/// transcript, the clock, the collections and the typed arrays are each a
-/// module of their own, another such root (`platform/TranscriptFactory.ns`,
-/// `platform/TimeFactory.ns`, `platform/CollectionsFactory.ns`,
-/// `platform/TypedArraysFactory.ns`), whose one instance this root builds
+/// transcript, the clock, the collections, the typed arrays and the
+/// mirrors are each a module of their own, another such root
+/// (`platform/TranscriptFactory.ns`, `platform/TimeFactory.ns`,
+/// `platform/CollectionsFactory.ns`, `platform/TypedArraysFactory.ns`,
+/// `platform/MirrorsFactory.ns`), whose one instance this root builds
 /// through the mirror on its first use and keeps in a private lazy slot
 /// here; the platform hands out only the facets their `build` answers.
 /// Nothing a program can name answers this root's instance or its class,
@@ -46,7 +49,7 @@
 /// slot nor a method may name them (§6); a root keeps what it uses, so of
 /// the kernel it keeps the instance, which the lazy module slots build
 /// over, and the classes `KernelNamespace` hands out, and nothing hands
-/// the instance on but to the factories of those two modules. A
+/// the instance on but to the factories of those three modules. A
 /// send to `vmMirror` here is a mirror send, as in `Kernel.ns`: this module
 /// is resolved with `resolve_kernel`, which only shipped source is.
 ///
@@ -59,8 +62,8 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
     /// a member here reaches a native operation. Never handed out.
     private vmMirror = mirror.
     /// The kernel module's instance the factory was given, which the
-    /// collections and typed arrays modules are built over on first
-    /// demand. Kept because those builds need the instance itself, not
+    /// collections, typed arrays and mirrors modules are built over on
+    /// first demand. Kept because those builds need the instance itself, not
     /// only its classes; handed to nothing but their factories, never to
     /// a program, and sent nothing but `garbageCollect`, which it
     /// understands.
@@ -174,6 +177,22 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
     ].
   ].
 
+  /// The one mirrors module, built over the mirror and the kernel on
+  /// first use and the same object on every use after it, as
+  /// `collectionsModule` is: the factory goes only to a class the mirror
+  /// answered, and a demand an unwind interrupts records nothing, so the
+  /// next one builds the module again. Only the `Mirrors` namespaces its
+  /// `build` answers leave this module.
+  lazy private mirrorsModule = vmMirror moduleInstanceNamed: #MirrorsFactory ifFail: [
+    |
+      rootClass = vmMirror shippedModuleClassNamed: #MirrorsFactory ifFail: [nil].
+    |
+    rootClass isNil ifFalse: [
+      vmMirror recordShippedModule: (rootClass usingVmMirror: vmMirror kernel: kernelModule)
+          ifFail: [nil].
+    ].
+  ].
+
   /// The platform a program is handed: the namespace of what it may use
   /// beyond the kernel, each member built on first use.
   ///
@@ -184,8 +203,9 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
   /// answer, and since `class` is protected it reaches no class of
   /// theirs, so it can make no second platform or transcript. `Time`
   /// hands out `Stopwatch`, which a program instantiates itself, the
-  /// collections facet the collections module's classes, and the typed
-  /// arrays facet the typed arrays module's classes.
+  /// collections facet the collections module's classes, the typed
+  /// arrays facet the typed arrays module's classes, and the mirrors
+  /// facet the mirrors module's public classes.
   private class Platform = Value () (
     /// The program's standard output, a `Transcript`, written as UTF-8.
     /// Built on first use; every later send answers the same one.
@@ -215,6 +235,16 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
     /// program needs it, as `kernel` is: it hands out a whole module of
     /// the core library's classes, not a piece of the platform's services.
     lazy public typedArrays = typedArraysModule build.
+
+    /// The namespace of the mirrors module's public classes --
+    /// `ObjectMirror` and `ClassMirror`, through which a program reads the
+    /// structure of its objects and classes -- a `Mirrors`. Built on first
+    /// use; every later send answers the same one.
+    ///
+    /// Exempt from the rule that an accessor here exists only because a
+    /// program needs it, as `kernel` and `typedArrays` are: it hands out
+    /// classes of a core-library module and reaches no host.
+    lazy public mirrors = mirrorsModule build.
   )
 
   /// `platform kernel`: the kernel classes a program may name that

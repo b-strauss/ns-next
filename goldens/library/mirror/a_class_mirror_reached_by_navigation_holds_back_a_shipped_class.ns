@@ -1,0 +1,45 @@
+/// A class mirror hands back the class it was given, a core-library class
+/// included, but one it reached by navigation -- an object's class, a
+/// superclass -- only when the class is the program's own: a core-library
+/// class reached that way shows its structure and is refused as a value.
+/// Both mirrors on one class are equal however each was reached.
+class AClassMirrorReachedByNavigationHoldsBackAShippedClass = Object new () (
+  class Plain = Object new () ()
+
+  refusal: action on: transcript = (
+    transcript
+        show: (action on: Error do: [:error | error messageText]);
+        newLine.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      ObjectMirror = platform mirrors ObjectMirror.
+      List = platform collections List.
+      given = ClassMirror reflecting: List.
+      reached = (ObjectMirror reflecting: List new) getClass.
+    |
+    transcript
+        print: given reflectee == List;
+        newLine.
+    refusal: [reached reflectee] on: transcript.
+    transcript
+        show: reached name;
+        show: ' ';
+        print: given = reached;
+        show: ' ';
+        print: reached = given;
+        show: ' ';
+        print: given hash = reached hash;
+        newLine.
+    transcript
+        print: (ObjectMirror reflecting: Plain new) getClass reflectee == Plain;
+        newLine.
+    refusal: [(ClassMirror reflecting: Plain) superclass reflectee] on: transcript.
+    transcript
+        show: (ClassMirror reflecting: Plain) superclass name;
+        newLine.
+  )
+)

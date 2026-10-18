@@ -1,0 +1,76 @@
+/// An object mirror reads the object it reflects: its class, through a
+/// class mirror, and its slots, private ones included, superclass first,
+/// each in declaration order. A slot it cannot name is refused with an
+/// Error, and a name that is no Symbol with an ArgumentError. Two mirrors are equal when they reflect the one object, never
+/// two objects that are only equal.
+class AnObjectMirrorReadsAnObject = Object new () (
+  class Base = Object new (
+    |
+      public first = 1.
+      private hidden ::= 'secret'.
+    |
+  ) ()
+
+  class Derived = Base new (
+    |
+      public second ::= 2.
+      third = #three.
+    |
+  ) ()
+
+  class Twin = Object new () (
+    public = other = (
+      ^true.
+    )
+
+    public hash = (
+      ^0.
+    )
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ObjectMirror = platform mirrors ObjectMirror.
+      object = Derived new.
+      mirror = ObjectMirror reflecting: object.
+      twin = ObjectMirror reflecting: object.
+    |
+    transcript
+        print: mirror reflectee == object;
+        show: ' ';
+        print: mirror getClass reflectee == Derived;
+        newLine.
+    transcript
+        print: (mirror getSlot: #first);
+        show: ' ';
+        print: (mirror getSlot: #hidden);
+        show: ' ';
+        print: (mirror getSlot: #second);
+        show: ' ';
+        print: (mirror getSlot: #third);
+        newLine.
+    (mirror slots collect: [:slot |
+      slot name asString , '=' , slot value reflectee printString.
+    ]) do: [:text | transcript show: text] separatedBy: [transcript show: ' '].
+    transcript newLine.
+    transcript
+        show: ([mirror getSlot: #missing] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: ([mirror getSlot: 'first'] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        print: mirror = twin;
+        show: ' ';
+        print: mirror hash = twin hash;
+        newLine.
+    transcript
+        print: Twin new = Twin new;
+        show: ' ';
+        print: (ObjectMirror reflecting: Twin new) = (ObjectMirror reflecting: Twin new);
+        show: ' ';
+        print: mirror = object;
+        newLine.
+  )
+)

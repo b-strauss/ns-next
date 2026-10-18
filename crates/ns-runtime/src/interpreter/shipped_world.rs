@@ -675,6 +675,10 @@ mod tests {
             ("TypedArraysFactory", "TypedArray"),
             ("TypedArraysFactory", "Int16Array"),
             ("TypedArraysFactory", "TypedArrays"),
+            ("MirrorsFactory", "ObjectMirror"),
+            ("MirrorsFactory", "ClassMirror"),
+            ("MirrorsFactory", "NavigatedClassMirror"),
+            ("MirrorsFactory", "Mirrors"),
         ]);
         interpreter.enter(|mutator| {
             let world = &mutator.shipped_world;
@@ -756,6 +760,23 @@ mod tests {
                     "TypedArraysFactory {typed_array} is a value, a superclass and a record's class"
                 );
             }
+            // The two public mirror classes are what the mirrors facet's
+            // class accessors answer: a program names, subclasses and keeps
+            // instances of them. A navigation answers instances of the
+            // private `NavigatedClassMirror`, a record's class only.
+            for public in ["ObjectMirror", "ClassMirror"] {
+                let positions =
+                    positions_of(world, name("MirrorsFactory", public, ShippedKind::Class));
+                assert!(
+                    positions.value && positions.superclass && positions.header,
+                    "MirrorsFactory {public} is a value, a superclass and a record's class"
+                );
+            }
+            let navigated = positions_of(
+                world,
+                name("MirrorsFactory", "NavigatedClassMirror", ShippedKind::Class),
+            );
+            assert!(!navigated.value && !navigated.superclass && navigated.header);
             // The level `<: IndexedCollection` adds is where a frame of its
             // methods runs, and nothing else.
             for (module, applying) in [
@@ -774,7 +795,7 @@ mod tests {
             );
             assert!(list.value && list.superclass && list.header);
             // The platform hands out none of its module's classes and the
-            // collections and typed arrays facets not their own: a program
+            // collections, typed arrays and mirrors facets not their own: a program
             // holds their instances, records of them, but never the classes.
             for (module, declaration) in [
                 ("PlatformFactory", "Platform"),
@@ -783,6 +804,7 @@ mod tests {
                 ("TimeFactory", "Time"),
                 ("CollectionsFactory", "Collections"),
                 ("TypedArraysFactory", "TypedArrays"),
+                ("MirrorsFactory", "Mirrors"),
             ] {
                 let positions = positions_of(world, name(module, declaration, ShippedKind::Class));
                 assert!(
@@ -797,6 +819,7 @@ mod tests {
                 "TimeFactory",
                 "CollectionsFactory",
                 "TypedArraysFactory",
+                "MirrorsFactory",
             ] {
                 let positions = positions_of(world, name(root, root, ShippedKind::Class));
                 assert!(!positions.value && !positions.header && positions.frame_class);
@@ -964,6 +987,7 @@ mod tests {
             ("collections", "List"),
             ("time", "Stopwatch"),
             ("typedArrays", "Int16Array"),
+            ("mirrors", "ClassMirror"),
         ] {
             let facet = expect_ok(
                 interpreter.send(&platform, Symbol::intern(member), &[]),

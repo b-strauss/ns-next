@@ -1,0 +1,21 @@
+/// `platform mirrors` is one facet, the same on every send, and hands out
+/// the same `ObjectMirror` and `ClassMirror` classes every time; it hands
+/// out nothing else, its module's root least of all.
+class PlatformMirrorsIsOneFacet = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        print: platform mirrors == platform mirrors;
+        show: ' ';
+        print: platform mirrors ClassMirror == platform mirrors ClassMirror;
+        show: ' ';
+        print: platform mirrors ObjectMirror == platform mirrors ObjectMirror;
+        newLine.
+    transcript
+        show: ([platform mirrors MirrorsFactory] on: platform kernel MessageNotUnderstood
+            do: [:error | error messageText]);
+        newLine.
+  )
+)

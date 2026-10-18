@@ -29,6 +29,9 @@ pub(crate) const COLLECTIONS_FACTORY_SOURCE: &str =
 pub(crate) const TYPED_ARRAYS_FACTORY_SOURCE: &str =
     include_str!("../../core-library/platform/TypedArraysFactory.ns");
 
+pub(crate) const MIRRORS_FACTORY_SOURCE: &str =
+    include_str!("../../core-library/platform/MirrorsFactory.ns");
+
 /// Not one of the shipped modules above, and never in their table: the
 /// manifest a project's root receives is compiled into the program like a
 /// user module, holds no mirror, and may be carried by an image.
@@ -43,8 +46,8 @@ pub(crate) struct ShippedModule {
     pub(crate) factory: ShippedFactory,
 }
 
-/// What a shipped module's factory takes: `PlatformFactory` and
-/// `TypedArraysFactory` the mirror and the kernel
+/// What a shipped module's factory takes: `PlatformFactory`,
+/// `TypedArraysFactory` and `MirrorsFactory` the mirror and the kernel
 /// (`usingVmMirror:kernel:`), `TranscriptFactory` and
 /// `TimeFactory` the mirror alone (`usingVmMirror:`), since they need none
 /// of the kernel's classes, and `CollectionsFactory` the kernel alone
@@ -85,6 +88,11 @@ pub(crate) const SHIPPED_MODULES: &[ShippedModule] = &[
         source: TYPED_ARRAYS_FACTORY_SOURCE,
         factory: ShippedFactory::MirrorAndKernel,
     },
+    ShippedModule {
+        name: "MirrorsFactory",
+        source: MIRRORS_FACTORY_SOURCE,
+        factory: ShippedFactory::MirrorAndKernel,
+    },
 ];
 
 /// The shipped modules a program's first demand builds, through
@@ -97,6 +105,7 @@ pub(crate) const LAZY_SHIPPED_MODULES: &[&str] = &[
     "TimeFactory",
     "CollectionsFactory",
     "TypedArraysFactory",
+    "MirrorsFactory",
 ];
 
 /// The `SHIPPED_MODULES` entry `name`. A name the table does not list is a
@@ -259,8 +268,9 @@ impl crate::interpreter::Interpreter {
     /// Builds the `SHIPPED_MODULES` entry `name` from the host, as the
     /// mirror's leaves build it from shipped Newspeak: its root class
     /// (`module_class`), instantiated through the ordinary `instantiate`
-    /// with its factory's arguments -- `PlatformFactory` and
-    /// `TypedArraysFactory` the VM mirror and the kernel instance,
+    /// with its factory's arguments -- `PlatformFactory`,
+    /// `TypedArraysFactory` and `MirrorsFactory` the VM mirror and the
+    /// kernel instance,
     /// `TranscriptFactory` and `TimeFactory` the mirror alone,
     /// `CollectionsFactory` the kernel instance alone -- and the instance
     /// recorded as the module's one instance (`record_pending`). A module
