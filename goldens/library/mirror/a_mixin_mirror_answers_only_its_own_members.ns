@@ -1,0 +1,119 @@
+/// A mixin mirror answers only the members its own declaration declares,
+/// never an inherited one: its eager slots in declaration order, each with
+/// its mutability and its access, an unmarked one protected; its lazy
+/// slots apart; and the methods the declaration writes, by their position
+/// in the source, never a slot's accessor, a lazy slot's getter or a
+/// nested class's accessor. Each member is defined by the mixin. A class
+/// side is a mixin of its own, named after its instance side, with its own
+/// methods and neither slots nor nested classes. A class mirror's slots
+/// are every level's own, superclass first.
+class AMixinMirrorAnswersOnlyItsOwnMembers = Object new () (
+  class Super = Object new (
+    |
+      public inherited = 0.
+    |
+  ) (
+    public inheritedMethod = (
+      ^0.
+    )
+  )
+
+  class Klass = Super new (
+    |
+      public fixed = 1.
+      public changing ::= 2.
+      protected guarded = 3.
+      private hidden ::= 4.
+      unmarked = 5.
+    |
+  ) (
+    class Inner = Object new () ()
+
+    class Other = Object new () ()
+
+    lazy public cached = 6.
+
+    lazy private later = 7.
+
+    public compute = (
+      ^1.
+    )
+
+    protected helper = (
+      ^2.
+    )
+
+    private secret = (
+      ^3.
+    )
+  ) : (
+    public classMethod = (
+      ^0.
+    )
+  )
+
+  names: group on: transcript = (
+    (group collect: [:each | each name]) do: [:name |
+      transcript show: name.
+    ] separatedBy: [
+      transcript show: ' '.
+    ].
+    transcript newLine.
+  )
+
+  slot: slot of: mixin on: transcript = (
+    transcript
+        show: slot name;
+        show: ' ';
+        print: slot isMutable;
+        show: ' ';
+        print: slot isLazy;
+        show: ' ';
+        print: slot accessModifier;
+        show: ' ';
+        print: slot definingMixin = mixin;
+        newLine.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      klass = platform mirrors ClassMirror reflecting: Klass.
+      mixin = klass mixin.
+      classSide = mixin classMixin.
+    |
+    transcript
+        show: mixin name;
+        show: ' ';
+        show: mixin simpleName;
+        show: ' ';
+        print: mixin isMeta;
+        newLine.
+    mixin slots do: [:slot | slot: slot of: mixin on: transcript].
+    mixin lazySlots do: [:slot | slot: slot of: mixin on: transcript].
+    mixin methods do: [:method |
+      transcript
+          show: method name;
+          show: ' ';
+          print: method accessModifier;
+          show: ' ';
+          print: method definingMixin = mixin;
+          newLine.
+    ].
+    names: mixin nestedClasses on: transcript.
+    transcript
+        show: classSide name;
+        show: ' ';
+        print: classSide isMeta;
+        newLine.
+    names: classSide methods on: transcript.
+    transcript
+        print: classSide slots isEmpty;
+        show: ' ';
+        print: classSide lazySlots isEmpty;
+        show: ' ';
+        print: classSide nestedClasses isEmpty;
+        newLine.
+    names: klass slots on: transcript.
+  )
+)

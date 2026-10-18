@@ -480,21 +480,49 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     )
   )
 
-  /// A mirror on one mixin: the members its own declaration declares,
-  /// never inherited ones.
+  /// A mirror on one mixin -- a class declaration's instance side or its
+  /// class side, declared or synthesized -- and the members its own
+  /// declaration declares, never inherited ones. Everything is read
+  /// through the VM. A mixin is one however many classes apply it, so two
+  /// mirrors on it are equal however each was reached.
+  ///
+  /// What stays readable of a core-library mixin is its structure, which
+  /// is all a mixin mirror answers (the module's shipped-level rule).
   ///
   /// aReifiedMixin: the kernel's reified mixin, as the VM answers it for
-  ///     a class's mixin.
+  ///     a class's mixin; one object per mixin.
   private class MixinMirror reflecting: aReifiedMixin = Object (
     |
-      /// The reified mixin the mirror reflects.
+      /// The reified mixin the mirror reflects; never handed out.
       private subject = aReifiedMixin.
     |
   ) (
+    /// Answers true: the receiver is a mixin mirror.
+    public isKindOfMixinMirror = (
+      ^true.
+    )
+
+    /// Answers whether the receiver reflects `anObject`, by identity; it
+    /// sends `anObject` nothing.
+    ///
+    /// anObject: any object.
+    ///
+    /// The comparison `=` makes of two mixin mirrors, which reads the
+    /// reified mixin without handing it out.
+    public reflects: anObject = (
+      ^vmMirror object: subject identicalTo: anObject ifFail: [false].
+    )
+
     /// Answers the mixin's name, a new String: its declaration's, a class
     /// side's that name followed by ' class'.
     public name = (
       ^vmMirror reflectionMixinName: subject ifFail: [nil].
+    )
+
+    /// Answers the mixin's name, as `name` does: a mixin's name is its
+    /// declaration's, never qualified by the classes it is nested in.
+    public simpleName = (
+      ^self name.
     )
 
     /// Answers whether the mixin is a class side.
@@ -502,22 +530,73 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
       ^vmMirror reflectionMixinIsMeta: subject ifFail: [false].
     )
 
-    /// Answers a new MirrorGroup of the mixin's slot declarations, lazy
-    /// ones left out, in declaration order.
+    /// Answers a mixin mirror on the instance side of the class
+    /// declaration the mixin's class declaration is nested in, or nil for
+    /// a module's class. A class side is enclosed by what its instance
+    /// side is.
+    public enclosingMixin = (
+      |
+        enclosing = vmMirror reflectionMixinEnclosing: subject ifFail: [nil].
+      |
+      nil == enclosing ifTrue: [^nil].
+      ^MixinMirror reflecting: enclosing.
+    )
+
+    /// Answers a mixin mirror on the class side of the mixin's
+    /// declaration -- the one it declares, or the one synthesized for a
+    /// declaration that declares none -- the receiver's mixin itself for a
+    /// class side.
+    public classMixin = (
+      ^MixinMirror reflecting: (vmMirror reflectionMixinClassSide: subject ifFail: [nil]).
+    )
+
+    /// Answers a mixin mirror on the instance side of the mixin's
+    /// declaration, the receiver's mixin itself for an instance side.
+    public instanceMixin = (
+      ^MixinMirror reflecting: (vmMirror reflectionMixinInstanceSide: subject ifFail: [nil]).
+    )
+
+    /// Answers a class declaration mirror on the declaration the mixin is
+    /// a side of: the same for an instance side and its class side.
+    public declaration = (
+      ^ClassDeclarationMirror reflecting: (vmMirror reflectionMixinInstanceSide: subject ifFail: [
+        nil.
+      ]).
+    )
+
+    /// Answers a new MirrorGroup of slot declaration mirrors on the
+    /// mixin's own eager slot declarations, in declaration order; empty
+    /// for a class side.
     public slots = (
+      ^self slotsLazy: false.
+    )
+
+    /// Answers a new MirrorGroup of slot declaration mirrors on the
+    /// mixin's own lazy slot declarations, in declaration order; empty for
+    /// a class side.
+    public lazySlots = (
+      ^self slotsLazy: true.
+    )
+
+    /// Answers a new MirrorGroup of slot declaration mirrors on those of
+    /// the mixin's own slot declarations that are lazy, or eager, as
+    /// asked, in declaration order.
+    ///
+    /// lazy: true for the lazy declarations, false for the eager ones.
+    private slotsLazy: lazy = (
       |
         declarations = vmMirror reflectionMixinSlots: subject ifFail: [{}].
         result ::= {}.
       |
-      declarations do: [:declaration |
-        (declaration at: 4) ifFalse: [
+      declarations do: [:entry |
+        (entry at: 4) == lazy ifTrue: [
           result:: result
               , {
                 SlotDeclarationMirror in: subject
-                    name: (declaration at: 1)
-                    mutable: (declaration at: 2)
-                    access: (declaration at: 3)
-                    lazy: (declaration at: 4).
+                    name: (entry at: 1)
+                    mutable: (entry at: 2)
+                    access: (entry at: 3)
+                    lazy: (entry at: 4).
               }.
         ].
       ].
@@ -526,7 +605,9 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
 
     /// Answers a new MirrorGroup of method mirrors on the methods the
     /// mixin's declaration writes, by their position in the source, then
-    /// by selector.
+    /// by selector. Slot accessors, a lazy slot's getter, the factory and
+    /// nested classes' accessors are not methods a declaration writes, so
+    /// none is listed.
     public methods = (
       |
         entries = vmMirror reflectionMixinMethods: subject ifFail: [{}].
@@ -545,25 +626,121 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
       |
       ^MirrorGroup over: (nested collect: [:each | ClassDeclarationMirror reflecting: each]).
     )
+
+    /// Answers whether `other` is a mixin mirror on the same mixin, by
+    /// the identity of the one object that stands for it, however each
+    /// mirror was reached; the mixin of two applications is one mixin.
+    ///
+    /// other: any object; sent `reflects:` only when it is an instance of
+    /// this module's `MixinMirror` or of the receiver's class, so that the
+    /// reified mixin is handed to no other code.
+    public = other = (
+      (vmMirror object: self identicalTo: other ifFail: [false]) ifTrue: [^true].
+      (self trusts: (vmMirror objectClass: other ifFail: [nil])) ifFalse: [^false].
+      ^other reflects: subject.
+    )
+
+    /// Answers whether `aClass` is a class whose instances `=` may hand
+    /// the reified mixin to: this module's `MixinMirror`, whose code is
+    /// this module's, or the receiver's own class.
+    ///
+    /// aClass: the class of the object `=` compares the receiver with.
+    private trusts: aClass = (
+      (vmMirror object: aClass identicalTo: outer MirrorsFactory MixinMirror ifFail: [
+        false.
+      ]) ifTrue: [^true].
+      ^vmMirror object: aClass identicalTo: (vmMirror objectClass: self ifFail: [nil]) ifFail: [
+        false.
+      ].
+    )
+
+    /// Answers the reified mixin's identity hash, alike for two mirrors
+    /// on the one mixin.
+    public hash = (
+      ^vmMirror objectHash: subject ifFail: [0].
+    )
   )
 
-  /// A mirror on one class declaration, named by the reified mixin of its
-  /// instance side.
+  /// A mirror on one class declaration: its name, its two sides, the
+  /// declaration it is nested in, its access and its text. It is named by
+  /// the reified mixin of its instance side, so the declarations reached
+  /// from either side, or from the enclosing declaration's nested
+  /// classes, are equal.
   ///
   /// aReifiedMixin: the reified mixin of the declaration's instance side.
   private class ClassDeclarationMirror reflecting: aReifiedMixin = Object (
     |
-      /// The reified mixin of the declaration's instance side.
+      /// The reified mixin of the declaration's instance side; never
+      /// handed out.
       private subject = aReifiedMixin.
     |
   ) (
+    /// Answers true: the receiver is a class declaration mirror.
+    public isKindOfClassDeclarationMirror = (
+      ^true.
+    )
+
     /// Answers the name the declaration gives the class, a new String.
     public name = (
       ^vmMirror reflectionMixinName: subject ifFail: [nil].
     )
+
+    /// Answers a mixin mirror on the declaration's instance side.
+    public instanceSide = (
+      ^MixinMirror reflecting: subject.
+    )
+
+    /// Answers a mixin mirror on the declaration's class side, the
+    /// synthesized one of a declaration that declares none.
+    public classSide = (
+      ^MixinMirror reflecting: (vmMirror reflectionMixinClassSide: subject ifFail: [nil]).
+    )
+
+    /// Answers a class declaration mirror on the declaration this one is
+    /// nested in, or nil for a module's class.
+    public enclosingClass = (
+      |
+        enclosing = self instanceSide enclosingMixin.
+      |
+      nil == enclosing ifTrue: [^nil].
+      ^enclosing declaration.
+    )
+
+    /// Answers the access of the class's accessor, the Symbol `#public`,
+    /// `#protected` or `#private`, an unmarked declaration's `#protected`.
+    public accessModifier = (
+      ^vmMirror reflectionMixinAccess: subject ifFail: [nil].
+    )
+
+    /// Answers the declaration's text, a new String, from its access
+    /// modifier, or `class` when it has none, to its closing parenthesis,
+    /// as its source spells it; nil when the code was built without its
+    /// source, as an image may carry none.
+    public source = (
+      ^vmMirror reflectionMixinSource: subject ifFail: [nil].
+    )
+
+    /// Answers whether `other` is a class declaration mirror on the same
+    /// declaration: one whose instance side is the receiver's. A
+    /// declaration is never equal to either of its sides.
+    ///
+    /// other: any object; sent `isKindOfClassDeclarationMirror`, and
+    /// `instanceSide` when it answers true.
+    public = other = (
+      other isKindOfClassDeclarationMirror ifFalse: [^false].
+      ^self instanceSide = other instanceSide.
+    )
+
+    /// Answers the hash of the declaration's instance side, alike for two
+    /// mirrors on the one declaration.
+    public hash = (
+      ^self instanceSide hash.
+    )
   )
 
-  /// A mirror on one method a mixin's declaration writes.
+  /// A mirror on one method a mixin's declaration writes: its selector,
+  /// its access, the mixin and the method's text. Two mirrors on one
+  /// selector of one mixin are equal, however each was reached.
   ///
   /// aReifiedMixin: the reified mixin that declares the method.
   /// aSymbol: the method's selector.
@@ -571,7 +748,7 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
   ///     `#private`.
   private class MethodMirror in: aReifiedMixin selector: aSymbol access: anAccessSymbol = Object (
     |
-      /// The reified mixin that declares the method.
+      /// The reified mixin that declares the method; never handed out.
       private mixin = aReifiedMixin.
       /// The method's selector, a Symbol.
       private selector = aSymbol.
@@ -579,13 +756,57 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
       private access = anAccessSymbol.
     |
   ) (
+    /// Answers true: the receiver is a method mirror.
+    public isKindOfMethodMirror = (
+      ^true.
+    )
+
     /// Answers the method's selector, a Symbol.
     public name = (
       ^selector.
     )
+
+    /// Answers the method's access, the Symbol `#public`, `#protected` or
+    /// `#private`, an unmarked method's `#protected`.
+    public accessModifier = (
+      ^access.
+    )
+
+    /// Answers a mixin mirror on the mixin whose declaration writes the
+    /// method.
+    public definingMixin = (
+      ^MixinMirror reflecting: mixin.
+    )
+
+    /// Answers the method's text, a new String, from its access modifier
+    /// to its closing parenthesis, as its source spells it, the comments
+    /// before it left out; nil when the code was built without its
+    /// source, as an image may carry none.
+    public source = (
+      ^vmMirror reflectionMixin: mixin methodSource: selector ifFail: [nil].
+    )
+
+    /// Answers whether `other` is a method mirror on the same selector of
+    /// the same mixin.
+    ///
+    /// other: any object; sent `isKindOfMethodMirror`, and `name` and
+    /// `definingMixin` when it answers true.
+    public = other = (
+      other isKindOfMethodMirror ifFalse: [^false].
+      (vmMirror object: selector identicalTo: other name ifFail: [false]) ifFalse: [^false].
+      ^self definingMixin = other definingMixin.
+    )
+
+    /// Answers a hash of the mixin and the selector, alike for two mirrors
+    /// on the one method.
+    public hash = (
+      ^(vmMirror objectHash: mixin ifFail: [0]) bitXor: (vmMirror objectHash: selector ifFail: [0]).
+    )
   )
 
-  /// A mirror on one slot a mixin's declaration declares.
+  /// A mirror on one slot a mixin's declaration declares: its name, its
+  /// mutability, whether it is lazy, its access and the mixin. Two mirrors
+  /// on one name of one mixin are equal, however each was reached.
   ///
   /// aReifiedMixin: the reified mixin that declares the slot.
   /// aSymbol: the slot's name.
@@ -601,7 +822,7 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
       lazy: isLazy
       = Object (
     |
-      /// The reified mixin that declares the slot.
+      /// The reified mixin that declares the slot; never handed out.
       private mixin = aReifiedMixin.
       /// The slot's name, a Symbol.
       private slotName = aSymbol.
@@ -613,9 +834,53 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
       private lazySlot = isLazy.
     |
   ) (
+    /// Answers true: the receiver is a slot declaration mirror.
+    public isKindOfSlotDeclarationMirror = (
+      ^true.
+    )
+
     /// Answers the slot's name, a Symbol.
     public name = (
       ^slotName.
+    )
+
+    /// Answers whether the slot is mutable: declared with `::=`.
+    public isMutable = (
+      ^mutable.
+    )
+
+    /// Answers whether the slot is lazy.
+    public isLazy = (
+      ^lazySlot.
+    )
+
+    /// Answers the slot's access, the Symbol `#public`, `#protected` or
+    /// `#private`, an unmarked slot's `#protected`.
+    public accessModifier = (
+      ^access.
+    )
+
+    /// Answers a mixin mirror on the mixin whose declaration declares the
+    /// slot.
+    public definingMixin = (
+      ^MixinMirror reflecting: mixin.
+    )
+
+    /// Answers whether `other` is a slot declaration mirror on the same
+    /// name of the same mixin, which declares a name once.
+    ///
+    /// other: any object; sent `isKindOfSlotDeclarationMirror`, and
+    /// `name` and `definingMixin` when it answers true.
+    public = other = (
+      other isKindOfSlotDeclarationMirror ifFalse: [^false].
+      (vmMirror object: slotName identicalTo: other name ifFail: [false]) ifFalse: [^false].
+      ^self definingMixin = other definingMixin.
+    )
+
+    /// Answers a hash of the mixin and the name, alike for two mirrors on
+    /// the one slot declaration.
+    public hash = (
+      ^(vmMirror objectHash: mixin ifFail: [0]) bitXor: (vmMirror objectHash: slotName ifFail: [0]).
     )
   )
 

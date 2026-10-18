@@ -1,0 +1,34 @@
+/// A method mirror answers the method's text, from its access modifier to
+/// its closing parenthesis, and a class declaration mirror the whole
+/// declaration, as the source spells them. A core-library method has its
+/// text too; only that it is a non-empty String is printed, since the
+/// text is the library's to lay out.
+class AMethodAndAClassAnswerTheirSource = Object new () (
+  class Calculator = Object new () (
+    /// Answers the answer.
+    public compute = (
+      ^6 * 7.
+    )
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      mixin = (ClassMirror reflecting: Calculator) mixin.
+      listMixin = (ClassMirror reflecting: platform collections List) mixin.
+      listSource = (listMixin methods findMirrorNamed: #add:) source.
+    |
+    transcript
+        show: (mixin methods findMirrorNamed: #compute) source;
+        newLine.
+    transcript
+        show: mixin declaration source;
+        newLine.
+    transcript
+        print: listSource isKindOfString;
+        show: ' ';
+        print: listSource isEmpty not;
+        newLine.
+  )
+)

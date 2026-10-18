@@ -1,0 +1,18 @@
+stdout = '''
+Klass Klass false
+fixed false false #public true
+changing true false #public true
+guarded false false #protected true
+hidden true false #private true
+unmarked false false #protected true
+cached false true #public true
+later false true #private true
+compute #public true
+helper #protected true
+secret #private true
+Inner Other
+Klass class true
+classMethod
+true true true
+inherited fixed changing guarded hidden unmarked
+'''

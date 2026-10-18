@@ -1,0 +1,69 @@
+/// One mixin applied twice, once under each of two enclosing objects, makes
+/// two classes, whose class mirrors are not equal, but one mixin, whose
+/// mirrors are. So the mirrors of one method or one slot declaration,
+/// reached through either class, are equal and hash alike, though they are
+/// two objects; another method's, or a slot declaration of the method's
+/// name, is not equal to them.
+class MethodMirrorsOfTwoApplicationsAreEqual = Object new () (
+  class Holder = Object new () (
+    public class Shape = Object new (
+      |
+        public sides = 0.
+      |
+    ) (
+      public area = (
+        ^0.
+      )
+
+      public perimeter = (
+        ^0.
+      )
+    )
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      firstClass = Holder new Shape.
+      secondClass = Holder new Shape.
+      first = ClassMirror reflecting: firstClass.
+      second = ClassMirror reflecting: secondClass.
+      firstArea = first mixin methods findMirrorNamed: #area.
+      secondArea = second mixin methods findMirrorNamed: #area.
+      firstSides = first mixin slots findMirrorNamed: #sides.
+      secondSides = second mixin slots findMirrorNamed: #sides.
+    |
+    transcript
+        print: firstClass == secondClass;
+        show: ' ';
+        print: first = second;
+        show: ' ';
+        print: first mixin = second mixin;
+        show: ' ';
+        print: first mixin hash = second mixin hash;
+        newLine.
+    transcript
+        print: firstArea = secondArea;
+        show: ' ';
+        print: firstArea hash = secondArea hash;
+        show: ' ';
+        print: firstArea == secondArea;
+        show: ' ';
+        print: firstArea = (second methods findMirrorNamed: #area);
+        show: ' ';
+        print: firstArea = (second mixin methods findMirrorNamed: #perimeter);
+        newLine.
+    transcript
+        print: firstSides = secondSides;
+        show: ' ';
+        print: firstSides hash = secondSides hash;
+        show: ' ';
+        print: firstSides == secondSides;
+        show: ' ';
+        print: firstSides = firstArea;
+        show: ' ';
+        print: firstArea = firstSides;
+        newLine.
+  )
+)

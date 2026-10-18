@@ -1,0 +1,12 @@
+stdout = '''
+public compute = (
+      ^6 * 7.
+    )
+class Calculator = Object new () (
+    /// Answers the answer.
+    public compute = (
+      ^6 * 7.
+    )
+  )
+true true
+'''

@@ -1,0 +1,8 @@
+stdout = '''
+Holder true true nil
+First class true true false
+First true true First class Holder AMixinMirrorNavigatesItsDeclaration nil
+false false false true true true
+First #public
+Second #private
+'''

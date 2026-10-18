@@ -1,0 +1,51 @@
+/// A class that declares no class side has one all the same: its mixin's
+/// class side is a mixin of its own, the same however often and however
+/// it is reached -- from the mixin or from the metaclass -- named after
+/// the class, leading back to its instance side, sharing its declaration
+/// and its enclosing mixin, and declaring nothing.
+class ASynthesizedClassSideIsOneMixin = Object new () (
+  class Plain = Object new () ()
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      ObjectMirror = platform mirrors ObjectMirror.
+      mixin = (ClassMirror reflecting: Plain) mixin.
+      first = mixin classMixin.
+      second = mixin classMixin.
+      fromMetaclass = (ObjectMirror reflecting: Plain) getClass mixin.
+    |
+    transcript
+        print: first = second;
+        show: ' ';
+        print: first hash = second hash;
+        show: ' ';
+        print: first = fromMetaclass;
+        show: ' ';
+        print: first == second;
+        newLine.
+    transcript
+        show: first name;
+        show: ' ';
+        print: first isMeta;
+        show: ' ';
+        print: first instanceMixin = mixin;
+        show: ' ';
+        print: first = mixin;
+        show: ' ';
+        print: first classMixin = first;
+        newLine.
+    transcript
+        print: first declaration = mixin declaration;
+        show: ' ';
+        print: first enclosingMixin = mixin enclosingMixin;
+        show: ' ';
+        print: first methods isEmpty;
+        show: ' ';
+        print: first slots isEmpty;
+        show: ' ';
+        print: first nestedClasses isEmpty;
+        newLine.
+  )
+)
