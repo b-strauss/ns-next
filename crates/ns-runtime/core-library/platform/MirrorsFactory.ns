@@ -1053,9 +1053,17 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
       /// The staged declaration's text, a String, as the last check or
       /// install answered it.
       private stagedSource ::= nil.
+      /// The staged declaration's header, a String, as the last check or
+      /// install answered it: the parse's, up to the members'
+      /// parenthesis.
+      private stagedHeader ::= nil.
       /// The declaration's header, a ClassHeaderBuilder, which stages a
       /// new header through the receiver.
-      public header = ClassHeaderBuilder of: self staging: [:text | self stageHeader: text].
+      public header = ClassHeaderBuilder reading: [
+        stagedHeader.
+      ] staging: [:text |
+        self stageHeader: text.
+      ].
       /// The declaration's instance side, a MixinBuilder whose methods and
       /// lazy slots stage through the receiver.
       public instanceSide = MixinBuilder methods: (MutableMemberGroup adding: #addMethod
@@ -1115,6 +1123,7 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
       instanceOperations:: {}.
       classOperations:: {}.
       stagedSource:: answer at: 2.
+      stagedHeader:: answer at: 3.
     )
 
     /// Answers the staged edit as the VM reads it: a new Array of the
@@ -1153,8 +1162,8 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
 
     /// Checks `newState` against the module's current text and, when the
     /// VM accepts it, makes it the staged state, the declaration's text
-    /// the check answers becoming `source`. Nothing else changes either
-    /// way.
+    /// and the header the check answers becoming `source` and the
+    /// header's `source`. Nothing else changes either way.
     ///
     /// newState: an Array of the header's text or nil, the instance
     ///     side's operations and the class side's, as `edit` answers them.
@@ -1171,6 +1180,7 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
       instanceOperations:: newState at: 2.
       classOperations:: newState at: 3.
       stagedSource:: answer at: 2.
+      stagedHeader:: answer at: 3.
     )
 
     /// Signals an Error, 'a MirrorBuilder takes a member or a header as a
@@ -1184,34 +1194,34 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
 
   /// The header of a declaration a ClassDeclarationBuilder edits: its text
   /// -- the class's access modifier, name, factory, superclass clause,
-  /// slots and initializer -- read from the builder's staged declaration,
-  /// and replaced through the builder.
+  /// slots and initializer -- as the builder's last check or install
+  /// answered it, and replaced through the builder.
   ///
-  /// aBuilder: the ClassDeclarationBuilder whose declaration's header the
-  ///     receiver stands for.
-  /// aBlock: a one-argument block that stages a header's text, a String,
-  ///     through `aBuilder`, signalling what the builder's check signals.
-  private class ClassHeaderBuilder of: aBuilder staging: aBlock = Object (
+  /// aReadBlock: a block of no arguments that answers the builder's
+  ///     staged header, a String.
+  /// aStageBlock: a one-argument block that stages a header's text, a
+  ///     String, through the builder, signalling what the builder's check
+  ///     signals.
+  ///
+  /// The header's extent is the parse's, which the VM answers with every
+  /// check: reading it here would take a second reading of the syntax,
+  /// which would have to follow every rule of the lexer to agree with it.
+  private class ClassHeaderBuilder reading: aReadBlock staging: aStageBlock = Object (
     |
-      /// The builder whose staged declaration holds the header.
-      private builder = aBuilder.
+      /// The block that answers the builder's staged header.
+      private reading = aReadBlock.
       /// The block that stages a new header through the builder.
-      private staging = aBlock.
+      private staging = aStageBlock.
     |
   ) (
-    /// Answers the staged header's text, a new String: the builder's
-    /// `source` from its start up to, not including, the parenthesis that
-    /// opens the declaration's members -- the text `source:` was last
+    /// Answers the staged header's text, a String: the staged
+    /// declaration's text from its start up to, not including, the
+    /// parenthesis that opens its members -- the text `source:` was last
     /// given, as it was given, or the declaration's own header when none
-    /// is staged. All of `source` for a declaration with no members of
-    /// its own.
+    /// is staged; all of the declaration's text for one with no members
+    /// of its own.
     public source = (
-      |
-        text = builder source.
-        open = self membersOpenIn: text.
-      |
-      open = 0 ifTrue: [^text].
-      ^text copyFrom: 1 to: open - 1.
+      ^reading value.
     )
 
     /// Stages `aString` as the declaration's header and answers the
@@ -1233,151 +1243,6 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// collide with a member staged or declared.
     public source: aString = (
       staging value: aString asString.
-    )
-
-    /// Answers the index in `text` of the parenthesis that opens the
-    /// declaration's members, or 0 when it has none: the last parenthesis
-    /// that opens a group outside every other, before the colon of a
-    /// class side if there is one. Strings and comments are skipped, so a
-    /// parenthesis in them counts for nothing.
-    ///
-    /// text: a declaration's text, as `ClassDeclarationBuilder>>source`
-    ///     answers it.
-    private membersOpenIn: text = (
-      |
-        index ::= self significantIndexIn: text from: 1.
-        depth ::= 0.
-        lastOpen ::= 0.
-        afterGroup ::= false.
-        code ::= 0.
-      |
-      [index <= text size] whileTrue: [
-        code:: text at: index.
-        (afterGroup and: [code = 58]) ifTrue: [^lastOpen].
-        afterGroup:: false.
-        code = 40 ifTrue: [
-          depth = 0 ifTrue: [lastOpen:: index].
-          depth:: depth + 1.
-        ].
-        code = 41 ifTrue: [
-          depth:: depth - 1.
-          afterGroup:: depth = 0.
-        ].
-        index:: self significantIndexIn: text from: (self indexAfterTokenIn: text at: index).
-      ].
-      ^lastOpen.
-    )
-
-    /// Answers the index in `text` just after the token, or the part of
-    /// one, that starts at `start`: a whole string literal, single-quoted
-    /// with its doubled quotes or double-quoted, and one code point of
-    /// anything else.
-    ///
-    /// text: a String.
-    /// start: an Integer from 1 to `text size`.
-    private indexAfterTokenIn: text at: start = (
-      |
-        code = text at: start.
-        index ::= start + 1.
-      |
-      code = 39 ifTrue: [
-        [index <= text size] whileTrue: [
-          (text at: index) = 39 ifTrue: [
-            (self codeIn: text at: index + 1) = 39 ifFalse: [^index + 1].
-            index:: index + 1.
-          ].
-          index:: index + 1.
-        ].
-        ^index.
-      ].
-      code = 34 ifTrue: [
-        (self codeIn: text at: start + 2) = 34 ifTrue: [^start + 3].
-        [index <= text size and: [((text at: index) = 34) not]] whileTrue: [index:: index + 1].
-        ^index + 1.
-      ].
-      ^index.
-    )
-
-    /// Answers the index of the first code point at or after `start` in
-    /// `text` that is no whitespace and stands in no comment, a `(* *)`
-    /// one, nested ones included, or a `///` one; past the end when there
-    /// is none.
-    ///
-    /// text: a String.
-    /// start: an Integer from 1 to `text size + 1`.
-    private significantIndexIn: text from: start = (
-      |
-        index ::= start.
-        code ::= 0.
-      |
-      [index <= text size] whileTrue: [
-        code:: text at: index.
-        (self isWhitespace: code) ifTrue: [
-          index:: index + 1.
-        ] ifFalse: [
-          (code = 40 and: [(self codeIn: text at: index + 1) = 42]) ifTrue: [
-            index:: self indexAfterCommentIn: text at: index.
-          ] ifFalse: [
-            (self startsLineCommentIn: text at: index) ifFalse: [^index].
-            [index <= text size and: [((text at: index) = 10) not]] whileTrue: [index:: index + 1].
-          ].
-        ].
-      ].
-      ^index.
-    )
-
-    /// Answers the index in `text` just after the `(* *)` comment that
-    /// starts at `start`, the comments nested in it included; past the
-    /// end for one never closed.
-    ///
-    /// text: a String.
-    /// start: the index of the comment's `(`.
-    private indexAfterCommentIn: text at: start = (
-      |
-        index ::= start + 2.
-        depth ::= 1.
-      |
-      [depth > 0 and: [index <= text size]] whileTrue: [
-        ((text at: index) = 40 and: [(self codeIn: text at: index + 1) = 42]) ifTrue: [
-          depth:: depth + 1.
-          index:: index + 2.
-        ] ifFalse: [
-          ((text at: index) = 42 and: [(self codeIn: text at: index + 1) = 41]) ifTrue: [
-            depth:: depth - 1.
-            index:: index + 2.
-          ] ifFalse: [
-            index:: index + 1.
-          ].
-        ].
-      ].
-      ^index.
-    )
-
-    /// Answers whether a `///` comment starts at `index` in `text`.
-    ///
-    /// text: a String.
-    /// index: an Integer from 1 to `text size`.
-    private startsLineCommentIn: text at: index = (
-      ^(text at: index) = 47 and: [
-        (self codeIn: text at: index + 1) = 47 and: [(self codeIn: text at: index + 2) = 47].
-      ].
-    )
-
-    /// Answers whether `code` is a whitespace code point: a space, a tab,
-    /// a line feed, a form feed or a carriage return.
-    ///
-    /// code: an Integer.
-    private isWhitespace: code = (
-      ^code = 32 or: [code = 9 or: [code = 10 or: [code = 12 or: [code = 13]]]].
-    )
-
-    /// Answers the code point at `index` in `text`, or 0 past its end.
-    ///
-    /// text: a String.
-    /// index: an Integer of 1 or more.
-    private codeIn: text at: index = (
-      index > text size ifTrue: [^0].
-      ^text at: index.
     )
   )
 

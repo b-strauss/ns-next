@@ -30,7 +30,7 @@ use ns_syntax::ast;
 
 use crate::builtins::primitive::ReflectionPrimitive;
 use crate::heap::{Heap, MixinId};
-use crate::interpreter::edit::Edit;
+use crate::interpreter::edit::{Edit, EditedTexts};
 use crate::mixin::{source_text, Mixin, MixinApplication, MixinMethod};
 use crate::types::*;
 use crate::{Mutator, Symbol};
@@ -135,7 +135,7 @@ pub(crate) fn execute<'gc>(
             edit(mutator, receiver, arguments, |mutator, id, edit| {
                 mutator
                     .prepare_edit(id, edit)
-                    .map(|prepared| prepared.declaration_text)
+                    .map(|prepared| prepared.texts)
             })
         }
         ReflectionPrimitive::InstallEdit => {
@@ -151,8 +151,10 @@ pub(crate) fn execute<'gc>(
 /// installing -- on the declaration the subject, a reified mixin, belongs
 /// to, a class side's being its instance side's, and the edit the
 /// argument stands for (`Edit::from_value`). Answers `{true.
-/// declarationText}` or `{false. diagnostic}`, one shape for both, so
-/// that the builder reads a check and an install alike; a refusal is an
+/// declarationText. headerText}` or `{false. diagnostic}`, one shape for
+/// both, so that the builder reads a check and an install alike, and
+/// takes the header from the parse rather than reading syntax itself; a
+/// refusal is an
 /// answer rather than a decline because a failure block receives no
 /// argument to carry the diagnostic in. Declined for any other subject
 /// and for a malformed edit.
@@ -160,18 +162,22 @@ fn edit<'gc>(
     mutator: &mut Mutator<'gc>,
     subject: Value<'gc>,
     arguments: &[Value<'gc>],
-    run: impl FnOnce(&mut Mutator<'gc>, MixinId, &Edit) -> Result<String, String>,
+    run: impl FnOnce(&mut Mutator<'gc>, MixinId, &Edit) -> Result<EditedTexts, String>,
 ) -> Option<Value<'gc>> {
     let id = instance_side_id(&mutator.heap, reified_id(mutator, subject)?)?;
     let edit = Edit::from_value(&mutator.heap, *arguments.first()?)?;
-    let (succeeded, text) = match run(mutator, id, &edit) {
-        Ok(declaration_text) => (true, declaration_text),
-        Err(diagnostic) => (false, diagnostic),
+    let answer = match run(mutator, id, &edit) {
+        Ok(texts) => {
+            let declaration = Value::object(mutator.new_string(texts.declaration));
+            let header = Value::object(mutator.new_string(texts.header));
+            vec![Value::boolean(true), declaration, header]
+        }
+        Err(diagnostic) => {
+            let diagnostic = Value::object(mutator.new_string(diagnostic));
+            vec![Value::boolean(false), diagnostic]
+        }
     };
-    let text = Value::object(mutator.new_string(text));
-    Some(Value::object(
-        mutator.new_array(vec![Value::boolean(succeeded), text]),
-    ))
+    Some(Value::object(mutator.new_array(answer)))
 }
 
 /// `elementsOf:forwardIdentityToElementsOf:ifFail:`: forwards every
@@ -2640,6 +2646,12 @@ mod tests {
         answer_of(interpreter, "reflectionMixinOf:ifFail:", &class, &[])
     }
 
+    /// How a leaf's answer ends for an accepted edit of the fixture's
+    /// `Derived`: the declaration's text, then its header up to the
+    /// members' parenthesis, the space before it included.
+    const DERIVED_HEADER_ANSWERED: &str =
+        ")'. 'public class Derived = Base (\n    | own ::= 1. private secret = 2. |\n  ) '}";
+
     /// The check leaf answers the declaration with the edit spliced in, and
     /// stages nothing: the mixin's members, its source and an existing
     /// instance are as before.
@@ -2665,7 +2677,7 @@ mod tests {
             "{answer}"
         );
         assert!(answer.contains("public d = ( ^4 )"), "{answer}");
-        assert!(answer.ends_with(")'}"), "{answer}");
+        assert!(answer.ends_with(DERIVED_HEADER_ANSWERED), "{answer}");
         assert_eq!(
             rendered(
                 &mut interpreter,
@@ -2759,6 +2771,7 @@ mod tests {
             "{answer}"
         );
         assert!(answer.contains("public b = ( ^5 )"), "{answer}");
+        assert!(answer.ends_with(DERIVED_HEADER_ANSWERED), "{answer}");
         assert_eq!(rendered_send(&mut interpreter, &derived, "b"), "5");
         let class = send(&mut interpreter, &fixture, "Derived");
         assert_eq!(rendered_send(&mut interpreter, &class, "other"), "6");

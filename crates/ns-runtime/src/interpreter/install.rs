@@ -4,7 +4,7 @@
 
 use std::rc::Rc;
 
-use super::edit::{Edit, PreparedEdit};
+use super::edit::{Edit, EditedTexts, PreparedEdit};
 use super::Mutator;
 use crate::hash::IdentityMap;
 use crate::heap::{ClassReference, MixinId, ObjectReference};
@@ -32,7 +32,7 @@ impl<'gc> Mutator<'gc> {
     /// -- keeping its identity, as every class object does -- the
     /// instances whose layout changed copied into the new one by name and
     /// forwarded in one bulk forward, the others restamped.
-    pub(crate) fn install_edit(&mut self, id: MixinId, edit: &Edit) -> Result<String, String> {
+    pub(crate) fn install_edit(&mut self, id: MixinId, edit: &Edit) -> Result<EditedTexts, String> {
         let prepared = self.prepare_edit(id, edit)?;
         let mut fresh_by_id: IdentityMap<MixinId, Rc<Mixin>> = IdentityMap::default();
         for (replaced, fresh) in &prepared.replacements {
@@ -85,7 +85,7 @@ impl<'gc> Mutator<'gc> {
                 unreachable!("internal: each migrated instance is forwarded once, to a new one");
             }
         }
-        Ok(prepared.declaration_text)
+        Ok(prepared.texts)
     }
 
     /// Each class object's position in `classes`, by its identity key.
@@ -416,7 +416,7 @@ mod tests {
 
     fn install(interpreter: &mut Interpreter, id: MixinId, edit: &Edit) -> String {
         match interpreter.enter(|mutator| mutator.install_edit(id, edit)) {
-            Ok(text) => text,
+            Ok(texts) => texts.declaration,
             Err(diagnostic) => panic!("the install was refused: {diagnostic}"),
         }
     }
@@ -957,7 +957,7 @@ mod tests {
         for edit in [colliding, header_and_method] {
             let diagnostic =
                 match interpreter.enter(|mutator| mutator.install_edit(inner_id, &edit)) {
-                    Ok(text) => panic!("the install succeeded: {text}"),
+                    Ok(texts) => panic!("the install succeeded: {}", texts.declaration),
                     Err(diagnostic) => diagnostic,
                 };
             assert!(

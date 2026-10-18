@@ -35,6 +35,20 @@ pub(crate) enum MemberEdit {
     RemoveLazySlot(Symbol),
 }
 
+/// What an edit the VM accepts answers the MirrorBuilder: the edited
+/// declaration's text and its header's, both sliced from the edited
+/// module's text by the spans of its parse, so that the builder never
+/// reads Newspeak syntax itself.
+pub(crate) struct EditedTexts {
+    /// The edited declaration's text, from its start to its closing
+    /// parenthesis.
+    pub(crate) declaration: String,
+    /// The edited declaration's header: from its start up to, not
+    /// including, the parenthesis that opens its members; the whole
+    /// declaration for a mixin application without a body.
+    pub(crate) header: String,
+}
+
 /// What preparing an edit answers: everything the install needs, built and
 /// registered nowhere.
 pub(crate) struct PreparedEdit {
@@ -42,8 +56,9 @@ pub(crate) struct PreparedEdit {
     pub(crate) module_root: MixinId,
     /// The whole edited module's text.
     pub(crate) module_text: ModuleText,
-    /// The edited declaration's text, sliced from `module_text`.
-    pub(crate) declaration_text: String,
+    /// The edited declaration's and its header's text, sliced from
+    /// `module_text`.
+    pub(crate) texts: EditedTexts,
     /// Every fresh mixin with the id it is installed under: the edited
     /// declaration's instance side first, then its class side, then
     /// each nested mixin's two sides, preorder. A fresh mixin whose old
@@ -246,13 +261,26 @@ impl<'gc> Mutator<'gc> {
         let declaration_text = crate::mixin::source_text(&text, fresh.span)
             .unwrap_or_default()
             .to_string();
+        let header_end = declaration
+            .instance_side
+            .members_delimiters
+            .map_or(declaration.span.end, |members| members.open.start);
+        let header_text = usize::try_from(declaration.span.start)
+            .ok()
+            .zip(usize::try_from(header_end).ok())
+            .and_then(|(start, end)| text.get(start..end))
+            .unwrap_or_default()
+            .to_string();
         let mut replacements = Vec::new();
         let mut synthesized = Vec::new();
         self.pair(id, &current, &fresh, &mut replacements, &mut synthesized);
         Ok(PreparedEdit {
             module_root,
             module_text: ModuleText(text),
-            declaration_text,
+            texts: EditedTexts {
+                declaration: declaration_text,
+                header: header_text,
+            },
             replacements,
             synthesized,
         })
@@ -788,14 +816,33 @@ mod tests {
         let close = OUTER.find("\n  )\n)").expect("Inner's members close") + 3;
         let expected = format!("{}\npublic b = (^2)\n{}", &OUTER[..close], &OUTER[close..]);
         assert_eq!(&*prepared.module_text.0, expected);
-        assert!(prepared.declaration_text.contains("public a = ( ^1 )"));
-        assert!(prepared.declaration_text.contains("public b = (^2)"));
-        assert!(prepared.declaration_text.starts_with("public class Inner"));
-        assert!(prepared.declaration_text.ends_with("public b = (^2)\n)"));
+        assert!(prepared.texts.declaration.contains("public a = ( ^1 )"));
+        assert!(prepared.texts.declaration.contains("public b = (^2)"));
+        assert!(prepared.texts.declaration.starts_with("public class Inner"));
+        assert!(prepared.texts.declaration.ends_with("public b = (^2)\n)"));
         let (id, fresh) = &prepared.replacements[0];
         assert_eq!(*id, inner_id);
         assert!(fresh.methods.contains_key(&Symbol::intern("b")));
         assert!(fresh.methods.contains_key(&Symbol::intern("a")));
+    }
+
+    /// The header answered is the parse's, from the declaration's start to
+    /// its members' parenthesis, whatever its text holds before it: a
+    /// `///` comment ended by a carriage return alone, a block comment and
+    /// a string, each holding a parenthesis.
+    #[test]
+    fn the_header_is_sliced_by_the_parse() {
+        let header = "public class Inner = (\r    /// a comment ( ending at a CR\r    \
+                      | public text = 'it''s ('. |\r    (* ( *)\r  ) ";
+        let source =
+            format!("class Outer = Object new () (\r  {header}(\r    public a = ( ^1 )\r  )\r)\r");
+        let (mut interpreter, outer) = load(&source);
+        let (_, inner_id) = root_and_inner_ids(&mut interpreter, &outer);
+        let unchanged = prepare(&mut interpreter, inner_id, &instance_edit(Vec::new()));
+        assert_eq!(unchanged.texts.header, header);
+        let added = prepare(&mut interpreter, inner_id, &add_method("public b = (^2)"));
+        assert_eq!(added.texts.header, header);
+        assert!(added.texts.declaration.starts_with(header));
     }
 
     /// An added member replaces the one of its kind and name, a removed

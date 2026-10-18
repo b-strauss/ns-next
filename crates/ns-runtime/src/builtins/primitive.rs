@@ -889,14 +889,15 @@ pub enum ReflectionPrimitive {
     ForwardIdentity,
     /// Whether an edit of a reified mixin's declaration, the argument an
     /// edit on the wire (`interpreter::edit::Edit::from_value`), would
-    /// install: `{true. declarationText}` with the edit spliced in, or
-    /// `{false. diagnostic}`; nothing changes either way. A class side
+    /// install: `{true. declarationText. headerText}` with the edit
+    /// spliced in, the header up to the members' parenthesis, or `{false.
+    /// diagnostic}`; nothing changes either way. A class side
     /// stands for its instance side's declaration. Declined for any other
     /// subject and a malformed edit.
     CheckEdit,
     /// Installs an edit of a reified mixin's declaration atomically
     /// (`Mutator::install_edit`), answering as `CheckEdit` does:
-    /// `{true. declarationText}` once installed, `{false. diagnostic}`
+    /// `{true. declarationText. headerText}` once installed, `{false. diagnostic}`
     /// with nothing changed. Declined as `CheckEdit` is.
     InstallEdit,
 }
