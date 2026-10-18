@@ -15,30 +15,30 @@ when they were written.
 
 ## Next
 
-**Road step 5b2, MirrorBuilder and atomic installation** ("Step 5,
-mirrors and atomic installation" below; decided with the user on
-2026-10-05, split from road step 5a on 2026-10-17 and from road step 5b1
-on 2026-10-18). It builds on what road steps 5a and 5b1 built. 5a: the
-mirrors that read ([liveness-and-reflection.md](design/liveness-and-reflection.md),
-"Mirrors that read") behind `platform mirrors`, whose mirrors the builder
-is reached from; the reified mixin, whose identity an install keeps since
-it keeps the `MixinId`; the image's `OBJECT_MIXIN`; and the shipped-level
-rule, by which the builder refuses every edit to a shipped mixin. 5b1:
-every version of a mixin answers the one id it was first registered under,
-the row holding the current version, its enclosing mixin's id and its
-module's text, and `Mutator::replace_mixin` installs a fresh mixin under an
-old id ([liveness-and-reflection.md](design/liveness-and-reflection.md),
-"An edit replaces the mixin under its id"); `become:` as an eager bulk
-forward behind the VM-mirror leaf
-`elementsOf:forwardIdentityToElementsOf:ifFail:`, which refuses anything
-but an ordinary instance of a class that is no builtin and whose mixin is
-not shipped and flushes every inline cache; and the recorded guards that
-keep an activation entered before a forward, and a cached private or super
-slot accessor, from writing a receiver of another shape in the old layout
-([object-model.md](design/object-model.md), "`become:` is an eager bulk
-forward", "What a slot access checks"). What the step builds, from
-[liveness-and-reflection.md](design/liveness-and-reflection.md),
-"Planned: road step 5b2, MirrorBuilder and atomic installation":
+**Road step 5b2, MirrorBuilder and atomic installation** ("Step 5, mirrors
+and atomic installation" below; decided with the user on 2026-10-05, split
+from road step 5a on 2026-10-17 and from road step 5b1 on 2026-10-18). It
+builds on what road steps 5a and 5b1 built. 5a: the mirrors that read
+([liveness-and-reflection.md](design/liveness-and-reflection.md), "Mirrors
+that read") behind `platform mirrors`, whose mirrors the builder is reached
+from; the reified mixin, whose identity an install keeps since it keeps the
+`MixinId`; the image's `OBJECT_MIXIN`; and the shipped-level rule, by which
+the builder refuses every edit to a shipped mixin. 5b1: every version of a
+mixin answers the one id it was first registered under, the row holding the
+current version, its enclosing mixin's id and its module's text, and
+`Mutator::replace_mixin` installs a fresh mixin under an old id
+([liveness-and-reflection.md](design/liveness-and-reflection.md), "An edit
+replaces the mixin under its id"); `become:` as an eager bulk forward
+behind the VM-mirror leaf `elementsOf:forwardIdentityToElementsOf:ifFail:`,
+which refuses anything but an ordinary instance of a class that is no
+builtin and whose mixin is not shipped and flushes every inline cache; and
+the recorded guards that keep an activation entered before a forward, and a
+cached private or super slot accessor, from writing a receiver of another
+shape in the old layout ([object-model.md](design/object-model.md),
+"`become:` is an eager bulk forward", "What a slot access checks"). What
+the step builds, from
+[liveness-and-reflection.md](design/liveness-and-reflection.md), "Planned:
+road step 5b2, MirrorBuilder and atomic installation":
 
 - **The MirrorBuilder and its protocol.** Both prior arts build from
   source: `asBuilder`, `methods addFromSource:`, slots through the class
@@ -83,18 +83,18 @@ forward", "What a slot access checks"). What the step builds, from
   a replacement keeps a mixin's name, access and shipped flag.
 - **Two tests 5b1 did not write.** `ReturnSlotIfFilled`'s error branch has
   none, and a valid program can hardly reach it: the instruction opens a
-  lazy getter, right after the push that recorded the guard; and no test makes a class object's
-  current application differ from an activation's entered level, to pin
-  that the slot base comes from the entered one -- feasible through
-  `Heap::class_set_application`.
+  lazy getter, right after the push that recorded the guard; and no test
+  makes a class object's current application differ from an activation's
+  entered level, to pin that the slot base comes from the entered one --
+  feasible through `Heap::class_set_application`.
 
-**What 5b1 cost.** Measured in release, three pinned builds a side,
-against master (`733c15bd`) and task by task: every program within noise,
-but `bench_megamorphic.ns`, +1.3-2.1% after the private and super
-accessor check, at the edge of build noise and not diagnosed ("Planned:
-performance and representation" below). It has no implementation plan
-yet, so the next session starts by writing one. Everything before it on
-the road is built, road step 5b1 last; each step has its entry in
+**What 5b1 cost.** Measured in release, three pinned builds a side, against
+master (`733c15bd`) and task by task: every program within noise, but
+`bench_megamorphic.ns`, +1.3-2.1% after the private and super accessor
+check, at the edge of build noise and not diagnosed ("Planned: performance
+and representation" below). Road step 5b2 has no implementation plan yet,
+so the next session starts by writing one. Everything before it on the road
+is built, road step 5b1 last; each step has its entry in
 [PROGRESS.md](PROGRESS.md), and the whole road is below.
 
 **Measuring.** The protocol is [execution.md](design/execution.md)'s "What
@@ -1649,10 +1649,7 @@ Small, deliberately left, none affecting an outcome.
   metaclass takes part in class-object equality (`class_state_pairs`) and in
   what the image encoder walks.
 - Leftovers of road step 3a's code reviews, none affecting an outcome
-  (noted 2026-10-03): two doc comments cite `object-model.md`'s retired
-  heading "Planned: the object layout", now "The object layout"
-  (`heap/tables.rs`'s module doc, `mixin.rs` above `CLAUSE_INDEX_LIMIT`);
-  test names that outlived what they name
+  (noted 2026-10-03): test names that outlived what they name
   (`class_data_is_reachable_through_object_data` in `types.rs`,
   `an_identity_hash_at_the_ceiling_is_refused_rather_than_overflowing_the_counter`
   in `tests/image.rs`); stale comments in `image/decode.rs` (`describe` at

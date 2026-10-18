@@ -2122,16 +2122,17 @@ takes the module roots' mixins and plans one tree per module from them
 (`image/mixins.rs`), the code table holds the code those rows reach, and
 the encoder refuses a class object whose mixin is part of no module the
 image carries (`image/encode.rs`). An edit installs a fresh mixin under the
-old one's id ([liveness-and-reflection.md](liveness-and-reflection.md),
-"An edit replaces the mixin under its id"), so the encoder will walk each module's tree through the ids to the mixins they
-name now: an edited mixin is the row of the declaration it replaced, in
-the same place of the same tree, and its code enters the code table like
-any other. Nothing about the format's trust changes: a row an edit
-produced is verified as any row is ("Verification"), the shipped mixins
-stay named by declaration, and an edit to a shipped mixin is refused, so no image
-carries one. This is the step toward the graph style for user-defined
-behaviour that "How upstream compares" below names, taken in the table
-style: the row is the unit, not a graph of method objects.
+old one's id ([liveness-and-reflection.md](liveness-and-reflection.md), "An
+edit replaces the mixin under its id"), so the encoder will walk each
+module's tree through the ids to the mixins they name now: an edited mixin
+is the row of the declaration it replaced, in the same place of the same
+tree, and its code enters the code table like any other. Nothing about the
+format's trust changes: a row an edit produced is verified as any row is
+("Verification"), the shipped mixins stay named by declaration, and an edit
+to a shipped mixin is refused, so no image carries one. This is the step
+toward the graph style for user-defined behaviour that "How upstream
+compares" below names, taken in the table style: the row is the unit, not a
+graph of method objects.
 
 Open, for road step 5b2's plan:
 

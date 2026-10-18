@@ -879,8 +879,11 @@ pub enum ReflectionPrimitive {
     /// `become:` as an eager bulk forward: every object of one `Array`
     /// forwarded to the object of another at the same index, answering
     /// `nil` (`heap::world::forward_identity`). Declined, nothing changed,
-    /// unless both are `Array`s of ordinary instances of classes whose
-    /// mixin is not shipped, and on every `ForwardRefusal`.
+    /// unless both are `Array`s every element of which the leaf's lock
+    /// admits (`builtins/reflection.rs`'s `may_be_forwarded`: a
+    /// `FixedPointers` instance of a class that is no builtin and whose
+    /// mixin is not shipped, no reified mixin, no withheld value), and on
+    /// every `ForwardRefusal`.
     ForwardIdentity,
 }
 

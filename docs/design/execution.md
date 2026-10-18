@@ -150,19 +150,20 @@ pub struct ActivationReference {
   root set ([memory.md](memory.md)).
 - **A push** (`Heap::push_activation`) copies the arguments into `values`, fills
   the temporaries with nil and appends a `StackEntry`; only for code that
-  addresses its own slots (`CompiledCode::addresses_own_slots`) does it
-  record the receiver's guard and the full-width index of `current_class`'s
-  application, which every own-slot instruction checks and takes its slot
-  base from, so any other push pays one flag test
-  ([object-model.md](object-model.md), "What a slot access checks"). Both vectors keep their
-  capacity across pops, so once they have grown to the program's depth a push
-  allocates nothing. Every activation the runtime pushes goes through one
-  function, `Mutator::push`, which refuses a push past the depth limit ("The
-  depth limit" below) before it reaches the heap, so no new push site can skip
-  the check. It is called from one place, `Mutator::push_step`, for the
-  method, block or body a decision answered. An activation nothing reifies
-  leaves nothing behind; only a block the compiler did not inline reifies one,
-  since an inlined `ifTrue:`/`and:`/`whileTrue:` argument creates no closure.
+  addresses its own slots (`CompiledCode::addresses_own_slots`) does it record
+  the receiver's guard and the full-width index of `current_class`'s
+  application, which every own-slot instruction checks and takes its slot base
+  from, so any other push pays one flag test
+  ([object-model.md](object-model.md), "What a slot access checks"). Both
+  vectors keep their capacity across pops, so once they have grown to the
+  program's depth a push allocates nothing. Every activation the runtime pushes
+  goes through one function, `Mutator::push`, which refuses a push past the
+  depth limit ("The depth limit" below) before it reaches the heap, so no new
+  push site can skip the check. It is called from one place,
+  `Mutator::push_step`, for the method, block or body a decision answered. An
+  activation nothing reifies leaves nothing behind; only a block the compiler
+  did not inline reifies one, since an inlined `ifTrue:`/`and:`/`whileTrue:`
+  argument creates no closure.
 - **Register access through an `ActivationReference`** is `values[entries[i].base +
   r]`, with no branch on the handle's kind or on an args/temps split; a release
   build still bounds-checks both slice indexes. A debug build also checks that

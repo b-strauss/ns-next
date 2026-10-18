@@ -5575,7 +5575,7 @@ impl<'gc> Heap<'gc> {
 
     /// Forwards every object of `old` to the object of `new` at the same
     /// index, one way and at once: `become:` as a bulk forward
-    /// (`docs/design/object-model.md`, "Planned: `become:` as an eager bulk
+    /// (`docs/design/object-model.md`, "`become:` is an eager bulk
     /// forward"). Every pair is validated before anything is written: equal
     /// sizes, no object of `old` named twice (a split), none also among
     /// `new` (a chain); several old objects forwarded to one new one (a
@@ -5600,8 +5600,10 @@ impl<'gc> Heap<'gc> {
     /// inside a step: no instruction runs between the forward and the
     /// leaf's answer. Its one caller is the VM mirror's
     /// `elementsOf:forwardIdentityToElementsOf:ifFail:` leaf, whose lock
-    /// has refused every object but an ordinary instance of a class that is
-    /// not shipped.
+    /// (`builtins/reflection.rs`'s `may_be_forwarded`) has refused every
+    /// object but an ordinary `FixedPointers` instance of a class that is no
+    /// builtin and whose mixin is not shipped, no reified mixin and no
+    /// withheld value.
     #[must_use = "the interpreter's own roots are forwarded through the answer; dropping it leaves them naming forwarders"]
     pub(crate) fn forward_identity(
         &mut self,
@@ -5658,12 +5660,12 @@ impl<'gc> Heap<'gc> {
     /// Forwards every handle the heap itself holds through `forwarder`:
     /// every object, the `Activation` class, every stack entry and
     /// the continuation it owns, every register, every surviving canonical
-    /// symbol table entry, and every host root. Shared by `move_everything`
-    /// and `compact` -- each builds its own `Forwarder`
+    /// symbol table entry, and every host root. Shared by `move_everything`,
+    /// `compact` and `forward_identity` -- each builds its own `Forwarder`
     /// first, over its own `Relocation`, and then walks the same roots
-    /// through it -- so that a field
-    /// either one must reach is named here once, rather than in two copies
-    /// a later change can update in one and miss in the other (`trace.rs`'s
+    /// through it -- so that a field any of them must reach is named here
+    /// once, rather than in copies a later change can update in one and
+    /// miss in another (`trace.rs`'s
     /// reason for existing, one level up).
     fn forward_everything<M: Relocation>(&mut self, forwarder: &mut Forwarder<M>) {
         use crate::trace::{Trace, Tracer};

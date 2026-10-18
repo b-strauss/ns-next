@@ -278,7 +278,8 @@ at run time, because one mixin's code is shared by every application of it;
 application the activation was *entered* at, never the class object's
 current one, and **every slot access whose index was decided without looking
 at the receiver checks a recorded guard first** -- the own-slot
-instructions, and a private or super slot accessor -- or a receiver the bulk
+instructions, a private or super slot accessor, and a super send's
+`doesNotUnderstand:` slot handler by a walk -- or a receiver the bulk
 forward replaced is written in the old layout at exit status 0
 (`object-model.md`, "What a slot access checks").
 
@@ -312,7 +313,11 @@ every other shipped name in a position the rule does not allow; (5) the
 encoder refuses a graph reaching the mirror, its class, `Top` or their
 metaclasses, and `decide_factory` refuses to instantiate the mirror's class;
 (6) `SendMirror` has no wire tag (`core-library.md`, "The VM mirror is the
-whole Rust boundary").
+whole Rust boundary"). The bulk-forward leaf
+(`elementsOf:forwardIdentityToElementsOf:ifFail:`) refuses the mirror,
+every withheld value and every builtin or shipped instance on either side
+(`builtins/reflection.rs`'s `may_be_forwarded`), so a forward can never put
+the mirror where a program reaches it; never loosen it either.
 
 **A cache records what the lookup decided; it never decides.** An inline-cache
 hit is `act` on the resolution `resolve_*` answered for the same key; an entry

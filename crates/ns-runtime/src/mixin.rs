@@ -547,7 +547,7 @@ impl AppliedClause {
 /// How many `<:` clauses one superclass clause may apply: the clause index
 /// is 23 bits of the class object's applied-clause `SmallInteger` -- a limit
 /// a valid program can reach, taken knowingly (decided with the user on
-/// 2026-10-03; `docs/design/object-model.md`, "Planned: the object layout").
+/// 2026-10-03; `docs/design/object-model.md`, "The object layout").
 pub(crate) const CLAUSE_INDEX_LIMIT: usize = 1 << 23;
 
 const CLAUSE_INDEX_SHIFT: u32 = 32;

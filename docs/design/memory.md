@@ -1619,35 +1619,35 @@ either, and Squeak's weak symbol table behaves the same way.
 than the collector.** Its key is a pair of the heap's ids -- the mixin's
 `MixinId` and the superclass application's `ApplicationIndex`
 (`heap/tables.rs`) -- not two addresses, so a freed `Rc<Mixin>` handing its
-address to a newly allocated one can no longer make the new mixin hit the old
-entry and be given a **different, perfectly valid** application, the failure
-class the handle invariants exist to prevent. The heap's tables still map a
-mixin's and a body's address to its id (`Rc::as_ptr`), which is sound only
-because each table holds the strong `Rc` that keeps the address valid and
-unique for as long as the entry lives -- forever, until an id is reclaimed.
-So weakness is decidable now, and what makes it sound when it comes is that
-the cache's key and value use an application's full-width index, never its
-22-bit guard id, and the reuse rules: a full-width index is reclaimable once
-no class object, no application-cache key or value and no other
-application's superclass link names it; a guard id once no object header, no
-inline- or global-cache entry and no recorded guard (an activation's, a
-slot accessor's cache entry's or the caches' verified pair) names it; a mixin id once
-the `Mixin` itself is dropped -- its table entry freed, no declaration,
-enclosing mixin or code holding it -- and no application, no
-application-cache key or value and no class object's applied-clause field
-names it ([object-model.md](object-model.md), "An application has two ids").
-A class's change of application restamps every instance's header by a heap
-walk (`Heap::class_set_application`) before the old guard id could become
-reclaimable. Nothing drops a mixin, a version an edit superseded included
-(`Tables::superseded`), so the ids are
-minted and none is reclaimed, and the cache stays strong until then (decided
-with the user on 2026-10-03); its unbounded growth under live editing
+address to a newly allocated one can no longer make the new mixin hit the
+old entry and be given a **different, perfectly valid** application, the
+failure class the handle invariants exist to prevent. The heap's tables
+still map a mixin's and a body's address to its id (`Rc::as_ptr`), which is
+sound only because each table holds the strong `Rc` that keeps the address
+valid and unique for as long as the entry lives -- forever, until an id is
+reclaimed. So weakness is decidable now, and what makes it sound when it
+comes is that the cache's key and value use an application's full-width
+index, never its 22-bit guard id, and the reuse rules: a full-width index
+is reclaimable once no class object, no application-cache key or value and
+no other application's superclass link names it; a guard id once no object
+header, no inline- or global-cache entry and no recorded guard (an
+activation's, a slot accessor's cache entry's or the caches' verified pair)
+names it; a mixin id once the `Mixin` itself is dropped -- its table entry
+freed, no declaration, enclosing mixin or code holding it -- and no
+application, no application-cache key or value and no class object's
+applied-clause field names it ([object-model.md](object-model.md), "An
+application has two ids"). A class's change of application restamps every
+instance's header by a heap walk (`Heap::class_set_application`) before the
+old guard id could become reclaimable. Nothing drops a mixin, a version an
+edit superseded included (`Tables::superseded`), so the ids are minted and
+none is reclaimed, and the cache stays strong until then (decided with the
+user on 2026-10-03); its unbounded growth under live editing
 ([liveness-and-reflection.md](liveness-and-reflection.md)) ends with the
 first edit's reclamation, which road step 5b2's atomic install brings
 ([liveness-and-reflection.md](liveness-and-reflection.md), "Planned: road
-step 5b2, MirrorBuilder and atomic installation"). The same per-mixin id serves dispatch's open
-option of guarding a private lexical site on N's mixin
-([dispatch.md](dispatch.md), "Decisions").
+step 5b2, MirrorBuilder and atomic installation"). The same per-mixin id
+serves dispatch's open option of guarding a private lexical site on N's
+mixin ([dispatch.md](dispatch.md), "Decisions").
 
 The cache holds no handle at all — a pair of numbers for a key, an `Rc` for a
 value — so it is neither a root nor a forwarding target.
@@ -2209,31 +2209,30 @@ objects lie end to end from the region's start up to its top.
 
 **What changes in `CLAUDE.md`, and when.** Its invariants describe what is
 built, so each changes when its road step lands, not before. Road steps 1,
-3a, 3b and 4 are done: the crate list names `crates/ns-memory`, the one crate
-with `unsafe`, and the heap's space in its reservation, a nursery of eden
-and two survivor spaces below the old space, a Cheney scavenger beside the
-mark-and-slide collector, which compacts both generations, and the barrier
-in `heap.rs`'s store accessors; "the crate forbids
-unsafe code" names `ns-runtime`; "An image is untrusted input" states the
-figures of "The amplification bound of a rejected load" above, and that
-the decoder allocates only after a tenure between entries, the
-platform-path sends may collect at their safepoints like any run, and the
-graph pass allocates old, after the last tenure, and never polls a
-safepoint, so the peak argument stands; the handle
-paragraphs describe a 64-bit byte offset and name no frame arena; "A
-cache records what the lookup decided" reads the builtin tag as a field of
-the class object, which `act` still reads afresh on every send; the end-of-batch
-gates name five stress modes, `SCAVENGE` among them; and "Every store into
-an existing object goes through `heap.rs`'s store accessors and their write
-barrier" is an invariant of its own. Still to
-come: "The
-VM mirror is a capability" gains, as a consequence, that the mirrors refuse
-every edit to a shipped mixin, which seals the mirror's class (road step
-5b2). No program reaches `become:` already, since it is a leaf on the
-mirror, and the leaf refuses every shipped instance, builtin instance and
-withheld value itself ([object-model.md](object-model.md), "`become:` is an
-eager bulk forward", "What the forward refuses"). "Decided per activation from the
-block's `outer_reach`" stands, since the divorce keeps that rule.
+3a, 3b and 4 are done: the crate list names `crates/ns-memory`, the one
+crate with `unsafe`, and the heap's space in its reservation, a nursery of
+eden and two survivor spaces below the old space, a Cheney scavenger beside
+the mark-and-slide collector, which compacts both generations, and the
+barrier in `heap.rs`'s store accessors; "the crate forbids unsafe code"
+names `ns-runtime`; "An image is untrusted input" states the figures of
+"The amplification bound of a rejected load" above, and that the decoder
+allocates only after a tenure between entries, the platform-path sends may
+collect at their safepoints like any run, and the graph pass allocates old,
+after the last tenure, and never polls a safepoint, so the peak argument
+stands; the handle paragraphs describe a 64-bit byte offset and name no
+frame arena; "A cache records what the lookup decided" reads the builtin
+tag as a field of the class object, which `act` still reads afresh on every
+send; the end-of-batch gates name five stress modes, `SCAVENGE` among them;
+and "Every store into an existing object goes through `heap.rs`'s store
+accessors and their write barrier" is an invariant of its own. Still to
+come: "The VM mirror is a capability" gains, as a consequence, that the
+mirrors refuse every edit to a shipped mixin, which seals the mirror's
+class (road step 5b2). No program reaches `become:` already, since it is a
+leaf on the mirror, and the leaf refuses every shipped instance, builtin
+instance and withheld value itself ([object-model.md](object-model.md),
+"`become:` is an eager bulk forward", "What the forward refuses"). "Decided
+per activation from the block's `outer_reach`" stands, since the divorce
+keeps that rule.
 
 ## Generations
 
@@ -2482,18 +2481,17 @@ stack, which is a root, and take no barrier; nor does a store into a young
 object. The collector's own rewrites -- the scavenge, the compaction, the
 move -- keep the remembered set themselves, and so does the bulk forward
 (`Heap::forward_identity`), which writes words without the barrier beside
-them: it rewrites words in place as a compaction does, and after each holder's
-rewrite remembers every old one that names a young object now
+them: it rewrites words in place as a compaction does, and after each
+holder's rewrite remembers every old one that names a young object now
 (`IdentityForward::holder_done`) ([object-model.md](object-model.md),
-"`become:` is an eager bulk forward"); the replacement of resolved
-futures, which may store a young value into an old object, runs only
-before a full collection, which empties the nursery and the set; and the
-decoder's fills store old values into old objects. The debug check of the
-stored Rust-side value's
-heap id and epoch, which every store makes (`Heap::store`; "The object
-space"), holds here too. A store that writes a word into an old object any
-other way leaves the young object it names unreachable to the next
-scavenge, silently; that is the invariant `CLAUDE.md` states, and the
+"`become:` is an eager bulk forward"); the replacement of resolved futures,
+which may store a young value into an old object, runs only before a full
+collection, which empties the nursery and the set; and the decoder's fills
+store old values into old objects. The debug check of the stored Rust-side
+value's heap id and epoch, which every store makes (`Heap::store`; "The
+object space"), holds here too. A store that writes a word into an old
+object any other way leaves the young object it names unreachable to the
+next scavenge, silently; that is the invariant `CLAUDE.md` states, and the
 scavenge stress mode below is what finds a breach.
 
 ### The remembered set and its limit

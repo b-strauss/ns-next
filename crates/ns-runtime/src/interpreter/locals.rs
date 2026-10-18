@@ -195,7 +195,7 @@ fn own_slots_cold_check<'gc>(
 /// replaced it by an instance of a subclass of the level's class. (One
 /// replaced by another instance of the level's own application keeps the
 /// guard and never gets here.) Whether an edit that changes only methods
-/// keeps a class's application, and so passes here, is road step 5b's
+/// keeps a class's application, and so passes here, is road step 5b2's
 /// install's decision. When it passes, the receiver's current guard is
 /// recorded, so the accesses after it take the hot path again. An
 /// immediate receiver has no slots to protect and passes; the instructions

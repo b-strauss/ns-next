@@ -2402,8 +2402,8 @@ mod tests {
     /// and makes the fresh one the id's: the address of either answers the
     /// id, the id answers the fresh one and the enclosing mixin it was
     /// registered with, and the mixin keeps its one reified object
-    /// (`docs/design/liveness-and-reflection.md`, "Planned with road step
-    /// 5: an edit replaces the mixin under its id").
+    /// (`docs/design/liveness-and-reflection.md`, "An edit replaces the
+    /// mixin under its id").
     #[test]
     fn every_version_of_a_mixin_answers_one_id() {
         let (mut interpreter, outer) = load(OUTER);

@@ -1,17 +1,18 @@
 //! What a heap object names by a `SmallInteger` because it cannot live in
 //! the words: a mixin, a mixin application, a compiled body
-//! (`docs/design/object-model.md`, "Planned: the object layout"). Per heap,
-//! because the objects naming them are, and append-only: road step 3a mints
-//! these ids and reclaims none, since nothing drops a mixin before live
-//! editing (`docs/OPEN-WORK.md`, "Live editing of mixins").
+//! (`docs/design/object-model.md`, "The object layout"). Per heap, because
+//! the objects naming them are, and append-only: road step 3a mints these
+//! ids and reclaims none, since nothing drops a mixin, a superseded version
+//! included, before road step 5b2's reclamation (`docs/OPEN-WORK.md`,
+//! "Next").
 //!
 //! A mixin's id is its identity: every version of it answers the id it was
 //! first registered under, and the row holds the current version, the id of
 //! the mixin it is declared in and its module's text, so that an edit
 //! installs a fresh mixin under the old id and everything that names the
 //! mixin by id sees the edited one
-//! (`docs/design/liveness-and-reflection.md`, "Planned with road step 5: an
-//! edit replaces the mixin under its id").
+//! (`docs/design/liveness-and-reflection.md`, "An edit replaces the mixin
+//! under its id").
 
 use std::rc::Rc;
 

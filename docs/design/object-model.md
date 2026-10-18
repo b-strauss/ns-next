@@ -2163,8 +2163,9 @@ roots (`ForwardRoots`) and the whole heap (`ForwardHeap`), rebuilding the
 remembered set as it goes; the interpreter clears its lookup cache in the
 prologue every such pass runs (`GCPrologue`,
 `prior-art/primordialsoup/vm/interpreter.cc:1906-1908`), and primitive 183,
-`Heap_becomeForward` (`prior-art/primordialsoup/vm/primitives.cc:2271-2281`),
-is its only entry. In ns-next the leaf is the `MIRROR` row
+`Heap_becomeForward`
+(`prior-art/primordialsoup/vm/primitives.cc:2271-2281`), is its only entry.
+In ns-next the leaf is the `MIRROR` row
 `elementsOf:forwardIdentityToElementsOf:ifFail:`, reported
 `forwardIdentityTo:` since a row's leaf arity is its reported selector's
 (`ReflectionPrimitive::ForwardIdentity`, `builtins/reflection.rs`'s
@@ -2181,13 +2182,14 @@ walk the compaction and the move stress mode run, through a fourth
 `Relocation`, `IdentityForward`, which answers each old object's
 replacement and every other offset unchanged, over every handle the heap
 holds -- the activation stack, the reified mixins, the host roots and the
-symbol table among them -- and every heap object, through the same knowledge of pointer words the collector uses
-(`heap/object.rs`'s `pointer_ranges`); `world::forward_identity` then
-forwards the step state's own roots (`StepRoots`) through the answer. The
-walk writes words without the barrier, as the collector's own rewrites do,
-and keeps the remembered set itself: after each holder's words are
-rewritten, `IdentityForward::holder_done` says whether one of them names a
-young object now, and every such old holder is remembered
+symbol table among them -- and every heap object, through the same
+knowledge of pointer words the collector uses (`heap/object.rs`'s
+`pointer_ranges`); `world::forward_identity` then forwards the step state's
+own roots (`StepRoots`) through the answer. The walk writes words without
+the barrier, as the collector's own rewrites do, and keeps the remembered
+set itself: after each holder's words are rewritten,
+`IdentityForward::holder_done` says whether one of them names a young
+object now, and every such old holder is remembered
 ([memory.md](memory.md), "The write barrier"). Last, the inline caches are
 flushed, all of them (`InlineCaches::invalidate`, the verified pair of
 "What a slot access checks" above included); scoping the invalidation to

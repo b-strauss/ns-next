@@ -526,21 +526,21 @@ getter has to evaluate the initializer while the slot holds `nil`, so
 (`compiler::compile_lazy_slot_getter`, `MixinMethod::lazy_slot_getter`) whose
 body opens with `Instruction::ReturnSlotIfFilled`, which returns the field
 when it holds anything but `nil`, and otherwise evaluates the initializer,
-stores it with `InitializeSlot` and returns it. Both instructions address
-the field from the activation's slot base, the own `own_slot_base` of the
-application the activation was entered at (`Heap::activation_slot_base`)
--- the getter's defining class, as an initializer's is the level it
-initializes -- after checking the activation's recorded guard
-([object-model.md](object-model.md), "What a slot access checks"). The getter has no
-fast path: every send of it, filled or not, activates it. A
-`MethodFastPath::LazySlot` once answered a filled slot without an
-activation, as an accessor does, but its arm sat in `act_with_base`, which
-is inlined into every send site of the run loop, and cost every method send
-2.6-4.6% on `bench_send.ns` and `bench_block.ns` for a feature almost no
-send reaches; moving its body out of line, and taking the slot base off the
-activation, did not recover it, and dropping the arm did
-([execution.md](execution.md), "What the platform module cost"). A mutable
-lazy slot's setter is an ordinary accessor entry.
+stores it with `InitializeSlot` and returns it. Both instructions address the
+field from the activation's slot base, the own `own_slot_base` of the
+application the activation was entered at (`Heap::activation_slot_base`) --
+the getter's defining class, as an initializer's is the level it initializes
+-- after checking the activation's recorded guard
+([object-model.md](object-model.md), "What a slot access checks"). The getter
+has no fast path: every send of it, filled or not, activates it. A
+`MethodFastPath::LazySlot` once answered a filled slot without an activation,
+as an accessor does, but its arm sat in `act_with_base`, which is inlined into
+every send site of the run loop, and cost every method send 2.6-4.6% on
+`bench_send.ns` and `bench_block.ns` for a feature almost no send reaches;
+moving its body out of line, and taking the slot base off the activation, did
+not recover it, and dropping the arm did ([execution.md](execution.md), "What
+the platform module cost"). A mutable lazy slot's setter is an ordinary
+accessor entry.
 
 ## Primitives
 
@@ -957,11 +957,11 @@ until that pass — its class may not have its application yet — and nothing
 dispatches on it in between. A decoded image rebuilds its applications
 through `apply_mixin` ([image-format.md](image-format.md), "What is *not*
 serialized"), so an id never comes from its bytes. The id is not a handle,
-so the tracer does not see it and a move carries it along. The planned
-`become:` will swap no ids: it is an eager bulk forward, so once it ends no
-reference names a forwarder, every target keeps its own id, and every
-inline cache is flushed ([object-model.md](object-model.md), "Planned:
-`become:` as an eager bulk forward"). In a debug build
+so the tracer does not see it and a move carries it along. `become:` swaps
+no ids: it is an eager bulk forward, so once it ends no reference names a
+forwarder, every target keeps its own id, and every inline cache is flushed
+([object-model.md](object-model.md), "`become:` is an eager bulk
+forward"). In a debug build
 `Heap::dispatch_id` recomputes the id from the class on every read and
 asserts that the header agrees, so a missed restamp fails the first test
 that dispatches on the stale object. Outside `heap.rs` nothing knows where
@@ -1553,18 +1553,18 @@ above; [object-model.md](object-model.md), "What a slot access checks").
 
 An immediate's guard comes from a table indexed by its tag, and for the
 constant tag by the constant, since `nil`, `true` and `false` share a tag but
-have three guards. At 22 bits the guard ids can run out where a `u32`
-counter practically could not; running out keeps the rule of "The dispatch
-id" above, an application without a guard id running uncached (`NONE`). The
-guard id serves only as a guard -- in object headers and inline- and
-global-cache entries, and in recorded guards
-([object-model.md](object-model.md), "What a slot access checks") -- and every identity comparison of applications uses the
+have three guards. At 22 bits the guard ids can run out where a `u32` counter
+practically could not; running out keeps the rule of "The dispatch id" above,
+an application without a guard id running uncached (`NONE`). The guard id
+serves only as a guard -- in object headers and inline- and global-cache
+entries, and in recorded guards ([object-model.md](object-model.md), "What a
+slot access checks") -- and every identity comparison of applications uses the
 full-width index instead: the application cache's key and value,
 `behavior:sharesApplicationWith:` (`Kernel.ns`), class-object equality
 (`builtins/value.rs`), and the global cache's `Lexical` key, which never
 records a `NONE` guard, as step 6 of the lookup order in "3b — The caches"
-says. So an application without a guard id stays reachable and distinct.
-None of the ids is reclaimed yet; their reuse rules are
+says. So an application without a guard id stays reachable and distinct. None
+of the ids is reclaimed yet; their reuse rules are
 [object-model.md](object-model.md), "An application has two ids". A class's
 change of application restamps every instance's header by a heap walk
 (`Heap::class_set_application`) before the old guard id could become
