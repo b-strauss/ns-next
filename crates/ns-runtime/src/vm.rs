@@ -23,7 +23,7 @@ use crate::interpreter::inline_cache::{send_lexical, send_public, send_super};
 use crate::interpreter::instantiate::check_value_slot;
 use crate::interpreter::literals::{body_too_large_error, unresolved_identifier_error};
 use crate::interpreter::locals::{
-    filled_own_slot, load_own_slot, load_vector, read_local, read_outer_local,
+    check_own_slots, filled_own_slot, load_own_slot, load_vector, read_local, read_outer_local,
     store_instance_field, store_vector, write_local, write_outer_local,
 };
 use crate::interpreter::unwind::{non_boolean_condition, UnwindOutcome};
@@ -784,8 +784,8 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                 // the field's address is `InitializeSlot`'s, and reading it
                                 // is a `locals` helper's.
                                 CompactInstruction::ReturnSlotIfFilled { own_index } => {
-                                    match filled_own_slot(&mutator.heap, activation, own_index) {
-                                        Some(value) => {
+                                    match filled_own_slot(mutator, activation, own_index) {
+                                        Ok(Some(value)) => {
                                             break 'decided finish(
                                                 mutator,
                                                 activation,
@@ -794,7 +794,15 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                                 &mut handoff,
                                             )
                                         }
-                                        None => next!(),
+                                        Ok(None) => next!(),
+                                        Err(signal) => {
+                                            break 'decided unwind(
+                                                mutator,
+                                                signal,
+                                                floor,
+                                                &mut handoff,
+                                            )
+                                        }
                                     }
                                 }
                                 // §6.3.2's simultaneous slot clauses: one arm and one call,
@@ -1284,9 +1292,10 @@ fn run_wide<'gc>(
             }
         }
         Instruction::ReturnSlotIfFilled { own_index } => {
-            match filled_own_slot(&mutator.heap, activation, *own_index) {
-                Some(value) => finish(mutator, activation, value, floor, handoff),
-                None => return WideOutcome::Next,
+            match filled_own_slot(mutator, activation, *own_index) {
+                Ok(Some(value)) => finish(mutator, activation, value, floor, handoff),
+                Ok(None) => return WideOutcome::Next,
+                Err(signal) => unwind(mutator, signal, floor, handoff),
             }
         }
         Instruction::MakeFuture {
@@ -1308,9 +1317,16 @@ fn run_wide<'gc>(
         Instruction::LoadOwnSlot {
             destination,
             own_index,
-        } => load_own_slot_into(mutator, activation, *destination, *own_index),
+        } => load_own_slot_into(
+            mutator,
+            activation,
+            *destination,
+            *own_index,
+            floor,
+            handoff,
+        ),
         Instruction::InitializeSlotProvisionally { source, own_index } => {
-            initialize_slot_provisionally(mutator, activation, *source, *own_index)
+            initialize_slot_provisionally(mutator, activation, *source, *own_index, floor, handoff)
         }
         Instruction::Return { register } | Instruction::ImplicitReturn { register } => return_from(
             mutator,
@@ -1601,6 +1617,7 @@ fn initialize_slot<'gc>(
     source: u16,
     own_index: u32,
 ) -> Result<(), Signal<'gc>> {
+    check_own_slots(mutator, activation)?;
     let value = mutator.heap.register(register_base, source);
     let receiver = mutator.heap.activation_receiver(activation);
     let base = mutator.heap.activation_slot_base(activation);
@@ -1904,6 +1921,11 @@ fn initialize_slot_refused<'gc>(
     floor: usize,
     handoff: &mut Handoff,
 ) -> Transfer {
+    // A receiver that no longer has the slot is refused whatever the
+    // value: only a refusal of the value itself can be about a future.
+    if check_own_slots(mutator, activation).is_err() {
+        return unwind(mutator, signal, floor, handoff);
+    }
     let value = read_local(&mutator.heap, activation, source);
     match value_for_a_value_slot(mutator, value) {
         None => unwind(mutator, signal, floor, handoff),
@@ -1975,9 +1997,23 @@ fn simultaneous_clause_instruction<'gc>(
         CompactInstruction::LoadOwnSlot {
             destination,
             own_index,
-        } => load_own_slot_into(mutator, activation, u16::from(destination), own_index),
+        } => load_own_slot_into(
+            mutator,
+            activation,
+            u16::from(destination),
+            own_index,
+            floor,
+            handoff,
+        ),
         CompactInstruction::InitializeSlotProvisionally { source, own_index } => {
-            initialize_slot_provisionally(mutator, activation, u16::from(source), own_index)
+            initialize_slot_provisionally(
+                mutator,
+                activation,
+                u16::from(source),
+                own_index,
+                floor,
+                handoff,
+            )
         }
         _ => unreachable!("internal: only a simultaneous clause's instructions come here"),
     }
@@ -2037,10 +2073,16 @@ fn load_own_slot_into<'gc>(
     activation: ActivationReference,
     destination: u16,
     own_index: u32,
+    floor: usize,
+    handoff: &mut Handoff,
 ) -> Transfer {
-    let value = load_own_slot(&mutator.heap, activation, own_index);
-    write_local(&mut mutator.heap, activation, destination, value);
-    Transfer::Next
+    match load_own_slot(mutator, activation, own_index) {
+        Ok(value) => {
+            write_local(&mut mutator.heap, activation, destination, value);
+            Transfer::Next
+        }
+        Err(signal) => unwind(mutator, signal, floor, handoff),
+    }
 }
 
 /// `InitializeSlotProvisionally`: `InitializeSlot` without §3.1.1's check.
@@ -2049,7 +2091,12 @@ fn initialize_slot_provisionally<'gc>(
     activation: ActivationReference,
     source: u16,
     own_index: u32,
+    floor: usize,
+    handoff: &mut Handoff,
 ) -> Transfer {
+    if let Err(signal) = check_own_slots(mutator, activation) {
+        return unwind(mutator, signal, floor, handoff);
+    }
     let value = read_local(&mutator.heap, activation, source);
     let receiver = mutator.heap.activation_receiver(activation);
     let base = mutator.heap.activation_slot_base(activation);

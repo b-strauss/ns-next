@@ -1652,7 +1652,7 @@ fn non_value_slot_error<'gc>(
 /// declares none -- `mixin::factory_entry`'s rule, which is what puts the
 /// entry in the metaclass's method table, asked again here so that a
 /// refusal names the selector the program actually sent.
-fn factory_selector(application: &crate::mixin::MixinApplication) -> Symbol {
+pub(crate) fn factory_selector(application: &crate::mixin::MixinApplication) -> Symbol {
     application
         .mixin
         .factory

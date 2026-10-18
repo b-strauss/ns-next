@@ -1,11 +1,13 @@
-//! Register and outer-local access for a running activation, and the helper
-//! `InitializeSlot` writes through.
+//! Register and outer-local access for a running activation, the check
+//! every own-slot instruction makes first, and the helper `InitializeSlot`
+//! writes through.
 
 use crate::heap::{ActivationReference, Heap};
+use crate::mixin::DispatchId;
 use crate::types::*;
 use crate::Symbol;
 
-use super::{EvaluationResult, Signal};
+use super::{EvaluationResult, Mutator, Signal};
 
 pub(crate) fn read_local<'gc>(
     heap: &Heap<'gc>,
@@ -136,22 +138,120 @@ fn vector_error<'gc>(vector: Value<'gc>) -> Signal<'gc> {
     ))
 }
 
+/// Whether the running activation's receiver still has the slots of the
+/// level the activation was entered at, which its own-slot instructions --
+/// `InitializeSlot`, `InitializeSlotProvisionally`, `LoadOwnSlot` and
+/// `ReturnSlotIfFilled` -- address by an index decided without looking at
+/// the receiver. Each of them calls this before it reads or writes, so a
+/// receiver the bulk forward replaced by an object of another shape is
+/// never read or written in the layout the code was compiled for
+/// (`docs/design/object-model.md`, "what a slot access checks").
+///
+/// The hot path is one compare of the receiver's header guard with the one
+/// the activation recorded when it was pushed. Anything else takes the cold
+/// check (`own_slots_cold_check`).
+#[inline(always)]
+pub(crate) fn check_own_slots<'gc>(
+    mutator: &mut Mutator<'gc>,
+    activation: ActivationReference,
+) -> Result<(), Signal<'gc>> {
+    let (receiver, recorded_guard) = mutator
+        .heap
+        .activation_receiver_and_recorded_guard(activation);
+    if recorded_guard != DispatchId::NONE && mutator.heap.dispatch_id(receiver) == recorded_guard {
+        return Ok(());
+    }
+    own_slots_cold_check(mutator, activation, receiver)
+}
+
+/// `check_own_slots` on a mismatch, or with no recorded guard: whether the
+/// receiver's application chain still contains the application the
+/// activation was entered at, by its full-width index -- never the class
+/// object's current application, which an install can rewrite while this
+/// activation still runs the old code. When it does -- an edit that changed
+/// only methods restamped the header, or the forward replaced the receiver
+/// by another instance of its own class -- the receiver's current guard is
+/// recorded, so the accesses after it take the hot path again; when it does
+/// not, the access raises an ordinary Newspeak error. An immediate receiver
+/// has no slots to protect, and the instructions skip it as before.
+#[inline(never)]
+fn own_slots_cold_check<'gc>(
+    mutator: &mut Mutator<'gc>,
+    activation: ActivationReference,
+    receiver: Value<'gc>,
+) -> Result<(), Signal<'gc>> {
+    if receiver.as_object().is_none() {
+        return Ok(());
+    }
+    let entered_level = mutator.heap.activation_entered_level(activation);
+    if mutator.heap.receiver_has_level(receiver, entered_level) {
+        let guard = mutator.heap.dispatch_id(receiver);
+        mutator.heap.activation_record_guard(activation, guard);
+        return Ok(());
+    }
+    Err(no_longer_has_the_slots(
+        mutator,
+        activation,
+        receiver,
+        entered_level,
+    ))
+}
+
+/// The error of an own-slot instruction whose receiver no longer has the
+/// slots of the level its activation was entered at. It names the method
+/// the program sent -- a lazy slot's getter, or the factory whose
+/// initializer runs.
+#[cold]
+#[inline(never)]
+fn no_longer_has_the_slots<'gc>(
+    mutator: &Mutator<'gc>,
+    activation: ActivationReference,
+    receiver: Value<'gc>,
+    entered_level: crate::heap::ApplicationIndex,
+) -> Signal<'gc> {
+    let level = mutator.heap.application(entered_level);
+    let class = level.as_ref().map_or_else(
+        || "its class".to_string(),
+        |level| level.mixin.reflected_name(),
+    );
+    let selector = match mutator.heap.activation_kind(activation) {
+        FrameKind::Method(method) => method.selector,
+        _ => level.as_ref().map_or(Symbol::NEW, |level| {
+            super::instantiate::factory_selector(level)
+        }),
+    };
+    Signal::Error(NewspeakError::error(
+        selector,
+        receiver,
+        format!(
+            "{} no longer has the slots of {class}, which the running code was compiled for",
+            mutator.heap.describe(receiver)
+        ),
+    ))
+}
+
 /// The value of the running activation's receiver's own slot `own_index`
 /// -- addressed as `Instruction::InitializeSlot` addresses it, from the
 /// activation's slot base (`Heap::activation_slot_base`) -- when it holds
 /// anything but `nil`. `None` for `nil`, a lazy slot not yet computed
 /// (§6.3.3), and for a receiver or index with no such field, both of which
 /// run the getter's initializer: `vm::run_stretch`'s
-/// `Instruction::ReturnSlotIfFilled` arm.
+/// `Instruction::ReturnSlotIfFilled` arm. The error of `check_own_slots`
+/// when the receiver no longer has the slot.
 pub(crate) fn filled_own_slot<'gc>(
-    heap: &Heap<'gc>,
+    mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
     own_index: u32,
-) -> Option<Value<'gc>> {
-    let object = heap.activation_receiver(activation).as_object()?;
+) -> Result<Option<Value<'gc>>, Signal<'gc>> {
+    check_own_slots(mutator, activation)?;
+    let heap = &mutator.heap;
+    let Some(object) = heap.activation_receiver(activation).as_object() else {
+        return Ok(None);
+    };
     let base = heap.activation_slot_base(activation);
-    heap.instance_field(object, base + own_index as usize)
-        .filter(|value| !value.is_nil())
+    Ok(heap
+        .instance_field(object, base + own_index as usize)
+        .filter(|value| !value.is_nil()))
 }
 
 /// The value of the running activation's receiver's own slot `own_index`,
@@ -161,17 +261,21 @@ pub(crate) fn filled_own_slot<'gc>(
 /// computes, but without its "not yet computed" filter: `nil` is answered
 /// for a receiver or index with no such field, exactly as `filled_own_slot`
 /// treats those, but an actual `nil` field is simply what it holds here.
+/// The error of `check_own_slots` when the receiver no longer has the slot.
 pub(crate) fn load_own_slot<'gc>(
-    heap: &Heap<'gc>,
+    mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
     own_index: u32,
-) -> Value<'gc> {
+) -> EvaluationResult<'gc> {
+    check_own_slots(mutator, activation)?;
+    let heap = &mutator.heap;
     let Some(object) = heap.activation_receiver(activation).as_object() else {
-        return Value::nil();
+        return Ok(Value::nil());
     };
     let base = heap.activation_slot_base(activation);
-    heap.instance_field(object, base + own_index as usize)
-        .unwrap_or(Value::nil())
+    Ok(heap
+        .instance_field(object, base + own_index as usize)
+        .unwrap_or(Value::nil()))
 }
 
 /// Writes `value` into instance field `index` of `instance`, an

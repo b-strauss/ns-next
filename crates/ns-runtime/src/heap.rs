@@ -424,6 +424,22 @@ struct StackEntry<'gc> {
     /// unmarked activation leaves its frame with no registers at all
     /// (`docs/design/execution.md`, "Converted representation").
     retains_registers: bool,
+    /// For code that addresses its own slots
+    /// (`CompiledCode::addresses_own_slots`), the receiver's dispatch id
+    /// when the activation was pushed, or since a cold check passed; `NONE`
+    /// otherwise. An own-slot instruction compares the receiver's header
+    /// against it, so that a receiver the bulk forward replaced is never
+    /// written in the layout the code was compiled for
+    /// (`interpreter::locals::check_own_slots`; `docs/design/object-model.md`,
+    /// "what a slot access checks").
+    recorded_guard: DispatchId,
+    /// The full-width index of the application the activation was entered
+    /// at -- its `current_class`'s when it was pushed, for code that
+    /// addresses its own slots, `UNREGISTERED` otherwise. The cold check
+    /// asks whether the receiver's chain still contains it: the class
+    /// object's current application is the wrong question, since an install
+    /// can rewrite it while this activation still runs the old code.
+    entered_level: ApplicationIndex,
     #[cfg(debug_assertions)]
     generation: u32,
 }
@@ -873,6 +889,8 @@ impl crate::trace::Trace for StackEntry<'_> {
             counted: _,
             reified,
             retains_registers: _, // not a handle
+            recorded_guard: _,    // not a handle
+            entered_level: _,     // not a handle
             #[cfg(debug_assertions)]
                 generation: _,
         } = self;
@@ -4435,6 +4453,19 @@ impl<'gc> Heap<'gc> {
             self.stack.next_generation = self.stack.next_generation.wrapping_add(1);
             self.stack.next_generation
         };
+        // Only code that addresses its own slots pays for the two reads; a
+        // send to any other method tests one flag.
+        let (recorded_guard, entered_level) = if header.code.addresses_own_slots {
+            (
+                self.dispatch_id(header.receiver),
+                header
+                    .current_class
+                    .and_then(|class| self.class_application_index(class))
+                    .unwrap_or(ApplicationIndex::UNREGISTERED),
+            )
+        } else {
+            (DispatchId::NONE, ApplicationIndex::UNREGISTERED)
+        };
         self.stack.entries.push(StackEntry {
             receiver: header.receiver,
             current_class: header.current_class,
@@ -4448,6 +4479,8 @@ impl<'gc> Heap<'gc> {
             counted: header.counted,
             reified: None,
             retains_registers: false,
+            recorded_guard,
+            entered_level,
             #[cfg(debug_assertions)]
             generation,
         });
@@ -4669,6 +4702,68 @@ impl<'gc> Heap<'gc> {
     ) -> Option<ClassReference<'gc>> {
         self.check_activation(activation);
         self.stack.entries[activation.index as usize].current_class
+    }
+
+    /// The receiver and the guard `activation` recorded for it
+    /// (`StackEntry::recorded_guard`), fetched together: an own-slot
+    /// instruction's hot path needs both and nothing else.
+    #[inline(always)]
+    pub(crate) fn activation_receiver_and_recorded_guard(
+        &self,
+        activation: ActivationReference,
+    ) -> (Value<'gc>, DispatchId) {
+        self.check_activation(activation);
+        let entry = &self.stack.entries[activation.index as usize];
+        (entry.receiver, entry.recorded_guard)
+    }
+
+    /// The full-width index of the application `activation` was entered at
+    /// (`StackEntry::entered_level`); `UNREGISTERED` for code that
+    /// addresses no own slot.
+    pub(crate) fn activation_entered_level(
+        &self,
+        activation: ActivationReference,
+    ) -> ApplicationIndex {
+        self.check_activation(activation);
+        self.stack.entries[activation.index as usize].entered_level
+    }
+
+    /// Records `guard` as the one `activation`'s own-slot instructions
+    /// compare the receiver's header against: a cold check that found the
+    /// receiver still has the entered level's slots records its current
+    /// guard, so the accesses after it take the hot path again.
+    pub(crate) fn activation_record_guard(
+        &mut self,
+        activation: ActivationReference,
+        guard: DispatchId,
+    ) {
+        self.check_activation(activation);
+        self.stack.entries[activation.index as usize].recorded_guard = guard;
+    }
+
+    /// Whether `receiver`'s application chain -- its class's application
+    /// and every superclass's, read through the class words -- contains the
+    /// application whose full-width index is `level`: whether it still has
+    /// the slots of the level some code was compiled against. An immediate
+    /// has no such chain and answers `false`, as does `UNREGISTERED`. The
+    /// one walk of the cold checks of every slot access whose index was
+    /// decided without looking at the receiver (`docs/design/object-model.md`,
+    /// "what a slot access checks").
+    pub(crate) fn receiver_has_level(&self, receiver: Value<'gc>, level: ApplicationIndex) -> bool {
+        let Some(object) = receiver.as_object() else {
+            return false;
+        };
+        if level == ApplicationIndex::UNREGISTERED {
+            return false;
+        }
+        let mut current = Some(self.object_class(object));
+        while let Some(class) = current {
+            if self.class_application_index(class) == Some(level) {
+                return true;
+            }
+            current = self.class_superclass(class);
+        }
+        false
     }
 
     /// The absolute field index a compiled `InitializeSlot`'s mixin-relative

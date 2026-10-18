@@ -1887,6 +1887,183 @@ mod tests {
         }
     }
 
+    /// A module for the recorded guard of the own-slot instructions: each
+    /// class forwards its own instance, from one of its initializers,
+    /// through the VM mirror it is handed, while the activation that
+    /// initializes it still runs.
+    fn a_guard_fixture(lowering: crate::Lowering) -> (Interpreter, Root) {
+        let source = indoc! {"
+            class Guarding = Object new () (
+              public class Wide = (
+                | public x ::= 10. public y ::= 20. public z ::= 30. |
+              ) ()
+              public class Shifting usingMirror: mirror into: target = (
+                |
+                public a = mirror isNil ifFalse: [mirror elementsOf: {self} forwardIdentityToElementsOf: {target} ifFail: [nil]].
+                public b = 2.
+                |
+              ) ()
+              public class Narrower usingMirror: mirror into: target = Shifting usingMirror: mirror into: target (
+                | public c = 3. |
+              ) ()
+              public class Lazy = (
+                |
+                public mirror ::= nil.
+                |
+              ) (
+                lazy public late = forwardAndAnswer.
+                forwardAndAnswer = (
+                  mirror elementsOf: {self} forwardIdentityToElementsOf: {Wide new} ifFail: [nil].
+                  ^3
+                )
+              )
+              public class Clause usingMirror: mirror into: target = (
+                ||
+                  public a = mirror elementsOf: {self} forwardIdentityToElementsOf: {target} ifFail: [nil].
+                  public b = 2.
+                ||
+              ) ()
+              public wide = (^Wide new)
+              public aLazy = (^Lazy new)
+              public shifting: mirror into: target = (^Shifting usingMirror: mirror into: target)
+              public narrower = (^Narrower usingMirror: nil into: nil)
+              public clause: mirror into: target = (^Clause usingMirror: mirror into: target)
+            ) : ()
+        "};
+        let module = ns_syntax::parse(source).expect("the fixture parses");
+        let resolved = match crate::resolve(
+            module,
+            std::rc::Rc::from(source),
+            crate::SourceOrigin::File(std::path::PathBuf::from("guard_fixture.ns")),
+        ) {
+            Ok(resolved) => resolved,
+            Err(_) => panic!("the fixture resolves"),
+        };
+        let mut interpreter = Interpreter::bootstrap_with(lowering);
+        let class = interpreter.load_module(&resolved);
+        let fixture = expect_ok(interpreter.instantiate(&class, &[]), "Guarding new");
+        (interpreter, fixture)
+    }
+
+    /// The text of the Newspeak error `result` raised.
+    fn error_text(result: HostResult, what: &str) -> String {
+        match result {
+            Ok(_) => panic!("{what}: answered instead of raising"),
+            Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
+            Err(HostSignal::Error(error)) => error.message.to_string(),
+        }
+    }
+
+    crate::for_each_lowering! {
+        /// The initializer forwards its receiver to a `Wide` before it
+        /// stores `a`: the store would write `Shifting`'s layout into a
+        /// `Wide`, so it raises instead.
+        fn an_initializer_whose_receiver_was_forwarded_raises(lowering) {
+            let (mut interpreter, fixture) = a_guard_fixture(lowering);
+            let mirror = the_vm_mirror(&mut interpreter);
+            let wide = send(&mut interpreter, &fixture, "wide");
+            let result =
+                interpreter.send(&fixture, Symbol::intern("shifting:into:"), &[mirror, wide]);
+            assert_eq!(
+                error_text(result, "shifting:into:"),
+                "an instance of Wide no longer has the slots of Shifting, which the running code was compiled for"
+            );
+        }
+    }
+
+    crate::for_each_lowering! {
+        /// A lazy slot's getter forwards its receiver before it stores the
+        /// slot: its `InitializeSlot` raises.
+        fn a_lazy_getter_whose_receiver_was_forwarded_raises(lowering) {
+            let (mut interpreter, fixture) = a_guard_fixture(lowering);
+            let mirror = the_vm_mirror(&mut interpreter);
+            let lazy = send(&mut interpreter, &fixture, "aLazy");
+            expect_ok(
+                interpreter.send(&lazy, Symbol::intern("mirror:"), &[mirror]),
+                "mirror:",
+            );
+            let result = interpreter.send(&lazy, Symbol::intern("late"), &[]);
+            assert_eq!(
+                error_text(result, "late"),
+                "an instance of Wide no longer has the slots of Lazy, which the running code was compiled for"
+            );
+        }
+    }
+
+    crate::for_each_lowering! {
+        /// A simultaneous clause's first initializer forwards the receiver:
+        /// what the clause reads or writes of its own slots afterwards
+        /// raises.
+        fn a_simultaneous_clause_whose_receiver_was_forwarded_raises(lowering) {
+            let (mut interpreter, fixture) = a_guard_fixture(lowering);
+            let mirror = the_vm_mirror(&mut interpreter);
+            let wide = send(&mut interpreter, &fixture, "wide");
+            let result =
+                interpreter.send(&fixture, Symbol::intern("clause:into:"), &[mirror, wide]);
+            assert_eq!(
+                error_text(result, "clause:into:"),
+                "an instance of Wide no longer has the slots of Clause, which the running code was compiled for"
+            );
+        }
+    }
+
+    crate::for_each_lowering! {
+        /// Forwarded to another instance of its own class, the receiver
+        /// still has every slot the initializer addresses: the initializer
+        /// completes, on the replacement, which the factory answers.
+        fn an_initializer_whose_receiver_was_forwarded_to_its_own_application_proceeds(lowering) {
+            let (mut interpreter, fixture) = a_guard_fixture(lowering);
+            let nothing = interpreter.stash(Value::nil());
+            let twin = expect_ok(
+                interpreter.send(
+                    &fixture,
+                    Symbol::intern("shifting:into:"),
+                    &[nothing.clone(), nothing],
+                ),
+                "the twin",
+            );
+            let mirror = the_vm_mirror(&mut interpreter);
+            let answer = expect_ok(
+                interpreter.send(
+                    &fixture,
+                    Symbol::intern("shifting:into:"),
+                    &[mirror, twin.clone()],
+                ),
+                "shifting:into:",
+            );
+            assert!(same(&mut interpreter, &answer, &twin));
+            let second = send(&mut interpreter, &twin, "b");
+            let second = interpreter.enter(|mutator| render(mutator, mutator.fetch(&second)));
+            assert_eq!(second, "2");
+        }
+    }
+
+    crate::for_each_lowering! {
+        /// Forwarded to an instance of a subclass, the receiver's guard is
+        /// another application's, but its chain still contains the level
+        /// the initializer was entered at: the cold check passes, records
+        /// the new guard, and the initializer completes on the replacement.
+        fn an_initializer_whose_receiver_was_forwarded_to_a_subclass_instance_proceeds(lowering) {
+            let (mut interpreter, fixture) = a_guard_fixture(lowering);
+            let narrower = send(&mut interpreter, &fixture, "narrower");
+            let mirror = the_vm_mirror(&mut interpreter);
+            let answer = expect_ok(
+                interpreter.send(
+                    &fixture,
+                    Symbol::intern("shifting:into:"),
+                    &[mirror, narrower.clone()],
+                ),
+                "shifting:into:",
+            );
+            assert!(same(&mut interpreter, &answer, &narrower));
+            for (selector, expected) in [("a", "nil"), ("b", "2"), ("c", "3")] {
+                let slot = send(&mut interpreter, &narrower, selector);
+                let slot = interpreter.enter(|mutator| render(mutator, mutator.fetch(&slot)));
+                assert_eq!(slot, expected, "{selector}");
+            }
+        }
+    }
+
     /// An instance of a program's subclass of a shipped class is the
     /// program's: its class's own mixin is not shipped.
     #[test]
