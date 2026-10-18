@@ -442,8 +442,10 @@ pub struct CompiledCode {
     /// Whether the body itself -- not a block it creates, which has its own
     /// -- contains an instruction that addresses a slot of the level it was
     /// entered at (`addresses_own_slots_of` lists them). An activation of
-    /// such a body records its receiver's guard when it is pushed, so that a
-    /// receiver replaced meanwhile is never written in the old layout
+    /// such a body records its receiver's guard when it is pushed, and only
+    /// when the receiver's chain contains the level it is entered at, so
+    /// that a receiver replaced before or during it is never written in the
+    /// old layout
     /// (`docs/design/object-model.md`, "what a slot access checks"). Derived
     /// from the encoding by `from_builder`, never on the wire.
     ///
