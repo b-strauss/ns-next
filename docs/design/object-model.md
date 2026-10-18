@@ -2328,7 +2328,8 @@ Newspeak's `ObjectMirror>>setClass:` forwards nothing: it calls
 (`prior-art/newspeak/MirrorsForSqueak.ns:1364-1366`), and Primordial Soup
 offers no `setClass:` at all, its tests of it empty
 (`prior-art/primordialsoup/newspeak/MirrorTesting.ns:772-775`). A
-shape-changing `setClass:` is deferred beyond road step 5b2.
+shape-changing `setClass:` is deferred beyond road step 5b2a (`OPEN-WORK.md`,
+"Reflection beyond road step 5b2a").
 
 **Only mirrors reach it.** No program sends `become:`: `Object` declares no
 such method, and the forward is a leaf on the VM mirror, which only the

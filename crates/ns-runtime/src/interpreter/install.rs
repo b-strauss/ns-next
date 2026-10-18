@@ -104,6 +104,13 @@ impl<'gc> Mutator<'gc> {
     /// a class's layout may change when a replaced level of its chain has
     /// another slot list or another nested list, so no instance the commit
     /// migrates escapes the check.
+    ///
+    /// A defensive lock behind `may_be_forwarded`: no program instance is
+    /// known to reach it, since a user subclass of `Array`, `String` or
+    /// `Ephemeron` has `FixedPointers` instances, which the forward
+    /// accepts. It is kept for the formats road step 5b2b's decoded
+    /// programs bring, so that an install refuses before it replaces
+    /// anything rather than meeting a refused forward inside its commit.
     fn refuse_an_unmigratable_instance(
         &self,
         classes: &[ClassReference<'gc>],

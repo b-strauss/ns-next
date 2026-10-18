@@ -188,15 +188,19 @@ fn own_slots_cold_check<'gc>(
 
 /// The cold half of `check_own_slots`, without its error: whether
 /// `receiver`'s application chain contains the application the activation
-/// was entered at, by its full-width index -- never the class object's
-/// current application, which an install can rewrite while this activation
-/// still runs the old code. What passes today is a receiver whose chain
-/// contains the entered application under another guard: the forward
-/// replaced it by an instance of a subclass of the level's class. (One
-/// replaced by another instance of the level's own application keeps the
-/// guard and never gets here.) Whether an edit that changes only methods
-/// keeps a class's application, and so passes here, is road step 5b2's
-/// install's decision. When it passes, the receiver's current guard is
+/// was entered at, or its successor, by its full-width index -- never the
+/// class object's current application, which an install can rewrite while
+/// this activation still runs the old code. What passes is a receiver
+/// whose chain contains the entered application under another guard: the
+/// forward replaced it by an instance of a subclass of the level's class.
+/// (One replaced by another instance of the level's own application keeps
+/// the guard and never gets here.) And one whose level an install
+/// re-applied: the install builds a new application even for an edit that
+/// changes only methods, and records it as the entered one's successor
+/// when the level keeps its slot base and its own slots
+/// (`docs/design/object-model.md`, "The entered level's successor"), so
+/// the activation runs on; one whose slots changed is refused. When it
+/// passes, the receiver's current guard is
 /// recorded, so the accesses after it take the hot path again. An
 /// immediate receiver has no slots to protect and passes; the instructions
 /// skip it as before. `vm::initialize_slot_refused` asks this, rather than

@@ -213,7 +213,9 @@ methods and objects through mirrors, and nothing it can reach that way
 leads to a shipped module's root or the VM mirror. This is road step 5a:
 road step 5 is split in two (decided with the user on 2026-10-17), this
 read side first, then the MirrorBuilder and the atomic install, road step
-5b below (its VM half built by 5b1, the rest 5b2's), which build on it --
+5b below (its VM half built by 5b1, the rest split into 5b2a's
+MirrorBuilder and atomic install and 5b2b's edited programs in images),
+which build on it --
 the same capability, the same mirrors and the same boundary at the shipped
 modules. The decisions below were settled with the user on 2026-10-17, or
 taken while the step was built and stated here as what the code does.

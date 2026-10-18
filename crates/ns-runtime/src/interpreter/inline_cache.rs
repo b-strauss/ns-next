@@ -182,8 +182,10 @@ pub(crate) struct InlineCaches {
     /// image -- is never recorded nor answered; and whatever changes a
     /// class object's application or chain under an unchanged guard
     /// (`Heap::class_set_application` on a superclass changes every
-    /// subclass's chain) must invalidate the caches after it, which road
-    /// step 5b2's install has to do.
+    /// subclass's chain) must invalidate the caches after it, as road
+    /// step 5b2a's atomic install does: after re-applying, itself when it
+    /// migrates no instance, else through the bulk forward
+    /// (`heap::forward_identity`), which vacates them.
     verified_slot_level: Option<(DispatchId, ApplicationIndex)>,
     /// Code identity -> the start of its family's range.
     families: IdentityMap<usize, FeedbackBase>,

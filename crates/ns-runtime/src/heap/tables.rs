@@ -3,7 +3,7 @@
 //! (`docs/design/object-model.md`, "The object layout"). Per heap, because
 //! the objects naming them are, and append-only: road step 3a mints these
 //! ids and reclaims none, since nothing drops a mixin, a superseded version
-//! included, before road step 5b2's reclamation (`docs/OPEN-WORK.md`,
+//! included, before road step 5b2b's reclamation (`docs/OPEN-WORK.md`,
 //! "Next").
 //!
 //! A mixin's id is its identity: every version of it answers the id it was
@@ -64,7 +64,7 @@ pub(crate) struct CodeEntry {
 /// address valid and unique for as long as the entry lives -- forever, in
 /// 3a. `mixin_ids` names every version of a mixin, so every version is
 /// held: the current one in `mixins`, each earlier one in `superseded`,
-/// until road step 5b2's weak application cache decides which of them may
+/// until road step 5b2b's weak application cache decides which of them may
 /// be dropped.
 #[derive(Default)]
 pub(crate) struct Tables {

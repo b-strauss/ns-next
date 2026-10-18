@@ -2228,10 +2228,11 @@ frame arena; "A cache records what the lookup decided" reads the builtin
 tag as a field of the class object, which `act` still reads afresh on every
 send; the end-of-batch gates name five stress modes, `SCAVENGE` among them;
 and "Every store into an existing object goes through `heap.rs`'s store
-accessors and their write barrier" is an invariant of its own. Still to
-come: "The VM mirror is a capability" gains, as a consequence, that the
-mirrors refuse every edit to a shipped mixin, which seals the mirror's
-class (road step 5b2). No program reaches `become:` already, since it is a
+accessors and their write barrier" is an invariant of its own; and "The
+VM mirror is a capability" says that the MirrorBuilder refuses every edit
+to a shipped mixin, in `asBuilder` and again in `prepare_edit`, and
+resolves an edit with `resolve`, never `resolve_kernel`, which seals the
+mirror's class (road step 5b2a). No program reaches `become:` already, since it is a
 leaf on the mirror, and the leaf refuses every shipped instance, builtin
 instance and withheld value itself ([object-model.md](object-model.md),
 "`become:` is an eager bulk forward", "What the forward refuses"). "Decided

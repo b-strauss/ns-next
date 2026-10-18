@@ -320,7 +320,11 @@ whole Rust boundary"). The bulk-forward leaf
 (`elementsOf:forwardIdentityToElementsOf:ifFail:`) refuses the mirror,
 every withheld value and every builtin or shipped instance on either side
 (`builtins/reflection.rs`'s `may_be_forwarded`), so a forward can never put
-the mirror where a program reaches it; never loosen it either.
+the mirror where a program reaches it; never loosen it either. The
+MirrorBuilder refuses every edit to a shipped mixin, in `asBuilder` and
+again on the Rust side (`interpreter/edit.rs`'s `prepare_edit`), and
+resolves an edit with `resolve`, never `resolve_kernel`, so no edit
+records a `MirrorSend` binding.
 
 **A cache records what the lookup decided; it never decides.** An inline-cache
 hit is `act` on the resolution `resolve_*` answered for the same key; an entry

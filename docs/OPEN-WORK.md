@@ -630,6 +630,14 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   several builders.
   [liveness-and-reflection.md](design/liveness-and-reflection.md), "A
   MirrorBuilder and an atomic install".
+- **A syntax error found while applying an earlier staged operation**
+  (2026-10-19) reports a line of the intermediate text the operations
+  before it made, not of the module's current text nor of the operation
+  the program gave (`interpreter/edit.rs`, `prepare_edit`). Whether the
+  diagnostic should name the operation, or a line of the text it was
+  given, is undesigned.
+  [liveness-and-reflection.md](design/liveness-and-reflection.md), "A
+  MirrorBuilder and an atomic install".
 - **The activation and thread mirrors** (2026-10-18): road step 5a reads
   classes, mixins, methods and objects, not activations. §8.2 asks for
   "access to the current activation" through mirrors
