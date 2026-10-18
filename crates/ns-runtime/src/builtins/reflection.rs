@@ -2273,7 +2273,9 @@ mod tests {
     /// `<:` clause message forwards the instance `Registering`'s
     /// initializer registered before `Mix`'s level is pushed. `Host`'s
     /// nested class `Inner` has a superclass clause that forwards the
-    /// enclosing object while the class is being created.
+    /// enclosing object while the class is being created, when the `Host`
+    /// was handed a mirror; `HostChild` inherits it, and `Inner`'s
+    /// `pushing` answers the module instance its `outer` walk reaches.
     fn a_pushed_guard_fixture(lowering: crate::Lowering) -> (Interpreter, Root) {
         let source = indoc! {"
             class Pushing = Object new (
@@ -2317,9 +2319,13 @@ mod tests {
               public class Host = (
                 | public mirror ::= nil. public target ::= nil. |
               ) (
-                public class Inner = swapAndObject () ()
+                public class Inner = swapAndObject () (
+                  public pushing = (^outer Pushing)
+                )
                 swapAndObject = (
-                  mirror elementsOf: {self} forwardIdentityToElementsOf: {target} ifFail: [nil].
+                  mirror isNil ifFalse: [
+                    mirror elementsOf: {self} forwardIdentityToElementsOf: {target} ifFail: [nil].
+                  ].
                   ^Object
                 )
                 public probe = (^Inner)
@@ -2491,6 +2497,44 @@ mod tests {
             let cached = send(&mut interpreter, &child, "probe");
             assert!(same(&mut interpreter, &created, &cached));
             assert_eq!(rendered_send(&mut interpreter, &cached, "name"), "'Inner'");
+        }
+    }
+
+    crate::for_each_lowering! {
+        /// The replacement has its own `Inner` cached already: the creation
+        /// the forward interrupted answers that class rather than replacing
+        /// it, so the replacement keeps one class for the declaration.
+        fn a_nested_class_forwarded_to_an_object_with_its_class_cached_answers_that_class(lowering) {
+            let (mut interpreter, fixture) = a_pushed_guard_fixture(lowering);
+            let child = send(&mut interpreter, &fixture, "hostChild");
+            let cached = send(&mut interpreter, &child, "probe");
+            let host = a_host_forwarding_to(&mut interpreter, &fixture, &child);
+            let created = send(&mut interpreter, &host, "probe");
+            assert!(same(&mut interpreter, &created, &cached));
+            let again = send(&mut interpreter, &child, "probe");
+            assert!(same(&mut interpreter, &again, &cached));
+        }
+    }
+
+    crate::for_each_lowering! {
+        /// The replacement belongs to another instance of the module, so the
+        /// `Host` level of its chain is another class object, over the same
+        /// application: the class created for it declares itself in that
+        /// level, and its `outer` walk reaches the replacement's module
+        /// instance, not the forwarded object's.
+        fn a_nested_class_forwarded_to_another_module_instance_walks_its_chain(lowering) {
+            let (mut interpreter, fixture) = a_pushed_guard_fixture(lowering);
+            let module_class = interpreter.enter(|mutator| {
+                let class = mutator.class_of(mutator.fetch(&fixture));
+                mutator.stash(Value::object(class))
+            });
+            let other_fixture = send(&mut interpreter, &module_class, "new");
+            let child = send(&mut interpreter, &other_fixture, "hostChild");
+            let host = a_host_forwarding_to(&mut interpreter, &fixture, &child);
+            let created = send(&mut interpreter, &host, "probe");
+            let instance = send(&mut interpreter, &created, "new");
+            let pushing = send(&mut interpreter, &instance, "pushing");
+            assert!(same(&mut interpreter, &pushing, &other_fixture));
         }
     }
 

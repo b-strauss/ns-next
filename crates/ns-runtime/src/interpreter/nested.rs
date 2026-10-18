@@ -227,10 +227,37 @@ pub(crate) fn after_clause<'gc>(
         superclass_with_applied_levels(mutator, &nested, superclass)?
     };
     // The clause was user code on `enclosing`, and the bulk forward may have
-    // replaced it meanwhile: the slot is looked up again in its current
-    // layout, and an object that no longer has the declaring level's slots
-    // gets no class, as an own-slot access on such a receiver raises.
-    let Some(index) = current_cache_index(mutator, enclosing, &nested) else {
+    // replaced it meanwhile: the slot and the declaring level are looked up
+    // again in its current chain, and an object that no longer has the
+    // declaring level's slots gets no class, as an own-slot access on such
+    // a receiver raises.
+    let Some((index, cached)) = current_cache(mutator, enclosing, &nested) else {
+        return Err(no_longer_caches_error(
+            mutator,
+            enclosing,
+            &nested,
+            declaring_class,
+        ));
+    };
+    // What the slot holds now is the accessor's step 1 again: a replacement
+    // may have its own class cached, which stays the one class of the
+    // declaration for it, or its own creation underway further down the
+    // stack, whose clause this one would race. Only an empty slot -- every
+    // creation's, once `end_creation` has reset its marker -- takes the
+    // class built here.
+    match cached {
+        cached if cached.is_nil() => {}
+        cached if is_creation_in_progress(cached) => {
+            return Err(cyclic_definition_error(
+                Value::object(enclosing),
+                nested.name,
+            ));
+        }
+        cached => return Ok(Step::Value(cached)),
+    }
+    let Some(declaring_class) =
+        current_declaring_class(mutator, enclosing, &nested, declaring_class)
+    else {
         return Err(no_longer_caches_error(
             mutator,
             enclosing,
@@ -493,16 +520,65 @@ fn cache_slot<'gc>(
 }
 
 /// The absolute index of `nested`'s cache slot in `enclosing`'s current
-/// layout, or `None` when `enclosing` no longer has one: what `cache_slot`
-/// answers, asked again once a superclass clause -- user code on
-/// `enclosing`, which the bulk forward can replace -- has run, since the
-/// index the creation began with was decided from the layout before it.
-fn current_cache_index<'gc>(
+/// layout and what the slot holds, or `None` when `enclosing` no longer has
+/// one: what `cache_slot` answers, asked again once a superclass clause --
+/// user code on `enclosing`, which the bulk forward can replace -- has run,
+/// since the index the creation began with was decided from the layout
+/// before it.
+fn current_cache<'gc>(
     mutator: &Mutator<'gc>,
     enclosing: ObjectReference<'gc>,
     nested: &Rc<Mixin>,
-) -> Option<usize> {
-    cache_slot(mutator, Value::object(enclosing), nested).map(|(_, index, _)| index)
+) -> Option<(usize, Value<'gc>)> {
+    cache_slot(mutator, Value::object(enclosing), nested).map(|(_, index, cached)| (index, cached))
+}
+
+/// The class object of the level of `enclosing`'s current chain whose
+/// mixin declares `nested`, by the declaration's id: the declaring class a
+/// class created after its superclass clause ran takes, so that its
+/// `outer` walk follows the chain of the object it is cached in. A forward
+/// during the clause can put an object of another chain there -- an
+/// instance of a subclass built in another enclosing instance has another
+/// class object at that level, over the same application. `None` only for
+/// a chain that lost the level, which `current_cache` has refused already.
+///
+/// `found`, the declaring class the lookup found before the clause ran, is
+/// asked first, by identity alone, since only a forward changes the
+/// answer: every creation of a nested class comes here, and it should
+/// not pay the walk by id for the forward's rare case.
+fn current_declaring_class<'gc>(
+    mutator: &Mutator<'gc>,
+    enclosing: ObjectReference<'gc>,
+    nested: &Rc<Mixin>,
+    found: ClassReference<'gc>,
+) -> Option<ClassReference<'gc>> {
+    let own_class = mutator.class_of(Value::object(enclosing));
+    let mut current = Some(own_class);
+    while let Some(class) = current {
+        if class.same(found) {
+            return Some(found);
+        }
+        current = mutator.heap.class_superclass(class);
+    }
+    let id = mutator.heap.known_mixin_id(nested)?;
+    let mut current = Some(own_class);
+    while let Some(class) = current {
+        let declares = mutator
+            .heap
+            .class_application(class)
+            .is_some_and(|application| {
+                application
+                    .mixin
+                    .nested
+                    .iter()
+                    .any(|declared| mutator.heap.known_mixin_id(declared) == Some(id))
+            });
+        if declares {
+            return Some(class);
+        }
+        current = mutator.heap.class_superclass(class);
+    }
+    None
 }
 
 /// The error of a nested class whose superclass clause left its enclosing
@@ -596,8 +672,8 @@ pub(super) fn begin_creation<'gc>(
 /// forward `enclosing` to an object whose field at that index is one of the
 /// program's own, which may hold `false` itself.
 pub(super) fn end_creation<'gc>(mutator: &mut Mutator<'gc>, creation: &NestedClassCreation<'gc>) {
-    let still_the_slot =
-        current_cache_index(mutator, creation.enclosing, &creation.nested) == Some(creation.index);
+    let still_the_slot = current_cache(mutator, creation.enclosing, &creation.nested)
+        .is_some_and(|(index, _)| index == creation.index);
     if still_the_slot
         && mutator
             .heap

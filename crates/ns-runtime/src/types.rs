@@ -498,7 +498,7 @@ pub struct NestedClassCreation<'gc> {
     /// the slot the in-progress marker was written to. The clause is user
     /// code and can forward `enclosing`, so the end of the creation and the
     /// store of the class re-derive it (`interpreter::nested`,
-    /// `current_cache_index`).
+    /// `current_cache`).
     pub(crate) index: usize,
     /// The declaration.
     pub(crate) nested: Rc<crate::mixin::Mixin>,

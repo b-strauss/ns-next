@@ -2164,10 +2164,17 @@ decides from the enclosing object's layout before the superclass clause
 runs, and where `begin_creation` writes the in-progress marker. The clause
 is user code on the enclosing object and can forward it. So `after_clause`
 looks the slot up again, by the declaration's id in the enclosing object's
-current application, before it builds the class: an object that still has
-the declaring level -- forwarded to an instance of a subclass, say -- gets
-the class built, cached in its own slot and answered; one that has not
-gets no class, and the access raises an ordinary Newspeak error in the
+current application, before it builds the class, and reads what that slot
+holds, as the accessor's first step does. An object that still has the
+declaring level -- forwarded to an instance of a subclass, say -- keeps the
+one class of the declaration it has: a class already cached there is
+answered, a creation of its own underway further down the stack raises the
+cyclic-definition error, and only an empty slot takes the class built here,
+whose declaring class is the level of the replacement's own chain that
+declares it (`current_declaring_class`) -- another class object than the
+forwarded object's when the replacement was built in another enclosing
+instance -- so that the class's `outer` walk follows the chain of the
+object it is cached in. One that has not gets no class, and the access raises an ordinary Newspeak error in the
 own-slot check's words, since the class would have neither a slot to be
 cached in nor an enclosing object with the declaring level's slots to run
 in:
@@ -2178,8 +2185,13 @@ in:
 declaration's; the error's selector is the declaration's name.
 `end_creation` resets the marker only while the slot it was written to is
 still the slot the current layout has, so a replacement's own field that
-holds `false` is left alone. The tests are `builtins/reflection.rs`'s,
-under both lowerings.
+holds `false` is left alone. What remains: when the replacement has a
+creation of its own underway at the same index, `end_creation` cannot tell
+that creation's marker from its own and resets it, so the first of the two
+to finish caches its class and the other answers it -- one class still,
+but a cyclic definition in the other creation's clause after that point
+goes undiagnosed ([OPEN-WORK.md](../OPEN-WORK.md), "Next"). The tests are
+`builtins/reflection.rs`'s, under both lowerings.
 
 ## `become:` is an eager bulk forward
 

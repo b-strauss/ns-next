@@ -83,6 +83,14 @@ road step 5b2, MirrorBuilder and atomic installation":
   `builtins/reflection.rs`'s `instance_side`, `Mixin::reflected_name` and
   `is_shipped`, which follow the builder's `Weak` link -- right as long as
   a replacement keeps a mixin's name, access and shipped flag.
+- **A cycle diagnosis a forward can lose.** A nested class's superclass
+  clause that forwards its enclosing object to one whose own creation of
+  the same class is underway at the same slot index resets that
+  creation's in-progress marker when it ends, since the marker carries no
+  creation of its own: both creations answer one class, but a cyclic
+  definition in the other clause after that point is not diagnosed
+  ([object-model.md](design/object-model.md), "What a slot access checks",
+  "The nested-class cache slot"). A per-creation marker would close it.
 - **A test 5b1 did not write.** No test makes a class object's current
   application differ from an activation's entered level, to pin that the
   slot base comes from the entered one -- feasible through
