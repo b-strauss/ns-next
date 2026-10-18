@@ -1,0 +1,68 @@
+/// A slot an edit adds to a superclass, under a slot of its subclass of
+/// the same name, is a slot of its own: an instance of the subclass made
+/// before the install has it nil, and the subclass's slot of that name
+/// keeps its value, as do every other slot of both levels. A slot
+/// migrates by the level declaring it and its name, never by its name
+/// alone.
+class ASlotAddedToASuperclassUnderAShadowingOneStartsNil = Object new () (
+  class X = Object new (
+    |
+      public a = 1.
+      public b = 2.
+      public c = 3.
+    |
+  ) ()
+
+  class Y = X new (
+    |
+      public c = 4.
+      public d = 5.
+      public e = 6.
+    |
+  ) (
+    public superC = (
+      ^super c.
+    )
+
+    public superD = (
+      ^super d.
+    )
+  )
+
+  outcome: action = (
+    ^[action value printString] on: Error do: [:error | error messageText].
+  )
+
+  show: instance on: transcript = (
+    transcript
+        show: (outcome: [instance a]);
+        show: ' ';
+        show: (outcome: [instance b]);
+        show: ' ';
+        show: (outcome: [instance c]);
+        show: ' ';
+        show: (outcome: [instance superC]);
+        show: ' ';
+        show: (outcome: [instance d]);
+        show: ' ';
+        show: (outcome: [instance superD]);
+        show: ' ';
+        show: (outcome: [instance e]);
+        newLine.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      instance = Y new.
+      builder = (ClassMirror reflecting: X) mixin declaration asBuilder.
+    |
+    show: instance on: transcript.
+    builder
+        header source: 'class X = Object new (| public a = 1. public b = 2. public c = 3. public d = 7. |)'.
+    builder install.
+    show: instance on: transcript.
+    show: Y new on: transcript.
+  )
+)

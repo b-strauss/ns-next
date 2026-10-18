@@ -1043,12 +1043,16 @@ pub fn declared_slots_of(
 }
 
 /// What one field of an instance holds, by what it is named rather than
-/// where it lies: a declared slot by its name, a hidden nested-class cache
-/// slot by its declaration's id. An install copies an instance's fields
-/// into its new layout by these (`MixinApplication::field_names`).
+/// where it lies: a declared slot by the id of the mixin declaring it and
+/// its name, a hidden nested-class cache slot by its declaration's id. An
+/// install copies an instance's fields into its new layout by these
+/// (`MixinApplication::field_names`). The declaring mixin is part of a
+/// slot's name because a subclass's slot may shadow a superclass's slot
+/// of the same name: matched by name alone, a slot an edit adds under or
+/// over a shadowing one would take the other level's value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FieldName {
-    Slot(Symbol),
+    Slot(MixinId, Symbol),
     Nested(MixinId),
 }
 
@@ -1059,9 +1063,11 @@ impl MixinApplication {
     }
 
     /// Every field of an instance, by index: each level's own slots from
-    /// its `own_slot_base`, then its hidden nested-class slots, read off
-    /// `nested_slot` -- superclass first.
-    pub(crate) fn field_names(&self) -> Vec<FieldName> {
+    /// its `own_slot_base`, each named by the id `heap` answers for the
+    /// level's mixin, then its hidden nested-class slots, read off
+    /// `nested_slot` -- superclass first. No two fields share a name,
+    /// since one level declares a slot name at most once.
+    pub(crate) fn field_names(&self, heap: &crate::heap::Heap) -> Vec<FieldName> {
         let mut levels = Vec::new();
         let mut level = Some(self);
         while let Some(application) = level {
@@ -1070,12 +1076,15 @@ impl MixinApplication {
         }
         let mut names = Vec::with_capacity(self.slot_count);
         for application in levels.into_iter().rev() {
+            let id = heap
+                .known_mixin_id(&application.mixin)
+                .expect("internal: an applied mixin is registered");
             names.extend(
                 application
                     .mixin
                     .slots
                     .iter()
-                    .map(|slot| FieldName::Slot(slot.name)),
+                    .map(|slot| FieldName::Slot(id, slot.name)),
             );
             // This level's cache slots follow its own slots; every entry
             // below `nested_start` is an inherited level's.

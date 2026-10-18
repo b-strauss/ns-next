@@ -253,9 +253,10 @@ impl<'gc> Mutator<'gc> {
     }
 
     /// Allocates each instance whose class's fields changed in the new
-    /// layout and copies its fields into it by name -- of two old fields
-    /// of one name, the last -- leaving a field the edit added nil; runs
-    /// no initializer and sends nothing.
+    /// layout and copies its fields into it by their `FieldName` -- a slot
+    /// by its declaring level and its name -- leaving nil a field the edit
+    /// added, or moved to another level; runs no initializer and sends
+    /// nothing.
     fn migrate(
         &mut self,
         classes: &[ClassReference<'gc>],
@@ -270,12 +271,12 @@ impl<'gc> Mutator<'gc> {
             .iter()
             .zip(new_applications)
             .map(|(old, new)| {
-                let old_names = old.field_names();
-                let new_names = new.field_names();
+                let old_names = old.field_names(&self.heap);
+                let new_names = new.field_names(&self.heap);
                 (old_names != new_names).then(|| {
                     new_names
                         .iter()
-                        .map(|name| old_names.iter().rposition(|old_name| old_name == name))
+                        .map(|name| old_names.iter().position(|old_name| old_name == name))
                         .collect()
                 })
             })
@@ -587,6 +588,38 @@ mod tests {
             mutator.heap().instance_field_count(object)
         });
         assert_eq!(fields, Some(2));
+    }
+
+    /// A slot a subclass gains, shadowing its superclass's slot of the
+    /// same name, starts nil, and the shadowed slot keeps its value: a
+    /// field migrates by its declaring level and its name, so the new
+    /// slot never takes the superclass's field.
+    #[test]
+    fn a_shadowed_slot_keeps_its_value() {
+        let source = indoc! {"
+            class Outer = Object new () (
+              public class Base = (| public b ::= 2. public c ::= 3. |) ()
+              public class Inner = Base (| public c ::= 4. |) (
+                public superB = ( ^super b )
+                public superC = ( ^super c )
+              )
+            )
+        "};
+        let (mut interpreter, _, _, inner, inner_id) = outer_and_inner(source);
+        install(
+            &mut interpreter,
+            inner_id,
+            &header_edit("public class Inner = Base (| public b ::= 7. public c ::= 4. |)"),
+        );
+        let own_b = send(&mut interpreter, &inner, "b");
+        let super_b = send(&mut interpreter, &inner, "superB");
+        let own_c = send(&mut interpreter, &inner, "c");
+        let super_c = send(&mut interpreter, &inner, "superC");
+        let is_nil = interpreter.enter(|mutator| mutator.fetch(&own_b).is_nil());
+        assert!(is_nil, "the new shadowing slot starts nil");
+        assert_eq!(integer(&mut interpreter, &super_b), Some(2));
+        assert_eq!(integer(&mut interpreter, &own_c), Some(4));
+        assert_eq!(integer(&mut interpreter, &super_c), Some(3));
     }
 
     /// A migrated instance keeps its identity hash.

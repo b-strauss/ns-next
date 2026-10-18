@@ -1,0 +1,63 @@
+/// A slot an edit adds to a subclass, shadowing a slot of its superclass
+/// of the same name, is a slot of its own: an instance made before the
+/// install has it nil, and the superclass's slot of that name keeps its
+/// value, as do every other slot of both levels. A slot migrates by the
+/// level declaring it and its name, never by its name alone.
+class AShadowingSlotAddedToASubclassStartsNil = Object new () (
+  class X = Object new (
+    |
+      public a = 1.
+      public b = 2.
+      public c = 3.
+    |
+  ) ()
+
+  class Y = X new (
+    |
+      public c = 4.
+      public d = 5.
+      public e = 6.
+    |
+  ) (
+    public superB = (
+      ^super b.
+    )
+
+    public superC = (
+      ^super c.
+    )
+  )
+
+  show: instance on: transcript = (
+    transcript
+        print: instance a;
+        show: ' ';
+        print: instance b;
+        show: ' ';
+        print: instance superB;
+        show: ' ';
+        print: instance c;
+        show: ' ';
+        print: instance superC;
+        show: ' ';
+        print: instance d;
+        show: ' ';
+        print: instance e;
+        newLine.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      instance = Y new.
+      builder = (ClassMirror reflecting: Y) mixin declaration asBuilder.
+    |
+    show: instance on: transcript.
+    builder
+        header source: 'class Y = X new (| public b = 7. public c = 4. public d = 5. public e = 6. |)'.
+    builder install.
+    show: instance on: transcript.
+    show: Y new on: transcript.
+  )
+)

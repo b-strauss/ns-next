@@ -647,8 +647,11 @@ safepoint:
   in one step ("What an activation entered before the install does
   next" below).
 - *Migrate*: each instance of a class object whose slot list changed is
-  allocated in the new shape and its slots are copied by name -- of two
-  slots of one name, the last, as both prior arts take it -- and its
+  allocated in the new shape and its slots are copied by their declaring
+  level's mixin id and their name -- a subclass's slot may shadow a
+  superclass's of the same name, and the canonical
+  `AtomicInstallTesting.ns:77-145` keeps the two apart, so a slot moved to
+  another level is `nil` (`:278-317`) -- and its
   hidden nested-class slots by mixin id; a slot the edit added is `nil`
   and its initializer does not run, so a new lazy slot is computed on its
   first read. The instances that keep their shape are restamped with

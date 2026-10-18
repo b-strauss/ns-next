@@ -2380,7 +2380,7 @@ replaced under its id instead (`Mutator::replace_mixin`;
 [liveness-and-reflection.md](liveness-and-reflection.md), "An edit
 replaces the mixin under its id"). When the slots change, the instances
 migrate: road step 5b2's install allocates each in the new shape, copies
-its slots by name, leaves a slot the edit added `nil` without running its
+its slots by declaring level and name, leaves a slot the edit added `nil` without running its
 initializer, keeps its identity hash, and sends nothing to a user object
 while it does; then one bulk forward replaces all of them at once. A live
 frame gains locals by being divorced into a newly allocated, larger frame
