@@ -888,3 +888,76 @@ fn the_platform_hands_out_none_of_its_modules_classes() {
         });
     }
 }
+
+/// The text of a String the host holds.
+fn text_of(interpreter: &mut Interpreter, root: &Root) -> String {
+    interpreter.enter(|mutator| {
+        let value = mutator.fetch(root);
+        match value.kind() {
+            ValueKind::Object(object) => mutator.heap().str_value(object).unwrap_or_else(|| {
+                panic!("expected a String, got {}", mutator.heap().describe(value))
+            }),
+            _ => panic!("expected a String, got {}", mutator.heap().describe(value)),
+        }
+    })
+}
+
+/// A method mirror answers its method's text, from the access modifier to
+/// the closing parenthesis, and a class declaration mirror the whole
+/// declaration, as the module's source spells them. Held here rather than
+/// in a golden: a golden is also run from an image built without source,
+/// where both answer nil.
+#[test]
+fn a_mirror_answers_a_method_and_a_class_declaration_source() {
+    let source = indoc! {"
+        class Probe usingPlatform: platform = Object new (
+            |
+                ClassMirror = platform mirrors ClassMirror.
+            |
+        ) (
+            class Calculator = Object new () (
+                /// Answers the answer.
+                public compute = (
+                    ^6 * 7.
+                )
+            )
+            public methodSource = (
+                ^((ClassMirror reflecting: Calculator) mixin methods findMirrorNamed: #compute) source
+            )
+            public declarationSource = (
+                ^(ClassMirror reflecting: Calculator) mixin declaration source
+            )
+        ) : ()
+    "};
+    let module = ns_syntax::parse(source).expect("parse");
+    let resolved = ns_runtime::resolve(
+        module,
+        source.into(),
+        ns_runtime::SourceOrigin::File("test.ns".into()),
+    )
+    .expect("resolve");
+    let mut interpreter = Interpreter::bootstrap();
+    let class = interpreter.load_module(&resolved);
+    let platform = interpreter.platform();
+    let probe = expect_ok(
+        interpreter.send(&class, Symbol::intern("usingPlatform:"), &[platform]),
+        "usingPlatform:",
+    );
+    let method_source = expect_ok(
+        interpreter.send(&probe, Symbol::intern("methodSource"), &[]),
+        "methodSource",
+    );
+    assert_eq!(
+        text_of(&mut interpreter, &method_source),
+        "public compute = (\n            ^6 * 7.\n        )"
+    );
+    let declaration_source = expect_ok(
+        interpreter.send(&probe, Symbol::intern("declarationSource"), &[]),
+        "declarationSource",
+    );
+    assert_eq!(
+        text_of(&mut interpreter, &declaration_source),
+        "class Calculator = Object new () (\n        /// Answers the answer.\n        \
+         public compute = (\n            ^6 * 7.\n        )\n    )"
+    );
+}
