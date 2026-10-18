@@ -6,7 +6,8 @@
 /// `ArgumentError`.
 ///
 /// mirror: the VM mirror, through which every mirror reads what it
-///     reflects; a mirror sends its reflectee nothing.
+///     reflects; a mirror sends its reflectee nothing, and forces no
+///     future it is given.
 /// kernel: the kernel module instance; its `Error` is what a mirror
 ///     signals for what it may not read, its `ArgumentError` what
 ///     `ClassMirror reflecting:` signals for anything that is no class.
@@ -91,7 +92,9 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
   /// A mirror on one object: its class, as a class mirror, and the values
   /// of its slots. It sends the object nothing -- its class, its equality
   /// and its hash are asked of the VM -- so an object that overrides `=`,
-  /// `hash` or `class`, or a proxy, reflects as itself.
+  /// `hash` or `class`, or a proxy, reflects as itself. A future is such
+  /// a proxy: the mirror reflects the future, never the value it stands
+  /// for, and never forces it.
   ///
   /// anObject: any object.
   public class ObjectMirror reflecting: anObject = Object (
@@ -138,7 +141,7 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// so that refusing runs no code of the program's.
     private refuseSlotNamed: aName = (
       |
-        text = vmMirror symbolAsString: aName ifFail: [
+        text = vmMirror reflectionSymbolText: aName ifFail: [
           ^(ArgumentError value: aName) signal: 'getSlot: requires a Symbol'.
         ].
       |
@@ -178,7 +181,7 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// when it answers true.
     public = other = (
       other isKindOfObjectMirror ifFalse: [^false].
-      ^vmMirror object: reflectee identicalTo: other reflectee ifFail: [false].
+      ^vmMirror reflectionObject: reflectee identicalTo: other reflectee ifFail: [false].
     )
 
     /// Answers the reflectee's identity hash, alike for two mirrors on
@@ -280,7 +283,9 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
         ].
         taken ::= 0.
       |
-      [(vmMirror object: taken identicalTo: steps ifFail: [false]) or: [nil == level]] whileFalse: [
+      [
+        (vmMirror reflectionObject: taken identicalTo: steps ifFail: [false]) or: [nil == level].
+      ] whileFalse: [
         level:: vmMirror behaviorSuperclass: level ifFail: [nil].
         taken:: taken + 1.
       ].
@@ -290,14 +295,14 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// Answers whether the way takes the anchor's class first: whether
     /// `classFirst` is `true` itself.
     private takesClassFirst = (
-      ^vmMirror object: classFirst identicalTo: true ifFail: [false].
+      ^vmMirror reflectionObject: classFirst identicalTo: true ifFail: [false].
     )
 
     /// Answers whether the mirror was reached by navigation: whether its
     /// way takes any step from the anchor.
     private isNavigated = (
       self takesClassFirst ifTrue: [^true].
-      ^(vmMirror object: steps identicalTo: 0 ifFail: [false]) not.
+      ^(vmMirror reflectionObject: steps identicalTo: 0 ifFail: [false]) not.
     )
 
     /// Answers whether the receiver reflects `anObject`, by identity; it
@@ -309,7 +314,7 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// class without handing it out: a mirror reached by navigation keeps
     /// its class back (the module's shipped-level rule).
     public reflects: anObject = (
-      ^vmMirror object: self reflectedClass identicalTo: anObject ifFail: [false].
+      ^vmMirror reflectionObject: self reflectedClass identicalTo: anObject ifFail: [false].
     )
 
     /// Answers the class's name, a new String: the name its declaration
@@ -426,7 +431,7 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// classes and answers false, so that a class it holds back never
     /// reaches program code through `reflects:`.
     public = other = (
-      (vmMirror object: self identicalTo: other ifFail: [false]) ifTrue: [^true].
+      (vmMirror reflectionObject: self identicalTo: other ifFail: [false]) ifTrue: [^true].
       (self trusts: (vmMirror objectClass: other ifFail: [nil])) ifFalse: [^false].
       ^other reflects: self reflectedClass.
     )
@@ -441,16 +446,16 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     ///
     /// aClass: the class of the object `=` compares the receiver with.
     private trusts: aClass = (
-      (vmMirror object: aClass identicalTo: outer MirrorsFactory ClassMirror ifFail: [
+      (vmMirror reflectionObject: aClass identicalTo: outer MirrorsFactory ClassMirror ifFail: [
         false.
       ]) ifTrue: [^true].
-      (vmMirror object: aClass identicalTo: outer MirrorsFactory NavigatedClassMirror ifFail: [
-        false.
-      ]) ifTrue: [^true].
+      (vmMirror reflectionObject: aClass
+          identicalTo: outer MirrorsFactory NavigatedClassMirror
+          ifFail: [false]) ifTrue: [^true].
       self isNavigated ifTrue: [^false].
-      ^vmMirror object: aClass identicalTo: (vmMirror objectClass: self ifFail: [nil]) ifFail: [
-        false.
-      ].
+      ^vmMirror reflectionObject: aClass
+          identicalTo: (vmMirror objectClass: self ifFail: [nil])
+          ifFail: [false].
     )
 
     /// Answers the class's identity hash, alike for two mirrors on the
@@ -608,7 +613,7 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// The comparison `=` makes of two mixin mirrors, which reads the
     /// reified mixin without handing it out.
     public reflects: anObject = (
-      ^vmMirror object: subject identicalTo: anObject ifFail: [false].
+      ^vmMirror reflectionObject: subject identicalTo: anObject ifFail: [false].
     )
 
     /// Answers the mixin's name, a new String: its declaration's, a class
@@ -733,7 +738,7 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// this module's `MixinMirror` or of the receiver's class, so that the
     /// reified mixin is handed to no other code.
     public = other = (
-      (vmMirror object: self identicalTo: other ifFail: [false]) ifTrue: [^true].
+      (vmMirror reflectionObject: self identicalTo: other ifFail: [false]) ifTrue: [^true].
       (self trusts: (vmMirror objectClass: other ifFail: [nil])) ifFalse: [^false].
       ^other reflects: subject.
     )
@@ -744,12 +749,12 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     ///
     /// aClass: the class of the object `=` compares the receiver with.
     private trusts: aClass = (
-      (vmMirror object: aClass identicalTo: outer MirrorsFactory MixinMirror ifFail: [
+      (vmMirror reflectionObject: aClass identicalTo: outer MirrorsFactory MixinMirror ifFail: [
         false.
       ]) ifTrue: [^true].
-      ^vmMirror object: aClass identicalTo: (vmMirror objectClass: self ifFail: [nil]) ifFail: [
-        false.
-      ].
+      ^vmMirror reflectionObject: aClass
+          identicalTo: (vmMirror objectClass: self ifFail: [nil])
+          ifFail: [false].
     )
 
     /// Answers the reified mixin's identity hash, alike for two mirrors
@@ -891,7 +896,9 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// `definingMixin` when it answers true.
     public = other = (
       other isKindOfMethodMirror ifFalse: [^false].
-      (vmMirror object: selector identicalTo: other name ifFail: [false]) ifFalse: [^false].
+      (vmMirror reflectionObject: selector identicalTo: other name ifFail: [false]) ifFalse: [
+        ^false.
+      ].
       ^self definingMixin = other definingMixin.
     )
 
@@ -971,7 +978,9 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// `name` and `definingMixin` when it answers true.
     public = other = (
       other isKindOfSlotDeclarationMirror ifFalse: [^false].
-      (vmMirror object: slotName identicalTo: other name ifFail: [false]) ifFalse: [^false].
+      (vmMirror reflectionObject: slotName identicalTo: other name ifFail: [false]) ifFalse: [
+        ^false.
+      ].
       ^self definingMixin = other definingMixin.
     )
 

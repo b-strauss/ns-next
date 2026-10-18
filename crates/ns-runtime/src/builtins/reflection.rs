@@ -3,7 +3,14 @@
 //! "Mirrors that read"). A class leaf takes a class
 //! or a metaclass, a mixin leaf a reified mixin (`Mutator::reified_mixin`),
 //! and each declines -- answers `None`, so the failure block runs -- for
-//! anything else; none raises.
+//! anything else; none raises. Two leaves serve the module beside them:
+//! identity and a Symbol's text, which the kernel's rows answer too, but
+//! seen through a future.
+//!
+//! A future is read as the object it is, never as the value it stands
+//! for: the failure path sees through no leaf of this family
+//! (`interpreter::future::after_a_failed_leaf`), so no mirror read runs a
+//! future's computation.
 //!
 //! Structure -- names, selectors, access modifiers, slot declarations,
 //! source -- is answered of every mixin, shipped or not. A value is
@@ -102,6 +109,15 @@ pub(crate) fn execute<'gc>(
         ReflectionPrimitive::MixinIsShipped => {
             let mixin = reified(mutator, receiver)?;
             Some(Value::boolean(is_shipped(&mixin)))
+        }
+        ReflectionPrimitive::Identical => Some(Value::boolean(
+            crate::builtins::object_class::identical(&mutator.heap, receiver, *arguments.first()?),
+        )),
+        ReflectionPrimitive::SymbolText => {
+            let symbol = mutator.heap.symbol_value(receiver.as_object()?)?;
+            Some(Value::object(
+                mutator.new_string(symbol.as_str().to_string()),
+            ))
         }
     }
 }
@@ -1453,5 +1469,120 @@ mod tests {
                 expected
             );
         }
+    }
+
+    /// A module whose `future` answers a future of a `Plain`, which records
+    /// in `ran` that its block ran.
+    fn a_future_fixture() -> (Interpreter, Root) {
+        let source = indoc! {"
+            class FutureFixture usingPlatform: platform = Object new (
+              |
+                Future = platform kernel Future.
+                public ran ::= false.
+              |
+            ) (
+              public class Plain = () ()
+              public future = (
+                ^Future computing: [
+                  ran:: true.
+                  Plain new.
+                ].
+              )
+            ) : ()
+        "};
+        let module = ns_syntax::parse(source).expect("the fixture parses");
+        let resolved = match crate::resolve(
+            module,
+            std::rc::Rc::from(source),
+            crate::SourceOrigin::File(std::path::PathBuf::from("future_fixture.ns")),
+        ) {
+            Ok(resolved) => resolved,
+            Err(_) => panic!("the fixture resolves"),
+        };
+        let mut interpreter = Interpreter::bootstrap();
+        let class = interpreter.load_module(&resolved);
+        let platform = interpreter.platform();
+        let fixture = expect_ok(
+            interpreter.instantiate(&class, &[platform]),
+            "FutureFixture usingPlatform:",
+        );
+        (interpreter, fixture)
+    }
+
+    /// The fixture's `ran`, rendered.
+    fn block_ran(interpreter: &mut Interpreter, fixture: &Root) -> String {
+        let ran = send(interpreter, fixture, "ran");
+        interpreter.enter(|mutator| render(mutator, mutator.fetch(&ran)))
+    }
+
+    /// A leaf reads a future as the object it is: one that declines for
+    /// it declines, and its failure path forces nothing, so the future's
+    /// block never runs. Whether it ran is asked after every leaf.
+    #[test]
+    fn no_leaf_forces_a_future() {
+        let (mut interpreter, fixture) = a_future_fixture();
+        let future = send(&mut interpreter, &fixture, "future");
+        let name = a_symbol(&mut interpreter, "ran");
+        let three = interpreter.stash(Value::small_integer(3));
+        let cases: [(&str, &[Root], &str); 10] = [
+            (
+                "reflectionSlotOf:named:ifFail:",
+                std::slice::from_ref(&name),
+                "declined",
+            ),
+            ("reflectionSlotNamesOf:ifFail:", &[], "{}"),
+            ("reflectionMixinOf:ifFail:", &[], "declined"),
+            ("reflectionIsMetaclass:ifFail:", &[], "declined"),
+            ("reflectionEnclosingObjectOf:ifFail:", &[], "declined"),
+            ("reflectionMixinName:ifFail:", &[], "declined"),
+            ("reflectionMixinClassSide:ifFail:", &[], "declined"),
+            (
+                "reflectionObject:identicalTo:ifFail:",
+                std::slice::from_ref(&three),
+                "false",
+            ),
+            (
+                "reflectionObject:identicalTo:ifFail:",
+                std::slice::from_ref(&future),
+                "true",
+            ),
+            ("reflectionSymbolText:ifFail:", &[], "declined"),
+        ];
+        for (selector, arguments, expected) in cases {
+            assert_eq!(
+                rendered(&mut interpreter, selector, &future, arguments),
+                expected,
+                "{selector} on a future"
+            );
+            assert_eq!(
+                block_ran(&mut interpreter, &fixture),
+                "false",
+                "{selector} ran the future's block"
+            );
+        }
+        // A future as the argument: a slot's name that is no Symbol, and
+        // the other object of an identity.
+        let plain = send(&mut interpreter, &fixture, "Plain");
+        let instance = send(&mut interpreter, &plain, "new");
+        for (selector, subject, expected) in [
+            ("reflectionSlotOf:named:ifFail:", &instance, "declined"),
+            ("reflectionObject:identicalTo:ifFail:", &three, "false"),
+        ] {
+            assert_eq!(
+                rendered(
+                    &mut interpreter,
+                    selector,
+                    subject,
+                    std::slice::from_ref(&future)
+                ),
+                expected,
+                "{selector} given a future"
+            );
+        }
+        assert_eq!(
+            block_ran(&mut interpreter, &fixture),
+            "false",
+            "a leaf given a future ran its block"
+        );
     }
 }

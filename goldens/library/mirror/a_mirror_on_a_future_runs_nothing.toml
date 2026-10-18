@@ -1,0 +1,13 @@
+stdout = '''
+getSlot: no slot named computation that a mirror may read
+getSlot: requires a Symbol
+0
+FutureImplementation
+reflectee: a core-library class reached by navigation is not handed out
+true true
+false false
+reflecting: requires a class or a metaclass
+forcing
+the block ran
+42
+'''

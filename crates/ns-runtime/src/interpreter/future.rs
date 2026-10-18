@@ -480,7 +480,9 @@ pub(crate) fn host_passed_a_future<'gc>() -> Signal<'gc> {
 /// before the failure block runs) and `execute_method` (a primitive method,
 /// before the method is activated). A leaf that answers `false` to a
 /// stranger declines for a future (`declines_for_a_future`), so it arrives
-/// here too. Before any future exists this is one flag test.
+/// here too. A reflection leaf's answer stands as it is: a mirror reads a
+/// future as the object it is, never forcing it. Before any future exists
+/// this is one flag test.
 #[inline(always)]
 pub(crate) fn after_a_failed_leaf<'gc>(
     mutator: &mut Mutator<'gc>,
@@ -507,6 +509,14 @@ fn see_through_a_failed_leaf<'gc>(
     answer: Option<Result<Step<'gc>, Signal<'gc>>>,
 ) -> Option<Result<Step<'gc>, Signal<'gc>>> {
     if !matches!(answer, None | Some(Err(Signal::Error(_)))) {
+        return answer;
+    }
+    // A mirror reflects the object it is given, a future the future
+    // itself: forcing one here would run the program's computation from
+    // inside a mirror read, which sends its reflectee nothing
+    // (`docs/design/liveness-and-reflection.md`, "A mirror sends its
+    // reflectee nothing").
+    if matches!(primitive, Primitive::Reflection(_)) {
         return answer;
     }
     match see_through(mutator, primitive, receiver, selector, arguments) {

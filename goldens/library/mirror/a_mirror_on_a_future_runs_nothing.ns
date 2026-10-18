@@ -1,0 +1,64 @@
+/// A mirror on a future reflects the future itself and never forces it:
+/// `getSlot:`, `slots`, `getClass`, `=` and `hash` read the future object,
+/// whose slots are all the kernel's, a future given as a slot's name is no
+/// Symbol, and `ClassMirror reflecting:` refuses a future as no class. The
+/// future's block runs only when the program sends the future a message.
+class AMirrorOnAFutureRunsNothing = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      Future = platform kernel Future.
+      ArgumentError = platform kernel ArgumentError.
+      ObjectMirror = platform mirrors ObjectMirror.
+      ClassMirror = platform mirrors ClassMirror.
+      future
+      mirror
+      twin
+    |
+    future:: Future computing: [
+      transcript
+          show: 'the block ran';
+          newLine.
+      42.
+    ].
+    mirror:: ObjectMirror reflecting: future.
+    twin:: ObjectMirror reflecting: future.
+    transcript
+        show: ([mirror getSlot: #computation] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: ([mirror getSlot: future] on: ArgumentError do: [:error | error messageText]);
+        newLine.
+    transcript
+        print: mirror slots size;
+        newLine.
+    transcript
+        show: mirror getClass name;
+        newLine.
+    transcript
+        show: ([mirror getClass reflectee] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        print: mirror = twin;
+        show: ' ';
+        print: mirror hash = twin hash;
+        newLine.
+    transcript
+        print: mirror = (ObjectMirror reflecting: 42);
+        show: ' ';
+        print: (ClassMirror reflecting: Object) = future;
+        newLine.
+    transcript
+        show: ([
+          ClassMirror reflecting: future.
+          'made'.
+        ] on: ArgumentError do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: 'forcing';
+        newLine.
+    transcript
+        print: future + 0;
+        newLine.
+  )
+)

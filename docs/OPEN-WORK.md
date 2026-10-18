@@ -642,14 +642,18 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   `WeakArray` or a `String` lists none, and a program instance of any
   other shape answers an empty group. Primordial Soup's `slots` lists an
   indexed object's elements (`Mirrors.ns:1667-1676`, `slotsIndexed`).
-- **A navigated mirror anchored on an unresolved future** (2026-10-18): a
-  navigated class mirror recomputes its class from its anchor on every
-  use, so one made from an object mirror on a §6.3.2 future that resolves
-  later reflects the resolved value's class afterwards, where a mirror
-  holding the class would have kept the future's. Which is right is
-  undecided, and no test pins either.
-  [liveness-and-reflection.md](design/liveness-and-reflection.md), "No
-  mirror hands out a value it reached through a shipped level".
+- **A mirror on a future that the program resolves** (2026-10-18): a
+  mirror forces no future and reflects an unresolved one as the future
+  object itself, its anchor and reflectee included (pinned by
+  `goldens/library/mirror/a_mirror_on_a_future_runs_nothing.ns`). Once the
+  program resolves the future, the mirror goes on reflecting the future
+  object until the next full collection replaces its slots with the value,
+  and reflects the value from then on, so what it answers in between
+  depends on when the collector ran. Whether a mirror should see a
+  resolved future as its value at once -- as every other leaf does --
+  is undecided, and no test pins the window.
+  [liveness-and-reflection.md](design/liveness-and-reflection.md), "A
+  mirror forces no future".
 - **Scoped invalidation.** `Interpreter::invalidate_caches` exists, and
   nothing but a test and the cache stress mode calls it; road step 5b's
   install will flush every inline cache through it. Scoping an invalidation

@@ -1027,6 +1027,15 @@ instance of `FutureImplementation` until the program has made one.
   operand is seen through: an unresolved one the leaf would only have stored
   is forced first, and one still being computed raises the
   divergent-evaluation error in place of the leaf's own error.
+- *The reflection leaves* (`Primitive::Reflection`), which only
+  `MirrorsFactory.ns` sends, are never seen through: a mirror reflects the
+  object it is given, a future the future itself, so a reflection leaf that
+  declines for a future declines and no mirror read forces one
+  (`future::after_a_failed_leaf`). The family has an identity leaf and a
+  Symbol's-text leaf of its own, so that the mirrors need neither of the
+  kernel's, which see through a future
+  ([liveness-and-reflection.md](liveness-and-reflection.md), "A mirror
+  sends its reflectee nothing").
 - *`InitializeSlot` into a value* looks for a future only on its refusal
   path (`check_value_slot`, then `future::value_for_a_value_slot`): it
   stores and checks a resolved one's value, and forces an unresolved one

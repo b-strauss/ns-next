@@ -36,7 +36,7 @@ pub(crate) fn execute<'gc>(
     }
 }
 
-fn identical<'gc>(heap: &Heap<'gc>, first: Value<'gc>, second: Value<'gc>) -> bool {
+pub(crate) fn identical<'gc>(heap: &Heap<'gc>, first: Value<'gc>, second: Value<'gc>) -> bool {
     match (first.kind(), second.kind()) {
         (ValueKind::Nil, ValueKind::Nil) => true,
         (ValueKind::Boolean(left), ValueKind::Boolean(right)) => left == right,

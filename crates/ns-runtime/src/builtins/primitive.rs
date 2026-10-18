@@ -306,7 +306,10 @@ impl Primitive {
             // argument of the wrong kind -- a future among them -- as
             // `Behavior`'s leaves do. `SlotNamesOf` never declines: it
             // reads a future as the object it is, whose levels are all the
-            // kernel's, and answers no slot.
+            // kernel's, and answers no slot. None needs to see through a
+            // future, and none does (`interpreter::future::after_a_failed_leaf`):
+            // a mirror reflects the future itself, so `Identical` answers
+            // `false` for a future and another object without declining.
             Primitive::Reflection(
                 ReflectionPrimitive::MixinOf
                 | ReflectionPrimitive::IsMetaclass
@@ -324,7 +327,9 @@ impl Primitive {
                 | ReflectionPrimitive::MixinAccess
                 | ReflectionPrimitive::MethodSource
                 | ReflectionPrimitive::MixinSource
-                | ReflectionPrimitive::MixinIsShipped,
+                | ReflectionPrimitive::MixinIsShipped
+                | ReflectionPrimitive::Identical
+                | ReflectionPrimitive::SymbolText,
             ) => false,
             // It reaches its own primitive's row through `execute_sent`,
             // whose failure path looks for a future among that row's
@@ -864,6 +869,12 @@ pub enum ReflectionPrimitive {
     /// Whether a mixin is shipped, a class side's whether its instance
     /// side is.
     MixinIsShipped,
+    /// Whether two objects are one, by identity, a future the future
+    /// itself: never declined, so no future is forced for it.
+    Identical,
+    /// A Symbol's text, a new String; declined for anything else, a
+    /// future included, which it never forces.
+    SymbolText,
 }
 
 /// A row of `MIRROR`. A `u16`, so the table may hold 65,536 rows: two bytes
@@ -2310,6 +2321,16 @@ pub const MIRROR: &[MirrorEntry] = &[
         "reflectionMixinIsShipped:ifFail:",
         "isShipped",
         Primitive::Reflection(ReflectionPrimitive::MixinIsShipped),
+    ),
+    mirror(
+        "reflectionObject:identicalTo:ifFail:",
+        "==",
+        Primitive::Reflection(ReflectionPrimitive::Identical),
+    ),
+    mirror(
+        "reflectionSymbolText:ifFail:",
+        "asString",
+        Primitive::Reflection(ReflectionPrimitive::SymbolText),
     ),
 ];
 

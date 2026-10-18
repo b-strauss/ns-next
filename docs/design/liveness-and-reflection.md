@@ -295,8 +295,29 @@ lazy slot's value through `getSlot:`, and the indexed elements of an
 `=` and `hash`, a class mirror's whole walk, and a mixin mirror's reads ask
 the VM mirror, so a reflectee that overrides `=`, `hash` or `class`, or is
 a proxy, reflects as itself; refusing a slot name reads the name's text
-through the VM too (`symbolAsString:ifFail:`), so a refusal runs none of
-the program's code.
+through the VM too (`reflectionSymbolText:ifFail:`), so a refusal runs none
+of the program's code.
+
+**A mirror forces no future.** A §6.3.2 future is such a proxy: a mirror
+reflects the future object itself -- its class `FutureImplementation`, a
+kernel class whose slots a mirror does not read, so `slots` is empty and
+`getSlot:` refuses every name; its identity and its hash -- and never the
+value it stands for. The failure path that sees through a future for every
+other leaf ([object-model.md](object-model.md), "Where Rust sees a future")
+skips the reflection family, so a reflection leaf that declines for a
+future declines, and the mirrors compare by identity and read a Symbol's
+text through leaves of that family (`reflectionObject:identicalTo:ifFail:`,
+`reflectionSymbolText:ifFail:`) rather than the kernel's rows, which see
+through one. So `ClassMirror reflecting:` a future signals its
+`ArgumentError`, a future given `getSlot:` as a name is no Symbol, and a
+navigated mirror anchored on a future reflects `FutureImplementation`. A
+mirror's reflectee and anchor are slots like any other: once the program
+itself resolves the future, the next full collection replaces them with
+its value, as it replaces every reference in an object field
+([memory.md](memory.md), "A resolved future is traced as its value"), and
+the mirror reflects the value from then on. Otherwise a mirror read would
+run the program's computation, and `getSlot:` would answer the resolved
+value's slot while `slots` listed none.
 
 **No mirror hands out a value it reached through a shipped level.** Both
 prior arts let whoever holds the mirrors reach everything
@@ -373,17 +394,20 @@ no element of a `List`; the list's public protocol still does.
 
 **The leaves.** The mirrors read through one family,
 `Primitive::Reflection(ReflectionPrimitive)` (`builtins/reflection.rs`),
-seventeen rows appended to `MIRROR`, beside the existing
-`objectClass:ifFail:`, `object:identicalTo:ifFail:`,
-`objectHash:ifFail:`, `behaviorSuperclass:ifFail:` and
-`symbolAsString:ifFail:`. A class leaf takes a class or a metaclass
+nineteen rows appended to `MIRROR`, beside the existing
+`objectClass:ifFail:`, `objectHash:ifFail:` and
+`behaviorSuperclass:ifFail:`, which never force a future a mirror hands
+them: the first two answer for any object, and the third is given only a
+class the walk reached. A class leaf takes a class or a metaclass
 (`reflectionMixinOf:`, `reflectionIsMetaclass:`,
 `reflectionEnclosingObjectOf:`), an object leaf any object
 (`reflectionSlotNamesOf:`, `reflectionSlotOf:named:`), and a mixin leaf a
 reified mixin (`reflectionMixinName:`, `IsMeta:`, `Enclosing:`,
 `InstanceSide:`, `ClassSide:`, `Slots:`, `Methods:`, `Nested:`,
 `Access:`, `Source:`, `IsShipped:`, and `reflectionMixin:methodSource:`,
-whose reported selector is `methodSource:`); each ends in `ifFail:` and
+whose reported selector is `methodSource:`), beside identity
+(`reflectionObject:identicalTo:`) and a Symbol's text
+(`reflectionSymbolText:`); each ends in `ifFail:` and
 declines -- answers nothing, so the failure block runs -- for anything
 else, and none raises: what a program sees is the `Error` or
 `ArgumentError` the mirrors module signals. Slots and methods come back as
@@ -448,7 +472,7 @@ reaches no host ([core-library.md](core-library.md),
 "The on-demand rule").
 
 **The mirror table is past 256 rows.** `MirrorPrimitive` is a `u16`, so
-`MIRROR` may hold 65,536 rows and holds 265; `Primitive` grew from two
+`MIRROR` may hold 65,536 rows and holds 267; `Primitive` grew from two
 bytes to four in the padding every holder already had, so none grew
 ([core-library.md](core-library.md), "The VM mirror is the whole Rust
 boundary").
