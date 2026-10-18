@@ -680,6 +680,7 @@ mod tests {
             ("MirrorsFactory", "ObjectMirror"),
             ("MirrorsFactory", "ClassMirror"),
             ("MirrorsFactory", "NavigatedClassMirror"),
+            ("MirrorsFactory", "AbstractClassMirror"),
             ("MirrorsFactory", "Mirrors"),
         ]);
         interpreter.enter(|mutator| {
@@ -779,6 +780,13 @@ mod tests {
                 name("MirrorsFactory", "NavigatedClassMirror", ShippedKind::Class),
             );
             assert!(!navigated.value && !navigated.superclass && navigated.header);
+            // What every class mirror inherits is private too: a record's
+            // class at most, never a value a program keeps.
+            let abstract_mirror = positions_of(
+                world,
+                name("MirrorsFactory", "AbstractClassMirror", ShippedKind::Class),
+            );
+            assert!(!abstract_mirror.value && !abstract_mirror.superclass);
             // The level `<: IndexedCollection` adds is where a frame of its
             // methods runs, and nothing else.
             for (module, applying) in [

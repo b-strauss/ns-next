@@ -2450,6 +2450,7 @@ mod tests {
                 "ClassMirror",
                 "MirrorGroup",
                 "SlotMirror",
+                "AbstractClassMirror",
                 "NavigatedClassMirror",
                 "MixinMirror",
                 "ClassDeclarationMirror",

@@ -110,7 +110,7 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// navigation, so its `reflectee` hands out the class only when the
     /// class is the program's own (the module's shipped-level rule).
     public getClass = (
-      ^NavigatedClassMirror reflecting: (vmMirror objectClass: reflectee ifFail: [nil]).
+      ^NavigatedClassMirror anchor: reflectee classFirst: true steps: 0.
     )
 
     /// Answers the value of the reflectee's slot named `aSymbol`: the slot
@@ -188,24 +188,46 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     )
   )
 
-  /// A mirror on one class or metaclass: its name, its mixin, its
-  /// superclass chain, its enclosing object and the slots, methods and
-  /// nested classes it has, the inherited ones included, superclass
-  /// first, the level a `<:` clause adds where it stands in the chain.
-  /// Everything is read through the VM; the class is sent nothing.
+  /// What every class mirror is: a mirror on one class or metaclass, its
+  /// name, its mixin, its superclass chain, its enclosing object and the
+  /// slots, methods and nested classes it has, the inherited ones
+  /// included, superclass first, the level a `<:` clause adds where it
+  /// stands in the chain. Everything is read through the VM; the class is
+  /// sent nothing. Never instantiated itself: `ClassMirror` is the mirror
+  /// a program makes, `NavigatedClassMirror` the one navigation answers.
   ///
-  /// aClass: a class or a metaclass.
+  /// A class mirror holds the way to its class rather than the class: an
+  /// anchor -- the class `ClassMirror reflecting:` was given, or the
+  /// object whose class an object mirror's `getClass` reflects -- and the
+  /// steps from it, recomputed through the VM on every use. A program
+  /// holding a mirror reached by navigation so holds only what it gave,
+  /// never the core-library class the mirror reflects, which an image
+  /// could not name where a program keeps it
+  /// (`docs/design/image-format.md`, "Shipped names").
   ///
-  /// Signals an ArgumentError carrying `aClass`, 'reflecting: requires a
-  /// class or a metaclass', for anything else.
-  public class ClassMirror reflecting: aClass = Object (
+  /// anObject: the anchor; any object.
+  /// aBoolean: whether the way takes the anchor's class first; false when
+  ///     the anchor is the class itself.
+  /// anInteger: the number of superclass steps that follow, zero or more.
+  ///
+  /// The anchor and the steps must lead to a class or a metaclass; only
+  /// `ClassMirror reflecting:`, which checks its argument, and navigation,
+  /// which steps only to a class that exists, make them so. The way is
+  /// read through the VM, by identity, and never sent a message, so a
+  /// mirror made otherwise reads what the VM answers for whatever its
+  /// anchor leads to: a `classFirst` that is not `true` takes no class, and
+  /// a `steps` that is no count of steps walks to the end of the chain.
+  private class AbstractClassMirror anchor: anObject classFirst: aBoolean steps: anInteger
+      = Object (
     |
-      /// The class the mirror reflects, as `reflecting:` was given it.
-      private subject = aClass.
+      /// The object the way to the class starts from; handed out only as
+      /// the class a program gave `ClassMirror reflecting:`.
+      private anchor = anObject.
+      /// Whether the way takes the anchor's class first.
+      private classFirst = aBoolean.
+      /// The number of superclass steps after that.
+      private steps = anInteger.
     |
-    vmMirror reflectionIsMetaclass: aClass ifFail: [
-      (ArgumentError value: aClass) signal: 'reflecting: requires a class or a metaclass'.
-    ].
   ) (
     /// Answers true: the receiver is a class mirror.
     public isKindOfClassMirror = (
@@ -213,8 +235,69 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     )
 
     /// Answers the class the mirror reflects.
+    ///
+    /// Signals an Error, 'reflectee: a core-library class reached by
+    /// navigation is not handed out', when the mirror was reached by
+    /// navigation and the class's mixin is a core-library one; its
+    /// structure stays readable. The class `ClassMirror reflecting:` was
+    /// given is handed back whatever it is.
     public reflectee = (
-      ^subject.
+      |
+        held = self reflectedClass.
+      |
+      self isNavigated ifFalse: [^held].
+      (vmMirror reflectionMixinIsShipped: (vmMirror reflectionMixinOf: held ifFail: [nil]) ifFail: [
+        true.
+      ]) ifTrue: [
+        ^Error signal: 'reflectee: a core-library class reached by navigation is not handed out'.
+      ].
+      ^held.
+    )
+
+    /// Answers the class the anchor and the steps lead to, read through
+    /// the VM afresh: the anchor's class first when the way takes it,
+    /// then as many superclasses as the steps count; nil past `Top`.
+    ///
+    /// Private, so that no subclass a program declares reads it.
+    private reflectedClass = (
+      ^self walk: [:level :taken | level].
+    )
+
+    /// Walks the way and answers what `action` answers for where it ends.
+    ///
+    /// action: a two-argument block, given the class the way leads to, nil
+    ///     past `Top`, and the number of superclass steps it took.
+    ///
+    /// Asks the VM whether the way takes the anchor's class and whether it
+    /// has taken its steps, by identity, so that it sends `classFirst` and
+    /// `steps` nothing.
+    private walk: action = (
+      |
+        level ::= self takesClassFirst ifTrue: [
+          vmMirror objectClass: anchor ifFail: [nil].
+        ] ifFalse: [
+          anchor.
+        ].
+        taken ::= 0.
+      |
+      [(vmMirror object: taken identicalTo: steps ifFail: [false]) or: [nil == level]] whileFalse: [
+        level:: vmMirror behaviorSuperclass: level ifFail: [nil].
+        taken:: taken + 1.
+      ].
+      ^action value: level value: taken.
+    )
+
+    /// Answers whether the way takes the anchor's class first: whether
+    /// `classFirst` is `true` itself.
+    private takesClassFirst = (
+      ^vmMirror object: classFirst identicalTo: true ifFail: [false].
+    )
+
+    /// Answers whether the mirror was reached by navigation: whether its
+    /// way takes any step from the anchor.
+    private isNavigated = (
+      self takesClassFirst ifTrue: [^true].
+      ^(vmMirror object: steps identicalTo: 0 ifFail: [false]) not.
     )
 
     /// Answers whether the receiver reflects `anObject`, by identity; it
@@ -226,7 +309,7 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// class without handing it out: a mirror reached by navigation keeps
     /// its class back (the module's shipped-level rule).
     public reflects: anObject = (
-      ^vmMirror object: subject identicalTo: anObject ifFail: [false].
+      ^vmMirror object: self reflectedClass identicalTo: anObject ifFail: [false].
     )
 
     /// Answers the class's name, a new String: the name its declaration
@@ -244,19 +327,22 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// Answers a mixin mirror on the mixin the class applies: a class's
     /// instance side, a metaclass's class side.
     public mixin = (
-      ^MixinMirror reflecting: (vmMirror reflectionMixinOf: subject ifFail: [nil]).
+      ^MixinMirror reflecting: (vmMirror reflectionMixinOf: self reflectedClass ifFail: [nil]).
     )
 
     /// Answers a class mirror on the class's superclass, or nil for `Top`,
-    /// which has none. The mirror was reached by navigation, so its
-    /// `reflectee` hands out the superclass only when it is the program's
-    /// own (the module's shipped-level rule).
+    /// which has none: a mirror reached by navigation, one step further
+    /// along the receiver's way, so its `reflectee` hands out the
+    /// superclass only when it is the program's own (the module's
+    /// shipped-level rule).
     public superclass = (
-      |
-        parent = vmMirror behaviorSuperclass: subject ifFail: [nil].
-      |
-      nil == parent ifTrue: [^nil].
-      ^NavigatedClassMirror reflecting: parent.
+      ^self walk: [:level :taken |
+        nil == (vmMirror behaviorSuperclass: level ifFail: [nil]) ifTrue: [
+          nil.
+        ] ifFalse: [
+          NavigatedClassMirror anchor: anchor classFirst: self takesClassFirst steps: taken + 1.
+        ].
+      ].
     )
 
     /// Answers an object mirror on the class's enclosing object: the
@@ -266,14 +352,14 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// core-library class is not reflected', for a class whose mixin is
     /// a core-library one (the module's shipped-level rule).
     public enclosingObject = (
-      ^ObjectMirror reflecting: (vmMirror reflectionEnclosingObjectOf: subject ifFail: [
+      ^ObjectMirror reflecting: (vmMirror reflectionEnclosingObjectOf: self reflectedClass ifFail: [
         ^Error signal: 'enclosingObject: the enclosing object of a core-library class is not reflected'.
       ]).
     )
 
     /// Answers whether the class is a metaclass.
     public isMeta = (
-      ^vmMirror reflectionIsMetaclass: subject ifFail: [false].
+      ^vmMirror reflectionIsMetaclass: self reflectedClass ifFail: [false].
     )
 
     /// Answers a new MirrorGroup of the slot declarations of every level
@@ -310,7 +396,7 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     private gathered: members = (
       |
         levels ::= {}.
-        level ::= subject.
+        level ::= self reflectedClass.
         result ::= {}.
       |
       [nil == level] whileFalse: [
@@ -330,20 +416,21 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// identity, however each was reached; two applications of one mixin
     /// are two classes.
     ///
-    /// other: any object; sent `reflects:` only when it is a class mirror
-    /// of this module's own classes or of the receiver's class, so that
-    /// the class is handed to no other code.
+    /// other: any object; sent `reflects:` only when `trusts:` trusts its
+    /// class, so that the class is handed to no other code.
     public = other = (
       (vmMirror object: self identicalTo: other ifFail: [false]) ifTrue: [^true].
       (self trusts: (vmMirror objectClass: other ifFail: [nil])) ifFalse: [^false].
-      ^other reflects: subject.
+      ^other reflects: self reflectedClass.
     )
 
     /// Answers whether `aClass` is a class whose instances `=` may hand
     /// the reflected class to: this module's `ClassMirror` or
-    /// `NavigatedClassMirror`, whose code is this module's, or the
-    /// receiver's own class, whose instances a program made only over
-    /// classes it holds.
+    /// `NavigatedClassMirror`, whose code is this module's, or, for a
+    /// mirror not reached by navigation, the receiver's own class, whose
+    /// instances a program made over a class it holds. A mirror reached by
+    /// navigation trusts no class a program declared, whose `reflects:`
+    /// could keep a class the program was never given.
     ///
     /// aClass: the class of the object `=` compares the receiver with.
     private trusts: aClass = (
@@ -353,6 +440,7 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
       (vmMirror object: aClass identicalTo: outer MirrorsFactory NavigatedClassMirror ifFail: [
         false.
       ]) ifTrue: [^true].
+      self isNavigated ifTrue: [^false].
       ^vmMirror object: aClass identicalTo: (vmMirror objectClass: self ifFail: [nil]) ifFail: [
         false.
       ].
@@ -361,9 +449,24 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// Answers the class's identity hash, alike for two mirrors on the
     /// one class.
     public hash = (
-      ^vmMirror objectHash: subject ifFail: [0].
+      ^vmMirror objectHash: self reflectedClass ifFail: [0].
     )
   )
+
+  /// A mirror on one class or metaclass a program gives it: it reads the
+  /// class as every class mirror does (`AbstractClassMirror`), and its
+  /// `reflectee` hands the class back, whatever it is.
+  ///
+  /// aClass: a class or a metaclass.
+  ///
+  /// Signals an ArgumentError carrying `aClass`, 'reflecting: requires a
+  /// class or a metaclass', for anything else.
+  public class ClassMirror reflecting: aClass
+      = AbstractClassMirror anchor: aClass classFirst: false steps: 0 (
+    vmMirror reflectionIsMetaclass: aClass ifFail: [
+      (ArgumentError value: aClass) signal: 'reflecting: requires a class or a metaclass'.
+    ].
+  ) ()
 
   /// A class mirror a program reached by navigation -- an object's class,
   /// a superclass -- rather than made itself: it reads the class as a
@@ -371,24 +474,12 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
   /// not a core-library one (the module's shipped-level rule). Every
   /// navigation answers one of these, never a `ClassMirror`.
   ///
-  /// aClass: a class or a metaclass, as for `ClassMirror reflecting:`.
-  private class NavigatedClassMirror reflecting: aClass = ClassMirror reflecting: aClass () (
-    /// Answers the class the mirror reflects.
-    ///
-    /// Signals an Error, 'reflectee: a core-library class reached by
-    /// navigation is not handed out', for a class whose mixin is a
-    /// core-library one; its structure stays readable.
-    public reflectee = (
-      |
-        held = super reflectee.
-        reifiedMixin = vmMirror reflectionMixinOf: held ifFail: [nil].
-      |
-      (vmMirror reflectionMixinIsShipped: reifiedMixin ifFail: [true]) ifTrue: [
-        ^Error signal: 'reflectee: a core-library class reached by navigation is not handed out'.
-      ].
-      ^held.
-    )
-  )
+  /// anObject: the anchor, as for `AbstractClassMirror`: the object an
+  ///     object mirror reflects, or the class a class mirror was given.
+  /// aBoolean: whether the way takes the anchor's class first.
+  /// anInteger: the number of superclass steps that follow.
+  private class NavigatedClassMirror anchor: anObject classFirst: aBoolean steps: anInteger
+      = AbstractClassMirror anchor: anObject classFirst: aBoolean steps: anInteger () ()
 
   /// One slot of an object an object mirror reflects: its name and, as an
   /// object mirror, its value, read when the object's `slots` were.
