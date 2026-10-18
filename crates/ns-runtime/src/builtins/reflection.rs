@@ -2264,6 +2264,166 @@ mod tests {
         }
     }
 
+    /// A module whose receivers are forwarded just before code that
+    /// addresses their own slots is pushed, by a send that binds its method
+    /// without looking at the receiver: `Lazy`'s private lexical send,
+    /// `Derived`'s super send, and `Applied`'s instantiation walk, whose
+    /// `<:` clause message forwards the instance `Registering`'s
+    /// initializer registered before `Mix`'s level is pushed. `Host`'s
+    /// nested class `Inner` has a superclass clause that forwards the
+    /// enclosing object while the class is being created.
+    fn a_pushed_guard_fixture(lowering: crate::Lowering) -> (Interpreter, Root) {
+        let source = indoc! {"
+            class Pushing = Object new (
+              |
+              public mirror ::= nil.
+              public target ::= nil.
+              public registered ::= nil.
+              |
+            ) (
+              public class Wide = (
+                | public x ::= 10. public y ::= 20. public z ::= 30. |
+              ) ()
+              public class Falsy = (
+                | public x ::= 10. public y ::= 20. public z ::= false. |
+              ) ()
+              public class Lazy = (
+                | public mirror ::= nil. |
+              ) (
+                lazy private late = 3.
+                public peek = (
+                  mirror elementsOf: {self} forwardIdentityToElementsOf: {Wide new} ifFail: [nil].
+                  ^late
+                )
+              )
+              public class Base = () (
+                lazy public late = 3.
+              )
+              public class Derived = Base () (
+                public peek: mirror = (
+                  mirror elementsOf: {self} forwardIdentityToElementsOf: {Wide new} ifFail: [nil].
+                  ^super late
+                )
+              )
+              public class Registering = (
+                | public registeredSlot = outer Pushing register: self. |
+              ) ()
+              public class Mix withValue: value = (
+                | public added = value. |
+              ) ()
+              public class Applied = Registering new <: Mix withValue: (outer Pushing forwardRegistered) () ()
+              public class Host = (
+                | public mirror ::= nil. public target ::= nil. |
+              ) (
+                public class Inner = swapAndObject () ()
+                swapAndObject = (
+                  mirror elementsOf: {self} forwardIdentityToElementsOf: {target} ifFail: [nil].
+                  ^Object
+                )
+                public probe = (^Inner)
+              )
+              public wide = (^Wide new)
+              public falsy = (^Falsy new)
+              public aLazy = (^Lazy new)
+              public derived = (^Derived new)
+              public host = (^Host new)
+              public register: object = (
+                registered:: object.
+                ^1
+              )
+              public forwardRegistered = (
+                mirror elementsOf: {registered} forwardIdentityToElementsOf: {target} ifFail: [nil].
+                ^7
+              )
+              public applied = (^Applied new)
+            ) : ()
+        "};
+        let module = ns_syntax::parse(source).expect("the fixture parses");
+        let resolved = match crate::resolve(
+            module,
+            std::rc::Rc::from(source),
+            crate::SourceOrigin::File(std::path::PathBuf::from("pushed_guard_fixture.ns")),
+        ) {
+            Ok(resolved) => resolved,
+            Err(_) => panic!("the fixture resolves"),
+        };
+        let mut interpreter = Interpreter::bootstrap_with(lowering);
+        let class = interpreter.load_module(&resolved);
+        let fixture = expect_ok(interpreter.instantiate(&class, &[]), "Pushing new");
+        (interpreter, fixture)
+    }
+
+    /// What `selector` answers of `receiver`, rendered.
+    fn rendered_send(interpreter: &mut Interpreter, receiver: &Root, selector: &str) -> String {
+        let answer = send(interpreter, receiver, selector);
+        interpreter.enter(|mutator| render(mutator, mutator.fetch(&answer)))
+    }
+
+    crate::for_each_lowering! {
+        /// `peek` forwards its receiver, then reads its private lazy slot
+        /// by a lexical send, which binds the getter without looking at the
+        /// receiver: the getter's push must not record the `Wide`'s guard
+        /// as one that has `Lazy`'s slots, so its `ReturnSlotIfFilled`
+        /// raises rather than answering the `Wide`'s `y`.
+        fn a_private_lazy_getter_pushed_after_a_forward_raises(lowering) {
+            let (mut interpreter, fixture) = a_pushed_guard_fixture(lowering);
+            let mirror = the_vm_mirror(&mut interpreter);
+            let lazy = send(&mut interpreter, &fixture, "aLazy");
+            expect_ok(
+                interpreter.send(&lazy, Symbol::intern("mirror:"), &[mirror]),
+                "mirror:",
+            );
+            let result = interpreter.send(&lazy, Symbol::intern("peek"), &[]);
+            assert_eq!(
+                error_text(result, "peek"),
+                "an instance of Wide no longer has the slots of Lazy, which the running code was compiled for"
+            );
+        }
+    }
+
+    crate::for_each_lowering! {
+        /// `peek:` forwards its receiver, then reads the lazy slot its
+        /// superclass declares by a super send, which binds the getter
+        /// without looking at the receiver: the getter raises rather than
+        /// answering the `Wide`'s `x`.
+        fn a_super_lazy_getter_pushed_after_a_forward_raises(lowering) {
+            let (mut interpreter, fixture) = a_pushed_guard_fixture(lowering);
+            let mirror = the_vm_mirror(&mut interpreter);
+            let derived = send(&mut interpreter, &fixture, "derived");
+            let result = interpreter.send(&derived, Symbol::intern("peek:"), &[mirror]);
+            assert_eq!(
+                error_text(result, "peek:"),
+                "an instance of Wide no longer has the slots of Base, which the running code was compiled for"
+            );
+        }
+    }
+
+    crate::for_each_lowering! {
+        /// `Applied`'s `<:` clause message forwards the instance being
+        /// created after `Registering`'s level is initialized and before
+        /// `Mix`'s is pushed: `Mix`'s initializer raises rather than
+        /// writing `added` over the `Wide`'s `y`.
+        fn a_level_pushed_after_its_clause_forwarded_the_instance_raises(lowering) {
+            let (mut interpreter, fixture) = a_pushed_guard_fixture(lowering);
+            let mirror = the_vm_mirror(&mut interpreter);
+            let wide = send(&mut interpreter, &fixture, "wide");
+            expect_ok(
+                interpreter.send(&fixture, Symbol::intern("mirror:"), &[mirror]),
+                "mirror:",
+            );
+            expect_ok(
+                interpreter.send(&fixture, Symbol::intern("target:"), std::slice::from_ref(&wide)),
+                "target:",
+            );
+            let result = interpreter.send(&fixture, Symbol::intern("applied"), &[]);
+            assert_eq!(
+                error_text(result, "applied"),
+                "an instance of Wide no longer has the slots of Mix, which the running code was compiled for"
+            );
+            assert_eq!(rendered_send(&mut interpreter, &wide, "y"), "20");
+        }
+    }
+
     /// An instance of a program's subclass of a shipped class is the
     /// program's: its class's own mixin is not shipped.
     #[test]

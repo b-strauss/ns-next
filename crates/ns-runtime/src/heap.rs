@@ -426,8 +426,8 @@ struct StackEntry<'gc> {
     retains_registers: bool,
     /// For code that addresses its own slots
     /// (`CompiledCode::addresses_own_slots`), the receiver's dispatch id
-    /// when the activation was pushed, or since a cold check passed; `NONE`
-    /// otherwise. An own-slot instruction compares the receiver's header
+    /// when the activation was pushed with a receiver whose chain contains
+    /// `entered_level`, or since a cold check passed; `NONE` otherwise. An own-slot instruction compares the receiver's header
     /// against it, so that a receiver the bulk forward replaced is never
     /// written in the layout the code was compiled for
     /// (`interpreter::locals::check_own_slots`; `docs/design/object-model.md`,
@@ -4463,16 +4463,28 @@ impl<'gc> Heap<'gc> {
             self.stack.next_generation = self.stack.next_generation.wrapping_add(1);
             self.stack.next_generation
         };
-        // Only code that addresses its own slots pays for the two reads; a
-        // send to any other method tests one flag.
+        // Only code that addresses its own slots pays for these reads; a
+        // send to any other method tests one flag. The receiver's guard is
+        // recorded only when its chain contains the entered level: a
+        // private lexical send, a super send and the instantiation walk's
+        // next level bind their code without looking at the receiver, so a
+        // receiver the bulk forward replaced before the push would
+        // otherwise be vouched for by its own guard and read or written in
+        // the old layout. Without one, the first own-slot access takes the
+        // cold check (`interpreter::locals::check_own_slots`). The walk
+        // stops at the receiver's own class for every level but an
+        // inherited one.
         let (recorded_guard, entered_level) = if header.code.addresses_own_slots {
-            (
-                self.dispatch_id(header.receiver),
-                header
-                    .current_class
-                    .and_then(|class| self.class_application_index(class))
-                    .unwrap_or(ApplicationIndex::UNREGISTERED),
-            )
+            let entered_level = header
+                .current_class
+                .and_then(|class| self.class_application_index(class))
+                .unwrap_or(ApplicationIndex::UNREGISTERED);
+            let recorded_guard = if self.receiver_has_level(header.receiver, entered_level) {
+                self.dispatch_id(header.receiver)
+            } else {
+                DispatchId::NONE
+            };
+            (recorded_guard, entered_level)
         } else {
             (DispatchId::NONE, ApplicationIndex::UNREGISTERED)
         };
