@@ -1643,9 +1643,9 @@ edit superseded included (`Tables::superseded`), so the ids are minted and
 none is reclaimed, and the cache stays strong until then (decided with the
 user on 2026-10-03); its unbounded growth under live editing
 ([liveness-and-reflection.md](liveness-and-reflection.md)) ends with the
-first edit's reclamation, which road step 5b2's atomic install brings
+reclamation road step 5b2b brings after road step 5b2a's atomic install
 ([liveness-and-reflection.md](liveness-and-reflection.md), "Planned: road
-step 5b2, MirrorBuilder and atomic installation"). The same per-mixin id
+step 5b2b, edited programs in images, and reclaiming ids"). The same per-mixin id
 serves dispatch's open option of guarding a private lexical site on N's
 mixin ([dispatch.md](dispatch.md), "Decisions").
 

@@ -2092,6 +2092,20 @@ could hold -- runs with `NONE` and `UNREGISTERED` and raises for every
 object receiver, as does own-slot code run in an activation with no
 `current_class`.
 
+**Planned: the entered level's successor** (road step 5b2a, decided with
+the user on 2026-10-18; [liveness-and-reflection.md](liveness-and-reflection.md),
+"Planned: road step 5b2a, MirrorBuilder and atomic installation"). The
+install builds new applications for every class it reaches, even for an
+edit that changes only methods, since an application holds the mixin
+version it was built from. For each old level whose slot base and own
+slots, by name and in order, the edit keeps, it records the new
+application as the old one's successor, pointing every earlier
+predecessor at the newest; the cold path of `Heap::receiver_has_level`
+then accepts the entered level or its successor. So an initializer or a
+lazy getter entered before the install runs to its end when its level's
+slots did not change, and raises the error above when they did; the hot
+path is unchanged.
+
 **Private and super slot accessors.** `Lookup::SlotAccessor` answers the
 level whose own slot the field is, and `Resolved::Slot` and
 `Target::Slot` carry it with a recorded guard. Every fresh lookup -- the
@@ -2205,10 +2219,11 @@ an array of new ones, done eagerly, as Primordial Soup does, and only
 mirrors reach it: it is a leaf on the VM mirror. Built by road step 5b1
 (2026-10-18,
 [its plan](../superpowers/plans/2026-10-18-1236-become-and-recorded-guards.md));
-its one caller, the shipped mirrors module's atomic install, is road step
-5b2's ([liveness-and-reflection.md](liveness-and-reflection.md), "Planned:
-road step 5b2, MirrorBuilder and atomic installation"), so today only tests
-reach it, handing the VM mirror to a test program from the host, which no
+road step 5b2a's atomic install calls the forward on the Rust side, from
+its one leaf, with no safepoint between rebuilding the classes and
+forwarding their instances ([liveness-and-reflection.md](liveness-and-reflection.md),
+"Planned: road step 5b2a, MirrorBuilder and atomic installation"), so the
+leaf has no caller in shipped code, and only tests reach it, handing the VM mirror to a test program from the host, which no
 program can do. Eager forwarding and its reach only through mirrors were
 decided with the user on 2026-10-05.
 
@@ -2509,8 +2524,10 @@ no program can observe, since a value has no identity.
   The bulk forward runs inside its leaf, in the middle of a step, not at
   the next safepoint, so no instruction runs between the forward and the
   leaf's answer and it is atomic; nothing live moves, so no move epoch
-  changes. The leaf comes with 5b1 and its Newspeak caller with 5b2's
-  install; tests reach it by handing the VM mirror to a test program from
+  changes. The leaf comes with 5b1; road step 5b2a's install calls the
+  forward on the Rust side, inside its own leaf, so no safepoint falls
+  between rebuilding the classes and forwarding their instances (decided
+  with the user on 2026-10-18); tests reach the leaf by handing the VM mirror to a test program from
   the host. The leaf is a lock of its own: both sides ordinary instances
   of a class whose mixin is not shipped, besides Primordial Soup's checks
   -- extended while building it to builtin classes and withheld values,

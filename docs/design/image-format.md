@@ -2113,9 +2113,10 @@ mismatched `home` as its own untrusted-input case.
 Would change: a program a MirrorBuilder edited is written to an image and
 loads back edited -- every mixin it names now, with its compiled code, is a
 row of the mixin table, whether a module declared it or an install put it
-there (decided with the user on 2026-10-05; road step 5b2,
+there (decided with the user on 2026-10-05; road step 5b2b,
 [liveness-and-reflection.md](liveness-and-reflection.md), "Planned: road
-step 5b2, MirrorBuilder and atomic installation").
+step 5b2b, edited programs in images, and reclaiming ids"). Until then the
+encoder refuses a program with an edited mixin, with an error.
 
 Today the rows come from what the modules declared: `image::mixins::encode`
 takes the module roots' mixins and plans one tree per module from them
@@ -2134,7 +2135,7 @@ toward the graph style for user-defined behaviour that "How upstream
 compares" below names, taken in the table style: the row is the unit, not a
 graph of method objects.
 
-Open, for road step 5b2's plan:
+Open, for road step 5b2b's plan:
 
 - **Code an older version of a mixin still runs.** A closure keeps the code
   it was made with, and a frame the code it was running, after an edit

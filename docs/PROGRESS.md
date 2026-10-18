@@ -44,7 +44,8 @@ first.
 | The front end's cost: a corpus benchmark of the syntax crate, the comment attachment on demand, mimalloc in both binaries | Complete | 2026-10-17 | [attach-on-demand](superpowers/plans/2026-10-17-1049-attach-on-demand.md) |
 | Road step 5a — mirrors that read | Complete | 2026-10-18 | [mirrors-that-read](superpowers/plans/2026-10-17-2355-mirrors-that-read.md) |
 | Road step 5b1 — the VM's half of live editing: one id for every version of a mixin, `become:` as an eager bulk forward, recorded guards | Complete | 2026-10-18 | [become-and-recorded-guards](superpowers/plans/2026-10-18-1236-become-and-recorded-guards.md) |
-| Road step 5b2 — MirrorBuilder and atomic installation | Not started | — | — |
+| Road step 5b2a — MirrorBuilder and atomic installation | Not started | — | — |
+| Road step 5b2b — edited programs in images, and reclaiming ids | Not started | — | — |
 | Road step 6 — inline allocation in the interpreter | Not started | — | — |
 | Road step 7 — an execution model for compiled code | Not started | — | — |
 | Between road steps 7 and 8 — real Newspeak bodies for `whileTrue:`, `whileFalse:` and `do:` | Not started | — | — |

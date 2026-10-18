@@ -2690,12 +2690,12 @@ modules it builds on first demand -- `TranscriptFactory`'s, `TimeFactory`'s,
 shipped module passed it on to one, which none does: each root keeps it in
 a private slot. `become:` ([object-model.md](object-model.md),
 "`become:` is an eager bulk forward") keeps it that way, because no program
-sends it: it is a leaf on the mirror, which the shipped mirrors module
-alone is to use, for road step 5b2's atomic install, and the install
-forwards only the instances it migrates, of classes a program edited --
-never of a shipped mixin, since the mirrors refuse every edit to one
+sends it: it is a leaf on the mirror, which no shipped module sends yet,
+and road step 5b2a's atomic install forwards on the Rust side, only the
+instances it migrates, of classes a program edited -- never of a shipped
+mixin, since the mirrors refuse every edit to one
 ([liveness-and-reflection.md](liveness-and-reflection.md), "Planned: road
-step 5b2, MirrorBuilder and atomic installation"); the leaf itself refuses
+step 5b2a, MirrorBuilder and atomic installation"); the leaf itself refuses
 every instance of a shipped mixin or a builtin class and every withheld
 value, the mirror among them ([object-model.md](object-model.md), "What
 the forward refuses"). So no object a shipped name
