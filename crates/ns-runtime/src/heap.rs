@@ -64,7 +64,7 @@ pub use value::{
     fits_small_integer, Immediate, ImmediateKind, Value, ValueKind, Word, SMALL_INTEGER_MAX,
     SMALL_INTEGER_MIN,
 };
-pub(crate) use world::World;
+pub(crate) use world::{forward_identity, World};
 
 /// The sizes `image::decode::decode_graph_section`'s first pass gives each
 /// record before it allocates anything, stated beside the payloads they

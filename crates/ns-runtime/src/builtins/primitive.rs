@@ -329,7 +329,8 @@ impl Primitive {
                 | ReflectionPrimitive::MixinSource
                 | ReflectionPrimitive::MixinIsShipped
                 | ReflectionPrimitive::Identical
-                | ReflectionPrimitive::SymbolText,
+                | ReflectionPrimitive::SymbolText
+                | ReflectionPrimitive::ForwardIdentity,
             ) => false,
             // It reaches its own primitive's row through `execute_sent`,
             // whose failure path looks for a future among that row's
@@ -875,6 +876,12 @@ pub enum ReflectionPrimitive {
     /// A Symbol's text, a new String; declined for anything else, a
     /// future included, which it never forces.
     SymbolText,
+    /// `become:` as an eager bulk forward: every object of one `Array`
+    /// forwarded to the object of another at the same index, answering
+    /// `nil` (`heap::world::forward_identity`). Declined, nothing changed,
+    /// unless both are `Array`s of ordinary instances of classes whose
+    /// mixin is not shipped, and on every `ForwardRefusal`.
+    ForwardIdentity,
 }
 
 /// A row of `MIRROR`. A `u16`, so the table may hold 65,536 rows: two bytes
@@ -2331,6 +2338,14 @@ pub const MIRROR: &[MirrorEntry] = &[
         "reflectionSymbolText:ifFail:",
         "asString",
         Primitive::Reflection(ReflectionPrimitive::SymbolText),
+    ),
+    // Reported `forwardIdentityTo:`, no kernel selector: a row's arity is
+    // its reported selector's, this leaf takes the subject and one
+    // argument, and it raises nothing whose text the selector would name.
+    mirror(
+        "elementsOf:forwardIdentityToElementsOf:ifFail:",
+        "forwardIdentityTo:",
+        Primitive::Reflection(ReflectionPrimitive::ForwardIdentity),
     ),
 ];
 

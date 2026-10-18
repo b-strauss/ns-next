@@ -5,7 +5,8 @@
 //! and each declines -- answers `None`, so the failure block runs -- for
 //! anything else; none raises. Two leaves serve the module beside them:
 //! identity and a Symbol's text, which the kernel's rows answer too, but
-//! seen through a future.
+//! seen through a future. One writes: the bulk forward, `become:`
+//! (`forward_identity`).
 //!
 //! A future is read as the object it is, never as the value it stands
 //! for: the failure path sees through no leaf of this family
@@ -127,7 +128,77 @@ pub(crate) fn execute<'gc>(
                 mutator.new_string(symbol.as_str().to_string()),
             ))
         }
+        ReflectionPrimitive::ForwardIdentity => forward_identity(mutator, receiver, arguments),
     }
+}
+
+/// `elementsOf:forwardIdentityToElementsOf:ifFail:`: forwards every
+/// object of the subject, an `Array`, to the object of the argument, an
+/// `Array`, at the same index, and answers `nil`
+/// (`heap::world::forward_identity`). Declined, with nothing changed,
+/// when either is no `Array`, when an element of either may not be
+/// forwarded (`may_be_forwarded`), and when the heap refuses the pairs:
+/// unequal sizes, a split or a chain.
+///
+/// The handles collected here are dropped with the leaf's frame, and
+/// nothing reads them after the forward: one naming a forwarded object
+/// names a forwarder from then on.
+fn forward_identity<'gc>(
+    mutator: &mut Mutator<'gc>,
+    subject: Value<'gc>,
+    arguments: &[Value<'gc>],
+) -> Option<Value<'gc>> {
+    let old = forwardable_elements(mutator, subject)?;
+    let new = forwardable_elements(mutator, *arguments.first()?)?;
+    crate::heap::forward_identity(mutator, &old, &new).ok()?;
+    Some(Value::nil())
+}
+
+/// The elements of `array`, when it is an `Array` every element of which
+/// may be forwarded; `None` otherwise.
+fn forwardable_elements<'gc>(
+    mutator: &Mutator<'gc>,
+    array: Value<'gc>,
+) -> Option<Vec<ObjectReference<'gc>>> {
+    mutator
+        .heap
+        .array_elements(array.as_object()?)?
+        .into_iter()
+        .map(|element| {
+            element
+                .as_object()
+                .filter(|object| may_be_forwarded(mutator, *object))
+        })
+        .collect()
+}
+
+/// Whether `object` may stand on either side of a forward: an ordinary
+/// instance -- no class, closure, frame, `Array`, String, number or
+/// reified mixin -- of a class that is no builtin and whose mixin is not
+/// shipped, and no value a mirror withholds.
+///
+/// The leaf's one caller, the atomic install, only ever forwards a
+/// program's instances to their rebuilt replacements, so this refuses
+/// nothing it asks for. It is a lock of its own all the same: a defect in
+/// the install, or in whatever else comes to hold the mirror, must not
+/// forward the kernel's objects, a shipped module's instance or the VM
+/// mirror -- which would hand the capability to every holder of the
+/// object forwarded to it -- nor an object whose layout the VM reads
+/// natively (`docs/design/object-model.md`, "What the forward refuses").
+/// The VM mirror's class is a builtin whose mixin is not marked shipped,
+/// so the builtin test, and behind it the withheld one, are what refuse
+/// it.
+fn may_be_forwarded<'gc>(mutator: &Mutator<'gc>, object: ObjectReference<'gc>) -> bool {
+    let heap = &mutator.heap;
+    if heap.instance_field_count(object).is_none() || heap.mixin_object_id(object).is_some() {
+        return false;
+    }
+    let class = heap.object_class(object);
+    heap.class_builtin(class).is_none()
+        && heap
+            .class_application(class)
+            .is_some_and(|application| !is_shipped(&application.mixin))
+        && !mutator.is_withheld(Value::object(object))
 }
 
 /// The subject as a class object, a class or a metaclass; `None` for
@@ -1611,5 +1682,224 @@ mod tests {
             "false",
             "a leaf given a future ran its block"
         );
+    }
+
+    const FORWARD: &str = "elementsOf:forwardIdentityToElementsOf:ifFail:";
+
+    /// A module for the bulk forward: `Point` and the wider `Wide`, each
+    /// with a `sum` of its slots, `Failure`, a program's subclass of the
+    /// kernel's `Error`, and `swap:`, which forwards a `Point` to a `Wide`
+    /// between two rounds of the one send site `point sum`, through the VM
+    /// mirror it is handed.
+    fn a_forward_fixture(lowering: crate::Lowering) -> (Interpreter, Root) {
+        let source = indoc! {"
+            class Forwarding usingPlatform: platform = Object new (
+              | public collections = platform collections. |
+            ) (
+              public class Point = (
+                | public x ::= 1. public y ::= 2. |
+              ) (
+                public sum = (^x + y)
+              )
+              public class Wide = (
+                | public x ::= 10. public y ::= 20. public z ::= 30. |
+              ) (
+                public sum = (^x + y + z)
+              )
+              public class Failure = Error (
+                | public detail ::= 1. |
+              ) ()
+              public point = (^Point new)
+              public wide = (^Wide new)
+              public failure = (^Failure new)
+              public closure = (^[1])
+              public list = (^collections List new)
+              public swap: mirror = (
+                | point wide holder sums |
+                point:: Point new.
+                wide:: Wide new.
+                holder:: {point}.
+                sums:: Array new: 2.
+                1 to: 2 do: [:index |
+                  sums at: index put: point sum.
+                  index = 1 ifTrue: [
+                    mirror elementsOf: {point} forwardIdentityToElementsOf: {wide} ifFail: [^#declined].
+                  ].
+                ].
+                ^{sums at: 1. sums at: 2. (holder at: 1) sum. point == wide}
+              )
+            ) : ()
+        "};
+        let module = ns_syntax::parse(source).expect("the fixture parses");
+        let resolved = match crate::resolve(
+            module,
+            std::rc::Rc::from(source),
+            crate::SourceOrigin::File(std::path::PathBuf::from("forward_fixture.ns")),
+        ) {
+            Ok(resolved) => resolved,
+            Err(_) => panic!("the fixture resolves"),
+        };
+        let mut interpreter = Interpreter::bootstrap_with(lowering);
+        let class = interpreter.load_module(&resolved);
+        let platform = interpreter.platform();
+        let fixture = expect_ok(
+            interpreter.instantiate(&class, &[platform]),
+            "Forwarding usingPlatform:",
+        );
+        (interpreter, fixture)
+    }
+
+    /// An `Array` of `elements`, built on the host side.
+    fn an_array(interpreter: &mut Interpreter, elements: &[&Root]) -> Root {
+        interpreter.enter(|mutator| {
+            let values = elements
+                .iter()
+                .map(|element| mutator.fetch(element))
+                .collect();
+            let array = mutator.new_array(values);
+            mutator.stash(Value::object(array))
+        })
+    }
+
+    /// The VM mirror, read on the host side, where no program can reach it.
+    fn the_vm_mirror(interpreter: &mut Interpreter) -> Root {
+        interpreter.enter(|mutator| {
+            let mirror = mutator.vm_mirror();
+            mutator.stash(mirror)
+        })
+    }
+
+    crate::for_each_lowering! {
+        /// The method's register, the inlined block's use of it and the
+        /// array element all name the `Wide` after the forward, and the one
+        /// site `point sum`, whose cache the first round filled for
+        /// `Point`, runs `Wide`'s method in the second: the caches were
+        /// vacated.
+        fn the_leaf_forwards_a_program_instance(lowering) {
+            let (mut interpreter, fixture) = a_forward_fixture(lowering);
+            let mirror = the_vm_mirror(&mut interpreter);
+            let answer = expect_ok(
+                interpreter.send(&fixture, Symbol::intern("swap:"), &[mirror]),
+                "swap:",
+            );
+            let answer = interpreter.enter(|mutator| render(mutator, mutator.fetch(&answer)));
+            assert_eq!(answer, "{3. 60. 60. true}");
+        }
+    }
+
+    /// Every refused forward declines, and leaves both sides as they were:
+    /// each old object is still itself, no root names its replacement, and
+    /// each `Point` and `Wide` still answers its own `sum`.
+    #[test]
+    fn a_refused_forward_changes_nothing() {
+        let (mut interpreter, fixture) = a_forward_fixture(crate::Lowering::Optimized);
+        let point = send(&mut interpreter, &fixture, "point");
+        let wide = send(&mut interpreter, &fixture, "wide");
+        let other_wide = send(&mut interpreter, &fixture, "wide");
+        let three = interpreter.stash(Value::small_integer(3));
+        let text = a_string(&mut interpreter, "text");
+        let one = interpreter.stash(Value::small_integer(1));
+        let two = interpreter.stash(Value::small_integer(2));
+        let literal_array = an_array(&mut interpreter, &[&one, &two]);
+        let point_class = send(&mut interpreter, &fixture, "Point");
+        let closure = send(&mut interpreter, &fixture, "closure");
+        let list = send(&mut interpreter, &fixture, "list");
+        let platform = interpreter.platform();
+        let point_mixin = answer_of(
+            &mut interpreter,
+            "reflectionMixinOf:ifFail:",
+            &point_class,
+            &[],
+        );
+        let mirror = the_vm_mirror(&mut interpreter);
+        let kernel = module_instance(&mut interpreter, "Kernel");
+        let refused: [(&str, &Root); 10] = [
+            ("a SmallInteger", &three),
+            ("a String", &text),
+            ("an Array", &literal_array),
+            ("a class", &point_class),
+            ("a closure", &closure),
+            ("a shipped class's instance", &list),
+            ("the platform", &platform),
+            ("a reified mixin", &point_mixin),
+            ("the VM mirror", &mirror),
+            ("the kernel", &kernel),
+        ];
+        let mut cases: Vec<(String, Vec<&Root>, Vec<&Root>)> = vec![
+            (
+                "unequal sizes".to_string(),
+                vec![&point],
+                vec![&wide, &other_wide],
+            ),
+            (
+                "a split".to_string(),
+                vec![&point, &point],
+                vec![&wide, &other_wide],
+            ),
+            (
+                "a chain".to_string(),
+                vec![&point, &wide],
+                vec![&wide, &other_wide],
+            ),
+        ];
+        for (name, object) in refused {
+            cases.push((format!("{name} as old"), vec![object], vec![&wide]));
+            cases.push((format!("{name} as new"), vec![&point], vec![object]));
+        }
+        for (name, old, new) in cases {
+            let old_array = an_array(&mut interpreter, &old);
+            let new_array = an_array(&mut interpreter, &new);
+            assert_eq!(
+                rendered(&mut interpreter, FORWARD, &old_array, &[new_array]),
+                "declined",
+                "{name}"
+            );
+            for (index, element) in old.iter().enumerate() {
+                let kept = interpreter.enter(|mutator| {
+                    let Some(array) = mutator.fetch(&old_array).as_object() else {
+                        panic!("the old side is an Array");
+                    };
+                    let Some(kept) = mutator.heap().array_element(array, index) else {
+                        panic!("the old side keeps its elements");
+                    };
+                    mutator.stash(kept)
+                });
+                let same_value = interpreter.enter(|mutator| {
+                    crate::builtins::object_class::identical(
+                        mutator.heap(),
+                        mutator.fetch(&kept),
+                        mutator.fetch(element),
+                    )
+                });
+                assert!(same_value, "{name}: element {index} is still itself");
+                if let Some(replacement) = new.get(index) {
+                    assert!(
+                        !same(&mut interpreter, element, replacement),
+                        "{name}: element {index} names its replacement"
+                    );
+                }
+            }
+            for (subject, expected) in [(&point, "3"), (&wide, "60"), (&other_wide, "60")] {
+                let sum = send(&mut interpreter, subject, "sum");
+                let sum = interpreter.enter(|mutator| render(mutator, mutator.fetch(&sum)));
+                assert_eq!(sum, expected, "{name}: a sum changed");
+            }
+        }
+    }
+
+    /// An instance of a program's subclass of a shipped class is the
+    /// program's: its class's own mixin is not shipped.
+    #[test]
+    fn a_program_subclass_of_a_shipped_class_is_forwarded() {
+        let (mut interpreter, fixture) = a_forward_fixture(crate::Lowering::Optimized);
+        let failure = send(&mut interpreter, &fixture, "failure");
+        let replacement = send(&mut interpreter, &fixture, "failure");
+        let old_array = an_array(&mut interpreter, &[&failure]);
+        let new_array = an_array(&mut interpreter, &[&replacement]);
+        assert_eq!(
+            rendered(&mut interpreter, FORWARD, &old_array, &[new_array]),
+            "nil"
+        );
+        assert!(same(&mut interpreter, &failure, &replacement));
     }
 }

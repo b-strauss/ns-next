@@ -93,13 +93,6 @@ fn split<'state, 'gc>(
 /// decided for receivers that are now forwarders. Inside a step: nothing
 /// moves, so no handle a caller holds goes stale but one naming an object
 /// of `old`, and the VM mirror's leaf holds none.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the VM mirror's `elementsOf:forwardIdentityToElementsOf:ifFail:` leaf calls it from road step 5b1's next task"
-    )
-)]
 pub(crate) fn forward_identity<'gc>(
     mutator: &mut Mutator<'gc>,
     old: &[ObjectReference<'gc>],
