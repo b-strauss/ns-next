@@ -342,10 +342,10 @@ pub struct Mutator<'gc> {
     /// instance, and a fresh `Rc<Mixin>` each time would give every one of
     /// them its own application and its own dispatch id, so no two instances
     /// would share behaviour and every `X new` site would go megamorphic.
-    /// Keyed by the class mixin's identity, which the application holding it
-    /// keeps alive in `applications` for as long as any class object can
-    /// reach this.
-    pub(crate) metaclass_mixins: IdentityMap<usize, Rc<crate::mixin::Mixin>>,
+    /// Keyed by the instance side's `MixinId`, which the heap's mixin table
+    /// holds for as long as the heap lives, so a key never outlives its
+    /// mixin and never names another one.
+    pub(crate) metaclass_mixins: IdentityMap<crate::heap::MixinId, Rc<crate::mixin::Mixin>>,
     /// How many nested classes are marked as being created
     /// (`nested::begin_creation`), for `run_from_host`'s check that none
     /// outlives the run that began it. The mark itself lives in the class's

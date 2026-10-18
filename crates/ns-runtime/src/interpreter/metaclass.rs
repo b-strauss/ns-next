@@ -110,7 +110,12 @@ impl<'gc> Mutator<'gc> {
         if let Some(class_side) = &mixin.class_side {
             return class_side.clone();
         }
-        let key = crate::mixin::mixin_key(mixin);
+        // Keyed by the instance side's id, which interns it: the heap's
+        // table keeps it alive, so no key outlives its mixin -- the
+        // decoder asks for the class side of an image's row before
+        // anything else interns the row, and a load rejected afterwards
+        // drops the row.
+        let key = self.heap.mixin_id(mixin);
         if let Some(existing) = self.metaclass_mixins.get(&key) {
             return existing.clone();
         }
@@ -239,6 +244,26 @@ mod tests {
                     );
                 }
             }
+        });
+    }
+
+    /// The class side synthesized for a mixin nothing has applied -- an
+    /// image's row, as the decoder's first pass asks for it -- is keyed by
+    /// an id that keeps the mixin alive, so the key cannot outlive it and
+    /// answer its class side for another mixin later at the same address.
+    #[test]
+    fn a_synthesized_class_side_keeps_its_instance_side_alive() {
+        let mut interpreter = Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let mixin = Rc::new(crate::mixin::Mixin::empty(Symbol::intern("Unapplied")));
+            let first = mutator.metaclass_mixin(&mixin);
+            let weak = Rc::downgrade(&mixin);
+            drop(mixin);
+            let Some(instance_side) = weak.upgrade() else {
+                panic!("the mixin a class side is keyed by was dropped");
+            };
+            let second = mutator.metaclass_mixin(&instance_side);
+            assert!(Rc::ptr_eq(&first, &second), "one class side per mixin");
         });
     }
 
