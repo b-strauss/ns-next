@@ -1549,7 +1549,15 @@ Small, deliberately left, none affecting an outcome.
   `no_mirror_answers_a_withheld_value`) sends every public unary method of
   every facet, `garbageCollect` and the transcript's `newLine` among them,
   and pins exact counts, seven facets and 37 classes, that change with
-  every facet.
+  every facet. Three comments of `MirrorsFactory.ns` and one link say
+  less or more than the code: the root's "forces no future it is given"
+  holds for reflectees and anchors, while a future passed as the argument
+  of `ObjectMirror>>=` or `findMirrorNamed:` is forced by the ordinary
+  sends to it; `ClassMirror>>=`'s comment names the asymmetry against a
+  navigated mirror only, though a program's subclass against a plain
+  `ClassMirror` is asymmetric too; and `object-model.md`'s bullet on
+  futures links "A mirror sends its reflectee nothing" rather than "A
+  mirror forces no future".
 
 - Leftovers of the `ByteArray` sub-project's reviews (noted 2026-10-13):
   `Heap::byte_array_words` and `byte_array_words_mut` repeat the format
