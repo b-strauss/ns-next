@@ -174,6 +174,16 @@ pub(crate) struct InlineCaches {
     /// (`Mutator::slot_level_holds`): a verification the check made, not a
     /// decision, so the next access by a receiver of that application to
     /// that level's slots passes with one compare wherever its site is.
+    ///
+    /// It rests on a guard naming one application whose chain does not
+    /// change while the caches persist. So `DispatchId::NONE`, which names
+    /// no one application -- every application once the ids run out
+    /// (`Mutator::mint_dispatch_ids`), a class without one in a crafted
+    /// image -- is never recorded nor answered; and whatever changes a
+    /// class object's application or chain under an unchanged guard
+    /// (`Heap::class_set_application` on a superclass changes every
+    /// subclass's chain) must invalidate the caches after it, which road
+    /// step 5b2's install has to do.
     verified_slot_level: Option<(DispatchId, ApplicationIndex)>,
     /// Code identity -> the start of its family's range.
     families: IdentityMap<usize, FeedbackBase>,
@@ -231,15 +241,19 @@ impl InlineCaches {
     }
 
     /// Whether the last cold check that passed found `guard`'s receivers
-    /// to have `level` (`verified_slot_level`).
+    /// to have `level` (`verified_slot_level`); never for
+    /// `DispatchId::NONE`.
     #[inline(always)]
     pub(crate) fn slot_level_verified(&self, guard: DispatchId, level: ApplicationIndex) -> bool {
-        self.verified_slot_level == Some((guard, level))
+        guard != DispatchId::NONE && self.verified_slot_level == Some((guard, level))
     }
 
-    /// Records that a receiver with `guard` was found to have `level`.
+    /// Records that a receiver with `guard` was found to have `level`;
+    /// nothing for `DispatchId::NONE`, which names no one application.
     pub(crate) fn record_slot_level(&mut self, guard: DispatchId, level: ApplicationIndex) {
-        self.verified_slot_level = Some((guard, level));
+        if guard != DispatchId::NONE {
+            self.verified_slot_level = Some((guard, level));
+        }
     }
 
     /// How many sites the table holds -- `statistics`'s `site_entries`.
@@ -663,6 +677,16 @@ fn record<'gc>(
             level: levels_between(&mutator.heap, start?, *defining_class)?,
             chain,
         },
+        // §5.10's slot handler is never recorded: its field is decided from
+        // S's chain, so the receiver must be checked before it runs, and a
+        // check in `act`'s handler arm -- even one more argument to the
+        // handler's call -- slowed every program 4-9%, public sends
+        // included. Uncached, `miss` and `decide_super_send` check it
+        // before `act` (`Mutator::check_super_handler_slot`).
+        Resolved::Slot {
+            chain: Chain::SuperDoesNotUnderstand,
+            ..
+        } => return None,
         Resolved::Slot {
             kind, field, level, ..
         } => Target::Slot {
@@ -1166,6 +1190,7 @@ fn miss<'gc>(
     }
     let resolved = resolve(mutator, known_lexical_class);
     fill(mutator, index, key, selector, &resolved);
+    mutator.check_super_handler_slot(&resolved, *key.receiver)?;
     mutator.act(resolved, *key.receiver, selector, arguments)
 }
 
@@ -1559,6 +1584,18 @@ mod tests {
             "the key a read promoted survives the third key's insert"
         );
         assert!(cache.get(third, selector, CacheRule::Public).is_some());
+    }
+
+    /// `DispatchId::NONE` names no one application, so it is never
+    /// recorded as verified nor answered as one.
+    #[test]
+    fn no_slot_level_verification_is_recorded_or_answered_for_no_guard() {
+        let mut caches = InlineCaches::new();
+        let level = ApplicationIndex::from_index(1).expect("a small index");
+        caches.record_slot_level(DispatchId::NONE, level);
+        assert!(!caches.slot_level_verified(DispatchId::NONE, level));
+        caches.verified_slot_level = Some((DispatchId::NONE, level));
+        assert!(!caches.slot_level_verified(DispatchId::NONE, level));
     }
 
     /// A slot level verification answers only for the guard and level it

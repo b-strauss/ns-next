@@ -2108,10 +2108,21 @@ mod tests {
                 public read = (^secret)
                 public store: value = (secret:: value)
               )
+              public class Catcher = (
+                | public doesNotUnderstand ::= nil. |
+              ) ()
+              public class Probe = Catcher () (
+                public peek: mirror = (
+                  mirror elementsOf: {self} forwardIdentityToElementsOf: {Wide new} ifFail: [nil].
+                  ^super missing
+                )
+              )
               public class One = Holder () ()
               public class Two = Holder () ()
               public class Three = Holder () ()
               public keeper = (^Keeper new)
+              public wide = (^Wide new)
+              public probe = (^Probe new)
               public derived = (^Derived new)
               public one = (^One new store: 1)
               public two = (^Two new store: 2)
@@ -2179,6 +2190,61 @@ mod tests {
                 "an instance of Wide no longer has the slots of Base, which the slot accessor value addresses"
             );
         }
+    }
+
+    crate::for_each_lowering! {
+        /// A `super` send nothing in S answers reaches S's slot handler,
+        /// the setter of a slot named `doesNotUnderstand`, whose field is
+        /// decided from S's chain: after its receiver was forwarded to a
+        /// `Wide`, it raises rather than store the message into the
+        /// `Wide`.
+        fn a_super_slot_handler_after_its_receiver_was_forwarded_raises(lowering) {
+            let (mut interpreter, fixture) = an_accessor_guard_fixture(lowering);
+            let probe = send(&mut interpreter, &fixture, "probe");
+            let mirror = the_vm_mirror(&mut interpreter);
+            let result = interpreter.send(&probe, Symbol::intern("peek:"), &[mirror]);
+            assert_eq!(
+                error_text(result, "peek:"),
+                "an instance of Wide no longer has the slots of Catcher, which the slot accessor doesNotUnderstand: addresses"
+            );
+        }
+    }
+
+    /// The uncached path, the reference lowering's oracle, always walks:
+    /// a verified pair that wrongly says a `Wide` has `Keeper`'s slots --
+    /// which only a cached check consults -- does not make it pass, and a
+    /// walk of its own that passes records nothing.
+    #[test]
+    fn the_uncached_slot_check_walks_and_records_nothing() {
+        let (mut interpreter, fixture) = an_accessor_guard_fixture(crate::Lowering::Reference);
+        let keeper = send(&mut interpreter, &fixture, "keeper");
+        let wide = send(&mut interpreter, &fixture, "wide");
+        interpreter.enter(|mutator| {
+            let keeper = mutator.fetch(&keeper);
+            let wide = mutator.fetch(&wide);
+            let keeper_object = keeper.as_object().expect("a Keeper is an object");
+            let level = mutator
+                .heap()
+                .class_application_index(mutator.heap().object_class(keeper_object))
+                .expect("Keeper's application");
+            let wide_guard = mutator.heap().dispatch_id(wide);
+            let keeper_guard = mutator.heap().dispatch_id(keeper);
+            mutator.caches.record_slot_level(wide_guard, level);
+            assert!(
+                mutator.slot_level_holds(wide, level, crate::mixin::DispatchId::NONE),
+                "a cached check consults the pair"
+            );
+            assert!(
+                !mutator.slot_level_holds(wide, level, crate::mixin::DispatchId::VACANT),
+                "the uncached check walks"
+            );
+            assert!(mutator.slot_level_holds(keeper, level, crate::mixin::DispatchId::VACANT));
+            assert!(
+                !mutator.caches.slot_level_verified(keeper_guard, level),
+                "the uncached check records nothing"
+            );
+            assert!(mutator.caches.slot_level_verified(wide_guard, level));
+        });
     }
 
     crate::for_each_lowering! {

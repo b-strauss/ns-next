@@ -51,9 +51,10 @@ pub(crate) enum Resolved<'gc> {
         /// found the accessor at.
         level: ApplicationIndex,
         /// The receiver guard a cache entry recorded for a receiver that
-        /// has `level` (`inline_cache::record`); `DispatchId::NONE` for a
-        /// resolution the uncached path made, which so always takes the
-        /// cold check (`Mutator::slot_level_holds`).
+        /// has `level` (`inline_cache::record`), `DispatchId::NONE` for one
+        /// that had not; `DispatchId::VACANT` for a resolution the uncached
+        /// path made, which so always walks and records nothing
+        /// (`Mutator::slot_level_holds`).
         recorded_guard: DispatchId,
     },
     NestedClass {
@@ -261,7 +262,7 @@ fn resolved<'gc>(lookup: Lookup<'gc>, chain: Chain) -> Resolved<'gc> {
             field,
             chain,
             level,
-            recorded_guard: DispatchId::NONE,
+            recorded_guard: DispatchId::VACANT,
         },
         Lookup::NestedClass(mixin, declaring_class) => Resolved::NestedClass {
             mixin,
