@@ -259,10 +259,11 @@ fn inherits_mixin_of<'gc>(
         return None;
     }
     let mixin = mutator.heap.class_application(class)?.mixin.clone();
+    let id = mutator.heap.known_mixin_id(&mixin);
     let mut current = Some(mutator.class_of(subject));
     while let Some(level) = current {
         if let Some(application) = mutator.heap.class_application(level) {
-            if Rc::ptr_eq(&application.mixin, &mixin) {
+            if mutator.heap.same_mixin(&application.mixin, &mixin, id) {
                 return Some(true);
             }
         }
@@ -301,4 +302,71 @@ fn terminate<'gc>(mutator: &Mutator<'gc>, arguments: &[Value<'gc>]) -> Signal<'g
         argument(1),
         message,
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Interpreter, SourceOrigin};
+    use indoc::indoc;
+    use std::path::PathBuf;
+
+    const SOURCE: &str = indoc! {"
+        class Outer = Object new () (
+          public class Inner = () (
+            public answer = ( ^1 )
+          )
+          public inner = ( ^Inner )
+          public fresh = ( ^Inner new )
+        )
+    "};
+
+    /// A handler for an exception class catches an instance of the class
+    /// as it was before an edit replaced its mixin, and the other way
+    /// round: the two versions are one declaration.
+    #[test]
+    fn inherits_mixin_of_matches_applications_of_one_id() {
+        let module = ns_syntax::parse(SOURCE).expect("parse");
+        let resolved = crate::resolve(
+            module,
+            Rc::from(SOURCE),
+            SourceOrigin::File(PathBuf::from("t.ns")),
+        )
+        .expect("resolve");
+        let mut interpreter = Interpreter::bootstrap();
+        let outer = interpreter.load_module(&resolved);
+        let send = |interpreter: &mut Interpreter, receiver, selector: &str| match interpreter.send(
+            receiver,
+            Symbol::intern(selector),
+            &[],
+        ) {
+            Ok(root) => root,
+            Err(_) => panic!("{selector} failed"),
+        };
+        let first = interpreter.instantiate(&outer, &[]).ok().expect("an Outer");
+        let old_instance = send(&mut interpreter, &first, "fresh");
+        let old_class = send(&mut interpreter, &first, "inner");
+        interpreter.enter(|mutator| {
+            let class = mutator.fetch(&outer).as_object().expect("a class");
+            let inner = mutator
+                .heap()
+                .class_application(class)
+                .expect("a class object")
+                .mixin
+                .nested[0]
+                .clone();
+            let id = mutator.heap().known_mixin_id(&inner).expect("registered");
+            mutator.replace_mixin(id, Rc::new((*inner).clone()), None);
+        });
+        let second = interpreter.instantiate(&outer, &[]).ok().expect("an Outer");
+        let new_instance = send(&mut interpreter, &second, "fresh");
+        let new_class = send(&mut interpreter, &second, "inner");
+        interpreter.enter(|mutator| {
+            for (subject, class) in [(&old_instance, &new_class), (&new_instance, &old_class)] {
+                let subject = mutator.fetch(subject);
+                let arguments = [mutator.fetch(class)];
+                assert_eq!(inherits_mixin_of(mutator, subject, &arguments), Some(true));
+            }
+        });
+    }
 }

@@ -2465,6 +2465,107 @@ mod tests {
         );
     }
 
+    /// An activation entered at a level before an edit is accepted by the
+    /// slot check's cold path once the level has a successor and the
+    /// receiver's class names it; a chain of edits answers its newest
+    /// level at once.
+    #[test]
+    fn a_receiver_has_its_entered_levels_successor() {
+        let (mut interpreter, outer) = load(OUTER);
+        let instance = expect_ok(interpreter.instantiate(&outer, &[]), "an Outer");
+        interpreter.enter(|mutator| {
+            let class = mutator
+                .fetch(&outer)
+                .as_object()
+                .expect("a module's root is a class object");
+            let receiver = mutator.fetch(&instance);
+            let mixin = root_mixin(mutator, &outer);
+            let id = mutator
+                .heap()
+                .known_mixin_id(&mixin)
+                .expect("a root applied is registered");
+            let first = mutator
+                .heap()
+                .class_application(class)
+                .expect("a class object");
+            let superclass = first.superclass.clone();
+            // An edit that kept the level's slots: the mixin under its id
+            // replaced, and the class object naming its application.
+            fn next_level<'gc>(
+                mutator: &mut Mutator<'gc>,
+                class: ClassReference<'gc>,
+                id: crate::heap::MixinId,
+                mixin: &crate::mixin::Mixin,
+                superclass: Option<&Rc<crate::mixin::MixinApplication>>,
+            ) -> crate::heap::ApplicationIndex {
+                let version = Rc::new(mixin.clone());
+                mutator.replace_mixin(id, version.clone(), None);
+                let application = mutator.apply_mixin(&version, superclass);
+                assert!(mutator
+                    .heap_mut()
+                    .class_set_application(class, application.clone()));
+                application.index()
+            }
+            let second = next_level(mutator, class, id, &mixin, superclass.as_ref());
+            assert_ne!(second, first.index());
+            assert!(!mutator.heap().receiver_has_level(receiver, first.index()));
+            mutator.heap_mut().record_successor(first.index(), second);
+            assert!(mutator.heap().receiver_has_level(receiver, first.index()));
+            assert!(mutator.heap().receiver_has_level(receiver, second));
+            let third = next_level(mutator, class, id, &mixin, superclass.as_ref());
+            mutator.heap_mut().record_successor(second, third);
+            assert_eq!(mutator.heap().successor(first.index()), Some(third));
+            assert_eq!(mutator.heap().successor(second), Some(third));
+            assert_eq!(mutator.heap().successor(third), None);
+            assert!(mutator.heap().receiver_has_level(receiver, first.index()));
+        });
+    }
+
+    /// An application of an edited mixin's old version and one of its new
+    /// version are levels of one declaration.
+    #[test]
+    fn an_old_and_a_new_application_of_one_id_match() {
+        let (mut interpreter, outer) = load(OUTER_WITH_ACCESSORS);
+        let first = expect_ok(interpreter.instantiate(&outer, &[]), "the first Outer");
+        let old_inner = expect_ok(
+            interpreter.send(&first, Symbol::intern("inner"), &[]),
+            "the first Inner",
+        );
+        let (replacement, text) = replacement_inner(&mut interpreter);
+        replace_inner(&mut interpreter, &outer, replacement, text);
+        let second = expect_ok(interpreter.instantiate(&outer, &[]), "the second Outer");
+        let new_inner = expect_ok(
+            interpreter.send(&second, Symbol::intern("inner"), &[]),
+            "the second Inner",
+        );
+        interpreter.enter(|mutator| {
+            let old_class = mutator.fetch(&old_inner).as_object().expect("a class");
+            let new_class = mutator.fetch(&new_inner).as_object().expect("a class");
+            let old_application = mutator.heap().class_application(old_class).unwrap();
+            let new_application = mutator.heap().class_application(new_class).unwrap();
+            assert!(!Rc::ptr_eq(&old_application.mixin, &new_application.mixin));
+            let found =
+                mutator
+                    .heap()
+                    .with_level_applying_mixin_of(old_class, new_class, |application| {
+                        application.index()
+                    });
+            assert_eq!(found, Some(old_application.index()));
+        });
+    }
+
+    /// `OUTER` with accessors for its `Inner` class and one of its
+    /// instances.
+    const OUTER_WITH_ACCESSORS: &str = indoc! {"
+        class Outer = Object new () (
+          public class Inner = () (
+            public answer = ( ^1 )
+          )
+          public inner = ( ^Inner )
+          public fresh = ( ^Inner new answer )
+        )
+    "};
+
     /// `selector`'s mirror leaf run on `subject`, through a send to the VM
     /// mirror, which the host hands over and no program can reach.
     fn leaf(interpreter: &mut Interpreter, selector: &str, subject: &Root) -> Root {

@@ -3337,6 +3337,21 @@ impl<'gc> Heap<'gc> {
         id
     }
 
+    /// Whether `candidate` is `mixin` or another version of the mixin `id`
+    /// (`mixin`'s own, as `known_mixin_id` answered it) names: an edit
+    /// replaces a mixin under its id, and a level applying the old version
+    /// is still a level of the declaration. The reference compare is the
+    /// fast case and the only one an unregistered `mixin` has.
+    pub(crate) fn same_mixin(
+        &self,
+        candidate: &Rc<Mixin>,
+        mixin: &Rc<Mixin>,
+        id: Option<MixinId>,
+    ) -> bool {
+        Rc::ptr_eq(candidate, mixin)
+            || id.is_some_and(|id| self.known_mixin_id(candidate) == Some(id))
+    }
+
     /// The id `mixin`, any version of it, was registered under; `None`
     /// while nothing has registered it -- a mixin no class object applies
     /// and nothing has reified.
@@ -3464,6 +3479,31 @@ impl<'gc> Heap<'gc> {
         application
     }
 
+    /// Records `new` as the application that took `old`'s place and
+    /// repoints every application whose successor was `old` at `new`, so a
+    /// chain of edits answers its newest level in one lookup.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "road step 5b2a's install records successors; until then only the tests do"
+        )
+    )]
+    pub(crate) fn record_successor(&mut self, old: ApplicationIndex, new: ApplicationIndex) {
+        for successor in self.tables.successors.values_mut() {
+            if *successor == old {
+                *successor = new;
+            }
+        }
+        self.tables.successors.insert(old, new);
+    }
+
+    /// The newest application that took `level`'s place, if an install
+    /// replaced it.
+    pub(crate) fn successor(&self, level: ApplicationIndex) -> Option<ApplicationIndex> {
+        self.tables.successors.get(&level).copied()
+    }
+
     pub fn application(&self, index: ApplicationIndex) -> Option<Rc<MixinApplication>> {
         self.tables.applications.get(index.index()).cloned()
     }
@@ -3565,9 +3605,11 @@ impl<'gc> Heap<'gc> {
     /// `mixin_of`: a subclass's instance finds there the slots that mixin
     /// declares, at the level's own slot base, whatever slots other levels
     /// add -- a `<:` clause's level as well as the class itself. Matched by
-    /// mixin, not by class object, and compared by reference, so the walk
-    /// clones no application. `None` when no level applies it, or
-    /// `mixin_of` is no class object.
+    /// mixin, not by class object, and compared by reference first, then by
+    /// id (`same_mixin`), so the walk clones no application and an
+    /// application of an edited mixin's old version matches one of its new
+    /// version. `None` when no level applies it, or `mixin_of` is no class
+    /// object.
     pub(crate) fn with_level_applying_mixin_of<T>(
         &self,
         class: ClassReference<'gc>,
@@ -3575,10 +3617,11 @@ impl<'gc> Heap<'gc> {
         read: impl FnOnce(&crate::mixin::MixinApplication) -> T,
     ) -> Option<T> {
         let mixin = &self.class_application_entry(mixin_of)?.mixin;
+        let id = self.known_mixin_id(mixin);
         let mut level = Some(class);
         while let Some(current) = level {
             if let Some(application) = self.class_application_entry(current) {
-                if Rc::ptr_eq(&application.mixin, mixin) {
+                if self.same_mixin(&application.mixin, mixin, id) {
                     return Some(read(application));
                 }
             }
@@ -4808,6 +4851,11 @@ impl<'gc> Heap<'gc> {
     /// one walk of the cold checks of every slot access whose index was
     /// decided without looking at the receiver (`docs/design/object-model.md`,
     /// "what a slot access checks").
+    ///
+    /// The level's successor passes as well: an activation entered before
+    /// an edit holds the old level, and an edit that reached the install
+    /// kept that level's slots, so a receiver whose chain holds the
+    /// replacement still has the layout the activation was compiled against.
     pub(crate) fn receiver_has_level(&self, receiver: Value<'gc>, level: ApplicationIndex) -> bool {
         let Some(object) = receiver.as_object() else {
             return false;
@@ -4815,9 +4863,11 @@ impl<'gc> Heap<'gc> {
         if level == ApplicationIndex::UNREGISTERED {
             return false;
         }
+        let successor = self.successor(level);
         let mut current = Some(self.object_class(object));
         while let Some(class) = current {
-            if self.class_application_index(class) == Some(level) {
+            let held = self.class_application_index(class);
+            if held == Some(level) || (successor.is_some() && held == successor) {
                 return true;
             }
             current = self.class_superclass(class);

@@ -100,6 +100,14 @@ pub(crate) struct Tables {
     /// text is what an edit edits").
     pub(crate) current_module_texts: IdentityMap<MixinId, ModuleText>,
     pub(crate) applications: Vec<Rc<MixinApplication>>,
+    /// Per application an install replaced, the application of the edited
+    /// mixin that took its place, always the newest of its chain
+    /// (`Heap::record_successor` repoints the earlier entries): an
+    /// activation entered at the old level passes the slot check's cold
+    /// path against the new one, because an edit that reaches the install
+    /// keeps the level's slots. No entry is dropped; the rule for reusing
+    /// an application's index is road step 5b2b's.
+    pub(crate) successors: IdentityMap<ApplicationIndex, ApplicationIndex>,
     pub(crate) codes: Vec<CodeEntry>,
     pub(crate) code_ids: IdentityMap<usize, CodeId>,
 }
