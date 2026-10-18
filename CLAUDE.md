@@ -20,7 +20,9 @@ Rust 1.98.0, edition 2021, six crates:
   `bytecode/compact.rs`), the VM (`vm.rs`) and the send machinery it calls
   (`interpreter/`: inline caches in `inline_cache.rs` in front of the lookups
   in `resolve.rs`, the one unwinder in `unwind.rs`, the VM mirror in
-  `mirror.rs` and its leaves in `builtins/`), the core library
+  `mirror.rs` and its leaves in `builtins/`, a MirrorBuilder's edit
+  prepared from its module's current text in `edit.rs` and installed
+  atomically in `install.rs`), the core library
   (`core-library/Kernel.ns`, `PlatformFactory.ns` and, under `platform/`,
   `TranscriptFactory.ns`, `TimeFactory.ns`, `CollectionsFactory.ns`,
   `TypedArraysFactory.ns` and `MirrorsFactory.ns` (the mirrors, whose
