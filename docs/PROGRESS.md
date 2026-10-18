@@ -5553,10 +5553,11 @@ fingerprint changed.
 - `f4b1280e`, `1a2ed218` -- comments that gave lazy forwarding or the
   current class as their reason.
 - `f423936e`, `9aa2ef49` -- the documents.
-- `9008d8b3`, `b56f19aa` and this commit -- the final review's fixes: a
-  push records the receiver's guard only for a receiver that has the
-  entered level, the nested-class cache slot is looked up again after the
-  clause, and the documents.
+- `9008d8b3`, `b56f19aa`, `c32679a1`, `73b4907b`, `af267bf4` -- the final
+  review's fixes: a push records the receiver's guard only for a receiver
+  that has the entered level, the nested-class cache slot is looked up
+  again after the clause and read before the class is stored there, and
+  the documents.
 
 What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "Next":
 road step 5b2, with the places still keyed by a mixin's address, the
