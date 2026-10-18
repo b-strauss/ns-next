@@ -439,6 +439,20 @@ pub struct CompiledCode {
     /// -- silent wrong output at exit status 0, not a crash. The round-trip
     /// tests' `assert_derived_as_decoded` holds the two lists to each other.
     pub outer_reach: u16,
+    /// Whether the body itself -- not a block it creates, which has its own
+    /// -- contains an instruction that addresses a slot of the level it was
+    /// entered at (`addresses_own_slots_of` lists them). An activation of
+    /// such a body records its receiver's guard when it is pushed, so that a
+    /// receiver replaced meanwhile is never written in the old layout
+    /// (`docs/design/object-model.md`, "what a slot access checks"). Derived
+    /// from the encoding by `from_builder`, never on the wire.
+    ///
+    /// **Every instruction that addresses a slot by `own_index` has to be
+    /// named in `addresses_own_slots_of`, and its eight-byte form in
+    /// `compact::narrow_addresses_own_slots`**: one that is not runs without
+    /// a recorded guard, and a forwarded receiver is written in the old
+    /// layout at exit status 0. Both matches are exhaustive.
+    pub addresses_own_slots: bool,
     /// Whether this is the body of `Closure>>on:do:`, `ensure:` or
     /// `ifCurtailed:`, and where its parameters and locals live: recognized
     /// only when the kernel is compiled (`compiler::unwind_marker`), so no
@@ -466,13 +480,16 @@ pub(crate) struct CompiledCodeFields<'code> {
     pub(crate) copied_count: &'code u16,
     #[expect(dead_code, reason = "named so that a writer decides to leave it out")]
     pub(crate) outer_reach: &'code u16,
+    #[expect(dead_code, reason = "named so that a writer decides to leave it out")]
+    pub(crate) addresses_own_slots: &'code bool,
     pub(crate) unwind_marker: &'code Option<UnwindMarker>,
     pub(crate) source: &'code Span,
 }
 
 impl CompiledCode {
     /// A body from its instructions, encoded at once; `family_size` and
-    /// `outer_reach` are derived from them, as the compiler derives them.
+    /// `outer_reach` and `addresses_own_slots` are derived from them, as the
+    /// compiler derives them.
     /// It carries no unwind marker: only the kernel's compilation
     /// recognizes one.
     pub fn new(
@@ -500,9 +517,10 @@ impl CompiledCode {
     }
 
     /// A body from the builder a lowering or the image decoder emitted it
-    /// into; `family_size` and `outer_reach` are derived from it, read off
-    /// its tables as `family_size_of` and `outer_reach_of` read the decoded
-    /// view, so that building a body decodes none of it.
+    /// into; `family_size`, `outer_reach` and `addresses_own_slots` are
+    /// derived from it, read off its tables as `family_size_of`,
+    /// `outer_reach_of` and `addresses_own_slots_of` read the decoded view,
+    /// so that building a body decodes none of it.
     pub(crate) fn from_builder(
         kind: CodeKind,
         builder: CodeBuilder,
@@ -516,6 +534,7 @@ impl CompiledCode {
             kind,
             family_size: builder.family_size(),
             outer_reach: builder.outer_reach(),
+            addresses_own_slots: builder.addresses_own_slots(),
             body: builder.finish(),
             argument_count,
             register_count,
@@ -540,6 +559,7 @@ impl CompiledCode {
             family_size,
             copied_count,
             outer_reach,
+            addresses_own_slots,
             unwind_marker,
             source,
         } = self;
@@ -552,6 +572,7 @@ impl CompiledCode {
             family_size,
             copied_count,
             outer_reach,
+            addresses_own_slots,
             unwind_marker,
             source,
         }
@@ -648,6 +669,7 @@ impl PartialEq for CompiledCode {
             family_size,
             copied_count,
             outer_reach,
+            addresses_own_slots,
             unwind_marker,
             source,
         } = self;
@@ -658,6 +680,7 @@ impl PartialEq for CompiledCode {
             && *family_size == other.family_size
             && *copied_count == other.copied_count
             && *outer_reach == other.outer_reach
+            && *addresses_own_slots == other.addresses_own_slots
             && *unwind_marker == other.unwind_marker
             && *source == other.source
             && self.instruction_count() == other.instruction_count()
@@ -879,6 +902,54 @@ pub(crate) fn outer_reach_of(instructions: &[Instruction]) -> u16 {
         })
         .max()
         .unwrap_or(0)
+}
+
+/// Whether a body itself addresses a slot of the level it was entered at: it
+/// contains an instruction that reads or writes the receiver's field at the
+/// activation's slot base plus an `own_index`. A block a body creates is a
+/// body of its own and does not count.
+///
+/// **The match below answers every instruction, with no `_` arm, and so does
+/// `compact::narrow_addresses_own_slots` for the eight-byte forms**, so that a
+/// new instruction must decide. One that addressed a slot by `own_index` but
+/// answered `false` would run without a recorded guard, and a receiver the
+/// live-editing forward replaced would be written in its old layout, silently
+/// (`docs/design/object-model.md`, "what a slot access checks").
+pub(crate) fn addresses_own_slots_of(instructions: &[Instruction]) -> bool {
+    instructions.iter().any(|instruction| match instruction {
+        Instruction::InitializeSlot { .. }
+        | Instruction::InitializeSlotProvisionally { .. }
+        | Instruction::LoadOwnSlot { .. }
+        | Instruction::ReturnSlotIfFilled { .. } => true,
+        Instruction::LoadLiteral { .. }
+        | Instruction::LoadSelf { .. }
+        | Instruction::LoadEnclosingObject { .. }
+        | Instruction::Move { .. }
+        | Instruction::LoadOuterLocal { .. }
+        | Instruction::StoreOuterLocal { .. }
+        | Instruction::StoreLocal { .. }
+        | Instruction::SendLexical { .. }
+        | Instruction::SendPublic { .. }
+        | Instruction::SendInlinable { .. }
+        | Instruction::SendSuper { .. }
+        | Instruction::SendMirror { .. }
+        | Instruction::MakeClosure { .. }
+        | Instruction::MakeArray { .. }
+        | Instruction::MakeVector { .. }
+        | Instruction::LoadVector { .. }
+        | Instruction::StoreVector { .. }
+        | Instruction::MakeFuture { .. }
+        | Instruction::ResolveFuture { .. }
+        | Instruction::Return { .. }
+        | Instruction::ImplicitReturn { .. }
+        | Instruction::NonLocalReturn { .. }
+        | Instruction::SignalNonBoolean { .. }
+        | Instruction::Jump { .. }
+        | Instruction::JumpIfNotBoolean { .. }
+        | Instruction::BranchIfFalse { .. }
+        | Instruction::BranchIfTrue { .. }
+        | Instruction::IntegerBinary { .. } => false,
+    })
 }
 
 /// A human-readable listing of `code` for `ns-next-analyzer disasm`. Nested block
@@ -1240,6 +1311,71 @@ mod tests {
             ]),
             1
         );
+    }
+
+    fn code_of(instructions: Vec<Instruction>) -> CompiledCode {
+        CompiledCode::new(
+            CodeKind::Method,
+            instructions,
+            0,
+            2,
+            0,
+            vec![],
+            Span::new(0, 0),
+        )
+    }
+
+    #[test]
+    fn a_body_with_an_own_slot_instruction_addresses_its_own_slots() {
+        let instructions = [
+            Instruction::InitializeSlot {
+                source: 0,
+                own_index: 0,
+            },
+            Instruction::InitializeSlotProvisionally {
+                source: 0,
+                own_index: 0,
+            },
+            Instruction::LoadOwnSlot {
+                destination: 0,
+                own_index: 0,
+            },
+            Instruction::ReturnSlotIfFilled { own_index: 0 },
+        ];
+        for instruction in instructions {
+            let body = vec![
+                Instruction::LoadSelf { destination: 0 },
+                instruction.clone(),
+                Instruction::Return { register: 0 },
+            ];
+            assert!(addresses_own_slots_of(&body), "{instruction:?}");
+            assert!(code_of(body).addresses_own_slots, "{instruction:?}");
+        }
+    }
+
+    #[test]
+    fn a_body_without_one_does_not() {
+        let body = vec![
+            Instruction::LoadSelf { destination: 0 },
+            Instruction::Return { register: 0 },
+        ];
+        assert!(!addresses_own_slots_of(&body));
+        assert!(!code_of(body).addresses_own_slots);
+        // A block it creates is another body, with its own flag.
+        let block = Rc::new(code_of(vec![Instruction::ReturnSlotIfFilled {
+            own_index: 0,
+        }]));
+        assert!(block.addresses_own_slots);
+        let creating = code_of(vec![
+            Instruction::MakeClosure {
+                destination: 0,
+                parameters: Rc::new(vec![]),
+                code: block,
+                copied: Vec::new(),
+            },
+            Instruction::Return { register: 0 },
+        ]);
+        assert!(!creating.addresses_own_slots);
     }
 
     /// A mirror send lists its mirror selector with the subject leading its

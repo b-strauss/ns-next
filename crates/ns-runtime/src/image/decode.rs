@@ -1918,8 +1918,9 @@ fn decode_code(
     for _ in 0..instruction_count {
         builder.emit(decode_instruction(reader, codes, symbols, uncached)?);
     }
-    // `from_builder` derives `family_size` and `outer_reach` as the compiler's
-    // bodies derive them, off the encoding. `family_size` is a placeholder, not
+    // `from_builder` derives `family_size`, `outer_reach` and
+    // `addresses_own_slots` as the compiler's bodies derive them, off the
+    // encoding. `family_size` is a placeholder, not
     // yet the real answer: every send here carries a number-shaped stand-in,
     // not the number `number_call_site_families` will give it, so this would
     // double-count a non-uncached body's sends as if they were already dense

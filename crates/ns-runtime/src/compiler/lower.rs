@@ -3883,6 +3883,53 @@ mod tests {
         assert_eq!(code.outer_reach, 0);
     }
 
+    /// The instance initializer and a lazy slot's getter run against the
+    /// level's own slots; an ordinary method does not.
+    #[test]
+    fn an_initializer_and_a_lazy_getter_address_their_own_slots_and_a_method_does_not() {
+        let source = indoc! {"
+            class X = Object new (
+              | a = 1. |
+            ) (
+              lazy b = 2.
+
+              m = ( ^a )
+            ) : ()
+        "};
+        let module = ns_syntax::parse(source).expect("parse");
+        let resolved = crate::resolve(
+            module,
+            Rc::from(source),
+            crate::SourceOrigin::File(PathBuf::from("t.ns")),
+        )
+        .expect("resolve");
+        let mut interpreter = crate::Interpreter::bootstrap();
+        let class = interpreter.load_module(&resolved);
+        let mixin = interpreter.enter(|mutator| {
+            let crate::ValueKind::Object(object) = mutator.fetch(&class).kind() else {
+                panic!("expected a class object");
+            };
+            mutator
+                .heap()
+                .class_application(object)
+                .expect("a class")
+                .mixin
+                .clone()
+        });
+        let initializer = mixin.initializer_code.as_ref().expect("an initializer");
+        assert!(initializer.addresses_own_slots);
+        let flag_of = |selector: &str| {
+            mixin
+                .compiled_methods()
+                .find(|method| method.selector.as_str() == selector)
+                .unwrap_or_else(|| panic!("a method {selector}"))
+                .code
+                .addresses_own_slots
+        };
+        assert!(flag_of("b"), "the lazy getter");
+        assert!(!flag_of("m"));
+    }
+
     /// A failure argument that is not a literal block is an ordinary send
     /// to the mirror, under the optimized lowering as under the reference.
     #[test]

@@ -374,11 +374,13 @@ impl Out {
             argument_count,
             register_count,
             statement_program_counter,
-            // Both derived from the instructions by `from_builder`, as the
-            // compiler derives them, so `outer_reach_of` decides them here too.
+            // All three derived from the instructions by `from_builder`, as the
+            // compiler derives them, so `outer_reach_of` and
+            // `addresses_own_slots_of` decide them here too.
             family_size: _,
             copied_count,
             outer_reach: _,
+            addresses_own_slots: _,
             unwind_marker,
             source,
         } = code.fields();

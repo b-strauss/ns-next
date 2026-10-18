@@ -1230,6 +1230,12 @@ impl CodeBuilder {
         self.tables().outer_reach(&self.slots)
     }
 
+    /// `bytecode::addresses_own_slots_of` over what has been emitted, read
+    /// off the slots and the wide table without decoding them.
+    pub(crate) fn addresses_own_slots(&self) -> bool {
+        self.tables().addresses_own_slots(&self.slots)
+    }
+
     fn tables(&self) -> Tables<'_> {
         Tables {
             constants: &self.constants,
@@ -1554,6 +1560,74 @@ fn narrow_outer_reach(slot: CompactInstruction) -> u16 {
     }
 }
 
+/// Whether a narrow slot addresses a slot of the level it was entered at:
+/// `addresses_own_slots_of`'s list, in the eight-byte forms. No `_` arm, so
+/// that a new form must decide: one that addressed a slot by `own_index`
+/// unnamed would run without a recorded guard (`docs/design/object-model.md`,
+/// "what a slot access checks"). A `Wide`'s is counted from `wide`.
+fn narrow_addresses_own_slots(slot: CompactInstruction) -> bool {
+    match slot {
+        CompactInstruction::InitializeSlot { .. }
+        | CompactInstruction::ReturnSlotIfFilled { .. }
+        | CompactInstruction::LoadOwnSlot { .. }
+        | CompactInstruction::InitializeSlotProvisionally { .. } => true,
+        CompactInstruction::LoadOuterLocal { .. }
+        | CompactInstruction::StoreOuterLocal { .. }
+        | CompactInstruction::LoadNil { .. }
+        | CompactInstruction::LoadTrue { .. }
+        | CompactInstruction::LoadFalse { .. }
+        | CompactInstruction::LoadSmallInteger { .. }
+        | CompactInstruction::LoadConstant { .. }
+        | CompactInstruction::LoadLiteral { .. }
+        | CompactInstruction::LoadSelf { .. }
+        | CompactInstruction::LoadEnclosingObject { .. }
+        | CompactInstruction::Move { .. }
+        | CompactInstruction::StoreLocal { .. }
+        | CompactInstruction::SendPublic0 { .. }
+        | CompactInstruction::SendPublic1 { .. }
+        | CompactInstruction::SendPublic2 { .. }
+        | CompactInstruction::SendPublicWide { .. }
+        | CompactInstruction::SendInlinable0 { .. }
+        | CompactInstruction::SendInlinable1 { .. }
+        | CompactInstruction::SendInlinable2 { .. }
+        | CompactInstruction::SendInlinableWide { .. }
+        | CompactInstruction::SendLexical0 { .. }
+        | CompactInstruction::SendLexical1 { .. }
+        | CompactInstruction::SendLexical2 { .. }
+        | CompactInstruction::SendLexicalWide { .. }
+        | CompactInstruction::SendSuper0 { .. }
+        | CompactInstruction::SendSuper1 { .. }
+        | CompactInstruction::SendSuper2 { .. }
+        | CompactInstruction::SendSuperWide { .. }
+        | CompactInstruction::SendMirror { .. }
+        | CompactInstruction::MakeClosure { .. }
+        | CompactInstruction::MakeArray { .. }
+        | CompactInstruction::MakeVector { .. }
+        | CompactInstruction::LoadVector { .. }
+        | CompactInstruction::StoreVector { .. }
+        | CompactInstruction::MakeFuture { .. }
+        | CompactInstruction::ResolveFuture { .. }
+        | CompactInstruction::Return { .. }
+        | CompactInstruction::ImplicitReturn { .. }
+        | CompactInstruction::NonLocalReturn { .. }
+        | CompactInstruction::SignalNonBoolean { .. }
+        | CompactInstruction::Jump { .. }
+        | CompactInstruction::JumpIfNotBoolean { .. }
+        | CompactInstruction::BranchIfFalse { .. }
+        | CompactInstruction::BranchIfTrue { .. }
+        | CompactInstruction::IntegerAdd { .. }
+        | CompactInstruction::IntegerSubtract { .. }
+        | CompactInstruction::IntegerMultiply { .. }
+        | CompactInstruction::IntegerFloorDivide { .. }
+        | CompactInstruction::IntegerLess { .. }
+        | CompactInstruction::IntegerGreater { .. }
+        | CompactInstruction::IntegerLessOrEqual { .. }
+        | CompactInstruction::IntegerGreaterOrEqual { .. }
+        | CompactInstruction::IntegerEqual { .. }
+        | CompactInstruction::Wide { .. } => false,
+    }
+}
+
 /// The tables a slot indexes, borrowed from a builder or a finished body,
 /// so that both decode with the one inverse below.
 struct Tables<'a> {
@@ -1602,6 +1676,15 @@ impl Tables<'_> {
             .chain(std::iter::once(crate::bytecode::outer_reach_of(self.wide)))
             .max()
             .unwrap_or(0)
+    }
+
+    /// What `bytecode::addresses_own_slots_of` answers over the decoded view:
+    /// the narrow forms are named in `narrow_addresses_own_slots`, and every
+    /// wide instruction is in `wide`, where `addresses_own_slots_of` itself
+    /// names them.
+    fn addresses_own_slots(&self, slots: &[CompactInstruction]) -> bool {
+        slots.iter().any(|slot| narrow_addresses_own_slots(*slot))
+            || crate::bytecode::addresses_own_slots_of(self.wide)
     }
 
     /// The exact inverse of `CodeBuilder::encode`.
@@ -2069,8 +2152,9 @@ mod tests {
         }
     }
 
-    /// `family_size` and `outer_reach`, read off the encoding, answer what
-    /// `family_size_of` and `outer_reach_of` answer over the decoded view.
+    /// `family_size`, `outer_reach` and `addresses_own_slots`, read off the
+    /// encoding, answer what `family_size_of`, `outer_reach_of` and
+    /// `addresses_own_slots_of` answer over the decoded view.
     fn assert_derived_as_decoded(builder: &CodeBuilder) {
         let instructions = builder.instructions();
         assert_eq!(
@@ -2080,6 +2164,10 @@ mod tests {
         assert_eq!(
             builder.outer_reach(),
             crate::bytecode::outer_reach_of(&instructions)
+        );
+        assert_eq!(
+            builder.addresses_own_slots(),
+            crate::bytecode::addresses_own_slots_of(&instructions)
         );
     }
 

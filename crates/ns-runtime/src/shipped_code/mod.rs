@@ -163,7 +163,7 @@ pub(crate) fn decode_module(bytes: &[u8], name: &str, module_text: Rc<str>) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bytecode::Instruction;
+    use crate::bytecode::{CompiledCode, Instruction};
 
     fn decoded_modules(bytes: &[u8]) -> Vec<(&'static str, Rc<Mixin>)> {
         module_names()
@@ -252,6 +252,63 @@ mod tests {
         assert!(usable(bytes), "run `cargo xtask shipped-code`");
         let decoded = decoded_modules(bytes);
         assert_eq!(encode(&decoded, SHIPPED_CODE_FINGERPRINT), bytes);
+    }
+
+    /// Asserts, for `code` and every block it creates, that the flag the
+    /// builder derived off the encoding is what `addresses_own_slots_of`
+    /// answers over the decoded view; returns how many bodies were true.
+    fn count_addressing_own_slots(code: &CompiledCode) -> usize {
+        let instructions = code.instructions();
+        assert_eq!(
+            code.addresses_own_slots,
+            crate::bytecode::addresses_own_slots_of(&instructions)
+        );
+        let blocks: usize = instructions
+            .iter()
+            .map(|instruction| match instruction {
+                Instruction::MakeClosure { code, .. } => count_addressing_own_slots(code),
+                _ => 0,
+            })
+            .sum();
+        usize::from(code.addresses_own_slots) + blocks
+    }
+
+    fn count_in_mixin(mixin: &Mixin) -> usize {
+        let own = mixin
+            .initializer_code
+            .iter()
+            .chain(&mixin.superclass_clause_code)
+            .chain(&mixin.superclass_message_code)
+            .chain(
+                mixin
+                    .mixin_applications
+                    .iter()
+                    .filter_map(|clause| clause.message_code.as_ref()),
+            )
+            .map(|code| count_addressing_own_slots(code))
+            .chain(
+                mixin
+                    .compiled_methods()
+                    .map(|method| count_addressing_own_slots(&method.code)),
+            )
+            .sum::<usize>();
+        own + mixin
+            .nested
+            .iter()
+            .chain(&mixin.class_side)
+            .map(|nested| count_in_mixin(nested))
+            .sum::<usize>()
+    }
+
+    /// The flag is exact for every body of the shipped world, compiled from
+    /// source and decoded from the embedded artifact alike.
+    #[test]
+    fn the_flag_is_exact_for_every_body_of_the_shipped_modules() {
+        let mut total = 0;
+        for (_, root) in decoded_modules(&generated()) {
+            total += count_in_mixin(&root);
+        }
+        assert!(total > 0, "no shipped body addresses its own slots");
     }
 
     #[test]
