@@ -962,75 +962,17 @@ fn a_mirror_answers_a_method_and_a_class_declaration_source() {
     );
 }
 
-/// Every class the platform's facets hand out, by facet: the only
-/// core-library classes a program can be given without naming them bare.
-const HANDED_OUT: &[(&str, &[&str])] = &[
-    (
-        "kernel",
-        &[
-            "Exception",
-            "Error",
-            "MessageNotUnderstood",
-            "Halt",
-            "Message",
-            "ArgumentError",
-            "CannotReturn",
-            "CannotInstantiate",
-            "Closure",
-            "Future",
-            "Proxy",
-            "Collection",
-            "StringBuilder",
-            "DataView",
-            "WeakArray",
-            "Ephemeron",
-            "WeakMap",
-        ],
-    ),
-    (
-        "collections",
-        &[
-            "List",
-            "NotFound",
-            "Map",
-            "IdentityMap",
-            "Set",
-            "Collection",
-            "ConcurrentModification",
-            "WeakArray",
-            "WeakMap",
-        ],
-    ),
-    ("time", &["Stopwatch"]),
-    (
-        "typedArrays",
-        &[
-            "TypedArray",
-            "Int8Array",
-            "Uint8Array",
-            "Int16Array",
-            "Uint16Array",
-            "Int32Array",
-            "Uint32Array",
-            "Int64Array",
-            "Uint64Array",
-            "Float32Array",
-            "Float64Array",
-        ],
-    ),
-    ("mirrors", &["ObjectMirror", "ClassMirror"]),
-    ("transcript", &[]),
-];
-
 /// Walking through mirrors from the platform, every facet, every class
 /// the facets hand out and an instance of several of them, every value a
 /// mirror answers without signalling -- a slot's value, `getSlot:` of
 /// every slot a class declares, an enclosing object, a class, a
-/// superclass, the metaclass and its chain -- is neither the VM mirror
-/// nor a shipped module's instance, and no class among them is a
-/// core-library class the facets do not hand out
+/// superclass, the metaclass and its chain -- is one of the classes the
+/// walk was given, each exactly twice: every subject is a core-library
+/// class or an instance of one, so nothing else may come back
 /// (`docs/design/liveness-and-reflection.md`, "No mirror hands out a value
-/// it reached through a shipped level").
+/// it reached through a shipped level"). The facets and their classes are
+/// found through mirrors too: the platform class's public lazy slots, and
+/// each facet class's public unary methods whose answer is a class.
 #[test]
 fn no_mirror_answers_a_withheld_value() {
     let source = indoc! {"
@@ -1069,6 +1011,20 @@ fn no_mirror_answers_a_withheld_value() {
               keep: [mirror getSlot: declaration name].
             ].
             walkChain: mirror getClass.
+          )
+
+          public publicNames: group = (
+            ^(group asArray select: [:each | each accessModifier = #public]) collect: [:each |
+              each name.
+            ].
+          )
+
+          public facetNames = (
+            ^publicNames: (ObjectMirror reflecting: walked) getClass mixin lazySlots.
+          )
+
+          public selectorsOf: facet = (
+            ^publicNames: (ObjectMirror reflecting: facet) getClass mixin methods.
           )
 
           public walk: facets classes: classes = (
@@ -1113,20 +1069,60 @@ fn no_mirror_answers_a_withheld_value() {
         "usingPlatform:",
     );
     let mut facets = vec![platform.clone()];
-    let mut classes = Vec::new();
-    for (facet, names) in HANDED_OUT {
+    let mut classes: Vec<Root> = Vec::new();
+    let facet_names = expect_ok(
+        interpreter.send(&walker, Symbol::intern("facetNames"), &[]),
+        "facetNames",
+    );
+    for facet_name in symbols_of(&mut interpreter, &facet_names) {
         let facet = expect_ok(
-            interpreter.send(&platform, Symbol::intern(facet), &[]),
-            &format!("platform {facet}"),
+            interpreter.send(&platform, Symbol::intern(&facet_name), &[]),
+            &format!("platform {facet_name}"),
         );
-        for name in *names {
-            classes.push(expect_ok(
-                interpreter.send(&facet, Symbol::intern(name), &[]),
-                name,
-            ));
+        let selectors = expect_ok(
+            interpreter.send(
+                &walker,
+                Symbol::intern("selectorsOf:"),
+                std::slice::from_ref(&facet),
+            ),
+            "selectorsOf:",
+        );
+        for selector in symbols_of(&mut interpreter, &selectors) {
+            let unary = selector
+                .chars()
+                .all(|character| character.is_alphanumeric() || character == '_');
+            if !unary {
+                continue;
+            }
+            let answer = expect_ok(
+                interpreter.send(&facet, Symbol::intern(&selector), &[]),
+                &format!("{facet_name} {selector}"),
+            );
+            let fresh = interpreter.enter(|mutator| {
+                let Some(object) = mutator.fetch(&answer).as_object() else {
+                    return false;
+                };
+                mutator.heap().is_class(object)
+                    && !classes.iter().any(|class| {
+                        mutator
+                            .fetch(class)
+                            .as_object()
+                            .is_some_and(|known| known.same(object))
+                    })
+            });
+            if fresh {
+                classes.push(answer);
+            }
         }
         facets.push(facet);
     }
+    // The derivation found what the facets hand out: 17 kernel classes, 9
+    // collections, 1 of time, 11 typed arrays and 2 mirrors, less the
+    // `Collection`, `WeakArray` and `WeakMap` the kernel and the
+    // collections facets both hand out. A facet widened on demand moves
+    // the count with it.
+    assert_eq!(facets.len(), 7, "the platform and its six facets");
+    assert_eq!(classes.len(), 37, "the classes the facets hand out");
     let (facet_array, class_array) = interpreter.enter(|mutator| {
         let facets = facets.iter().map(|facet| mutator.fetch(facet)).collect();
         let facets = Value::object(mutator.new_array(facets));
@@ -1153,43 +1149,59 @@ fn no_mirror_answers_a_withheld_value() {
             .iter()
             .filter_map(|class| mutator.fetch(class).as_object())
             .collect();
-        let mut given_seen = 0;
+        // Each given class comes back twice: from the mirror the walk made
+        // on it, and as the first level of that mirror's chain.
+        let mut occurrences = vec![0_usize; given.len()];
         for element in &elements {
             let description = mutator.heap().describe(*element);
             assert!(
                 !mutator.is_withheld(*element),
                 "a mirror answered a withheld value: {description}"
             );
-            let Some(object) = element.as_object() else {
-                continue;
+            let Some(position) = element
+                .as_object()
+                .and_then(|object| given.iter().position(|class| class.same(object)))
+            else {
+                panic!("a mirror answered what it was not given: {description}");
             };
-            if !mutator.heap().is_class(object) {
-                continue;
-            }
-            let Some(application) = mutator.heap().class_application(object) else {
-                panic!("a class object has an application");
-            };
-            let shipped = if application.mixin.is_class_side() {
-                application
-                    .mixin
-                    .enclosing_mixin()
-                    .is_none_or(|instance| instance.shipped)
-            } else {
-                application.mixin.shipped
-            };
-            if !shipped {
-                continue;
-            }
-            assert!(
-                given.iter().any(|class| class.same(object)),
-                "a mirror answered a core-library class no facet hands out: {description}"
-            );
-            given_seen += 1;
+            occurrences[position] += 1;
         }
-        assert!(
-            given_seen >= given.len(),
-            "every class handed to reflecting: comes back: {given_seen} of {}",
-            given.len()
-        );
+        for (class, count) in given.iter().zip(&occurrences) {
+            assert_eq!(
+                *count,
+                2,
+                "{} comes back once from reflecting: and once from its chain",
+                mutator.heap().describe(Value::object(*class))
+            );
+        }
     });
+}
+
+/// The texts of an Array of Symbols the host holds.
+fn symbols_of(interpreter: &mut Interpreter, array: &Root) -> Vec<String> {
+    interpreter.enter(|mutator| {
+        let value = mutator.fetch(array);
+        let Some(elements) = value
+            .as_object()
+            .and_then(|object| mutator.heap().array_elements(object))
+        else {
+            panic!("expected an Array, got {}", mutator.heap().describe(value));
+        };
+        elements
+            .iter()
+            .map(|element| {
+                element
+                    .as_object()
+                    .and_then(|object| mutator.heap().symbol_value(object))
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "expected a Symbol, got {}",
+                            mutator.heap().describe(*element)
+                        )
+                    })
+                    .as_str()
+                    .to_string()
+            })
+            .collect()
+    })
 }
