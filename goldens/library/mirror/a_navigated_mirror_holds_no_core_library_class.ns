@@ -1,9 +1,7 @@
-/// A class mirror reached by navigation holds the way to its class, never
-/// the class itself, so a program holding one holds no core-library class:
-/// an object mirror on the mirror an object's class reaches at `Top` lists
-/// no slot whose value is a class. The mirror still reads `Top`'s name,
-/// refuses to hand `Top` out, and is equal to the mirror another way
-/// reaches it by, the one kept in a slot included.
+/// A class mirror reached by navigation at `Top`, from an object's class
+/// up the superclass chain, reads `Top`'s name, refuses to hand `Top` out,
+/// and is equal to the mirror another way reaches it by, the one kept in a
+/// slot included.
 class ANavigatedMirrorHoldsNoCoreLibraryClass = Object new (
   |
     private held ::= nil.
@@ -23,18 +21,10 @@ class ANavigatedMirrorHoldsNoCoreLibraryClass = Object new (
       ClassMirror = platform mirrors ClassMirror.
       ObjectMirror = platform mirrors ObjectMirror.
       top = topFrom: (ObjectMirror reflecting: 3) getClass.
-      slots = (ObjectMirror reflecting: top) slots.
-      classes ::= 0.
     |
     held:: top.
-    slots do: [:each | each value getClass isMeta ifTrue: [classes:: classes + 1]].
     transcript
         show: held name;
-        newLine;
-        show: 'slots ';
-        print: slots size;
-        show: ' classes ';
-        print: classes;
         newLine;
         show: ([top reflectee] on: Error do: [:error | error messageText]);
         newLine;

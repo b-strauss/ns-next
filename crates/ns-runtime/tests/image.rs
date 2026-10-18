@@ -3442,6 +3442,12 @@ const MIRROR_HOLDER: &str = indoc! {"
 /// slot; and the mirror navigation reached `Top` with, which holds no
 /// class, still reads `Top`. Without source, a program's method and class
 /// declaration answer nil.
+///
+/// The `Top` part is the regression guard for a navigated mirror holding
+/// the way to its class rather than the class: a mirror that kept `Top` in
+/// a slot made the snapshot refuse `Top` as a value. No golden can guard
+/// it, since a golden's image is built before `main:args:`, when no
+/// program holds a mirror.
 #[test]
 fn a_program_holding_mirrors_loads_back_holding_them() {
     for with_source in [true, false] {

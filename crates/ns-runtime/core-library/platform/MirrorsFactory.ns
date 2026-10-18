@@ -418,6 +418,13 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     ///
     /// other: any object; sent `reflects:` only when `trusts:` trusts its
     /// class, so that the class is handed to no other code.
+    ///
+    /// Asymmetric for a program's subclass of `ClassMirror` against a
+    /// mirror reached by navigation: the subclass's mirror trusts the
+    /// module's `NavigatedClassMirror` and answers true for one on its
+    /// class, but the navigated mirror trusts only the module's own mirror
+    /// classes and answers false, so that a class it holds back never
+    /// reaches program code through `reflects:`.
     public = other = (
       (vmMirror object: self identicalTo: other ifFail: [false]) ifTrue: [^true].
       (self trusts: (vmMirror objectClass: other ifFail: [nil])) ifFalse: [^false].

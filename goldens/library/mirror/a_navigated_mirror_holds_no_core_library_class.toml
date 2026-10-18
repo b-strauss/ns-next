@@ -1,6 +1,5 @@
 stdout = '''
 Top
-slots 0 classes 0
 reflectee: a core-library class reached by navigation is not handed out
 true true
 '''
