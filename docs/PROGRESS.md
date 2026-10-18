@@ -42,7 +42,8 @@ first.
 | The gates: the suite's longest loops split into parallel trials, the round trips, the two-entry cache, the hints' oracle and the benchmark programs in nextest profiles of their own, the benchmarks out of the goldens, one table of which gate runs when, run as `cargo xtask gates <group>` | Complete | 2026-10-14 | — |
 | The boot: the shipped modules' compiled code embedded in the binary, and four of the six built on their first demand | Complete | 2026-10-15 | [precompiled-shipped-code](superpowers/plans/2026-10-14-2207-precompiled-shipped-code.md), [shipped-modules-on-first-demand](superpowers/plans/2026-10-15-0900-shipped-modules-on-first-demand.md) |
 | The front end's cost: a corpus benchmark of the syntax crate, the comment attachment on demand, mimalloc in both binaries | Complete | 2026-10-17 | [attach-on-demand](superpowers/plans/2026-10-17-1049-attach-on-demand.md) |
-| Road step 5 — mirrors and atomic installation, on `become:` as an eager bulk forward | Not started | — | — |
+| Road step 5a — mirrors that read | Complete | 2026-10-18 | [mirrors-that-read](superpowers/plans/2026-10-17-2355-mirrors-that-read.md) |
+| Road step 5b — MirrorBuilder and atomic installation, on `become:` as an eager bulk forward | Not started | — | — |
 | Road step 6 — inline allocation in the interpreter | Not started | — | — |
 | Road step 7 — an execution model for compiled code | Not started | — | — |
 | Between road steps 7 and 8 — real Newspeak bodies for `whileTrue:`, `whileFalse:` and `do:` | Not started | — | — |
