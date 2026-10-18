@@ -3455,13 +3455,6 @@ impl<'gc> Heap<'gc> {
 
     /// Whether a replacement has installed another version of the mixin
     /// `id` names (`replace_mixin`); `false` for an id past the table.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "road step 5b2a's image encoder asks it; until then only the tests do"
-        )
-    )]
     pub(crate) fn mixin_is_edited(&self, id: MixinId) -> bool {
         self.tables.edited.get(id.index()).copied().unwrap_or(false)
     }

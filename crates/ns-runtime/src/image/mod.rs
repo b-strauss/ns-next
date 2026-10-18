@@ -77,6 +77,25 @@ fn encode_describing<'gc>(
             ));
         }
     }
+    // An edited mixin's code and layout live in the heap's tables, not in
+    // the tree the rows are planned from, so planning it would write an
+    // image that loads as the program before the edit. Refused before any
+    // row is planned, until images carry edits (road step 5b2b).
+    let mut tree = Vec::new();
+    for root in &module_roots {
+        crate::mixin::preorder(root, &mut tree);
+    }
+    for mixin in &tree {
+        if heap
+            .known_mixin_id(mixin)
+            .is_some_and(|id| heap.mixin_is_edited(id))
+        {
+            return Err(format!(
+                "image encoding cannot yet serialize mixin `{}`, which a MirrorBuilder edited",
+                mixin.name
+            ));
+        }
+    }
     let mut symbols = symbols::Builder::new();
     let mut code = encode::Writer::new();
     let ids = encode::encode_code_table(&mut code, &module_roots, &mut symbols)?;

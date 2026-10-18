@@ -461,6 +461,36 @@ mod tests {
         (interpreter, instance, inner_class, inner, inner_id)
     }
 
+    /// The image encoder, entered the way the host's `build` enters it,
+    /// refuses a program whose mixin an edit replaced -- with an error, not
+    /// a panic -- until images carry edits.
+    #[test]
+    fn an_edited_program_is_refused_with_an_error() {
+        let (mut interpreter, outer) = load(OUTER);
+        let inner_id = nested_id_of(&mut interpreter, &outer, "Inner");
+        install(&mut interpreter, inner_id, &add_method("public b = ( ^2 )"));
+        let refused = interpreter.enter(|mutator| {
+            let class = mutator
+                .fetch(&outer)
+                .as_object()
+                .expect("the module is a class object");
+            let origin = SourceOrigin::File(PathBuf::from("t.ns"));
+            let modules = [crate::image::ModuleSource {
+                class,
+                origin: &origin,
+                source: None,
+            }];
+            crate::image::snapshot(mutator, &modules, &[])
+        });
+        match refused {
+            Err(message) => assert_eq!(
+                message,
+                "image encoding cannot yet serialize mixin `Inner`, which a MirrorBuilder edited"
+            ),
+            Ok(_) => panic!("an edited program was encoded"),
+        }
+    }
+
     /// A method added to a class answers on an instance made before.
     #[test]
     fn an_added_method_answers_on_an_existing_instance() {
