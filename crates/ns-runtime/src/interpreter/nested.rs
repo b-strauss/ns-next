@@ -26,7 +26,7 @@ use std::rc::Rc;
 
 use ns_syntax::ast;
 
-use crate::mixin::{mixin_key, Mixin, MixinApplication};
+use crate::mixin::{Mixin, MixinApplication};
 use crate::types::*;
 use crate::Symbol;
 
@@ -456,7 +456,7 @@ pub(crate) fn build_applied_levels<'gc>(
 /// `Value`, so a non-object receiver cannot reach it at all.
 ///
 /// The declaration itself, not its name: `MixinApplication::nested_slot` is
-/// keyed by declaration identity so that a subclass's `class N` and the
+/// keyed by the declaration's id so that a subclass's `class N` and the
 /// inherited `class N` it shadows cache into different slots.
 fn cache_slot<'gc>(
     mutator: &Mutator<'gc>,
@@ -464,11 +464,12 @@ fn cache_slot<'gc>(
     nested: &Rc<Mixin>,
 ) -> Option<(ObjectReference<'gc>, usize, Value<'gc>)> {
     let class = mutator.class_of(receiver);
+    let id = mutator.heap.known_mixin_id(nested)?;
     let index = mutator
         .heap
         .class_application(class)?
         .nested_slot
-        .get(&mixin_key(nested))
+        .get(&id)
         .copied()?;
     match receiver.as_object() {
         Some(object) => mutator

@@ -27,6 +27,7 @@ use std::rc::Rc;
 use ns_syntax::ast;
 
 use crate::builtins::primitive::ReflectionPrimitive;
+use crate::heap::{Heap, MixinId};
 use crate::mixin::{source_text, Mixin, MixinApplication, MixinMethod};
 use crate::types::*;
 use crate::{Mutator, Symbol};
@@ -61,16 +62,21 @@ pub(crate) fn execute<'gc>(
             Some(Value::boolean(mixin.is_class_side()))
         }
         ReflectionPrimitive::MixinEnclosing => {
-            let mixin = reified(mutator, receiver)?;
-            let enclosing = instance_side(&mixin).and_then(|instance| instance.enclosing_mixin());
+            let id = reified_id(mutator, receiver)?;
+            let heap = &mutator.heap;
+            let enclosing = instance_side_id(heap, id)
+                .and_then(|instance| heap.enclosing_mixin_id(instance))
+                .and_then(|enclosing| heap.mixin(enclosing));
             Some(reified_or_nil(mutator, enclosing))
         }
         ReflectionPrimitive::MixinInstanceSide => {
-            let mixin = reified(mutator, receiver)?;
-            if !mixin.is_class_side() {
+            let id = reified_id(mutator, receiver)?;
+            if !mutator.heap.mixin(id)?.is_class_side() {
                 return Some(receiver);
             }
-            Some(reified_or_nil(mutator, mixin.enclosing_mixin()))
+            let instance =
+                instance_side_id(&mutator.heap, id).and_then(|id| mutator.heap.mixin(id));
+            Some(reified_or_nil(mutator, instance))
         }
         ReflectionPrimitive::MixinClassSide => {
             let mixin = reified(mutator, receiver)?;
@@ -99,9 +105,11 @@ pub(crate) fn execute<'gc>(
         }
         ReflectionPrimitive::MethodSource => method_source(mutator, receiver, arguments),
         ReflectionPrimitive::MixinSource => {
-            let mixin = reified(mutator, receiver)?;
-            let text = instance_side(&mixin).and_then(|declaration| {
-                let text = declaration.module_text.as_ref()?;
+            let id = reified_id(mutator, receiver)?;
+            let heap = &mutator.heap;
+            let text = instance_side_id(heap, id).and_then(|instance| {
+                let text = heap.mixin_module_text(instance)?;
+                let declaration = heap.mixin(instance)?;
                 source_text(&text.0, declaration.span).map(str::to_string)
             });
             Some(string_or_nil(mutator, text))
@@ -134,6 +142,24 @@ fn class_object<'gc>(mutator: &Mutator<'gc>, subject: Value<'gc>) -> Option<Clas
 /// for anything else.
 fn reified<'gc>(mutator: &Mutator<'gc>, subject: Value<'gc>) -> Option<Rc<Mixin>> {
     mutator.mixin_of_reified(subject.as_object()?)
+}
+
+/// The id of the mixin the subject stands for, when it is a reified mixin;
+/// `None` for anything else. A leaf that reads the mixin's place -- the
+/// mixin it is declared in, the text it is read in -- reads it through the
+/// id, whose row keeps it across a replacement.
+fn reified_id<'gc>(mutator: &Mutator<'gc>, subject: Value<'gc>) -> Option<MixinId> {
+    mutator.heap.mixin_object_id(subject.as_object()?)
+}
+
+/// The id of the instance side the mixin `id` belongs to: `id` itself, or
+/// a class side's instance side's.
+fn instance_side_id(heap: &Heap<'_>, id: MixinId) -> Option<MixinId> {
+    if heap.mixin(id)?.is_class_side() {
+        heap.enclosing_mixin_id(id)
+    } else {
+        Some(id)
+    }
 }
 
 /// The reified `mixin`, or `nil` when there is none.
@@ -373,17 +399,18 @@ fn method_source<'gc>(
     subject: Value<'gc>,
     arguments: &[Value<'gc>],
 ) -> Option<Value<'gc>> {
-    let mixin = reified(mutator, subject)?;
+    let id = reified_id(mutator, subject)?;
+    let mixin = mutator.heap.mixin(id)?;
     let selector = mutator.heap.symbol_value(arguments.first()?.as_object()?)?;
     let method = declared_methods(&mixin)
         .into_iter()
         .find(|method| method.selector == selector)?;
     // A class side's methods lie in its instance side's module, whose text
     // a declared class side shares.
-    let text = mixin
-        .module_text
-        .clone()
-        .or_else(|| instance_side(&mixin).and_then(|instance| instance.module_text.clone()));
+    let heap = &mutator.heap;
+    let text = heap.mixin_module_text(id).or_else(|| {
+        instance_side_id(heap, id).and_then(|instance| heap.mixin_module_text(instance))
+    });
     let source = text.and_then(|text| source_text(&text.0, method.code.source).map(str::to_string));
     Some(string_or_nil(mutator, source))
 }

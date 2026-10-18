@@ -12,10 +12,11 @@ use std::rc::Rc;
 
 use ns_syntax::ast::AccessModifier;
 
+use crate::heap::MixinId;
 use crate::heap::{Heap, Root};
 use crate::interpreter::core_library::KERNEL_MODULE;
 use crate::interpreter::Mutator;
-use crate::mixin::{mixin_key, MethodEntry, Mixin};
+use crate::mixin::{MethodEntry, Mixin};
 use crate::trace::{Trace, Tracer};
 use crate::types::{BuiltinClass, ClassReference, ObjectReference, Value};
 use crate::Symbol;
@@ -196,23 +197,23 @@ impl<'gc> ShippedWorld<'gc> {
             .collect()
     }
 
-    /// The mixin of each `Class` entry, by `mixin_key`, to the entry's
+    /// The mixin of each `Class` entry, by its id, to the entry's
     /// position in `entries`: which shipped declaration a mixin is. A
     /// level applies the mixin of some class, so only classes are keyed.
-    pub(crate) fn index_by_mixin(&self, heap: &Heap<'gc>) -> HashMap<usize, usize> {
+    pub(crate) fn index_by_mixin(&self, heap: &Heap<'gc>) -> HashMap<MixinId, usize> {
         self.entries
             .iter()
             .enumerate()
             .filter(|(_, entry)| entry.name.kind == ShippedKind::Class)
             .filter_map(|(index, entry)| {
                 let application = heap.class_application(entry.object)?;
-                Some((mixin_key(&application.mixin), index))
+                Some((heap.known_mixin_id(&application.mixin)?, index))
             })
             .collect()
     }
 
     /// The mixin of each declaration a recorded module's root declares
-    /// whose class is not built yet, by `mixin_key`, to the name its class
+    /// whose class is not built yet, by its id, to the name its class
     /// will have: what an image names a reified mixin by when navigation
     /// reached the mixin before anything built its class. The loader builds
     /// the class a name names before it decodes the graph
@@ -220,7 +221,7 @@ impl<'gc> ShippedWorld<'gc> {
     /// Every shipped class is declared directly in its module's root, so
     /// these and `index_by_mixin`'s are every shipped mixin but the VM
     /// mirror's class's, which has no declaration.
-    pub(crate) fn declared_by_mixin(&self, heap: &Heap<'gc>) -> HashMap<usize, ShippedName> {
+    pub(crate) fn declared_by_mixin(&self, heap: &Heap<'gc>) -> HashMap<MixinId, ShippedName> {
         let mut declared = HashMap::new();
         for (module, instance) in &self.module_instances {
             for nested in &root_application(heap, *instance).mixin.nested {
@@ -229,8 +230,11 @@ impl<'gc> ShippedWorld<'gc> {
                     declaration: nested.name,
                     kind: ShippedKind::Class,
                 };
-                if self.index_of_name(&name).is_none() {
-                    declared.insert(mixin_key(nested), name);
+                // A mixin nothing registered has no id, and so no reified
+                // object an image could name it through.
+                let id = heap.known_mixin_id(nested);
+                if let Some(id) = id.filter(|_| self.index_of_name(&name).is_none()) {
+                    declared.insert(id, name);
                 }
             }
         }
@@ -422,9 +426,10 @@ impl<'gc> Mutator<'gc> {
     ) {
         let application = root_application(self.heap(), instance);
         for nested in &application.mixin.nested {
-            let built = application
-                .nested_slot
-                .get(&mixin_key(nested))
+            let built = self
+                .heap()
+                .known_mixin_id(nested)
+                .and_then(|id| application.nested_slot.get(&id))
                 .and_then(|index| self.heap().instance_field(instance, *index))
                 .and_then(Value::as_object)
                 .filter(|class| self.heap().is_class(*class));
@@ -1172,8 +1177,9 @@ mod tests {
                 .index_of_name(&name("Kernel", "IndexedCollection", ShippedKind::Class))
                 .expect("Kernel IndexedCollection is named");
             assert_eq!(
-                world.index_by_mixin(heap).get(&mixin_key(&level_mixin)),
-                Some(&indexed_collection),
+                heap.known_mixin_id(&level_mixin)
+                    .and_then(|id| world.index_by_mixin(heap).get(&id).copied()),
+                Some(indexed_collection),
                 "the level's mixin is IndexedCollection's, keyed by its class"
             );
         });
@@ -1203,7 +1209,8 @@ mod tests {
             let application = heap
                 .class_application(array_class)
                 .expect("Array is a class");
-            assert_eq!(by_mixin.get(&mixin_key(&application.mixin)), Some(&array));
+            let id = heap.known_mixin_id(&application.mixin);
+            assert_eq!(id.and_then(|id| by_mixin.get(&id)), Some(&array));
             assert_eq!(
                 name("Kernel", "Kernel", ShippedKind::LevelMetaclass(0)).describe(),
                 "Kernel Kernel level 0 class"
@@ -1240,14 +1247,41 @@ mod tests {
                 .find(|nested| nested.name.as_str() == "List")
                 .expect("CollectionsFactory declares List")
                 .clone();
-            let class = application
-                .nested_slot
-                .get(&mixin_key(&list))
+            let class = mutator
+                .heap()
+                .known_mixin_id(&list)
+                .and_then(|id| application.nested_slot.get(&id))
                 .and_then(|index| mutator.heap().instance_field(instance, *index))
                 .and_then(Value::as_object)
                 .expect("List was built and named");
             mutator.record_shipped_class(collections, &list, class);
             assert_eq!(mutator.shipped_world.entries().len(), before);
+        });
+    }
+
+    /// A shipped mixin is the binary's code, which no edit replaces: the
+    /// locks of the VM mirror rest on it.
+    #[test]
+    #[should_panic(expected = "shipped")]
+    fn replacing_a_shipped_mixin_panics() {
+        let mut interpreter = bootstrap_with(&[("CollectionsFactory", "List")]);
+        interpreter.enter(|mutator| {
+            let instance = mutator
+                .shipped_world
+                .module_instance(Symbol::intern("CollectionsFactory"))
+                .expect("CollectionsFactory is built with its List");
+            let list = root_application(mutator.heap(), instance)
+                .mixin
+                .nested
+                .iter()
+                .find(|nested| nested.name.as_str() == "List")
+                .expect("CollectionsFactory declares List")
+                .clone();
+            let id = mutator
+                .heap()
+                .known_mixin_id(&list)
+                .expect("List was built");
+            mutator.replace_mixin(id, Rc::new((*list).clone()), None);
         });
     }
 

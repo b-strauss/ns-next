@@ -3221,20 +3221,127 @@ impl<'gc> Heap<'gc> {
 
     // ---------- The Rust-side tables ----------
 
+    /// The id of `mixin`, any version of it, minted on first sight. A
+    /// mixin's row names the row of the mixin it is declared in, so the
+    /// enclosing mixins not registered yet are registered first, outermost
+    /// first; walked, not recursed, because an image chooses how deep its
+    /// declarations nest.
     pub(crate) fn mixin_id(&mut self, mixin: &Rc<Mixin>) -> MixinId {
-        let key = crate::mixin::mixin_key(mixin);
-        if let Some(id) = self.tables.mixin_ids.get(&key) {
-            return *id;
+        if let Some(id) = self.known_mixin_id(mixin) {
+            return id;
         }
+        let mut unregistered = vec![mixin.clone()];
+        let mut enclosing = None;
+        while let Some(parent) = unregistered
+            .last()
+            .and_then(|innermost| innermost.enclosing_mixin())
+        {
+            if let Some(id) = self.known_mixin_id(&parent) {
+                enclosing = Some(id);
+                break;
+            }
+            unregistered.push(parent);
+        }
+        for each in unregistered.into_iter().rev() {
+            enclosing = Some(self.register_mixin(&each, enclosing));
+        }
+        enclosing.expect("internal: `mixin` itself was registered last")
+    }
+
+    /// Mints the next id for `mixin`, declared in the mixin `enclosing`
+    /// names, and copies its module's text into the row.
+    fn register_mixin(&mut self, mixin: &Rc<Mixin>, enclosing: Option<MixinId>) -> MixinId {
         let id = MixinId::from_index(self.tables.mixins.len())
             .expect("more than u32::MAX mixins in one heap");
         self.tables.mixins.push(mixin.clone());
-        self.tables.mixin_ids.insert(key, id);
+        self.tables.enclosing.push(enclosing);
+        self.tables.module_texts.push(mixin.module_text.clone());
+        self.tables
+            .mixin_ids
+            .insert(crate::mixin::mixin_key(mixin), id);
         id
     }
 
+    /// The id `mixin`, any version of it, was registered under; `None`
+    /// while nothing has registered it -- a mixin no class object applies
+    /// and nothing has reified.
+    pub fn known_mixin_id(&self, mixin: &Rc<Mixin>) -> Option<MixinId> {
+        self.tables
+            .mixin_ids
+            .get(&crate::mixin::mixin_key(mixin))
+            .copied()
+    }
+
+    /// The current version of the mixin `id` names.
     pub fn mixin(&self, id: MixinId) -> Option<Rc<Mixin>> {
         self.tables.mixins.get(id.index()).cloned()
+    }
+
+    /// The id of the mixin the mixin `id` is declared in: a nested
+    /// declaration's enclosing declaration, a class side's instance side.
+    /// `None` for a module's root, a builtin's mixin, and an id past the
+    /// table.
+    pub(crate) fn enclosing_mixin_id(&self, id: MixinId) -> Option<MixinId> {
+        *self.tables.enclosing.get(id.index())?
+    }
+
+    /// The text of the module the mixin `id` is read in; `None` where its
+    /// current version has none (`Mixin::module_text`) and for an id past
+    /// the table.
+    pub(crate) fn mixin_module_text(&self, id: MixinId) -> Option<crate::mixin::ModuleText> {
+        self.tables.module_texts.get(id.index())?.clone()
+    }
+
+    /// Makes `replacement` the current version of the mixin `id`, read in
+    /// `module_text`: from here on `replacement`'s address answers `id`,
+    /// as every earlier version's still does, and the id keeps the
+    /// enclosing mixin it was registered with. What was built from an
+    /// earlier version keeps it (`Mutator::replace_mixin`).
+    ///
+    /// A compiler-invariant violation panics: a `replacement` that already
+    /// has an id, whose address would then answer two; a shipped current
+    /// version, which is the binary's code and which the VM mirror's locks
+    /// rest on; and a class side replacing an instance side or the other
+    /// way round.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "road step 5b2's install calls it; until then only the tests do"
+        )
+    )]
+    pub(crate) fn replace_mixin(
+        &mut self,
+        id: MixinId,
+        replacement: Rc<Mixin>,
+        module_text: Option<crate::mixin::ModuleText>,
+    ) {
+        assert!(
+            self.known_mixin_id(&replacement).is_none(),
+            "internal: a replacement mixin is registered under no id yet"
+        );
+        let current = self
+            .tables
+            .mixins
+            .get(id.index())
+            .expect("internal: a replaced mixin's id names a row");
+        assert!(
+            !current.shipped,
+            "internal: the shipped mixin {} is never replaced",
+            current.name
+        );
+        assert_eq!(
+            current.is_class_side(),
+            replacement.is_class_side(),
+            "internal: a class side is replaced by a class side, an instance side by an \
+             instance side"
+        );
+        self.tables
+            .mixin_ids
+            .insert(crate::mixin::mixin_key(&replacement), id);
+        let superseded = std::mem::replace(&mut self.tables.mixins[id.index()], replacement);
+        self.tables.superseded.push(superseded);
+        self.tables.module_texts[id.index()] = module_text;
     }
 
     /// Enters `application` into the table, stamped with its index, and

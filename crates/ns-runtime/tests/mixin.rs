@@ -2,7 +2,7 @@ use indoc::indoc;
 use std::rc::Rc;
 
 use ns_runtime::dispatch::{self, Lookup};
-use ns_runtime::mixin::{mixin_key, AccessorKind, Mixin};
+use ns_runtime::mixin::{AccessorKind, Mixin, MixinApplication};
 use ns_runtime::{HostResult, HostSignal, Interpreter, Mutator, Root, Symbol, ValueKind};
 use ns_syntax::{ast, span::Span};
 
@@ -230,8 +230,25 @@ fn a_nested_declaration_reserves_a_hidden_cache_slot() {
         );
         let inner = &application.mixin.nested[0];
         assert_eq!(inner.name, Symbol::intern("Inner"));
-        assert_eq!(application.nested_slot[&mixin_key(inner)], 0);
+        let id = mutator
+            .heap()
+            .known_mixin_id(inner)
+            .expect("applying Outer registered Inner");
+        assert_eq!(application.nested_slot[&id], 0);
     });
+}
+
+/// The hidden cache slot `application` gives the nested declaration
+/// `nested`, which applying its enclosing mixin registered.
+fn nested_slot_of(
+    interpreter: &mut Interpreter,
+    application: &MixinApplication,
+    nested: &Rc<Mixin>,
+) -> usize {
+    let id = interpreter
+        .enter(|mutator| mutator.heap().known_mixin_id(nested))
+        .expect("applying the enclosing mixin registered the nested one");
+    application.nested_slot[&id]
 }
 
 #[test]
@@ -252,7 +269,7 @@ fn inherited_nested_declarations_keep_their_declaring_levels_slot() {
         interpreter.enter(|mutator| mutator.apply_mixin(&superclass_mixin, None));
     assert_eq!(superclass_application.own_slot_base, 0);
     assert_eq!(
-        superclass_application.nested_slot[&mixin_key(&superclass_inner)],
+        nested_slot_of(&mut interpreter, &superclass_application, &superclass_inner),
         1
     );
     assert_eq!(superclass_application.slot_count, 2);
@@ -262,7 +279,7 @@ fn inherited_nested_declarations_keep_their_declaring_levels_slot() {
     let subclass_application = interpreter
         .enter(|mutator| mutator.apply_mixin(&subclass_mixin, Some(&superclass_application)));
     assert_eq!(
-        subclass_application.nested_slot[&mixin_key(&superclass_inner)],
+        nested_slot_of(&mut interpreter, &subclass_application, &superclass_inner),
         1,
         "an inherited nested declaration keeps its declaring level's slot"
     );
@@ -337,11 +354,11 @@ fn a_redeclared_nested_class_gets_its_own_cache_slot() {
         "one hidden slot per declaration"
     );
     assert_eq!(
-        subclass_application.nested_slot[&mixin_key(&superclass_inner)],
+        nested_slot_of(&mut interpreter, &subclass_application, &superclass_inner),
         0
     );
     assert_eq!(
-        subclass_application.nested_slot[&mixin_key(&subclass_inner)],
+        nested_slot_of(&mut interpreter, &subclass_application, &subclass_inner),
         1
     );
 }

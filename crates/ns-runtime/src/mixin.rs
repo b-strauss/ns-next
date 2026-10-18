@@ -682,15 +682,22 @@ pub struct Mixin {
     /// not the one it is nested in, so this is the upward link, `Weak` so
     /// that a tree is no cycle, and set once, after the enclosing mixin's
     /// `Rc` exists (`set_enclosing_of_children`). Empty for a module's root
-    /// and a builtin's mixin. Road step 5b moves the link to the mixin's id.
+    /// and a builtin's mixin. What a builder records: the heap copies it,
+    /// as the enclosing mixin's id, into the mixin's row when it first
+    /// registers the mixin (`Heap::mixin_id`), and a reader of the link
+    /// asks the heap (`Heap::enclosing_mixin_id`), since a replacement
+    /// keeps the id's link whatever its own says.
     pub enclosing: OnceCell<Weak<Mixin>>,
     /// The source text of the module this mixin is declared in, for the
     /// mirrors' `source`: the one `Rc<str>` every mixin of the module
     /// shares, sliced by `span` and each method's `CompiledCode::source`
     /// through `source_text`. `None` for a builtin's mixin, the VM
     /// mirror's, a synthesized class side's, which has no text of its
-    /// own, and a mixin of an image that carries no source. Road step 5b
-    /// moves it with the link, to the mixin's id.
+    /// own, and a mixin of an image that carries no source. What a builder
+    /// records: the heap copies it into the mixin's row when it first
+    /// registers the mixin, a replacement brings its own
+    /// (`Heap::replace_mixin`), and a reader asks the heap
+    /// (`Heap::mixin_module_text`).
     pub module_text: Option<ModuleText>,
 }
 
@@ -948,14 +955,15 @@ pub struct MixinApplication {
     /// hash lookup. Inherited declarations keep the index their declaring
     /// level gave them, as inherited slots keep theirs.
     ///
-    /// Keyed by `mixin_key` -- the declaration's identity -- and not by its
-    /// name, which is the one thing a subclass's nested declaration shares
-    /// with the inherited one it shadows. Both declarations are real, both
-    /// get their own physical slot, and `super N` reaches the inherited one
-    /// while `N` reaches the subclass's; a name key would collapse the two
-    /// entries onto one index and make whichever was resolved first the
-    /// answer to both.
-    pub nested_slot: IdentityMap<usize, usize>,
+    /// Keyed by the declaration's id (`Heap::mixin_id`), which every
+    /// version of it answers, so that an edited declaration keeps its
+    /// slot; and not by its name, which is the one thing a subclass's
+    /// nested declaration shares with the inherited one it shadows. Both
+    /// declarations are real, both get their own physical slot, and
+    /// `super N` reaches the inherited one while `N` reaches the
+    /// subclass's; a name key would collapse the two entries onto one index
+    /// and make whichever was resolved first the answer to both.
+    pub nested_slot: IdentityMap<MixinId, usize>,
     /// The absolute field indices of the slots this application's classes
     /// **declare**, superclass level first and in declaration order within a
     /// level -- which is the order the fields themselves are laid out in.

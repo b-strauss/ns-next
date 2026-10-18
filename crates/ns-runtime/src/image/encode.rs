@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::bytecode::{CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal};
-use crate::heap::{Heap, ObjectShape};
+use crate::heap::{Heap, MixinId, ObjectShape};
 use crate::interpreter::future;
 use crate::interpreter::shipped_world::{ShippedEntry, ShippedWorld};
 use crate::types::{
@@ -896,13 +896,13 @@ pub struct GraphTable<'gc> {
 /// shipped world's entries by object (`ShippedWorld::index_by_object`) and
 /// by mixin (`ShippedWorld::index_by_mixin`), the names of the shipped
 /// classes not built yet by mixin (`ShippedWorld::declared_by_mixin`), the
-/// VM mirror, and the mixin of its class, by `mixin::mixin_key`.
+/// VM mirror, and the id of its class's mixin.
 struct Named<'a, 'gc> {
     by_object: &'a HashMap<usize, usize>,
-    by_mixin: &'a HashMap<usize, usize>,
-    declared_by_mixin: &'a HashMap<usize, ShippedName>,
+    by_mixin: &'a HashMap<MixinId, usize>,
+    declared_by_mixin: &'a HashMap<MixinId, ShippedName>,
     mirror: Option<ObjectReference<'gc>>,
-    mirror_mixin: Option<usize>,
+    mirror_mixin: Option<MixinId>,
 }
 
 impl<'gc> GraphTable<'gc> {
@@ -1087,7 +1087,7 @@ impl<'gc> GraphTable<'gc> {
                         if applies_a_shipped_mixin(heap, object) {
                             let mixin = heap
                                 .class_application(object)
-                                .map(|application| crate::mixin::mixin_key(&application.mixin));
+                                .and_then(|application| heap.known_mixin_id(&application.mixin));
                             if let Some(world_index) =
                                 mixin.and_then(|mixin| named.by_mixin.get(&mixin))
                             {
@@ -1113,8 +1113,8 @@ impl<'gc> GraphTable<'gc> {
                 // is refused as the class is (lock (5)).
                 ObjectShape::Mixin => {
                     if let Ok((instance_side, class_side)) = reified_mixin_reference(heap, object) {
-                        let key = crate::mixin::mixin_key(&instance_side);
-                        if named.mirror_mixin == Some(key) {
+                        let key = heap.known_mixin_id(&instance_side);
+                        if key.is_some() && named.mirror_mixin == key {
                             if self.unnamed.is_none() {
                                 self.unnamed = Some(format!(
                                     "image encoding refuses the mixin of the VM mirror's \
@@ -1122,9 +1122,13 @@ impl<'gc> GraphTable<'gc> {
                                     if class_side { " class" } else { "" }
                                 ));
                             }
-                        } else if let Some(world_index) = named.by_mixin.get(&key) {
+                        } else if let Some(world_index) =
+                            key.and_then(|key| named.by_mixin.get(&key))
+                        {
                             self.used.use_name(*world_index);
-                        } else if let Some(name) = named.declared_by_mixin.get(&key) {
+                        } else if let Some(name) =
+                            key.and_then(|key| named.declared_by_mixin.get(&key))
+                        {
                             self.used.use_declared(*name);
                         }
                     }
@@ -1250,9 +1254,9 @@ pub struct EncodeContext<'a, 'gc> {
     /// `ShippedWorld::index_by_object`, built for this encoding.
     shipped_by_object: &'a HashMap<usize, usize>,
     /// `ShippedWorld::index_by_mixin`, built for this encoding.
-    shipped_by_mixin: &'a HashMap<usize, usize>,
+    shipped_by_mixin: &'a HashMap<MixinId, usize>,
     /// `ShippedWorld::declared_by_mixin`, built for this encoding.
-    shipped_declared_by_mixin: &'a HashMap<usize, ShippedName>,
+    shipped_declared_by_mixin: &'a HashMap<MixinId, ShippedName>,
     /// `mixin::mixin_key` -> mixin-table row id, as `mixins::encode`
     /// assigned them.
     pub mixin_ids: &'a HashMap<usize, u32>,
@@ -1557,9 +1561,9 @@ fn encode_class_record<'gc>(
         .as_ref()
         .filter(|_| applies_a_shipped_mixin(heap, class))
     {
-        let Some(&world_index) = context
-            .shipped_by_mixin
-            .get(&crate::mixin::mixin_key(mixin))
+        let Some(&world_index) = heap
+            .known_mixin_id(mixin)
+            .and_then(|id| context.shipped_by_mixin.get(&id))
         else {
             return Err(format!(
                 "image encoding cannot serialize a level that `<:` clause {} of class `{}` \
@@ -1801,13 +1805,19 @@ fn reified_mixin_reference<'gc>(
     heap: &Heap<'gc>,
     object: ObjectReference<'gc>,
 ) -> Result<(Rc<crate::mixin::Mixin>, bool), String> {
-    let Some(mixin) = heap.mixin_object_id(object).and_then(|id| heap.mixin(id)) else {
+    let Some((id, mixin)) = heap
+        .mixin_object_id(object)
+        .and_then(|id| Some((id, heap.mixin(id)?)))
+    else {
         unreachable!("internal: an `ObjectShape::Mixin` stands for a mixin of the table")
     };
     if !mixin.is_class_side() {
         return Ok((mixin, false));
     }
-    match mixin.enclosing_mixin() {
+    match heap
+        .enclosing_mixin_id(id)
+        .and_then(|instance| heap.mixin(instance))
+    {
         Some(instance_side) => Ok((instance_side, true)),
         None => Err(
             "image encoding cannot serialize the reified mixin of a class side whose \
@@ -1829,17 +1839,18 @@ fn encode_mixin_record<'gc>(
 ) -> Result<(), String> {
     let (instance_side, class_side) = reified_mixin_reference(context.heap, object)?;
     let key = crate::mixin::mixin_key(&instance_side);
+    let id = context.heap.known_mixin_id(&instance_side);
     if let Some(row) = context.mixin_ids.get(&key) {
         writer.write_u8(MIXIN_ROW);
         writer.write_u32(*row);
-    } else if let Some(&world_index) = context.shipped_by_mixin.get(&key) {
+    } else if let Some(&world_index) = id.and_then(|id| context.shipped_by_mixin.get(&id)) {
         let entry = &context.world.entries()[world_index];
         if !NamePosition::Mixin.allows(entry.positions) {
             return Err(not_allowed(entry, NamePosition::Mixin));
         }
         writer.write_u8(MIXIN_SHIPPED);
         writer.write_u32(context.table.used.index_of(world_index));
-    } else if let Some(name) = context.shipped_declared_by_mixin.get(&key) {
+    } else if let Some(name) = id.and_then(|id| context.shipped_declared_by_mixin.get(&id)) {
         // A class not built yet has no entry and so no positions, but a
         // reified mixin's mixin may be every shipped class's, whatever its
         // accessibility (`shipped_world::class_positions`), so no position
@@ -2007,7 +2018,7 @@ pub fn encode_graph_section<'gc>(
         mirror: mutator.vm_mirror.and_then(|mirror| mirror.as_object()),
         mirror_mixin: heap
             .class_application(mutator.builtin_class(BuiltinClass::VmMirror))
-            .map(|application| crate::mixin::mixin_key(&application.mixin)),
+            .and_then(|application| heap.known_mixin_id(&application.mixin)),
     };
     let table = GraphTable::build(heap, roots, module_roots, &named);
     // The VM mirror is a capability the bootstrap hands to the core library

@@ -10,7 +10,7 @@ use ns_syntax::ast;
 use crate::heap::Root;
 use crate::interpreter::core_library::KERNEL_MODULE;
 use crate::interpreter::{HostSignal, Interpreter, Mutator};
-use crate::mixin::{mixin_key, Mixin};
+use crate::mixin::Mixin;
 use crate::types::*;
 
 /// `Kernel.ns`, compiled into the binary: the library is source the runtime
@@ -834,7 +834,7 @@ pub(super) fn mirror_slot_of<'gc>(mutator: &Mutator<'gc>, kernel: ObjectReferenc
 }
 
 /// The kernel instance's hidden slot caching the nested class `kind`:
-/// `MixinApplication::nested_slot`, keyed by the nested mixin's identity.
+/// `MixinApplication::nested_slot`, keyed by the nested mixin's id.
 pub(super) fn hidden_slot_of<'gc>(
     mutator: &Mutator<'gc>,
     kernel: ObjectReference<'gc>,
@@ -852,10 +852,15 @@ fn hidden_slot_of_mixin<'gc>(
     kernel: ObjectReference<'gc>,
     nested: &Rc<Mixin>,
 ) -> usize {
-    kernel_application(mutator, kernel)
-        .nested_slot
-        .get(&mixin_key(nested))
-        .copied()
+    mutator
+        .heap
+        .known_mixin_id(nested)
+        .and_then(|id| {
+            kernel_application(mutator, kernel)
+                .nested_slot
+                .get(&id)
+                .copied()
+        })
         .unwrap_or_else(|| {
             panic!(
                 "internal: the kernel's application has no slot for {}",
@@ -2737,10 +2742,8 @@ mod tests {
     ) -> Option<crate::types::ClassReference<'gc>> {
         let application = super::kernel_application(mutator, kernel);
         let nested = super::nested_named(&application.mixin, "IndexedCollection");
-        let slot = application
-            .nested_slot
-            .get(&crate::mixin::mixin_key(nested))
-            .copied()?;
+        let id = mutator.heap().known_mixin_id(nested)?;
+        let slot = application.nested_slot.get(&id).copied()?;
         mutator
             .heap()
             .instance_field(kernel, slot)

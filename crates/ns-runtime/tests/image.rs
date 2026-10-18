@@ -8620,7 +8620,10 @@ fn cached_nested_class<'gc>(
         panic!("{name} is a nested declaration of this object's class");
     };
     let application = application_of(heap, class);
-    let index = application.nested_slot[&ns_runtime::mixin::mixin_key(&nested)];
+    let id = heap
+        .known_mixin_id(&nested)
+        .expect("applying the enclosing mixin registered the nested one");
+    let index = application.nested_slot[&id];
     heap.instance_field(object(enclosing), index)
         .expect("an enclosing object is an instance")
 }

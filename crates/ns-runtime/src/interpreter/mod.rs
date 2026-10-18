@@ -1895,13 +1895,20 @@ impl<'gc> Mutator<'gc> {
         mixin: &Rc<crate::mixin::Mixin>,
         superclass: Option<&Rc<crate::mixin::MixinApplication>>,
     ) -> Rc<crate::mixin::MixinApplication> {
-        let key = (
-            self.heap.mixin_id(mixin),
-            superclass.map(|application| application.index()),
-        );
+        let id = self.heap.mixin_id(mixin);
+        let key = (id, superclass.map(|application| application.index()));
         if let Some(existing) = self.applications.get(&key) {
             return existing.clone();
         }
+        // The id's current version, whichever version the caller holds: an
+        // enclosing mixin built before a replacement still holds the
+        // version it was built with, and a class built from it now is the
+        // replacement's.
+        let current = self
+            .heap
+            .mixin(id)
+            .expect("internal: a registered mixin has a row");
+        let mixin = &current;
         let inherited = superclass.map_or(0, |superclass_application| {
             superclass_application.slot_count
         });
@@ -1910,7 +1917,7 @@ impl<'gc> Mutator<'gc> {
         // a side table keyed by object would cost a hash lookup on a path
         // that is otherwise a slot read.
         //
-        // Keyed by declaration identity: a subclass that redeclares an
+        // Keyed by the declaration's id: a subclass that redeclares an
         // inherited nested class shadows it for a plain `N` but not for
         // `super N`, so the two need separate slots -- see `nested_slot`.
         let mut nested_slot = superclass
@@ -1919,7 +1926,7 @@ impl<'gc> Mutator<'gc> {
             });
         let mut next = inherited + mixin.slots.len();
         for nested in &mixin.nested {
-            nested_slot.insert(crate::mixin::mixin_key(nested), next);
+            nested_slot.insert(self.heap.mixin_id(nested), next);
             next += 1;
         }
         // §3.1.1's two questions about a value class, asked once here rather
@@ -2036,6 +2043,31 @@ impl<'gc> Mutator<'gc> {
             });
         self.applications.insert(key, application.clone());
         application
+    }
+
+    /// Installs `replacement`, read in `module_text`, as the current
+    /// version of the mixin `id` (`Heap::replace_mixin`), and forgets the
+    /// applications and the synthesized class side built from the
+    /// previous one, so that the next application of the id applies the
+    /// replacement. Applications already built, and the class objects
+    /// naming them, keep the version they were built from; road step 5b2's
+    /// install rewrites those.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "road step 5b2's install calls it; until then only the tests do"
+        )
+    )]
+    pub(crate) fn replace_mixin(
+        &mut self,
+        id: crate::heap::MixinId,
+        replacement: Rc<crate::mixin::Mixin>,
+        module_text: Option<crate::mixin::ModuleText>,
+    ) {
+        self.heap.replace_mixin(id, replacement, module_text);
+        self.applications.retain(|(mixin, _), _| *mixin != id);
+        self.metaclass_mixins.remove(&id);
     }
 }
 
@@ -2270,6 +2302,221 @@ mod tests {
                 mutator.heap().describe(Value::object(reified_class_side)),
                 "the mixin First class"
             );
+        });
+    }
+
+    /// The module the replacement tests edit: `Inner` answers 1, and
+    /// `fresh` answers what a new `Inner` answers.
+    const OUTER: &str = indoc! {"
+        class Outer = Object new () (
+          public class Inner = () (
+            public answer = ( ^1 )
+          )
+          public fresh = ( ^Inner new answer )
+        )
+    "};
+
+    /// The module the replacement for `OUTER`'s `Inner` is taken from.
+    const REPLACEMENT: &str = indoc! {"
+        class Elsewhere = Object new () (
+          public class Inner = () (
+            public answer = ( ^2 )
+          )
+        )
+    "};
+
+    /// A replacement for `OUTER`'s `Inner`: `REPLACEMENT`'s `Inner`, whose
+    /// `answer` answers 2, as a fresh mixin no id names yet, and the text it
+    /// is to be read in. The copy holds no text of its own and still names
+    /// `Elsewhere` as its enclosing mixin, so that a reader that asks the
+    /// mixin rather than its id answers something else.
+    fn replacement_inner(
+        interpreter: &mut Interpreter,
+    ) -> (Rc<crate::mixin::Mixin>, crate::mixin::ModuleText) {
+        let module = ns_syntax::parse(REPLACEMENT).expect("parse");
+        let resolved = crate::resolve(
+            module,
+            Rc::from(REPLACEMENT),
+            SourceOrigin::File(PathBuf::from("replacement.ns")),
+        )
+        .expect("resolve");
+        let class = interpreter.load_module(&resolved);
+        let inner = interpreter.enter(|mutator| root_mixin(mutator, &class).nested[0].clone());
+        let replacement = crate::mixin::Mixin {
+            module_text: None,
+            ..(*inner).clone()
+        };
+        (
+            Rc::new(replacement),
+            crate::mixin::ModuleText(Rc::from(REPLACEMENT)),
+        )
+    }
+
+    /// The mixin of the module root `class` holds.
+    fn root_mixin<'gc>(mutator: &Mutator<'gc>, class: &Root) -> Rc<crate::mixin::Mixin> {
+        let class = mutator
+            .fetch(class)
+            .as_object()
+            .expect("a module's root is a class object");
+        mutator
+            .heap()
+            .class_application(class)
+            .expect("a module's root is a class object")
+            .mixin
+            .clone()
+    }
+
+    /// Replaces `OUTER`'s `Inner`, whose class `outer` holds, with
+    /// `replacement`, and answers its id.
+    fn replace_inner(
+        interpreter: &mut Interpreter,
+        outer: &Root,
+        replacement: Rc<crate::mixin::Mixin>,
+        text: crate::mixin::ModuleText,
+    ) -> crate::heap::MixinId {
+        interpreter.enter(|mutator| {
+            let original = root_mixin(mutator, outer).nested[0].clone();
+            let id = mutator
+                .heap()
+                .known_mixin_id(&original)
+                .expect("applying Outer registered Inner");
+            mutator.replace_mixin(id, replacement, Some(text));
+            id
+        })
+    }
+
+    /// What `receiver` answers to the unary `selector`, as a SmallInteger.
+    fn small_integer_answer(
+        interpreter: &mut Interpreter,
+        receiver: &Root,
+        selector: &str,
+    ) -> Option<i64> {
+        let answer = expect_ok(
+            interpreter.send(receiver, Symbol::intern(selector), &[]),
+            selector,
+        );
+        interpreter.enter(|mutator| mutator.fetch(&answer).as_small_integer())
+    }
+
+    /// Installing a fresh mixin under an id keeps the id for both versions
+    /// and makes the fresh one the id's: the address of either answers the
+    /// id, the id answers the fresh one and the enclosing mixin it was
+    /// registered with, and the mixin keeps its one reified object
+    /// (`docs/design/liveness-and-reflection.md`, "Planned with road step
+    /// 5: an edit replaces the mixin under its id").
+    #[test]
+    fn every_version_of_a_mixin_answers_one_id() {
+        let (mut interpreter, outer) = load(OUTER);
+        let (replacement, text) = replacement_inner(&mut interpreter);
+        interpreter.enter(|mutator| {
+            let outer_mixin = root_mixin(mutator, &outer);
+            let original = outer_mixin.nested[0].clone();
+            let id = mutator
+                .heap()
+                .known_mixin_id(&original)
+                .expect("applying Outer registered Inner");
+            let reified = mutator.reified_mixin(&original);
+            mutator.replace_mixin(id, replacement.clone(), Some(text));
+            let heap = mutator.heap();
+            assert_eq!(heap.known_mixin_id(&original), Some(id));
+            assert_eq!(heap.known_mixin_id(&replacement), Some(id));
+            let current = heap.mixin(id).expect("the id has a row");
+            assert!(Rc::ptr_eq(&current, &replacement));
+            let outer_id = heap.known_mixin_id(&outer_mixin);
+            assert!(outer_id.is_some(), "Outer was applied");
+            assert_eq!(heap.enclosing_mixin_id(id), outer_id);
+            assert!(mutator.reified_mixin(&replacement).same(reified));
+            assert!(mutator.reified_mixin(&original).same(reified));
+        });
+    }
+
+    /// A class object built after a replacement applies the replacement,
+    /// though the enclosing mixin still holds the version it was built
+    /// with; one built before keeps the application it was built from
+    /// until road step 5b2's install rewrites it.
+    #[test]
+    fn a_nested_class_created_after_a_replacement_is_the_replacement() {
+        let (mut interpreter, outer) = load(OUTER);
+        let first = expect_ok(interpreter.instantiate(&outer, &[]), "the first Outer");
+        assert_eq!(
+            small_integer_answer(&mut interpreter, &first, "fresh"),
+            Some(1)
+        );
+        let (replacement, text) = replacement_inner(&mut interpreter);
+        replace_inner(&mut interpreter, &outer, replacement, text);
+        assert_eq!(
+            small_integer_answer(&mut interpreter, &first, "fresh"),
+            Some(1),
+            "the first Outer's Inner was built before the replacement"
+        );
+        let second = expect_ok(interpreter.instantiate(&outer, &[]), "the second Outer");
+        assert_eq!(
+            small_integer_answer(&mut interpreter, &second, "fresh"),
+            Some(2),
+            "the second Outer's Inner is built after the replacement"
+        );
+    }
+
+    /// `selector`'s mirror leaf run on `subject`, through a send to the VM
+    /// mirror, which the host hands over and no program can reach.
+    fn leaf(interpreter: &mut Interpreter, selector: &str, subject: &Root) -> Root {
+        let mirror = interpreter.enter(|mutator| {
+            let mirror = mutator.vm_mirror();
+            mutator.stash(mirror)
+        });
+        let declined = interpreter.stash(Value::small_integer(-1));
+        expect_ok(
+            interpreter.send(
+                &mirror,
+                Symbol::intern(selector),
+                &[subject.clone(), declined],
+            ),
+            selector,
+        )
+    }
+
+    /// The mirrors read a replaced mixin's enclosing mixin and text from
+    /// its id's row, not from the replacement, whose own link and text a
+    /// builder set for wherever it was built.
+    #[test]
+    fn a_replaced_mixin_reads_its_enclosing_mixin_and_text_through_the_id() {
+        let (mut interpreter, outer) = load(OUTER);
+        let (replacement, text) = replacement_inner(&mut interpreter);
+        let expected = crate::mixin::source_text(REPLACEMENT, replacement.span)
+            .expect("the replacement's span lies in its text")
+            .to_string();
+        assert!(expected.contains("^2"), "{expected}");
+        let id = replace_inner(&mut interpreter, &outer, replacement, text);
+        let (inner, outer_mixin) = interpreter.enter(|mutator| {
+            let inner = mutator.heap().mixin(id).expect("the id has a row");
+            let inner = mutator.reified_mixin(&inner);
+            let outer_mixin = root_mixin(mutator, &outer);
+            let outer_mixin = mutator.reified_mixin(&outer_mixin);
+            (
+                mutator.stash(Value::object(inner)),
+                mutator.stash(Value::object(outer_mixin)),
+            )
+        });
+        let enclosing = leaf(&mut interpreter, "reflectionMixinEnclosing:ifFail:", &inner);
+        let source = leaf(&mut interpreter, "reflectionMixinSource:ifFail:", &inner);
+        interpreter.enter(|mutator| {
+            let enclosing = mutator
+                .fetch(&enclosing)
+                .as_object()
+                .expect("Inner has an enclosing mixin");
+            let outer_mixin = mutator
+                .fetch(&outer_mixin)
+                .as_object()
+                .expect("a reified mixin");
+            assert!(
+                enclosing.same(outer_mixin),
+                "Inner's enclosing mixin is Outer's"
+            );
+            let source = mutator
+                .fetch(&source)
+                .as_object()
+                .expect("the replacement has a source");
+            assert_eq!(mutator.heap().str_value(source), Some(expected));
         });
     }
 
