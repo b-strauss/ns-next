@@ -3330,6 +3330,7 @@ impl<'gc> Heap<'gc> {
             .expect("more than u32::MAX mixins in one heap");
         self.tables.mixins.push(mixin.clone());
         self.tables.enclosing.push(enclosing);
+        self.tables.edited.push(false);
         self.tables.module_texts.push(mixin.module_text.clone());
         self.tables
             .mixin_ids
@@ -3398,13 +3399,6 @@ impl<'gc> Heap<'gc> {
     /// Makes `text` the current text of the module whose root mixin
     /// `module_root` names, which the next edit of any of its classes
     /// starts from.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "road step 5b2a's install calls it; until then only the tests do"
-        )
-    )]
     pub(crate) fn set_current_module_text(
         &mut self,
         module_root: MixinId,
@@ -3424,13 +3418,6 @@ impl<'gc> Heap<'gc> {
     /// version, which is the binary's code and which the VM mirror's locks
     /// rest on; and a class side replacing an instance side or the other
     /// way round.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "road step 5b2's install calls it; until then only the tests do"
-        )
-    )]
     pub(crate) fn replace_mixin(
         &mut self,
         id: MixinId,
@@ -3463,6 +3450,20 @@ impl<'gc> Heap<'gc> {
         let superseded = std::mem::replace(&mut self.tables.mixins[id.index()], replacement);
         self.tables.superseded.push(superseded);
         self.tables.module_texts[id.index()] = module_text;
+        self.tables.edited[id.index()] = true;
+    }
+
+    /// Whether a replacement has installed another version of the mixin
+    /// `id` names (`replace_mixin`); `false` for an id past the table.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "road step 5b2a's image encoder asks it; until then only the tests do"
+        )
+    )]
+    pub(crate) fn mixin_is_edited(&self, id: MixinId) -> bool {
+        self.tables.edited.get(id.index()).copied().unwrap_or(false)
     }
 
     /// Enters `application` into the table, stamped with its index, and
@@ -3482,13 +3483,6 @@ impl<'gc> Heap<'gc> {
     /// Records `new` as the application that took `old`'s place and
     /// repoints every application whose successor was `old` at `new`, so a
     /// chain of edits answers its newest level in one lookup.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "road step 5b2a's install records successors; until then only the tests do"
-        )
-    )]
     pub(crate) fn record_successor(&mut self, old: ApplicationIndex, new: ApplicationIndex) {
         for successor in self.tables.successors.values_mut() {
             if *successor == old {
@@ -4112,9 +4106,70 @@ impl<'gc> Heap<'gc> {
         true
     }
 
+    /// Every class object whose chain -- the class and its superclass
+    /// links -- holds an application `replaced` answers true for (by the
+    /// application's mixin's id), and every object whose class word
+    /// names one of them, in one walk of the space; changes nothing.
+    ///
+    /// The install's walk: there is no registry of a mixin's applications
+    /// or a class's instances, so the space is the one place that holds
+    /// them all (`docs/design/liveness-and-reflection.md`, "The install is
+    /// one leaf, and its commit has no safepoint"). An object nothing
+    /// reaches any more is found as well, since only a collection tells
+    /// the two apart, and none runs inside a leaf; a forwarder and a gap
+    /// are no objects and are skipped.
+    pub(crate) fn classes_and_instances_over(
+        &self,
+        replaced: impl Fn(MixinId) -> bool,
+    ) -> (Vec<ClassReference<'gc>>, Vec<ObjectReference<'gc>>) {
+        // Per class object, by offset, whether its chain holds a replaced
+        // level: every instance of a class asks the same question.
+        let mut verdicts: IdentityMap<u64, bool> = IdentityMap::default();
+        let mut over = |class: ClassReference<'gc>| -> bool {
+            *verdicts.entry(class.offset.get()).or_insert_with(|| {
+                let mut level = Some(class);
+                while let Some(current) = level {
+                    let holds = self
+                        .class_application_entry(current)
+                        .and_then(|application| self.known_mixin_id(&application.mixin))
+                        .is_some_and(&replaced);
+                    if holds {
+                        return true;
+                    }
+                    level = self.class_superclass(current);
+                }
+                false
+            })
+        };
+        let mut classes = Vec::new();
+        let mut instances = Vec::new();
+        let words = self.space.words();
+        for range in self.space.occupied() {
+            let mut position = range.start / 8;
+            while position < range.end / 8 {
+                let (header, next) = object_at(words, position);
+                position = next;
+                let format = Header(words[header]).format();
+                if matches!(format, Format::Free | Format::Forwarded) {
+                    continue;
+                }
+                let object = self.object_handle(offset_of_header(header));
+                if format == Format::Class && over(object) {
+                    classes.push(object);
+                }
+                if over(self.object_class(object)) {
+                    instances.push(object);
+                }
+            }
+        }
+        (classes, instances)
+    }
+
     /// Stamps each of `objects` with the id its class now answers. The
     /// decoder's one pass, after `rebuild_applications` has given every
-    /// decoded class its application.
+    /// decoded class its application, and the install's restamp of the
+    /// objects whose class it re-applied without moving them, as
+    /// `class_set_application` stamps every instance of one class.
     pub(crate) fn stamp_dispatch_ids(&mut self, objects: &[ObjectReference<'gc>]) {
         for object in objects {
             let class = self.object_class(*object);
@@ -5687,8 +5742,8 @@ impl<'gc> Heap<'gc> {
     /// The hash is copied whether or not the old object has one, so a new
     /// object that was hashed already takes the old one's absence of a
     /// hash and answers another hash afterwards: a caller forwards only to
-    /// objects nothing has hashed yet, as road step 5b2's install will to
-    /// the fresh ones it builds.
+    /// objects nothing has hashed yet, as the install (`install_edit`) does
+    /// to the fresh ones it builds.
     /// Last, one walk rewrites every handle the heap itself holds
     /// (`forward_everything`) and remembers every old holder that names a
     /// young object afterwards, which no barrier saw stored; a forwarder

@@ -188,7 +188,7 @@ fn forwardable_elements<'gc>(
 /// The VM mirror's class is a builtin whose mixin is not marked shipped,
 /// so the builtin test, and behind it the withheld one, are what refuse
 /// it.
-fn may_be_forwarded<'gc>(mutator: &Mutator<'gc>, object: ObjectReference<'gc>) -> bool {
+pub(crate) fn may_be_forwarded<'gc>(mutator: &Mutator<'gc>, object: ObjectReference<'gc>) -> bool {
     let heap = &mutator.heap;
     if heap.instance_field_count(object).is_none() || heap.mixin_object_id(object).is_some() {
         return false;

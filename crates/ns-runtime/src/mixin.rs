@@ -1042,10 +1042,59 @@ pub fn declared_slots_of(
     declared
 }
 
+/// What one field of an instance holds, by what it is named rather than
+/// where it lies: a declared slot by its name, a hidden nested-class cache
+/// slot by its declaration's id. An install copies an instance's fields
+/// into its new layout by these (`MixinApplication::field_names`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FieldName {
+    Slot(Symbol),
+    Nested(MixinId),
+}
+
 impl MixinApplication {
     /// Its index in its heap's table (`Heap::application` answers it back).
     pub fn index(&self) -> crate::heap::ApplicationIndex {
         self.index
+    }
+
+    /// Every field of an instance, by index: each level's own slots from
+    /// its `own_slot_base`, then its hidden nested-class slots, read off
+    /// `nested_slot` -- superclass first.
+    pub(crate) fn field_names(&self) -> Vec<FieldName> {
+        let mut levels = Vec::new();
+        let mut level = Some(self);
+        while let Some(application) = level {
+            levels.push(application);
+            level = application.superclass.as_deref();
+        }
+        let mut names = Vec::with_capacity(self.slot_count);
+        for application in levels.into_iter().rev() {
+            names.extend(
+                application
+                    .mixin
+                    .slots
+                    .iter()
+                    .map(|slot| FieldName::Slot(slot.name)),
+            );
+            // This level's cache slots follow its own slots; every entry
+            // below `nested_start` is an inherited level's.
+            let nested_start = application.own_slot_base + application.mixin.slots.len();
+            let mut nested: Vec<(usize, MixinId)> = application
+                .nested_slot
+                .iter()
+                .filter(|(_, index)| **index >= nested_start)
+                .map(|(id, index)| (*index, *id))
+                .collect();
+            nested.sort_unstable_by_key(|(index, _)| *index);
+            names.extend(nested.into_iter().map(|(_, id)| FieldName::Nested(id)));
+        }
+        debug_assert_eq!(
+            names.len(),
+            self.slot_count,
+            "internal: an application's fields are its levels' slots and cache slots"
+        );
+        names
     }
 }
 

@@ -74,14 +74,11 @@ pub(crate) struct Tables {
     pub(crate) mixin_ids: IdentityMap<usize, MixinId>,
     /// Every version a replacement superseded, held so that its address
     /// stays unique while `mixin_ids` names it.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "road step 5b2's install replaces a mixin; until then only the tests do"
-        )
-    )]
     pub(crate) superseded: Vec<Rc<Mixin>>,
+    /// Per id, whether a replacement has made another version its current
+    /// one: the image encoder, which still names a mixin by its current
+    /// version's address, refuses a program holding one.
+    pub(crate) edited: Vec<bool>,
     /// Per id, the id of the mixin it is declared in: a nested
     /// declaration's enclosing declaration, a class side's instance side
     /// (`Mixin::enclosing`), read once, when the mixin is registered, and

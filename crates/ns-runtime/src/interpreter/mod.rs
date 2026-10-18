@@ -15,6 +15,14 @@ pub(crate) mod core_library;
 mod edit;
 pub mod future;
 pub(crate) mod inline_cache;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "road step 5b2a's install leaf calls it; until then only the tests do"
+    )
+)]
+mod install;
 pub mod instantiate;
 pub(crate) mod kernel;
 pub(crate) mod literals;
@@ -2058,15 +2066,8 @@ impl<'gc> Mutator<'gc> {
     /// applications and the synthesized class side built from the
     /// previous one, so that the next application of the id applies the
     /// replacement. Applications already built, and the class objects
-    /// naming them, keep the version they were built from; road step 5b2's
-    /// install rewrites those.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "road step 5b2's install calls it; until then only the tests do"
-        )
-    )]
+    /// naming them, keep the version they were built from; the install
+    /// (`install_edit`) re-applies those.
     pub(crate) fn replace_mixin(
         &mut self,
         id: crate::heap::MixinId,
@@ -2441,7 +2442,7 @@ mod tests {
     /// A class object built after a replacement applies the replacement,
     /// though the enclosing mixin still holds the version it was built
     /// with; one built before keeps the application it was built from
-    /// until road step 5b2's install rewrites it.
+    /// until the install (`install_edit`) re-applies it.
     #[test]
     fn a_nested_class_created_after_a_replacement_is_the_replacement() {
         let (mut interpreter, outer) = load(OUTER);
