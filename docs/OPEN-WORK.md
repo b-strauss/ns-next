@@ -15,9 +15,19 @@ when they were written.
 
 ## Next
 
-**Road step 5, mirrors and atomic installation** ("Step 5, mirrors and
-atomic installation" below; decided with the user on 2026-10-05). Its
-building block is `become:` as an eager bulk forward, as Primordial Soup's:
+**Road step 5b, MirrorBuilder and atomic installation** ("Step 5,
+mirrors and atomic installation" below; decided with the user on
+2026-10-05, split from road step 5a on 2026-10-17). It builds on the
+mirrors road step 5a built ([liveness-and-reflection.md](design/liveness-and-reflection.md),
+"Mirrors that read"): the shipped module `MirrorsFactory.ns` behind
+`platform mirrors`, whose mirrors the builder is reached from; the
+reified mixin, one kernel-private `Mixin` object per mixin per heap,
+whose identity an install keeps since it keeps the `MixinId`; the
+upward link `Mixin::enclosing` and the module text `Mixin::module_text`,
+which move to the id with the rest of the mixin's identity; the image's
+`OBJECT_MIXIN`; and the shipped-level rule, by which the builder refuses
+every edit to a shipped mixin. Its building block is `become:` as an
+eager bulk forward, as Primordial Soup's:
 a one-way forward of an array of old objects to an array of new ones that
 copies the identity hash, makes forwarders that exist only while it runs,
 rewrites every reference by one walk of the roots the collector traces and
@@ -27,18 +37,19 @@ a leaf on the VM mirror that the shipped mirrors module's atomic install
 alone uses. On it the step builds a minimal MirrorBuilder: staged edits of
 a class's instance slots and methods, an atomic install (§8.2) that reaches
 every application of an edited mixin and migrates the instances whose
-layout changed, the refusal of every edit to a shipped mixin, a mirror
-capability from the platform, and `ClassMirror` and `ObjectMirror` to read
-with. With it come the recorded guard of an activation and the slot-access
+layout changed, and the refusal of every edit to a shipped mixin. With it
+come the recorded guard of an activation and the slot-access
 check, since the install's forward is the first way a running activation's
 receiver can change shape ([object-model.md](design/object-model.md),
 "Planned: `become:` as an eager bulk forward", "Planned with road step 5:
 what a slot access checks";
 [liveness-and-reflection.md](design/liveness-and-reflection.md), "Planned:
-road step 5, mirrors and atomic installation", which also lists what the
-step's plan decides and what it defers). It has no implementation plan
+road step 5b, MirrorBuilder and atomic installation", which also lists what
+the step's plan decides and what it defers). It has no implementation plan
 yet, so the next session starts by writing one. Everything before it on
-the road is built, road step 4 last: generations
+the road is built, road step 5a last: mirrors that read
+([liveness-and-reflection.md](design/liveness-and-reflection.md),
+"Mirrors that read"), and before it generations
 ([memory.md](design/memory.md), "Generations";
 [image-format.md](design/image-format.md), "The image under
 generations"), whose scavenger's forwarded format is the one the bulk
@@ -149,41 +160,50 @@ and `prior-art/newspeak-benchmarks`.
   [memory.md](design/memory.md), "Generations";
   [execution.md](design/execution.md), "What generations moved".
 - **Step 5, mirrors and atomic installation** (decided with the user on
-  2026-10-05), on `become:` as an eager bulk forward after Primordial
+  2026-10-05), in two plans (decided with the user on 2026-10-17), as road
+  step 3 was. **5a, mirrors that read -- built** (2026-10-18,
+  [its plan](superpowers/plans/2026-10-17-2355-mirrors-that-read.md)): a
+  seventh shipped module, `MirrorsFactory.ns`, behind `platform mirrors`,
+  whose `ObjectMirror` and `ClassMirror` lead to mixin, class declaration,
+  method and slot mirrors in Primordial Soup's protocol with the canonical
+  `ClassMirror` split; a mirror sends its reflectee nothing, reads only the
+  slot a name names, and hands out no value it reached through a shipped
+  level, a class mirror reached by navigation holding the way to its
+  class rather than the class; a mixin reified as one kernel-private
+  `Mixin` object per mixin per heap, each mixin knowing its enclosing
+  mixin and its module's text, and an image record of its own for it; the
+  mirror table past 256 rows. [liveness-and-reflection.md](design/liveness-and-reflection.md),
+  "Mirrors that read". **5b, MirrorBuilder and atomic installation**, on
+  `become:` as an eager bulk forward after Primordial
   Soup's, reached only through mirrors. A minimal MirrorBuilder after
   Primordial Soup's `Mirrors.ns` and the canonical Newspeak's
   `AtomicInstaller.ns`: edits staged apart from the live system, of a
   class's instance slots and methods; an atomic install that reaches every
   application of an edited mixin and their subclasses (§6.2), migrates the
   instances whose layout changed and forwards them in one bulk forward, and
-  flushes every inline cache; every edit to a shipped mixin refused; a
-  mirror capability a program obtains from the platform; `ClassMirror` and
-  `ObjectMirror` to read with. It brings the recorded guard of an activation
-  and the slot-access check with it (decided with the user on 2026-10-03).
+  flushes every inline cache; every edit to a shipped mixin refused; the
+  builder reached from the mirrors of 5a. It brings the recorded guard of
+  an activation and the slot-access check with it (decided with the user
+  on 2026-10-03).
   It is the live editing of mixins, which §6.2 requires to reach every
   application: a `Mixin` stays an immutable Rust value outside the object
   space, its identity is its `MixinId`, and an edit installs a fresh mixin
   under the old one's id -- Primordial Soup's forward of a mixin, done on
   the Rust side -- so the places that still name a mixin by its `Rc`'s
   address (`Heap::mixin_id`, `Mixin::nested`, the hidden nested-class slot,
-  the encoder's row ids) move to the id (decided with the user on
-  2026-10-05). The application cache, kept strong since road step 3a,
-  reclaims no mixin id, application index or guard id; the reuse rules of
-  [object-model.md](design/object-model.md), "An application has two ids",
-  and a weak application cache come with this step (decided with the user
-  on 2026-10-03). An edited program, its edited mixins and their code
-  included, is written to an image and loads back edited (decided with the
-  user on 2026-10-05; [image-format.md](design/image-format.md), "Planned:
-  edited mixins in the image"). Left to its plan: how removing a slot
-  recompiles a mixin whose declaration is absent, as a decoded one's is,
-  and the questions "Planned: edited mixins in the image" leaves open.
-  The reflective checks no golden can make while `class` and `Object`'s
-  class accessors are protected -- the boundary between `Integer` and
-  `LargeInteger`, chains of metaclasses, that `Metaclass` refuses
-  instantiation, the identity of class objects -- return as goldens through
-  its mirrors; meanwhile `crates/ns-runtime/tests/representation.rs` checks
-  them from the host ([core-library.md](design/core-library.md), "`class`
-  and the class accessors are protected").
+  the encoder's row ids, `ShippedWorld::declared_by_mixin`) move to the
+  id, and so do `Mixin::enclosing` and `Mixin::module_text` (decided with
+  the user on 2026-10-05). The application cache, kept strong since road
+  step 3a, reclaims no mixin id, application index or guard id; the reuse
+  rules of [object-model.md](design/object-model.md), "An application has
+  two ids", and a weak application cache come with this step (decided
+  with the user on 2026-10-03). An edited program, its edited mixins and
+  their code included, is written to an image and loads back edited
+  (decided with the user on 2026-10-05;
+  [image-format.md](design/image-format.md), "Planned: edited mixins in
+  the image"). Left to its plan: how removing a slot recompiles a mixin
+  whose declaration is absent, as a decoded one's is, and the questions
+  "Planned: edited mixins in the image" leaves open.
   Deferred beyond it: a shape-changing `setClass:`, a superclass change,
   edits of nested classes, `installAtomically:` over several builders,
   editing kernel methods, `ActivationMirror` and edit-and-continue, scoped
@@ -195,7 +215,7 @@ and `prior-art/newspeak-benchmarks`.
   [object-model.md](design/object-model.md), "Planned: `become:` as an
   eager bulk forward", "Planned with road step 5: what a slot access
   checks"; [liveness-and-reflection.md](design/liveness-and-reflection.md),
-  "Planned: road step 5, mirrors and atomic installation";
+  "Planned: road step 5b, MirrorBuilder and atomic installation";
   [memory.md](design/memory.md), "Weak references".
 - **Step 6, inline allocation in the interpreter**: a bump in eden for `new`,
   closures, boxed floats and `Array new:`, with headroom past the scavenge
@@ -231,6 +251,20 @@ and `prior-art/newspeak-benchmarks`.
 Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 
 ## Planned: performance and representation
+
+- **A mirror walks again what it walked a moment ago** (2026-10-18): a
+  navigated class mirror holds the way to its class, so every use walks
+  it afresh, and `superclass` and `gathered:` -- behind a class mirror's
+  `slots`, `methods` and `nestedClasses` -- walk the chain once per call,
+  so reading every level of a chain `n` deep through `superclass` costs
+  `n²` steps. And an object mirror's `slots` asks `getSlot:`'s leaf for
+  each name, which rebuilds the visible slots each time
+  (`builtins/reflection.rs`, `visible_slots`), `n²` in the slots of the
+  object. Nothing measures mirrors yet; a leaf answering the names and
+  the values together, and one walking a whole chain once, are
+  candidates.
+  [liveness-and-reflection.md](design/liveness-and-reflection.md),
+  "Mirrors that read".
 
 - **The parser's 3.4 ms for `Kernel.ns`** (2026-10-14): a boot that
   compiles the shipped source still parses it, `Kernel.ns` in 3.44 ms of a
@@ -490,8 +524,8 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   on `corpus/runnable.toml` or a program under `benchmarks/` asks for it:
   `IdentitySet`; exceptions beyond §8.6's core and Primordial Soup's
   (`ExceptionSet`, `Notification`, `Warning`, `outer`, `retryUsing:`,
-  `signalerContext`, `Object>>error:`); a mirror `slot name` leaf for
-  reflection; an embedded compiled kernel image if the kernel grows. What
+  `signalerContext`, `Object>>error:`); an embedded compiled kernel image
+  if the kernel grows. What
   Primordial Soup's core API has comes with "Next" above.
   [core-library.md](design/core-library.md).
 - **Beyond the typed arrays and `DataView`** (noted with the user on
@@ -556,14 +590,68 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   boundaries, restart frame, breakpoints; `defaultAction` is where it plugs in
   (a test-only `resume_unhandled_exceptions` hook stands in today). Blocked on
   the yield path above. [liveness-and-reflection.md](design/liveness-and-reflection.md).
-- **Reflection beyond road step 5**: a shape-changing `setClass:`, a
-  superclass change, edits of nested classes, `installAtomically:` over
-  several builders, and `ActivationMirror`, on the activation objects that
-  exist, for edit-and-continue and §8.2's access to the current activation.
+- **Reflection beyond road step 5b**: a shape-changing `setClass:`, a
+  superclass change, edits of nested classes and `installAtomically:` over
+  several builders.
   [liveness-and-reflection.md](design/liveness-and-reflection.md), "Planned:
-  road step 5, mirrors and atomic installation".
+  road step 5b, MirrorBuilder and atomic installation".
+- **The activation and thread mirrors** (2026-10-18): road step 5a reads
+  classes, mixins, methods and objects, not activations. §8.2 asks for
+  "access to the current activation" through mirrors
+  (`newspeak-spec.pdf` p. 47), and edit-and-continue needs a mirror on a
+  suspended one; Primordial Soup's `ActivationMirror` and `ThreadMirror`
+  (`prior-art/primordialsoup/newspeak/Mirrors.ns:32`, `:2484`) are the
+  model, over the kernel-private activation objects that exist. An
+  activation holds what the shipped-level rule withholds -- a shipped
+  frame's registers hold the kernel and the VM mirror -- so the rule has
+  to reach frames before one is handed out.
+  [liveness-and-reflection.md](design/liveness-and-reflection.md), "Mirrors
+  that read".
+- **`evaluate:` and `perform:` through a mirror** (2026-10-18): an object
+  mirror that evaluates an expression in the reflectee's scope, or sends
+  it a message, answering a mirror on the result, as Primordial Soup's
+  `ObjectMirror>>evaluate:` (`Mirrors.ns:1600-1606`) and the canonical
+  `perform:with:ifFail:` (`prior-art/newspeak/MirrorsForSqueak.ns:1345`)
+  do; §8.2's "modify itself" covers it. `evaluate:` needs the compiler
+  reachable at run time, and both run the program's code, unlike every
+  mirror operation built.
+- **`instances` and `referringObjects`** (2026-10-18): a class mirror's
+  instances and an object mirror's referrers, Primordial Soup's
+  `ClassMirror>>instances` (`Mirrors.ns:915-916`) and
+  `ObjectMirror>>referringObjects` (`:1655`), each a walk of the heap. Both
+  must keep the shipped-level rule: an instance of a shipped class or a
+  referrer that is a shipped module's root or the VM mirror is not a value
+  a mirror may hand out.
+- **Metadata through mirrors** (2026-10-18): §4.3 makes metadata comments,
+  `(*:id: ... *)`, "available at runtime via mirrors" (`newspeak-spec.pdf`
+  p. 21), as Primordial Soup's mirrors answer `metadata`
+  (`Mirrors.ns:758`, `:849`, `:1233`, `:1269`). The parser attaches every
+  comment to its node; nothing carries one past the front end, so a
+  mixin, a method and a slot would have to keep theirs, and an image carry
+  them.
+- **`getSlot:` of a lazy slot** (2026-10-18): an object mirror's `slots`
+  leaves a lazy slot out and `getSlot:` refuses its name, since reading
+  the field would answer `nil` for a slot not yet computed and forcing it
+  would run the program's initializer; §6.3.3 makes a lazy slot's value
+  the slot's on first use. Primordial Soup's `getSlot:` reads a slot by
+  its index (`Mirrors.ns:1628-1638`). Which of the two a mirror answers is
+  undecided. [liveness-and-reflection.md](design/liveness-and-reflection.md),
+  "No mirror hands out a value it reached through a shipped level".
+- **The indexed elements in `ObjectMirror slots`** (2026-10-18): `slots`
+  lists named slots only, so a mirror on an `Array`, a `ByteArray`, a
+  `WeakArray` or a `String` lists none, and a program instance of any
+  other shape answers an empty group. Primordial Soup's `slots` lists an
+  indexed object's elements (`Mirrors.ns:1667-1676`, `slotsIndexed`).
+- **A navigated mirror anchored on an unresolved future** (2026-10-18): a
+  navigated class mirror recomputes its class from its anchor on every
+  use, so one made from an object mirror on a §6.3.2 future that resolves
+  later reflects the resolved value's class afterwards, where a mirror
+  holding the class would have kept the future's. Which is right is
+  undecided, and no test pins either.
+  [liveness-and-reflection.md](design/liveness-and-reflection.md), "No
+  mirror hands out a value it reached through a shipped level".
 - **Scoped invalidation.** `Interpreter::invalidate_caches` exists, and
-  nothing but a test and the cache stress mode calls it; road step 5's
+  nothing but a test and the cache stress mode calls it; road step 5b's
   install will flush every inline cache through it. Scoping an invalidation
   to the applications an edit affects is deferred beyond that step.
   [liveness-and-reflection.md](design/liveness-and-reflection.md), "Caches
@@ -675,9 +763,9 @@ a modifier needs no whitespace after it (§6.3.3,
 selector ends before it (§4.2); `outer N` without a message answers the
 enclosing object (§5.9);
 value objects are never copied across an actor boundary (§3.1.1); there is
-no mirror-based reflection (§8.2), which road step 5 closes but for
-changing the class of an individual object and access to the current
-activation.
+no MirrorBuilder (§8.2): mirrors read but do not change, which road step
+5b closes but for changing the class of an individual object and access
+to the current activation ("The activation and thread mirrors" above).
 
 ## Open design questions
 
@@ -710,7 +798,7 @@ activation.
 - **How a replaced kernel method is compiled.** Its primitive-method mark and
   `SendMirror` rest on `Binding::MirrorSend`, which only shipped source gets;
   recording it for an edit would hand the edit the whole Rust boundary.
-  Road step 5 refuses every edit to a shipped mixin, so the question stays
+  Road step 5b refuses every edit to a shipped mixin, so the question stays
   open until editing kernel methods is offered.
   [liveness-and-reflection.md](design/liveness-and-reflection.md).
 - **Whether a shape-changing `setClass:` is ever offered, and at what
@@ -718,7 +806,7 @@ activation.
   object; with `become:` an eager bulk forward, changing one object to a
   class of another shape would pay a walk of the whole heap for one object.
   The canonical Newspeak's `setClass:` rewrites the class word in place
-  (`changeClassOf:to:`), and Primordial Soup offers none. Road step 5
+  (`changeClassOf:to:`), and Primordial Soup offers none. Road step 5b
   leaves it out.
   [object-model.md](design/object-model.md), "Planned: `become:` as an
   eager bulk forward".
@@ -1440,6 +1528,25 @@ Small, deliberately left, none affecting an outcome.
   `git diff --name-only` against the table's paths, one group, say
   `changed`, so that a gate the table asks for cannot be forgotten.
 
+- Leftovers of road step 5a's reviews (noted 2026-10-18):
+  `MirrorsFactory.ns`'s root comment calls `build` its one public member,
+  but `ObjectMirror` and `ClassMirror` are public classes of the root too
+  (no program reaches the root, so nothing depends on it); the "once" of
+  `Heap::record_mixin_object` is a `debug_assert!` only; a thread that
+  boots both from the embedded shipped code and from source holds two
+  copies of a shipped module's text, `shipped_module_text`'s and the
+  resolved module's (`interpreter/core_library.rs`);
+  `ClassDeclarationMirror>>=` is asymmetric with an object that answers
+  `isKindOfClassDeclarationMirror` falsely, which is harmless, since the
+  `MixinMirror>>=` it ends in hands the reified mixin to the module's own
+  mirrors only; a class side's `simpleName` is
+  its `name`, `'Klass class'`, which no prior art pins; and the shipped
+  boundary's walk (`tests/platform.rs`,
+  `no_mirror_answers_a_withheld_value`) sends every public unary method of
+  every facet, `garbageCollect` and the transcript's `newLine` among them,
+  and pins exact counts, seven facets and 37 classes, that change with
+  every facet.
+
 - Leftovers of the `ByteArray` sub-project's reviews (noted 2026-10-13):
   `Heap::byte_array_words` and `byte_array_words_mut` repeat the format
   check and the size computation; a string's UTF-8 size is computed twice,
@@ -1528,6 +1635,17 @@ Small, deliberately left, none affecting an outcome.
   precondition lines lack a blank `///` before them.
 
 ## Goldens and documentation
+
+- **The reflective checks back in goldens** (2026-10-18): what only the
+  representation showed while `class` and `Object`'s class accessors are
+  protected -- the boundary between `Integer` and `LargeInteger`, chains
+  of metaclasses, the identity of class objects -- is checked from the
+  host by `crates/ns-runtime/tests/representation.rs`. The mirrors of
+  road step 5a can check it from goldens (`getClass name`, `isMeta`, a
+  class mirror's `=`), but for `Metaclass` refusing instantiation, which a
+  mirror does not hand out; those goldens are not written.
+  [core-library.md](design/core-library.md), "`class` and the class
+  accessors are protected".
 
 - **The amplification bound of a rejected load is counted with two-byte
   class tags.** `decode_value`'s doc comment (`image/decode.rs`), the

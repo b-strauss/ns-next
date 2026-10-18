@@ -739,6 +739,14 @@ check").
 - The host root table.
 - The kernel-private `Activation` class, every frame object's class, which
   the heap holds (`Heap::activation_class`).
+- The heap's table of reified mixins (`Heap`'s `mixin_objects`), the one
+  kernel-private `Mixin` object of each mixin a mirror has reached
+  ([liveness-and-reflection.md](liveness-and-reflection.md), "A mixin is
+  reified as a kernel-private object"): a strong root, marked, forwarded
+  by every move and scavenged like `activation_class`, since a mixin lives
+  as long as the heap's mixin table, and an object let go would make the
+  next mirror on the mixin answer a second one, so `==` would no longer be
+  the mixin's identity.
 - The depth limit's reserve, `Mutator.depth_reserve`: the frame of the
   activation an error near the limit arose in, marked, forwarded and
   scavenged with the bootstrap's roots through `StepRoots`
@@ -1103,7 +1111,7 @@ creator's frame record without registers.
   may have a latency cost as well as a memory one.
 - **The application cache grows without bound** in the presence of live editing,
   because every re-application mints a fresh entry that nothing evicts. It is
-  settled with road step 5's edits, which replace a mixin under its id
+  settled with road step 5b's edits, which replace a mixin under its id
   ([liveness-and-reflection.md](liveness-and-reflection.md), "Planned with
   road step 5: an edit replaces the mixin under its id"). Its key is a pair
   of the heap's ids since road step 3a, so evicting weakly is decidable; it
@@ -1163,8 +1171,12 @@ peak during loading, not a leak for the process's life.
 
 **The decoder reads the graph section twice**
 ([image-format.md](image-format.md), "Two passes"). The first pass reads
-every record as the second will and allocates nothing beyond transient,
-bounded buffers; it sizes each record's object from the record's own bytes,
+every record as the second will and allocates nothing in the object space:
+beside transient, bounded buffers, it interns the mixin each reified
+mixin's record names, and resolving one that names a class side may
+synthesize that class side, a Rust value of the heap's mixin table, at
+most one per instance-side mixin, which lives as long as the interpreter
+the load returns or drops; it sizes each record's object from the record's own bytes,
 refuses what the second pass would refuse about counts, ids, a symbol or a
 mixin named twice and a `FutureImplementation` record of another field count, and refuses before
 anything is allocated when the objects would take more than eight words a
@@ -1259,8 +1271,12 @@ the nursery bounds rather than the input; and the decoded `Vec<Instruction>` of
 one compiled body at a time while the code table is verified ("The trigger
 and the growth policy" below); and a module's source text, which an image
 with source holds once, its bytes in one `Rc<str>` that every mixin of the
-module and the host's `LoadedModule` share. Each stays proportional to the
-input.
+module and the host's `LoadedModule` share; and what the first pass keeps
+of the reified mixins' records -- the mixin each names, a set of their ids,
+both dropped before the placeholders exist, and a class side resolving one
+may synthesize, a Rust value, at most one per instance-side mixin,
+entered in the heap's mixin table and so living as long as the
+interpreter the load returns or drops. Each stays proportional to the input.
 
 `bounded_count` is what keeps all of this proportional to the input rather
 than to a 32-bit count -- without it a crafted `u32::MAX` would allocate
@@ -1625,7 +1641,7 @@ reclaimable. Nothing drops a mixin before live editing, so the ids are
 minted and none is reclaimed, and the cache stays strong until then (decided
 with the user on 2026-10-03); its unbounded growth under live editing
 ([liveness-and-reflection.md](liveness-and-reflection.md)) ends with the
-first edit's reclamation, which road step 5's atomic install brings
+first edit's reclamation, which road step 5b's atomic install brings
 ([liveness-and-reflection.md](liveness-and-reflection.md), "Planned: road
 step 5, mirrors and atomic installation"). The same per-mixin id serves dispatch's open
 option of guarding a private lexical site on N's mixin
@@ -1882,7 +1898,7 @@ object's size is reflective and rare -- edit-and-continue adding locals to a
 live activation, a MirrorBuilder adding or removing slots of live instances
 (requirements 2 and 3 of
 [liveness-and-reflection.md](liveness-and-reflection.md)) -- and will take a
-new object: for instances, road step 5's atomic install will forward the old
+new object: for instances, road step 5b's atomic install will forward the old
 ones to their replacements in one bulk forward, a walk of every root the
 collector traces (`trace.rs`) and every heap object that rewrites every
 reference ([object-model.md](object-model.md), "Planned: `become:` as an
@@ -2213,7 +2229,7 @@ VM mirror is a capability" gains, as a consequence, that no program reaches
 `become:` -- a leaf on the mirror that only the shipped mirrors module's
 atomic install uses -- and that the mirrors refuse every edit to a shipped
 mixin, which seals the mirror's class and keeps every object a shipped name
-names out of the forward (road step 5; [object-model.md](object-model.md),
+names out of the forward (road step 5b; [object-model.md](object-model.md),
 "Planned: `become:` as an eager bulk forward"). "Decided per activation from the
 block's `outer_reach`" stands, since the divorce keeps that rule.
 
@@ -2317,7 +2333,7 @@ A Cheney copy of the nursery's survivors (`heap/scavenge.rs`), as Spur's
   one joins the remembered set.
 - **Forwarders.** A copied object's old place becomes a forwarder: its
   header's format the forwarded one, its class word naming the copy, the
-  format road step 5's bulk forward writes too, while it runs
+  format road step 5b's bulk forward writes too, while it runs
   ([object-model.md](object-model.md), "Planned: `become:` as an eager bulk
   forward"). A reference to a forwarder is followed along the whole chain
   (`evacuate`), and the object at its end is copied only if it is young and

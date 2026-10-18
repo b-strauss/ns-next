@@ -22,10 +22,11 @@ Rust 1.98.0, edition 2021, six crates:
   in `resolve.rs`, the one unwinder in `unwind.rs`, the VM mirror in
   `mirror.rs` and its leaves in `builtins/`), the core library
   (`core-library/Kernel.ns`, `PlatformFactory.ns` and, under `platform/`,
-  `TranscriptFactory.ns`, `TimeFactory.ns`, `CollectionsFactory.ns` and
-  `TypedArraysFactory.ns`, every root `= Value`; `Kernel` and
+  `TranscriptFactory.ns`, `TimeFactory.ns`, `CollectionsFactory.ns`,
+  `TypedArraysFactory.ns` and `MirrorsFactory.ns` (the mirrors, whose
+  leaves are `builtins/reflection.rs`), every root `= Value`; `Kernel` and
   `PlatformFactory` booted by `interpreter/kernel.rs` and
-  `interpreter/core_library.rs`, the other four built on first demand by
+  `interpreter/core_library.rs`, the other five built on first demand by
   `PlatformFactory.ns`'s lazy slots through two mirror leaves, or by the
   loader when an image names them),
   `LargeInteger` arithmetic (`arbitrary_integer/`, adapted
@@ -291,7 +292,7 @@ and never add a way for a program to obtain the mirror, its class or a
 `Binding::MirrorSend`, and only the shipped modules are resolved with it; (2)
 the mirror slot of `Kernel` is checked at boot, and that of every shipped
 module given the mirror (`PlatformFactory`, `TranscriptFactory`,
-`TimeFactory`, `TypedArraysFactory`) whenever its instance is recorded --
+`TimeFactory`, `TypedArraysFactory`, `MirrorsFactory`) whenever its instance is recorded --
 at boot, by `recordShippedModule:` on first demand, or by the loader -- so
 no instance that fails it is ever recorded, and no program reaches a
 shipped root (the factory pattern), nor the mirror or the kernel instance
@@ -378,9 +379,10 @@ runs end to end belongs in `corpus/runnable.toml` with the unary selector its
 generated application sends it (`send`) and its output. `PlatformFactory.ns`,
 `TranscriptFactory.ns` and `TimeFactory.ns` are widened only on demand: an accessor exists because a `runnable.toml`
 module or a program under `benchmarks/` needs it, named in the accessor's
-comment; the kernel facet (`platform kernel`) and the typed arrays facet
-(`platform typedArrays`), which only hand out the classes of `Kernel.ns` and
-`TypedArraysFactory.ns`, are exempt. `Kernel.ns` and `CollectionsFactory.ns` take Primordial Soup's whole
+comment; the kernel facet (`platform kernel`), the typed arrays facet
+(`platform typedArrays`) and the mirrors facet (`platform mirrors`), which
+only hand out the classes of `Kernel.ns`, `TypedArraysFactory.ns` and
+`MirrorsFactory.ns`, are exempt. `Kernel.ns` and `CollectionsFactory.ns` take Primordial Soup's whole
 core API instead, its selectors and behaviour adopted, every body written
 here and no other project named in their comments (`core-library.md`,
 "The kernel completed to Primordial Soup's core API").
@@ -446,7 +448,8 @@ decision, made so far only for `num-bigint` and `num-integer`
 - **Every member of a shipped core-library module is documented** to the
   standard of Javadoc. Every method, slot and class of `Kernel.ns`,
   `PlatformFactory.ns`, `TranscriptFactory.ns`, `TimeFactory.ns`,
-  `CollectionsFactory.ns` and `TypedArraysFactory.ns` -- public, protected and
+  `CollectionsFactory.ns`, `TypedArraysFactory.ns` and `MirrorsFactory.ns`
+  -- public, protected and
   private -- has a `///` comment directly above it that says what it
   does and what it answers, each argument and what it must be, every Error
   it signals and when, and what it guarantees about order, identity,

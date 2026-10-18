@@ -866,9 +866,11 @@ pub enum ReflectionPrimitive {
     MixinIsShipped,
 }
 
-/// A row of `MIRROR`. A `u16`, so the table may hold 65,536 rows; a
-/// `Resolved::Primitive` carries one, and its size is pinned
-/// (`interpreter::resolve`'s
+/// A row of `MIRROR`. A `u16`, so the table may hold 65,536 rows: two bytes
+/// more than a `u8` makes `Primitive` four bytes, which fit in the padding
+/// every structure holding one already had, so none grows (`Target`,
+/// `CacheEntry`, `GlobalEntry`, `Resolved` and `MirrorEntry`; the size of
+/// `Resolved` is pinned by `interpreter::resolve`'s
 /// `a_resolution_stays_the_size_the_hot_path_was_measured_at`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MirrorPrimitive(u16);

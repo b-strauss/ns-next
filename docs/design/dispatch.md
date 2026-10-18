@@ -567,7 +567,7 @@ lets a primitive method carry its row ("Primitive methods" below). **A
 MirrorBuilder must seal the mirror's class when it arrives**: a method added
 to or replaced on it would be found by a sent mirror send and bypassed by
 every `SendMirror` and primitive method, and the two would then disagree.
-Road step 5's MirrorBuilder seals it by refusing every edit to a shipped
+Road step 5b's MirrorBuilder seals it by refusing every edit to a shipped
 mixin ([liveness-and-reflection.md](liveness-and-reflection.md), "Mirrors
 and MirrorBuilder").
 
@@ -944,7 +944,7 @@ the id lives: every read goes through `Heap::dispatch_id` or
 — only a crafted image makes one — and which is never cached;
 `DispatchId::VACANT`, 1, which guards a site state and which no value
 answers; and `DispatchId::FORWARDED`, 2, reserved as a forwarder's guard,
-which the eager bulk forward of road step 5 does not need, since no send
+which the eager bulk forward of road step 5b does not need, since no send
 meets a forwarder; whether it stays reserved is left to that step's plan
 ([object-model.md](object-model.md), "The reserved guard values sit at
 the low end"). The counter mints from 3 and below 2^22; an exhausted counter
@@ -1508,7 +1508,7 @@ never reused while a key can name them, the cache is free to become weak
 editing reclaims an id ([object-model.md](object-model.md), "An application
 has two ids"). And no cache ever meets a forwarder: `become:` will be an
 eager bulk forward ([object-model.md](object-model.md), "Planned:
-`become:` as an eager bulk forward", road step 5), whose forwarders exist
+`become:` as an eager bulk forward", road step 5b), whose forwarders exist
 only while it runs, rewritten out of every root and every object before
 any send runs again, after which every inline cache is flushed. So no send
 entry unforwards its receiver, and a super send or a private lexical send,
@@ -1527,7 +1527,7 @@ have three guards. At 22 bits the guard ids can run out where a `u32`
 counter practically could not; running out keeps the rule of "The dispatch
 id" above, an application without a guard id running uncached (`NONE`). The
 guard id serves only as a guard -- in object headers and inline- and
-global-cache entries, and from road step 5 in recorded guards
+global-cache entries, and from road step 5b in recorded guards
 ([object-model.md](object-model.md), "Planned with road step 5: what a slot
 access checks") -- and every identity comparison of applications uses the
 full-width index instead: the application cache's key and value,

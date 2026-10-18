@@ -1,16 +1,25 @@
 # Liveness, reflection, and concurrency
 
-> **Status:** planned. Nothing in this document is built; mirrors that read
-> are road step 5a ("Planned: road step 5a, mirrors that read"), a
-> MirrorBuilder and an atomic install road step 5b ("Planned: road step
-> 5b, MirrorBuilder and atomic installation"). What *is* built is
-> the groundwork every part of it depends on — reified activations and the
-> kernel-private activation objects the exceptions are built on
-> ([core-library.md](core-library.md), "Exceptions"), the safepoint
-> statement→program-counter table, stable call-site identity, source and
-> provenance retention, identity hashes, §3.2's reified class hierarchy — each
-> described in the document for its own aspect.
-> **Code:** none yet.
+> **Status:** mirrors that read are built, road step 5a ("Mirrors that
+> read"): `platform mirrors` hands out `ObjectMirror` and `ClassMirror`,
+> through which a program reads the structure of its classes, mixins,
+> methods and objects, and no mirror hands out a value it reached through
+> a shipped level. **Planned:** a MirrorBuilder and an atomic install, road
+> step 5b ("Planned: road step 5b, MirrorBuilder and atomic
+> installation"); the debugger, edit-and-continue and actors after it.
+> What else is built is the groundwork every part of it depends on —
+> reified activations and the kernel-private activation objects the
+> exceptions are built on ([core-library.md](core-library.md),
+> "Exceptions"), the safepoint statement→program-counter table, stable
+> call-site identity, source and provenance retention, identity hashes,
+> §3.2's reified class hierarchy — each described in the document for its
+> own aspect.
+> **Code:** `crates/ns-runtime/core-library/platform/MirrorsFactory.ns`
+> (the mirrors), `crates/ns-runtime/src/builtins/reflection.rs` (their
+> leaves), the reified mixin (`Mutator::reified_mixin`, `Heap`'s
+> `mixin_objects`, `Kernel.ns`'s private class `Mixin`), `Mixin::enclosing`
+> and `Mixin::module_text` (`mixin.rs`), the image's `OBJECT_MIXIN`
+> (`image/encode.rs`, `image/decode.rs`).
 
 This is the constraints document. It binds every milestone even though it
 implements none of them: the point is that the runtime's shape must not foreclose
@@ -89,7 +98,7 @@ emptying its global cache, with every code family's range kept for the
 activations still running; a debug-build stress mode, `NS_NEXT_STRESS_CACHES`,
 does exactly that at every safepoint. Nothing calls it outside that mode and
 the tests yet, since nothing mutates a method table at run time; road step
-5's atomic install will call it after its bulk forward. Scoping an
+5b's atomic install will call it after its bulk forward. Scoping an
 invalidation to the applications a change affects is deferred beyond that
 step. The dispatch id a cache guards on is a copy in the
 object header ([dispatch.md](dispatch.md), "The dispatch id"), so `become:`
@@ -100,7 +109,7 @@ planned bulk forward meets the first by construction: it is eager, so no
 forwarder outlives it and every reference names the new object, which keeps
 its own id, and every inline cache is flushed after it
 ([object-model.md](object-model.md), "Planned: `become:` as an eager bulk
-forward", road step 5).
+forward", road step 5b).
 
 ## Debugger
 
@@ -171,94 +180,123 @@ A **MirrorBuilder** applies class changes:
 - *Change a superclass* → re-resolve lookup for the subtree, flush its caches,
   re-lay-out instances if inherited slots changed.
 
-### Planned: road step 5a, mirrors that read
+### Mirrors that read
 
-Would change: a program that holds the platform reads the structure of
-classes, mixins, methods and objects through mirrors, and nothing it can
-reach that way leads to a shipped module's root or the VM mirror. Road
-step 5 is split in two (decided with the user on 2026-10-17): this read
-side first, then the MirrorBuilder and the atomic install, road step 5b
-below, which build on it -- the same capability, the same mirrors and the
-same boundary at the shipped modules. Settled with the user on 2026-10-17:
+A program that holds the platform reads the structure of classes, mixins,
+methods and objects through mirrors, and nothing it can reach that way
+leads to a shipped module's root or the VM mirror. This is road step 5a:
+road step 5 is split in two (decided with the user on 2026-10-17), this
+read side first, then the MirrorBuilder and the atomic install, road step
+5b below, which build on it -- the same capability, the same mirrors and
+the same boundary at the shipped modules. The decisions below were settled
+with the user on 2026-10-17, or taken while the step was built and stated
+here as what the code does.
 
 **The specification asks for the capability, not the protocol.** §1 makes
 mirrors capabilities ("Given access to the appropriate mirrors (and only
 given such access), a running program can both introspect and modify
-itself"), §8.2 asks that mirrors examine "the structure of class
-declarations and methods, including the bodies of methods" and "individual
-objects", §4.3 makes metadata available "via mirrors"; no mirror class but
-`MessageMirror` is named, nor what a mirror answers, nor how a program
-obtains one, nor how mirrors meet access control (searched for mirror,
-reflect, reflectee, every mirror class name, capability, platform,
-metaclass, `class`, `mixin`, enclosing object, private, protected, access
-control, introspect). The protocol follows the canonical implementation
-and Primordial Soup, which agree on it.
+itself", `newspeak-spec.pdf` p. 3), §8.2 asks that mirrors examine "the
+structure of class declarations and methods, including the bodies of
+methods" and "individual objects", §4.3 makes metadata available "via
+mirrors" (p. 21); no mirror class but `MessageMirror` is named, nor what a
+mirror answers, nor how a program obtains one, nor how mirrors meet access
+control (searched for mirror, reflect, reflectee, every mirror class name,
+capability, platform, metaclass, `class`, `mixin`, enclosing object,
+private, protected, access control, introspect). The protocol follows the
+canonical implementation and Primordial Soup, which agree on it.
 
-**The mirrors are a shipped module, handed out as `platform mirrors`.** A
-seventh shipped module, `platform/MirrorsFactory.ns`, built on first
+**The mirrors are a shipped module, handed out as `platform mirrors`.** The
+seventh shipped module, `platform/MirrorsFactory.ns`, is built on first
 demand like the transcript, the clock and the typed arrays, over the VM
-mirror and the kernel; the platform's `mirrors` facet hands out its two
-public classes, `ObjectMirror` and `ClassMirror`, whose factory
-`reflecting:` is where a program enters. Every other mirror class is
-private and reached only by navigating from those two. This is both
+mirror and the kernel, of which its root keeps only `Error` and
+`ArgumentError`; it is a value, so every platform shares the one module
+and its classes. The platform's lazy `mirrors` answers the module's
+`Mirrors` facet, a value with one class accessor for each of its two public
+classes, `ObjectMirror` and `ClassMirror`, whose factory `reflecting:` is
+where a program enters. Every other mirror class -- `AbstractClassMirror`,
+`NavigatedClassMirror`, `MixinMirror`, `ClassDeclarationMirror`,
+`MethodMirror`, `SlotDeclarationMirror`, `SlotMirror` and `MirrorGroup` --
+is private and reached only by navigating from those two. This is both
 prior arts' shape (`prior-art/newspeak/RuntimeForSqueak.ns:99`,
 `public mirrors = Mirrors usingPlatform: self vmMirror: vmm`;
 `prior-art/primordialsoup/newspeak/RuntimeWithMirrors.ns:27`) and the
 corpus's (`platform mirrors ClassMirror`). Primordial Soup also has a
 runtime without mirrors; ns-next has one platform, and the platform is
 itself the capability: a module that does not pass it on passes on no
-mirror.
+mirror. The module's root holds the VM mirror in an immutable eager slot,
+checked when its instance is recorded as every shipped module's given the
+mirror is (lock (2), [core-library.md](core-library.md), "The VM mirror is
+the whole Rust boundary").
 
 **The protocol.** Primordial Soup's selectors
 (`prior-art/primordialsoup/newspeak/Mirrors.ns`), with the canonical
 `ClassMirror` split -- a class mirror answers the class's whole inherited
 member set, superclass first, a mixin mirror only the mixin's own:
 
-- `ObjectMirror reflecting: anObject`: `reflectee`, `getClass` (a
-  `ClassMirror`), `getSlot: aSymbol` (the slot's value), `slots` (a
-  `MirrorGroup` of `SlotMirror`s, each a `name` and a `value`, an
-  `ObjectMirror`), `=` and `hash`. Neither `getClass` nor `=` nor `hash`
-  sends anything to the reflectee: they ask the VM mirror, so a reflectee
-  that overrides `=`, `hash` or `class`, or is a proxy, reflects as itself.
-- `ClassMirror reflecting: aClass` (an `ArgumentError` for anything that is
-  not a class or metaclass): `reflectee`, `name`, `simpleName`, `mixin` (a
-  `MixinMirror`), `superclass` (a `ClassMirror`, `nil` at the chain's end,
-  above `Object`'s superclass `Top`, a kernel-private class whose mirror
-  holds its class back like any shipped class reached by navigation), `enclosingObject` (an `ObjectMirror`, on `nil` for a module's
-  class), `isMeta`, `slots`, `methods` and `nestedClasses` -- each a
-  `MirrorGroup`, inherited members included, superclass first, a `<:`
-  level's members where the level stands in the chain -- `=` and `hash`.
+- `ObjectMirror reflecting: anObject`: `reflectee`, `getClass` (a class
+  mirror), `getSlot: aSymbol` (the slot's value), `slots` (a `MirrorGroup`
+  of `SlotMirror`s, each a `name` and a `value`, an `ObjectMirror`), `=`
+  (by the reflectee's identity) and `hash`.
+- `ClassMirror reflecting: aClass` (an `ArgumentError` carrying the
+  argument for anything that is not a class or metaclass): `reflectee`,
+  `name`, `simpleName`, `mixin` (a `MixinMirror`), `superclass` (a class
+  mirror, `nil` for `Top`, which has none -- `Object`'s superclass `Top` is
+  a kernel-private class, and its mirror holds it back like any shipped
+  class reached by navigation), `enclosingObject` (an `ObjectMirror`, on
+  `nil` for a module's class), `isMeta`, `slots` (eager slot
+  declarations), `methods` and `nestedClasses` -- each a `MirrorGroup`,
+  every level's members, from `Top` down to the class, a `<:` level's
+  where the level stands in the chain, a method a subclass overrides at
+  both levels -- `reflects:`, `=` and `hash`.
 - `MixinMirror`: `name` (`'Klass'`, the class side `'Klass class'`),
-  `simpleName`, `isMeta`, `enclosingMixin` (`nil` for a module's root),
-  `classMixin` and `instanceMixin`, `declaration` (a
-  `ClassDeclarationMirror`), `slots`, `lazySlots`, `methods` and
-  `nestedClasses` -- own members only -- `=` and `hash`.
-- `ClassDeclarationMirror`: `name`, `instanceSide`, `classSide`,
-  `enclosingClass` (a `ClassDeclarationMirror`, `nil` at a module's root),
-  `accessModifier`, `source`.
+  `simpleName`, `isMeta`, `enclosingMixin` (`nil` for a module's root, a
+  class side's that of its instance side), `classMixin` and
+  `instanceMixin`, `declaration` (a `ClassDeclarationMirror`), `slots` and
+  `lazySlots` (each empty for a class side), `methods` and `nestedClasses`
+  (empty for a class side) -- own members only -- `reflects:`, `=` and
+  `hash`.
+- `ClassDeclarationMirror`: `name`, `instanceSide`, `classSide` (the
+  synthesized one of a declaration that declares none), `enclosingClass`
+  (`nil` at a module's root), `accessModifier`, `source`, `=` and `hash`.
 - `MethodMirror`: `name` (the selector, a Symbol), `accessModifier`,
-  `definingMixin`, `source`.
+  `definingMixin`, `source`, `=` and `hash`.
 - `SlotDeclarationMirror`: `name`, `isMutable`, `isLazy`,
-  `accessModifier`, `definingMixin`.
+  `accessModifier`, `definingMixin`, `=` and `hash`.
 - `MirrorGroup`: `size`, `isEmpty`, `do:`, `collect:`, `detect:ifNone:`,
-  `findMirrorNamed:` (`nil` when absent), `includesMirrorNamed:`, and
-  `asArray`, in a fixed order: slots in declaration order, superclass
-  first; methods by their position in the source, then by selector;
-  nested classes in declaration order.
+  `findMirrorNamed:` (`nil` when absent; a Symbol and a String of one text
+  name the same mirror), `includesMirrorNamed:`, and `asArray` (a copy),
+  in a fixed order: slots in declaration order, superclass first; methods
+  by their position in the source, then by selector; nested classes in
+  declaration order.
 
-`accessModifier` answers `#public`, `#protected` or `#private`, the
-default already applied (§6.3.1: an unmarked member is protected). A
-method mirror covers the methods a declaration writes: never a slot's
-accessors, a lazy slot's getter, the factory, or a nested class's
-accessor, which the declaration of the slot, the class and the nested
-class already describe. Mirrors read private and protected members
-alike, as both prior arts' do (`Mirrors.ns:1628`,
+Every mirror but a `SlotMirror` and a `MirrorGroup` also answers its
+`isKindOf...Mirror` test. `name` and
+`simpleName` agree: a class's name is its declaration's, never qualified
+by the classes it is nested in. `accessModifier` answers `#public`,
+`#protected` or `#private`, the default already applied (§6.3.1: an
+unmarked member is protected); a class declaration's is its accessor's, a
+class side's its instance side's. A method mirror covers the methods a
+declaration writes: never a slot's accessors, a lazy slot's getter, the
+factory, or a nested class's accessor, which the declaration of the slot,
+the class and the nested class already describe. A method's `source` is
+its declaration from the access modifier to the closing parenthesis, the
+comments before it left out; a class declaration's is its `Mixin::span`,
+from its access modifier, or `class` when it has none; either is `nil`
+when the code was built without its source. Mirrors read private and
+protected members alike, as both prior arts' do (`Mirrors.ns:1628`,
 `prior-art/newspeak/MirrorsForSqueak.ns:1220-1222`): holding the
-capability is the access check. Not in this step: `evaluate:`,
-`perform:`, `instances`, `referringObjects`, the activation and thread
-mirrors, metadata (§4.3), a lazy slot's value through `getSlot:` (which
-refuses a lazy slot's name), and the indexed elements of an `Array` or
-`String` in `slots`.
+capability is the access check. Not in this step, each an item of
+[OPEN-WORK.md](../OPEN-WORK.md): `evaluate:`, `perform:`, `instances`,
+`referringObjects`, the activation and thread mirrors, metadata (§4.3), a
+lazy slot's value through `getSlot:`, and the indexed elements of an
+`Array` or a `String` in `slots`.
+
+**A mirror sends its reflectee nothing.** An object mirror's `getClass`,
+`=` and `hash`, a class mirror's whole walk, and a mixin mirror's reads ask
+the VM mirror, so a reflectee that overrides `=`, `hash` or `class`, or is
+a proxy, reflects as itself; refusing a slot name reads the name's text
+through the VM too (`symbolAsString:ifFail:`), so a refusal runs none of
+the program's code.
 
 **No mirror hands out a value it reached through a shipped level.** Both
 prior arts let whoever holds the mirrors reach everything
@@ -269,19 +307,59 @@ object; the canonical platform even hands its VM mirror out through
 a facet class's enclosing object is its module's root instance, and a
 private shipped class carries its enclosing object's authority. So the
 rule is structural, by level: a mirror reads a value only through a level
-whose mixin is not shipped (`Mixin::shipped`).
+whose mixin is not shipped (`Mixin::shipped`, a class side's that of its
+instance side).
 
-- `getSlot:` and `slots` read only slots that a non-shipped mixin
-  declares; `getSlot:` of a slot a shipped mixin declares signals an
-  `Error`, and `slots` leaves such slots out. A program's subclass of
-  `List` reads its own slots, not `List`'s.
-- `enclosingObject` of a class whose mixin is shipped signals an `Error`.
-- `reflectee` of a `ClassMirror` on a shipped class signals an `Error`
-  unless the program handed that class to `reflecting:` itself: a mirror
-  reached by navigation (`getClass`, `superclass`, `mixin` and back)
-  holds the class but does not give it out. A program that can name
-  `List` gets `List` back; one that reaches a private shipped class by
-  `getClass` gets its structure and not the class.
+- **A mirror reads only the slot a name names.** An object mirror's
+  `slots` lists each name once, under the slot the object's own code sees
+  -- the one the nearest level declaring the name declares -- superclass
+  level first and in declaration order within a level, and leaves the name
+  out when that level declares it lazy or is a core-library level;
+  `getSlot:` reads the same slot and refuses then, never reading a farther
+  slot the nearest one shadows. A program's subclass of `List` reads its
+  own slots, not `List`'s. Primordial Soup's `getSlot:` cannot reach a
+  shadowed slot either (`Mirrors.ns:1627-1628`, deprecated for it); its
+  `slots` lists every level's, which here would put a shadowed value under
+  a name that names another slot.
+- `getSlot:` with a name that is no Symbol signals an `ArgumentError`
+  carrying the name, `'getSlot: requires a Symbol'`; a name it may not read
+  an `Error`, `'getSlot: no slot named <name> that a mirror may read'`.
+- `enclosingObject` of a class whose mixin is shipped signals an `Error`,
+  `'enclosingObject: the enclosing object of a core-library class is not
+  reflected'`.
+- **A class mirror reached by navigation holds the way to its class, never
+  the class.** `getClass` and `superclass` answer a `NavigatedClassMirror`
+  holding an anchor the program gave -- the object an object mirror
+  reflects, or the class `ClassMirror reflecting:` was given -- whether
+  the way takes the anchor's class first, and the number of superclass
+  steps after that; every use walks the way afresh through the VM, by
+  identity, sending the anchor and the counts nothing. Its `reflectee`
+  hands the class out only when its mixin is the program's own and signals
+  an `Error` otherwise, `'reflectee: a core-library class reached by
+  navigation is not handed out'`; the `ClassMirror` a program made hands
+  its class back whatever it is, so a program that can name `List` gets
+  `List` back, and one that reaches a private shipped class by `getClass`
+  gets its structure and not the class. Holding the way rather than the
+  class is what lets a program holding a navigated mirror on `Top` or a
+  private core-library class be written to an image: the mirror's slots
+  hold only what the program gave and two immediates, so lock (4) -- no
+  private shipped class in a value position
+  ([image-format.md](image-format.md), "Shipped names") -- stands
+  unloosened.
+- **`ClassMirror>>=` is by class**, by identity, however each mirror was
+  reached; two applications of one mixin are two classes. It hands the
+  class it compares to no code but the module's own: it sends `reflects:`,
+  public for the purpose, only to an instance of the module's
+  `ClassMirror` or `NavigatedClassMirror`, or, for a mirror the program
+  made, of the receiver's own class. So it is deliberately asymmetric for a
+  program's subclass of `ClassMirror` against a navigated mirror: the
+  subclass's mirror trusts the module's navigated mirror and answers true
+  for one on its class, but the navigated mirror trusts no class a program
+  declared and answers false, since such a class's `reflects:` could keep a
+  class the program was never given. `MixinMirror>>=` is by the reified
+  mixin, trusting the module's `MixinMirror` and the receiver's own class
+  alike; a class declaration mirror compares by its instance side, and a
+  method or slot declaration mirror by its name and defining mixin.
 - What stays readable on a shipped class or mixin is structure: names,
   selectors, access modifiers, slot declarations, the superclass chain as
   further mirrors, and source. None of it is a value that carries
@@ -289,9 +367,31 @@ whose mixin is not shipped (`Mixin::shipped`).
 
 Behind the Newspeak rule, the leaves that answer a slot's value or an
 enclosing object refuse the VM mirror and every recorded shipped module
-instance whatever the level, so a defect in `MirrorsFactory.ns` cannot
-hand one out. The price is that a mirror shows no element of a `List`;
-the list's public protocol still does.
+instance whatever the level (`Mutator::is_withheld`), so a defect in
+`MirrorsFactory.ns` cannot hand one out. The price is that a mirror shows
+no element of a `List`; the list's public protocol still does.
+
+**The leaves.** The mirrors read through one family,
+`Primitive::Reflection(ReflectionPrimitive)` (`builtins/reflection.rs`),
+seventeen rows appended to `MIRROR`, beside the existing
+`objectClass:ifFail:`, `object:identicalTo:ifFail:`,
+`objectHash:ifFail:`, `behaviorSuperclass:ifFail:` and
+`symbolAsString:ifFail:`. A class leaf takes a class or a metaclass
+(`reflectionMixinOf:`, `reflectionIsMetaclass:`,
+`reflectionEnclosingObjectOf:`), an object leaf any object
+(`reflectionSlotNamesOf:`, `reflectionSlotOf:named:`), and a mixin leaf a
+reified mixin (`reflectionMixinName:`, `IsMeta:`, `Enclosing:`,
+`InstanceSide:`, `ClassSide:`, `Slots:`, `Methods:`, `Nested:`,
+`Access:`, `Source:`, `IsShipped:`, and `reflectionMixin:methodSource:`,
+whose reported selector is `methodSource:`); each ends in `ifFail:` and
+declines -- answers nothing, so the failure block runs -- for anything
+else, and none raises: what a program sees is the `Error` or
+`ArgumentError` the mirrors module signals. Slots and methods come back as
+`Array`s of `Array`s (`{name. isMutable. accessModifier. isLazy}`,
+`{selector. accessModifier}`), which the module wraps in mirrors. A
+declared method is a compiled method whose selector is not a lazy slot's
+name of the same mixin, ordered by its body's source start, then its
+selector, so the order does not depend on the method table's hashing.
 
 **A mixin is reified as a kernel-private object.** A mixin is an immutable
 Rust value in the heap's mixin table, named by its `MixinId`
@@ -299,36 +399,47 @@ Rust value in the heap's mixin table, named by its `MixinId`
 below), so a `MixinMirror` needs a heap object to stand for it as its
 reflectee -- as both prior arts' mixins are heap objects
 (`prior-art/primordialsoup/newspeak/KernelForPrimordialSoup.ns:1463-1475`).
-A new builtin, `Kernel.ns`'s private class `Mixin`, has instances of one
-field, the `MixinId` as a `SmallInteger`, format `FixedPointers`; there is
-one per mixin per heap, kept in a strong table on the heap indexed by the
-id, so `==` is the mixin's identity and the object survives an edit that
-installs a new mixin under the id. `Mixin new` is refused, as `Symbol
-new` is; no program can name the class; the object answers nothing of its
-own, and only `MirrorsFactory.ns` reads it, through leaves. A class side
-is a mixin of its own, the synthesized one of a class that declares no
-class side included. The image writes a reified mixin as a record of its
-own, naming a mixin row or, for a shipped mixin, the shipped class whose
-application it is ([image-format.md](image-format.md), "Planned: the
-reified mixin record"). The bare id as a `SmallInteger` was rejected: after
-a load it names another mixin, or none.
+That object is an instance of `Kernel.ns`'s private class `Mixin`
+(`BuiltinClass::Mixin`), format `FixedPointers`, of one field, the
+`MixinId` as a `SmallInteger`. There is one per mixin per heap, made on
+first demand by `Mutator::reified_mixin` and kept in a strong table on the
+heap indexed by the id (`Heap`'s `mixin_objects`, a root of every
+collection, forwarded by every move), so `==` is the mixin's identity and
+the object will survive an edit that installs a new mixin under the id.
+`Heap::mixin_object_id` reads an object as a mixin only when it is the one
+the table holds for the id its field names, so no other object of the
+class ever stands for a mixin. `Mixin new` is refused (`decide_factory`),
+as `Symbol new` is; no program can name the class; the object answers
+nothing of its own, and only `MirrorsFactory.ns` reads it, through the
+leaves. A class side is a mixin of its own, the synthesized one of a class
+that declares no class side included (`Mutator::metaclass_mixin`, one per
+class mixin). The image writes a reified mixin as a record of its own,
+naming a mixin row or, for a shipped mixin, the shipped class whose
+mixin it is, by its declaration -- the declaration of a core-library class
+not yet built included, which the loader then builds
+([image-format.md](image-format.md), "A reified mixin is a record of its
+own"). The bare id as a `SmallInteger` was rejected: after a load it names
+another mixin, or none.
 
 **A mixin knows its enclosing mixin and its module's source.** A mixin
 holds its nested mixins, not the one it is nested in; `enclosingMixin` and
 a class side's `instanceMixin` need the upward link, so each builder --
 from source, from the embedded shipped code, from an image -- sets
 `Mixin::enclosing`, a `Weak` link set once after the enclosing mixin's
-`Rc` exists, a class side's to its instance side's mixin. A method's
-source span is already its body's `CompiledCode::source`, on both codecs'
-wire; what is missing is the text, so each mixin also holds its module's
-source, the one `Rc<str>` every mixin of the module shares: a source
-module's `ResolvedModule::source`, a shipped module's embedded text, an
-image's module text when the image carries source, and `None` otherwise,
-when `source` answers `nil`. A span read from an image is untrusted: the
-slice is taken only where the span lies within the text and on character
-boundaries, `nil` otherwise. A method's source is its declaration from
-the access modifier to the closing parenthesis, comments outside it; a
-class declaration's is its `Mixin::span`.
+`Rc` exists (`Mixin::set_enclosing_of_children`), a class side's to its
+instance side's mixin; `Mixin::enclosing_mixin` reads it. A method's
+source span is its body's `CompiledCode::source`, on both codecs' wire;
+the text is `Mixin::module_text`, the one `Rc<str>` every mixin of the
+module shares: a source module's `ResolvedModule::source`, a shipped
+module's text (one per module per thread, `shipped_module_text`, whether
+the boot compiles the source or decodes the embedded code), an image's
+module text when the image carries source, shared with the host's
+`LoadedModule::source`, and `None` otherwise -- for a builtin's mixin,
+the VM mirror's, and an image without source -- when `source` answers
+`nil`. A synthesized class side has no text of its own and reads its
+instance side's. A span read from an image is untrusted: every slice goes
+through `mixin::source_text`, which answers a slice only where the span
+lies within the text and on character boundaries, `nil` otherwise.
 
 **`platform mirrors` is exempt from the on-demand rule** (decided with
 the user on 2026-10-18), as `platform kernel` and `platform typedArrays`
@@ -336,10 +447,21 @@ are: it hands out the classes of a core-library module and
 reaches no host ([core-library.md](core-library.md),
 "The on-demand rule").
 
-**The mirror table grows past 256 rows.** The step adds about twenty
-leaves to the 248 rows; `MirrorPrimitive` becomes a `u16`, as
-[OPEN-WORK.md](../OPEN-WORK.md) prepared, `Primitive` growing from two
-bytes to four in the padding every holder already has.
+**The mirror table is past 256 rows.** `MirrorPrimitive` is a `u16`, so
+`MIRROR` may hold 65,536 rows and holds 265; `Primitive` grew from two
+bytes to four in the padding every holder already had, so none grew
+([core-library.md](core-library.md), "The VM mirror is the whole Rust
+boundary").
+
+What pins it: the goldens under `goldens/library/mirror/`, run under both
+lowerings and, in the `images` profile, through `build` then `load`; the
+leaves' unit tests in `builtins/reflection.rs`; `tests/platform.rs`, which
+builds the module once on first demand, reads a program's own source
+through a mirror, and walks from the platform through every facet and
+every class the facets hand out, finding no value a mirror answers but
+the classes the walk was given; and `tests/image.rs`, which round-trips reified
+mixins -- a program's, a shipped one's and one of a class not yet built --
+and a program holding mirrors, and refuses every crafted mixin record.
 
 ### Planned: road step 5b, MirrorBuilder and atomic installation
 
@@ -397,10 +519,12 @@ has no implementation plan yet.
 Edit-and-continue is then a special case: a mirror on the suspended activation,
 plus a method replacement, plus the ability to resume.
 
-**The instance-of relation a class mirror needs exists.** A mirror tells a
-metaclass from a class by `Metaclass = classOf: reflectee`, which needs every
-class object's class to be its metaclass and every metaclass's class to be
-`Metaclass`, as §3.2 says. Both hold: `Behavior`, `Class` and `Metaclass`
+**The instance-of relation a class mirror reads exists.** A class
+mirror's `isMeta` asks the VM whether its class is a metaclass
+(`reflectionIsMetaclass:`), and its `getClass` of a class answers the
+class's metaclass, which needs every class object's class to be its
+metaclass and every metaclass's class to be `Metaclass`, as §3.2 says.
+Both hold: `Behavior`, `Class` and `Metaclass`
 are declared classes of `Kernel.ns`
 ([object-model.md](object-model.md), "Class sides and metaclasses"). The
 classes themselves answer only `name` and `printString`; `superclass`,
@@ -413,7 +537,7 @@ and a primitive method carries its leaf on the method, both on the ground
 that the mirror's class and table are fixed at bootstrap
 ([dispatch.md](dispatch.md), "Primitives"). A MirrorBuilder that added or
 replaced a method there would be seen by a sent mirror send and bypassed by
-both, so the two paths would disagree; road step 5's refusal of every edit
+both, so the two paths would disagree; road step 5b's refusal of every edit
 to a shipped mixin is what seals it. **Open:** how a replaced *kernel*
 method is compiled, should editing kernel methods ever be offered. Its
 primitive-method mark and its `SendMirror` rest on
@@ -481,8 +605,9 @@ looks a mixin's id up by `mixin::mixin_key`, the `Rc`'s address
 (`heap.rs`); a mixin holds its nested declarations as `Vec<Rc<Mixin>>`
 (`Mixin::nested`, `mixin.rs`), so an edited nested mixin would otherwise
 force a new enclosing mixin up to the module root; and the hidden
-nested-class slot and the image encoder's row ids are keyed by
-`mixin_key` too. The application cache, today strong and growing with
+nested-class slot, the image encoder's row ids and the shipped world's
+declarations not yet built (`ShippedWorld::declared_by_mixin`) are keyed
+by `mixin_key` too. The application cache, today strong and growing with
 every re-application, gets the reuse rules of the ids and becomes weak
 with this first edit (decided with the user on 2026-10-03;
 [object-model.md](object-model.md), "An application has two ids";

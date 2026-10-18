@@ -2,7 +2,7 @@
 /// up the superclass chain, reads `Top`'s name, refuses to hand `Top` out,
 /// and is equal to the mirror another way reaches it by, the one kept in a
 /// slot included.
-class ANavigatedMirrorHoldsNoCoreLibraryClass = Object new (
+class ANavigatedMirrorNamesTopAndHoldsItBack = Object new (
   |
     private held ::= nil.
   |

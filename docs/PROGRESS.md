@@ -5338,7 +5338,7 @@ return is the safepoint that serves the collection the leaf requested;
 image carries `OBJECT_WEAK_ARRAY` (body tag 12) and `OBJECT_EPHEMERON`
 (13), written as a collection would leave them but for what takes no
 record -- an immediate, a shipped name, a value written by value -- which is
-kept; the decoder holds each body to its class. The `MIRROR` table has 248
+kept; the decoder holds each body to its class. The sub-project brought the `MIRROR` table to 248
 rows, and a fresh boot leaves 27 inline-cache sites and 22 global entries
 (the platform's eager slots for the three classes), where it left 23 and
 19.
@@ -5413,3 +5413,73 @@ What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the runtime
 still pays for the attachment and discards the comments, fewer allocations
 in the syntax tree, and parsing files in parallel. Road step 5, mirrors and
 atomic installation, is still next.
+
+## Mirrors that read, road step 5a (2026-10-18)
+
+Plan: [mirrors-that-read](superpowers/plans/2026-10-17-2355-mirrors-that-read.md);
+[liveness-and-reflection.md](design/liveness-and-reflection.md), "Mirrors
+that read"; [image-format.md](design/image-format.md), "A reified mixin is
+a record of its own"; [core-library.md](design/core-library.md), "The
+platform".
+
+The read half of road step 5, split from the MirrorBuilder and the atomic
+install (decided with the user on 2026-10-17). A seventh shipped module,
+`platform/MirrorsFactory.ns`, built on first demand over the VM mirror and
+the kernel's `Error` and `ArgumentError`, is the facet `platform mirrors`,
+which hands out `ObjectMirror` and `ClassMirror`; from them a program
+navigates to mixin, class declaration, method and slot mirrors and mirror
+groups, in Primordial Soup's protocol with the canonical `ClassMirror`
+split -- a class mirror answers every level's members, superclass first,
+a mixin mirror only its own. A mirror sends its reflectee nothing, reads
+private and protected members alike, and reads only the slot a name names,
+never a farther one it shadows. No mirror hands out a value it reached
+through a shipped level: a core-library level's slots are neither read nor
+listed, a core-library class's enclosing object is not reflected, and a
+class mirror reached by navigation holds the way to its class -- an anchor
+the program gave and the steps from it -- and does not hand a core-library
+class out, so a program holding one on `Top` can be written to an image
+without loosening lock (4); behind that rule the leaves refuse the VM
+mirror and every shipped module instance whatever the level. The mirrors
+read through seventeen leaves of a new family,
+`Primitive::Reflection` (`builtins/reflection.rs`), appended to `MIRROR`,
+which now has 265 rows, `MirrorPrimitive` a `u16` and `Primitive` four
+bytes in the padding every holder had. A mixin is reified as one
+kernel-private `Mixin` object per mixin per heap, kept in a strong table
+the collectors trace (`Heap`'s `mixin_objects`), and written to an image as
+`OBJECT_MIXIN` (body tag 14), which names its mixin by row or by the
+shipped declaration, built or not, and whose second record for one mixin
+is refused before anything is allocated. Every mixin knows its enclosing
+mixin (`Mixin::enclosing`, a `Weak` link) and holds its module's text
+(`Mixin::module_text`), shared with the host's `LoadedModule::source` on a
+load, so `source` answers a method's or a declaration's text, sliced only
+within the text and on character boundaries.
+
+No existing golden's outcome changed. New goldens under
+`goldens/library/mirror/`; leaf tests in `builtins/reflection.rs`; host
+tests in `tests/platform.rs`, `tests/image.rs`,
+`tests/image_truncations.rs` and `tests/opcode_tags.rs`. The golden image
+fixture was regenerated for the changed shipped world, its size unchanged.
+
+- `3d7a7afa`, `9396d659` -- the design and the plan.
+- `58ed4bb9` -- the mirror table indexed with sixteen bits.
+- `eb2bd835`, `5b5f9b7d` -- every mixin's enclosing mixin and its module's
+  text, held once on a load.
+- `432f2829`, `068e1dac` -- the reified mixin, and its image record.
+- `64c343cb` -- the reflection leaves.
+- `40b29018`, `413b277e` -- `platform mirrors`, `ObjectMirror` and
+  `ClassMirror`, and the slot a name names.
+- `c16809c6`, `2a0fbdec` -- the mixin, declaration, method and slot
+  mirrors, and program source held in a host test.
+- `f12569a1`, `bb18233b` -- the shipped boundary, walked from the platform.
+- `c14c1223`, `67f3f14a`, `71ade2c3`, `3d3d2bd2` -- a navigated class mirror
+  holding the way to its class, a shipped mixin named by its declaration
+  before its class is built, and a program holding mirrors through a
+  snapshot.
+- This commit -- the documents.
+
+What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the
+activation and thread mirrors, `evaluate:` and `perform:`, `instances` and
+`referringObjects`, metadata through mirrors, `getSlot:` of a lazy slot,
+the indexed elements in `slots`, a navigated mirror anchored on a future,
+a mirror's repeated walks, and the reflective checks back in goldens. Road
+step 5b, the MirrorBuilder and the atomic install, is next.

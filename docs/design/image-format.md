@@ -773,10 +773,52 @@ generations"), and `inspect` prints the records as "weak array [...]" and
 "ephemeron {...}" ([core-library.md](core-library.md), "Weak
 references").
 
+**A reified mixin is a record of its own**, `OBJECT_MIXIN` (body tag 14),
+so that a program holding a mirror at a snapshot loads back holding one on
+the same mixin: the kernel-private `Mixin` object a `MixinMirror` reflects
+([liveness-and-reflection.md](liveness-and-reflection.md), "A mixin is
+reified as a kernel-private object"), under a header naming `Kernel
+Mixin`. Its body is the mixin's reference, as a class record names its
+mixin -- `MIXIN_ROW` and a `u32` row id for a mixin the image's modules
+carry, `MIXIN_SHIPPED` and the `u32` index of the shipped name of the class
+whose mixin it is -- always an instance side's, then a side byte,
+`MIXIN_SIDE_INSTANCE` (0) or `MIXIN_SIDE_CLASS` (1) for that mixin's class
+side, the declared one or the one synthesized for a class that declares
+none. So each mixin has one spelling. The id the object holds is never
+written: it is minted afresh on load. A shipped mixin may be named in this
+position whatever its class's accessibility, a module's root and `Top`
+included, since the object carries no authority ("What may be named where"
+in "Shipped names" below); and since navigation reaches a mixin before
+anything has built its class -- a core-library mixin's `nestedClasses` --
+the encoder names a class its module's root declares that is not built yet
+by that declaration (`ShippedWorld::declared_by_mixin`), and the loader
+builds it before the graph ("The loader builds before the graph" below).
+The encoder refuses the reified mixin of the VM mirror's class, which has
+no name, as it refuses the class itself (lock (5) of the mirror), and one
+of a mixin no module the image carries declares. The decoder's first pass
+reads each record's reference and side as the second will and refuses a
+row past the table (`BadMixinId`), a shipped name that is no class's
+(`MixinRecordNamesNoClass`) or not allowed there (`ShippedNameNotAllowed`),
+a class side's own row (`MixinRecordNamesAClassSide`), a side other than 0
+or 1 (`BadMixinSide`), and a mixin body under any class but `Mixin` or any
+other body under `Mixin`'s (`MixinRecordMismatch`) -- a stray `Mixin`
+instance would stand for a mixin outside the table that keeps one object
+per mixin. After the pass, still before anything is allocated, it resolves
+every record's mixin, which may synthesize a class side as a Rust value,
+and refuses a second record for one mixin, or one for a mixin the heap has
+reified already (`DuplicateMixin`): the object is canonical, as a symbol
+is, and `DuplicateSymbol` is the model. The second pass fills each
+placeholder's one field with the fresh id and enters the object into the
+heap's table at once, so the table holds it before anything reads it
+back. `inspect` prints the record as "mixin row 3" or "mixin Kernel Array",
+followed by ", class side" for a class side.
+
 **Two passes.** Records reference each other freely and forward, so every
 record's object must exist before any is filled. `decode_graph_section`
 therefore reads the object table twice. The first pass (`Sizing`) reads
-every header and body exactly as the second will and stores nothing: values
+every header and body exactly as the second will and allocates nothing in
+the object space, keeping only each record's size and, for a mixin record,
+the mixin it names: values
 are parsed and dropped, ids range-checked against the count, shipped-name
 indices, code ids, mixin rows, clause indices and symbol ids resolved, each
 shipped name held to the position it stands in, a symbol
@@ -792,7 +834,11 @@ the class's slot count, none (`WeakArrayInstanceFieldCount`), and an
 ephemeron body
 and an `Ephemeron` header refused unless they come together
 (`EphemeronRecordMismatch`) and with the class's field count
-(`EphemeronFieldCount`); each record yields its object's size, read from its own
+(`EphemeronFieldCount`), and a mixin body and a `Mixin` header likewise
+(`MixinRecordMismatch`), each mixin record's mixin held to what it may name
+and, once every record is read, to being the only record of its mixin
+(`DuplicateMixin`; "A reified mixin is a record of its own" above); each
+record yields its object's size, read from its own
 bytes — the kind comes first in a frame record, the register count, a
 byte array's length and a weak array's or an ephemeron's count are on the
 wire, so no size depends on another record. If the objects would take
@@ -922,7 +968,15 @@ in the module section, one text per module —
 them in module order, one after another. It is never
 parsed, never resolved, never executed. It exists so that the liveness
 requirement "an image can be exported back to `.ns`" is met today, while the
-decompiler that is supposed to meet it properly does not exist.
+decompiler that is supposed to meet it properly does not exist, and so that
+a mirror's `source` answers a method's or a class declaration's text after
+a load: the module section is read before the mixins are built, and every
+mixin of a module holds the one text, shared with the host's
+`LoadedModule::source` (`Mixin::module_text`). A span read from the image
+is sliced only where it lies within the text and on character boundaries;
+without the flag, `source` answers `nil`
+([liveness-and-reflection.md](liveness-and-reflection.md), "A mixin knows
+its enclosing mixin and its module's source").
 
 ## Verification
 
@@ -2054,41 +2108,14 @@ load-bearing, and whoever wires up re-entry has to decide, deliberately,
 whether `verify_graph` gains the cross-check or the re-entry path treats a
 mismatched `home` as its own untrusted-input case.
 
-## Planned: the reified mixin record
-
-Would change: a reified mixin, the kernel-private `Mixin` object a
-`MixinMirror` reflects (road step 5a,
-[liveness-and-reflection.md](liveness-and-reflection.md), "Planned: road
-step 5a, mirrors that read"), is written as a record of its own,
-`OBJECT_MIXIN`, the next free object-body tag, so that a program holding a
-mirror at a snapshot loads back holding one on the same mixin. Its body is
-the mixin's reference -- `MIXIN_ROW` and a row id for a mixin the image's
-modules carry, `MIXIN_SHIPPED` and a shipped-name index for a shipped one,
-named by the `ShippedKind::Class` entry of the shipped class whose
-application it is, as a class record names its mixin -- and a side byte, 0
-for the instance side, 1 for the class side, the synthesized one of a
-class that declares none included. The id the object holds is never
-written: it is minted afresh on load.
-
-The decoder sizes the record from its bytes in the first pass, refuses a
-row id past the table, a shipped name that is not a class's, a side byte
-other than 0 or 1, a record whose header names a class other than `Mixin`,
-and a second record for the same mixin -- the object is canonical, as a
-symbol is, and the symbol's `DuplicateSymbol` is the model -- before it
-allocates; in the second pass it enters each object into the heap's table.
-A shipped mixin may be named in this position whatever its class's
-accessibility, since the object carries no authority; the encoder refuses
-the reified mixin of the VM mirror's class, which has no name, as it
-refuses the class itself (lock (5)).
-
 ## Planned: edited mixins in the image
 
 Would change: a program a MirrorBuilder edited is written to an image and
 loads back edited -- every mixin it names now, with its compiled code, is a
 row of the mixin table, whether a module declared it or an install put it
-there (decided with the user on 2026-10-05; road step 5,
+there (decided with the user on 2026-10-05; road step 5b,
 [liveness-and-reflection.md](liveness-and-reflection.md), "Planned: road
-step 5, mirrors and atomic installation").
+step 5b, MirrorBuilder and atomic installation").
 
 Today the rows come from what the modules declared: `image::mixins::encode`
 takes the module roots' mixins and plans one tree per module from them
@@ -2107,7 +2134,7 @@ carries one. This is the step toward the graph style for user-defined
 behaviour that "How upstream compares" below names, taken in the table
 style: the row is the unit, not a graph of method objects.
 
-Open, for road step 5's plan:
+Open, for road step 5b's plan:
 
 - **Code an older version of a mixin still runs.** A closure keeps the code
   it was made with, and a frame the code it was running, after an edit
@@ -2150,7 +2177,7 @@ edges, and reuses one format for isolate messages. We get artifacts in kilobytes
 rather than a ~1.27 MB floor, and hold the untrusted-input invariant cheaply
 because a hostile file cannot replace a shipped class. **The decision is to
 stay with the table style**, and to move the line one step toward the graph
-style for *user-defined* behaviour only -- with road step 5's edits, as rows
+style for *user-defined* behaviour only -- with road step 5b's edits, as rows
 of the mixin table ("Planned: edited mixins in the image") -- never for the
 shipped world.
 
@@ -2344,6 +2371,16 @@ shipped world.
   value -- is kept whether or not anything else reaches it: keeping more
   than a collection would is never wrong, since a collection's timing is
   unspecified.
+- **A reified mixin is a record naming its mixin, not its id** (designed
+  with the user on 2026-10-17, built on 2026-10-18; "A reified mixin is a
+  record of its own"): `OBJECT_MIXIN` (14), the next free body tag, the
+  instance side's mixin reference and a side byte, so a program holding a
+  mirror at a snapshot loads back holding one on the same mixin. The bare
+  `MixinId` as a `SmallInteger` was rejected: after a load it names
+  another mixin, or none. A shipped mixin is named by its class's
+  declaration, built or not, whatever the class's accessibility, since the
+  object carries no authority; a second record for one mixin is refused,
+  as a second for one symbol is, since the object is canonical.
 
 ## Open questions
 

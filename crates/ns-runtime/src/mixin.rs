@@ -1052,7 +1052,7 @@ impl MixinApplication {
 /// not the only
 /// recursive graph: `Mixin`'s `nested` and `class_side` links are also
 /// `Rc` and also drop recursively, but their depth is bounded by the
-/// parser and `image::mixins::decode` refuses anything deeper, so a ceiling
+/// parser and `image::mixins::read` refuses anything deeper, so a ceiling
 /// covers them (`image/mixins.rs`, `MAX_MIXIN_DEPTH`).
 ///
 /// No ceiling here: every chain is still released in full. `Rc::try_unwrap`
@@ -1085,7 +1085,7 @@ pub fn mixin_key(mixin: &Rc<Mixin>) -> usize {
 ///
 /// Recursive, and deliberately so: the trees it walks are either built from
 /// a parsed module (whose nesting depth the parser already bounds) or
-/// decoded through `image::mixins::decode`, which refuses a tree deeper than
+/// decoded through `image::mixins::read`, which refuses a tree deeper than
 /// its own ceiling. An unbounded tree can never reach this function.
 pub fn preorder(mixin: &Rc<Mixin>, out: &mut Vec<Rc<Mixin>>) {
     out.push(mixin.clone());

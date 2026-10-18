@@ -464,9 +464,9 @@ pub enum DecodeError {
     BadMixinSide(u8),
     /// An `OBJECT_MIXIN` record names a class side's own row. A class side
     /// is named through its instance side, with `MIXIN_SIDE_CLASS`, so each
-    /// mixin has one spelling -- which the refusal of a second record for
-    /// one mixin rests on -- and no record names the class side of a class
-    /// side, which no class has.
+    /// mixin has one spelling on the wire, and no record names the class
+    /// side of a class side, which no class has. A second record for one
+    /// mixin is refused by the mixin's id either way (`DuplicateMixin`).
     MixinRecordNamesAClassSide,
     /// An `OBJECT_MIXIN` record's shipped name, shown here, names a module
     /// instance, a metaclass, a level or a level's metaclass: only a class's
@@ -1254,7 +1254,7 @@ fn check_code_id(id: u32, codes: &[Rc<CompiledCode>]) -> Result<(), DecodeError>
 /// row's first bad entry. `read_row` enforces no order, so for a crafted row
 /// that lists its selectors otherwise it is merely one of them.
 ///
-/// `mixins::decode` attaches the bodies but checks none of this, so `inspect`
+/// `mixins::build` attaches the bodies but checks none of this, so `inspect`
 /// can still display an artifact whose halves disagree; `image::load` calls
 /// this before anything is built on the code.
 pub fn verify_mixins(mixins: &mixins::Decoded) -> Result<(), DecodeError> {
@@ -1486,7 +1486,7 @@ fn lexical_parents(table: &DecodedCodeTable) -> Result<Vec<Option<usize>>, Decod
 ///
 /// A root's own table slot is its only reference at this point: nothing
 /// creates a root via `MakeClosure` (`lexical_parents` already proved that),
-/// and nothing has cloned anything out of the table yet -- `mixins::decode`,
+/// and nothing has cloned anything out of the table yet -- `mixins::build`,
 /// the first thing that does, has not run. Mutating it in place through
 /// `Rc::get_mut` therefore never allocates. A block's slot, by contrast, is
 /// still shared with its parent's `MakeClosure` field, so numbering it
@@ -1497,10 +1497,10 @@ fn lexical_parents(table: &DecodedCodeTable) -> Result<Vec<Option<usize>>, Decod
 /// agrees with what a decoded closure or frame points to later.
 ///
 /// **Precondition, unenforced by the type system**: `table` must not have
-/// been handed to anything that clones a code out of it (`mixins::decode`,
+/// been handed to anything that clones a code out of it (`mixins::build`,
 /// today's only such caller) before this runs. Both production callers
 /// (`image::load`, `image::inspect::inspect`) call this immediately after
-/// `decode_code_table`, before `mixins::decode`, which is what makes the
+/// `decode_code_table`, before `mixins::build`, which is what makes the
 /// `Rc::get_mut` below never fail; nothing here checks it, since a `Cell`
 /// or a runtime check would cost every call for a precondition its only two
 /// callers already satisfy by construction.

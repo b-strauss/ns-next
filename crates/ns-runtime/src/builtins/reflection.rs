@@ -1,6 +1,6 @@
 //! The leaves the shipped mirrors module reads classes, mixins, methods
 //! and objects through (`docs/design/liveness-and-reflection.md`,
-//! "Planned: road step 5a, mirrors that read"). A class leaf takes a class
+//! "Mirrors that read"). A class leaf takes a class
 //! or a metaclass, a mixin leaf a reified mixin (`Mutator::reified_mixin`),
 //! and each declines -- answers `None`, so the failure block runs -- for
 //! anything else; none raises.

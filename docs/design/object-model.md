@@ -293,6 +293,8 @@ struct Mixin {                    // one per declaration, shared for its lifetim
     nested: Vec<Rc<Mixin>>,       // the nested declarations, for their accessors
     class_side: Option<Rc<Mixin>>,
     mixin_applications: Vec<MixinApplicationClause>,  // its `<:` clauses (§6.2)
+    enclosing: OnceCell<Weak<Mixin>>, // the mixin it is declared in, set once
+    module_text: Option<ModuleText>,  // its module's source, one Rc<str> shared
 }
 
 struct MixinApplication {         // (mixin, super application) -> behaviour
@@ -318,6 +320,20 @@ a class object                    // one per enclosing instance, per level;
 The layout and its reasons are "The object layout" below; `heap/object.rs`'s
 `class_field` names the fields, and every read and write goes through the
 `class_*` accessors of `heap.rs`.
+
+A mixin holds its nested mixins, and `Mixin::enclosing` is the link back
+up, for the mirrors' `enclosingMixin` and a class side's `instanceMixin`: a
+nested declaration's names the declaration it is nested in, a class side's
+-- declared or synthesized -- its instance side, and a module's root and a
+builtin's mixin have none. It is `Weak`, so a tree is no cycle, and set
+once by every builder -- from source, from the embedded shipped code, from
+an image -- after the enclosing mixin's `Rc` exists
+(`Mixin::set_enclosing_of_children`); `Mixin::enclosing_mixin` reads it.
+`Mixin::module_text` is the module's source ("Source retention and
+provenance" below). A mixin is no heap object; a mirror's reflectee stands
+for it, the one kernel-private `Mixin` object per mixin per heap
+([liveness-and-reflection.md](liveness-and-reflection.md), "A mixin is
+reified as a kernel-private object").
 
 **The application cache is keyed by (the mixin's id, the superclass
 *application*'s full-width index), never by the superclass class object.** If
@@ -482,7 +498,10 @@ kernel's.
   `Closure` stays directly under `Object`, and so does `Behavior`, with `Class`
   and `Metaclass` below it ("Class sides and metaclasses" below), and so do
   `Proxy`, with the runtime's `FutureImplementation` below it, and the
-  public `Future`, which has no instances ("Simultaneous slots" below). The
+  public `Future`, which has no instances ("Simultaneous slots" below), and
+  the private `Mixin`, whose instances stand for mixins
+  ([liveness-and-reflection.md](liveness-and-reflection.md), "A mixin is
+  reified as a kernel-private object"). The
   error classes `ArgumentError`, `CannotReturn`, `NonBooleanReceiver` and
   `CannotInstantiate` are below `Error` ([core-library.md](core-library.md),
   "Exceptions"). The VM mirror's class,
@@ -504,7 +523,7 @@ kernel's.
   predefined classes are accessors on `Object`", "`class` and the class
   accessors are protected").
 - **`Top` is not nameable.** It is declared private in `Kernel.ns`, as
-  only `Activation`, `NonBooleanReceiver`, `FutureImplementation`,
+  only `Activation`, `NonBooleanReceiver`, `FutureImplementation`, `Mixin`,
   `IndexedCollection`, `LittleEndianDataView` and `BigEndianDataView` are
   besides it, so §6.3.1 keeps it out of every other module's reach; `Object`
   declares no accessor for it among §3.2's accessors for the predefined
@@ -1414,8 +1433,8 @@ names lives in the kernel or the platform, where it names them directly.
 `interpreter/kernel.rs`'s accessor-set test pins the set.
 
 **Instantiation is refused.** The three are reachable anyway — a class
-side's `self class` is a metaclass, a host can hand a program any of them,
-and road step 5's mirrors will reach every one — so refusing to
+side's `self class` is a metaclass, and a host can hand a program any of
+them — so refusing to
 instantiate them is needed whatever is nameable. `Mutator::apply_mixin` folds
 `InstantiationRefusal::ClassObject` into the `instantiation_refusal` of
 `Behavior`'s application — recognized by the mixin the kernel phase records
@@ -1556,9 +1575,23 @@ and where it came from — needed by the debugger and by any export back to `.ns
 and cheap to carry.
 
 - Each loaded module keeps its full original source as one `Rc<str>`, attached to
-  the module rather than duplicated per node.
-- Every declaration already carries a `Span`, so source text for any node is
-  recovered on demand as `span.text(&module_source)`, with no per-node copy.
+  the module rather than duplicated per node (`ResolvedModule::source`).
+- The text reaches the heap through the mixins: every mixin of a module
+  holds that one `Rc<str>` (`Mixin::module_text`), whether it was built
+  from source, decoded from the embedded shipped code (one text per
+  shipped module per thread) or decoded from an image that carries source
+  (shared with the host's `LoadedModule::source`); a builtin's mixin, the
+  VM mirror's, a synthesized class side and a mixin of an image without
+  source hold none. A mirror's `source` reads it
+  ([liveness-and-reflection.md](liveness-and-reflection.md), "A mixin
+  knows its enclosing mixin and its module's source").
+- Every declaration already carries a `Span`, and every compiled body its
+  `CompiledCode::source`, so source text for any node is recovered on
+  demand, with no per-node copy: in the front end as
+  `span.text(&module_source)`, and from a mixin through
+  `mixin::source_text`, which answers nothing for a span past the text or
+  off a character boundary, since a span read from an image is the
+  image's to choose.
 - `SourceOrigin` is attached once per module: `SourceOrigin::File(PathBuf)`
   for a source read from a file, `SourceOrigin::Embedded(String)` for one
   compiled into the binary, named by the file it was read from at build time
@@ -1719,7 +1752,7 @@ verbatim").
 
 **An application has two ids.** Its *guard id*, 22 bits wide, is the
 inline caches' guard: it stands in object headers and in inline- and
-global-cache entries -- and, from road step 5, in recorded guards (see
+global-cache entries -- and, from road step 5b, in recorded guards (see
 "Planned with road step 5: what a slot access checks" below) -- and nowhere
 else. Running out of guard ids keeps the rule of
 [dispatch.md](dispatch.md), "The dispatch id": an application without one
@@ -1748,7 +1781,7 @@ every instance's header by a heap walk (`Heap::class_set_application`)
 before the old guard id can become reclaimable. None of it is reclaimed:
 nothing drops a mixin before live editing, and the application cache, keyed
 by the ids, stays strong; the reuse rules and a weak cache come with the
-first edit (decided with the user on 2026-10-03), which is road step 5's
+first edit (decided with the user on 2026-10-03), which is road step 5b's
 atomic install ([OPEN-WORK.md](../OPEN-WORK.md), "Step 5, mirrors and
 atomic installation").
 
@@ -1787,7 +1820,7 @@ either layout open.
 | 2 | frame | a reified frame: ten fixed fields, then its registers |
 | 3 | closure | three fixed fields, then its copied values |
 | 4 | 64-bit-indexed | a `LargeInteger`'s magnitude (its sign in the header's negative bit), a boxed `Float` |
-| 5 | forwarded | a forwarder -- the scavenger's for a young object it has copied, and from road step 5 the bulk forward's ("Planned: `become:` as an eager bulk forward") -- whose class word holds the new location; each exists only while the scavenge or the forward that made it runs, so no send, accessor or reader outside the two ever meets one |
+| 5 | forwarded | a forwarder -- the scavenger's for a young object it has copied, and from road step 5b the bulk forward's ("Planned: `become:` as an eager bulk forward") -- whose class word holds the new location; each exists only while the scavenge or the forward that made it runs, so no send, accessor or reader outside the two ever meets one |
 | 6 | free | a gap a collector leaves, walkable like an object; no object has it, since the sliding compaction and the scavenge leave no gap; a debug build writes it as the poison over the nursery a scavenge vacated, and `Heap::block` refuses it there ([memory.md](memory.md), "Finding a missed barrier: the scavenge stress mode") |
 | 7 | class | a class object: eight fixed fields |
 | 8-9 | 32-bit-indexed | a wide string or symbol |
@@ -1907,7 +1940,7 @@ newly allocated, larger frame object -- allocated old and born remembered by
 the rule in [memory.md](memory.md), "Generations" -- the VM
 rewriting every reference to the old frame by a walk of every root the
 collector traces (`trace.rs`) and every heap object, the same walk as the
-bulk forward of road step 5 ("Planned: `become:` as an eager bulk forward"
+bulk forward of road step 5b ("Planned: `become:` as an eager bulk forward"
 below); execution continues from the divorced frame, which needs a
 divorced frame put back on the stack, the piece suspend and resume need too
 ([execution.md](execution.md), "How this meets the liveness requirements").
@@ -1994,7 +2027,7 @@ shape, and a receiver forwarded to an object of another class never
 receives a write meant for the class it replaced. Recorded guards join the
 guard id's reuse rule ("An application has two ids" above).
 
-The recorded guard and this check come with road step 5, not with road
+The recorded guard and this check come with road step 5b, not with road
 step 3: the atomic install's bulk forward is the first way a running
 activation's receiver can change shape, and edit-and-continue the next --
 today the decoder's in-place fills touch only its own
@@ -2087,7 +2120,7 @@ Newspeak's `ObjectMirror>>setClass:` forwards nothing: it calls
 (`prior-art/newspeak/MirrorsForSqueak.ns:1364-1366`), and Primordial Soup
 offers no `setClass:` at all, its tests of it empty
 (`prior-art/primordialsoup/newspeak/MirrorTesting.ns:772-775`). A
-shape-changing `setClass:` is deferred beyond road step 5.
+shape-changing `setClass:` is deferred beyond road step 5b.
 
 **Only mirrors reach it.** No program sends `become:`: `Object` declares no
 such method, and the forward is a leaf on the VM mirror, which only the
@@ -2123,7 +2156,7 @@ of a user subclass the install migrated fails the slot-access check
 ("Planned with road step 5: what a slot access checks" above) rather than
 writing the old layout into the new shape. Whether the leaf also checks the
 shipped mixins itself, as a second lock behind the mirrors' refusal, is
-left to road step 5's plan.
+left to road step 5b's plan.
 
 **Everything stays editable.** A class object keeps its identity when its
 class is edited: the VM writes its fields -- a new application id when
@@ -2259,7 +2292,7 @@ no program can observe, since a value has no identity.
   arena and then the space (3b), both built**, and five details of the
   layout are settled (decided with the user on 2026-10-03; "The object
   layout" above): the recorded guard and the slot-access check come with
-  road step 5, the guard in the activation stack's entry
+  road step 5b, the guard in the activation stack's entry
   alone and a resumed activation starting with `NONE`; the applied clause
   is one `SmallInteger` of mixin id, clause index and builtin tag, 32, 23
   and 6 bits, the clause count's limit reported as a resolve or decode

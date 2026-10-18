@@ -267,7 +267,7 @@ fn resolved<'gc>(lookup: Lookup<'gc>, chain: Chain) -> Resolved<'gc> {
         // lookup from a class object's class -- hand their answer to
         // `resolved_for` below, which maps it. Reaching here means a
         // private, `super` or handler lookup found one, which only a crafted
-        // image can arrange (`image::mixins::decode` derives one for a
+        // image can arrange (`image::mixins::build` derives one for a
         // class-side row alone): refused, rather than instantiating whatever
         // object happened to receive the send.
         Lookup::Factory(_) => Resolved::Unhandled,
@@ -282,7 +282,7 @@ fn resolved<'gc>(lookup: Lookup<'gc>, chain: Chain) -> Resolved<'gc> {
 /// instantiates the class object the message was sent to -- so it is
 /// honoured only when it was found on that receiver's own class, its
 /// metaclass. Found anywhere else it could only have been put there by a
-/// crafted image (`image::mixins::decode` derives one for a class-side row
+/// crafted image (`image::mixins::build` derives one for a class-side row
 /// alone), and it is refused rather than instantiating whatever received
 /// the send.
 #[inline(always)]
