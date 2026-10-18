@@ -1,0 +1,48 @@
+/// An implicit-receiver send is bound to the nearest class on the
+/// lexical chain that declares the selector, and only to the receiver
+/// itself when none does (§5.7). A nested class's `probe` send answers
+/// what its superclass inherits; adding `probe` to the enclosing class
+/// sends it to the enclosing object instead, and removing it again sends
+/// it to the receiver, for an instance made before the edits.
+class AnImplicitSendIsReboundByAnEnclosingEdit = Object new () (
+  class Base = Object new () (
+    public probe = (
+      ^#inherited.
+    )
+  )
+
+  class Outer = Object new () (
+    public class Inner = Base new () (
+      public answer = (
+        ^probe.
+      )
+    )
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      subject = Outer new.
+      inner = subject Inner new.
+      builder = (ClassMirror reflecting: Outer) mixin declaration asBuilder.
+    |
+    transcript
+        print: inner answer;
+        newLine.
+    builder instanceSide methods addFromSource: 'public probe = (^#enclosing)'.
+    builder install.
+    transcript
+        print: inner answer;
+        show: ' ';
+        print: subject Inner new answer;
+        newLine.
+    builder instanceSide methods removeMirrorNamed: #probe.
+    builder install.
+    transcript
+        print: inner answer;
+        show: ' ';
+        print: subject Inner new answer;
+        newLine.
+  )
+)

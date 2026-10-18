@@ -1,0 +1,7 @@
+/// A module whose class is the superclass of a class another module
+/// declares.
+class Base = Object new (
+  |
+    public base ::= 1.
+  |
+) ()

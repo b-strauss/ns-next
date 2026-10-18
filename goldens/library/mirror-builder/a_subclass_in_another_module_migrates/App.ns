@@ -1,0 +1,44 @@
+/// An edit reaches every application of the edited mixin, in whichever
+/// module it is declared (§6.2): a header edit that adds a slot to one
+/// module's class migrates the instances of a subclass another module
+/// declares, which have the new slot nil and keep both their slots'
+/// values, while an instance made after the install runs every
+/// initializer.
+class App packageUsing: manifest = Object new (
+  |
+    private Base = manifest Base.
+    private Derived = manifest Derived.
+  |
+) (
+  outcome: action = (
+    ^[action value printString] on: Error do: [:error | error messageText].
+  )
+
+  show: instance on: transcript = (
+    transcript
+        show: (outcome: [instance base]);
+        show: ' ';
+        show: (outcome: [instance added]);
+        show: ' ';
+        show: (outcome: [instance own]);
+        newLine.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      Sub = (Derived withBase: Base) Sub.
+      instance = Sub new.
+      builder = (ClassMirror reflecting: Base) mixin declaration asBuilder.
+    |
+    instance
+        base: 2;
+        own: 44.
+    builder header source: 'class Base = Object new (| public base ::= 1. public added ::= 47. |)'.
+    show: instance on: transcript.
+    builder install.
+    show: instance on: transcript.
+    show: Sub new on: transcript.
+  )
+)

@@ -1,0 +1,6 @@
+stdout = '''
+117 0 nil
+117 0 nil
+120 0 nil
+'''
+skipped_in_images = "a program loaded from an image cannot be edited until road step 5b2b"

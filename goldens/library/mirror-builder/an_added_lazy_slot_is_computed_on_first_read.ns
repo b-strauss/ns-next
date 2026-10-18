@@ -1,0 +1,54 @@
+/// A lazy slot an install adds is computed on its first read (§6.3.3),
+/// for an instance made before the install as for one made after it: its
+/// initializer runs once, on that read and not at the install, and a
+/// value stored into it is answered until nil is stored, after which the
+/// next read computes it again.
+class AnAddedLazySlotIsComputedOnFirstRead = Object new () (
+  class Subject = Object new (
+    |
+      public counter ::= 0.
+    |
+  ) ()
+
+  outcome: action = (
+    ^[action value printString] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      instance = Subject new.
+      builder = (ClassMirror reflecting: Subject) mixin declaration asBuilder.
+    |
+    builder instanceSide lazySlots addFromSource: 'lazy public cached ::= counter:: counter + 1.'.
+    transcript
+        show: (outcome: [instance cached]);
+        newLine.
+    builder install.
+    transcript
+        print: instance counter;
+        show: ' ';
+        print: instance cached;
+        show: ' ';
+        print: instance cached;
+        show: ' ';
+        print: instance counter;
+        newLine.
+    instance cached: 42.
+    transcript
+        print: instance cached;
+        show: ' ';
+        print: instance counter;
+        newLine.
+    instance cached: nil.
+    transcript
+        print: instance cached;
+        show: ' ';
+        print: instance counter;
+        newLine.
+    transcript
+        print: Subject new cached;
+        newLine.
+  )
+)

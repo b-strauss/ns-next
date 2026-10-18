@@ -1,0 +1,48 @@
+/// A slot a header edit adds to a superclass reaches the instances of its
+/// subclass: one made before the install has it nil beside the
+/// subclass's own slot, which keeps its value and is not aliased by the
+/// new one; one made after the install runs both initializers.
+class ASuperclassSlotIsSeenByASubclassInstance = Object new () (
+  class Base = Object new (
+    |
+      public base ::= 1.
+    |
+  ) ()
+
+  class Sub = Base new (
+    |
+      public own ::= 43.
+    |
+  ) ()
+
+  outcome: action = (
+    ^[action value printString] on: Error do: [:error | error messageText].
+  )
+
+  show: instance on: transcript = (
+    transcript
+        show: (outcome: [instance base]);
+        show: ' ';
+        show: (outcome: [instance added]);
+        show: ' ';
+        show: (outcome: [instance own]);
+        newLine.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      instance = Sub new.
+      builder = (ClassMirror reflecting: Base) mixin declaration asBuilder.
+    |
+    instance base: 2.
+    builder header source: 'class Base = Object new (| public base ::= 1. public added ::= 47. |)'.
+    show: instance on: transcript.
+    builder install.
+    show: instance on: transcript.
+    instance added: 98.
+    show: instance on: transcript.
+    show: Sub new on: transcript.
+  )
+)

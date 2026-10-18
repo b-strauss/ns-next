@@ -1,0 +1,30 @@
+/// An instance an install migrates to a new layout keeps its identity: a
+/// reference taken before the install is `==` to it after, and its
+/// identity hash, read before the install, answers the same after it.
+class AMigrationKeepsTheIdentityHash = Object new () (
+  class Subject = Object new () ()
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      instance = Subject new.
+      holder = {instance}.
+      identityHashBefore = instance identityHash.
+      hashBefore = instance hash.
+      builder = (ClassMirror reflecting: Subject) mixin declaration asBuilder.
+    |
+    builder header source: 'class Subject = Object new (| public added ::= 91. |)'.
+    builder install.
+    transcript
+        print: instance added;
+        newLine.
+    transcript
+        print: instance identityHash = identityHashBefore;
+        show: ' ';
+        print: instance hash = hashBefore;
+        show: ' ';
+        print: (holder at: 1) == instance;
+        newLine.
+  )
+)

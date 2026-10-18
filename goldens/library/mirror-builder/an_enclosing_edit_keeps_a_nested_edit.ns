@@ -1,0 +1,41 @@
+/// An edit starts from its module's current text, which holds every
+/// earlier edit: a method installed in a nested class survives a later
+/// edit of the class enclosing it, which recompiles the nested class,
+/// and each method's `source` answers the text it was installed from.
+class AnEnclosingEditKeepsANestedEdit = Object new () (
+  class Outer = Object new () (
+    public class Inner = Object new () ()
+  )
+
+  outcome: action = (
+    ^[action value printString] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      subject = Outer new.
+      inner = subject Inner new.
+      nested = (ClassMirror reflecting: subject Inner) mixin declaration asBuilder.
+      enclosing = (ClassMirror reflecting: Outer) mixin declaration asBuilder.
+    |
+    nested instanceSide methods addFromSource: 'public tag = (^#nested)'.
+    nested install.
+    enclosing instanceSide methods addFromSource: 'public other = (^#enclosing)'.
+    enclosing install.
+    transcript
+        show: (outcome: [inner tag]);
+        show: ' ';
+        show: (outcome: [subject Inner new tag]);
+        show: ' ';
+        show: (outcome: [subject other]);
+        newLine.
+    transcript
+        show: ((ClassMirror reflecting: subject Inner) mixin methods findMirrorNamed: #tag) source;
+        newLine.
+    transcript
+        show: ((ClassMirror reflecting: Outer) mixin methods findMirrorNamed: #other) source;
+        newLine.
+  )
+)

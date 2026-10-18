@@ -1,0 +1,55 @@
+/// A header edit that adds a slot to a class migrates its instances with
+/// the class objects of their nested classes: the enclosing instance
+/// answers, after the install, the very class object `Inner` it answered
+/// before, and an `Inner` instance made before the install is still an
+/// instance of it, answers through it and names the migrated instance as
+/// its enclosing object.
+class ANestedClassObjectSurvivesAnEnclosingSlotEdit = Object new () (
+  class Outer = Object new (
+    |
+      public kept ::= 1.
+    |
+  ) (
+    public class Inner = Object new () (
+      public answer = (
+        ^#inner.
+      )
+
+      public owner = (
+        ^outer Outer.
+      )
+    )
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      ObjectMirror = platform mirrors ObjectMirror.
+      subject = Outer new.
+      before = subject Inner.
+      inner = before new.
+      builder = (ClassMirror reflecting: Outer) mixin declaration asBuilder.
+    |
+    subject kept: 7.
+    builder header source: 'class Outer = Object new (| public kept ::= 1. public added ::= 2. |)'.
+    builder install.
+    transcript
+        print: subject kept;
+        show: ' ';
+        print: subject added;
+        newLine.
+    transcript
+        print: subject Inner == before;
+        show: ' ';
+        print: (ObjectMirror reflecting: inner) getClass reflectee == subject Inner;
+        newLine.
+    transcript
+        print: inner answer;
+        show: ' ';
+        print: subject Inner new answer;
+        show: ' ';
+        print: inner owner == subject;
+        newLine.
+  )
+)

@@ -1,0 +1,48 @@
+/// A slot a header edit adds is nil on an instance made before the
+/// install, whose other slot keeps its value, and the slot's initializer
+/// does not run for it; an instance made after the install runs the
+/// initializer. The new slot is understood only after `install`, and its
+/// setter writes the old instance's own slot.
+class AnAddedSlotIsNilOnAnOldInstance = Object new () (
+  class Subject = Object new (
+    |
+      public kept ::= 1.
+    |
+  ) ()
+
+  outcome: action = (
+    ^[action value printString] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      instance = Subject new.
+      builder = (ClassMirror reflecting: Subject) mixin declaration asBuilder.
+    |
+    instance kept: 7.
+    builder
+        header source: 'class Subject = Object new (| public kept ::= 1. public added ::= 5. |)'.
+    transcript
+        show: (outcome: [instance added]);
+        newLine.
+    builder install.
+    transcript
+        show: (outcome: [instance kept]);
+        show: ' ';
+        show: (outcome: [instance added]);
+        newLine.
+    instance added: 9.
+    transcript
+        show: (outcome: [instance kept]);
+        show: ' ';
+        show: (outcome: [instance added]);
+        newLine.
+    transcript
+        show: (outcome: [Subject new kept]);
+        show: ' ';
+        show: (outcome: [Subject new added]);
+        newLine.
+  )
+)

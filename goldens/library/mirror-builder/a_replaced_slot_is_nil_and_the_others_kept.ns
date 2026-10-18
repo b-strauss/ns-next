@@ -1,0 +1,48 @@
+/// A header edit that replaces a slot by one of another name leaves an
+/// instance made before the install without the old slot, with the new
+/// one nil and the others' values copied by name; an instance made after
+/// the install runs the new slot's initializer.
+class AReplacedSlotIsNilAndTheOthersKept = Object new () (
+  class Subject = Object new (
+    |
+      public x ::= 117.
+      public y ::= 0.
+      public z.
+    |
+  ) ()
+
+  outcome: action = (
+    ^[action value printString] on: Error do: [:error | error messageText].
+  )
+
+  show: instance on: transcript = (
+    transcript
+        show: (outcome: [instance x]);
+        show: ' ';
+        show: (outcome: [instance a]);
+        show: ' ';
+        show: (outcome: [instance y]);
+        show: ' ';
+        show: (outcome: [instance z]);
+        newLine.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      instance = Subject new.
+      builder = (ClassMirror reflecting: Subject) mixin declaration asBuilder.
+    |
+    instance
+        x: 1;
+        y: 2;
+        z: 3.
+    builder
+        header source: 'class Subject = Object new (| public a ::= 120. public y ::= 0. public z |)'.
+    show: instance on: transcript.
+    builder install.
+    show: instance on: transcript.
+    show: Subject new on: transcript.
+  )
+)

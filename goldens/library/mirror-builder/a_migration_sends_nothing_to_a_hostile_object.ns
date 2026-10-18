@@ -1,0 +1,73 @@
+/// A migration sends nothing to the objects it migrates: a class whose
+/// `=` and `hash`, on both sides, print a line and signal an Error has
+/// two instances migrated by a header edit that adds a slot, and no line
+/// is printed. Each instance keeps its slot's value and has the new slot
+/// nil.
+class AMigrationSendsNothingToAHostileObject = Object new (
+  |
+    log.
+  |
+) (
+  class Hostile slot: value = Object new (
+    |
+      public slot = value.
+    |
+  ) (
+    public = other = (
+      log
+          show: 'an instance was sent =';
+          newLine.
+      ^Error signal: 'an instance was sent ='.
+    )
+
+    public hash = (
+      log
+          show: 'an instance was sent hash';
+          newLine.
+      ^Error signal: 'an instance was sent hash'.
+    )
+  ) : (
+    public = other = (
+      log
+          show: 'the class was sent =';
+          newLine.
+      ^Error signal: 'the class was sent ='.
+    )
+
+    public hash = (
+      log
+          show: 'the class was sent hash';
+          newLine.
+      ^Error signal: 'the class was sent hash'.
+    )
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      first = Hostile slot: 1.
+      second = Hostile slot: 2.
+      builder = (ClassMirror reflecting: Hostile) mixin declaration asBuilder.
+    |
+    log:: transcript.
+    builder
+        header source: 'class Hostile slot: value = Object new (| public slot = value. public added |)'.
+    builder install.
+    transcript
+        show: 'installed';
+        newLine.
+    transcript
+        print: first slot;
+        show: ' ';
+        print: first added;
+        show: ' ';
+        print: second slot;
+        show: ' ';
+        print: second added;
+        newLine.
+    transcript
+        print: (Hostile slot: 3) slot;
+        newLine.
+  )
+)

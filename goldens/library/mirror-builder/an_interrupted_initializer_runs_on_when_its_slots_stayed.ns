@@ -1,0 +1,38 @@
+/// An install that runs inside an initializer of the edited class and
+/// keeps that class's slots lets the initializer run on: the first slot's
+/// initializer installs an edit that adds a method, and the slot after it
+/// is still initialized, so the instance has both slots' values and
+/// understands the new method.
+class AnInterruptedInitializerRunsOnWhenItsSlotsStayed = Object new () (
+  class Subject during: action = Object new (
+    |
+      public first = action value.
+      public second = 2.
+    |
+  ) ()
+
+  outcome: action = (
+    ^[action value printString] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      builder = (ClassMirror reflecting: Subject) mixin declaration asBuilder.
+      instance
+    |
+    builder instanceSide methods addFromSource: 'public added = (^#added)'.
+    instance:: Subject during: [
+      builder install.
+      #installed.
+    ].
+    transcript
+        show: (outcome: [instance first]);
+        show: ' ';
+        show: (outcome: [instance second]);
+        show: ' ';
+        show: (outcome: [instance added]);
+        newLine.
+  )
+)

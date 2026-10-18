@@ -1,0 +1,45 @@
+/// A header edit that removes a slot leaves an instance made before the
+/// install with the values of the slots that stayed, copied by name, and
+/// without the removed slot's accessors; until `install` the removed slot
+/// still answers.
+class ARemovedSlotKeepsTheOthers = Object new () (
+  class Subject = Object new (
+    |
+      public x ::= 117.
+      public y ::= 0.
+      public z.
+    |
+  ) ()
+
+  outcome: action = (
+    ^[action value printString] on: Error do: [:error | error messageText].
+  )
+
+  show: instance on: transcript = (
+    transcript
+        show: (outcome: [instance x]);
+        show: ' ';
+        show: (outcome: [instance y]);
+        show: ' ';
+        show: (outcome: [instance z]);
+        newLine.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      instance = Subject new.
+      builder = (ClassMirror reflecting: Subject) mixin declaration asBuilder.
+    |
+    instance
+        x: 1;
+        y: 2;
+        z: 3.
+    builder header source: 'class Subject = Object new (| public x ::= 117. public y ::= 0. |)'.
+    show: instance on: transcript.
+    builder install.
+    show: instance on: transcript.
+    show: Subject new on: transcript.
+  )
+)

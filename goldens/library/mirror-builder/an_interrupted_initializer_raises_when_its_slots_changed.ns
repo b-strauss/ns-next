@@ -1,0 +1,38 @@
+/// An install that runs inside an initializer of the edited class and
+/// changes that class's slots migrates the instance being initialized,
+/// and the initializer's next store into a slot of the old layout raises
+/// an Error rather than writing that layout into the new one. The install
+/// itself stands: an instance made after it has the added slot.
+class AnInterruptedInitializerRaisesWhenItsSlotsChanged = Object new () (
+  class Subject during: action = Object new (
+    |
+      public first = action value.
+      public second = 2.
+    |
+  ) ()
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      builder = (ClassMirror reflecting: Subject) mixin declaration asBuilder.
+      instance
+    |
+    builder
+        header source: 'class Subject during: action = Object new (| public first = action value. public second = 2. public third = 3. |)'.
+    transcript
+        show: ([
+          Subject during: [builder install].
+          'initialized'.
+        ] on: Error do: [:error | error messageText]);
+        newLine.
+    instance:: Subject during: [#again].
+    transcript
+        print: instance first;
+        show: ' ';
+        print: instance second;
+        show: ' ';
+        print: instance third;
+        newLine.
+  )
+)

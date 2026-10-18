@@ -1,0 +1,44 @@
+/// An edit of a nested class reaches every class object of its mixin
+/// (§6.2): two instances of the enclosing class each have their own
+/// class object `Inner`, and a method added through a builder over one of
+/// them is understood, after `install`, by an instance of either, made
+/// before the install or after it.
+class TwoNestedClassObjectsSeeOneEdit = Object new () (
+  class Outer = Object new () (
+    public class Inner = Object new () ()
+  )
+
+  outcome: action = (
+    ^[action value printString] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      first = Outer new.
+      second = Outer new.
+      firstInner = first Inner new.
+      secondInner = second Inner new.
+      builder = (ClassMirror reflecting: first Inner) mixin declaration asBuilder.
+    |
+    transcript
+        print: first Inner == second Inner;
+        newLine.
+    builder instanceSide methods addFromSource: 'public added = (^#added)'.
+    transcript
+        show: (outcome: [secondInner added]);
+        newLine.
+    builder install.
+    transcript
+        show: (outcome: [firstInner added]);
+        show: ' ';
+        show: (outcome: [secondInner added]);
+        show: ' ';
+        show: (outcome: [second Inner new added]);
+        newLine.
+    transcript
+        print: first Inner == second Inner;
+        newLine.
+  )
+)

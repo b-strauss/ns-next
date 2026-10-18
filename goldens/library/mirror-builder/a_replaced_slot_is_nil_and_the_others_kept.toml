@@ -1,0 +1,6 @@
+stdout = '''
+1 an object does not understand #a 2 3
+an object does not understand #x nil 2 3
+an object does not understand #x 120 0 nil
+'''
+skipped_in_images = "a program loaded from an image cannot be edited until road step 5b2b"

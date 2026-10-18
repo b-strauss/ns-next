@@ -1,0 +1,38 @@
+/// A closure made before an install keeps the code it was made with,
+/// even when the install replaces the method that made it, while its
+/// sends find the new code: the old closure answers its old literal and
+/// the replaced helper's new value, and a closure the replaced method
+/// makes after the install runs the new code.
+class AnOldClosureKeepsItsCode = Object new () (
+  class Subject = Object new () (
+    public maker = (
+      ^[{#oldBlock. helper}].
+    )
+
+    public helper = (
+      ^#oldHelper.
+    )
+  )
+
+  showAll: values on: transcript = (
+    values do: [:each | transcript print: each] separatedBy: [transcript show: ' '].
+    transcript newLine.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      instance = Subject new.
+      closure = instance maker.
+      builder = (ClassMirror reflecting: Subject) mixin declaration asBuilder.
+    |
+    showAll: closure value on: transcript.
+    builder instanceSide methods
+        addFromSource: 'public maker = (^[{#newBlock. helper}])';
+        addFromSource: 'public helper = (^#newHelper)'.
+    builder install.
+    showAll: closure value on: transcript.
+    showAll: instance maker value on: transcript.
+  )
+)

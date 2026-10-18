@@ -1,0 +1,45 @@
+/// A subclass of the shipped `Error` migrates like any class: a header
+/// edit that adds a slot gives an instance made before the install the
+/// new slot nil, keeps its own slot's value and the value of the slot
+/// its shipped superclass declares, copied by name, and the instance
+/// still signals and is caught as what it is.
+class AnErrorSubclassMigrates = Object new () (
+  class Failure = Error new (
+    |
+      public code ::= 1.
+    |
+  ) ()
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      instance = Failure new.
+      builder = (ClassMirror reflecting: Failure) mixin declaration asBuilder.
+      caught
+    |
+    instance
+        code: 7;
+        messageText: 'kept text'.
+    builder header source: 'class Failure = Error new (| public code ::= 1. public added ::= 2. |)'.
+    builder install.
+    transcript
+        print: instance code;
+        show: ' ';
+        print: instance added;
+        show: ' ';
+        show: instance messageText;
+        newLine.
+    caught:: [instance signal] on: Failure do: [:error | error].
+    transcript
+        print: caught == instance;
+        show: ' ';
+        show: caught messageText;
+        newLine.
+    transcript
+        print: Failure new code;
+        show: ' ';
+        print: Failure new added;
+        newLine.
+  )
+)

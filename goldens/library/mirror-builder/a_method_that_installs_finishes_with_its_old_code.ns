@@ -1,0 +1,46 @@
+/// A method whose activation installs an edit replacing it finishes with
+/// the code it was running, while its sends after the install find the
+/// new code: one call site of a helper, sent once before the install so
+/// that its cache holds the old helper, answers after the install the
+/// helper the same edit replaced. The next send of the method runs its
+/// new code.
+class AMethodThatInstallsFinishesWithItsOldCode = Object new () (
+  class Subject = Object new () (
+    public run: builder = (
+      |
+        answers = Array new: 2.
+      |
+      1 to: 2 do: [:round |
+        round = 2 ifTrue: [builder install].
+        answers at: round put: helper.
+      ].
+      ^{#oldRemainder. answers at: 1. answers at: 2}.
+    )
+
+    public helper = (
+      ^#oldHelper.
+    )
+  )
+
+  showAll: values on: transcript = (
+    values do: [:each | transcript print: each] separatedBy: [transcript show: ' '].
+    transcript newLine.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      instance = Subject new.
+      builder = (ClassMirror reflecting: Subject) mixin declaration asBuilder.
+    |
+    builder instanceSide methods
+        addFromSource: 'public run: builder = (^#replaced)';
+        addFromSource: 'public helper = (^#newHelper)'.
+    transcript
+        print: instance helper;
+        newLine.
+    showAll: (instance run: builder) on: transcript.
+    showAll: {instance run: builder. instance helper} on: transcript.
+  )
+)

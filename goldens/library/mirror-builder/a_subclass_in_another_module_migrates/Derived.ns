@@ -1,0 +1,12 @@
+/// A module that declares a subclass of the class its factory is given.
+class Derived withBase: BaseClass = Object new (
+  |
+    private Base = BaseClass.
+  |
+) (
+  public class Sub = Base new (
+    |
+      public own ::= 43.
+    |
+  ) ()
+)
