@@ -619,7 +619,7 @@ impl<'a> Lowerer<'a> {
     /// a setter method)" -- then `Return` of the same register, "and o is
     /// returned as the result of the send". Nothing runs between the two
     /// reads of the register, so it needs no protective copy. The
-    /// activation's slot base is its defining class's own
+    /// activation's slot base is that of the application it was entered at
     /// (`Heap::activation_slot_base`), the class whose slot this is. The
     /// test precedes the one statement, as a prologue.
     pub(crate) fn lower_lazy_slot_getter(&mut self, initializer: &Expression, own_index: u32) {

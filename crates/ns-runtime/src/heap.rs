@@ -5588,8 +5588,9 @@ impl<'gc> Heap<'gc> {
     /// Last, one walk rewrites every handle the heap itself holds
     /// (`forward_everything`) and remembers every old holder that names a
     /// young object afterwards, which no barrier saw stored; a forwarder
-    /// already in the remembered set stays there, its class word the only
-    /// word a scavenge reads of it. What the heap does not hold, the caller
+    /// already in the remembered set stays there until its target is
+    /// tenured or a full collection runs, its class word the only word a
+    /// scavenge reads of it. What the heap does not hold, the caller
     /// forwards with the answer (`world::forward_identity`).
     ///
     /// Eager: once the walk ends nothing names a forwarder, so no send, no

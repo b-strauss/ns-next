@@ -52,9 +52,9 @@ pub(crate) enum Resolved<'gc> {
         level: ApplicationIndex,
         /// The receiver guard a cache entry recorded for a receiver that
         /// has `level` (`inline_cache::record`), `DispatchId::NONE` for one
-        /// that had not; `DispatchId::VACANT` for a resolution the uncached
-        /// path made, which so always walks and records nothing
-        /// (`Mutator::slot_level_holds`).
+        /// that had not; `DispatchId::VACANT` for every resolution the lookup
+        /// makes (the uncached path and a cached site's miss), which so always
+        /// walks and records nothing (`Mutator::slot_level_holds`).
         recorded_guard: DispatchId,
     },
     NestedClass {

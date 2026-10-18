@@ -249,7 +249,7 @@ pub enum Instruction {
     /// on how many slots their own superclass contributes. The VM
     /// resolves the absolute index at run time via the activation's slot
     /// base (`Heap::activation_slot_base`): the own
-    /// `MixinApplication.own_slot_base` of its `current_class`, which is the
+    /// `MixinApplication.own_slot_base` of the application it was entered at, which is the
     /// level an initializer activation initializes -- one activation per
     /// level, so a base never describes a level other than its own -- and a
     /// lazy slot's getter's defining class. With `ReturnSlotIfFilled`, one of

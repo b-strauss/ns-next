@@ -300,8 +300,8 @@ mod tests {
             .sum::<usize>()
     }
 
-    /// The flag is exact for every body of the shipped world, compiled from
-    /// source and decoded from the embedded artifact alike.
+    /// The flag is exact for every body of the shipped world as the
+    /// embedded artifact decodes it.
     #[test]
     fn the_flag_is_exact_for_every_body_of_the_shipped_modules() {
         let mut total = 0;

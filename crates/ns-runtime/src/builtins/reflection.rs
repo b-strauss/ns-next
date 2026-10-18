@@ -1772,9 +1772,8 @@ mod tests {
     crate::for_each_lowering! {
         /// The method's register, the inlined block's use of it and the
         /// array element all name the `Wide` after the forward, and the one
-        /// site `point sum`, whose cache the first round filled for
-        /// `Point`, runs `Wide`'s method in the second: the caches were
-        /// vacated.
+        /// site `point sum`, which the first round filled for `Point`,
+        /// answers `Wide`'s method in the second.
         fn the_leaf_forwards_a_program_instance(lowering) {
             let (mut interpreter, fixture) = a_forward_fixture(lowering);
             let mirror = the_vm_mirror(&mut interpreter);

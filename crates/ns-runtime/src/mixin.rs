@@ -55,8 +55,10 @@ impl DispatchId {
     /// or megamorphic site. `Heap::dispatch_id` never answers it, so no
     /// receiver matches one.
     pub(crate) const VACANT: DispatchId = DispatchId(1);
-    /// A forwarder's guard (road step 5): never minted, so that every send
-    /// guarded on a forwarded receiver's own header misses.
+    /// The guard the bulk forward stamps on each forwarder
+    /// (`Heap::forward_identity`). It is never minted, so that a cache could
+    /// never hit on a forwarder even if a reader met one -- and none does,
+    /// since the forward is eager and leaves no handle naming a forwarder.
     pub(crate) const FORWARDED: DispatchId = DispatchId(2);
     /// The first id the counter mints.
     pub(crate) const FIRST_MINTED: u32 = 3;
@@ -84,8 +86,8 @@ impl DispatchId {
     }
 }
 
-// The forwarder's guard is reserved now and used from road step 5 on; the
-// assertion keeps it below every minted id.
+// The assertion keeps the forwarder's reserved guard below every minted id,
+// so that the counter can never mint it.
 const _: () = assert!(DispatchId::FORWARDED.0 < DispatchId::FIRST_MINTED);
 
 /// An application's id, for its instances. There is no second, class-side
@@ -997,7 +999,7 @@ pub struct MixinApplication {
     pub slot_count: usize,
     /// Where this application's *own* slots start -- `superclass.slot_count`,
     /// or 0 with none. Read at run time (`Heap::activation_slot_base`, off the
-    /// activation's `current_class`) to turn a compiled `InitializeSlot`'s
+    /// application the activation was entered at) to turn a compiled `InitializeSlot`'s
     /// mixin-relative `own_index` into this application's absolute field index:
     /// the compiled initializer is shared by every application of the mixin
     /// (keying code by mixin without this would bake ONE application's offset

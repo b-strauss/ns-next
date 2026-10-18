@@ -116,7 +116,8 @@ impl<'space> Scavenger<'space> {
     }
 
     /// Where the object `offset` names lives once the scavenge is done:
-    /// followed along every forwarder, whatever made each link, and copied
+    /// followed along every forwarder, whatever made each link (the chains
+    /// are the scavenger's own: a bulk forward leaves none behind), and copied
     /// if it is young and not already in the survivor space being filled,
     /// as Spur's `scavengeReferentsOf:` decides (`cointerp.c:43316-43322`).
     pub(in crate::heap) fn evacuate(&mut self, offset: NonZeroU64) -> NonZeroU64 {
@@ -127,7 +128,10 @@ impl<'space> Scavenger<'space> {
         self.copy(offset)
     }
 
-    /// The end of the chain of forwarders that starts at `offset`.
+    /// The end of the chain of forwarders that starts at `offset`. A young
+    /// object is copied once per scavenge, so a chain is one link long; the
+    /// loop costs nothing for that and never meets a bulk forward's
+    /// forwarder, which no handle names.
     fn follow(&self, offset: NonZeroU64) -> NonZeroU64 {
         let words = self.space.words();
         let mut offset = offset;

@@ -1608,8 +1608,9 @@ fn load_vector_into<'gc>(
 }
 
 /// `own_index` is relative to the executing mixin's own slots; the
-/// activation's slot base, its `current_class`'s own, turns it into this
-/// instance's absolute field index.
+/// activation's slot base, that of the application it was entered at
+/// (`Heap::activation_slot_base`), turns it into this instance's absolute
+/// field index.
 #[inline(always)]
 fn initialize_slot<'gc>(
     mutator: &mut Mutator<'gc>,

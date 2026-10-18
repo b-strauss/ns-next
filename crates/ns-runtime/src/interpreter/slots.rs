@@ -69,9 +69,9 @@ impl<'gc> Mutator<'gc> {
     /// raises `no_longer_has_the_slots` when it answers `false`; §5.10's
     /// slot handler is checked before `act` (`check_super_handler_slot`).
     ///
-    /// An uncached resolution carries `DispatchId::VACANT`, which no header
-    /// holds: the uncached path, the reference lowering's oracle, always
-    /// walks and records nothing. Otherwise the hot path is one compare of
+    /// A resolution the lookup makes carries `DispatchId::VACANT`, which no
+    /// header holds -- the uncached path, the reference lowering's oracle, and
+    /// a cached site's miss alike -- so it always walks and records nothing. Otherwise the hot path is one compare of
     /// the receiver's guard with the one the cache entry recorded;
     /// `DispatchId::NONE`, which an entry records for a receiver without
     /// the level, never matches. Next, the caches' one verified pair
