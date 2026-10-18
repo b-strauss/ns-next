@@ -3359,6 +3359,156 @@ fn a_reified_mixin_of_an_unbuilt_shipped_class_round_trips_by_name() {
     });
 }
 
+/// A module whose instance, made with the platform, holds mirrors in its
+/// slots: a mixin mirror on its own class `Foo`, a class mirror on `List`,
+/// a method mirror on `Foo`'s `compute`, an object mirror on a `Foo`, the
+/// declaration mirror of `Foo`, and a class mirror reached by navigation
+/// on `Top`. Its unary methods answer what the mirrors read.
+const MIRROR_HOLDER: &str = indoc! {"
+    class Holder usingPlatform: platform = Object new (
+      |
+        ClassMirror = platform mirrors ClassMirror.
+        ObjectMirror = platform mirrors ObjectMirror.
+        List = platform collections List.
+        mixinMirror = (ClassMirror reflecting: Foo) mixin.
+        listMirror = ClassMirror reflecting: List.
+        methodMirror = mixinMirror methods findMirrorNamed: #compute.
+        objectMirror = ObjectMirror reflecting: Foo new.
+        declarationMirror = mixinMirror declaration.
+        topMirror = topFrom: (ObjectMirror reflecting: 3) getClass.
+      |
+    ) (
+      class Foo = Object new (
+        |
+          public count = 42.
+        |
+      ) (
+        public compute = (
+          ^6 * 7
+        )
+      )
+
+      topFrom: aClassMirror = (
+        |
+          level ::= aClassMirror.
+        |
+        [nil == level superclass] whileFalse: [level:: level superclass].
+        ^level
+      )
+
+      public mixinName = (
+        ^mixinMirror name
+      )
+
+      public mixinIsFresh = (
+        ^mixinMirror = (ClassMirror reflecting: Foo) mixin
+      )
+
+      public listIsList = (
+        ^listMirror reflectee == List
+      )
+
+      public methodName = (
+        ^methodMirror name
+      )
+
+      public methodSource = (
+        ^methodMirror source
+      )
+
+      public declarationSource = (
+        ^declarationMirror source
+      )
+
+      public objectCount = (
+        ^objectMirror getSlot: #count
+      )
+
+      public topName = (
+        ^topMirror name
+      )
+
+      public topIsTop = (
+        ^topMirror = (ClassMirror reflecting: Object) superclass
+      )
+    ) : ()
+"};
+
+/// A program holding mirrors survives a snapshot: built and loaded, with
+/// its source and without, every mirror answers what it read before -- the
+/// mixin mirror is equal to one reached afresh, since the reified mixin
+/// loads onto the loaded mixin; the class mirror hands back the very
+/// `List`; the method mirror and the object mirror read their method and
+/// slot; and the mirror navigation reached `Top` with, which holds no
+/// class, still reads `Top`. Without source, a program's method and class
+/// declaration answer nil.
+#[test]
+fn a_program_holding_mirrors_loads_back_holding_them() {
+    for with_source in [true, false] {
+        let (mut interpreter, class) = load(MIRROR_HOLDER);
+        let platform = interpreter.platform();
+        let instance = expect_ok(
+            interpreter.send(&class, Symbol::intern("usingPlatform:"), &[platform]),
+            "usingPlatform:",
+        );
+        let bytes = interpreter.enter(|mutator| {
+            let class = class_reference(mutator, &class);
+            let instance = mutator.fetch(&instance);
+            snapshot_one(
+                mutator,
+                with_source.then_some(MIRROR_HOLDER),
+                &Origin::File(PathBuf::from("t.ns")),
+                class,
+                &[instance],
+            )
+            .unwrap_or_else(|error| panic!("snapshot (source {with_source}): {error}"))
+        });
+        let mut loaded = image::load(&bytes).expect("load");
+        let holder = loaded.roots[0].clone();
+        let mut answer = |selector: &str| {
+            let root = expect_ok(
+                loaded
+                    .interpreter
+                    .send(&holder, Symbol::intern(selector), &[]),
+                selector,
+            );
+            loaded.interpreter.enter(|mutator| {
+                let value = mutator.fetch(&root);
+                if value.is_nil() {
+                    return "nil".to_string();
+                }
+                if let Some(boolean) = value.as_boolean() {
+                    return boolean.to_string();
+                }
+                if let Some(integer) = value.as_small_integer() {
+                    return integer.to_string();
+                }
+                text_or_class_name(mutator, value)
+            })
+        };
+        assert_eq!(answer("mixinName"), "Foo");
+        assert_eq!(answer("mixinIsFresh"), "true");
+        assert_eq!(answer("listIsList"), "true");
+        assert_eq!(answer("methodName"), "compute");
+        assert_eq!(answer("objectCount"), "42");
+        assert_eq!(answer("topName"), "Top");
+        assert_eq!(answer("topIsTop"), "true");
+        if with_source {
+            assert_eq!(
+                answer("methodSource"),
+                "public compute = (\n      ^6 * 7\n    )"
+            );
+            assert!(
+                answer("declarationSource").starts_with("class Foo = Object new ("),
+                "the declaration's text"
+            );
+        } else {
+            assert_eq!(answer("methodSource"), "nil");
+            assert_eq!(answer("declarationSource"), "nil");
+        }
+    }
+}
+
 /// The VM mirror's class has no declaration and so no name; its mixin, and
 /// that mixin's class side, are refused as the class is (lock (5)).
 #[test]
