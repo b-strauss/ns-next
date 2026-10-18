@@ -15,7 +15,7 @@ use crate::builtins::primitive::Primitive;
 use crate::bytecode::{CallSite, CompiledCode, Instruction};
 use crate::dispatch;
 use crate::hash::IdentityMap;
-use crate::heap::{ActivationReference, Heap};
+use crate::heap::{ActivationReference, ApplicationIndex, Heap};
 use crate::mixin::{AccessorKind, DispatchId, Mixin, MixinMethod};
 use crate::types::*;
 use crate::Symbol;
@@ -67,6 +67,13 @@ pub(crate) enum Target {
         field: u32,
         kind: AccessorKind,
         chain: Chain,
+        /// The application whose own slot `field` is.
+        level: ApplicationIndex,
+        /// For a private or super site, the guard of the receiver the entry
+        /// was filled for when its chain contains `level`, and
+        /// `DispatchId::NONE` otherwise (`record`): the one compare a hit's
+        /// `Mutator::slot_level_holds` makes before its cold check.
+        recorded_guard: DispatchId,
     },
     NestedClass {
         mixin: Rc<Mixin>,
@@ -162,6 +169,12 @@ pub(crate) struct InlineCaches {
     /// Blocks a megamorphic transition or an invalidation gave back.
     free_blocks: Vec<u32>,
     global: GlobalCache,
+    /// The last receiver guard a private or super slot accessor's cold
+    /// check found to have a level, with that level
+    /// (`Mutator::slot_level_holds`): a verification the check made, not a
+    /// decision, so the next access by a receiver of that application to
+    /// that level's slots passes with one compare wherever its site is.
+    verified_slot_level: Option<(DispatchId, ApplicationIndex)>,
     /// Code identity -> the start of its family's range.
     families: IdentityMap<usize, FeedbackBase>,
     /// Every body in `families`, held so that its address -- the key -- is
@@ -176,6 +189,7 @@ impl InlineCaches {
             pool: Vec::new(),
             free_blocks: Vec::new(),
             global: GlobalCache::with_groups(GLOBAL_CACHE_ENTRIES / 2),
+            verified_slot_level: None,
             families: IdentityMap::default(),
             family_codes: Vec::new(),
         }
@@ -214,6 +228,18 @@ impl InlineCaches {
             }
             _ => FeedbackBase::NOT_ASSIGNED,
         }
+    }
+
+    /// Whether the last cold check that passed found `guard`'s receivers
+    /// to have `level` (`verified_slot_level`).
+    #[inline(always)]
+    pub(crate) fn slot_level_verified(&self, guard: DispatchId, level: ApplicationIndex) -> bool {
+        self.verified_slot_level == Some((guard, level))
+    }
+
+    /// Records that a receiver with `guard` was found to have `level`.
+    pub(crate) fn record_slot_level(&mut self, guard: DispatchId, level: ApplicationIndex) {
+        self.verified_slot_level = Some((guard, level));
     }
 
     /// How many sites the table holds -- `statistics`'s `site_entries`.
@@ -316,6 +342,7 @@ impl InlineCaches {
         self.pool.clear();
         self.free_blocks.clear();
         self.global.clear();
+        self.verified_slot_level = None;
     }
 
     /// The table's sizes: how much of what is allocated is actually filled,
@@ -636,10 +663,14 @@ fn record<'gc>(
             level: levels_between(&mutator.heap, start?, *defining_class)?,
             chain,
         },
-        Resolved::Slot { kind, field, .. } => Target::Slot {
+        Resolved::Slot {
+            kind, field, level, ..
+        } => Target::Slot {
             field: u32::try_from(*field).ok()?,
             kind: *kind,
             chain,
+            level: *level,
+            recorded_guard: slot_guard(&mutator.heap, chain, *key.receiver, *level),
         },
         Resolved::NestedClass {
             mixin,
@@ -660,6 +691,26 @@ fn record<'gc>(
         Resolved::Factory { .. } => Target::Factory { chain },
         Resolved::Unhandled => return None,
     })
+}
+
+/// The guard a slot entry records: the receiver's own, for a private or
+/// super site whose receiver has `level` -- so a hit on that receiver's
+/// application passes `Mutator::slot_level_holds` with one compare -- and
+/// `DispatchId::NONE` otherwise, so an entry never holds a guard for a
+/// receiver without the level. A public or protected entry's guard is the
+/// receiver's own dispatch id already, and `act` checks nothing for it.
+fn slot_guard<'gc>(
+    heap: &Heap<'gc>,
+    chain: Chain,
+    receiver: Value<'gc>,
+    level: ApplicationIndex,
+) -> DispatchId {
+    match chain {
+        Chain::Private | Chain::Super if heap.receiver_has_level(receiver, level) => {
+            heap.dispatch_id(receiver)
+        }
+        _ => DispatchId::NONE,
+    }
 }
 
 /// The `Resolved` an entry's target names for this send, with the base a
@@ -690,11 +741,19 @@ fn materialize<'gc>(
                 feedback_base,
             )
         }
-        Target::Slot { field, kind, chain } => (
+        Target::Slot {
+            field,
+            kind,
+            chain,
+            level,
+            recorded_guard,
+        } => (
             Resolved::Slot {
                 kind,
                 field: field as usize,
                 chain,
+                level,
+                recorded_guard,
             },
             FeedbackBase::NOT_ASSIGNED,
         ),
@@ -1502,6 +1561,25 @@ mod tests {
         assert!(cache.get(third, selector, CacheRule::Public).is_some());
     }
 
+    /// A slot level verification answers only for the guard and level it
+    /// was recorded for, the last one recorded, and is gone after an
+    /// invalidation.
+    #[test]
+    fn a_slot_level_verification_answers_its_own_pair_until_invalidated() {
+        let mut caches = InlineCaches::new();
+        let guard = |number: u32| DispatchId::from_counter(DispatchId::FIRST_MINTED + number);
+        let level = |index: usize| ApplicationIndex::from_index(index).expect("a small index");
+        assert!(!caches.slot_level_verified(guard(0), level(1)));
+        caches.record_slot_level(guard(0), level(1));
+        assert!(caches.slot_level_verified(guard(0), level(1)));
+        assert!(!caches.slot_level_verified(guard(1), level(1)));
+        assert!(!caches.slot_level_verified(guard(0), level(2)));
+        caches.record_slot_level(guard(1), level(1));
+        assert!(!caches.slot_level_verified(guard(0), level(1)));
+        caches.invalidate();
+        assert!(!caches.slot_level_verified(guard(1), level(1)));
+    }
+
     /// A site moves vacant, monomorphic, polymorphic in the order first
     /// seen, megamorphic on a fifth guard, and gives its block back.
     #[test]
@@ -1513,6 +1591,8 @@ mod tests {
             field,
             kind: AccessorKind::Getter,
             chain: Chain::Public,
+            level: ApplicationIndex::UNREGISTERED,
+            recorded_guard: DispatchId::NONE,
         };
         let guard = |number: u32| DispatchId::from_counter(DispatchId::FIRST_MINTED + number);
         caches.advance(index, guard(0), slot(0), false);

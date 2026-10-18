@@ -2064,6 +2064,141 @@ mod tests {
         }
     }
 
+    /// A module for the recorded guard of the private and super slot
+    /// accessors: `Keeper` and `Derived` forward their own receiver through
+    /// the VM mirror they are handed between two reads of a slot, and
+    /// `Holder`'s one `read` site serves instances of three subclasses.
+    fn an_accessor_guard_fixture(lowering: crate::Lowering) -> (Interpreter, Root) {
+        let source = indoc! {"
+            class Accessing = Object new () (
+              public class Wide = (
+                | public x ::= 10. public y ::= 20. public z ::= 30. |
+              ) ()
+              public class Keeper = (
+                | private secret ::= 7. |
+              ) (
+                public peek: mirror = (
+                  secret.
+                  mirror elementsOf: {self} forwardIdentityToElementsOf: {Wide new} ifFail: [nil].
+                  ^secret
+                )
+                public again: mirror = (
+                  | answer |
+                  1 to: 2 do: [:round |
+                    answer:: secret.
+                    mirror elementsOf: {self} forwardIdentityToElementsOf: {Wide new} ifFail: [nil]
+                  ].
+                  ^answer
+                )
+              )
+              public class Base = (
+                | public value ::= 7. |
+              ) ()
+              public class Derived = Base () (
+                public value = (^0)
+                public peek: mirror = (
+                  super value.
+                  mirror elementsOf: {self} forwardIdentityToElementsOf: {Wide new} ifFail: [nil].
+                  ^super value
+                )
+              )
+              public class Holder = (
+                | private secret ::= 1. |
+              ) (
+                public read = (^secret)
+                public store: value = (secret:: value)
+              )
+              public class One = Holder () ()
+              public class Two = Holder () ()
+              public class Three = Holder () ()
+              public keeper = (^Keeper new)
+              public derived = (^Derived new)
+              public one = (^One new store: 1)
+              public two = (^Two new store: 2)
+              public three = (^Three new store: 3)
+            ) : ()
+        "};
+        let module = ns_syntax::parse(source).expect("the fixture parses");
+        let resolved = match crate::resolve(
+            module,
+            std::rc::Rc::from(source),
+            crate::SourceOrigin::File(std::path::PathBuf::from("accessor_guard_fixture.ns")),
+        ) {
+            Ok(resolved) => resolved,
+            Err(_) => panic!("the fixture resolves"),
+        };
+        let mut interpreter = Interpreter::bootstrap_with(lowering);
+        let class = interpreter.load_module(&resolved);
+        let fixture = expect_ok(interpreter.instantiate(&class, &[]), "Accessing new");
+        (interpreter, fixture)
+    }
+
+    crate::for_each_lowering! {
+        /// The second read of a private slot finds its receiver forwarded
+        /// to a `Wide`: reading `Keeper`'s field of a `Wide` would answer
+        /// one of the `Wide`'s own slots, so it raises instead.
+        fn a_private_slot_read_after_its_receiver_was_forwarded_raises(lowering) {
+            let (mut interpreter, fixture) = an_accessor_guard_fixture(lowering);
+            let keeper = send(&mut interpreter, &fixture, "keeper");
+            let mirror = the_vm_mirror(&mut interpreter);
+            let result = interpreter.send(&keeper, Symbol::intern("peek:"), &[mirror]);
+            assert_eq!(
+                error_text(result, "peek:"),
+                "an instance of Wide no longer has the slots of Keeper, which the slot accessor secret addresses"
+            );
+        }
+    }
+
+    crate::for_each_lowering! {
+        /// One private slot site reads `secret` of a `Keeper`, then, on the
+        /// loop's second round, of the `Wide` its receiver was forwarded
+        /// to: under the optimized lowering a cache hit whose recorded
+        /// guard no longer matches, which raises as the uncached read does.
+        fn a_private_slot_site_hit_after_its_receiver_was_forwarded_raises(lowering) {
+            let (mut interpreter, fixture) = an_accessor_guard_fixture(lowering);
+            let keeper = send(&mut interpreter, &fixture, "keeper");
+            let mirror = the_vm_mirror(&mut interpreter);
+            let result = interpreter.send(&keeper, Symbol::intern("again:"), &[mirror]);
+            assert_eq!(
+                error_text(result, "again:"),
+                "an instance of Wide no longer has the slots of Keeper, which the slot accessor secret addresses"
+            );
+        }
+    }
+
+    crate::for_each_lowering! {
+        /// The second `super value` finds its receiver forwarded to a
+        /// `Wide`: it raises rather than read `Base`'s field of the `Wide`.
+        fn a_super_slot_read_after_its_receiver_was_forwarded_raises(lowering) {
+            let (mut interpreter, fixture) = an_accessor_guard_fixture(lowering);
+            let derived = send(&mut interpreter, &fixture, "derived");
+            let mirror = the_vm_mirror(&mut interpreter);
+            let result = interpreter.send(&derived, Symbol::intern("peek:"), &[mirror]);
+            assert_eq!(
+                error_text(result, "peek:"),
+                "an instance of Wide no longer has the slots of Base, which the slot accessor value addresses"
+            );
+        }
+    }
+
+    crate::for_each_lowering! {
+        /// One private slot site sees instances of three subclasses in
+        /// turn: the entry records the first receiver's guard, the others
+        /// take the cold check, and every read answers its own receiver's
+        /// slot.
+        fn a_private_slot_site_with_subclass_receivers_answers_each_slot(lowering) {
+            let (mut interpreter, fixture) = an_accessor_guard_fixture(lowering);
+            let receivers = ["one", "two", "three"].map(|name| send(&mut interpreter, &fixture, name));
+            for _ in 0..3 {
+                for (receiver, expected) in receivers.iter().zip(["1", "2", "3"]) {
+                    let answer = send(&mut interpreter, receiver, "read");
+                    let answer = interpreter.enter(|mutator| render(mutator, mutator.fetch(&answer)));
+                    assert_eq!(answer, expected);
+                }
+            }
+        }
+    }
+
     /// An instance of a program's subclass of a shipped class is the
     /// program's: its class's own mixin is not shipped.
     #[test]

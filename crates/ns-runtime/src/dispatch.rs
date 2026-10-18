@@ -16,8 +16,11 @@ pub enum Lookup<'gc> {
     Method(Rc<MixinMethod>, ClassReference<'gc>),
     /// One of the accessors a slot declaration defines (`newspeak-spec.pdf`
     /// §6.3.2), with the absolute field it reads or writes: the declaring
-    /// application's `own_slot_base` plus the slot's mixin-relative index.
-    SlotAccessor(SlotAccessor, usize),
+    /// application's `own_slot_base` plus the slot's mixin-relative index --
+    /// and that application's index, the level whose slots the field is
+    /// one of, which a private or super accessor's guard check asks the
+    /// receiver's chain for (`interpreter::slots`, `slot_level_holds`).
+    SlotAccessor(SlotAccessor, usize, crate::heap::ApplicationIndex),
     /// A nested class declaration, reached through the implicit accessor
     /// `newspeak-spec.pdf` §6 says every such declaration defines in its
     /// enclosing class. The `ClassReference` is the class object of the level
@@ -360,6 +363,7 @@ fn found_entry<'gc>(
         MethodEntry::SlotAccessor(accessor) => Lookup::SlotAccessor(
             *accessor,
             application.own_slot_base + accessor.own_index as usize,
+            application.index,
         ),
         MethodEntry::Primitive(method) => Lookup::Primitive(method.primitive, level_class),
         MethodEntry::Factory(_) => Lookup::Factory(level_class),

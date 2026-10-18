@@ -3789,6 +3789,26 @@ impl<'gc> Heap<'gc> {
         header.guard()
     }
 
+    /// `dispatch_id` of an object, read from its header word alone, without
+    /// `header`'s block bounds: the one compare of a private or super slot
+    /// accessor's guard check (`Mutator::slot_level_holds`).
+    #[inline(always)]
+    pub(crate) fn object_dispatch_id(&self, object: ObjectReference<'gc>) -> DispatchId {
+        self.check_object_origin(object);
+        let header = Header(self.space.words()[header_index(object.offset)]);
+        debug_assert!(
+            !matches!(header.format(), Format::Free | Format::Forwarded),
+            "a handle names vacated nursery memory: a store missed the write barrier"
+        );
+        debug_assert_eq!(
+            header.guard(),
+            self.header_dispatch_id(self.object_class(object)),
+            "an object's dispatch id went stale: something changed its class's \
+             application without restamping it"
+        );
+        header.guard()
+    }
+
     /// `class`'s ids, or `NONE` when it is not a class object: the key of a
     /// `super` send and of a private lexical send.
     pub fn class_dispatch_ids(&self, class: ClassReference<'gc>) -> DispatchIds {

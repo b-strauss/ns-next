@@ -7,7 +7,8 @@
 //! Cog's quick methods and SOMns's `CachedSlotRead`
 //! (`docs/design/dispatch.md`, "Slot accessors").
 
-use crate::mixin::AccessorKind;
+use crate::heap::ApplicationIndex;
+use crate::mixin::{AccessorKind, DispatchId};
 use crate::types::*;
 use crate::Symbol;
 
@@ -25,6 +26,11 @@ impl<'gc> Mutator<'gc> {
     /// accessor is found only on its own class's instances, so only a decoded
     /// image whose layout disagrees with its mixins -- untrusted input -- can
     /// get here without one.
+    ///
+    /// `#[inline(always)]`: with the guard check `act` makes ahead of it
+    /// for a private or super accessor, LLVM called it out of line from
+    /// every sender, public and protected accessors included.
+    #[inline(always)]
     pub(crate) fn decide_slot_accessor(
         &mut self,
         receiver: Value<'gc>,
@@ -50,6 +56,88 @@ impl<'gc> Mutator<'gc> {
             }
         }
         Err(self.no_field_for_slot_accessor(receiver, selector, field))
+    }
+
+    /// Whether `receiver` still has the slots of `level`, the application
+    /// whose own slot a private or super accessor addresses -- by a field
+    /// the lookup decided from N's or `current_class`'s chain, never from
+    /// the receiver's -- so that a receiver the bulk forward replaced by an
+    /// object of another shape is never read or written in `level`'s
+    /// layout (`docs/design/object-model.md`, "what a slot access checks").
+    /// `act` asks it for `Chain::Private` and `Chain::Super` only, and
+    /// raises `no_longer_has_the_slots` when it answers `false`.
+    ///
+    /// The hot path is one compare of the receiver's guard with the one the
+    /// cache entry recorded; `DispatchId::NONE`, which the uncached path
+    /// carries and an entry records for a receiver without the level, never
+    /// matches. Next, the caches' one verified pair
+    /// (`InlineCaches::slot_level_verified`), and only then
+    /// `Heap::receiver_has_level`'s walk of the receiver's chain. What
+    /// passes the walk is a receiver whose chain contains `level` under
+    /// another guard -- an instance of another subclass at a site that
+    /// served one before, or a receiver forwarded to an instance of a
+    /// subclass -- and its guard and `level` are then recorded as the
+    /// verified pair: a verification the walk made, not a decision. Without
+    /// it a private slot of a class whose subclass's instances share its
+    /// sites walked on every access -- DeltaBlue's `Plan`, a `List`, about
+    /// ten million times a run, 3.9% of it. Rewriting the guard of the
+    /// entry that hit instead carried the entry's location through every
+    /// cached send, which slowed public and protected sends too, by
+    /// 2.5-7.4%. A walk that fails records nothing. An immediate receiver
+    /// has no slots to protect and passes, as an own-slot instruction's
+    /// does; `decide_slot_accessor` answers its error.
+    ///
+    /// Out of line, answering a `bool` in a register, the compare included:
+    /// with the compare inlined into `act` -- whose slot arm every sender
+    /// inlines -- public and protected accessors slowed by 7-10%
+    /// (`bench_loop.ns`, `bench_send.ns`) and private ones more than the
+    /// call costs; a check answering a `Result` cost `DeltaBlue` 4%.
+    #[inline(never)]
+    pub(crate) fn slot_level_holds(
+        &mut self,
+        receiver: Value<'gc>,
+        level: ApplicationIndex,
+        recorded_guard: DispatchId,
+    ) -> bool {
+        let Some(object) = receiver.as_object() else {
+            return true;
+        };
+        let guard = self.heap.object_dispatch_id(object);
+        if recorded_guard != DispatchId::NONE && guard == recorded_guard {
+            return true;
+        }
+        if self.caches.slot_level_verified(guard, level) {
+            return true;
+        }
+        if !self.heap.receiver_has_level(receiver, level) {
+            return false;
+        }
+        self.caches.record_slot_level(guard, level);
+        true
+    }
+
+    /// The error of a private or super accessor whose receiver no longer
+    /// has the slots of the level the accessor addresses.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn no_longer_has_the_slots(
+        &self,
+        receiver: Value<'gc>,
+        level: ApplicationIndex,
+        selector: Symbol,
+    ) -> Signal<'gc> {
+        let class = self.heap.application(level).map_or_else(
+            || "its class".to_string(),
+            |level| level.mixin.reflected_name(),
+        );
+        Signal::Error(NewspeakError::error(
+            selector,
+            receiver,
+            format!(
+                "{} no longer has the slots of {class}, which the slot accessor {selector} addresses",
+                self.heap.describe(receiver)
+            ),
+        ))
     }
 
     /// `decide_slot_accessor`'s error, out of line: formatted in place, it

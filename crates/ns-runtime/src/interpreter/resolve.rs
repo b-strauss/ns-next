@@ -9,7 +9,8 @@ use std::rc::Rc;
 
 use crate::builtins::primitive::Primitive;
 use crate::dispatch::{self, Lookup};
-use crate::mixin::{AccessorKind, MethodFastPath, Mixin, MixinMethod};
+use crate::heap::ApplicationIndex;
+use crate::mixin::{AccessorKind, DispatchId, MethodFastPath, Mixin, MixinMethod};
 use crate::types::*;
 use crate::{Heap, Symbol};
 
@@ -46,6 +47,14 @@ pub(crate) enum Resolved<'gc> {
         kind: AccessorKind,
         field: usize,
         chain: Chain,
+        /// The application whose own slot `field` is: the level the lookup
+        /// found the accessor at.
+        level: ApplicationIndex,
+        /// The receiver guard a cache entry recorded for a receiver that
+        /// has `level` (`inline_cache::record`); `DispatchId::NONE` for a
+        /// resolution the uncached path made, which so always takes the
+        /// cold check (`Mutator::slot_level_holds`).
+        recorded_guard: DispatchId,
     },
     NestedClass {
         mixin: Rc<Mixin>,
@@ -247,10 +256,12 @@ fn resolved<'gc>(lookup: Lookup<'gc>, chain: Chain) -> Resolved<'gc> {
             defining_class,
             chain,
         },
-        Lookup::SlotAccessor(accessor, field) => Resolved::Slot {
+        Lookup::SlotAccessor(accessor, field, level) => Resolved::Slot {
             kind: accessor.kind,
             field,
             chain,
+            level,
+            recorded_guard: DispatchId::NONE,
         },
         Lookup::NestedClass(mixin, declaring_class) => Resolved::NestedClass {
             mixin,
@@ -454,15 +465,36 @@ impl<'gc> Mutator<'gc> {
                     })
                 }
             },
-            Resolved::Slot { kind, field, chain } => match chain {
+            Resolved::Slot {
+                kind,
+                field,
+                chain,
+                level,
+                recorded_guard,
+            } => match chain {
                 Chain::DoesNotUnderstand | Chain::SuperDoesNotUnderstand => {
                     self.act_handler_slot(kind, field, receiver, selector, arguments)
                 }
                 // §6.3.2: a slot's accessors answer a send exactly when a
                 // method with the slot's accessibility would; `super x`
                 // reaches the superclass's accessor even where the
-                // receiver's own class overrides it (§5.10).
-                _ => self.decide_slot_accessor(receiver, kind, selector, field, arguments),
+                // receiver's own class overrides it (§5.10). A private
+                // site is guarded by N's application and a super site by
+                // `current_class`'s, never by the receiver's, so their
+                // field was decided without looking at the receiver, which
+                // must still have the level's slots
+                // (`docs/design/object-model.md`, "what a slot access
+                // checks"). A public or protected site is guarded by the
+                // receiver's own dispatch id, so its hit is that check
+                // already.
+                _ => {
+                    if matches!(chain, Chain::Private | Chain::Super)
+                        && !self.slot_level_holds(receiver, level, recorded_guard)
+                    {
+                        return Err(self.no_longer_has_the_slots(receiver, level, selector));
+                    }
+                    self.decide_slot_accessor(receiver, kind, selector, field, arguments)
+                }
             },
             // §6: the implicit accessor a nested declaration defines is
             // reached exactly like any other member, and it ignores

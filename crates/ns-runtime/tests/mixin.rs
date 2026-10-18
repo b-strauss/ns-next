@@ -175,7 +175,7 @@ fn a_class_object_carries_identity_and_its_application_carries_layout() {
         // §6.3.2: the slot's getter is a method-table entry, resolved by
         // the ordinary lookup to the field the application lays it out at.
         match dispatch::lookup_protected(mutator.heap(), class, Symbol::intern("y")) {
-            Lookup::SlotAccessor(accessor, field) => {
+            Lookup::SlotAccessor(accessor, field, _) => {
                 assert_eq!(accessor.kind, AccessorKind::Getter);
                 assert_eq!(
                     field, 1,
