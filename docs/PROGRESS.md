@@ -5430,7 +5430,8 @@ which hands out `ObjectMirror` and `ClassMirror`; from them a program
 navigates to mixin, class declaration, method and slot mirrors and mirror
 groups, in Primordial Soup's protocol with the canonical `ClassMirror`
 split -- a class mirror answers every level's members, superclass first,
-a mixin mirror only its own. A mirror sends its reflectee nothing, reads
+a mixin mirror only its own. A mirror sends its reflectee nothing, forces
+no future -- a mirror on a future reflects the future object -- reads
 private and protected members alike, and reads only the slot a name names,
 never a farther one it shadows. No mirror hands out a value it reached
 through a shipped level: a core-library level's slots are neither read nor
@@ -5440,9 +5441,9 @@ the program gave and the steps from it -- and does not hand a core-library
 class out, so a program holding one on `Top` can be written to an image
 without loosening lock (4); behind that rule the leaves refuse the VM
 mirror and every shipped module instance whatever the level. The mirrors
-read through seventeen leaves of a new family,
+read through nineteen leaves of a new family,
 `Primitive::Reflection` (`builtins/reflection.rs`), appended to `MIRROR`,
-which now has 265 rows, `MirrorPrimitive` a `u16` and `Primitive` four
+which now has 267 rows, `MirrorPrimitive` a `u16` and `Primitive` four
 bytes in the padding every holder had. A mixin is reified as one
 kernel-private `Mixin` object per mixin per heap, kept in a strong table
 the collectors trace (`Heap`'s `mixin_objects`), and written to an image as
@@ -5475,11 +5476,16 @@ fixture was regenerated for the changed shipped world, its size unchanged.
   holding the way to its class, a shipped mixin named by its declaration
   before its class is built, and a program holding mirrors through a
   snapshot.
-- This commit -- the documents.
+- `d561f5fe`, `39ad8e2e` -- the documents.
+- `d172f7c7`, `868fec59`, `53d71ce3`, `19e5f700` and this commit -- the
+  final review's fixes: no mirror forces a future, a synthesized class
+  side keyed by an interned mixin, every kind of mirror through a
+  snapshot, `ObjectMirror` and `ClassMirror` private classes of the root,
+  and the documents.
 
 What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the
 activation and thread mirrors, `evaluate:` and `perform:`, `instances` and
 `referringObjects`, metadata through mirrors, `getSlot:` of a lazy slot,
-the indexed elements in `slots`, a navigated mirror anchored on a future,
+the indexed elements in `slots`, a mirror on a future the program resolves,
 a mirror's repeated walks, and the reflective checks back in goldens. Road
 step 5b, the MirrorBuilder and the atomic install, is next.

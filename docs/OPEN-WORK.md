@@ -260,7 +260,10 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   `n²` steps. And an object mirror's `slots` asks `getSlot:`'s leaf for
   each name, which rebuilds the visible slots each time
   (`builtins/reflection.rs`, `visible_slots`), `n²` in the slots of the
-  object. Nothing measures mirrors yet; a leaf answering the names and
+  object. And an object mirror's `slots`, a mixin mirror's `slotsLazy:`
+  and a class mirror's `gathered:` (`MirrorsFactory.ns`) build their
+  result by repeated `, {...}` concatenation, `n²` in the members again.
+  Nothing measures mirrors yet; a leaf answering the names and
   the values together, and one walking a whole chain once, are
   candidates.
   [liveness-and-reflection.md](design/liveness-and-reflection.md),

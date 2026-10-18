@@ -1643,7 +1643,7 @@ with the user on 2026-10-03); its unbounded growth under live editing
 ([liveness-and-reflection.md](liveness-and-reflection.md)) ends with the
 first edit's reclamation, which road step 5b's atomic install brings
 ([liveness-and-reflection.md](liveness-and-reflection.md), "Planned: road
-step 5, mirrors and atomic installation"). The same per-mixin id serves dispatch's open
+step 5b, MirrorBuilder and atomic installation"). The same per-mixin id serves dispatch's open
 option of guarding a private lexical site on N's mixin
 ([dispatch.md](dispatch.md), "Decisions").
 
