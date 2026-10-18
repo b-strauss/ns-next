@@ -3306,6 +3306,59 @@ fn a_reified_shipped_mixin_round_trips_by_name() {
     });
 }
 
+/// The first class `CollectionsFactory`'s root declares that the shipped
+/// world has not built, named as a class: what mirror navigation reaches
+/// as a reified mixin before any program builds the class.
+fn unbuilt_collections_class<'gc>(mutator: &Mutator<'gc>, list: ClassReference<'gc>) -> Rc<Mixin> {
+    let root = applied_mixin(mutator.heap(), list)
+        .enclosing_mixin()
+        .expect("List is declared in its module's root");
+    root.nested
+        .iter()
+        .find(|nested| {
+            let name = ShippedName {
+                module: Symbol::intern("CollectionsFactory"),
+                declaration: nested.name,
+                kind: ShippedKind::Class,
+            };
+            shipped_names::resolve_in(mutator, &[name], false).is_err()
+        })
+        .cloned()
+        .expect("a CollectionsFactory class that is not built yet")
+}
+
+/// A shipped mixin whose class no program has built yet is named by its
+/// declaration all the same, so the loader builds the class before the
+/// graph and the record loads onto that class's mixin, the loading
+/// binary's own.
+#[test]
+fn a_reified_mixin_of_an_unbuilt_shipped_class_round_trips_by_name() {
+    let mut declaration = None;
+    let bytes = reified_holder_snapshot(|mutator, _class, list| {
+        let unbuilt = unbuilt_collections_class(mutator, list);
+        declaration = Some(unbuilt.name);
+        vec![Value::object(mutator.reified_mixin(&unbuilt))]
+    })
+    .expect("snapshot");
+    let name = ShippedName {
+        module: Symbol::intern("CollectionsFactory"),
+        declaration: declaration.expect("the snapshot ran"),
+        kind: ShippedKind::Class,
+    };
+    let mut loaded = image::load(&bytes).expect("load");
+    let root = loaded.roots[0].clone();
+    loaded.interpreter.enter(|mutator| {
+        let elements = held_elements(mutator, &root);
+        let resolved = match shipped_names::resolve_in(mutator, &[name], false) {
+            Ok(resolved) => resolved,
+            Err(error) => panic!("the loader built {}: {error}", name.describe()),
+        };
+        let mixin = applied_mixin(mutator.heap(), resolved[0].object);
+        assert_eq!(mixin.name, name.declaration);
+        assert_reifies(mutator, elements[0], &mixin);
+    });
+}
+
 /// The VM mirror's class has no declaration and so no name; its mixin, and
 /// that mixin's class side, are refused as the class is (lock (5)).
 #[test]

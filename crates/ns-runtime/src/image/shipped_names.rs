@@ -105,13 +105,12 @@ pub struct ResolvedName<'gc> {
 
 /// The section: a `u32` count, then per entry the module's and the
 /// declaration's symbol ids, the kind byte and, for a level or a level's
-/// metaclass, the clause's `u32` index. `used` lists positions in
-/// `world.entries()`, in the order the graph first used each, which is the
-/// order its references number them.
+/// metaclass, the clause's `u32` index. `used` lists the names in the
+/// order the graph first used each, which is the order its references
+/// number them.
 pub(crate) fn encode_section(
     writer: &mut Writer,
-    world: &ShippedWorld<'_>,
-    used: &[usize],
+    used: &[ShippedName],
     symbols: &mut symbols::Builder,
 ) {
     assert!(
@@ -119,8 +118,7 @@ pub(crate) fn encode_section(
         "internal: an image names more shipped objects than the shipped world has"
     );
     writer.write_u32(u32_field("shipped name count", used.len()));
-    for index in used {
-        let name = world.entries()[*index].name;
+    for name in used {
         writer.write_u32(symbols.intern(name.module.as_str()));
         writer.write_u32(symbols.intern(name.declaration.as_str()));
         match name.kind {
@@ -458,13 +456,12 @@ mod tests {
         }
         interpreter.enter(|mutator| {
             let world = &mutator.shipped_world;
-            let used: Vec<usize> = names
-                .iter()
-                .map(|shipped| world.index_of_name(shipped).expect("a shipped name"))
-                .collect();
+            for shipped in names {
+                assert!(world.index_of_name(shipped).is_some(), "a shipped name");
+            }
             let mut symbols = symbols::Builder::new();
             let mut writer = Writer::new();
-            encode_section(&mut writer, world, &used, &mut symbols);
+            encode_section(&mut writer, names, &mut symbols);
             (symbols.build(), writer.into_bytes())
         })
     }

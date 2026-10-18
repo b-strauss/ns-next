@@ -782,12 +782,24 @@ fn unnamed_shipped_class<'gc>(heap: &Heap<'gc>, object: ObjectReference<'gc>) ->
     ))
 }
 
-/// The shipped names a graph section uses, as positions in the shipped
-/// world's entries, in the order the graph first used each -- the order the
-/// shipped-name section lists them in and its references number them.
+/// One shipped name a graph section uses: an entry of the shipped world,
+/// by its position there, or the name of a class its module's root
+/// declares that is not built yet (`ShippedWorld::declared_by_mixin`),
+/// which only a reified mixin's record uses.
+#[derive(Clone, Copy)]
+enum UsedName {
+    Built(usize),
+    Declared(ShippedName),
+}
+
+/// The shipped names a graph section uses, in the order the graph first
+/// used each -- the order the shipped-name section lists them in and its
+/// references number them.
 pub struct UsedNames {
-    pub(crate) names: Vec<usize>,
+    names: Vec<UsedName>,
     index: HashMap<usize, u32>,
+    /// The section index of each `UsedName::Declared`.
+    declared: HashMap<ShippedName, u32>,
 }
 
 impl UsedNames {
@@ -795,6 +807,7 @@ impl UsedNames {
         UsedNames {
             names: Vec::new(),
             index: HashMap::new(),
+            declared: HashMap::new(),
         }
     }
 
@@ -806,7 +819,19 @@ impl UsedNames {
         }
         let index = u32_field("shipped name index", self.names.len());
         self.index.insert(world_index, index);
-        self.names.push(world_index);
+        self.names.push(UsedName::Built(world_index));
+        index
+    }
+
+    /// The section index of `name`, a class not built yet, listing it
+    /// first if nothing has used it yet.
+    fn use_declared(&mut self, name: ShippedName) -> u32 {
+        if let Some(index) = self.declared.get(&name) {
+            return *index;
+        }
+        let index = u32_field("shipped name index", self.names.len());
+        self.declared.insert(name, index);
+        self.names.push(UsedName::Declared(name));
         index
     }
 
@@ -819,6 +844,15 @@ impl UsedNames {
             .expect("internal: the graph walk listed every shipped name the encoder writes")
     }
 
+    /// The section index of `name`, a class not built yet, which the graph
+    /// walk listed.
+    fn index_of_declared(&self, name: &ShippedName) -> u32 {
+        *self
+            .declared
+            .get(name)
+            .expect("internal: the graph walk listed every shipped name the encoder writes")
+    }
+
     /// The names, in section order: what a host that decodes a graph
     /// section it wrote by hand resolves its `DecodeContext::shipped` from
     /// (`shipped_names::resolve_in`).
@@ -826,7 +860,10 @@ impl UsedNames {
         let entries = mutator.shipped_world.entries();
         self.names
             .iter()
-            .map(|index| entries[*index].name)
+            .map(|used| match used {
+                UsedName::Built(index) => entries[*index].name,
+                UsedName::Declared(name) => *name,
+            })
             .collect()
     }
 }
@@ -857,11 +894,13 @@ pub struct GraphTable<'gc> {
 
 /// What the graph walk resolves an object against before it enters it: the
 /// shipped world's entries by object (`ShippedWorld::index_by_object`) and
-/// by mixin (`ShippedWorld::index_by_mixin`), the VM mirror, and the mixin
-/// of its class, by `mixin::mixin_key`.
+/// by mixin (`ShippedWorld::index_by_mixin`), the names of the shipped
+/// classes not built yet by mixin (`ShippedWorld::declared_by_mixin`), the
+/// VM mirror, and the mixin of its class, by `mixin::mixin_key`.
 struct Named<'a, 'gc> {
     by_object: &'a HashMap<usize, usize>,
     by_mixin: &'a HashMap<usize, usize>,
+    declared_by_mixin: &'a HashMap<usize, ShippedName>,
     mirror: Option<ObjectReference<'gc>>,
     mirror_mixin: Option<usize>,
 }
@@ -1085,6 +1124,8 @@ impl<'gc> GraphTable<'gc> {
                             }
                         } else if let Some(world_index) = named.by_mixin.get(&key) {
                             self.used.use_name(*world_index);
+                        } else if let Some(name) = named.declared_by_mixin.get(&key) {
+                            self.used.use_declared(*name);
                         }
                     }
                 }
@@ -1210,6 +1251,8 @@ pub struct EncodeContext<'a, 'gc> {
     shipped_by_object: &'a HashMap<usize, usize>,
     /// `ShippedWorld::index_by_mixin`, built for this encoding.
     shipped_by_mixin: &'a HashMap<usize, usize>,
+    /// `ShippedWorld::declared_by_mixin`, built for this encoding.
+    shipped_declared_by_mixin: &'a HashMap<usize, ShippedName>,
     /// `mixin::mixin_key` -> mixin-table row id, as `mixins::encode`
     /// assigned them.
     pub mixin_ids: &'a HashMap<usize, u32>,
@@ -1796,6 +1839,13 @@ fn encode_mixin_record<'gc>(
         }
         writer.write_u8(MIXIN_SHIPPED);
         writer.write_u32(context.table.used.index_of(world_index));
+    } else if let Some(name) = context.shipped_declared_by_mixin.get(&key) {
+        // A class not built yet has no entry and so no positions, but a
+        // reified mixin's mixin may be every shipped class's, whatever its
+        // accessibility (`shipped_world::class_positions`), so no position
+        // refuses it; the loader builds the class before it resolves it.
+        writer.write_u8(MIXIN_SHIPPED);
+        writer.write_u32(context.table.used.index_of_declared(name));
     } else if instance_side.shipped {
         return Err(format!(
             "image encoding refuses the reified mixin {}: it is compiled from shipped source, \
@@ -1949,9 +1999,11 @@ pub fn encode_graph_section<'gc>(
     }
     let shipped_by_object = world.index_by_object(heap);
     let shipped_by_mixin = world.index_by_mixin(heap);
+    let shipped_declared_by_mixin = world.declared_by_mixin(heap);
     let named = Named {
         by_object: &shipped_by_object,
         by_mixin: &shipped_by_mixin,
+        declared_by_mixin: &shipped_declared_by_mixin,
         mirror: mutator.vm_mirror.and_then(|mirror| mirror.as_object()),
         mirror_mixin: heap
             .class_application(mutator.builtin_class(BuiltinClass::VmMirror))
@@ -1998,6 +2050,7 @@ pub fn encode_graph_section<'gc>(
         world,
         shipped_by_object: &shipped_by_object,
         shipped_by_mixin: &shipped_by_mixin,
+        shipped_declared_by_mixin: &shipped_declared_by_mixin,
         mixin_ids,
         heap,
     };

@@ -211,6 +211,32 @@ impl<'gc> ShippedWorld<'gc> {
             .collect()
     }
 
+    /// The mixin of each declaration a recorded module's root declares
+    /// whose class is not built yet, by `mixin_key`, to the name its class
+    /// will have: what an image names a reified mixin by when navigation
+    /// reached the mixin before anything built its class. The loader builds
+    /// the class a name names before it decodes the graph
+    /// (`Interpreter::build_shipped_names`), so the name resolves there.
+    /// Every shipped class is declared directly in its module's root, so
+    /// these and `index_by_mixin`'s are every shipped mixin but the VM
+    /// mirror's class's, which has no declaration.
+    pub(crate) fn declared_by_mixin(&self, heap: &Heap<'gc>) -> HashMap<usize, ShippedName> {
+        let mut declared = HashMap::new();
+        for (module, instance) in &self.module_instances {
+            for nested in &root_application(heap, *instance).mixin.nested {
+                let name = ShippedName {
+                    module: *module,
+                    declaration: nested.name,
+                    kind: ShippedKind::Class,
+                };
+                if self.index_of_name(&name).is_none() {
+                    declared.insert(mixin_key(nested), name);
+                }
+            }
+        }
+        declared
+    }
+
     /// The pending root class of the shipped module `name`, or `None` when
     /// none was built or its instance is recorded.
     pub(crate) fn pending_class(&self, name: Symbol) -> Option<ClassReference<'gc>> {

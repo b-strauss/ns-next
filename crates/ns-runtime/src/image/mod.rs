@@ -234,8 +234,7 @@ fn write_image<'gc>(
     let mut names_writer = encode::Writer::new();
     shipped_names::encode_section(
         &mut names_writer,
-        &mutator.shipped_world,
-        &used.names,
+        &used.names(mutator),
         &mut describing.symbols,
     );
     let mut writer = encode::Writer::new();

@@ -1951,7 +1951,7 @@ by the encoder and the decoder alike (`shipped_names::NamePosition`):
 | a record's class | any shipped class but a module's root and `Top`; `Activation` only on a frame record, `FutureImplementation` only on an unresolved future's; never a metaclass or a level |
 | a frame's `current_class` and kind, a class record's declaring class | any shipped class, metaclass or level |
 | `VALUE_SHIPPED_MODULE` | a frame record's receiver or registers only, and never in a started image |
-| a reified mixin's mixin (`OBJECT_MIXIN`) | any shipped class, whatever its accessibility, a module's root included; never a metaclass, a level or a module instance |
+| a reified mixin's mixin (`OBJECT_MIXIN`) | any shipped class, whatever its accessibility, a module's root included, and one its module's root declares that nothing has built yet, which the loader then builds (`ShippedWorld::declared_by_mixin`); never a metaclass, a level or a module instance |
 
 It keeps every capability out of a value -- `Top`, `Activation`,
 `FutureImplementation`, the module roots and their instances are no value,
