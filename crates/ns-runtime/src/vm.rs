@@ -24,7 +24,8 @@ use crate::interpreter::instantiate::check_value_slot;
 use crate::interpreter::literals::{body_too_large_error, unresolved_identifier_error};
 use crate::interpreter::locals::{
     check_own_slots, filled_own_slot, load_own_slot, load_vector, read_local, read_outer_local,
-    store_instance_field, store_vector, write_local, write_outer_local,
+    receiver_keeps_entered_level, store_instance_field, store_vector, write_local,
+    write_outer_local,
 };
 use crate::interpreter::unwind::{non_boolean_condition, UnwindOutcome};
 use crate::interpreter::{
@@ -1922,8 +1923,10 @@ fn initialize_slot_refused<'gc>(
     handoff: &mut Handoff,
 ) -> Transfer {
     // A receiver that no longer has the slot is refused whatever the
-    // value: only a refusal of the value itself can be about a future.
-    if check_own_slots(mutator, activation).is_err() {
+    // value -- `signal` is that refusal, built once -- and only a refusal
+    // of the value itself can be about a future.
+    let receiver = mutator.heap.activation_receiver(activation);
+    if !receiver_keeps_entered_level(mutator, activation, receiver) {
         return unwind(mutator, signal, floor, handoff);
     }
     let value = read_local(&mutator.heap, activation, source);

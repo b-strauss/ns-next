@@ -3586,16 +3586,6 @@ impl<'gc> Heap<'gc> {
         ApplicationIndex::from_index(usize::try_from(index).ok()?)
     }
 
-    /// Where `class`'s own slots start in an instance's fields
-    /// (`MixinApplication::own_slot_base`), copied out; `None` for an
-    /// object that is not a class object. Read without cloning the
-    /// application's `Rc`, because every `InitializeSlot` and
-    /// `ReturnSlotIfFilled` asks it (`Heap::activation_slot_base`).
-    pub fn class_own_slot_base(&self, class: ClassReference<'gc>) -> Option<usize> {
-        self.class_application_entry(class)
-            .map(|application| application.own_slot_base)
-    }
-
     /// §3.1.1's "its class inherits from class `Value`", read off the
     /// application without cloning the `Rc` that holds it: this is asked of
     /// every slot an initializer writes, and going through
@@ -4768,7 +4758,8 @@ impl<'gc> Heap<'gc> {
 
     /// The absolute field index a compiled `InitializeSlot`'s mixin-relative
     /// `own_index` is offset by: `MixinApplication.own_slot_base` of the
-    /// activation's `current_class`. The two bodies that contain
+    /// application the activation was entered at
+    /// (`StackEntry::entered_level`). The two bodies that contain
     /// `InitializeSlot` run with exactly the class whose slots they write
     /// there -- an instance initializer with the level it initializes, one
     /// activation per level of the chain, and a lazy slot's getter (§6.3.3)
@@ -4776,14 +4767,24 @@ impl<'gc> Heap<'gc> {
     /// carried on the activation: carrying it made every push store a field,
     /// and every method push ask whether its method is a lazy getter, for the
     /// one instruction that reads it (`docs/design/execution.md`, "What the
-    /// platform module cost"). An activation with no class, which no compiled
-    /// `InitializeSlot` runs in, answers 0.
+    /// platform module cost"). Read off the entered application, never the
+    /// class object's current one: the own-slot check
+    /// (`interpreter::locals::check_own_slots`) validates the receiver
+    /// against the entered application, and an install can rewrite the
+    /// class's application while this activation still runs code compiled
+    /// for the old one, so the base must be the one the check vouched for.
+    /// An activation of code that addresses no own slot, which no own-slot
+    /// instruction runs in, answers 0.
     pub fn activation_slot_base(&self, activation: ActivationReference) -> usize {
         self.check_activation(activation);
-        self.stack.entries[activation.index as usize]
-            .current_class
-            .and_then(|class| self.class_own_slot_base(class))
-            .unwrap_or(0)
+        self.tables
+            .applications
+            .get(
+                self.stack.entries[activation.index as usize]
+                    .entered_level
+                    .index(),
+            )
+            .map_or(0, |application| application.own_slot_base)
     }
 
     /// Where `activation`'s code family starts in the heap's cache table.

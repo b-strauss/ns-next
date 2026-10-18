@@ -164,37 +164,59 @@ pub(crate) fn check_own_slots<'gc>(
     own_slots_cold_check(mutator, activation, receiver)
 }
 
-/// `check_own_slots` on a mismatch, or with no recorded guard: whether the
-/// receiver's application chain still contains the application the
-/// activation was entered at, by its full-width index -- never the class
-/// object's current application, which an install can rewrite while this
-/// activation still runs the old code. When it does -- an edit that changed
-/// only methods restamped the header, or the forward replaced the receiver
-/// by another instance of its own class -- the receiver's current guard is
-/// recorded, so the accesses after it take the hot path again; when it does
-/// not, the access raises an ordinary Newspeak error. An immediate receiver
-/// has no slots to protect, and the instructions skip it as before.
+/// `check_own_slots` on a mismatch, or with no recorded guard: the
+/// receiver still has the entered level's slots
+/// (`receiver_keeps_entered_level`), or the access raises an ordinary
+/// Newspeak error.
 #[inline(never)]
 fn own_slots_cold_check<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
     receiver: Value<'gc>,
 ) -> Result<(), Signal<'gc>> {
-    if receiver.as_object().is_none() {
+    if receiver_keeps_entered_level(mutator, activation, receiver) {
         return Ok(());
     }
     let entered_level = mutator.heap.activation_entered_level(activation);
-    if mutator.heap.receiver_has_level(receiver, entered_level) {
-        let guard = mutator.heap.dispatch_id(receiver);
-        mutator.heap.activation_record_guard(activation, guard);
-        return Ok(());
-    }
     Err(no_longer_has_the_slots(
         mutator,
         activation,
         receiver,
         entered_level,
     ))
+}
+
+/// The cold half of `check_own_slots`, without its error: whether
+/// `receiver`'s application chain contains the application the activation
+/// was entered at, by its full-width index -- never the class object's
+/// current application, which an install can rewrite while this activation
+/// still runs the old code. What passes today is a receiver whose chain
+/// contains the entered application under another guard: the forward
+/// replaced it by an instance of a subclass of the level's class. (One
+/// replaced by another instance of the level's own application keeps the
+/// guard and never gets here.) Whether an edit that changes only methods
+/// keeps a class's application, and so passes here, is road step 5b's
+/// install's decision. When it passes, the receiver's current guard is
+/// recorded, so the accesses after it take the hot path again. An
+/// immediate receiver has no slots to protect and passes; the instructions
+/// skip it as before. `vm::initialize_slot_refused` asks this, rather than
+/// `check_own_slots`, to tell a refusal of the receiver from one of the
+/// value without building the error twice.
+pub(crate) fn receiver_keeps_entered_level<'gc>(
+    mutator: &mut Mutator<'gc>,
+    activation: ActivationReference,
+    receiver: Value<'gc>,
+) -> bool {
+    if receiver.as_object().is_none() {
+        return true;
+    }
+    let entered_level = mutator.heap.activation_entered_level(activation);
+    if !mutator.heap.receiver_has_level(receiver, entered_level) {
+        return false;
+    }
+    let guard = mutator.heap.dispatch_id(receiver);
+    mutator.heap.activation_record_guard(activation, guard);
+    true
 }
 
 /// The error of an own-slot instruction whose receiver no longer has the

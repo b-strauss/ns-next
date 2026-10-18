@@ -449,9 +449,11 @@ pub struct CompiledCode {
     ///
     /// **Every instruction that addresses a slot by `own_index` has to be
     /// named in `addresses_own_slots_of`, and its eight-byte form in
-    /// `compact::narrow_addresses_own_slots`**: one that is not runs without
-    /// a recorded guard, and a forwarded receiver is written in the old
-    /// layout at exit status 0. Both matches are exhaustive.
+    /// `compact::narrow_addresses_own_slots`**: one that is not runs in an
+    /// activation that recorded neither a guard nor an entered level, so
+    /// its own-slot check (`interpreter::locals::check_own_slots`) refuses
+    /// every object receiver and the instruction always raises. Both
+    /// matches are exhaustive.
     pub addresses_own_slots: bool,
     /// Whether this is the body of `Closure>>on:do:`, `ensure:` or
     /// `ifCurtailed:`, and where its parameters and locals live: recognized
@@ -912,8 +914,9 @@ pub(crate) fn outer_reach_of(instructions: &[Instruction]) -> u16 {
 /// **The match below answers every instruction, with no `_` arm, and so does
 /// `compact::narrow_addresses_own_slots` for the eight-byte forms**, so that a
 /// new instruction must decide. One that addressed a slot by `own_index` but
-/// answered `false` would run without a recorded guard, and a receiver the
-/// live-editing forward replaced would be written in its old layout, silently
+/// answered `false` would run in an activation that recorded neither a guard
+/// nor an entered level, and its own-slot check would refuse every object
+/// receiver: the instruction would always raise
 /// (`docs/design/object-model.md`, "what a slot access checks").
 pub(crate) fn addresses_own_slots_of(instructions: &[Instruction]) -> bool {
     instructions.iter().any(|instruction| match instruction {

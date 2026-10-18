@@ -1563,8 +1563,9 @@ fn narrow_outer_reach(slot: CompactInstruction) -> u16 {
 /// Whether a narrow slot addresses a slot of the level it was entered at:
 /// `addresses_own_slots_of`'s list, in the eight-byte forms. No `_` arm, so
 /// that a new form must decide: one that addressed a slot by `own_index`
-/// unnamed would run without a recorded guard (`docs/design/object-model.md`,
-/// "what a slot access checks"). A `Wide`'s is counted from `wide`.
+/// unnamed would run with no recorded guard and no entered level, and so
+/// always raise (`docs/design/object-model.md`, "what a slot access
+/// checks"). A `Wide`'s is counted from `wide`.
 fn narrow_addresses_own_slots(slot: CompactInstruction) -> bool {
     match slot {
         CompactInstruction::InitializeSlot { .. }
