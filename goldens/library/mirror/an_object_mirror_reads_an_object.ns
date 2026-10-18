@@ -1,8 +1,9 @@
 /// An object mirror reads the object it reflects: its class, through a
 /// class mirror, and its slots, private ones included, superclass first,
 /// each in declaration order. A slot it cannot name is refused with an
-/// Error, and a name that is no Symbol with an ArgumentError. Two mirrors are equal when they reflect the one object, never
-/// two objects that are only equal.
+/// Error, and a name that is no Symbol with an ArgumentError. Two mirrors
+/// are equal when they reflect the one object, never two objects that are
+/// only equal.
 class AnObjectMirrorReadsAnObject = Object new () (
   class Base = Object new (
     |

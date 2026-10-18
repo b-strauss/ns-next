@@ -826,11 +826,15 @@ pub enum ReflectionPrimitive {
     /// A class object's enclosing object, `nil` for a module's class;
     /// declined for a shipped level and a withheld value.
     EnclosingObjectOf,
-    /// The names of an object's named, non-lazy slots that non-shipped
-    /// levels declare, superclass level first; never declines.
+    /// The names of an object's visible slots, each once, superclass level
+    /// first: under each name the slot the nearest level declaring it
+    /// declares, the name left out when that declaration is lazy or on a
+    /// shipped level; never declines.
     SlotNamesOf,
-    /// The value of an object's slot of a name, the nearest non-shipped
-    /// level declaring it non-lazy winning; declined for a withheld value.
+    /// The value of an object's visible slot of a name, as `SlotNamesOf`
+    /// decides it; declined when the nearest declaration is lazy or on a
+    /// shipped level -- never reading a farther slot it shadows -- and for
+    /// a withheld value.
     SlotNamed,
     /// A mixin's name, a class side's `<instance side's name> class`.
     MixinName,

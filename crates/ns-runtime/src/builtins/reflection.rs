@@ -14,6 +14,7 @@
 //! structural, by level; behind it, a value that is either is declined
 //! whatever level it was reached through (`Mutator::is_withheld`).
 
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use ns_syntax::ast;
@@ -178,11 +179,10 @@ fn enclosing_object<'gc>(mutator: &Mutator<'gc>, subject: Value<'gc>) -> Option<
     (!mutator.is_withheld(enclosing)).then_some(enclosing)
 }
 
-/// The levels of `subject`'s class whose slots a mirror reads, nearest
-/// first: each application of its class's chain whose mixin is not
-/// shipped, when `subject` is an ordinary instance -- the only shape whose
+/// Every level of `subject`'s class chain, nearest first, shipped ones
+/// included, when `subject` is an ordinary instance -- the only shape whose
 /// state is named slots. Empty for anything else.
-fn readable_levels<'gc>(mutator: &Mutator<'gc>, subject: Value<'gc>) -> Vec<Rc<MixinApplication>> {
+fn instance_levels<'gc>(mutator: &Mutator<'gc>, subject: Value<'gc>) -> Vec<Rc<MixinApplication>> {
     let Some(object) = subject.as_object() else {
         return Vec::new();
     };
@@ -195,53 +195,63 @@ fn readable_levels<'gc>(mutator: &Mutator<'gc>, subject: Value<'gc>) -> Vec<Rc<M
         .class_application(mutator.heap.object_class(object));
     while let Some(application) = level {
         level = application.superclass.clone();
-        if !is_shipped(&application.mixin) {
-            levels.push(application);
-        }
+        levels.push(application);
     }
     levels
 }
 
-/// The field index of each of `application`'s own named, non-lazy slots,
-/// with its name, in declaration order: `own_slot_base` plus the slot's
-/// position among the mixin's own slots, as
-/// `MixinApplication::declared_slots` counts them.
-fn readable_slots(application: &MixinApplication) -> impl Iterator<Item = (Symbol, usize)> + '_ {
-    application
-        .mixin
-        .slots
-        .iter()
-        .enumerate()
-        .filter(|(_, slot)| !slot.lazy)
-        .map(|(position, slot)| (slot.name, application.own_slot_base + position))
-}
-
-/// `slots`: the names of `subject`'s readable slots, superclass level
-/// first and in declaration order within a level.
-fn slot_names<'gc>(mutator: &mut Mutator<'gc>, subject: Value<'gc>) -> Value<'gc> {
-    let levels = readable_levels(mutator, subject);
+/// The slots of `subject` a mirror reads, each name once, with its field
+/// index: superclass level first, declaration order within a level. Under
+/// each name only the slot the object's own code sees counts -- the one
+/// the nearest level declaring the name declares -- and a name whose
+/// nearest declaration is lazy, or on a shipped level, is left out
+/// entirely, never answered by a farther slot it shadows: a mirror reads
+/// what the name names, so a shadowed slot's value never stands under it.
+fn visible_slots<'gc>(mutator: &Mutator<'gc>, subject: Value<'gc>) -> Vec<(Symbol, usize)> {
+    let levels = instance_levels(mutator, subject);
     let fields = subject
         .as_object()
         .and_then(|object| mutator.heap.instance_field_count(object))
         .unwrap_or(0);
-    let names: Vec<Symbol> = levels
-        .iter()
-        .rev()
-        .flat_map(|application| readable_slots(application))
-        .filter(|(_, field)| *field < fields)
-        .map(|(name, _)| name)
-        .collect();
+    // The nearest declaration of each name: its level's index in `levels`
+    // and its position among that level's own slots.
+    let mut nearest: HashMap<Symbol, (usize, usize)> = HashMap::new();
+    for (index, application) in levels.iter().enumerate() {
+        for (position, slot) in application.mixin.slots.iter().enumerate() {
+            nearest.entry(slot.name).or_insert((index, position));
+        }
+    }
+    let mut visible = Vec::new();
+    for (index, application) in levels.iter().enumerate().rev() {
+        if is_shipped(&application.mixin) {
+            continue;
+        }
+        for (position, slot) in application.mixin.slots.iter().enumerate() {
+            let field = application.own_slot_base + position;
+            if !slot.lazy && field < fields && nearest.get(&slot.name) == Some(&(index, position)) {
+                visible.push((slot.name, field));
+            }
+        }
+    }
+    visible
+}
+
+/// `slots`: the names of `subject`'s visible slots (`visible_slots`),
+/// superclass level first and in declaration order within a level.
+fn slot_names<'gc>(mutator: &mut Mutator<'gc>, subject: Value<'gc>) -> Value<'gc> {
+    let names = visible_slots(mutator, subject);
     let symbols = names
         .into_iter()
-        .map(|name| mutator.new_symbol(name))
+        .map(|(name, _)| mutator.new_symbol(name))
         .collect();
     Value::object(mutator.new_array(symbols))
 }
 
-/// `getSlot:`: the value of `subject`'s readable slot of the name the
-/// argument, a Symbol, gives, the nearest level declaring it winning.
-/// Declined for a name that is no Symbol, for no such slot, and for a
-/// value that is withheld.
+/// `getSlot:`: the value of `subject`'s visible slot (`visible_slots`) of
+/// the name the argument, a Symbol, gives. Declined for a name that is no
+/// Symbol, for a name no level declares, for one whose nearest
+/// declaration is lazy or on a shipped level -- never reading a farther
+/// slot it shadows -- and for a value that is withheld.
 fn slot_named<'gc>(
     mutator: &Mutator<'gc>,
     subject: Value<'gc>,
@@ -249,11 +259,9 @@ fn slot_named<'gc>(
 ) -> Option<Value<'gc>> {
     let name = mutator.heap.symbol_value(arguments.first()?.as_object()?)?;
     let object = subject.as_object()?;
-    let field = readable_levels(mutator, subject)
-        .iter()
-        .find_map(|application| {
-            readable_slots(application).find_map(|(slot, field)| (slot == name).then_some(field))
-        })?;
+    let field = visible_slots(mutator, subject)
+        .into_iter()
+        .find_map(|(slot, field)| (slot == name).then_some(field))?;
     let value = mutator.heap.instance_field(object, field)?;
     (!mutator.is_withheld(value)).then_some(value)
 }
@@ -1052,6 +1060,87 @@ mod tests {
                 "reflectionSlotOf:named:ifFail:",
                 &derived,
                 &[text]
+            ),
+            "declined"
+        );
+    }
+
+    /// A module whose `Derived` redeclares two of `Base`'s slots: `shared`
+    /// eagerly, so the object's own code sees `Derived`'s, and `hidden`
+    /// lazily, so a mirror may read neither the lazy slot nor the eager
+    /// one it shadows.
+    fn a_shadowing_fixture() -> (Interpreter, Root) {
+        let source = indoc! {"
+            class Shadowing = Object new () (
+              public class Base = (
+                | public first ::= 1. public shared ::= 2. public hidden ::= 3. |
+              ) ()
+              public class Derived = Base (
+                | public shared ::= 20. public last ::= 4. |
+              ) (
+                lazy public hidden = 30.
+              )
+              public derived = (^Derived new)
+            ) : ()
+        "};
+        let module = ns_syntax::parse(source).expect("the fixture parses");
+        let resolved = match crate::resolve(
+            module,
+            std::rc::Rc::from(source),
+            crate::SourceOrigin::File(std::path::PathBuf::from("shadowing_fixture.ns")),
+        ) {
+            Ok(resolved) => resolved,
+            Err(_) => panic!("the fixture resolves"),
+        };
+        let mut interpreter = Interpreter::bootstrap();
+        let class = interpreter.load_module(&resolved);
+        let fixture = expect_ok(interpreter.instantiate(&class, &[]), "Shadowing new");
+        (interpreter, fixture)
+    }
+
+    #[test]
+    fn a_shadowed_name_is_answered_once_with_the_nearest_value() {
+        let (mut interpreter, fixture) = a_shadowing_fixture();
+        let derived = send(&mut interpreter, &fixture, "derived");
+        assert_eq!(
+            rendered(
+                &mut interpreter,
+                "reflectionSlotNamesOf:ifFail:",
+                &derived,
+                &[]
+            ),
+            "{#first. #shared. #last}"
+        );
+        let shared = a_symbol(&mut interpreter, "shared");
+        assert_eq!(
+            rendered(
+                &mut interpreter,
+                "reflectionSlotOf:named:ifFail:",
+                &derived,
+                &[shared]
+            ),
+            "20"
+        );
+    }
+
+    #[test]
+    fn a_nearer_lazy_declaration_hides_a_farther_eager_one() {
+        let (mut interpreter, fixture) = a_shadowing_fixture();
+        let derived = send(&mut interpreter, &fixture, "derived");
+        let names = rendered(
+            &mut interpreter,
+            "reflectionSlotNamesOf:ifFail:",
+            &derived,
+            &[],
+        );
+        assert!(!names.contains("#hidden"), "{names}");
+        let hidden = a_symbol(&mut interpreter, "hidden");
+        assert_eq!(
+            rendered(
+                &mut interpreter,
+                "reflectionSlotOf:named:ifFail:",
+                &derived,
+                &[hidden]
             ),
             "declined"
         );

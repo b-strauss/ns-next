@@ -1,7 +1,8 @@
 /// A class mirror reads a class's structure: its name, whether it is a
 /// metaclass, its superclass chain up to `Top`, whose superclass is nil,
 /// and its slots, methods and nested classes, the inherited ones included,
-/// superclass first. A method mirror covers only the methods a declaration
+/// superclass first, a level's methods in the order of the source, not of
+/// their selectors. A method mirror covers only the methods a declaration
 /// writes, never a slot's accessors or a nested class's. A nested class's
 /// enclosing object is the object it is nested in, a module's class has
 /// none, and anything that is no class or metaclass is refused with an
@@ -14,12 +15,12 @@ class AClassMirrorWalksTheSuperclassChain = Object new () (
   ) (
     class Outline = Object new () ()
 
-    public area = (
-      ^0.
-    )
-
     public label = (
       ^'shape'.
+    )
+
+    public area = (
+      ^0.
     )
   )
 
@@ -32,12 +33,12 @@ class AClassMirrorWalksTheSuperclassChain = Object new () (
 
     class Edge = Object new () ()
 
-    public area = (
-      ^length * length.
-    )
-
     public perimeter = (
       ^4 * length.
+    )
+
+    public area = (
+      ^length * length.
     )
   )
 

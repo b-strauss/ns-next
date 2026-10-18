@@ -113,17 +113,19 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
       ^NavigatedClassMirror reflecting: (vmMirror objectClass: reflectee ifFail: [nil]).
     )
 
-    /// Answers the value of the reflectee's slot named `aSymbol`; when
-    /// several levels of its class declare the name, the nearest one's.
+    /// Answers the value of the reflectee's slot named `aSymbol`: the slot
+    /// its own code sees under that name, which the nearest level of its
+    /// class declaring the name declares, never a farther slot that one
+    /// shadows.
     ///
     /// aSymbol: a Symbol, the slot's name.
     ///
     /// Signals an ArgumentError carrying `aSymbol`, 'getSlot: requires a
     /// Symbol', when it is no Symbol; and an Error, 'getSlot: no slot
-    /// named <name> that a mirror may read', when no level declares a
-    /// slot of that name that the module's shipped-level rule lets a
-    /// mirror read: none at all, a lazy one, one a core-library mixin
-    /// declares, or one holding what no mirror hands out.
+    /// named <name> that a mirror may read', when the name names no slot
+    /// a mirror may read: no level declares it, its nearest declaration
+    /// is lazy or a core-library mixin's (the module's shipped-level
+    /// rule), or the slot holds what no mirror hands out.
     public getSlot: aSymbol = (
       ^vmMirror reflectionSlotOf: reflectee named: aSymbol ifFail: [^self refuseSlotNamed: aSymbol].
     )
@@ -143,12 +145,14 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
       ^Error signal: 'getSlot: no slot named ' , text , ' that a mirror may read'.
     )
 
-    /// Answers a new MirrorGroup of SlotMirrors, one per slot of the
-    /// reflectee a mirror may read: superclass level first, each level's
-    /// slots in declaration order. Lazy slots, the slots a core-library
-    /// mixin declares (the module's shipped-level rule) and the indexed
-    /// elements of an Array or a String are left out; an object with no
-    /// such slot answers an empty group.
+    /// Answers a new MirrorGroup of SlotMirrors, one per name under which
+    /// the reflectee has a slot a mirror may read, each the slot
+    /// `getSlot:` reads: superclass level first, each level's slots in
+    /// declaration order, a name standing where the level declaring its
+    /// visible slot puts it. A name whose nearest declaration is lazy or a
+    /// core-library mixin's (the module's shipped-level rule) is left out,
+    /// as are the indexed elements of an Array or a String; an object with
+    /// no such slot answers an empty group.
     public slots = (
       |
         names = vmMirror reflectionSlotNamesOf: reflectee ifFail: [{}].

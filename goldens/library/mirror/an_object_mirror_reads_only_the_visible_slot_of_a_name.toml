@@ -1,0 +1,7 @@
+stdout = '''
+first='base first'
+shared='derived shared'
+last='derived last'
+'derived shared'
+getSlot: no slot named hidden that a mirror may read
+'''

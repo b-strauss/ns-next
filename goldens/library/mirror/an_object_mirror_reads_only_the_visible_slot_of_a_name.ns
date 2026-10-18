@@ -1,0 +1,43 @@
+/// A mirror reads, under each name, only the slot the object's own code
+/// sees: the one the nearest level declaring the name declares. A slot a
+/// subclass redeclares is listed once, with the subclass's value, and a
+/// name whose nearest declaration is lazy is neither listed nor read,
+/// whatever eager slot of a superclass it shadows.
+class AnObjectMirrorReadsOnlyTheVisibleSlotOfAName = Object new () (
+  class Base = Object new (
+    |
+      public first = 'base first'.
+      public shared = 'base shared'.
+      public hidden = 'base hidden'.
+    |
+  ) ()
+
+  class Derived = Base new (
+    |
+      public shared = 'derived shared'.
+      public last = 'derived last'.
+    |
+  ) (
+    lazy public hidden = 'derived hidden'.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      mirror = platform mirrors ObjectMirror reflecting: Derived new.
+    |
+    mirror slots do: [:slot |
+      transcript
+          show: slot name;
+          show: '=';
+          print: slot value reflectee;
+          newLine.
+    ].
+    transcript
+        print: (mirror getSlot: #shared);
+        newLine.
+    transcript
+        show: ([mirror getSlot: #hidden] on: Error do: [:error | error messageText]);
+        newLine.
+  )
+)
