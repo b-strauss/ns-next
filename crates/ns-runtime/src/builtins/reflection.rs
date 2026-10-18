@@ -1773,7 +1773,9 @@ mod tests {
         /// The method's register, the inlined block's use of it and the
         /// array element all name the `Wide` after the forward, and the one
         /// site `point sum`, which the first round filled for `Point`,
-        /// answers `Wide`'s method in the second.
+        /// answers `Wide`'s method in the second. That the forward vacates
+        /// the caches this does not show: the `Wide`'s guard would miss the
+        /// `Point` entry anyway.
         fn the_leaf_forwards_a_program_instance(lowering) {
             let (mut interpreter, fixture) = a_forward_fixture(lowering);
             let mirror = the_vm_mirror(&mut interpreter);

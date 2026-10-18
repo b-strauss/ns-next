@@ -121,6 +121,7 @@ struct StackEntry {
                                // entered_level (`Heap::activation_slot_base`)
     recorded_guard: DispatchId,     // the receiver's guard at the push, `NONE`
                                     // unless the code addresses its own slots
+                                    // and the receiver has entered_level
     entered_level: ApplicationIndex, // the application it was entered at,
                                     // `UNREGISTERED` unless it does
     code: Rc<CompiledCode>,    // the body it runs, which the loop resumes it in

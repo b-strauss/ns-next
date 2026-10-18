@@ -280,7 +280,10 @@ current one, and **every slot access whose index was decided without looking
 at the receiver checks a recorded guard first** -- the own-slot
 instructions, a private or super slot accessor, and a super send's
 `doesNotUnderstand:` slot handler by a walk -- or a receiver the bulk
-forward replaced is written in the old layout at exit status 0
+forward replaced is written in the old layout at exit status 0. A guard
+is recorded only for a receiver verified to have the level (the push,
+and a cache fill, walk for it), and a nested class's hidden cache slot is
+looked up again after its superclass clause ran
 (`object-model.md`, "What a slot access checks").
 
 **`outer` walks the *lexical* declaration chain, never the receiver's dynamic

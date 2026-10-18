@@ -32,9 +32,11 @@ replaces the mixin under its id"); `become:` as an eager bulk forward
 behind the VM-mirror leaf `elementsOf:forwardIdentityToElementsOf:ifFail:`,
 which refuses anything but an ordinary instance of a class that is no
 builtin and whose mixin is not shipped and flushes every inline cache; and
-the recorded guards that keep an activation entered before a forward, and a
-cached private or super slot accessor, from writing a receiver of another
-shape in the old layout ([object-model.md](design/object-model.md),
+the recorded guards that keep an activation's own-slot code, whether the
+forward came before its push or during it, and a cached private or super
+slot accessor, from writing a receiver of another shape in the old layout,
+and the nested-class cache slot looked up again after its superclass
+clause ran ([object-model.md](design/object-model.md),
 "`become:` is an eager bulk forward", "What a slot access checks"). What
 the step builds, from
 [liveness-and-reflection.md](design/liveness-and-reflection.md), "Planned:
@@ -81,12 +83,10 @@ road step 5b2, MirrorBuilder and atomic installation":
   `builtins/reflection.rs`'s `instance_side`, `Mixin::reflected_name` and
   `is_shipped`, which follow the builder's `Weak` link -- right as long as
   a replacement keeps a mixin's name, access and shipped flag.
-- **Two tests 5b1 did not write.** `ReturnSlotIfFilled`'s error branch has
-  none, and a valid program can hardly reach it: the instruction opens a
-  lazy getter, right after the push that recorded the guard; and no test
-  makes a class object's current application differ from an activation's
-  entered level, to pin that the slot base comes from the entered one --
-  feasible through `Heap::class_set_application`.
+- **A test 5b1 did not write.** No test makes a class object's current
+  application differ from an activation's entered level, to pin that the
+  slot base comes from the entered one -- feasible through
+  `Heap::class_set_application`.
 
 **What 5b1 cost.** Measured in release, three pinned builds a side, against
 master (`733c15bd`) and task by task: every program within noise, but
@@ -227,7 +227,8 @@ and `prior-art/newspeak-benchmarks`.
   the roots and the heap, keeps the remembered set and flushes every
   inline cache, its lock refusing anything but an ordinary instance of a
   class that is no builtin and whose mixin is not shipped; and the
-  recorded guard of an activation whose code addresses its own slots and
+  recorded guard of an activation whose code addresses its own slots,
+  recorded at the push only for a receiver that has the entered level, and
   of a private or super slot accessor's cache entry, one compare on the
   hot path and a walk of the receiver's chain on a mismatch, so a
   receiver the forward replaced is never written in the old layout.

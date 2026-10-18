@@ -5521,12 +5521,15 @@ the middle of a step and with no move epoch changed; its lock refuses
 anything but an ordinary instance of a class that is no builtin and whose
 mixin is not shipped, and every withheld value, since the VM mirror's
 class is a builtin whose mixin is not marked shipped. An activation whose
-code addresses its own slots records its receiver's guard and the
-application it was entered at, from which its own-slot instructions take
-their slot base; a private or super slot accessor's cache entry records
+code addresses its own slots records the application it was entered at,
+from which its own-slot instructions take their slot base, and its
+receiver's guard when the receiver's chain contains that application; a private or super slot accessor's cache entry records
 its level and the receiver's guard; each access compares the guard, and a
 mismatch walks the receiver's chain for the level and raises an ordinary
-Newspeak error when it is gone. Every program measured within noise of
+Newspeak error when it is gone. A nested class's hidden cache slot is
+looked up again after its superclass clause ran, and an enclosing object
+the clause forwarded to one without the declaring level gets no class but
+the same error. Every program measured within noise of
 master but `bench_megamorphic.ns`, +1.3-2.1%, at the edge of noise.
 
 No existing golden's outcome changed. New tests in `heap.rs`,
@@ -5549,11 +5552,15 @@ fingerprint changed.
   handler checked too.
 - `f4b1280e`, `1a2ed218` -- comments that gave lazy forwarding or the
   current class as their reason.
-- this commit -- the documents.
+- `f423936e`, `9aa2ef49` -- the documents.
+- `9008d8b3`, `b56f19aa` and this commit -- the final review's fixes: a
+  push records the receiver's guard only for a receiver that has the
+  entered level, the nested-class cache slot is looked up again after the
+  clause, and the documents.
 
 What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "Next":
 road step 5b2, with the places still keyed by a mixin's address, the
 question whether an edit of methods alone keeps a class's applications,
-two tests not written, and `bench_megamorphic.ns`'s undiagnosed
+a test not written, and `bench_megamorphic.ns`'s undiagnosed
 1.3-2.1%. Road step 5b2, the MirrorBuilder and the atomic install, is
 next.

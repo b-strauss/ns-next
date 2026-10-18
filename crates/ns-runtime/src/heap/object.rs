@@ -139,8 +139,13 @@ pub(in crate::heap) fn pointer_ranges_of(
                 *range = clamped(FIELDS + field, FIELDS + field + 1);
             }
         }
-        // Digits, code points and bytes, no stored words; and no object in
-        // the space is forwarded or free.
+        // Digits, code points and bytes store no words. A forwarder -- the
+        // corpse a bulk forward leaves, garbage in the old space until a
+        // full collection -- keeps the old object's fields, which nothing
+        // reads any more; only its class word, `ranges[0]`, names its
+        // replacement, and tracing that word is what keeps the young
+        // replacement of a remembered forwarder alive and rewritten until
+        // it is tenured. A free block holds nothing.
         Format::SixtyFourBit
         | Format::Bytes
         | Format::ThirtyTwoBit

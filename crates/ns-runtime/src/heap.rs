@@ -780,6 +780,12 @@ impl Relocation for IdentityForward {
             .get(&offset.get())
             .copied()
             .unwrap_or(offset);
+        // Every young answer counts, an unchanged one too: an old holder
+        // that named a young object before the forward is remembered
+        // already, so remembering it again changes nothing, and the walk
+        // leaves the remembered set holding every old object that names a
+        // young one -- the view `verify_remembered_set` checks -- without
+        // telling a word it rewrote from one it left.
         if space::is_young(answer) {
             self.names_young.set(true);
         }
@@ -5597,6 +5603,11 @@ impl<'gc> Heap<'gc> {
     /// merge -- and the old object becomes a forwarder: the forwarded
     /// format, the guard no application is minted, the new object in its
     /// class word and its word count kept, so the space stays walkable.
+    /// The hash is copied whether or not the old object has one, so a new
+    /// object that was hashed already takes the old one's absence of a
+    /// hash and answers another hash afterwards: a caller forwards only to
+    /// objects nothing has hashed yet, as road step 5b2's install will to
+    /// the fresh ones it builds.
     /// Last, one walk rewrites every handle the heap itself holds
     /// (`forward_everything`) and remembers every old holder that names a
     /// young object afterwards, which no barrier saw stored; a forwarder

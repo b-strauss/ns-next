@@ -2031,21 +2031,35 @@ enclosing object included, resolves on the lexical class to a field index
 (`resolve_lexical`, `interpreter/resolve.rs`; `decide_slot_accessor`), a
 super send on the superclass -- and a slot accessor that §5.10 makes the
 handler of a super send nothing understands (`Chain::SuperDoesNotUnderstand`),
-whose field is decided from the superclass's chain too. The bulk forward
+whose field is decided from the superclass's chain too; and the store of
+a nested class into its enclosing object's hidden cache slot, and the
+reset of the slot's in-progress marker, at an index decided before the
+class's superclass clause ran. The bulk forward
 ("`become:` is an eager bulk forward" below) rewrites the receiver of every
 running activation on a forwarded object to its replacement, while the
 activation goes on running the method or initializer it was entered in,
 compiled against the old layout; the check is what keeps the rest of such
 an activation, and a cached private or super accessor, from writing the old
-layout into an object of another shape.
+layout into an object of another shape. The forward can come at any send,
+so it can come *before* a push as well as during an activation: a private
+lexical send, a super send and the instantiation walk's next level bind
+their code without looking at the receiver, so nothing about the binding
+vouches for the receiver's shape.
 
 **The own-slot instructions.** When `Heap::push_activation` pushes code
 that addresses its own slots (`CompiledCode::addresses_own_slots`, derived
 from the instructions as `outer_reach` is and never on the wire), the stack
-entry records the receiver's guard, `recorded_guard`, and the full-width
-index of the application it was entered at, `entered_level` -- the
-application of its `current_class`, `UNREGISTERED` with none; every other
-push tests that one flag and records `NONE`. Every own-slot instruction
+entry records the full-width index of the application it was entered at,
+`entered_level` -- the application of its `current_class`, `UNREGISTERED`
+with none -- and, as `recorded_guard`, the receiver's guard only when the
+receiver's chain contains that level (`Heap::receiver_has_level`, which
+answers at its first compare when the receiver's own class is the level
+and walks only for an inherited one), `NONE` otherwise, as a cache fill's
+`slot_guard` does. Recording the guard unverified would let a receiver
+the forward replaced before the push -- by a lazy getter's private or
+super send, or by a `<:` clause's message between two levels of an
+instantiation -- vouch for itself. Every other push tests that one flag
+and records `NONE`. Every own-slot instruction
 first calls `interpreter::locals::check_own_slots`: the hot path is one
 header load and one compare of the receiver's guard with the recorded one.
 On a mismatch, or with `NONE` recorded, the cold path asks whether the
@@ -2139,7 +2153,33 @@ The tests are `builtins/reflection.rs`'s, under both lowerings: an
 initializer, a lazy getter, a simultaneous clause, a private and a super
 slot read, a cache hit and a super slot handler each raise after their
 receiver was forwarded to an object of another shape, and an initializer
-forwarded to its own application or to a subclass's instance proceeds.
+forwarded to its own application or to a subclass's instance proceeds. A
+private and a super lazy getter pushed after their receiver was forwarded
+raise from `ReturnSlotIfFilled`, as does an applied level pushed after
+its `<:` clause's message forwarded the instance.
+
+**The nested-class cache slot.** A nested class is cached in a hidden slot
+of its enclosing object, whose index `cache_slot` (`interpreter/nested.rs`)
+decides from the enclosing object's layout before the superclass clause
+runs, and where `begin_creation` writes the in-progress marker. The clause
+is user code on the enclosing object and can forward it. So `after_clause`
+looks the slot up again, by the declaration's id in the enclosing object's
+current application, before it builds the class: an object that still has
+the declaring level -- forwarded to an instance of a subclass, say -- gets
+the class built, cached in its own slot and answered; one that has not
+gets no class, and the access raises an ordinary Newspeak error in the
+own-slot check's words, since the class would have neither a slot to be
+cached in nor an enclosing object with the declaring level's slots to run
+in:
+
+> `<receiver> no longer has the slots of <class>, which the nested class <name> is cached in`
+
+`<class>` is the declaring level's mixin's name and `<name>` the
+declaration's; the error's selector is the declaration's name.
+`end_creation` resets the marker only while the slot it was written to is
+still the slot the current layout has, so a replacement's own field that
+holds `false` is left alone. The tests are `builtins/reflection.rs`'s,
+under both lowerings.
 
 ## `become:` is an eager bulk forward
 
