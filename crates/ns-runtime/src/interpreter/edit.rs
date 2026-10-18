@@ -49,11 +49,13 @@ pub(crate) struct PreparedEdit {
     /// each nested mixin's two sides, preorder. A fresh mixin whose old
     /// counterpart never got an id is absent: nothing names it.
     pub(crate) replacements: Vec<(MixinId, Rc<Mixin>)>,
-    /// The id of the synthesized class side the old version had, if it
-    /// was registered, with the fresh one replacing it when the new
-    /// version declares none (the declared one replaces it otherwise,
-    /// and stands in `replacements`).
-    pub(crate) synthesized: Option<(MixinId, MixinId, Rc<Mixin>)>,
+    /// For every pair of the subtree, the edited declaration's and each
+    /// nested one's, whose fresh mixin declares no class side while its
+    /// old version had a registered one: the instance side's id, that
+    /// class side's id and the fresh synthesized class side replacing it,
+    /// in `replacements`' order. A class side the fresh mixin declares
+    /// replaces the old one in `replacements` instead.
+    pub(crate) synthesized: Vec<(MixinId, MixinId, Rc<Mixin>)>,
 }
 
 impl Edit {
@@ -245,17 +247,8 @@ impl<'gc> Mutator<'gc> {
             .unwrap_or_default()
             .to_string();
         let mut replacements = Vec::new();
-        self.pair(id, &current, &fresh, &mut replacements);
-        let synthesized = match &fresh.class_side {
-            Some(_) => None,
-            None => self.old_class_side_id(id, &current).map(|class_side_id| {
-                (
-                    id,
-                    class_side_id,
-                    super::metaclass::synthesized_class_side(&fresh),
-                )
-            }),
-        };
+        let mut synthesized = Vec::new();
+        self.pair(id, &current, &fresh, &mut replacements, &mut synthesized);
         Ok(PreparedEdit {
             module_root,
             module_text: ModuleText(text),
@@ -308,19 +301,28 @@ impl<'gc> Mutator<'gc> {
 
     /// Pairs `fresh` with `old`, registered under `id`: the instance side,
     /// then a declared class side, then each nested mixin with the old one
-    /// of its name, preorder. An old mixin with no id has no counterpart
-    /// to replace, nor does anything nested in it.
+    /// of its name, preorder. A fresh mixin that declares no class side
+    /// gets a synthesized one in `synthesized`, under the id of the class
+    /// side its old version had, so that every metaclass of the subtree
+    /// keeps its mixin's id. An old mixin with no id has no counterpart to
+    /// replace, nor does anything nested in it.
     fn pair(
         &self,
         id: MixinId,
         old: &Rc<Mixin>,
         fresh: &Rc<Mixin>,
         replacements: &mut Vec<(MixinId, Rc<Mixin>)>,
+        synthesized: &mut Vec<(MixinId, MixinId, Rc<Mixin>)>,
     ) {
         replacements.push((id, Rc::clone(fresh)));
-        if let Some(class_side) = &fresh.class_side {
-            if let Some(class_side_id) = self.old_class_side_id(id, old) {
-                replacements.push((class_side_id, Rc::clone(class_side)));
+        if let Some(class_side_id) = self.old_class_side_id(id, old) {
+            match &fresh.class_side {
+                Some(class_side) => replacements.push((class_side_id, Rc::clone(class_side))),
+                None => synthesized.push((
+                    id,
+                    class_side_id,
+                    super::metaclass::synthesized_class_side(fresh),
+                )),
             }
         }
         for nested in &fresh.nested {
@@ -340,7 +342,7 @@ impl<'gc> Mutator<'gc> {
                 .heap
                 .mixin(nested_id)
                 .unwrap_or_else(|| Rc::clone(counterpart));
-            self.pair(nested_id, &current, nested, replacements);
+            self.pair(nested_id, &current, nested, replacements, synthesized);
         }
     }
 }
@@ -940,11 +942,12 @@ mod tests {
         let (id, replacement) = &prepared.replacements[1];
         assert_eq!(*id, synthesized_id);
         assert!(Rc::ptr_eq(replacement, &class_side));
-        assert!(prepared.synthesized.is_none());
+        assert!(prepared.synthesized.is_empty());
 
         let prepared = prepare(&mut interpreter, inner_id, &add_method("public b = (^2)"));
         let (_, fresh) = &prepared.replacements[0];
-        let Some((instance_side_id, class_side_id, synthesized)) = &prepared.synthesized else {
+        let [(instance_side_id, class_side_id, synthesized)] = prepared.synthesized.as_slice()
+        else {
             panic!("the old version's synthesized class side is replaced");
         };
         assert_eq!(
@@ -957,6 +960,44 @@ mod tests {
             .enclosing_mixin()
             .is_some_and(|enclosing| Rc::ptr_eq(&enclosing, fresh)));
         assert_eq!(prepared.replacements.len(), 1);
+    }
+
+    /// An edit of an enclosing class pairs the synthesized class side of
+    /// every nested class whose metaclass registered one, not only its own.
+    #[test]
+    fn an_enclosing_edit_pairs_a_nested_synthesized_class_side() {
+        let (mut interpreter, outer) = load(OUTER);
+        let instance = expect_ok(interpreter.instantiate(&outer, &[]), "Outer");
+        let inner = expect_ok(
+            interpreter.send(&instance, Symbol::intern("Inner"), &[]),
+            "Inner",
+        );
+        expect_ok(interpreter.send(&inner, Symbol::NEW, &[]), "Inner new");
+        let (root_id, inner_id) = root_and_inner_ids(&mut interpreter, &outer);
+        let synthesized_id = interpreter.enter(|mutator| {
+            let synthesized = mutator
+                .metaclass_mixins
+                .get(&inner_id)
+                .expect("Inner's class object synthesized its class side")
+                .clone();
+            mutator
+                .heap
+                .known_mixin_id(&synthesized)
+                .expect("Inner's metaclass registered its class side")
+        });
+        let prepared = prepare(&mut interpreter, root_id, &add_method("public d = (^4)"));
+        let (_, fresh_outer) = &prepared.replacements[0];
+        let entry = prepared
+            .synthesized
+            .iter()
+            .find(|(instance_side_id, _, _)| *instance_side_id == inner_id)
+            .expect("Inner's synthesized class side is paired");
+        assert_eq!(entry.1, synthesized_id);
+        assert!(entry.2.is_class_side());
+        assert!(entry
+            .2
+            .enclosing_mixin()
+            .is_some_and(|enclosing| Rc::ptr_eq(&enclosing, &fresh_outer.nested[0])));
     }
 
     /// The next edit of a module starts from its current text, so an
