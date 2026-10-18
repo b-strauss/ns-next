@@ -3362,8 +3362,10 @@ fn a_reified_mixin_of_an_unbuilt_shipped_class_round_trips_by_name() {
 /// A module whose instance, made with the platform, holds mirrors in its
 /// slots: a mixin mirror on its own class `Foo`, a class mirror on `List`,
 /// a method mirror on `Foo`'s `compute`, an object mirror on a `Foo`, the
-/// declaration mirror of `Foo`, and a class mirror reached by navigation
-/// on `Top`. Its unary methods answer what the mirrors read.
+/// declaration mirror of `Foo`, a class mirror reached by navigation
+/// on `Top`, the object mirror's `slots` group and its one slot mirror, the
+/// declaration mirror of `Foo`'s slot, and the `platform mirrors` facet.
+/// Its unary methods answer what the mirrors read.
 const MIRROR_HOLDER: &str = indoc! {"
     class Holder usingPlatform: platform = Object new (
       |
@@ -3376,6 +3378,10 @@ const MIRROR_HOLDER: &str = indoc! {"
         objectMirror = ObjectMirror reflecting: Foo new.
         declarationMirror = mixinMirror declaration.
         topMirror = topFrom: (ObjectMirror reflecting: 3) getClass.
+        slotGroup = objectMirror slots.
+        slotMirror = slotGroup findMirrorNamed: #count.
+        slotDeclarationMirror = mixinMirror slots findMirrorNamed: #count.
+        mirrors = platform mirrors.
       |
     ) (
       class Foo = Object new (
@@ -3431,6 +3437,34 @@ const MIRROR_HOLDER: &str = indoc! {"
       public topIsTop = (
         ^topMirror = (ClassMirror reflecting: Object) superclass
       )
+
+      public groupSize = (
+        ^slotGroup size
+      )
+
+      public slotName = (
+        ^slotMirror name
+      )
+
+      public slotValue = (
+        ^slotMirror value reflectee
+      )
+
+      public slotDeclarationName = (
+        ^slotDeclarationMirror name
+      )
+
+      public slotDeclarationIsMutable = (
+        ^slotDeclarationMirror isMutable
+      )
+
+      public facetClassMirror = (
+        ^mirrors ClassMirror == ClassMirror
+      )
+
+      public facetReflects = (
+        ^((mirrors ObjectMirror reflecting: Foo new) getSlot: #count)
+      )
     ) : ()
 "};
 
@@ -3439,9 +3473,11 @@ const MIRROR_HOLDER: &str = indoc! {"
 /// mixin mirror is equal to one reached afresh, since the reified mixin
 /// loads onto the loaded mixin; the class mirror hands back the very
 /// `List`; the method mirror and the object mirror read their method and
-/// slot; and the mirror navigation reached `Top` with, which holds no
-/// class, still reads `Top`. Without source, a program's method and class
-/// declaration answer nil.
+/// slot; the mirror navigation reached `Top` with, which holds no
+/// class, still reads `Top`; the group, the slot mirror and the slot
+/// declaration mirror still answer their size, name and value; and the
+/// facet still hands out the module's classes. Without source, a
+/// program's method and class declaration answer nil.
 ///
 /// The `Top` part is the regression guard for a navigated mirror holding
 /// the way to its class rather than the class: a mirror that kept `Top` in
@@ -3499,6 +3535,13 @@ fn a_program_holding_mirrors_loads_back_holding_them() {
         assert_eq!(answer("objectCount"), "42");
         assert_eq!(answer("topName"), "Top");
         assert_eq!(answer("topIsTop"), "true");
+        assert_eq!(answer("groupSize"), "1");
+        assert_eq!(answer("slotName"), "count");
+        assert_eq!(answer("slotValue"), "42");
+        assert_eq!(answer("slotDeclarationName"), "count");
+        assert_eq!(answer("slotDeclarationIsMutable"), "false");
+        assert_eq!(answer("facetClassMirror"), "true");
+        assert_eq!(answer("facetReflects"), "42");
         if with_source {
             assert_eq!(
                 answer("methodSource"),
