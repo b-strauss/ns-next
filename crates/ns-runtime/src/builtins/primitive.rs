@@ -330,7 +330,9 @@ impl Primitive {
                 | ReflectionPrimitive::MixinIsShipped
                 | ReflectionPrimitive::Identical
                 | ReflectionPrimitive::SymbolText
-                | ReflectionPrimitive::ForwardIdentity,
+                | ReflectionPrimitive::ForwardIdentity
+                | ReflectionPrimitive::CheckEdit
+                | ReflectionPrimitive::InstallEdit,
             ) => false,
             // It reaches its own primitive's row through `execute_sent`,
             // whose failure path looks for a future among that row's
@@ -885,6 +887,18 @@ pub enum ReflectionPrimitive {
     /// mixin is not shipped, no reified mixin, no withheld value), and on
     /// every `ForwardRefusal`.
     ForwardIdentity,
+    /// Whether an edit of a reified mixin's declaration, the argument an
+    /// edit on the wire (`interpreter::edit::Edit::from_value`), would
+    /// install: `{true. declarationText}` with the edit spliced in, or
+    /// `{false. diagnostic}`; nothing changes either way. A class side
+    /// stands for its instance side's declaration. Declined for any other
+    /// subject and a malformed edit.
+    CheckEdit,
+    /// Installs an edit of a reified mixin's declaration atomically
+    /// (`Mutator::install_edit`), answering as `CheckEdit` does:
+    /// `{true. declarationText}` once installed, `{false. diagnostic}`
+    /// with nothing changed. Declined as `CheckEdit` is.
+    InstallEdit,
 }
 
 /// A row of `MIRROR`. A `u16`, so the table may hold 65,536 rows: two bytes
@@ -2349,6 +2363,19 @@ pub const MIRROR: &[MirrorEntry] = &[
         "elementsOf:forwardIdentityToElementsOf:ifFail:",
         "forwardIdentityTo:",
         Primitive::Reflection(ReflectionPrimitive::ForwardIdentity),
+    ),
+    // Reported `checkEdit:` and `installEdit:`, no kernel selectors, for
+    // the forward's reason: the subject and one argument, and no error
+    // raised whose text names them.
+    mirror(
+        "reflectionMixin:checkEdit:ifFail:",
+        "checkEdit:",
+        Primitive::Reflection(ReflectionPrimitive::CheckEdit),
+    ),
+    mirror(
+        "reflectionMixin:installEdit:ifFail:",
+        "installEdit:",
+        Primitive::Reflection(ReflectionPrimitive::InstallEdit),
     ),
 ];
 

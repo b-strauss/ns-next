@@ -6,7 +6,8 @@
 //! anything else; none raises. Two leaves serve the module beside them:
 //! identity and a Symbol's text, which the kernel's rows answer too, but
 //! seen through a future. One writes: the bulk forward, `become:`
-//! (`forward_identity`).
+//! (`forward_identity`). Two serve the MirrorBuilder: one checks an edit
+//! of a class, the other installs it (`edit`).
 //!
 //! A future is read as the object it is, never as the value it stands
 //! for: the failure path sees through no leaf of this family
@@ -29,6 +30,7 @@ use ns_syntax::ast;
 
 use crate::builtins::primitive::ReflectionPrimitive;
 use crate::heap::{Heap, MixinId};
+use crate::interpreter::edit::Edit;
 use crate::mixin::{source_text, Mixin, MixinApplication, MixinMethod};
 use crate::types::*;
 use crate::{Mutator, Symbol};
@@ -129,7 +131,47 @@ pub(crate) fn execute<'gc>(
             ))
         }
         ReflectionPrimitive::ForwardIdentity => forward_identity(mutator, receiver, arguments),
+        ReflectionPrimitive::CheckEdit => {
+            edit(mutator, receiver, arguments, |mutator, id, edit| {
+                mutator
+                    .prepare_edit(id, edit)
+                    .map(|prepared| prepared.declaration_text)
+            })
+        }
+        ReflectionPrimitive::InstallEdit => {
+            edit(mutator, receiver, arguments, |mutator, id, edit| {
+                mutator.install_edit(id, edit)
+            })
+        }
     }
+}
+
+/// `reflectionMixin:checkEdit:ifFail:` and
+/// `reflectionMixin:installEdit:ifFail:`: `run` -- preparing or
+/// installing -- on the declaration the subject, a reified mixin, belongs
+/// to, a class side's being its instance side's, and the edit the
+/// argument stands for (`Edit::from_value`). Answers `{true.
+/// declarationText}` or `{false. diagnostic}`, one shape for both, so
+/// that the builder reads a check and an install alike; a refusal is an
+/// answer rather than a decline because a failure block receives no
+/// argument to carry the diagnostic in. Declined for any other subject
+/// and for a malformed edit.
+fn edit<'gc>(
+    mutator: &mut Mutator<'gc>,
+    subject: Value<'gc>,
+    arguments: &[Value<'gc>],
+    run: impl FnOnce(&mut Mutator<'gc>, MixinId, &Edit) -> Result<String, String>,
+) -> Option<Value<'gc>> {
+    let id = instance_side_id(&mutator.heap, reified_id(mutator, subject)?)?;
+    let edit = Edit::from_value(&mutator.heap, *arguments.first()?)?;
+    let (succeeded, text) = match run(mutator, id, &edit) {
+        Ok(declaration_text) => (true, declaration_text),
+        Err(diagnostic) => (false, diagnostic),
+    };
+    let text = Value::object(mutator.new_string(text));
+    Some(Value::object(
+        mutator.new_array(vec![Value::boolean(succeeded), text]),
+    ))
 }
 
 /// `elementsOf:forwardIdentityToElementsOf:ifFail:`: forwards every
@@ -2552,5 +2594,367 @@ mod tests {
             "nil"
         );
         assert!(same(&mut interpreter, &failure, &replacement));
+    }
+
+    const CHECK: &str = "reflectionMixin:checkEdit:ifFail:";
+    const INSTALL: &str = "reflectionMixin:installEdit:ifFail:";
+
+    /// An edit on the wire, `{ header. instanceOperations. classOperations }`,
+    /// built on the host side: each operation's kind a Symbol, its argument a
+    /// String for an addition and a Symbol for a removal.
+    fn an_edit(
+        interpreter: &mut Interpreter,
+        header: Option<&str>,
+        instance_side: &[(&str, &str)],
+        class_side: &[(&str, &str)],
+    ) -> Root {
+        interpreter.enter(|mutator| {
+            let header = match header {
+                Some(text) => Value::object(mutator.new_string(text.to_string())),
+                None => Value::nil(),
+            };
+            let mut elements = vec![header];
+            for operations in [instance_side, class_side] {
+                let mut pairs = Vec::new();
+                for (kind, argument) in operations {
+                    let kind_symbol = mutator.new_symbol(Symbol::intern(kind));
+                    let argument = if kind.starts_with("remove") {
+                        mutator.new_symbol(Symbol::intern(argument))
+                    } else {
+                        Value::object(mutator.new_string(argument.to_string()))
+                    };
+                    pairs.push(Value::object(
+                        mutator.new_array(vec![kind_symbol, argument]),
+                    ));
+                }
+                elements.push(Value::object(mutator.new_array(pairs)));
+            }
+            let edit = mutator.new_array(elements);
+            mutator.stash(Value::object(edit))
+        })
+    }
+
+    /// The reified mixin of the fixture's class `name`.
+    fn fixture_mixin(interpreter: &mut Interpreter, fixture: &Root, name: &str) -> Root {
+        let class = send(interpreter, fixture, name);
+        answer_of(interpreter, "reflectionMixinOf:ifFail:", &class, &[])
+    }
+
+    /// The check leaf answers the declaration with the edit spliced in, and
+    /// stages nothing: the mixin's members, its source and an existing
+    /// instance are as before.
+    #[test]
+    fn the_check_leaf_answers_the_staged_declaration() {
+        let (mut interpreter, fixture) = a_fixture();
+        let mixin = fixture_mixin(&mut interpreter, &fixture, "Derived");
+        let source_before = rendered(
+            &mut interpreter,
+            "reflectionMixinSource:ifFail:",
+            &mixin,
+            &[],
+        );
+        let edit = an_edit(
+            &mut interpreter,
+            None,
+            &[("addMethod", "public d = ( ^4 )")],
+            &[],
+        );
+        let answer = rendered(&mut interpreter, CHECK, &mixin, &[edit]);
+        assert!(
+            answer.starts_with("{true. 'public class Derived = Base ("),
+            "{answer}"
+        );
+        assert!(answer.contains("public d = ( ^4 )"), "{answer}");
+        assert!(answer.ends_with(")'}"), "{answer}");
+        assert_eq!(
+            rendered(
+                &mut interpreter,
+                "reflectionMixinSource:ifFail:",
+                &mixin,
+                &[]
+            ),
+            source_before
+        );
+        assert_eq!(
+            rendered(
+                &mut interpreter,
+                "reflectionMixinMethods:ifFail:",
+                &mixin,
+                &[]
+            ),
+            "{{#b. #public}. {#a. #protected}. {#c. #private}}"
+        );
+        let derived = send(&mut interpreter, &fixture, "derived");
+        let result = interpreter.send(&derived, Symbol::intern("d"), &[]);
+        error_text(result, "d");
+    }
+
+    /// The check leaf answers a refused edit's diagnostic, and the edit
+    /// changes nothing: a shipped mixin, and an edit that does not parse,
+    /// which the install leaf refuses alike.
+    #[test]
+    fn the_check_leaf_answers_a_diagnostic_and_changes_nothing() {
+        let (mut interpreter, fixture) = a_fixture();
+        let list = send(&mut interpreter, &fixture, "list");
+        let list_mixin = answer_of(&mut interpreter, "reflectionMixinOf:ifFail:", &list, &[]);
+        let edit = an_edit(
+            &mut interpreter,
+            None,
+            &[("addMethod", "public d = ( ^4 )")],
+            &[],
+        );
+        assert_eq!(
+            rendered(&mut interpreter, CHECK, &list_mixin, &[edit]),
+            "{false. 'List belongs to the shipped core library, which no MirrorBuilder edits'}"
+        );
+        let mixin = fixture_mixin(&mut interpreter, &fixture, "Derived");
+        let broken = an_edit(
+            &mut interpreter,
+            None,
+            &[("addMethod", "public b = ( ^ )")],
+            &[],
+        );
+        for selector in [CHECK, INSTALL] {
+            let answer = rendered(
+                &mut interpreter,
+                selector,
+                &mixin,
+                std::slice::from_ref(&broken),
+            );
+            assert!(
+                answer.starts_with("{false. 'Derived's edited source does not parse: "),
+                "{selector}: {answer}"
+            );
+        }
+        assert_eq!(
+            rendered(
+                &mut interpreter,
+                "reflectionMixinMethods:ifFail:",
+                &mixin,
+                &[]
+            ),
+            "{{#b. #public}. {#a. #protected}. {#c. #private}}"
+        );
+        let derived = send(&mut interpreter, &fixture, "derived");
+        assert_eq!(rendered_send(&mut interpreter, &derived, "b"), "1");
+    }
+
+    /// The install leaf answers the installed declaration, and an instance
+    /// made before answers the new method; a class side's subject edits
+    /// its instance side's declaration.
+    #[test]
+    fn the_install_leaf_installs() {
+        let (mut interpreter, fixture) = a_fixture();
+        let derived = send(&mut interpreter, &fixture, "derived");
+        let mixin = fixture_mixin(&mut interpreter, &fixture, "Derived");
+        let edit = an_edit(
+            &mut interpreter,
+            None,
+            &[("addMethod", "public b = ( ^5 )")],
+            &[("addMethod", "public other = ( ^6 )")],
+        );
+        let answer = rendered(&mut interpreter, INSTALL, &mixin, &[edit]);
+        assert!(
+            answer.starts_with("{true. 'public class Derived = Base ("),
+            "{answer}"
+        );
+        assert!(answer.contains("public b = ( ^5 )"), "{answer}");
+        assert_eq!(rendered_send(&mut interpreter, &derived, "b"), "5");
+        let class = send(&mut interpreter, &fixture, "Derived");
+        assert_eq!(rendered_send(&mut interpreter, &class, "other"), "6");
+        let metaclass = class_of(&mut interpreter, &class);
+        let class_side = answer_of(
+            &mut interpreter,
+            "reflectionMixinOf:ifFail:",
+            &metaclass,
+            &[],
+        );
+        let edit = an_edit(&mut interpreter, None, &[("removeMethod", "b")], &[]);
+        let answer = rendered(&mut interpreter, INSTALL, &class_side, &[edit]);
+        assert!(
+            answer.starts_with("{true. 'public class Derived"),
+            "{answer}"
+        );
+        let result = interpreter.send(&derived, Symbol::intern("b"), &[]);
+        error_text(result, "b");
+    }
+
+    /// Anything but a reified mixin and an edit on the wire is declined by
+    /// both leaves, with nothing changed.
+    #[test]
+    fn a_malformed_edit_is_declined() {
+        let (mut interpreter, fixture) = a_fixture();
+        let mixin = fixture_mixin(&mut interpreter, &fixture, "Derived");
+        let text = a_string(&mut interpreter, "public d = ( ^4 )");
+        let unknown = an_edit(
+            &mut interpreter,
+            None,
+            &[("addThing", "public d = ( ^4 )")],
+            &[],
+        );
+        let lazy_on_the_class_side = an_edit(
+            &mut interpreter,
+            None,
+            &[],
+            &[("addLazySlot", "lazy d = 4.")],
+        );
+        let well_formed = an_edit(
+            &mut interpreter,
+            None,
+            &[("addMethod", "public d = ( ^4 )")],
+            &[],
+        );
+        let nothing = interpreter.stash(Value::nil());
+        let class = send(&mut interpreter, &fixture, "Derived");
+        let cases: [(&str, &Root, &Root); 5] = [
+            ("a String for the edit", &mixin, &text),
+            ("an unknown operation", &mixin, &unknown),
+            (
+                "a lazy slot on the class side",
+                &mixin,
+                &lazy_on_the_class_side,
+            ),
+            ("a nil subject", &nothing, &well_formed),
+            ("a class for the subject", &class, &well_formed),
+        ];
+        for selector in [CHECK, INSTALL] {
+            for (name, subject, edit) in cases {
+                assert_eq!(
+                    rendered(
+                        &mut interpreter,
+                        selector,
+                        subject,
+                        std::slice::from_ref(edit)
+                    ),
+                    "declined",
+                    "{selector}: {name}"
+                );
+            }
+        }
+        assert_eq!(
+            rendered(
+                &mut interpreter,
+                "reflectionMixinMethods:ifFail:",
+                &mixin,
+                &[]
+            ),
+            "{{#b. #public}. {#a. #protected}. {#c. #private}}"
+        );
+    }
+
+    /// A module whose code installs edits of its own classes, through the
+    /// VM mirror the host hands it, while that code runs.
+    fn an_installing_fixture(lowering: crate::Lowering) -> (Interpreter, Root) {
+        let source = indoc! {"
+            class Installing = Object new () (
+              public class Kept usingMirror: mirror = (
+                |
+                public first = mirror
+                  reflectionMixin: (mirror reflectionMixinOf: self class ifFail: [nil])
+                  installEdit: {nil. {{#addMethod. 'public added = ( ^#added )'}}. {}}
+                  ifFail: [#declined].
+                public second = 2.
+                |
+              ) ()
+              public class Grown usingMirror: mirror = (
+                |
+                public first = mirror
+                  reflectionMixin: (mirror reflectionMixinOf: self class ifFail: [nil])
+                  installEdit: {'public class Grown usingMirror: mirror = (| public first = nil. public second = 2. public third = 3. |)'. {}. {}}
+                  ifFail: [#declined].
+                public second = 2.
+                |
+              ) ()
+              public class Changing = () (
+                public run: mirror = (
+                  | answer |
+                  answer:: mirror
+                    reflectionMixin: (mirror reflectionMixinOf: self class ifFail: [nil])
+                    installEdit: {nil. {{#addMethod. 'public run: mirror = ( ^#replaced )'}. {#addMethod. 'public helper = ( ^#newHelper )'}}. {}}
+                    ifFail: [^#declined].
+                  ^{#oldRemainder. helper. answer at: 1}
+                )
+                public helper = ( ^#oldHelper )
+              )
+              public kept: mirror = (^Kept usingMirror: mirror)
+              public grown: mirror = (^Grown usingMirror: mirror)
+              public changing = (^Changing new)
+            ) : ()
+        "};
+        let module = ns_syntax::parse(source).expect("the fixture parses");
+        let resolved = match crate::resolve(
+            module,
+            std::rc::Rc::from(source),
+            crate::SourceOrigin::File(std::path::PathBuf::from("installing_fixture.ns")),
+        ) {
+            Ok(resolved) => resolved,
+            Err(_) => panic!("the fixture resolves"),
+        };
+        let mut interpreter = Interpreter::bootstrap_with(lowering);
+        let class = interpreter.load_module(&resolved);
+        let fixture = expect_ok(interpreter.instantiate(&class, &[]), "Installing new");
+        (interpreter, fixture)
+    }
+
+    crate::for_each_lowering! {
+        /// The first slot's initializer installs a methods-only edit of its
+        /// own class: the level the initializer was entered at has a
+        /// successor with the same slots, so the store of `second` passes
+        /// the own-slot check, and the instance has both slots and the new
+        /// method.
+        fn an_interrupted_initializer_runs_on_when_its_slots_stayed(lowering) {
+            let (mut interpreter, fixture) = an_installing_fixture(lowering);
+            let mirror = the_vm_mirror(&mut interpreter);
+            let kept = expect_ok(
+                interpreter.send(&fixture, Symbol::intern("kept:"), &[mirror]),
+                "kept:",
+            );
+            let first = rendered_send(&mut interpreter, &kept, "first");
+            assert!(
+                first.starts_with("{true. 'public class Kept usingMirror: mirror"),
+                "{first}"
+            );
+            assert_eq!(rendered_send(&mut interpreter, &kept, "second"), "2");
+            assert_eq!(rendered_send(&mut interpreter, &kept, "added"), "#added");
+        }
+    }
+
+    crate::for_each_lowering! {
+        /// The first slot's initializer installs a header that adds a slot:
+        /// the instance being initialized migrates to the new layout, and
+        /// the initializer's next own-slot store raises rather than writing
+        /// the old layout into it.
+        fn an_interrupted_initializer_raises_when_its_slots_changed(lowering) {
+            let (mut interpreter, fixture) = an_installing_fixture(lowering);
+            let mirror = the_vm_mirror(&mut interpreter);
+            let result = interpreter.send(&fixture, Symbol::intern("grown:"), &[mirror]);
+            assert_eq!(
+                error_text(result, "grown:"),
+                "an instance of Grown no longer has the slots of Grown, which the running code was compiled for"
+            );
+        }
+    }
+
+    crate::for_each_lowering! {
+        /// A method that installs a replacement of itself runs its old code
+        /// to its end, while its send of a helper the same edit replaced
+        /// answers the helper's new value; the next send runs the new code.
+        fn a_method_that_installs_finishes_with_its_old_code(lowering) {
+            let (mut interpreter, fixture) = an_installing_fixture(lowering);
+            let mirror = the_vm_mirror(&mut interpreter);
+            let changing = send(&mut interpreter, &fixture, "changing");
+            let answer = expect_ok(
+                interpreter.send(&changing, Symbol::intern("run:"), std::slice::from_ref(&mirror)),
+                "run:",
+            );
+            let answer = interpreter.enter(|mutator| render(mutator, mutator.fetch(&answer)));
+            assert_eq!(answer, "{#oldRemainder. #newHelper. true}");
+            let again = expect_ok(
+                interpreter.send(&changing, Symbol::intern("run:"), &[mirror]),
+                "run:",
+            );
+            let again = interpreter.enter(|mutator| render(mutator, mutator.fetch(&again)));
+            assert_eq!(again, "#replaced");
+        }
     }
 }
