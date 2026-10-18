@@ -1,6 +1,6 @@
 /// The mirrors' module: `ObjectMirror` and `ClassMirror`, through which a
 /// program reads the structure of its objects and classes, reached
-/// through `platform mirrors`, and the private mirrors a program reaches
+/// through `platform mirrors`, and the other mirrors a program reaches
 /// only by navigating from those two. Built once, on first demand, over
 /// the VM mirror and the kernel, from which it takes `Error` and
 /// `ArgumentError`.
@@ -19,8 +19,9 @@
 /// the mirror, on its first use and keeps it in a private lazy slot,
 /// and each platform's `mirrors` getter sends it `build`, its one
 /// public member. What a program gets is the `Mirrors` facet `build`
-/// answers, which hands out this module's two public classes by class
-/// accessors, each exactly `^outer MirrorsFactory <Name>` -- a lexical
+/// answers, which hands out two of this module's private classes,
+/// `ObjectMirror` and `ClassMirror`, by class accessors, each exactly
+/// `^outer MirrorsFactory <Name>` -- a lexical
 /// send, which lets an image name the class by its declaration
 /// (`docs/design/image-format.md`, "Shipped names"). Its nested classes
 /// reach the mirror lexically, as members of this root, never through a
@@ -71,9 +72,9 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     private ArgumentError = kernel ArgumentError.
   |
 ) (
-  /// `platform mirrors`: the namespace of this module's two public
-  /// classes, `ObjectMirror` and `ClassMirror`, one accessor each;
-  /// nothing else. Its own class is not among them, so a program makes no
+  /// `platform mirrors`: the namespace of the two classes a program
+  /// makes mirrors with, `ObjectMirror` and `ClassMirror`, one accessor
+  /// each; nothing else. Its own class is not among them, so a program makes no
   /// second namespace.
   private class Mirrors = Value () (
     /// Answers this module's class `ObjectMirror`, which a program
@@ -97,7 +98,7 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
   /// for, and never forces it.
   ///
   /// anObject: any object.
-  public class ObjectMirror reflecting: anObject = Object (
+  private class ObjectMirror reflecting: anObject = Object (
     |
       /// The object the mirror reflects, as `reflecting:` was given it.
       public reflectee = anObject.
@@ -473,7 +474,7 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
   ///
   /// Signals an ArgumentError carrying `aClass`, 'reflecting: requires a
   /// class or a metaclass', for anything else.
-  public class ClassMirror reflecting: aClass
+  private class ClassMirror reflecting: aClass
       = AbstractClassMirror anchor: aClass classFirst: false steps: 0 (
     vmMirror reflectionIsMetaclass: aClass ifFail: [
       (ArgumentError value: aClass) signal: 'reflecting: requires a class or a metaclass'.

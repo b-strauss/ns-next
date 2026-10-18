@@ -752,11 +752,11 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
         public ObjectMirror = ( ^outer MirrorsFactory ObjectMirror )
         public ClassMirror = ( ^outer MirrorsFactory ClassMirror )
     )
-    public class ObjectMirror reflecting: anObject = Object ( ... ) ( ... )
+    private class ObjectMirror reflecting: anObject = Object ( ... ) ( ... )
     private class AbstractClassMirror anchor: anObject classFirst: aBoolean steps: anInteger = Object ( ... ) ( ... )
-    public class ClassMirror reflecting: aClass = AbstractClassMirror anchor: aClass classFirst: false steps: 0 ( ... ) ()
+    private class ClassMirror reflecting: aClass = AbstractClassMirror anchor: aClass classFirst: false steps: 0 ( ... ) ()
     private class NavigatedClassMirror anchor: anObject classFirst: aBoolean steps: anInteger = AbstractClassMirror ... () ()
-    ... MixinMirror, ClassDeclarationMirror, MethodMirror, SlotDeclarationMirror, SlotMirror, MirrorGroup, all private
+    ... MixinMirror, ClassDeclarationMirror, MethodMirror, SlotDeclarationMirror, SlotMirror, MirrorGroup, private too
     public build = ( ^Mirrors new )
 ) : ()
 ```
@@ -830,14 +830,13 @@ reaches `TypedArray` and the ten only through that facet (a class accessor
 each, `^outer TypedArraysFactory <Name>`), and subclasses them through it;
 `platform kernel` hands out none of them, and `IndexedCollection`, which is
 public in `Kernel.ns` because a shipped module applies it, is handed out by
-no facet. `MirrorsFactory.ns` is the one module whose root has public
-members besides `build`: its root holds the VM mirror and the kernel's
-`Error` and `ArgumentError`, the facet `Mirrors` and every mirror class but
-two are private, and `ObjectMirror` and `ClassMirror` are public classes,
-which the facet `platform mirrors` hands out by a class accessor each
-(`^outer MirrorsFactory <Name>`) and which no program reaches through the
-root, since none reaches the root ("No program reaches a shipped module's
-root" below; `the_mirrors_facet_is_a_value`).
+no facet. So does `MirrorsFactory.ns`: its root holds the VM mirror and the
+kernel's `Error` and `ArgumentError`, every nested class -- the facet
+`Mirrors` and every mirror class -- is private, and `build` answers the
+facet `platform mirrors`, which hands out `ObjectMirror` and `ClassMirror`
+by a class accessor each (`^outer MirrorsFactory <Name>`), through which a
+program subclasses them (`the_mirrors_factory_answers_only_build`,
+`the_mirrors_facet_is_a_value`).
 
 **The members are lazy slots** (§6.3.3, "Lazy slots first" below): each is
 built on its first use, so a program pays only for the members it asks for,

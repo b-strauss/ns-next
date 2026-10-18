@@ -211,12 +211,15 @@ demand like the transcript, the clock and the typed arrays, over the VM
 mirror and the kernel, of which its root keeps only `Error` and
 `ArgumentError`; it is a value, so every platform shares the one module
 and its classes. The platform's lazy `mirrors` answers the module's
-`Mirrors` facet, a value with one class accessor for each of its two public
-classes, `ObjectMirror` and `ClassMirror`, whose factory `reflecting:` is
-where a program enters. Every other mirror class -- `AbstractClassMirror`,
+`Mirrors` facet, a value with one class accessor for each of the two
+classes a program makes mirrors with, `ObjectMirror` and `ClassMirror`,
+whose factory `reflecting:` is where a program enters, and through which
+a program subclasses them. Like every class of a shipped factory, both
+are private classes of the module's root, whose one public member is
+`build`. Every other mirror class -- `AbstractClassMirror`,
 `NavigatedClassMirror`, `MixinMirror`, `ClassDeclarationMirror`,
 `MethodMirror`, `SlotDeclarationMirror`, `SlotMirror` and `MirrorGroup` --
-is private and reached only by navigating from those two. This is both
+is reached only by navigating from those two. This is both
 prior arts' shape (`prior-art/newspeak/RuntimeForSqueak.ns:99`,
 `public mirrors = Mirrors usingPlatform: self vmMirror: vmm`;
 `prior-art/primordialsoup/newspeak/RuntimeWithMirrors.ns:27`) and the

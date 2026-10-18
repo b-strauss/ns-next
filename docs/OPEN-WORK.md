@@ -1532,10 +1532,7 @@ Small, deliberately left, none affecting an outcome.
   `git diff --name-only` against the table's paths, one group, say
   `changed`, so that a gate the table asks for cannot be forgotten.
 
-- Leftovers of road step 5a's reviews (noted 2026-10-18):
-  `MirrorsFactory.ns`'s root comment calls `build` its one public member,
-  but `ObjectMirror` and `ClassMirror` are public classes of the root too
-  (no program reaches the root, so nothing depends on it); the "once" of
+- Leftovers of road step 5a's reviews (noted 2026-10-18): the "once" of
   `Heap::record_mixin_object` is a `debug_assert!` only; a thread that
   boots both from the embedded shipped code and from source holds two
   copies of a shipped module's text, `shipped_module_text`'s and the

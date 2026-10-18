@@ -821,6 +821,69 @@ fn the_collections_factory_answers_only_build() {
     });
 }
 
+/// `MirrorsFactory` is written in the same factory pattern: every nested
+/// class, `ObjectMirror` and `ClassMirror` included, is private and its one
+/// public member is `build`. A host reaches its instance only as the
+/// enclosing object of the facet's class; even then the classes' names
+/// find nothing, while `build` makes a facet whose `ObjectMirror` and
+/// `ClassMirror` answer classes.
+#[test]
+fn the_mirrors_factory_answers_only_build() {
+    let mut interpreter = Interpreter::bootstrap();
+    let platform = interpreter.platform();
+    let mirrors = expect_ok(
+        interpreter.send(&platform, Symbol::intern("mirrors"), &[]),
+        "platform mirrors",
+    );
+    let factory = interpreter.enter(|mutator| {
+        let Some(mirrors) = mutator.fetch(&mirrors).as_object() else {
+            panic!("the mirrors facet is an object");
+        };
+        let heap = mutator.heap();
+        let factory = heap
+            .class_enclosing(heap.object_class(mirrors))
+            .expect("the facet's class is a nested class");
+        assert_eq!(
+            heap.class_display_name(heap.object_class(factory)),
+            "MirrorsFactory"
+        );
+        mutator.stash(Value::object(factory))
+    });
+    for name in [
+        "Mirrors",
+        "ObjectMirror",
+        "ClassMirror",
+        "NavigatedClassMirror",
+        "MirrorGroup",
+    ] {
+        let message = refusal(
+            interpreter.send(&factory, Symbol::intern(name), &[]),
+            &format!("mirrors factory {name}"),
+        );
+        assert!(
+            message.contains("does not understand"),
+            "mirrors factory {name}: {message}"
+        );
+    }
+    let facet = expect_ok(
+        interpreter.send(&factory, Symbol::intern("build"), &[]),
+        "mirrors factory build",
+    );
+    for name in ["ObjectMirror", "ClassMirror"] {
+        let class = expect_ok(
+            interpreter.send(&facet, Symbol::intern(name), &[]),
+            &format!("build {name}"),
+        );
+        interpreter.enter(|mutator| {
+            let value = mutator.fetch(&class);
+            let Some(class) = value.as_object() else {
+                panic!("expected a class, got {}", mutator.heap().describe(value));
+            };
+            assert!(mutator.heap().is_class(class), "build {name} is a class");
+        });
+    }
+}
+
 /// The platform hands out none of its module's classes, and the collections and
 /// typed arrays facets not their own: an outside send of the class's name finds
 /// nothing, and none of them may stand as a value in an image, since no program
