@@ -1,0 +1,58 @@
+/// A chain may apply one mixin twice, and each of the two levels has its
+/// own slots: a header edit that changes the class's layout keeps each
+/// level's slot with that level's value, so the slot the upper level
+/// declares, which the accessor and the object's mirror read, still
+/// answers the upper level's value rather than the lower one's, and the
+/// class object `Inside` the upper level caches is the same after the
+/// install as before, the lower level's cache never read. A slot
+/// migrates by its level's mixin, that mixin's occurrence in the chain
+/// and its name.
+class AMixinAppliedTwiceKeepsBothLevelsSlots = Object new () (
+  class Marker tag: value = Object new (
+    |
+      public markerTag = value.
+    |
+  ) (
+    public class Inside = Object new () ()
+  )
+
+  class Middle = Object new () ()
+
+  class Twice = Object new <: Marker tag: 'lower' <: Middle <: Marker tag: 'upper' (
+    |
+      public own = 1.
+    |
+  ) ()
+
+  show: instance on: transcript using: ObjectMirror = (
+    transcript show: instance markerTag.
+    (ObjectMirror reflecting: instance) slots do: [:each |
+      transcript
+          show: ' ';
+          show: each name;
+          show: '=';
+          print: each value reflectee.
+    ].
+    transcript newLine.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      ObjectMirror = platform mirrors ObjectMirror.
+      instance = Twice new.
+      inside = instance Inside.
+      builder = (ClassMirror reflecting: Twice) mixin declaration asBuilder.
+    |
+    show: instance on: transcript using: ObjectMirror.
+    builder
+        header source: 'class Twice = Object new <: Marker tag: ''lower'' <: Middle <: Marker tag: ''upper'' (| public own = 1. public added = 2. |)'.
+    builder install.
+    show: instance on: transcript using: ObjectMirror.
+    transcript
+        print: instance Inside == inside;
+        newLine.
+    show: Twice new on: transcript using: ObjectMirror.
+  )
+)

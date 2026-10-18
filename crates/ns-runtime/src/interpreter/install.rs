@@ -622,6 +622,43 @@ mod tests {
         assert_eq!(integer(&mut interpreter, &super_c), Some(3));
     }
 
+    /// A chain that applies one mixin twice has two levels whose slots
+    /// share the mixin and the name; a layout-changing edit keeps each
+    /// level's field with its own value, since a slot is named by its
+    /// mixin's occurrence in the chain as well.
+    #[test]
+    fn a_mixin_applied_twice_keeps_both_levels_slots() {
+        let source = indoc! {"
+            class Outer = Object new () (
+              class Marker tag: value = Object new (| public markerTag = value. |) ()
+              class Middle = Object new () ()
+              public class Inner = Object new <: Marker tag: 1 <: Middle <: Marker tag: 2 (| public own = 5. |) ()
+            )
+        "};
+        let (mut interpreter, _, _, inner, inner_id) = outer_and_inner(source);
+        install(
+            &mut interpreter,
+            inner_id,
+            &header_edit(
+                "public class Inner = Object new <: Marker tag: 1 <: Middle <: Marker tag: 2 (| public own = 5. public added = 6. |)",
+            ),
+        );
+        let fields: Vec<Option<i64>> = interpreter.enter(|mutator| {
+            let object = mutator.fetch(&inner).as_object().expect("an Inner");
+            (0..4)
+                .map(|index| {
+                    mutator
+                        .heap()
+                        .instance_field(object, index)
+                        .and_then(|value| value.as_small_integer())
+                })
+                .collect()
+        });
+        assert_eq!(fields, vec![Some(1), Some(2), Some(5), None]);
+        let tag = send(&mut interpreter, &inner, "markerTag");
+        assert_eq!(integer(&mut interpreter, &tag), Some(2));
+    }
+
     /// A migrated instance keeps its identity hash.
     #[test]
     fn the_identity_hash_survives_a_migration() {

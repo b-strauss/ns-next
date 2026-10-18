@@ -1043,17 +1043,30 @@ pub fn declared_slots_of(
 }
 
 /// What one field of an instance holds, by what it is named rather than
-/// where it lies: a declared slot by the id of the mixin declaring it and
-/// its name, a hidden nested-class cache slot by its declaration's id. An
-/// install copies an instance's fields into its new layout by these
-/// (`MixinApplication::field_names`). The declaring mixin is part of a
-/// slot's name because a subclass's slot may shadow a superclass's slot
-/// of the same name: matched by name alone, a slot an edit adds under or
-/// over a shadowing one would take the other level's value.
+/// where it lies: a declared slot by the mixin of the level declaring it,
+/// that mixin's occurrence in the chain and the slot's name; a hidden
+/// nested-class cache slot by the nested declaration's id and the
+/// occurrence of the level caching it. An install copies an instance's
+/// fields into its new layout by these (`MixinApplication::field_names`).
+///
+/// The declaring mixin is part of a slot's name because a subclass's slot
+/// may shadow a superclass's slot of the same name: matched by name alone,
+/// a slot an edit adds under or over a shadowing one would take the other
+/// level's value. The occurrence is, because one chain may apply a mixin
+/// twice (`<:` clauses), and then two levels declare the same names; an
+/// install evaluates no superclass clause again, so a level's occurrence
+/// is the same before and after it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FieldName {
-    Slot(MixinId, Symbol),
-    Nested(MixinId),
+    Slot {
+        mixin: MixinId,
+        occurrence: u32,
+        name: Symbol,
+    },
+    Nested {
+        declaration: MixinId,
+        occurrence: u32,
+    },
 }
 
 impl MixinApplication {
@@ -1063,10 +1076,12 @@ impl MixinApplication {
     }
 
     /// Every field of an instance, by index: each level's own slots from
-    /// its `own_slot_base`, each named by the id `heap` answers for the
-    /// level's mixin, then its hidden nested-class slots, read off
-    /// `nested_slot` -- superclass first. No two fields share a name,
-    /// since one level declares a slot name at most once.
+    /// its `own_slot_base`, then its hidden nested-class slots, read off
+    /// `nested_slot` -- superclass first -- each named with the id `heap`
+    /// answers for the level's mixin and the count of the levels nearer
+    /// the root that apply the same mixin. No two fields share a name: a
+    /// level declares a slot name, and caches a nested class, at most
+    /// once, and two levels of one mixin differ in their occurrence.
     pub(crate) fn field_names(&self, heap: &crate::heap::Heap) -> Vec<FieldName> {
         let mut levels = Vec::new();
         let mut level = Some(self);
@@ -1075,17 +1090,19 @@ impl MixinApplication {
             level = application.superclass.as_deref();
         }
         let mut names = Vec::with_capacity(self.slot_count);
+        let mut occurrences: HashMap<MixinId, u32> = HashMap::new();
         for application in levels.into_iter().rev() {
             let id = heap
                 .known_mixin_id(&application.mixin)
                 .expect("internal: an applied mixin is registered");
-            names.extend(
-                application
-                    .mixin
-                    .slots
-                    .iter()
-                    .map(|slot| FieldName::Slot(id, slot.name)),
-            );
+            let count = occurrences.entry(id).or_insert(0);
+            let occurrence = *count;
+            *count += 1;
+            names.extend(application.mixin.slots.iter().map(|slot| FieldName::Slot {
+                mixin: id,
+                occurrence,
+                name: slot.name,
+            }));
             // This level's cache slots follow its own slots; every entry
             // below `nested_start` is an inherited level's.
             let nested_start = application.own_slot_base + application.mixin.slots.len();
@@ -1096,7 +1113,14 @@ impl MixinApplication {
                 .map(|(id, index)| (*index, *id))
                 .collect();
             nested.sort_unstable_by_key(|(index, _)| *index);
-            names.extend(nested.into_iter().map(|(_, id)| FieldName::Nested(id)));
+            names.extend(
+                nested
+                    .into_iter()
+                    .map(|(_, declaration)| FieldName::Nested {
+                        declaration,
+                        occurrence,
+                    }),
+            );
         }
         debug_assert_eq!(
             names.len(),
