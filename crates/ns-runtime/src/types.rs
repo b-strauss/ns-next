@@ -494,7 +494,11 @@ pub struct NestedClassCreation<'gc> {
     /// class.
     pub(crate) enclosing: ObjectReference<'gc>,
     /// The absolute index of the hidden slot of `enclosing` the class is
-    /// cached in.
+    /// cached in, as `enclosing`'s layout had it when the creation began --
+    /// the slot the in-progress marker was written to. The clause is user
+    /// code and can forward `enclosing`, so the end of the creation and the
+    /// store of the class re-derive it (`interpreter::nested`,
+    /// `current_cache_index`).
     pub(crate) index: usize,
     /// The declaration.
     pub(crate) nested: Rc<crate::mixin::Mixin>,

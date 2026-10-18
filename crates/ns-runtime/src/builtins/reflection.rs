@@ -2322,11 +2322,13 @@ mod tests {
                 )
                 public probe = (^Inner)
               )
+              public class HostChild = Host () ()
               public wide = (^Wide new)
               public falsy = (^Falsy new)
               public aLazy = (^Lazy new)
               public derived = (^Derived new)
               public host = (^Host new)
+              public hostChild = (^HostChild new)
               public register: object = (
                 registered:: object.
                 ^1
@@ -2421,6 +2423,72 @@ mod tests {
                 "an instance of Wide no longer has the slots of Mix, which the running code was compiled for"
             );
             assert_eq!(rendered_send(&mut interpreter, &wide, "y"), "20");
+        }
+    }
+
+    /// A `Host` handed the VM mirror and `target`, which `Inner`'s
+    /// superclass clause forwards it to.
+    fn a_host_forwarding_to(interpreter: &mut Interpreter, fixture: &Root, target: &Root) -> Root {
+        let mirror = the_vm_mirror(interpreter);
+        let host = send(interpreter, fixture, "host");
+        expect_ok(
+            interpreter.send(&host, Symbol::intern("mirror:"), &[mirror]),
+            "mirror:",
+        );
+        expect_ok(
+            interpreter.send(
+                &host,
+                Symbol::intern("target:"),
+                std::slice::from_ref(target),
+            ),
+            "target:",
+        );
+        host
+    }
+
+    crate::for_each_lowering! {
+        /// `Inner`'s superclass clause forwards the enclosing `Host` to a
+        /// `Wide`, which has no slot to cache `Inner` in: the creation
+        /// raises rather than writing the class over the `Wide`'s `z`.
+        fn a_nested_class_whose_enclosing_object_was_forwarded_raises(lowering) {
+            let (mut interpreter, fixture) = a_pushed_guard_fixture(lowering);
+            let wide = send(&mut interpreter, &fixture, "wide");
+            let host = a_host_forwarding_to(&mut interpreter, &fixture, &wide);
+            let result = interpreter.send(&host, Symbol::intern("probe"), &[]);
+            assert_eq!(
+                error_text(result, "probe"),
+                "an instance of Wide no longer has the slots of Host, which the nested class Inner is cached in"
+            );
+            assert_eq!(rendered_send(&mut interpreter, &wide, "z"), "30");
+        }
+    }
+
+    crate::for_each_lowering! {
+        /// The same forward to an object whose field at the cache slot's
+        /// index holds `false`, the in-progress marker's value: the end of
+        /// the creation leaves that field as the program wrote it.
+        fn a_forwarded_enclosing_object_keeps_a_false_field(lowering) {
+            let (mut interpreter, fixture) = a_pushed_guard_fixture(lowering);
+            let falsy = send(&mut interpreter, &fixture, "falsy");
+            let host = a_host_forwarding_to(&mut interpreter, &fixture, &falsy);
+            let result = interpreter.send(&host, Symbol::intern("probe"), &[]);
+            error_text(result, "probe");
+            assert_eq!(rendered_send(&mut interpreter, &falsy, "z"), "false");
+        }
+    }
+
+    crate::for_each_lowering! {
+        /// Forwarded to an instance of a subclass, the enclosing object
+        /// still has the declaring level's slots: the class is created,
+        /// cached in the replacement's slot, and answered again from there.
+        fn a_nested_class_whose_enclosing_object_was_forwarded_to_a_subclass_instance_is_cached(lowering) {
+            let (mut interpreter, fixture) = a_pushed_guard_fixture(lowering);
+            let child = send(&mut interpreter, &fixture, "hostChild");
+            let host = a_host_forwarding_to(&mut interpreter, &fixture, &child);
+            let created = send(&mut interpreter, &host, "probe");
+            let cached = send(&mut interpreter, &child, "probe");
+            assert!(same(&mut interpreter, &created, &cached));
+            assert_eq!(rendered_send(&mut interpreter, &cached, "name"), "'Inner'");
         }
     }
 

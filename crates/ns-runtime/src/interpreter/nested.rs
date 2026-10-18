@@ -209,7 +209,7 @@ pub(crate) fn after_clause<'gc>(
 ) -> Result<Step<'gc>, Signal<'gc>> {
     let NestedClassCreation {
         enclosing,
-        index,
+        index: _,
         nested,
         declaring_class,
     } = creation;
@@ -225,6 +225,18 @@ pub(crate) fn after_clause<'gc>(
         (superclass, super_application)
     } else {
         superclass_with_applied_levels(mutator, &nested, superclass)?
+    };
+    // The clause was user code on `enclosing`, and the bulk forward may have
+    // replaced it meanwhile: the slot is looked up again in its current
+    // layout, and an object that no longer has the declaring level's slots
+    // gets no class, as an own-slot access on such a receiver raises.
+    let Some(index) = current_cache_index(mutator, enclosing, &nested) else {
+        return Err(no_longer_caches_error(
+            mutator,
+            enclosing,
+            &nested,
+            declaring_class,
+        ));
     };
     // Step 3: the application cache decides whether this behaviour already
     // exists. Two enclosing instances whose clauses land on the same
@@ -480,6 +492,48 @@ fn cache_slot<'gc>(
     }
 }
 
+/// The absolute index of `nested`'s cache slot in `enclosing`'s current
+/// layout, or `None` when `enclosing` no longer has one: what `cache_slot`
+/// answers, asked again once a superclass clause -- user code on
+/// `enclosing`, which the bulk forward can replace -- has run, since the
+/// index the creation began with was decided from the layout before it.
+fn current_cache_index<'gc>(
+    mutator: &Mutator<'gc>,
+    enclosing: ObjectReference<'gc>,
+    nested: &Rc<Mixin>,
+) -> Option<usize> {
+    cache_slot(mutator, Value::object(enclosing), nested).map(|(_, index, _)| index)
+}
+
+/// The error of a nested class whose superclass clause left its enclosing
+/// object without the slots of the level that declares it -- the bulk
+/// forward replaced it -- so the class has nowhere to be cached and no
+/// enclosing object to run in. The same error, in the same words, as an
+/// own-slot access whose receiver no longer has its level's slots
+/// (`interpreter::locals::check_own_slots`).
+#[cold]
+fn no_longer_caches_error<'gc>(
+    mutator: &Mutator<'gc>,
+    enclosing: ObjectReference<'gc>,
+    nested: &Mixin,
+    declaring_class: ClassReference<'gc>,
+) -> Signal<'gc> {
+    let enclosing = Value::object(enclosing);
+    let class = mutator.heap.class_application(declaring_class).map_or_else(
+        || "its class".to_string(),
+        |application| application.mixin.reflected_name(),
+    );
+    Signal::Error(NewspeakError::error(
+        nested.name,
+        enclosing,
+        format!(
+            "{} no longer has the slots of {class}, which the nested class {} is cached in",
+            mutator.heap.describe(enclosing),
+            nested.name
+        ),
+    ))
+}
+
 /// What a nested class's cache slot holds while the class is being created
 /// for that enclosing object -- exactly while the activation evaluating its
 /// superclass clause is on the stack. An access that finds it is a cycle
@@ -537,12 +591,18 @@ pub(super) fn begin_creation<'gc>(
 /// can reach never changes under it, but the decoder does not bound
 /// `InitializeSlot`'s field index, so an image's clause body can overwrite the
 /// slot; that value is left as the image wrote it, and is why this is not an
-/// assertion, which such an image would turn into a panic.
+/// assertion, which such an image would turn into a panic. And only while
+/// the slot is still the one the marker was written to: the clause can
+/// forward `enclosing` to an object whose field at that index is one of the
+/// program's own, which may hold `false` itself.
 pub(super) fn end_creation<'gc>(mutator: &mut Mutator<'gc>, creation: &NestedClassCreation<'gc>) {
-    if mutator
-        .heap
-        .instance_field(creation.enclosing, creation.index)
-        .is_some_and(is_creation_in_progress)
+    let still_the_slot =
+        current_cache_index(mutator, creation.enclosing, &creation.nested) == Some(creation.index);
+    if still_the_slot
+        && mutator
+            .heap
+            .instance_field(creation.enclosing, creation.index)
+            .is_some_and(is_creation_in_progress)
     {
         mutator
             .heap
