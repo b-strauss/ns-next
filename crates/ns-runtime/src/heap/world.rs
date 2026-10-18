@@ -11,9 +11,9 @@
 
 use crate::compiler::Lowering;
 use crate::hash::IdentityMap;
-use crate::heap::{Heap, Root};
+use crate::heap::{ForwardRefusal, Heap, Root};
 use crate::interpreter::Mutator;
-use crate::types::{ClassReference, FrameReference, Value};
+use crate::types::{ClassReference, FrameReference, ObjectReference, Value};
 
 /// What the step state holds beside the heap that names objects: the
 /// bootstrap's builtin classes, the `platform` singleton, the VM mirror,
@@ -85,6 +85,32 @@ fn split<'state, 'gc>(
             depth_reserve,
         },
     )
+}
+
+/// Forwards every object of `old` to the object of `new` at the same index
+/// (`Heap::forward_identity`), then what the step state holds beside the
+/// heap (`StepRoots`), then vacates every inline cache, whose entries were
+/// decided for receivers that are now forwarders. Inside a step: nothing
+/// moves, so no handle a caller holds goes stale but one naming an object
+/// of `old`, and the VM mirror's leaf holds none.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the VM mirror's `elementsOf:forwardIdentityToElementsOf:ifFail:` leaf calls it from road step 5b1's next task"
+    )
+)]
+pub(crate) fn forward_identity<'gc>(
+    mutator: &mut Mutator<'gc>,
+    old: &[ObjectReference<'gc>],
+    new: &[ObjectReference<'gc>],
+) -> Result<(), ForwardRefusal> {
+    use crate::trace::Trace;
+    let (heap, mut roots) = split(mutator);
+    let mut forwarder = heap.forward_identity(old, new)?;
+    roots.trace(&mut forwarder);
+    mutator.caches.invalidate();
+    Ok(())
 }
 
 pub(crate) struct World {
@@ -341,5 +367,35 @@ impl World {
             }),
             "internal: a spare instantiation box holds a handle"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::types::Value;
+
+    /// What the step state holds beside the heap is forwarded with it: the
+    /// `platform` singleton, here, as every `StepRoots` field is.
+    #[test]
+    fn the_forward_rewrites_what_the_step_state_holds() {
+        let mut interpreter = crate::Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let Some(platform) = mutator.platform_singleton.and_then(Value::as_object) else {
+                panic!("the bootstrap records the platform singleton")
+            };
+            let class = mutator.heap().object_class(platform);
+            let replacement = mutator.heap_mut().allocate_instance(class, 0);
+            let root = mutator.heap().stash(Value::object(platform));
+            assert!(super::forward_identity(mutator, &[platform], &[replacement]).is_ok());
+            assert!(mutator
+                .platform_singleton
+                .and_then(Value::as_object)
+                .is_some_and(|object| object.same(replacement)));
+            assert!(mutator
+                .heap()
+                .fetch(&root)
+                .as_object()
+                .is_some_and(|object| object.same(replacement)));
+        });
     }
 }

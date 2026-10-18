@@ -714,14 +714,65 @@ impl std::fmt::Debug for Heap<'_> {
     }
 }
 
-/// How a move maps an old object offset to its new one. Two answer it: the
-/// stress mode's `Shift`, which keeps every object, and the collector's
-/// `ForwardingTable`, which keeps only the live ones (`compaction.rs`). A
-/// type parameter rather than an enum or a trait object, because `apply`
-/// runs once per handle in the whole heap and a monomorphized call leaves
-/// neither a branch nor an indirection there.
+/// How a move maps an old object offset to its new one. Three answer it:
+/// the stress mode's `Shift`, which keeps every object, the collector's
+/// `ForwardingTable`, which keeps only the live ones (`compaction.rs`), and
+/// the bulk forward's `IdentityForward`, which moves nothing and maps each
+/// forwarded object to its replacement. A type parameter rather than an
+/// enum or a trait object, because `apply` runs once per handle in the
+/// whole heap and a monomorphized call leaves neither a branch nor an
+/// indirection there.
 pub(crate) trait Relocation {
     fn apply(&self, offset: NonZeroU64) -> NonZeroU64;
+
+    /// Whether the block `forward_everything` has just rewritten names a
+    /// young object now, forgetting the answer for the next block. Only a
+    /// relocation that leaves the generations in place asks: a move or a
+    /// compaction keeps the remembered set itself, while the bulk forward
+    /// can make an old holder name a young object no barrier saw stored.
+    fn holder_done(&self) -> bool {
+        false
+    }
+}
+
+/// What `Heap::forward_identity` refuses, before it writes anything: what
+/// the heap itself can judge. Which objects may be forwarded at all is the
+/// VM mirror leaf's lock, checked before it calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ForwardRefusal {
+    /// The two arrays differ in size.
+    UnequalSizes,
+    /// An old object is named twice, and so would have two replacements.
+    Split,
+    /// An old object is also a new one, and so would be forwarded to
+    /// something that is itself forwarded.
+    Chain,
+}
+
+/// The bulk forward's relocation: each forwarded object's offset to its
+/// replacement's, every other offset unchanged, since nothing moves.
+pub(crate) struct IdentityForward {
+    replacements: IdentityMap<u64, NonZeroU64>,
+    /// Whether an answer since the last `holder_done` was young.
+    names_young: std::cell::Cell<bool>,
+}
+
+impl Relocation for IdentityForward {
+    fn apply(&self, offset: NonZeroU64) -> NonZeroU64 {
+        let answer = self
+            .replacements
+            .get(&offset.get())
+            .copied()
+            .unwrap_or(offset);
+        if space::is_young(answer) {
+            self.names_young.set(true);
+        }
+        answer
+    }
+
+    fn holder_done(&self) -> bool {
+        self.names_young.replace(false)
+    }
 }
 
 /// The word index of the header at byte offset `offset`.
@@ -5406,6 +5457,87 @@ impl<'gc> Heap<'gc> {
         forwarder
     }
 
+    /// Forwards every object of `old` to the object of `new` at the same
+    /// index, one way and at once: `become:` as a bulk forward
+    /// (`docs/design/object-model.md`, "Planned: `become:` as an eager bulk
+    /// forward"). Every pair is validated before anything is written: equal
+    /// sizes, no object of `old` named twice (a split), none also among
+    /// `new` (a chain); several old objects forwarded to one new one (a
+    /// merge) are accepted. Then, pair by pair in order, the new object
+    /// takes the old one's identity hash -- so that an identity-keyed
+    /// collection still finds what it holds, the last pair's standing for a
+    /// merge -- and the old object becomes a forwarder: the forwarded
+    /// format, the guard no application is minted, the new object in its
+    /// class word and its word count kept, so the space stays walkable.
+    /// Last, one walk rewrites every handle the heap itself holds
+    /// (`forward_everything`) and remembers every old holder that names a
+    /// young object afterwards, which no barrier saw stored; a forwarder
+    /// already in the remembered set stays there, its class word the only
+    /// word a scavenge reads of it. What the heap does not hold, the caller
+    /// forwards with the answer (`world::forward_identity`).
+    ///
+    /// Eager: once the walk ends nothing names a forwarder, so no send, no
+    /// `==`, no leaf and no later JIT ever checks for one; the one consumer,
+    /// the atomic install, walks the heap anyway (`object-model.md`, "Why
+    /// eager"). Nothing live moves, so no move epoch changes, and it runs
+    /// inside a step: no instruction runs between the forward and the
+    /// leaf's answer. Its one caller is the VM mirror's
+    /// `elementsOf:forwardIdentityToElementsOf:ifFail:` leaf, whose lock
+    /// has refused every object but an ordinary instance of a class that is
+    /// not shipped.
+    #[must_use = "the interpreter's own roots are forwarded through the answer; dropping it leaves them naming forwarders"]
+    pub(crate) fn forward_identity(
+        &mut self,
+        old: &[ObjectReference<'gc>],
+        new: &[ObjectReference<'gc>],
+    ) -> Result<Forwarder<IdentityForward>, ForwardRefusal> {
+        if old.len() != new.len() {
+            return Err(ForwardRefusal::UnequalSizes);
+        }
+        for object in old.iter().chain(new) {
+            self.check_object_origin(*object);
+        }
+        let new_offsets: std::collections::HashSet<u64> =
+            new.iter().map(|object| object.offset.get()).collect();
+        let mut replacements: IdentityMap<u64, NonZeroU64> = IdentityMap::default();
+        for (old_object, new_object) in old.iter().zip(new) {
+            if replacements
+                .insert(old_object.offset.get(), new_object.offset)
+                .is_some()
+            {
+                return Err(ForwardRefusal::Split);
+            }
+            if new_offsets.contains(&old_object.offset.get()) {
+                return Err(ForwardRefusal::Chain);
+            }
+        }
+        for (old_object, new_object) in old.iter().zip(new) {
+            let hash = self.header(*old_object).identity_hash();
+            self.object_set_identity_hash(*new_object, hash);
+            let words = self.space.words_mut();
+            let header = header_index(old_object.offset);
+            words[header] = Header(words[header])
+                .with_format(Format::Forwarded)
+                .with_guard(DispatchId::FORWARDED)
+                .0;
+            words[header + CLASS] = Word::with_object_offset(new_object.offset).bits();
+        }
+        let mut forwarder = Forwarder {
+            #[cfg(debug_assertions)]
+            heap_id: self.heap_id,
+            #[cfg(debug_assertions)]
+            from_epoch: self.epoch,
+            #[cfg(debug_assertions)]
+            to_epoch: self.epoch,
+            objects: IdentityForward {
+                replacements,
+                names_young: std::cell::Cell::new(false),
+            },
+        };
+        self.forward_everything(&mut forwarder);
+        Ok(forwarder)
+    }
+
     /// Forwards every handle the heap itself holds through `forwarder`:
     /// every object, the `Activation` class, every stack entry and
     /// the continuation it owns, every register, every surviving canonical
@@ -5423,14 +5555,24 @@ impl<'gc> Heap<'gc> {
         // moves. Walks the objects where they lie now, after the move.
         let ranges = self.space.occupied();
         let words = self.space.words_mut();
+        let mut holders = Vec::new();
+        forwarder.objects.holder_done();
         for range in ranges {
             let mut position = range.start / 8;
             while position < range.end / 8 {
                 let (header, next) = object_at(words, position);
                 let block = block_range(words, header);
                 trace_block(&mut words[block], forwarder);
+                let offset = offset_of_header(header);
+                if forwarder.objects.holder_done() && !space::is_young(offset) {
+                    holders.push(offset);
+                }
                 position = next;
             }
+        }
+        // After the walk, which has the words borrowed.
+        for holder in holders {
+            self.remember(holder);
         }
         if let Some(class) = &mut self.activation_class {
             forwarder.object(class);
@@ -10906,5 +11048,210 @@ mod tests {
         let class = heap.allocate_self_referential(0);
         let object = heap.allocate_byte_array(class, &[1, 2, 3]);
         assert_eq!(heap.describe(Value::object(object)), "a ByteArray of 3");
+    }
+
+    // ---------- The bulk forward ----------
+
+    /// `Heap::forward_identity` with nothing beside the heap to forward:
+    /// these tests read a handle afterwards only out of a host root, out
+    /// of an object, or as a new object, which the forward does not move.
+    fn forward<'gc>(
+        heap: &mut Heap<'gc>,
+        old: &[ObjectReference<'gc>],
+        new: &[ObjectReference<'gc>],
+    ) -> Result<(), ForwardRefusal> {
+        heap.forward_identity(old, new).map(|_forwarder| ())
+    }
+
+    /// The format of the object at `object`'s offset, read from the raw
+    /// words, since `header` refuses a forwarder.
+    fn raw_format(heap: &Heap<'_>, object: ObjectReference<'_>) -> Format {
+        Header(heap.space.words()[header_index(object.offset)]).format()
+    }
+
+    #[test]
+    fn the_forward_rewrites_every_holder_of_an_old_object() {
+        let mut heap = Heap::new();
+        let class = old_instance_class(&mut heap);
+        let weak_class = named_class(&mut heap, "WeakArray");
+        let ephemeron_class = named_class(&mut heap, "Ephemeron");
+        let old = heap.allocate_instance(class, 2);
+        let new = heap.allocate_instance(class, 2);
+        let instance = heap.allocate_instance(class, 1);
+        assert!(heap.instance_set_field(instance, 0, Value::object(old)));
+        let array = heap.allocate_array(class, &[Value::small_integer(1), Value::object(old)]);
+        let weak = heap.allocate_weak_array(weak_class, 1);
+        assert!(heap.weak_array_set_element(weak, 0, Value::object(old)));
+        let ephemeron = heap.allocate_ephemeron(ephemeron_class, 2);
+        assert!(heap.ephemeron_set_field(ephemeron, 0, Value::object(old)));
+        let root = heap.stash(Value::object(old));
+
+        assert!(forward(&mut heap, &[old], &[new]).is_ok());
+
+        assert_eq!(raw_format(&heap, old), Format::Forwarded);
+        let holders = [
+            heap.instance_field(instance, 0),
+            heap.array_element(array, 1),
+            heap.weak_array_element(weak, 0),
+            heap.ephemeron_fields(ephemeron)
+                .and_then(|fields| fields.first().copied()),
+            Some(heap.fetch(&root)),
+        ];
+        for (index, holder) in holders.into_iter().enumerate() {
+            let named = rooted(holder.unwrap_or(Value::nil()));
+            assert_eq!(
+                heap.object_identity_key(named),
+                heap.object_identity_key(new),
+                "holder {index} names the new object"
+            );
+        }
+        assert_eq!(
+            heap.array_element(array, 0)
+                .and_then(Value::as_small_integer),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn the_new_object_takes_the_old_ones_identity_hash() {
+        let mut heap = Heap::new();
+        let class = old_instance_class(&mut heap);
+        let old = heap.allocate_instance(class, 0);
+        let new = heap.allocate_instance(class, 0);
+        let hash = heap.object_ensure_identity_hash(old);
+        assert_eq!(heap.object_identity_hash(new), 0);
+        assert!(forward(&mut heap, &[old], &[new]).is_ok());
+        assert_eq!(heap.object_identity_hash(new), hash);
+
+        let first = heap.allocate_instance(class, 0);
+        let second = heap.allocate_instance(class, 0);
+        let merged = heap.allocate_instance(class, 0);
+        heap.object_ensure_identity_hash(first);
+        let second_hash = heap.object_ensure_identity_hash(second);
+        assert!(forward(&mut heap, &[first, second], &[merged, merged]).is_ok());
+        assert_eq!(
+            heap.object_identity_hash(merged),
+            second_hash,
+            "a merge keeps the last pair's hash"
+        );
+    }
+
+    #[test]
+    fn a_split_a_chain_or_unequal_sizes_changes_nothing() {
+        let mut heap = Heap::new();
+        let class = old_instance_class(&mut heap);
+        let old = heap.allocate_instance(class, 0);
+        let new = heap.allocate_instance(class, 0);
+        let other = heap.allocate_instance(class, 0);
+        let holder = heap.allocate_instance(class, 1);
+        assert!(heap.instance_set_field(holder, 0, Value::object(old)));
+        heap.object_ensure_identity_hash(old);
+        let new_hash = heap.object_ensure_identity_hash(new);
+        let attempts = [
+            (vec![old, old], vec![new, other], ForwardRefusal::Split),
+            (vec![old, new], vec![new, other], ForwardRefusal::Chain),
+            (vec![old], vec![new, other], ForwardRefusal::UnequalSizes),
+        ];
+        for (old_objects, new_objects, refusal) in attempts {
+            assert_eq!(
+                forward(&mut heap, &old_objects, &new_objects).err(),
+                Some(refusal)
+            );
+            assert_eq!(raw_format(&heap, old), Format::FixedPointers);
+            assert_eq!(raw_format(&heap, new), Format::FixedPointers);
+            assert!(names(
+                heap.instance_field(holder, 0).unwrap_or(Value::nil()),
+                old
+            ));
+            assert_eq!(heap.object_identity_hash(new), new_hash);
+        }
+    }
+
+    #[test]
+    fn an_old_holder_rewritten_to_a_young_object_is_remembered() {
+        let mut heap = Heap::new();
+        let class = old_instance_class(&mut heap);
+        let old = heap.allocate_instance(class, 0);
+        let holder = heap.allocate_instance(class, 1);
+        assert!(heap.instance_set_field(holder, 0, Value::object(old)));
+        let root = heap.stash(Value::object(holder));
+        scavenge_bare(&mut heap, true, &mut []);
+        let holder = rooted(heap.fetch(&root));
+        assert!(!space::is_young(holder.offset));
+        assert!(!heap.header(holder).remembered());
+        let old = rooted(heap.instance_field(holder, 0).unwrap_or(Value::nil()));
+        let class = heap.object_class(holder);
+        let new = heap.allocate_instance(class, 1);
+        let inner = heap.allocate_instance(class, 1);
+        assert!(heap.instance_set_field(inner, 0, Value::small_integer(42)));
+        assert!(heap.instance_set_field(new, 0, Value::object(inner)));
+        assert!(space::is_young(new.offset));
+
+        assert!(forward(&mut heap, &[old], &[new]).is_ok());
+
+        assert!(heap.header(holder).remembered());
+        #[cfg(debug_assertions)]
+        heap.verify_remembered_set();
+        scavenge_bare(&mut heap, false, &mut []);
+        let holder = rooted(heap.fetch(&root));
+        let new = rooted(heap.instance_field(holder, 0).unwrap_or(Value::nil()));
+        let inner = rooted(heap.instance_field(new, 0).unwrap_or(Value::nil()));
+        assert_eq!(
+            heap.instance_field(inner, 0)
+                .and_then(Value::as_small_integer),
+            Some(42)
+        );
+    }
+
+    #[test]
+    fn a_forwarder_is_garbage_after_the_forward() {
+        let mut heap = Heap::new();
+        let class = old_instance_class(&mut heap);
+        let young_old = heap.allocate_instance(class, 1);
+        let old_old = old_instance(&mut heap, class);
+        let young_new = heap.allocate_instance(class, 1);
+        let old_new = heap.allocate_instance(class, 1);
+        assert!(space::is_young(young_old.offset));
+        assert!(!space::is_young(old_old.offset));
+        let roots = [
+            heap.stash(Value::object(young_old)),
+            heap.stash(Value::object(old_old)),
+        ];
+        let live_before = heap.heap_statistics().live_objects;
+
+        assert!(forward(&mut heap, &[young_old, old_old], &[young_new, old_new]).is_ok());
+
+        #[cfg(debug_assertions)]
+        {
+            heap.verify_remembered_set();
+            let _ = heap.move_everything();
+        }
+        scavenge_bare(&mut heap, false, &mut []);
+        assert_eq!(
+            heap.heap_statistics().live_objects,
+            live_before - 1,
+            "the scavenge reclaims the young forwarder"
+        );
+        #[cfg(debug_assertions)]
+        {
+            heap.verify_remembered_set();
+            let _ = heap.move_everything();
+        }
+        heap.collect_for_test(&mut []);
+        assert_eq!(
+            heap.heap_statistics().live_objects,
+            live_before - 2,
+            "the collection reclaims the old forwarder"
+        );
+        #[cfg(debug_assertions)]
+        let _ = heap.move_everything();
+        for root in &roots {
+            let object = rooted(heap.fetch(root));
+            assert_eq!(raw_format(&heap, object), Format::FixedPointers);
+            assert_eq!(
+                heap.instance_field(object, 0).map(Value::is_nil),
+                Some(true)
+            );
+        }
     }
 }
