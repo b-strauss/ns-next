@@ -167,7 +167,7 @@ surface is.
   module and class the image names -- and it is the fixed
   root/special-objects table. So is the core library: a shipped class's
   methods are the loading process's own `Kernel.ns`, `PlatformFactory.ns`
-  and the four modules under `platform/`, built by its bootstrap or its
+  and the five modules under `platform/`, built by its bootstrap or its
   loader -- decoded from the code the binary embeds, or compiled
   from source ([core-library.md](core-library.md), "The embedded shipped
   code") -- and no image carries their code or the VM mirror — which is
