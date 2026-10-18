@@ -48,8 +48,9 @@ recorded guards (5b1). In short:
   `inherits_mixin_of` and `Heap::with_level_applying_mixin_of` compare by
   id; the encoder refuses an edited program with an error.
 
-Road step 5b2a has no implementation plan yet; the next session starts by
-writing one on the branch `road-step-5b2a`.
+Its implementation plan is
+[2026-10-18-2138-mirror-builder-and-atomic-install](superpowers/plans/2026-10-18-2138-mirror-builder-and-atomic-install.md),
+on the branch `road-step-5b2a`.
 
 **Road step 5b2b, after it** ([liveness-and-reflection.md](design/liveness-and-reflection.md),
 "Planned: road step 5b2b, edited programs in images, and reclaiming
