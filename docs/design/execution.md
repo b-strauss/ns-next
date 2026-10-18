@@ -118,7 +118,11 @@ struct StackEntry {
     base: u32,                 // first register in `values`
     argument_count: u32,
     program_counter: usize,    // no slot base: `InitializeSlot` derives it from
-                               // current_class (`Heap::activation_slot_base`)
+                               // entered_level (`Heap::activation_slot_base`)
+    recorded_guard: DispatchId,     // the receiver's guard at the push, `NONE`
+                                    // unless the code addresses its own slots
+    entered_level: ApplicationIndex, // the application it was entered at,
+                                    // `UNREGISTERED` unless it does
     code: Rc<CompiledCode>,    // the body it runs, which the loop resumes it in
     then: Continuation,        // what the loop does with its value
     counted: bool,             // whether it counts against the depth limit
@@ -145,7 +149,12 @@ pub struct ActivationReference {
   that stores activations, and because it is half of the collector's eventual
   root set ([memory.md](memory.md)).
 - **A push** (`Heap::push_activation`) copies the arguments into `values`, fills
-  the temporaries with nil and appends a `StackEntry`. Both vectors keep their
+  the temporaries with nil and appends a `StackEntry`; only for code that
+  addresses its own slots (`CompiledCode::addresses_own_slots`) does it
+  record the receiver's guard and the full-width index of `current_class`'s
+  application, which every own-slot instruction checks and takes its slot
+  base from, so any other push pays one flag test
+  ([object-model.md](object-model.md), "What a slot access checks"). Both vectors keep their
   capacity across pops, so once they have grown to the program's depth a push
   allocates nothing. Every activation the runtime pushes goes through one
   function, `Mutator::push`, which refuses a push past the depth limit ("The
@@ -4923,12 +4932,14 @@ is `8212048`'s).
    `method.fast_path` on every method push to give a lazy getter its
    defining application's `own_slot_base`; the activation's `slot_base`
    field went instead, `Heap::activation_slot_base` deriving the base from
-   the activation's `current_class`, which is exactly the class whose slots
+   the activation -- then from its `current_class`, today from the
+   application it was entered at, which is exactly the level whose slots
    `InitializeSlot` writes in both bodies that contain it. Pooled (n = 20):
    `bench_send.ns` +3.6%, `bench_block.ns` +1.2%, `bench_send.ns` still
    entirely above in both sittings. `vm::run` measured 6,758 instructions,
-   more than the head's 6,750, with the four inlined `class_own_slot_base`
-   and `instance_field` calls replaced by four calls to the helper.
+   more than the head's 6,750, with the four inlined reads of the class's
+   slot base and `instance_field` calls replaced by four calls to the
+   helper.
 3. **(c) No fast path.** Built as a diagnostic first, `act_with_base`
    with the `LazySlot` arm removed and the variant kept brought `vm::run`
    to 6,616: the arm itself, even as a call, was ~140 instructions over

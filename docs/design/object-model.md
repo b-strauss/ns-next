@@ -2,9 +2,12 @@
 
 > **Status:** built, a value as one tagged word, the object layout (road
 > step 3a, "The object layout") and the object space with byte-offset
-> handles (road step 3b, "Handles into the object space") included; the rest
-> of the road to a high-performance VM -- mirrors and atomic installation
-> over an eager `become:`, inline allocation and the JIT tiers -- is planned ("Planned: the road to a
+> handles (road step 3b, "Handles into the object space") included, and
+> `become:` as an eager bulk forward behind one VM-mirror leaf and the
+> recorded guards of a slot access (road step 5b1, "`become:` is an eager
+> bulk forward", "What a slot access checks"); the rest of the road to a
+> high-performance VM -- the atomic install that calls the forward, inline
+> allocation and the JIT tiers -- is planned ("Planned: the road to a
 > high-performance VM").
 > **Code:** `crates/ns-runtime/src/heap.rs` (the handle types and every read
 > and write of one), `heap/value.rs` (`Value`, `ValueKind`, `Word`, the
@@ -1669,9 +1672,12 @@ own:
    ([memory.md](memory.md), "The object space").
 4. **Generations** -- built ([memory.md](memory.md), "Generations").
 5. **Mirrors and atomic installation**, built on `become:` as an eager bulk
-   forward ("Planned: `become:` as an eager bulk forward" below;
+   forward ("`become:` is an eager bulk forward" below;
    [liveness-and-reflection.md](liveness-and-reflection.md), "Mirrors and
-   MirrorBuilder"; decided with the user on 2026-10-05).
+   MirrorBuilder"; decided with the user on 2026-10-05), in three plans:
+   5a, mirrors that read, and 5b1, the VM's half of live editing -- the
+   mixin id that carries every version, the forward and the recorded
+   guards -- built; 5b2, the MirrorBuilder and the atomic install, next.
 6. **Inline allocation in the interpreter** ([memory.md](memory.md),
    "Planned: inline allocation").
 7. **The execution model for compiled code** ([execution.md](execution.md),
@@ -1745,11 +1751,11 @@ from 3 below 2^22, answering `NONE` once it is exhausted (`mixin.rs`). So a
 header word left zero by a missed initialization carries `NONE`, which is
 never cached, rather than a guard some application was minted, and the
 debug build's recomputation in `Heap::dispatch_id` reports it (decided with
-the user on 2026-10-03). `FORWARDED` was reserved as the guard of a forwarder
-that outlives a `become:`; with `become:` an eager bulk forward, no send ever
-meets a forwarder ("Planned: `become:` as an eager bulk forward" below), so
-nothing needs it as a guard, and whether it stays reserved is left to road
-step 5's plan.
+the user on 2026-10-03). `FORWARDED` is the guard the bulk forward stamps on
+each forwarder it makes (`Heap::forward_identity`), never minted, so that a
+cache could never hit on a forwarder even if a reader met one -- and none
+does, since the forward is eager and leaves no handle naming a forwarder
+("`become:` is an eager bulk forward" below).
 
 **The identity hash is 22 bits wide**, drawn from a counter that wraps
 within them, as Strongtalk's wraps within 20 (`markOop.cpp`), and skips 0.
@@ -1761,8 +1767,8 @@ verbatim").
 
 **An application has two ids.** Its *guard id*, 22 bits wide, is the
 inline caches' guard: it stands in object headers and in inline- and
-global-cache entries -- and, from road step 5b, in recorded guards (see
-"Planned with road step 5: what a slot access checks" below) -- and nowhere
+global-cache entries -- and in recorded guards (see "What a slot access
+checks" below) -- and nowhere
 else. Running out of guard ids keeps the rule of
 [dispatch.md](dispatch.md), "The dispatch id": an application without one
 runs uncached. Its *full-width index*, an `ApplicationIndex` into the heap's
@@ -1780,19 +1786,26 @@ sight (`Heap::mixin_id`, `register_application`, `code_id`). They are
 append-only. Each id has its own reuse rule, and the collector can tell
 both of an application's, so reusing either will be safe: a guard id is
 reclaimable once no object header, no inline- or global-cache entry and no
-recorded guard names it; a full-width index once no class object, no
+recorded guard -- an activation's, a slot accessor's cache entry's or the
+caches' verified pair -- names it; a full-width index once no class object, no
 application-cache key or value and no other application's superclass link
 names it. A mixin id is reclaimable once the `Mixin` itself is dropped --
 its table entry freed, no declaration, enclosing mixin or code holding it --
 and no application, no application-cache key or value and no class object's
 applied-clause field names it. A class's change of application restamps
 every instance's header by a heap walk (`Heap::class_set_application`)
-before the old guard id can become reclaimable. None of it is reclaimed:
-nothing drops a mixin before live editing, and the application cache, keyed
-by the ids, stays strong; the reuse rules and a weak cache come with the
-first edit (decided with the user on 2026-10-03), which is road step 5b's
-atomic install ([OPEN-WORK.md](../OPEN-WORK.md), "Step 5, mirrors and
-atomic installation").
+before the old guard id can become reclaimable. Every version of a mixin
+answers the id it was first registered under: the row holds the current
+version, the id of the mixin it is declared in and its module's text, and
+`Heap::replace_mixin` installs a fresh version under an old id, keeping the
+one it supersedes in `Tables::superseded`, so the address map that answers
+a version's id (`mixin::mixin_key`) never names a dropped one
+([liveness-and-reflection.md](liveness-and-reflection.md), "An edit
+replaces the mixin under its id"). None of it is reclaimed: nothing drops a
+mixin, superseded versions included, and the application cache, keyed by
+the ids, stays strong; the reuse rules and a weak cache come with the first
+edit (decided with the user on 2026-10-03), which is road step 5b2's atomic
+install ([OPEN-WORK.md](../OPEN-WORK.md), "Next").
 
 **The class word** is an ordinary stored word naming the object's class
 object, written through `Heap::store` and read through `Heap::load` like a
@@ -1829,7 +1842,7 @@ either layout open.
 | 2 | frame | a reified frame: ten fixed fields, then its registers |
 | 3 | closure | three fixed fields, then its copied values |
 | 4 | 64-bit-indexed | a `LargeInteger`'s magnitude (its sign in the header's negative bit), a boxed `Float` |
-| 5 | forwarded | a forwarder -- the scavenger's for a young object it has copied, and from road step 5b the bulk forward's ("Planned: `become:` as an eager bulk forward") -- whose class word holds the new location; each exists only while the scavenge or the forward that made it runs, so no send, accessor or reader outside the two ever meets one |
+| 5 | forwarded | a forwarder -- the scavenger's for a young object it has copied, and the bulk forward's for each object it forwarded, its guard `FORWARDED` ("`become:` is an eager bulk forward") -- whose class word holds the new location; once the scavenge or the forward that made it ends, nothing names it, so no send, accessor or reader outside the two ever meets one, and a bulk forward's stays in the space as garbage until the next scavenge (a young one) or full collection (an old one) |
 | 6 | free | a gap a collector leaves, walkable like an object; no object has it, since the sliding compaction and the scavenge leave no gap; a debug build writes it as the poison over the nursery a scavenge vacated, and `Heap::block` refuses it there ([memory.md](memory.md), "Finding a missed barrier: the scavenge stress mode") |
 | 7 | class | a class object: eight fixed fields |
 | 8-9 | 32-bit-indexed | a wide string or symbol |
@@ -1949,7 +1962,7 @@ newly allocated, larger frame object -- allocated old and born remembered by
 the rule in [memory.md](memory.md), "Generations" -- the VM
 rewriting every reference to the old frame by a walk of every root the
 collector traces (`trace.rs`) and every heap object, the same walk as the
-bulk forward of road step 5b ("Planned: `become:` as an eager bulk forward"
+bulk forward ("`become:` is an eager bulk forward"
 below); execution continues from the divorced frame, which needs a
 divorced frame put back on the stack, the piece suspend and resume need too
 ([execution.md](execution.md), "How this meets the liveness requirements").
@@ -2003,66 +2016,144 @@ through one object -- a crafted image's by-reference register write
 included -- can reach another object's words, and an out-of-range index that
 a valid program produces raises an ordinary Newspeak error, never a panic.
 
-### Planned with road step 5: what a slot access checks
+### What a slot access checks
 
-Would change: a slot access that is not guarded by the receiver's own header
-checks a recorded guard. Such an access reads or writes a field at an index
-decided without looking at the receiver: the own-slot instructions
+Built by road step 5b1 (2026-10-18,
+[its plan](../superpowers/plans/2026-10-18-1236-become-and-recorded-guards.md)).
+A slot access that is not guarded by the receiver's own header checks a
+*recorded guard*. Such an access reads or writes a field at an index decided
+without looking at the receiver: the own-slot instructions
 `InitializeSlot`, `InitializeSlotProvisionally`, `LoadOwnSlot` and
 `ReturnSlotIfFilled`, which address `slot_base + own_index` in `self` with
 no send (`bytecode.rs`, `vm.rs`), and a slot accessor acted on through
 `Chain::Private` or `Chain::Super` -- a private lexical send, one to an
 enclosing object included, resolves on the lexical class to a field index
-(`resolve_lexical`, `interpreter/resolve.rs`; `decide_slot_accessor`), and
-a super send on the superclass. Each will compare the receiver's header
-guard with an expected guard, a *recorded guard*: for the own-slot
-instructions, the one the activation recorded from the receiver's header
-when it was entered -- not the running level's own application, which
-differs from the receiver's on every inherited level; for a private or super
-slot accessor, the one the cache entry recorded when it was filled. One
-compare, the hot path. On a mismatch, or when either guard is `NONE`, a cold
-path checks, through the receiver's class word and the full-width index,
-that the receiver's application inherits the accessing level: if it does --
-as after an edit that changed only methods and restamped the header -- the
-access proceeds; if not, it raises an ordinary Newspeak error. The reference
-lowering, which has no cache, always takes the cold check. The forward is
-eager ("Planned: `become:` as an eager bulk forward" below): when an atomic
-install migrates the instances of a class whose layout changed, the walk
-rewrites the receiver of every running activation on one of them to its
-new-shape replacement, while the activation goes on running the method or
-initializer it was entered in, compiled against the old layout. So the rest
-of such an activation cannot write the old layout into an object of another
-shape, and a receiver forwarded to an object of another class never
-receives a write meant for the class it replaced. Recorded guards join the
+(`resolve_lexical`, `interpreter/resolve.rs`; `decide_slot_accessor`), a
+super send on the superclass -- and a slot accessor that §5.10 makes the
+handler of a super send nothing understands (`Chain::SuperDoesNotUnderstand`),
+whose field is decided from the superclass's chain too. The bulk forward
+("`become:` is an eager bulk forward" below) rewrites the receiver of every
+running activation on a forwarded object to its replacement, while the
+activation goes on running the method or initializer it was entered in,
+compiled against the old layout; the check is what keeps the rest of such
+an activation, and a cached private or super accessor, from writing the old
+layout into an object of another shape.
+
+**The own-slot instructions.** When `Heap::push_activation` pushes code
+that addresses its own slots (`CompiledCode::addresses_own_slots`, derived
+from the instructions as `outer_reach` is and never on the wire), the stack
+entry records the receiver's guard, `recorded_guard`, and the full-width
+index of the application it was entered at, `entered_level` -- the
+application of its `current_class`, `UNREGISTERED` with none; every other
+push tests that one flag and records `NONE`. Every own-slot instruction
+first calls `interpreter::locals::check_own_slots`: the hot path is one
+header load and one compare of the receiver's guard with the recorded one.
+On a mismatch, or with `NONE` recorded, the cold path asks whether the
+receiver's application chain still contains the entered level
+(`Heap::receiver_has_level`, one walk of the receiver's class and its
+superclass links comparing full-width indexes): if it does -- the receiver
+was forwarded to an instance of a subclass -- the check records the
+receiver's current guard, so the accesses after it take the hot path again,
+and the access proceeds; if not, it raises an ordinary Newspeak error,
+which `on: Error do:` catches:
+
+> `<receiver> no longer has the slots of <class>, which the running code was compiled for`
+
+`<receiver>` is `Heap::describe` of the receiver and `<class>` the entered
+level's mixin's name; the error's selector is the method's for a lazy
+slot's getter and the entered level's factory selector otherwise, as the
+§3.1.1 slot refusal's is. An immediate receiver passes, and the access
+answers its usual error. A receiver replaced by another instance of the
+level's own application keeps the guard and never reaches the cold path.
+
+The level is the one the activation was *entered* at, by its full-width
+`ApplicationIndex`, not the class object's *current* application: road
+step 5b2's install rewrites a class object's application in place while an
+activation entered before it still runs code compiled against the old
+mixin's slot list. So the slot base comes from the same place
+(`Heap::activation_slot_base` reads the entered level's `own_slot_base`),
+and the check and the address agree by construction. An own-slot
+instruction in code whose flag is not set -- which only a crafted image
+could hold -- runs with `NONE` and `UNREGISTERED` and raises for every
+object receiver, as does own-slot code run in an activation with no
+`current_class`.
+
+**Private and super slot accessors.** `Lookup::SlotAccessor` answers the
+level whose own slot the field is, and `Resolved::Slot` and
+`Target::Slot` carry it with a recorded guard. Every fresh lookup -- the
+uncached path and a site's miss alike (`resolve::resolved`) -- carries
+`DispatchId::VACANT`, which no header holds, so an uncached access always
+walks and the reference lowering stays the uncached oracle. A cache fill
+records the receiver's guard when the receiver has the level, `NONE`
+otherwise (`inline_cache.rs`'s `slot_guard`); public and protected entries
+record `NONE` and check nothing. `act`'s slot arm, for a private or super
+chain, calls `Mutator::slot_level_holds` (`interpreter/slots.rs`, out of
+line): the entry's guard compared with the receiver's, then the caches'
+*verified pair*, then `Heap::receiver_has_level`. The verified pair is one
+(guard, level) pair per heap (`InlineCaches::verified_slot_level`): a walk
+that passed on a cached path records it, it is never recorded or answered
+for `NONE`, and invalidating the caches clears it. It records a
+verification the walk made and decides nothing, on the same assumption as
+an activation's recorded guard. A failed check raises:
+
+> `<receiver> no longer has the slots of <class>, which the slot accessor <selector> addresses`
+
+A super send whose handler is a slot accessor is checked before `act`
+(`Mutator::check_super_handler_slot`, from `decide_super_send` and `miss`),
+walking every time, and `record` never caches such a handler, so no hit
+bypasses the check.
+
+**What the shape cost.** Measured against master (`733c15bd`) and between
+the tasks, three pinned release builds a side: every program within noise,
+`bench_megamorphic.ns` at +1.3-2.1%, at the edge of build noise and not
+diagnosed ([OPEN-WORK.md](../OPEN-WORK.md), "Next"). Two shapes measured
+worse and were not built. Any heap read inlined into `act`'s slot arm slowed
+every slot accessor, public ones included, by 7-11%, so the check is out of
+line. Without the verified pair a site whose entry recorded one class's
+guard walked for every receiver of another: DeltaBlue's `Plan` subclasses
+the collections' `List`, whose methods read `List`'s private slots, and the
+walk ran about ten million times a run, +3.9%; rewriting the recorded guard
+of the entry that hit instead cut the walks but carried the entry's
+location through every cached send and cost every program 2.5-7.4%.
+
+**The assumption.** A guard names one application, and an application's
+chain does not change while the caches persist. Whatever changes a class
+object's application or chain under an unchanged guard must invalidate the
+caches after it -- `Heap::class_set_application` on a superclass is the
+case -- which road step 5b2's install does. Recorded guards follow the
 guard id's reuse rule ("An application has two ids" above).
 
-The recorded guard and this check come with road step 5b, not with road
-step 3: the atomic install's bulk forward is the first way a running
-activation's receiver can change shape, and edit-and-continue the next --
-today the decoder's in-place fills touch only its own
-placeholders and `Heap::class_set_application` runs only while the kernel
-boots -- so before it there is nothing for them to catch. The recorded
-guard will live in the activation stack's entry alone; a reified frame has
-no field for it. An activation resumed from a frame (road step 7) starts
-with `NONE`, so its first own-slot access takes the cold check, and a cold
-check that passes records the receiver's current header guard, so the
-accesses after it take the hot path again. Reading the guard afresh from the
-header on resume instead would defeat the check: after a bulk forward it
-would read the replacing object's own guard, which always matches that
-object.
-One cold check per resumed activation buys eight bytes in every reified
-frame, which `bench_block.ns` reifies once per iteration (decided with the
-user on 2026-10-03).
+**A reified frame has no field for it.** The recorded guard and the entered
+level live in the activation stack's entry alone. An activation resumed
+from a frame (road step 7) will start with `NONE`, so its first own-slot
+access takes the cold check, and a passing cold check records the
+receiver's current guard. Reading the guard afresh from the header on
+resume instead would defeat the check: after a bulk forward it would read
+the replacing object's own guard, which always matches that object. One
+cold check per resumed activation buys eight bytes in every reified frame,
+which `bench_block.ns` reifies once per iteration (decided with the user
+on 2026-10-03). Where a resumed activation's entered level comes from is
+road step 7's to decide.
 
-## Planned: `become:` as an eager bulk forward
+The tests are `builtins/reflection.rs`'s, under both lowerings: an
+initializer, a lazy getter, a simultaneous clause, a private and a super
+slot read, a cache hit and a super slot handler each raise after their
+receiver was forwarded to an object of another shape, and an initializer
+forwarded to its own application or to a subclass's instance proceeds.
 
-Would change: `become:` exists as one bulk, one-way forward of an array of
-old objects to an array of new ones, done eagerly, as Primordial Soup does,
-and only mirrors reach it: it is a leaf on the VM mirror, and its one
-caller is the shipped mirrors module's atomic install. Road step 5, whose
-consumer is that install ([liveness-and-reflection.md](liveness-and-reflection.md),
-"Mirrors and MirrorBuilder"). Eager forwarding and its reach only through
-mirrors were decided with the user on 2026-10-05.
+## `become:` is an eager bulk forward
+
+`become:` exists as one bulk, one-way forward of an array of old objects to
+an array of new ones, done eagerly, as Primordial Soup does, and only
+mirrors reach it: it is a leaf on the VM mirror. Built by road step 5b1
+(2026-10-18,
+[its plan](../superpowers/plans/2026-10-18-1236-become-and-recorded-guards.md));
+its one caller, the shipped mirrors module's atomic install, is road step
+5b2's ([liveness-and-reflection.md](liveness-and-reflection.md), "Planned:
+road step 5b2, MirrorBuilder and atomic installation"), so today only tests
+reach it, handing the VM mirror to a test program from the host, which no
+program can do. Eager forwarding and its reach only through mirrors were
+decided with the user on 2026-10-05.
 
 **The forward.** Primordial Soup's `Heap::BecomeForward`
 (`prior-art/primordialsoup/vm/heap.cc:1072-1229`) validates both arrays,
@@ -2073,44 +2164,74 @@ remembered set as it goes; the interpreter clears its lookup cache in the
 prologue every such pass runs (`GCPrologue`,
 `prior-art/primordialsoup/vm/interpreter.cc:1906-1908`), and primitive 183,
 `Heap_becomeForward` (`prior-art/primordialsoup/vm/primitives.cc:2271-2281`),
-is its only entry. In ns-next the forward takes two arrays of equal size
-and validates every pair before it changes anything ("What the forward
-refuses" below); it copies each old object's identity hash into the new
-one, so that an identity-keyed collection still finds what it holds; it
-turns each old object into a forwarder -- the forwarded format, the new
-object in its class word, the scavenger's forwarder ([memory.md](memory.md),
-"Generations") -- and then one walk over every root the collector traces
-(`trace.rs`) and every heap object rewrites every reference to an old object
-into its new one, through the same knowledge of pointer words the collector
-uses (`heap/object.rs`'s `pointer_ranges`), keeping the remembered set as
-the collector's own rewrites do. Last, the inline caches are flushed, all of
-them (`Interpreter::invalidate_caches`); scoping the invalidation to the
-applications an install affects stays deferred
-([liveness-and-reflection.md](liveness-and-reflection.md), "Caches and their
-dependency keys"). The forwarders exist only while the forward runs, as the
-scavenger's exist only while a scavenge does: once the walk ends nothing
-names one, and they are garbage. The walk is the one the divorce of a live
-frame for edit-and-continue needs ("The object layout" above), so the two
-share one mechanism.
+is its only entry. In ns-next the leaf is the `MIRROR` row
+`elementsOf:forwardIdentityToElementsOf:ifFail:`, reported
+`forwardIdentityTo:` since a row's leaf arity is its reported selector's
+(`ReflectionPrimitive::ForwardIdentity`, `builtins/reflection.rs`'s
+`forward_identity`). It takes two `Array`s, answers `nil`, and declines --
+so the `ifFail:` block runs -- on any refusal, having changed nothing.
+`Heap::forward_identity` validates every pair before it writes anything
+("What the forward refuses" below); then, pair by pair, the new object
+takes the old one's identity hash, so that an identity-keyed collection
+still finds what it holds (the last pair's, for a merge), and the old
+object becomes a forwarder -- the forwarded format, the guard `FORWARDED`,
+the new object in its class word, its word count kept so the space stays
+walkable. Then one walk rewrites every handle: `forward_everything`, the
+walk the compaction and the move stress mode run, through a fourth
+`Relocation`, `IdentityForward`, which answers each old object's
+replacement and every other offset unchanged, over every handle the heap
+holds -- the activation stack, the reified mixins, the host roots and the
+symbol table among them -- and every heap object, through the same knowledge of pointer words the collector uses
+(`heap/object.rs`'s `pointer_ranges`); `world::forward_identity` then
+forwards the step state's own roots (`StepRoots`) through the answer. The
+walk writes words without the barrier, as the collector's own rewrites do,
+and keeps the remembered set itself: after each holder's words are
+rewritten, `IdentityForward::holder_done` says whether one of them names a
+young object now, and every such old holder is remembered
+([memory.md](memory.md), "The write barrier"). Last, the inline caches are
+flushed, all of them (`InlineCaches::invalidate`, the verified pair of
+"What a slot access checks" above included); scoping the invalidation to
+the applications an install affects stays deferred
+([liveness-and-reflection.md](liveness-and-reflection.md), "Caches and
+their dependency keys").
 
-**What the eager forward spares.** Since no forwarder outlives the forward,
-nothing outside it ever meets one. No send entry unforwards its receiver; a
-super or private lexical send's cache hit needs no check of its receiver for
-the forwarded format; no heap accessor has a cold path that follows a
-forwarder; `==` compares two handles and nothing more; no leaf fails on a
-forwarded argument to be retried after following it; no application id has
-to be a forwarder's never-matching guard ("The reserved guard values sit at
-the low end" above); and the image encoder, `Heap::describe` and the host
-roots see only live objects. Spur's lazy forwarders, which stay in the heap
-after `become:with:twoWay:copyHash:`, pay for every one of these: a read
-barrier on send through the forwarder's class index, an explicit one in
-super sends (`ensureReceiverUnforwarded`,
+It runs inside the leaf, in the middle of a step, not at the next
+safepoint: no instruction runs between the forward and the leaf's answer,
+so it is atomic. Nothing live moves -- the forwarded objects become garbage
+-- so no move epoch changes, as none does for `Heap::class_set_application`'s
+heap walk, which also runs inside a step (decided with the user on
+2026-10-18). Once the walk ends nothing names a forwarder: a young one
+leaves the space at the next scavenge, an old one at the next full
+collection. An old forwarder already in the remembered set stays there
+until its target is tenured or a full collection runs, its class word the
+only word a scavenge reads of it. The walk is the one the divorce of a live
+frame for edit-and-continue needs ("The object layout" above), so the two
+share one mechanism. The tests are `heap.rs`'s and `heap/world.rs`'s (every
+kind of holder rewritten, the hash copied, refusals changing nothing, an
+old holder of a young replacement remembered, a forwarder garbage
+afterwards) and `builtins/reflection.rs`'s for the leaf.
+
+**What the eager forward spares.** Since nothing names a forwarder once the
+forward ends, nothing outside it ever meets one. No send entry unforwards
+its receiver; a super or private lexical send's cache hit needs no check of
+its receiver for the forwarded format; no heap accessor has a cold path
+that follows a forwarder; `==` compares two handles and nothing more; no
+leaf fails on a forwarded argument to be retried after following it; the
+`FORWARDED` guard a forwarder carries is never compared against anything
+("The reserved guard values sit at the low end" above); and the image
+encoder, `Heap::describe` and the host roots see only live objects. Spur's
+lazy forwarders, which stay in the heap after
+`become:with:twoWay:copyHash:`, pay for every one of these: a read barrier
+on send through the forwarder's class index, an explicit one in super sends
+(`ensureReceiverUnforwarded`,
 `prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:6637-6643`: "To
 maintain the invariant that all receivers are unforwarded we need an
 explicit read barrier in the super send cases"), and primitives that
 unforward their arguments on failure. Each reader that forgets its check is
 silent wrong output at exit status 0, and a JIT would carry every check
-into generated code.
+into generated code. What a forward does change under a running activation
+-- its receiver, now an object of another shape -- is what the recorded
+guards check ("What a slot access checks" above).
 
 **Why eager.** The only consumer, the atomic install, finds the instances it
 migrates and the class objects it updates by a walk of the heap anyway --
@@ -2129,7 +2250,7 @@ Newspeak's `ObjectMirror>>setClass:` forwards nothing: it calls
 (`prior-art/newspeak/MirrorsForSqueak.ns:1364-1366`), and Primordial Soup
 offers no `setClass:` at all, its tests of it empty
 (`prior-art/primordialsoup/newspeak/MirrorTesting.ns:772-775`). A
-shape-changing `setClass:` is deferred beyond road step 5b.
+shape-changing `setClass:` is deferred beyond road step 5b2.
 
 **Only mirrors reach it.** No program sends `become:`: `Object` declares no
 such method, and the forward is a leaf on the VM mirror, which only the
@@ -2145,37 +2266,48 @@ installation of an edit (`installAll`,
 `prior-art/primordialsoup/newspeak/Mirrors.ns:309-326`), and SOMns, a
 Newspeak with values and actors, has no `become:` at all.
 
-**What the forward refuses.** It refuses an immediate on either side, which
-has no object to forward, and a split or a chain -- an old object named
-twice, or an object both forwarded and a target -- as Primordial Soup's
-validation does (`heap.cc:1078-1113`), which accepts a merge, several old
-objects forwarded to one new one. Beyond the leaf's own validation, what is
-forwarded is decided by its one caller: the atomic install forwards only
-the instances it migrates, each to its new-shape replacement, and those are
-instances of the classes the edit names, never of a shipped mixin, since
-the mirrors refuse every edit to one
-([liveness-and-reflection.md](liveness-and-reflection.md), "Mirrors and
-MirrorBuilder"). So no class object, closure, frame object or symbol, and
-no string, large integer or boxed float, is ever forwarded, and no object
-on a path from shipped code to the VM mirror: every instance a platform
-path names is an instance of a shipped mixin, and so is every kernel-made
-object a program can reach, a VM error's `Error` or `MessageNotUnderstood`
-and its `Message` among them. A kernel method whose receiver is an instance
-of a user subclass the install migrated fails the slot-access check
-("Planned with road step 5: what a slot access checks" above) rather than
-writing the old layout into the new shape. Whether the leaf also checks the
-shipped mixins itself, as a second lock behind the mirrors' refusal, is
-left to road step 5b's plan.
+**What the forward refuses.** `Heap::forward_identity` refuses, as
+Primordial Soup's validation does (`heap.cc:1078-1113`), arrays of unequal
+sizes and a split or a chain -- an old object named twice, or an object both
+forwarded and a target (`ForwardRefusal`) -- and accepts a merge, several
+old objects forwarded to one new one. The leaf is a lock of its own besides
+(decided with the user on 2026-10-18): every element on either side must be
+an ordinary instance (format `FixedPointers`) of a class that is no builtin
+and whose application's mixin is not shipped (read as the mirrors read it,
+so a class side whose instance side is shipped counts as shipped), and no
+reified mixin and no value a mirror withholds -- the VM mirror and the
+recorded shipped module instances (`may_be_forwarded`). So no immediate,
+class object, closure, frame object, `Array`, symbol, string, large integer
+or boxed float is ever forwarded, nothing whose layout the VM reads
+natively, and no object on a path from shipped code to the VM mirror: every
+instance a platform path names is an instance of a shipped mixin, and so is
+every kernel-made object a program can reach, a VM error's `Error` or
+`MessageNotUnderstood` and its `Message` among them. The builtin and the
+withheld tests are not belt and braces: the VM mirror's class is a builtin
+whose mixin is not marked shipped, so the shipped test alone would let it
+through, and forwarding a program object to the mirror would hand the
+capability to every holder of that object. An instance of a program's
+subclass of a shipped class, an `Error` subclass's for one, is forwarded.
+The one caller asks for nothing the lock refuses: the atomic install
+forwards only the instances it migrates, each to its new-shape replacement,
+and those are instances of the classes the edit names, never of a shipped
+mixin, since the mirrors refuse every edit to one. A kernel method whose
+receiver is an instance of a user subclass the install migrated fails the
+slot-access check ("What a slot access checks" above) rather than writing
+the old layout into the new shape.
 
 **Everything stays editable.** A class object keeps its identity when its
 class is edited: the VM writes its fields -- a new application id when
 methods or slots change, a new superclass, a new value refusal -- and every
 reference to it stays valid, so the install forwards no class object and
 no mixin, where Primordial Soup's forwards its old mixins and classes to
-the new ones after the instances (`Mirrors.ns:320-326`). When the slots
-change, the instances migrate: the install allocates each in the new shape,
-copies its slots by name, leaves a slot the edit added `nil` without running
-its initializer, keeps its identity hash, and sends nothing to a user object
+the new ones after the instances (`Mirrors.ns:320-326`); a mixin is
+replaced under its id instead (`Mutator::replace_mixin`;
+[liveness-and-reflection.md](liveness-and-reflection.md), "An edit
+replaces the mixin under its id"). When the slots change, the instances
+migrate: road step 5b2's install allocates each in the new shape, copies
+its slots by name, leaves a slot the edit added `nil` without running its
+initializer, keeps its identity hash, and sends nothing to a user object
 while it does; then one bulk forward replaces all of them at once. A live
 frame gains locals by being divorced into a newly allocated, larger frame
 object, allocated old and born remembered, through the same walk, and
@@ -2278,7 +2410,7 @@ no program can observe, since a value has no identity.
   `Symbol` is a subclass of `String`, refused by `new`, and `=` stays
   class-tight both ways.
 - **`become:` is an eager bulk forward that only mirrors reach** (decided
-  with the user on 2026-10-05; "Planned: `become:` as an eager bulk forward"
+  with the user on 2026-10-05; "`become:` is an eager bulk forward"
   above). One walk of the roots and the heap per forward, as Primordial
   Soup's, rather than Spur's lazy forwarders, because its one consumer, the
   atomic install, walks the heap anyway, while a forwarder that outlives the
@@ -2310,3 +2442,27 @@ no program can observe, since a value has no identity.
   refusal is heap data, not a Rust-side table; and the ids are minted per
   heap, key the application cache and are reclaimed by nothing until live
   editing.
+- **Road step 5b is built as two plans, 5b1 the VM's half of live editing
+  and 5b2 the MirrorBuilder, the atomic install, the weak application
+  cache, the image's edited mixins and run-time compilation**, 5b1 built
+  (four decisions taken with the user on 2026-10-18,
+  [its plan](../superpowers/plans/2026-10-18-1236-become-and-recorded-guards.md)).
+  The bulk forward runs inside its leaf, in the middle of a step, not at
+  the next safepoint, so no instruction runs between the forward and the
+  leaf's answer and it is atomic; nothing live moves, so no move epoch
+  changes. The leaf comes with 5b1 and its Newspeak caller with 5b2's
+  install; tests reach it by handing the VM mirror to a test program from
+  the host. The leaf is a lock of its own: both sides ordinary instances
+  of a class whose mixin is not shipped, besides Primordial Soup's checks
+  -- extended while building it to builtin classes and withheld values,
+  since the VM mirror's class is a builtin whose mixin is not marked
+  shipped ("What the forward refuses" above). Refined while planning: the
+  accessing level a cold check asks for is the application an activation
+  was *entered* at, by its full-width index, recorded beside the guard,
+  not the class object's current application, which 5b2's install
+  rewrites in place under a running activation; and it is recorded only
+  for code that addresses its own slots, so an ordinary send pays one
+  flag test at its push ("What a slot access checks" above). Chosen by
+  measurement while building it: the private and super accessor check out
+  of line, with one verified (guard, level) pair per heap rather than a
+  rewrite of the entry that hit.

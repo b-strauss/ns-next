@@ -494,6 +494,31 @@ Initialization never goes through an accessor ("The initialization itself is not
 accomplished by the setter method"): the instance initializer writes the field
 with `InitializeSlot`.
 
+**A private or super accessor checks its receiver's chain.** A public or
+protected accessor's site is guarded on the receiver's own guard, so its
+field is decided by the receiver; a private one's is guarded on N's
+application ("The private rule, decided once per site" below) and a super
+one's on the running method's, so the field is decided without looking at
+the receiver. Such an accessor's cache entry (`Target::Slot`) records the
+level whose own slot the field is (`Lookup::SlotAccessor`'s application
+index) and the receiver's guard when it was filled, if the receiver had
+that level (`NONE` otherwise); a fresh lookup carries `VACANT` and always
+walks, so the reference lowering stays the uncached oracle. `act`'s slot
+arm, for `Chain::Private` and `Chain::Super`, calls
+`Mutator::slot_level_holds` before `decide_slot_accessor`: the entry's
+guard compared with the receiver's, then the caches' verified (guard,
+level) pair, then a walk of the receiver's chain
+(`Heap::receiver_has_level`), and a receiver whose chain lacks the level
+raises `<receiver> no longer has the slots of <class>, which the slot
+accessor <selector> addresses`. A slot accessor that is the handler of a
+super send nothing understands is checked before `act`
+(`Mutator::check_super_handler_slot`) and never cached. The check is out
+of line because any heap read inlined into the slot arm slowed every
+accessor, public ones included, by 7-11%
+([object-model.md](object-model.md), "What a slot access checks", has the
+mechanism, its measurements and the assumption the verified pair rests
+on).
+
 **A lazy slot's getter is a compiled method, not an accessor** (§6.3.3). Its
 getter has to evaluate the initializer while the slot holds `nil`, so
 `mixin::slot_accessors` gives a lazy slot no getter entry, and
@@ -502,9 +527,11 @@ getter has to evaluate the initializer while the slot holds `nil`, so
 body opens with `Instruction::ReturnSlotIfFilled`, which returns the field
 when it holds anything but `nil`, and otherwise evaluates the initializer,
 stores it with `InitializeSlot` and returns it. Both instructions address
-the field from the activation's slot base, its `current_class`'s own
-`own_slot_base` (`Heap::activation_slot_base`) -- the getter's defining
-class, as an initializer's is the level it initializes. The getter has no
+the field from the activation's slot base, the own `own_slot_base` of the
+application the activation was entered at (`Heap::activation_slot_base`)
+-- the getter's defining class, as an initializer's is the level it
+initializes -- after checking the activation's recorded guard
+([object-model.md](object-model.md), "What a slot access checks"). The getter has no
 fast path: every send of it, filled or not, activates it. A
 `MethodFastPath::LazySlot` once answered a filled slot without an
 activation, as an accessor does, but its arm sat in `act_with_base`, which
@@ -567,7 +594,7 @@ lets a primitive method carry its row ("Primitive methods" below). **A
 MirrorBuilder must seal the mirror's class when it arrives**: a method added
 to or replaced on it would be found by a sent mirror send and bypassed by
 every `SendMirror` and primitive method, and the two would then disagree.
-Road step 5b's MirrorBuilder seals it by refusing every edit to a shipped
+Road step 5b2's MirrorBuilder seals it by refusing every edit to a shipped
 mixin ([liveness-and-reflection.md](liveness-and-reflection.md), "Mirrors
 and MirrorBuilder").
 
@@ -943,9 +970,9 @@ the id lives: every read goes through `Heap::dispatch_id` or
 `DispatchId::NONE`, 0, which a value whose class has no application answers
 — only a crafted image makes one — and which is never cached;
 `DispatchId::VACANT`, 1, which guards a site state and which no value
-answers; and `DispatchId::FORWARDED`, 2, reserved as a forwarder's guard,
-which the eager bulk forward of road step 5b does not need, since no send
-meets a forwarder; whether it stays reserved is left to that step's plan
+answers; and `DispatchId::FORWARDED`, 2, the guard the bulk forward stamps
+on each forwarder, never minted, so that a cache could never hit on one --
+and no send meets one, since the forward is eager
 ([object-model.md](object-model.md), "The reserved guard values sit at
 the low end"). The counter mints from 3 and below 2^22; an exhausted counter
 hands out `NONE`, so that application runs uncached.
@@ -1270,10 +1297,13 @@ fills the same index again. A debug-build stress mode,
 (`interpreter/safepoint.rs`, ahead of the move stress mode's schedule, either
 mode keeping the safepoint request set), so that filling, transitions and
 invalidation run under the whole suite; `Interpreter::cache_invalidations`
-counts them. Road step 5's atomic install will be the first mutation, and it
-invalidates every cache this way after its bulk forward
-([object-model.md](object-model.md), "Planned: `become:` as an eager bulk
-forward"). Scoping an invalidation to the application a change affects — the
+counts them. The bulk forward invalidates every cache this way after its
+walk ([object-model.md](object-model.md), "`become:` is an eager bulk
+forward"), the private and super slot accessors' verified pair included
+("Slot accessors" above), so road step 5b2's atomic install, the first
+mutation, invalidates through it, and invalidates again after whatever it
+changes of a class object's application or chain under an unchanged
+guard. Scoping an invalidation to the application a change affects — the
 dependency key of [liveness-and-reflection.md](liveness-and-reflection.md),
 "Caches and their dependency keys" — is deferred beyond that step.
 
@@ -1477,9 +1507,9 @@ interpreter's measurement cannot see:
 
 **The cost accepted.** A copy that must be restamped wherever a class's
 application changes (`Heap::class_set_application`, the decoder's one
-stamping pass). The planned `become:` will need no restamp: it rewrites
-every reference to an old object into its target, which keeps its own id
-([object-model.md](object-model.md), "Planned: `become:` as an eager bulk
+stamping pass). `become:` needs no restamp: it rewrites every reference to
+an old object into its target, which keeps its own id
+([object-model.md](object-model.md), "`become:` is an eager bulk
 forward"). A debug build's check in `Heap::dispatch_id` catches a stale
 copy in every test that dispatches on one.
 
@@ -1506,20 +1536,20 @@ that full-width index, separate from the 22-bit guard id; with ids that are
 never reused while a key can name them, the cache is free to become weak
 ([memory.md](memory.md), "Weak references") -- it stays strong until live
 editing reclaims an id ([object-model.md](object-model.md), "An application
-has two ids"). And no cache ever meets a forwarder: `become:` will be an
-eager bulk forward ([object-model.md](object-model.md), "Planned:
-`become:` as an eager bulk forward", road step 5b), whose forwarders exist
-only while it runs, rewritten out of every root and every object before
-any send runs again, after which every inline cache is flushed. So no send
+has two ids"). And no cache ever meets a forwarder: `become:` is an eager
+bulk forward ([object-model.md](object-model.md), "`become:` is an eager
+bulk forward"), whose forwarders nothing names once it ends, rewritten out
+of every root and every object before any send runs again, after which
+every inline cache is flushed. So no send
 entry unforwards its receiver, and a super send or a private lexical send,
 which guards on the running method's or N's application rather than on the
 receiver's header, needs no check of the receiver for the forwarded format
 on a hit -- the read barriers Spur's lazy forwarders cost it on every send
 and explicitly in super sends (`ensureReceiverUnforwarded`,
 `prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:6637-6643`). What a
-super or private slot accessor's hit still checks after an install
-migrated its receiver is the recorded guard ([object-model.md](object-model.md),
-"Planned with road step 5: what a slot access checks").
+super or private slot accessor's hit still checks after a forward
+changed its receiver's shape is the recorded guard ("Slot accessors"
+above; [object-model.md](object-model.md), "What a slot access checks").
 
 An immediate's guard comes from a table indexed by its tag, and for the
 constant tag by the constant, since `nil`, `true` and `false` share a tag but
@@ -1527,9 +1557,8 @@ have three guards. At 22 bits the guard ids can run out where a `u32`
 counter practically could not; running out keeps the rule of "The dispatch
 id" above, an application without a guard id running uncached (`NONE`). The
 guard id serves only as a guard -- in object headers and inline- and
-global-cache entries, and from road step 5b in recorded guards
-([object-model.md](object-model.md), "Planned with road step 5: what a slot
-access checks") -- and every identity comparison of applications uses the
+global-cache entries, and in recorded guards
+([object-model.md](object-model.md), "What a slot access checks") -- and every identity comparison of applications uses the
 full-width index instead: the application cache's key and value,
 `behavior:sharesApplicationWith:` (`Kernel.ns`), class-object equality
 (`builtins/value.rs`), and the global cache's `Lexical` key, which never

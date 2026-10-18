@@ -2688,22 +2688,25 @@ above); `PlatformFactory` passes it on only to the factories of the shipped
 modules it builds on first demand -- `TranscriptFactory`'s, `TimeFactory`'s,
 `TypedArraysFactory`'s and `MirrorsFactory`'s -- and a user module would receive it only if a
 shipped module passed it on to one, which none does: each root keeps it in
-a private slot. The planned `become:` ([object-model.md](object-model.md),
-"Planned: `become:` as an eager bulk forward") will keep it that way,
-because no program sends it: it is to be a leaf on the mirror, which the
-shipped mirrors module alone uses, for road step 5b's atomic install, and the
-install forwards only the instances it migrates, of classes a program
-edited -- never of a shipped mixin, since the mirrors refuse every edit to
-one ([liveness-and-reflection.md](liveness-and-reflection.md), "Planned:
-road step 5b, MirrorBuilder and atomic installation"). So no object a shipped name
+a private slot. `become:` ([object-model.md](object-model.md),
+"`become:` is an eager bulk forward") keeps it that way, because no program
+sends it: it is a leaf on the mirror, which the shipped mirrors module
+alone is to use, for road step 5b2's atomic install, and the install
+forwards only the instances it migrates, of classes a program edited --
+never of a shipped mixin, since the mirrors refuse every edit to one
+([liveness-and-reflection.md](liveness-and-reflection.md), "Planned: road
+step 5b2, MirrorBuilder and atomic installation"); the leaf itself refuses
+every instance of a shipped mixin or a builtin class and every withheld
+value, the mirror among them ([object-model.md](object-model.md), "What
+the forward refuses"). So no object a shipped name
 names, no class object and no kernel-made object a program can reach, such
 as a VM error's `Error` and its `Message`, is ever forwarded; the path to
 the mirror runs only through class objects and the value roots of the seven
 shipped modules, so no program will be able to redirect a reference that
 leads shipped code to the mirror. A kernel method running on an instance of
-a program's subclass that the install migrated fails the planned
-slot-access check ([object-model.md](object-model.md), "Planned with road
-step 5: what a slot access checks") rather than writing the old layout into
+a program's subclass that the install migrated fails the slot-access
+check ([object-model.md](object-model.md), "What a slot access checks")
+rather than writing the old layout into
 the new shape. Six things keep it that way, and loosening any one of them
 lets a program claim every primitive:
 
@@ -3233,7 +3236,7 @@ Rust beside them.
 
 - **Compiling each method on its first call.** It touches only the half of
   the boot that compiling took, leaves parsing at every start, and puts a
-  "not yet compiled" state into the lookup, the image, road step 5b's
+  "not yet compiled" state into the lookup, the image, road step 5b2's
   atomic install and a later JIT; a large application reaches much of the
   kernel anyway.
 - **An embedded heap snapshot of the shipped world**, as Primordial Soup
@@ -3924,10 +3927,10 @@ mixin's method table, where `mixin::slot_accessors` puts no accessor
 getter for it; a mutable lazy slot keeps its ordinary setter. The
 instance initializer skips lazy slots. Both instructions address the
 field at the activation's slot base plus the slot's `own_index`, the base
-being the own `own_slot_base` of the activation's `current_class`
-(`Heap::activation_slot_base`) -- for the getter its defining class, for
-an initializer the level it initializes -- so no activation carries a
-base of its own. Every read of a lazy slot therefore activates its
+being the own `own_slot_base` of the application the activation was
+entered at (`Heap::activation_slot_base`) -- for the getter its defining
+class, for an initializer the level it initializes -- so no activation
+carries a base of its own. Every read of a lazy slot therefore activates its
 getter, filled or not. A `MethodFastPath::LazySlot` answered a filled one
 without an activation, but its arm, inlined into every send site of
 `vm::run`, slowed every method send; the getter gave it up
@@ -4301,7 +4304,7 @@ needs a name for.
   of `Map`, not a kernel class of its own beside it, because the two differ
   in how a key is found and compared and by those three selectors, not in
   representation, and nothing in the kernel needs one: its first user is
-  to be road step 5b's atomic install, which maps old objects to new ones
+  to be road step 5b2's atomic install, which maps old objects to new ones
   and must not run a program's `=`. A class side is not inherited, so
   `IdentityMap` declares its own `new` and `withAll:`
   (`goldens/library/collection/an_identity_map_compares_keys_by_identity`).

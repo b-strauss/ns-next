@@ -194,9 +194,10 @@ the next scavenge -- moved or reclaimed, silently, at exit status 0. Only an
 initializing store into an object just allocated skips the barrier, which
 is why every old allocation outside the image decoder is born remembered;
 besides those, only the collector's own rewrites (a scavenge, a
-compaction, a move), which keep the remembered set themselves, and the
-replacement of resolved futures, which runs only before a full collection
-empties the nursery, write words without it.
+compaction, a move) and the bulk forward behind `become:`
+(`Heap::forward_identity`), which keep the remembered set themselves, and
+the replacement of resolved futures, which runs only before a full
+collection empties the nursery, write words without it.
 `NS_NEXT_STRESS_SCAVENGE`'s verification of the remembered set, and a
 debug build's poison over the nursery a scavenge vacated, are what find a
 breach (`memory.md`, "Generations").
@@ -273,7 +274,13 @@ its own application (`object-model.md`, "Three layers, not one").
 **Compiled code lives on the mixin, and `Instruction::InitializeSlot`'s
 `own_index` is mixin-relative**, resolved against the activation's `slot_base`
 at run time, because one mixin's code is shared by every application of it;
-`vm_initializer.rs` pins it (`compiler.md`).
+`vm_initializer.rs` pins it (`compiler.md`). The slot base is that of the
+application the activation was *entered* at, never the class object's
+current one, and **every slot access whose index was decided without looking
+at the receiver checks a recorded guard first** -- the own-slot
+instructions, and a private or super slot accessor -- or a receiver the bulk
+forward replaced is written in the old layout at exit status 0
+(`object-model.md`, "What a slot access checks").
 
 **`outer` walks the *lexical* declaration chain, never the receiver's dynamic
 class** — `current_class`, then each class object's declaring-class field

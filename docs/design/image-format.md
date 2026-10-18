@@ -2113,9 +2113,9 @@ mismatched `home` as its own untrusted-input case.
 Would change: a program a MirrorBuilder edited is written to an image and
 loads back edited -- every mixin it names now, with its compiled code, is a
 row of the mixin table, whether a module declared it or an install put it
-there (decided with the user on 2026-10-05; road step 5b,
+there (decided with the user on 2026-10-05; road step 5b2,
 [liveness-and-reflection.md](liveness-and-reflection.md), "Planned: road
-step 5b, MirrorBuilder and atomic installation").
+step 5b2, MirrorBuilder and atomic installation").
 
 Today the rows come from what the modules declared: `image::mixins::encode`
 takes the module roots' mixins and plans one tree per module from them
@@ -2123,8 +2123,7 @@ takes the module roots' mixins and plans one tree per module from them
 the encoder refuses a class object whose mixin is part of no module the
 image carries (`image/encode.rs`). An edit installs a fresh mixin under the
 old one's id ([liveness-and-reflection.md](liveness-and-reflection.md),
-"Planned with road step 5: an edit replaces the mixin under its id"), so
-the encoder walks each module's tree through the ids to the mixins they
+"An edit replaces the mixin under its id"), so the encoder will walk each module's tree through the ids to the mixins they
 name now: an edited mixin is the row of the declaration it replaced, in
 the same place of the same tree, and its code enters the code table like
 any other. Nothing about the format's trust changes: a row an edit
@@ -2134,7 +2133,7 @@ carries one. This is the step toward the graph style for user-defined
 behaviour that "How upstream compares" below names, taken in the table
 style: the row is the unit, not a graph of method objects.
 
-Open, for road step 5b's plan:
+Open, for road step 5b2's plan:
 
 - **Code an older version of a mixin still runs.** A closure keeps the code
   it was made with, and a frame the code it was running, after an edit
@@ -2177,7 +2176,7 @@ edges, and reuses one format for isolate messages. We get artifacts in kilobytes
 rather than a ~1.27 MB floor, and hold the untrusted-input invariant cheaply
 because a hostile file cannot replace a shipped class. **The decision is to
 stay with the table style**, and to move the line one step toward the graph
-style for *user-defined* behaviour only -- with road step 5b's edits, as rows
+style for *user-defined* behaviour only -- with road step 5b2's edits, as rows
 of the mixin table ("Planned: edited mixins in the image") -- never for the
 shipped world.
 

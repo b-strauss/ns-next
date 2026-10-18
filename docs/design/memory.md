@@ -1111,9 +1111,9 @@ creator's frame record without registers.
   may have a latency cost as well as a memory one.
 - **The application cache grows without bound** in the presence of live editing,
   because every re-application mints a fresh entry that nothing evicts. It is
-  settled with road step 5b's edits, which replace a mixin under its id
-  ([liveness-and-reflection.md](liveness-and-reflection.md), "Planned with
-  road step 5: an edit replaces the mixin under its id"). Its key is a pair
+  settled with road step 5b2's edits, which replace a mixin under its id
+  ([liveness-and-reflection.md](liveness-and-reflection.md), "An edit
+  replaces the mixin under its id"). Its key is a pair
   of the heap's ids since road step 3a, so evicting weakly is decidable; it
   stays strong until live editing reclaims an id ("Weak references" below).
 
@@ -1630,20 +1630,22 @@ the cache's key and value use an application's full-width index, never its
 22-bit guard id, and the reuse rules: a full-width index is reclaimable once
 no class object, no application-cache key or value and no other
 application's superclass link names it; a guard id once no object header, no
-inline- or global-cache entry and no recorded guard names it; a mixin id once
+inline- or global-cache entry and no recorded guard (an activation's, a
+slot accessor's cache entry's or the caches' verified pair) names it; a mixin id once
 the `Mixin` itself is dropped -- its table entry freed, no declaration,
 enclosing mixin or code holding it -- and no application, no
 application-cache key or value and no class object's applied-clause field
 names it ([object-model.md](object-model.md), "An application has two ids").
 A class's change of application restamps every instance's header by a heap
 walk (`Heap::class_set_application`) before the old guard id could become
-reclaimable. Nothing drops a mixin before live editing, so the ids are
+reclaimable. Nothing drops a mixin, a version an edit superseded included
+(`Tables::superseded`), so the ids are
 minted and none is reclaimed, and the cache stays strong until then (decided
 with the user on 2026-10-03); its unbounded growth under live editing
 ([liveness-and-reflection.md](liveness-and-reflection.md)) ends with the
-first edit's reclamation, which road step 5b's atomic install brings
+first edit's reclamation, which road step 5b2's atomic install brings
 ([liveness-and-reflection.md](liveness-and-reflection.md), "Planned: road
-step 5b, MirrorBuilder and atomic installation"). The same per-mixin id serves dispatch's open
+step 5b2, MirrorBuilder and atomic installation"). The same per-mixin id serves dispatch's open
 option of guarding a private lexical site on N's mixin
 ([dispatch.md](dispatch.md), "Decisions").
 
@@ -1898,11 +1900,11 @@ object's size is reflective and rare -- edit-and-continue adding locals to a
 live activation, a MirrorBuilder adding or removing slots of live instances
 (requirements 2 and 3 of
 [liveness-and-reflection.md](liveness-and-reflection.md)) -- and will take a
-new object: for instances, road step 5b's atomic install will forward the old
-ones to their replacements in one bulk forward, a walk of every root the
-collector traces (`trace.rs`) and every heap object that rewrites every
-reference ([object-model.md](object-model.md), "Planned: `become:` as an
-eager bulk forward"); for a frame, the activation will be divorced into the
+new object: for instances, road step 5b2's atomic install will forward the old
+ones to their replacements in one bulk forward, which exists: a walk of every
+root the collector traces (`trace.rs`) and every heap object that rewrites
+every reference ([object-model.md](object-model.md), "`become:` is an eager
+bulk forward"); for a frame, the activation will be divorced into the
 larger frame object and the VM will rewrite the references to the old one by
 the same walk, the new frame allocated old and born remembered ("The object
 layout", there).
@@ -2225,12 +2227,12 @@ gates name five stress modes, `SCAVENGE` among them; and "Every store into
 an existing object goes through `heap.rs`'s store accessors and their write
 barrier" is an invariant of its own. Still to
 come: "The
-VM mirror is a capability" gains, as a consequence, that no program reaches
-`become:` -- a leaf on the mirror that only the shipped mirrors module's
-atomic install uses -- and that the mirrors refuse every edit to a shipped
-mixin, which seals the mirror's class and keeps every object a shipped name
-names out of the forward (road step 5b; [object-model.md](object-model.md),
-"Planned: `become:` as an eager bulk forward"). "Decided per activation from the
+VM mirror is a capability" gains, as a consequence, that the mirrors refuse
+every edit to a shipped mixin, which seals the mirror's class (road step
+5b2). No program reaches `become:` already, since it is a leaf on the
+mirror, and the leaf refuses every shipped instance, builtin instance and
+withheld value itself ([object-model.md](object-model.md), "`become:` is an
+eager bulk forward", "What the forward refuses"). "Decided per activation from the
 block's `outer_reach`" stands, since the divorce keeps that rule.
 
 ## Generations
@@ -2333,15 +2335,20 @@ A Cheney copy of the nursery's survivors (`heap/scavenge.rs`), as Spur's
   one joins the remembered set.
 - **Forwarders.** A copied object's old place becomes a forwarder: its
   header's format the forwarded one, its class word naming the copy, the
-  format road step 5b's bulk forward writes too, while it runs
-  ([object-model.md](object-model.md), "Planned: `become:` as an eager bulk
+  format the bulk forward writes too, with the guard `FORWARDED`
+  ([object-model.md](object-model.md), "`become:` is an eager bulk
   forward"). A reference to a forwarder is followed along the whole chain
   (`evacuate`), and the object at its end is copied only if it is young and
   not already in the future survivor space, as Spur's
   `scavengeReferentsOf:` decides (`cointerp.c:43278`, the
-  `isReallyYoungObject:` test at `:43316-43322`). Since the bulk forward
-  leaves no forwarder behind, every chain a scavenge meets is one link of
-  its own. The copy takes the whole allocation, its overflow word
+  `isReallyYoungObject:` test at `:43316-43322`). A young object is copied
+  once per scavenge, and nothing names a bulk forward's forwarder once the
+  forward ends, so every chain a scavenge meets is one link of its own. A
+  bulk forward's old forwarder that is remembered -- its class word names
+  a young replacement -- stays in the set until its target is tenured or a
+  full collection runs; its class word is the only word a scavenge reads
+  of it, which keeps the replacement alive at most as long as it is
+  remembered. The copy takes the whole allocation, its overflow word
   included, and moves a `ByteArray`'s data to the copy's alignment
   ("Every mover realigns a `ByteArray`'s data" below).
 - **Where a survivor goes.** To the future survivor space, its age one
@@ -2473,7 +2480,12 @@ rule. Every store into an existing object goes through one of them:
 decoder, as above. A married frame's registers live on the activation
 stack, which is a root, and take no barrier; nor does a store into a young
 object. The collector's own rewrites -- the scavenge, the compaction, the
-move -- keep the remembered set themselves; the replacement of resolved
+move -- keep the remembered set themselves, and so does the bulk forward
+(`Heap::forward_identity`), which writes words without the barrier beside
+them: it rewrites words in place as a compaction does, and after each holder's
+rewrite remembers every old one that names a young object now
+(`IdentityForward::holder_done`) ([object-model.md](object-model.md),
+"`become:` is an eager bulk forward"); the replacement of resolved
 futures, which may store a young value into an old object, runs only
 before a full collection, which empties the nursery and the set; and the
 decoder's fills store old values into old objects. The debug check of the

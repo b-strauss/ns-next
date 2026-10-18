@@ -43,7 +43,8 @@ first.
 | The boot: the shipped modules' compiled code embedded in the binary, and four of the six built on their first demand | Complete | 2026-10-15 | [precompiled-shipped-code](superpowers/plans/2026-10-14-2207-precompiled-shipped-code.md), [shipped-modules-on-first-demand](superpowers/plans/2026-10-15-0900-shipped-modules-on-first-demand.md) |
 | The front end's cost: a corpus benchmark of the syntax crate, the comment attachment on demand, mimalloc in both binaries | Complete | 2026-10-17 | [attach-on-demand](superpowers/plans/2026-10-17-1049-attach-on-demand.md) |
 | Road step 5a — mirrors that read | Complete | 2026-10-18 | [mirrors-that-read](superpowers/plans/2026-10-17-2355-mirrors-that-read.md) |
-| Road step 5b — MirrorBuilder and atomic installation, on `become:` as an eager bulk forward | Not started | — | — |
+| Road step 5b1 — the VM's half of live editing: one id for every version of a mixin, `become:` as an eager bulk forward, recorded guards | Complete | 2026-10-18 | [become-and-recorded-guards](superpowers/plans/2026-10-18-1236-become-and-recorded-guards.md) |
+| Road step 5b2 — MirrorBuilder and atomic installation | Not started | — | — |
 | Road step 6 — inline allocation in the interpreter | Not started | — | — |
 | Road step 7 — an execution model for compiled code | Not started | — | — |
 | Between road steps 7 and 8 — real Newspeak bodies for `whileTrue:`, `whileFalse:` and `do:` | Not started | — | — |
@@ -5488,5 +5489,71 @@ What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the
 activation and thread mirrors, `evaluate:` and `perform:`, `instances` and
 `referringObjects`, metadata through mirrors, `getSlot:` of a lazy slot,
 the indexed elements in `slots`, a mirror on a future the program resolves,
-a mirror's repeated walks, and the reflective checks back in goldens. Road
-step 5b, the MirrorBuilder and the atomic install, is next.
+a mirror's repeated walks, and the reflective checks back in goldens.
+
+## The VM's half of live editing, road step 5b1 (2026-10-18)
+
+Plan: [become-and-recorded-guards](superpowers/plans/2026-10-18-1236-become-and-recorded-guards.md);
+[object-model.md](design/object-model.md), "`become:` is an eager bulk
+forward", "What a slot access checks";
+[liveness-and-reflection.md](design/liveness-and-reflection.md), "An edit
+replaces the mixin under its id".
+
+The first of road step 5b's two plans (decided with the user on
+2026-10-18), the second the MirrorBuilder, the atomic install, the weak
+application cache, the image's edited mixins and run-time compilation.
+Every version of a mixin answers the one id it was first registered
+under: the mixin table's row holds the current version, the id of the
+mixin it is declared in and its module's text, `Heap::replace_mixin`
+installs a fresh mixin under an old id and keeps the version it
+supersedes, and `Mutator::replace_mixin` forgets the applications and the
+synthesized class side built from the old one. The hidden nested-class
+slot, the shipped world's two maps and the reflection leaves' enclosing
+link and text are keyed by the id. A body says whether it addresses its
+own slots (`CompiledCode::addresses_own_slots`), derived as `outer_reach`
+is. `become:` is one bulk, one-way forward inside the VM-mirror leaf
+`elementsOf:forwardIdentityToElementsOf:ifFail:`, the `MIRROR` table's new
+last row: it validates every pair, copies the identity hash, turns each old
+object into a forwarder, rewrites every reference by the walk the
+compaction runs, through a fourth `Relocation`, remembers every old holder
+that names a young object afterwards and flushes every inline cache, in
+the middle of a step and with no move epoch changed; its lock refuses
+anything but an ordinary instance of a class that is no builtin and whose
+mixin is not shipped, and every withheld value, since the VM mirror's
+class is a builtin whose mixin is not marked shipped. An activation whose
+code addresses its own slots records its receiver's guard and the
+application it was entered at, from which its own-slot instructions take
+their slot base; a private or super slot accessor's cache entry records
+its level and the receiver's guard; each access compares the guard, and a
+mismatch walks the receiver's chain for the level and raises an ordinary
+Newspeak error when it is gone. Every program measured within noise of
+master but `bench_megamorphic.ns`, +1.3-2.1%, at the edge of noise.
+
+No existing golden's outcome changed. New tests in `heap.rs`,
+`heap/world.rs`, `interpreter/mod.rs`, `interpreter/shipped_world.rs`,
+`interpreter/inline_cache.rs`, `bytecode.rs`, `compiler/lower.rs`,
+`shipped_code/mod.rs` and `builtins/reflection.rs`. The golden image
+fixture was regenerated for the changed shipped world, only its
+fingerprint changed.
+
+- `c9b6a8e2` -- the plan.
+- `03a0358e` -- every version of a mixin answers the one id it was
+  registered under.
+- `a39c1548` -- a body says whether it addresses its own slots.
+- `15b456de` -- the bulk forward in the heap.
+- `d1dc09a5` -- the forward behind one mirror leaf.
+- `9e67b44d`, `93a680b5` -- the own-slot instructions check a recorded
+  guard, and take their slot base from the entered level.
+- `221d50c1`, `637d3147` -- private and super slot accessors check a
+  recorded guard, with one verified pair per heap; a super send's slot
+  handler checked too.
+- `f4b1280e`, `1a2ed218` -- comments that gave lazy forwarding or the
+  current class as their reason.
+- this commit -- the documents.
+
+What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "Next":
+road step 5b2, with the places still keyed by a mixin's address, the
+question whether an edit of methods alone keeps a class's applications,
+two tests not written, and `bench_megamorphic.ns`'s undiagnosed
+1.3-2.1%. Road step 5b2, the MirrorBuilder and the atomic install, is
+next.

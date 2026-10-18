@@ -235,10 +235,12 @@ the same body per enclosing instance, since a class object is per-instance.
 **`InitializeSlot`'s `own_index` is therefore mixin-relative.** An absolute field index
 baked into shared code would be wrong the moment a second application inserts
 different inherited slots ahead of it. The VM resolves `own_index` against the
-executing activation's slot base — the own `own_slot_base` of its
-`current_class`, which for an initializer is the level it initializes and for a
-lazy slot's getter its defining class (`Heap::activation_slot_base`) — at run
-time.
+executing activation's slot base — the own `own_slot_base` of the
+application it was entered at, which for an initializer is the level it
+initializes and for a lazy slot's getter its defining class
+(`Heap::activation_slot_base`) — at run time, after checking the
+activation's recorded guard ([object-model.md](object-model.md), "What a
+slot access checks").
 
 A bug here is silent wrong output under one application and correct output under
 another. `crates/ns-runtime/tests/vm_initializer.rs` applies one mixin to two
