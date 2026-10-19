@@ -413,9 +413,10 @@ fn source_origin_tags_are_fixed() {
 #[test]
 fn header_flags_are_fixed() {
     use ns_runtime::image::encode;
-    assert_eq!(encode::FLAG_HAS_SOURCE, 1);
+    assert_eq!(encode::FLAG_HAS_SOURCE, 8);
     assert_eq!(encode::FLAG_START, 4);
-    // Bit 2 was `FLAG_STATELESS`; it is retired and never reused.
-    assert_eq!(encode::RETIRED_HEADER_FLAGS, 2);
+    // Bit 2 was `FLAG_STATELESS`, bit 1 the source variant that carried one
+    // text per module; both are retired and never reused.
+    assert_eq!(encode::RETIRED_HEADER_FLAGS, 2 | 1);
     assert_eq!(encode::KNOWN_FLAGS & encode::RETIRED_HEADER_FLAGS, 0);
 }

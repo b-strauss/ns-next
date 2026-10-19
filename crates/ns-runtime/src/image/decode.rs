@@ -180,6 +180,28 @@ pub enum DecodeError {
         declared: u32,
         trees: u32,
     },
+    /// A text of the text table whose parts do not describe a declaration:
+    /// holes out of order, overlapping or outside its range, or a cut text
+    /// whose length is not the range's less the holes'
+    /// (`DeclarationText::from_parts`). Slicing it could not answer the
+    /// text a span names.
+    MalformedText {
+        text: u32,
+    },
+    /// A mixin-table row names a text past the text table.
+    TextIndexOutOfRange {
+        row: u32,
+        index: u32,
+        texts: usize,
+    },
+    /// A mixin-table row names a text with another number of holes than
+    /// the declaration has nested rows: its module's text could not be
+    /// assembled from its declarations.
+    TextHolesMismatch {
+        row: u32,
+        holes: usize,
+        nested: usize,
+    },
     /// One mixin-table row declares a member twice: a method, a slot's
     /// accessor or a nested class under a name another of them already has.
     /// Its rebuilt method table would silently keep only one of the two, and
@@ -643,6 +665,17 @@ impl std::fmt::Display for DecodeError {
                 f,
                 "the image declares {declared} module(s) but its mixin table holds {trees} tree(s)"
             ),
+            DecodeError::MalformedText { text } => {
+                write!(f, "text {text} of the image does not describe a declaration")
+            }
+            DecodeError::TextIndexOutOfRange { row, index, texts } => write!(
+                f,
+                "mixin-table row {row} names text {index}, and the image carries {texts}"
+            ),
+            DecodeError::TextHolesMismatch { row, holes, nested } => write!(
+                f,
+                "mixin-table row {row}'s text has {holes} nested declarations, and the row {nested}"
+            ),
             DecodeError::DuplicateSelector(selector) => write!(
                 f,
                 "a mixin-table row declares member `{selector}` more than once"
@@ -1032,10 +1065,9 @@ impl<'a> Reader<'a> {
 /// What the header says about the rest of the image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Header {
-    /// Whether every module in the module section carries its source text --
-    /// the debug variant. The source is never executed and never re-parsed;
-    /// it is carried so a loaded world can be shown, and eventually exported,
-    /// as `.ns`.
+    /// Whether the image carries its program's source: the text table, and
+    /// per mixin row the index of its text (`FLAG_HAS_SOURCE`). The source
+    /// is never executed, and parsed only by an edit after the load.
     pub has_source: bool,
     /// The graph's one root is an application to start (`FLAG_START`).
     pub start: bool,

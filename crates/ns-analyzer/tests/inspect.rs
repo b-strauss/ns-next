@@ -24,7 +24,7 @@ fn inspect_reports_the_sections_symbols_and_mixins_of_an_image() {
     assert!(!out.contains("stateless"), "{out}");
     assert!(out.contains("start: yes"), "{out}");
     assert!(out.contains("modules: 1"), "{out}");
-    assert!(out.contains("source absent"), "{out}");
+    assert!(out.contains("source: no"), "{out}");
     for section in [
         "header",
         "symbols",
@@ -42,7 +42,7 @@ fn inspect_reports_the_sections_symbols_and_mixins_of_an_image() {
 }
 
 #[test]
-fn inspect_reports_a_debug_variants_source_blob() {
+fn inspect_reports_the_text_table_of_an_image_with_source() {
     let directory = ScratchDirectory::new("debug-source");
     let image = directory.join("app.nsi");
     std::fs::write(
@@ -57,7 +57,8 @@ fn inspect_reports_a_debug_variants_source_blob() {
 
     let (ok, out, error) = ns_next_analyzer(&["inspect".as_ref(), image.as_os_str()]);
     assert!(ok, "{error}");
-    assert!(out.contains("source present"), "{out}");
+    assert!(out.contains("source: yes"), "{out}");
+    assert!(out.contains("texts ("), "{out}");
 }
 
 #[test]

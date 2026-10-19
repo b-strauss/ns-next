@@ -697,8 +697,8 @@ pub struct Mixin {
     /// current versions into its module's text (`Heap::assembled_text`).
     /// A class side, declared or synthesized from a declaration, shares
     /// its instance side's. `None` for a builtin's mixin, the VM mirror's,
-    /// and a mixin of an image that carries no source or whose row's text
-    /// does not fit its module's. Each version holds its own, so that no
+    /// and a mixin of an image that carries no source. Each version holds
+    /// its own, so that no
     /// version keeps another's text alive.
     pub text: Option<Rc<DeclarationText>>,
 }
@@ -764,6 +764,42 @@ impl DeclarationText {
             storage: TextStorage::Shared(module_text),
             range,
             holes: holes.to_vec(),
+        })
+    }
+
+    /// The text an image carries, rebuilt from the parts `range`, `holes`
+    /// and `cut_text` answer: `None` unless the holes are in order, do not
+    /// overlap and lie within `range`, `cut_text` is as long as `range`
+    /// less the holes, and every piece between the holes begins and ends
+    /// on a character boundary of `cut_text`. Checked here, once, so that
+    /// a text an image chose answers `slice` and `assemble` like any other.
+    pub fn from_parts(
+        range: Span,
+        holes: Vec<Span>,
+        cut_text: Box<str>,
+    ) -> Option<DeclarationText> {
+        if !holes_fit(range, &holes) {
+            return None;
+        }
+        let removed: u64 = holes
+            .iter()
+            .map(|hole| u64::from(hole.end - hole.start))
+            .sum();
+        let expected = u64::from(range.end - range.start) - removed;
+        if u64::try_from(cut_text.len()).ok()? != expected {
+            return None;
+        }
+        let mut piece_end = 0;
+        for (start, end) in segment_bounds(range, &holes) {
+            piece_end += offset(end - start);
+            if !cut_text.is_char_boundary(piece_end) {
+                return None;
+            }
+        }
+        Some(DeclarationText {
+            storage: TextStorage::Cut(cut_text),
+            range,
+            holes,
         })
     }
 
@@ -902,12 +938,21 @@ fn fits(module_text: &str, range: Span, holes: &[Span]) -> bool {
     if !boundary(range.start) || !boundary(range.end) {
         return false;
     }
+    holes_fit(range, holes)
+        && holes
+            .iter()
+            .all(|hole| boundary(hole.start) && boundary(hole.end))
+}
+
+/// Whether `range` ends no earlier than it starts and each of `holes` lies
+/// within it, after the one before it.
+fn holes_fit(range: Span, holes: &[Span]) -> bool {
+    if range.start > range.end {
+        return false;
+    }
     let mut previous_end = range.start;
     for hole in holes {
         if hole.start < previous_end || hole.start > hole.end || hole.end > range.end {
-            return false;
-        }
-        if !boundary(hole.start) || !boundary(hole.end) {
             return false;
         }
         previous_end = hole.end;
@@ -1504,6 +1549,49 @@ mod declaration_text_tests {
         assert_eq!(cut.slice(probe), shared.slice(probe));
         assert_eq!(cut.cut_text(), shared.cut_text());
         assert_eq!(cut.assemble(&["X".into()]), shared.assemble(&["X".into()]));
+    }
+
+    /// The parts an image writes rebuild a text that answers as the one
+    /// they were taken from.
+    #[test]
+    fn a_text_rebuilt_from_its_parts_answers_as_the_original() {
+        let inner = span_of(MODULE, "class Inner = (\n  ) ( public a = ( ^1 ) )");
+        let whole = Span::new(0, MODULE.len() as u32);
+        let original = DeclarationText::cut(MODULE, whole, &[inner]).expect("cut");
+        let rebuilt = DeclarationText::from_parts(
+            original.range(),
+            original.holes().to_vec(),
+            Box::from(original.cut_text().as_ref()),
+        )
+        .expect("the parts describe a declaration");
+        let probe = span_of(MODULE, "public b = ( ^2 )");
+        assert_eq!(rebuilt.slice(probe), original.slice(probe));
+        assert_eq!(
+            rebuilt.assemble(&["X".into()]),
+            original.assemble(&["X".into()])
+        );
+    }
+
+    /// Parts that do not describe a declaration rebuild nothing: holes out
+    /// of order, a hole past the range, a text of another length than the
+    /// range less the holes, and a piece between holes that would split a
+    /// character.
+    #[test]
+    fn parts_that_do_not_fit_rebuild_nothing() {
+        let range = Span::new(10, 20);
+        let first = Span::new(12, 14);
+        let second = Span::new(16, 18);
+        let text = || Box::from("abcdef");
+        assert!(DeclarationText::from_parts(range, vec![first, second], text()).is_some());
+        assert!(DeclarationText::from_parts(range, vec![second, first], text()).is_none());
+        assert!(DeclarationText::from_parts(range, vec![Span::new(16, 21)], text()).is_none());
+        assert!(DeclarationText::from_parts(range, vec![first], text()).is_none());
+        assert!(DeclarationText::from_parts(
+            Span::new(0, 3),
+            vec![Span::new(1, 1)],
+            Box::from("\u{e4}x")
+        )
+        .is_none());
     }
 }
 

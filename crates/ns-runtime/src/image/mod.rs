@@ -2,22 +2,23 @@
 //! live `ns-next` world, decoded on load (never a memory dump). See
 //! `docs/design/image-format.md`. Layout: header (magic, format version,
 //! flags, the shipped world's fingerprint), symbol table, code
-//! table, mixin table (one tree per module, in module order), module section
-//! (per module: `SourceOrigin`, optional source text, the object id of its
-//! root class record), then the shipped names, object table (frames
-//! included), roots, tag-named hashes.
+//! table, text table (only with `FLAG_HAS_SOURCE`: each declaration's own
+//! text, `texts`), mixin table (one tree per module, in module order, each
+//! row naming its text when the image carries source), module section
+//! (per module: `SourceOrigin`, the object id of its root class record),
+//! then the shipped names, object table (frames included), roots,
+//! tag-named hashes.
 //!
 //! **Loading never runs the front end.** `load` decodes the world; it does
 //! not parse, resolve, or compile anything. The symbol table, the mixin
 //! table and the class-object records together describe every declaration
 //! the world holds, so there is nothing left for a re-parse to rebuild --
 //! and the image's source text, which is attacker-controlled input like
-//! every other byte in the file, is never handed to the parser. It is not
-//! even required to be present: modules handed as `ModuleSource`s without
-//! `with_source` write an image with no program text in it at all, and
-//! modules that all ask for theirs write the debug variant, whose source
-//! exists so a loaded world can be shown (and, once a decompiler exists,
-//! compared) as `.ns`.
+//! every other byte in the file, is never handed to the parser by the
+//! load; only an edit after it parses a text. It is not even required to
+//! be present: modules handed as `ModuleSource`s without `with_source`
+//! write an image with no program text in it at all, and modules that all
+//! ask for theirs write an image that carries each declaration's text.
 
 pub mod decode;
 pub mod encode;
@@ -28,6 +29,7 @@ pub mod modules;
 pub mod opcodes;
 pub mod shipped_names;
 pub mod symbols;
+pub mod texts;
 
 pub use modules::ModuleSource;
 
@@ -45,12 +47,11 @@ use crate::{Interpreter, Mutator};
 struct Describing {
     symbols: symbols::Builder,
     code: encode::Writer,
+    /// The text table, when the modules carry source.
+    texts: Option<encode::Writer>,
     mixins: encode::Writer,
     ids: encode::CodeIds,
     mixin_ids: mixins::MixinIds,
-    /// Each module's text, in module order, for a module handed
-    /// `with_source`; `None` for one handed without, or with no text.
-    module_texts: Vec<Option<String>>,
 }
 
 /// Encodes the code table and the mixin table into their own buffers,
@@ -99,64 +100,74 @@ fn encode_describing<'gc>(
             ));
         }
     }
+    // The header has one flag for the source of every module, so a module
+    // without text while another carries its own could only be written by
+    // inventing an empty text for it.
+    let with_source = modules.iter().any(|module| module.with_source);
+    if with_source && !modules.iter().all(|module| module.with_source) {
+        return Err(
+            "image encoding carries source for every module or for none: one module has none"
+                .to_string(),
+        );
+    }
     let mut symbols = symbols::Builder::new();
     let mut code = encode::Writer::new();
     let ids = encode::encode_code_table(&mut code, &module_roots, &mut symbols)?;
-    // After the code table, whose ids its rows name; before the graph, whose
-    // class objects might name its rows.
+    // The texts the heap holds, each declaration's own -- never the host's
+    // file, which after an edit is no longer the program's text.
+    let (texts, text_ids) = if with_source {
+        let mut texts = encode::Writer::new();
+        let text_ids = texts::encode(&mut texts, &module_roots)?;
+        (Some(texts), Some(text_ids))
+    } else {
+        (None, None)
+    };
+    // After the code table and the text table, whose ids its rows name;
+    // before the graph, whose class objects might name its rows.
     let mut mixin_writer = encode::Writer::new();
-    let mixin_ids = mixins::encode(&mut mixin_writer, &module_roots, &mut symbols, &ids)?;
-    let module_texts = modules
-        .iter()
-        .map(|module| {
-            module
-                .with_source
-                .then(|| module_text(heap, module.class))
-                .flatten()
-        })
-        .collect();
+    let mixin_ids = mixins::encode(
+        &mut mixin_writer,
+        &module_roots,
+        &mut symbols,
+        &ids,
+        text_ids.as_ref(),
+    )?;
     Ok(Describing {
         symbols,
         code,
+        texts,
         mixins: mixin_writer,
         ids,
         mixin_ids,
-        module_texts,
     })
 }
 
-/// The current text of the module whose root class is `class`, as the
-/// heap holds it (`Heap::module_source`) -- never the host's file, which
-/// after an edit is no longer the program's text. `None` for a root that
-/// is no class object and for a module with no text.
-fn module_text<'gc>(heap: &Heap<'gc>, class: ClassReference<'gc>) -> Option<String> {
-    let root = heap.class_application(class)?.mixin.clone();
-    match heap.known_mixin_id(&root) {
+/// The current text of the module whose root declaration is `root`, as
+/// the heap holds it: assembled from its declarations' current versions
+/// (`Heap::module_source`). `None` for a module with no text.
+fn module_text(heap: &Heap<'_>, root: &std::rc::Rc<crate::mixin::Mixin>) -> Option<String> {
+    match heap.known_mixin_id(root) {
         Some(id) => heap.module_source(id),
-        None => heap.assembled_text(&root),
+        None => heap.assembled_text(root),
     }
 }
 
 /// Writes header through the module section. Everything after that is the
 /// caller's: the graph.
 ///
-/// The header says the modules carry source when any one is handed
-/// `with_source`; `encode_modules` then refuses a module without text, so
-/// a mix is an `Err` rather than an artifact that silently drops one
-/// module's text.
+/// The header says the image carries source when `encode_describing`
+/// wrote the text table, which it does for every module or for none.
 fn write_describing(
     writer: &mut encode::Writer,
     modules: &[ModuleSource<'_, '_>],
     module_root_ids: &[u32],
     flags: u8,
     describing: Describing,
-) -> Result<(), String> {
-    let describing_texts = describing.module_texts;
-    let with_source = modules.iter().any(|module| module.with_source);
+) {
     encode::write_header(
         writer,
         flags
-            | if with_source {
+            | if describing.texts.is_some() {
                 encode::FLAG_HAS_SOURCE
             } else {
                 0
@@ -169,14 +180,11 @@ fn write_describing(
     // consuming `describing` here loses nothing.
     describing.symbols.write(writer);
     writer.write_raw(&describing.code.into_bytes());
+    if let Some(texts) = describing.texts {
+        writer.write_raw(&texts.into_bytes());
+    }
     writer.write_raw(&describing.mixins.into_bytes());
-    modules::encode_modules(
-        writer,
-        modules,
-        &describing_texts,
-        module_root_ids,
-        with_source,
-    )
+    modules::encode_modules(writer, modules, module_root_ids);
 }
 
 /// Serializes a quiesced world: `roots` (the root instance and, if any,
@@ -185,13 +193,15 @@ fn write_describing(
 /// modules the image carries, the application's first; a graph reaching a
 /// class of any other user module is refused.
 ///
-/// A module's `with_source` is the debug variant's switch. `false` writes a
-/// module whose bytes contain no program text -- what a loaded world needs
-/// is the code table, the mixin table and the graph, and none of them
-/// quotes the source. `true` additionally stores the module's current text
-/// as the heap holds it (`Heap::module_source`), verbatim; `load` hands it
-/// back on `LoadedModule::source` and cuts each declaration's text from it.
-/// Source travels for every module or for none. The graph closes with the hashes of
+/// A module's `with_source` says whether the image carries its source.
+/// `false` writes a module whose bytes contain no program text -- what a
+/// loaded world needs is the code table, the mixin table and the graph,
+/// and none of them quotes the source. `true` additionally stores the text
+/// of each of its declarations as the heap holds it (`Mixin::text`), in
+/// the text table; `load` gives each decoded mixin its own and hands the
+/// module's text, assembled from them, back on `LoadedModule::source`.
+/// Source travels for every module or for none, and a module built
+/// without it cannot be written with it. The graph closes with the hashes of
 /// the objects it names by tag (`encode::encode_tag_named_hashes`), and is
 /// preceded by the shipped names it names the binary's own objects by
 /// (`shipped_names`); the platform, if the graph reaches it, is an ordinary
@@ -291,7 +301,7 @@ fn write_image<'gc>(
         &mut describing.symbols,
     );
     let mut writer = encode::Writer::new();
-    write_describing(&mut writer, modules, &module_roots, flags, describing)?;
+    write_describing(&mut writer, modules, &module_roots, flags, describing);
     writer.write_raw(&names_writer.into_bytes());
     writer.write_raw(&graph_writer.into_bytes());
     Ok(writer.into_bytes())
@@ -308,11 +318,10 @@ pub struct LoadedModule {
     /// Where the module came from. Provenance, not program text -- it is
     /// in every artifact, source or not.
     pub origin: SourceOrigin,
-    /// The module's source text, for the debug variant only -- `None` for a
-    /// source-free artifact. Never parsed, never resolved, never executed:
-    /// `load` reads it out of the byte stream and hands it over unchanged,
-    /// after each mixin of the module has cut its declaration's text from
-    /// it (`Mixin::text`).
+    /// The module's source text, assembled once at load from the texts of
+    /// its declarations (`Heap::module_source`) -- `None` for a
+    /// source-free artifact. Never parsed, never resolved, never executed
+    /// by the load.
     pub source: Option<std::rc::Rc<str>>,
 }
 
@@ -420,11 +429,14 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
                 .module_root(index)
                 .cloned()
                 .ok_or_else(|| decode::DecodeError::NotAClass.to_string())?;
+            let source = interpreter
+                .enter(|mutator| module_text(&mutator.heap, &declaration))
+                .map(std::rc::Rc::from);
             Ok(LoadedModule {
                 class,
                 declaration,
                 origin: decoded.origin,
-                source: decoded.source,
+                source,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -451,17 +463,16 @@ fn decode_described(
     // family's call-site numbers -- a block's depend on where its
     // `MakeClosure` sits in its root's emission order -- can be assigned.
     decode::number_call_site_families(&mut table).map_err(|error| error.to_string())?;
-    let read = mixins::read(reader, &symbols, &table.codes).map_err(|error| error.to_string())?;
-    // The module section follows the mixin table and holds each module's
-    // text, from which every mixin of the module cuts its declaration's
-    // (`Mixin::text`), so it is read before the mixins are built.
-    let decoded_modules = modules::decode_modules(reader, &read.module_rows, header.has_source)
+    let texts = if header.has_source {
+        texts::decode(reader).map_err(|error| error.to_string())?
+    } else {
+        Vec::new()
+    };
+    let read = mixins::read(reader, &symbols, &table.codes, header.has_source)
         .map_err(|error| error.to_string())?;
-    let module_texts: Vec<Option<std::rc::Rc<str>>> = decoded_modules
-        .iter()
-        .map(|module| module.source.clone())
-        .collect();
-    let mixins = mixins::build(read, &table.codes, &module_texts);
+    let decoded_modules =
+        modules::decode_modules(reader, &read.module_rows).map_err(|error| error.to_string())?;
+    let mixins = mixins::build(read, &table.codes, &texts).map_err(|error| error.to_string())?;
     decode::verify_mixins(&mixins).map_err(|error| error.to_string())?;
     let names =
         shipped_names::decode_section(reader, &symbols).map_err(|error| error.to_string())?;

@@ -30,7 +30,7 @@ pub const MAGIC: &[u8; 4] = b"NSNX";
 /// (`opcodes.rs`) -- not from this field.
 ///
 /// The header's flag byte (`FLAG_HAS_SOURCE`) is what carries variation
-/// *within* the format: the modules' source text is optional, and a reader
+/// *within* the format: the program's source text is optional, and a reader
 /// distinguishes the two variants by the flag. A flag bit this build does
 /// not know is refused (`DecodeError::UnknownHeaderFlags`), which is what
 /// keeps an optional section from being silently skipped by a reader that
@@ -101,12 +101,15 @@ impl Writer {
     }
 }
 
-/// Header flag bits. Bit 0 says every module in the module section carries
-/// its source text (`modules::encode_modules`); every
-/// bit this build has not assigned a meaning to is reserved and must be
-/// zero, so a reader of this build refuses an image using a flag it does
-/// not implement rather than skipping a section it cannot see.
-pub const FLAG_HAS_SOURCE: u8 = 1;
+/// Header flag bits. Every bit this build has not assigned a meaning to is
+/// reserved and must be zero, so a reader of this build refuses an image
+/// using a flag it does not implement rather than skipping a section it
+/// cannot see.
+///
+/// The image carries its program's source: a table of every declaration's
+/// own text, and per mixin row the index of its text
+/// (`docs/design/image-format.md`, "Source").
+pub const FLAG_HAS_SOURCE: u8 = 8;
 
 /// The image is an application packaged just before `main:args:`: `load`
 /// starts it by sending `main: platform args:` to the graph's one root
@@ -116,11 +119,12 @@ pub const FLAG_START: u8 = 4;
 /// Every bit this build assigns a meaning to.
 pub const KNOWN_FLAGS: u8 = FLAG_HAS_SOURCE | FLAG_START;
 
-/// Header flag bits that no longer mean anything and are never reused: 2
-/// was `FLAG_STATELESS`, the stateless binary, retired 2026-09-29 when
-/// `build` began packaging the application before `main:args:`. A stale
-/// binary's header meets an unknown flag rather than whatever took the bit.
-pub const RETIRED_HEADER_FLAGS: u8 = 2;
+/// Flags that once meant something and are never reused: 2 was
+/// `FLAG_STATELESS`, the stateless binary, retired 2026-09-29; 1 was the
+/// source variant that carried one text per module, retired 2026-10-19
+/// when every declaration came to hold its own, so that an image of the
+/// old layout is refused rather than misread.
+pub const RETIRED_HEADER_FLAGS: u8 = 2 | 1;
 
 pub fn write_header(writer: &mut Writer, flags: u8) {
     writer.write_raw(MAGIC);

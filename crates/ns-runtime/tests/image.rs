@@ -794,6 +794,7 @@ fn round_trip_code_table<'gc>(
         &[root_mixin_of(heap, class)],
         &mut symbols,
         &ids,
+        None,
     )
     .expect("encode mixin table");
     let bytes = writer.into_bytes();
@@ -2411,7 +2412,6 @@ fn a_mixin_table_with_no_root_row_is_a_decode_error() {
     interpreter.enter(|mutator| {
         let module = image::modules::DecodedModule {
             origin: SourceOrigin::Embedded("t".to_string()),
-            source: None,
             root: 0,
         };
         let objects = [mutator.builtin_class(BuiltinClass::Object)];
@@ -2573,6 +2573,7 @@ fn mixin_ids_for<'gc>(
         &[root_mixin_of(mutator.heap(), class)],
         symbols,
         ids,
+        None,
     )
     .expect("mixin table")
 }
@@ -9373,9 +9374,6 @@ fn module_root_object(bytes: &[u8], module: usize) -> usize {
 /// Where the `u32` object id of `module`'s root class record sits in the
 /// module section.
 fn module_root_id_at(bytes: &[u8], module: usize) -> usize {
-    let has_source = decode::read_header(&mut decode::Reader::new(bytes))
-        .expect("valid header")
-        .has_source;
     let mut reader = decode::Reader::new(bytes);
     reader
         .read_raw(module_section_start(bytes))
@@ -9383,15 +9381,9 @@ fn module_root_id_at(bytes: &[u8], module: usize) -> usize {
     reader.read_u32().expect("module count");
     for _ in 0..module {
         decode::decode_source_origin(&mut reader).expect("an earlier module's origin");
-        if has_source {
-            reader.read_str().expect("an earlier module's source");
-        }
         reader.read_u32().expect("an earlier module's root");
     }
     decode::decode_source_origin(&mut reader).expect("the module's origin");
-    if has_source {
-        reader.read_str().expect("the module's source");
-    }
     reader.position()
 }
 
@@ -9585,11 +9577,7 @@ fn a_module_count_past_the_bytes_left_is_refused() {
     section.write_u32(2);
     let section = section.into_bytes();
     assert!(matches!(
-        image::modules::decode_modules(
-            &mut decode::Reader::new(&section),
-            &decoded.module_rows,
-            false,
-        ),
+        image::modules::decode_modules(&mut decode::Reader::new(&section), &decoded.module_rows,),
         Err(decode::DecodeError::UnexpectedEndOfFile)
     ));
 }
@@ -9745,17 +9733,17 @@ fn occurrences(haystack: &[u8], needle: &[u8]) -> usize {
         .count()
 }
 
-/// The image's bytes but the header and the module section -- whose
-/// verbatim source text necessarily still contains every selector as plain
+/// The image's bytes but the header and the text table -- whose
+/// declaration texts necessarily still contain every selector as plain
 /// source. The dedup property applies to every other section: everything
 /// that would otherwise be an inline `write_str` of a selector or name lives
 /// in one of them.
-fn bytes_outside_the_module_section(bytes: &[u8]) -> Vec<u8> {
+fn bytes_outside_the_text_table(bytes: &[u8]) -> Vec<u8> {
     let report = image::inspect::inspect(bytes).expect("inspect");
     report
         .sections
         .iter()
-        .filter(|section| section.name != "header" && section.name != "modules")
+        .filter(|section| section.name != "header" && section.name != "texts")
         .flat_map(|section| bytes[section.start..section.end].iter().copied())
         .collect()
 }
@@ -9767,10 +9755,10 @@ fn a_repeated_selector_is_stored_once() {
     // which would make `occurrences` meaningless.
     // This selector is the method-dictionary key for one method and the
     // send target at three call sites -- four inline occurrences without
-    // deduplication, one symbol-table entry with it. (The verbatim source
-    // text, stored in the module section, still contains the selector as
-    // plain text -- `bytes_outside_the_module_section` excludes that section,
-    // which the symbol table does not cover.)
+    // deduplication, one symbol-table entry with it. (The declaration texts,
+    // stored in the text table, still contain the selector as plain text --
+    // `bytes_outside_the_text_table` excludes that section, which the symbol
+    // table does not cover.)
     let bytes = snapshot_of(indoc! {"
         class C = Object new (
         ) (
@@ -9781,7 +9769,7 @@ fn a_repeated_selector_is_stored_once() {
     "});
     assert_eq!(
         occurrences(
-            &bytes_outside_the_module_section(&bytes),
+            &bytes_outside_the_text_table(&bytes),
             b"distinctiveSelector"
         ),
         1
@@ -10127,10 +10115,17 @@ const TABLE_NESTED_SOURCE: &str = indoc! {"
 /// hardcoded offsets that would drift as the format's earlier fields change.
 fn mixin_table_of(bytes: &[u8]) -> mixins::Decoded {
     let mut reader = decode::Reader::new(bytes);
-    decode::read_header(&mut reader).expect("valid header");
+    let header = decode::read_header(&mut reader).expect("valid header");
     let symbols = symbols::decode(&mut reader).expect("symbol table");
     let codes = decode::decode_code_table(&mut reader, &symbols).expect("code table");
-    mixins::decode(&mut reader, &symbols, &codes.codes).expect("mixin table")
+    let texts = if header.has_source {
+        image::texts::decode(&mut reader).expect("text table")
+    } else {
+        Vec::new()
+    };
+    let read =
+        mixins::read(&mut reader, &symbols, &codes.codes, header.has_source).expect("mixin table");
+    mixins::build(read, &codes.codes, &texts).expect("mixin table")
 }
 
 /// An image whose mixin table is `mixin_table` verbatim: a real header, a
@@ -10347,7 +10342,7 @@ fn two_modules_encode_as_two_trees_in_module_order() {
         let ids =
             encode::encode_code_table(&mut code, &roots, &mut symbols).expect("encode code table");
         let mut writer = encode::Writer::new();
-        mixins::encode(&mut writer, &roots, &mut symbols, &ids).expect("encode mixin table");
+        mixins::encode(&mut writer, &roots, &mut symbols, &ids, None).expect("encode mixin table");
         let table = symbols.build();
         let code_bytes = code.into_bytes();
         let decoded_code = decode::decode_code_table(&mut decode::Reader::new(&code_bytes), &table)
@@ -11016,17 +11011,31 @@ fn the_debug_variant_still_carries_source() {
     });
 }
 
-/// The two variants differ only in the source blob: everything a world
-/// needs to run is in both, so the source-free image is the shorter one and
-/// the difference is exactly the length-prefixed source.
+/// The two variants differ only by the source: everything a world needs to
+/// run is in both, so the source-free image is the shorter one and the
+/// difference is exactly the text table and each row's `u32` text index.
+/// The table carries the module's text once, split among its declarations:
+/// per text its range, its hole count, its holes and its length-prefixed
+/// text with the holes cut out.
 #[test]
-fn the_two_variants_differ_only_by_the_source_blob() {
+fn the_two_variants_differ_only_by_the_text_table() {
     let with = snapshot_module(SOURCE_FREE_MODULE, true, None);
     let without = snapshot_module(SOURCE_FREE_MODULE, false, None);
+    let report = image::inspect::inspect(&with).expect("inspect");
+    let holes: usize = report.texts.iter().map(|text| text.holes.len()).sum();
+    let table = 4 + report.texts.len() * (4 + 4 + 4 + 4) + holes * 8 + SOURCE_FREE_MODULE.len();
+    assert_eq!(
+        section_span(&report, "texts"),
+        (
+            section_span(&report, "texts").0,
+            section_span(&report, "texts").0 + table
+        ),
+        "the text table carries the module's text once"
+    );
     assert_eq!(
         with.len() - without.len(),
-        SOURCE_FREE_MODULE.len() + 4,
-        "the debug variant costs the source text plus its u32 length prefix"
+        table + 4 * report.mixins.len(),
+        "the source costs the text table plus a u32 text index per row"
     );
 }
 
@@ -11051,33 +11060,49 @@ fn a_frame_program_counter_past_its_bodys_last_instruction_is_refused() {
 }
 
 /// `load` never calls the parser, so source that could not possibly parse
-/// is still just a blob the debug variant carries around. The encoder
-/// writes the heap's text, so the module's text is overwritten in the
-/// bytes by one of the same length that is no Newspeak.
+/// is still just text the image carries around. The encoder writes the
+/// heap's text, so the root declaration's text -- the module with `Inner`
+/// cut out -- is overwritten in the bytes by one of the same length that
+/// is no Newspeak, and the module's text assembles around it.
 #[test]
-fn the_debug_variants_source_is_never_parsed() {
+fn the_source_an_image_carries_is_never_parsed() {
     let mut bytes = snapshot_module(SOURCE_FREE_MODULE, true, None);
+    let inner_start = SOURCE_FREE_MODULE
+        .find("public class Inner")
+        .expect("the module declares Inner");
+    let inner_close = "( ^v )\n    )";
+    let inner_end = SOURCE_FREE_MODULE
+        .find(inner_close)
+        .map(|end| end + inner_close.len())
+        .expect("Inner's body closes");
+    let root_text = format!(
+        "{}{}",
+        &SOURCE_FREE_MODULE[..inner_start],
+        &SOURCE_FREE_MODULE[inner_end..]
+    );
     let not_newspeak: String = "this is not Newspeak at all ("
         .chars()
         .cycle()
-        .take(SOURCE_FREE_MODULE.len())
+        .take(root_text.len())
         .collect();
-    let text = SOURCE_FREE_MODULE.as_bytes();
     assert_eq!(
-        occurrences(&bytes, text),
+        occurrences(&bytes, root_text.as_bytes()),
         1,
-        "the image carries the text once"
+        "the image carries the root's text once"
     );
     let start = bytes
-        .windows(text.len())
-        .position(|window| window == text)
-        .expect("the image carries the text");
-    bytes[start..start + text.len()].copy_from_slice(not_newspeak.as_bytes());
+        .windows(root_text.len())
+        .position(|window| window == root_text.as_bytes())
+        .expect("the image carries the root's text");
+    bytes[start..start + root_text.len()].copy_from_slice(not_newspeak.as_bytes());
     let loaded = image::load(&bytes).expect("load");
-    assert_eq!(
-        loaded.modules[0].source.as_deref(),
-        Some(not_newspeak.as_str())
+    let expected = format!(
+        "{}{}{}",
+        &not_newspeak[..inner_start],
+        &SOURCE_FREE_MODULE[inner_start..inner_end],
+        &not_newspeak[inner_start..]
     );
+    assert_eq!(loaded.modules[0].source.as_deref(), Some(expected.as_str()));
 }
 
 /// A snapshot is taken between sends, when no activation is running. A
@@ -11492,6 +11517,139 @@ fn the_wire_format_matches_the_golden_fixture() {
     );
 }
 
+/// `NESTED_MODULE` written with source, outside any run: a root declaration
+/// with one nested declaration, so the text table holds one text with a
+/// hole and one without.
+fn nested_module_with_source() -> Vec<u8> {
+    let (mut interpreter, class) = load(NESTED_MODULE);
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        module_only_image(mutator, true, &Origin::File(PathBuf::from("t.ns")), class)
+            .expect("snapshot")
+    })
+}
+
+/// `bytes` with the little-endian `u32` at `offset` replaced by `value`.
+fn with_u32_at(bytes: &[u8], offset: usize, value: u32) -> Vec<u8> {
+    let mut crafted = bytes.to_vec();
+    crafted[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    crafted
+}
+
+/// A text the decoder cannot hold to its declaration is refused before any
+/// mixin holds it: holes out of order, a hole past the range, a length that
+/// does not add up, a text index past the table, another number of holes
+/// than nested rows.
+#[test]
+fn a_crafted_declaration_text_is_refused() {
+    let bytes = nested_module_with_source();
+    image::load(&bytes).expect("the image as written loads");
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    let root_text_index = report.mixin_texts[0]
+        .as_ref()
+        .expect("the root row names a text");
+    let root_text = &report.texts[root_text_index.index as usize];
+    assert_eq!(root_text.holes.len(), 1, "the root text has Inner's hole");
+    let inner_row = report
+        .mixins
+        .iter()
+        .position(|line| line.starts_with("Inner "))
+        .expect("a row for Inner");
+    let inner_text_index = report.mixin_texts[inner_row]
+        .as_ref()
+        .expect("Inner's row names a text")
+        .index;
+    assert!(report.texts[inner_text_index as usize].holes.is_empty());
+    let hole = root_text.holes[0];
+
+    let past_the_range = with_u32_at(&bytes, root_text.holes_offset + 4, root_text.range.end + 1);
+    let error = load_error(&past_the_range);
+    assert!(
+        error.contains("does not describe a declaration"),
+        "a hole past the range: {error}"
+    );
+
+    let swapped = with_u32_at(&bytes, root_text.holes_offset, hole.end);
+    let swapped = with_u32_at(&swapped, root_text.holes_offset + 4, hole.start);
+    let error = load_error(&swapped);
+    assert!(
+        error.contains("does not describe a declaration"),
+        "a hole whose start is past its end: {error}"
+    );
+
+    let longer = with_u32_at(
+        &bytes,
+        root_text.cut_text_offset,
+        u32::try_from(root_text.length + 1).expect("a short text"),
+    );
+    let error = load_error(&longer);
+    assert!(
+        error.contains("does not describe a declaration"),
+        "a cut text one byte longer: {error}"
+    );
+
+    let past_the_table = with_u32_at(
+        &bytes,
+        root_text_index.offset,
+        u32::try_from(report.texts.len()).expect("a short table"),
+    );
+    let error = load_error(&past_the_table);
+    assert!(
+        error.contains("names text"),
+        "a text index past the table: {error}"
+    );
+
+    let without_the_hole = with_u32_at(&bytes, root_text_index.offset, inner_text_index);
+    let error = load_error(&without_the_hole);
+    assert!(
+        error.contains("nested declarations"),
+        "a text with no hole for a nested row: {error}"
+    );
+}
+
+/// Written with source and loaded, a module answers its text whole, and
+/// each mixin slices its methods from its own text.
+///
+/// `SOURCE_FREE_MODULE` rather than `NESTED_MODULE`, whose root declares no
+/// method: here both the root and its nested class do.
+#[test]
+fn a_loaded_module_answers_its_text_and_every_method_source() {
+    let bytes = snapshot_module(SOURCE_FREE_MODULE, true, None);
+    let loaded = image::load(&bytes).expect("load");
+    assert_eq!(
+        loaded.modules[0].source.as_deref(),
+        Some(SOURCE_FREE_MODULE),
+        "the module answers its text whole"
+    );
+    let root = loaded.modules[0].declaration.clone();
+    let inner = root
+        .nested
+        .iter()
+        .find(|nested| nested.name.as_str() == "Inner")
+        .cloned()
+        .expect("Outer declares Inner");
+    for (mixin, selectors) in [(&root, vec!["answer", "block"]), (&inner, vec!["value"])] {
+        let text = mixin.text.as_ref().expect("the image carries source");
+        for selector in selectors {
+            let method = mixin
+                .compiled_method(Symbol::intern(selector))
+                .expect("the declaration has the method");
+            let span = method.code.source;
+            let written = &SOURCE_FREE_MODULE[span.start as usize..span.end as usize];
+            assert!(
+                written.contains(selector),
+                "{selector}'s span covers its source"
+            );
+            assert_eq!(
+                text.slice(span),
+                Some(written),
+                "{} slices {selector} from its own text",
+                mixin.name
+            );
+        }
+    }
+}
+
 #[test]
 fn the_code_table_encoding_is_deterministic() {
     // Compiling twice is the point: the previous version of this test shared
@@ -11511,14 +11669,36 @@ fn regenerate_the_golden_fixture() {
 
 #[test]
 fn a_header_flag_this_build_does_not_assign_is_rejected() {
-    // Bit 3 is not assigned. A flag this build does not implement means a
+    // Bit 4 is not assigned. A flag this build does not implement means a
     // section it cannot see, so continuing would read the next field out of
     // whatever that section occupies.
     let mut writer = ns_runtime::image::encode::Writer::new();
-    ns_runtime::image::encode::write_header(&mut writer, 0b1000);
+    ns_runtime::image::encode::write_header(&mut writer, 0b1_0000);
     let bytes = writer.into_bytes();
     let mut reader = ns_runtime::image::decode::Reader::new(&bytes);
     assert!(ns_runtime::image::decode::read_header(&mut reader).is_err());
+}
+
+/// Bit 0 was the source variant that carried one text per module in the
+/// module section. An image of that layout is refused as an unknown flag
+/// rather than read as one whose texts sit in the text table.
+#[test]
+fn a_header_flag_of_the_retired_module_text_layout_is_rejected() {
+    use ns_runtime::image::decode::{read_header, DecodeError, Reader};
+    use ns_runtime::image::encode::{write_header, Writer, RETIRED_HEADER_FLAGS};
+    const MODULE_TEXTS: u8 = 1;
+    assert_ne!(RETIRED_HEADER_FLAGS & MODULE_TEXTS, 0);
+    let mut writer = Writer::new();
+    write_header(&mut writer, MODULE_TEXTS);
+    let bytes = writer.into_bytes();
+    let error = match read_header(&mut Reader::new(&bytes)) {
+        Ok(_) => panic!("the retired flag was accepted"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error.to_string(),
+        DecodeError::UnknownHeaderFlags { flags: 1 }.to_string()
+    );
 }
 
 /// A module with an application's `main:args:`, for the tests that need one.
@@ -13935,7 +14115,8 @@ fn inspect_prints_the_mixin_applications_an_image_describes() {
     let root = module_root_object(&bytes, 0);
     let report = image::inspect::render_full(&image::inspect::inspect(&bytes).expect("inspect"));
     for expected in [
-        format!("source present, root object {root}"),
+        "source: yes".to_string(),
+        format!("root object {root}"),
         "class mixin shipped Kernel Value, superclass Kernel Object, applied by clause 0 of row 0"
             .to_string(),
     ] {
@@ -15571,8 +15752,10 @@ fn indexed_collection_as_a_value_or_a_superclass_is_refused() {
 fn a_retired_stateless_flag_is_refused_as_unknown() {
     use ns_runtime::image::decode::{read_header, DecodeError, Reader};
     use ns_runtime::image::encode::{write_header, Writer, RETIRED_HEADER_FLAGS};
+    const STATELESS: u8 = 2;
+    assert_ne!(RETIRED_HEADER_FLAGS & STATELESS, 0);
     let mut writer = Writer::new();
-    write_header(&mut writer, RETIRED_HEADER_FLAGS);
+    write_header(&mut writer, STATELESS);
     let bytes = writer.into_bytes();
     let error = match read_header(&mut Reader::new(&bytes)) {
         Ok(_) => panic!("the retired flag was accepted"),
