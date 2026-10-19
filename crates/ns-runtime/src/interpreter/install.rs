@@ -641,6 +641,46 @@ mod tests {
         assert_eq!(integer(&mut image.interpreter, &answer), Some(2));
     }
 
+    /// A closure made by a method an edit removed keeps its block across
+    /// an image: the block and its home frame's body, the removed method's,
+    /// enter the code table.
+    #[test]
+    fn a_closure_of_a_removed_method_runs_after_a_load() {
+        let (mut interpreter, outer, _, inner, inner_id) = module_and_inner(OUTER);
+        let block = send(&mut interpreter, &inner, "block");
+        install(
+            &mut interpreter,
+            inner_id,
+            &instance_edit(vec![MemberEdit::RemoveMethod(Symbol::intern("block"))]),
+        );
+        let bytes = image_of(&mut interpreter, &outer, &[block]);
+        let mut image = loaded(&bytes);
+        let block = image.roots[0].clone();
+        let answer = send(&mut image.interpreter, &block, "value");
+        assert_eq!(integer(&mut image.interpreter, &answer), Some(1));
+    }
+
+    /// A replaced method's closure keeps the old block's answer after a
+    /// load, while the method answers the new one.
+    #[test]
+    fn a_closure_of_a_replaced_method_keeps_its_old_code_after_a_load() {
+        let (mut interpreter, outer, _, inner, inner_id) = module_and_inner(OUTER);
+        let old_block = send(&mut interpreter, &inner, "block");
+        install(
+            &mut interpreter,
+            inner_id,
+            &add_method("public block = ( ^[ 2 ] )"),
+        );
+        let bytes = image_of(&mut interpreter, &outer, &[old_block, inner]);
+        let mut image = loaded(&bytes);
+        let (old_block, inner) = (image.roots[0].clone(), image.roots[1].clone());
+        let old_answer = send(&mut image.interpreter, &old_block, "value");
+        assert_eq!(integer(&mut image.interpreter, &old_answer), Some(1));
+        let new_block = send(&mut image.interpreter, &inner, "block");
+        let new_answer = send(&mut image.interpreter, &new_block, "value");
+        assert_eq!(integer(&mut image.interpreter, &new_answer), Some(2));
+    }
+
     /// A method added to a class answers on an instance made before.
     #[test]
     fn an_added_method_answers_on_an_existing_instance() {

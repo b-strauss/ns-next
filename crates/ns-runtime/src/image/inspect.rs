@@ -90,6 +90,8 @@ pub struct Report {
     /// The object graph, read record by record rather than rebuilt; a
     /// frame is an object record like any other.
     pub graph_objects: Vec<String>,
+    /// Every frame record of the graph, in object order.
+    pub frames: Vec<Frame>,
     pub graph_roots: Vec<String>,
     /// The identity hashes the graph section records for the objects it
     /// names by tag. Rendered only by `render_full`.
@@ -236,8 +238,19 @@ fn expand_mixin(mixin: &Rc<crate::mixin::Mixin>, code: &mixins::MixinCode) -> St
 /// printing plausible nonsense.
 struct GraphView {
     objects: Vec<String>,
+    frames: Vec<Frame>,
     roots: Vec<String>,
     tag_named: Vec<String>,
+}
+
+/// A frame record where the file has it: what a reader that patches or
+/// checks one byte of it needs, which the record's text does not say.
+pub struct Frame {
+    /// The frame's object id.
+    pub object: usize,
+    /// The byte offset of the `u32` code id naming the frame's body, or
+    /// `None` for a frame that names none, a top-level one.
+    pub code_offset: Option<usize>,
 }
 
 /// What the graph's tags name by index: the shipped names. A reference
@@ -363,14 +376,23 @@ fn read_frame_reference(reader: &mut decode::Reader) -> Result<String, decode::D
     })
 }
 
-/// An `OBJECT_FRAME` body, in the order the wire has it.
+/// An `OBJECT_FRAME` body, in the order the wire has it, and the offset of
+/// its code id, if it names a body.
 fn read_frame_record(
     reader: &mut decode::Reader,
     symbols: &symbols::Table,
     targets: &TagTargets<'_>,
-) -> Result<String, decode::DecodeError> {
+) -> Result<(String, Option<usize>), decode::DecodeError> {
     let kind = match reader.read_u8()? {
-        opcodes::FRAME_METHOD => format!("method {}", symbols.get(reader.read_u32()?)?),
+        opcodes::FRAME_METHOD => {
+            let selector = symbols.get(reader.read_u32()?)?;
+            let access = match mixins::access_from_tag(reader.read_u8()?)? {
+                ns_syntax::ast::AccessModifier::Public => "public",
+                ns_syntax::ast::AccessModifier::Protected => "protected",
+                ns_syntax::ast::AccessModifier::Private => "private",
+            };
+            format!("method {selector} ({access})")
+        }
         opcodes::FRAME_TOP_LEVEL => "top level".to_string(),
         opcodes::FRAME_INITIALIZER => {
             format!("initializer of {}", read_class_tag(reader, targets)?)
@@ -393,6 +415,12 @@ fn read_frame_record(
             })
         }
     };
+    let (kind, code_offset) = if reader.read_boolean()? {
+        let offset = reader.position();
+        (format!("{kind}, code {}", reader.read_u32()?), Some(offset))
+    } else {
+        (kind, None)
+    };
     let program_counter = reader.read_u32()?;
     let uncontinuable = reader.read_boolean()?;
     let receiver = read_value(reader, targets)?;
@@ -400,11 +428,14 @@ fn read_frame_record(
     let home = read_frame_reference(reader)?;
     let current_class = read_optional_class(reader, targets)?;
     let registers = read_values(reader, targets)?;
-    Ok(format!(
-        "frame {kind}, pc {program_counter}, uncontinuable {uncontinuable}, \
-         receiver {receiver}, sender {sender}, home {home}, current class {current_class}, \
-         registers [{}]",
-        registers.join(", ")
+    Ok((
+        format!(
+            "frame {kind}, pc {program_counter}, uncontinuable {uncontinuable}, \
+             receiver {receiver}, sender {sender}, home {home}, current class {current_class}, \
+             registers [{}]",
+            registers.join(", ")
+        ),
+        code_offset,
     ))
 }
 
@@ -508,7 +539,8 @@ fn walk_graph(
     )?;
 
     let mut objects = Vec::with_capacity(object_count);
-    for _ in 0..object_count {
+    let mut frames = Vec::new();
+    for object in 0..object_count {
         let class = read_class_tag(reader, targets)?;
         let hash = reader.read_u32()?;
         let body = match reader.read_u8()? {
@@ -532,7 +564,14 @@ fn walk_graph(
             opcodes::OBJECT_METACLASS => {
                 format!("metaclass of {}", read_class_tag(reader, targets)?)
             }
-            opcodes::OBJECT_FRAME => read_frame_record(reader, symbols, targets)?,
+            opcodes::OBJECT_FRAME => {
+                let (record, code_offset) = read_frame_record(reader, symbols, targets)?;
+                frames.push(Frame {
+                    object,
+                    code_offset,
+                });
+                record
+            }
             opcodes::OBJECT_MIXIN => read_mixin_record(reader, targets)?,
             tag => {
                 return Err(decode::DecodeError::InvalidTag {
@@ -567,6 +606,7 @@ fn walk_graph(
 
     Ok(GraphView {
         objects,
+        frames,
         roots,
         tag_named,
     })
@@ -798,6 +838,7 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
         bodies,
         shipped_names: names.iter().map(ShippedName::describe).collect(),
         graph_objects: graph.objects,
+        frames: graph.frames,
         graph_roots: graph.roots,
         graph_tag_named_hashes: graph.tag_named,
         total_length: bytes.len(),

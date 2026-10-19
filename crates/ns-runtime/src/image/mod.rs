@@ -33,7 +33,12 @@ pub mod texts;
 
 pub use modules::ModuleSource;
 
-use crate::heap::{Heap, Root};
+use std::collections::HashSet;
+use std::rc::Rc;
+
+use crate::bytecode::{CompiledCode, Instruction};
+use crate::heap::{Heap, MixinId, Root};
+use crate::mixin::Mixin;
 use crate::types::{ClassReference, SourceOrigin, Value};
 use crate::{Interpreter, Mutator};
 
@@ -54,14 +59,21 @@ struct Describing {
     mixin_ids: mixins::MixinIds,
 }
 
-/// Encodes the code table and the mixin table into their own buffers,
-/// collecting every selector and name either one names into `symbols` along
-/// the way. The symbol table cannot be written before both are encoded, since
-/// it is the table's *contents* that fill it.
-fn encode_describing<'gc>(
+/// The rows the describing sections write, planned before the graph is
+/// walked, and whether they carry their texts.
+struct Planned {
+    rows: Vec<mixins::Row>,
+    with_source: bool,
+}
+
+/// Plans the mixin table's rows, making every refusal of the describing
+/// sections: a root that can never be instantiated, source for some modules
+/// but not all, and whatever `mixins::plan` refuses. Made before the graph
+/// is walked, so that these refusals come before the graph's.
+fn plan_describing<'gc>(
     heap: &Heap<'gc>,
     modules: &[ModuleSource<'_, 'gc>],
-) -> Result<Describing, String> {
+) -> Result<Planned, String> {
     // Each module's declarations, which carry its code. A root that is not a
     // class object has none and contributes no rows rather than an error:
     // the graph section is what refuses such a root.
@@ -91,13 +103,31 @@ fn encode_describing<'gc>(
                 .to_string(),
         );
     }
-    let mut symbols = symbols::Builder::new();
-    let mut code = encode::Writer::new();
     // Planned once, from each declaration's current version, so that the
     // code table, the text table and the mixin table describe one program:
     // the program as an edit left it, each declaration's text once.
     let rows = mixins::plan(heap, &module_roots)?;
-    let ids = encode::encode_code_table(&mut code, &rows, &[], &mut symbols)?;
+    Ok(Planned { rows, with_source })
+}
+
+/// Encodes the code table and the mixin table into their own buffers,
+/// collecting every selector and name either one names into `symbols` along
+/// the way. The symbol table cannot be written before both are encoded, since
+/// it is the table's *contents* that fill it.
+///
+/// `bodies` are the bodies the graph runs or can run
+/// (`encode::WalkedGraph::bodies`): the code table carries each one an
+/// older version of a carried declaration compiled (`extra_bodies`).
+fn encode_describing(
+    heap: &Heap<'_>,
+    planned: Planned,
+    bodies: &[Rc<CompiledCode>],
+) -> Result<Describing, String> {
+    let Planned { rows, with_source } = planned;
+    let mut symbols = symbols::Builder::new();
+    let mut code = encode::Writer::new();
+    let extra = extra_bodies(heap, &rows, bodies);
+    let ids = encode::encode_code_table(&mut code, &rows, &extra, &mut symbols)?;
     // The texts the heap holds, each declaration's own -- never the host's
     // file, which after an edit is no longer the program's text.
     let (texts, text_ids) = if with_source {
@@ -125,6 +155,81 @@ fn encode_describing<'gc>(
         ids,
         mixin_ids,
     })
+}
+
+/// The bodies of `bodies`, in their order, that an older version of a
+/// declaration the rows describe compiled and the rows' own bodies do not
+/// include: a closure an edit's superseded method made, and the frame it
+/// captured, still run that code. Every version of a row's declaration
+/// counts -- the row's own and each one an install superseded under its id
+/// (`Heap::superseded_mixins`) -- with every body each carries and the
+/// blocks nested in them. A body no such version compiled is left out, and
+/// the graph section refuses the closure or frame that runs it, as it
+/// refuses one over another module's code.
+fn extra_bodies(
+    heap: &Heap<'_>,
+    rows: &[mixins::Row],
+    bodies: &[Rc<CompiledCode>],
+) -> Vec<Rc<CompiledCode>> {
+    let mut current = HashSet::new();
+    for row in rows {
+        version_bodies(&row.mixin, &mut current);
+    }
+    let ids: HashSet<MixinId> = rows.iter().filter_map(|row| row.id).collect();
+    let mut admitted = HashSet::new();
+    for version in heap.superseded_mixins() {
+        if heap
+            .known_mixin_id(version)
+            .is_some_and(|id| ids.contains(&id))
+        {
+            version_bodies(version, &mut admitted);
+        }
+    }
+    let mut extra: Vec<Rc<CompiledCode>> = Vec::new();
+    let mut seen = HashSet::new();
+    for body in bodies {
+        let key = Rc::as_ptr(body) as usize;
+        if !current.contains(&key) && admitted.contains(&key) && seen.insert(key) {
+            extra.push(Rc::clone(body));
+        }
+    }
+    extra
+}
+
+/// Every body `mixin` carries -- its methods, its initializer, its
+/// superclass clause and message, its `<:` clauses' messages -- and the
+/// blocks nested in them, by address.
+fn version_bodies(mixin: &Mixin, out: &mut HashSet<usize>) {
+    let mut pending: Vec<Rc<CompiledCode>> = mixin
+        .compiled_methods()
+        .map(|method| Rc::clone(&method.code))
+        .chain(
+            [
+                &mixin.initializer_code,
+                &mixin.superclass_clause_code,
+                &mixin.superclass_message_code,
+            ]
+            .into_iter()
+            .chain(
+                mixin
+                    .mixin_applications
+                    .iter()
+                    .map(|clause| &clause.message_code),
+            )
+            .flatten()
+            .cloned(),
+        )
+        .collect();
+    while let Some(code) = pending.pop() {
+        if !out.insert(Rc::as_ptr(&code) as usize) {
+            continue;
+        }
+        for instruction in &code.instructions() {
+            if let Instruction::MakeClosure { code: block, .. } = instruction {
+                pending.push(Rc::clone(block));
+            }
+        }
+    }
 }
 
 /// The current text of the module whose root declaration is `root`, as
@@ -238,8 +343,12 @@ fn write_image<'gc>(
                 .to_string(),
         );
     }
-    let mut describing = encode_describing(heap, modules)?;
+    let planned = plan_describing(heap, modules)?;
     let classes: Vec<ClassReference<'gc>> = modules.iter().map(|module| module.class).collect();
+    // Walked before the code table is written: the bodies the graph runs
+    // decide which code of an older version the table carries.
+    let walked = encode::walk_graph(mutator, roots, &classes)?;
+    let mut describing = encode_describing(heap, planned, &walked.bodies(heap))?;
     // The graph section is encoded into its own buffer, against the same
     // `symbols` builder the describing sections used, before `write_describing`
     // consumes `describing` -- the graph needs the mixin table's row ids, and
@@ -252,9 +361,9 @@ fn write_image<'gc>(
     } = encode::encode_graph_section(
         mutator,
         &mut graph_writer,
+        &walked,
         roots,
         &describing.ids,
-        &classes,
         &describing.mixin_ids,
         &mut describing.symbols,
     )?;

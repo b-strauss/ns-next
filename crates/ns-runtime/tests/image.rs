@@ -2598,12 +2598,13 @@ fn round_trip_graph(
         )
         .expect("encode code table");
         let mixin_ids = mixin_ids_for(mutator, class, &mut symbols, &ids);
+        let walked = encode::walk_graph(mutator, &root_values, &[class]).expect("walk graph");
         let encoded = encode::encode_graph_section(
             mutator,
             &mut writer,
+            &walked,
             &root_values,
             &ids,
-            &[class],
             &mixin_ids,
             &mut symbols,
         )
@@ -4020,15 +4021,14 @@ fn a_closure_and_its_paused_home_frame_round_trip() {
         let FrameKind::Method(declaration) = &home.kind else {
             panic!("home is a method frame")
         };
-        assert!(
-            Rc::ptr_eq(
-                declaration,
-                mixin
-                    .compiled_method(Symbol::intern("mk"))
-                    .expect("the class declares `mk`")
-            ),
-            "re-resolved against the class's method map"
-        );
+        // `round_trip_graph` decodes against the original declarations and a
+        // freshly decoded code table, so the frame's method is built over the
+        // decoded body the record names rather than shared with the class's.
+        let method = mixin
+            .compiled_method(Symbol::intern("mk"))
+            .expect("the class declares `mk`");
+        assert_eq!(declaration.selector, method.selector);
+        assert_eq!(*declaration.code, *method.code);
         assert!(heap
             .object_class(object(heap.frame_receiver(closure_home)))
             .same(class));
@@ -4104,12 +4104,13 @@ fn the_graph_section_encoding_is_deterministic() {
             )
             .expect("encode code table");
             let mixin_ids = mixin_ids_for(mutator, class, &mut symbols, &ids);
+            let walked = encode::walk_graph(mutator, &roots, &[class]).expect("walk graph");
             encode::encode_graph_section(
                 mutator,
                 &mut writer,
+                &walked,
                 &roots,
                 &ids,
-                &[class],
                 &mixin_ids,
                 &mut symbols,
             )
@@ -4354,7 +4355,18 @@ fn frame_header(writer: &mut encode::Writer, hash: u32) {
     writer.write_u8(OBJECT_FRAME); // object body: Frame
 }
 
-/// Everything of a frame record after its kind: `program_counter`,
+/// A frame record's body for a frame that runs none, a top-level one.
+fn no_body(writer: &mut encode::Writer) {
+    writer.write_boolean(false); // no body
+}
+
+/// A frame record's body: code id `code_id`.
+fn runs_body(writer: &mut encode::Writer, code_id: u32) {
+    writer.write_boolean(true); // a body...
+    writer.write_u32(code_id); // ...by code id
+}
+
+/// Everything of a frame record after its kind and its body: `program_counter`,
 /// continuable, a nil receiver, no sender, no home, no current class, and
 /// `registers` registers, each nil.
 fn frame_tail(writer: &mut encode::Writer, program_counter: u32, registers: u32) {
@@ -4402,6 +4414,7 @@ fn a_frame_id_out_of_range_is_a_decode_error_not_a_panic() {
     graph_counts(&mut writer, 1);
     frame_header(&mut writer, 0);
     writer.write_u8(FRAME_TOP_LEVEL); // frame kind: TopLevel
+    no_body(&mut writer);
     writer.write_u32(0); // program_counter
     writer.write_boolean(false); // continuable
     writer.write_u8(VALUE_NIL); // receiver: nil
@@ -4430,6 +4443,7 @@ fn a_frame_reference_naming_a_string_is_refused() {
     writer.write_str("not a frame");
     frame_header(&mut writer, 0);
     writer.write_u8(FRAME_TOP_LEVEL); // frame kind: TopLevel
+    no_body(&mut writer);
     writer.write_u32(0); // program_counter
     writer.write_boolean(false); // continuable
     writer.write_u8(VALUE_NIL); // receiver: nil
@@ -4467,6 +4481,7 @@ fn a_frame_record_whose_register_count_would_exhaust_the_bytes_is_refused_before
     graph_counts(&mut writer, 1);
     frame_header(&mut writer, 0);
     writer.write_u8(FRAME_TOP_LEVEL); // frame kind: TopLevel
+    no_body(&mut writer);
     writer.write_u32(0); // program_counter
     writer.write_boolean(false); // continuable
     writer.write_u8(VALUE_NIL); // receiver: nil
@@ -5746,43 +5761,21 @@ fn an_invalid_frame_kind_tag_is_a_decode_error_not_a_panic() {
 
 /// The byte after the body tag is the frame's kind tag. A record with one
 /// stray byte 1 there has it read as `FRAME_CLOSURE`, and the next four
-/// bytes (the real kind tag and three bytes of the program counter) as a
-/// closure object id outside the one-record table, so it is refused rather
-/// than read as a different frame.
+/// bytes (the real kind tag, the body's absence and two bytes of the
+/// program counter) as a closure object id outside the one-record table,
+/// so it is refused rather than read as a different frame.
 #[test]
 fn a_frame_record_with_a_stray_byte_is_refused() {
     let mut writer = one_frame_prefix();
     writer.write_u8(1); // the stray byte
     writer.write_u8(FRAME_TOP_LEVEL); // frame kind: TopLevel
+    no_body(&mut writer);
     frame_tail(&mut writer, 0, 0);
     writer.write_u32(0); // no roots
     let bytes = writer.into_bytes();
     assert_eq!(
         GraphFixture::new().decode_error(&bytes),
         decode::DecodeError::BadObjectId(u32::from(FRAME_TOP_LEVEL))
-    );
-}
-
-#[test]
-fn a_method_frame_naming_a_selector_the_class_lost_is_a_decode_error() {
-    // The frame has no current class, so its method is resolved against the
-    // module's root class record, object 1, which declares no `gone`.
-    let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, 3);
-    frame_header(&mut writer, 0);
-    writer.write_u8(FRAME_METHOD); // frame kind: Method
-    writer.write_u32(0); // selector id 0 ("gone")
-    frame_tail(&mut writer, 0, 0);
-    root_class_records(&mut writer, 1);
-    writer.write_u32(0); // no roots
-    let bytes = writer.into_bytes();
-    let mut fixture = GraphFixture::new();
-    fixture.symbols = table_with(&["gone"]);
-    fixture.module_roots = vec![1];
-    let error = fixture.decode_error(&bytes);
-    assert_eq!(
-        error,
-        decode::DecodeError::UnknownSelector("gone".to_string())
     );
 }
 
@@ -5845,12 +5838,13 @@ fn a_truncated_graph_section_is_a_decode_error_not_a_panic() {
         let before = writer.into_bytes().len();
         let mut writer = encode::Writer::new();
         let mixin_ids = mixin_ids_for(mutator, class, &mut symbols, &ids);
+        let walked = encode::walk_graph(mutator, &roots, &[class]).expect("walk graph");
         let encoded = encode::encode_graph_section(
             mutator,
             &mut writer,
+            &walked,
             &roots,
             &ids,
-            &[class],
             &mixin_ids,
             &mut symbols,
         )
@@ -5952,14 +5946,16 @@ fn a_closure_capturing_a_block_activation_round_trips() {
         let FrameKind::Method(declaration) = &home_kind else {
             panic!("the home is `mk`'s method frame")
         };
+        // Against the original declarations and a freshly decoded code
+        // table (`round_trip_graph`): the frame's method is built over the
+        // decoded body its record names.
         let application = heap.class_application(class).expect("not a class");
-        assert!(Rc::ptr_eq(
-            declaration,
-            application
-                .mixin
-                .compiled_method(Symbol::intern("mk"))
-                .expect("the class declares `mk`")
-        ));
+        let method = application
+            .mixin
+            .compiled_method(Symbol::intern("mk"))
+            .expect("the class declares `mk`");
+        assert_eq!(declaration.selector, method.selector);
+        assert_eq!(*declaration.code, *method.code);
     });
 }
 
@@ -6142,6 +6138,7 @@ fn a_closure_frame_naming_an_object_that_is_not_a_closure_is_refused() {
     frame_header(&mut writer, 0);
     writer.write_u8(FRAME_CLOSURE); // frame kind: a closure...
     writer.write_u32(0); // ...naming object 0, the string
+    runs_body(&mut writer, 0); // the fixture's block
     writer.write_u32(0); // program_counter
     writer.write_boolean(false); // continuable
     writer.write_u8(VALUE_NIL); // receiver: nil
@@ -6151,7 +6148,9 @@ fn a_closure_frame_naming_an_object_that_is_not_a_closure_is_refused() {
     writer.write_boolean(false); // no current class
     writer.write_u32(0); // no registers
     writer.write_u32(0); // no roots
-    let error = GraphFixture::new().decode_error(&writer.into_bytes());
+    let mut fixture = GraphFixture::new();
+    fixture.codes = vec![block_code(0, 0)];
+    let error = fixture.decode_error(&writer.into_bytes());
     assert_eq!(error, decode::DecodeError::NotAClosureReference);
     assert_eq!(
         error.to_string(),
@@ -6166,6 +6165,7 @@ fn a_top_level_frame_kind_decodes() {
     // decoder's tag-2 branch.
     let mut writer = one_frame_prefix();
     writer.write_u8(FRAME_TOP_LEVEL); // frame kind: TopLevel
+    no_body(&mut writer);
     frame_tail(&mut writer, 0, 0);
     writer.write_u32(0); // no roots
     let bytes = writer.into_bytes();
@@ -6209,6 +6209,7 @@ fn closure_object_with_copied_values(copied: &[i64]) -> Vec<u8> {
     }
     frame_header(&mut writer, 0);
     writer.write_u8(FRAME_TOP_LEVEL); // frame kind: TopLevel
+    no_body(&mut writer);
     frame_tail(&mut writer, 0, 0);
     writer.write_u32(1); // one root...
     writer.write_u8(VALUE_OBJECT_ID);
@@ -7586,6 +7587,8 @@ fn foo_frame_at_program_counter(
     move |writer: &mut encode::Writer| {
         writer.write_u8(FRAME_METHOD); // frame kind: Method
         writer.write_u32(0); // selector id 0 -- "foo", per `closure_world`'s fixture
+        writer.write_u8(mixins::access_tag(AccessModifier::Public));
+        runs_body(writer, 1); // code id 1 -- `foo`'s body
         frame_tail(writer, program_counter, registers);
     }
 }
@@ -7662,6 +7665,7 @@ fn a_closure_captured_by_a_frame_that_does_not_run_its_lexical_parent_is_refused
     let (mut fixture, table) = closure_world();
     let bytes = closure_over_frame(|writer: &mut encode::Writer| {
         writer.write_u8(FRAME_TOP_LEVEL); // frame kind: TopLevel -- runs no code at all
+        no_body(writer);
         frame_tail(writer, 0, 0);
     });
     fixture.decoded(&bytes, "decode", |heap, graph| {
@@ -9132,10 +9136,23 @@ fn the_superclass_clause_frame_kinds_decode() {
         let mut writer = one_frame_prefix();
         writer.write_u8(tag);
         writer.write_shipped(OBJECT_NAME);
+        runs_body(&mut writer, 0);
         frame_tail(&mut writer, 0, 0);
         writer.write_u32(0); // no roots
         let bytes = writer.into_bytes();
-        GraphFixture::new().decoded(&bytes, "a superclass clause frame", |heap, decoded| {
+        let mut fixture = GraphFixture::new();
+        let kind = if expect_clause {
+            CodeKind::SuperclassClause
+        } else {
+            CodeKind::SuperclassMessage
+        };
+        fixture.codes = vec![code_with(
+            kind,
+            0,
+            1,
+            vec![Instruction::Return { register: 0 }],
+        )];
+        fixture.decoded(&bytes, "a superclass clause frame", |heap, decoded| {
             let frame = decoded.frames.first().expect("the one frame");
             let kind = heap.frame_kind(*frame);
             let matched = match &kind {
@@ -11060,6 +11077,82 @@ fn a_frame_program_counter_past_its_bodys_last_instruction_is_refused() {
             }
         );
     });
+}
+
+/// A real image of a closure over a method-local block, whose captured
+/// frame is `makeClosure`'s method frame; with the offset of that frame's
+/// code id and the code id the closure record names, the block's own.
+fn image_of_a_closure_over_a_method_frame() -> (Vec<u8>, usize, u32, usize) {
+    let source = indoc! {"
+        class Holder = Object new () (
+          public makeClosure = ( ^[ 1 ] )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let closure = expect_ok(
+        interpreter.send(&instance, Symbol::intern("makeClosure"), &[]),
+        "makeClosure",
+    );
+    let bytes = interpreter.enter(|mutator| {
+        let closure = mutator.fetch(&closure);
+        let class = class_reference(mutator, &class);
+        snapshot_one(
+            mutator,
+            false,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &[closure],
+        )
+        .expect("snapshot")
+    });
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    let [frame] = report.frames.as_slice() else {
+        panic!("the image holds one frame, the closure's captured one")
+    };
+    let code_offset = frame.code_offset.expect("a method frame names its body");
+    let block_code = report
+        .graph_objects
+        .iter()
+        .find_map(|object| {
+            let (_, after) = object.split_once("closure code ")?;
+            after.split(',').next()?.parse::<u32>().ok()
+        })
+        .expect("the image holds the closure");
+    (bytes, code_offset, block_code, report.code.len())
+}
+
+/// A method frame whose code id names the block it created rather than
+/// the method that ran in it is refused: the crafted bytes would
+/// otherwise decode the frame against a body it never ran.
+#[test]
+fn a_frame_whose_code_disagrees_with_its_kind_is_refused() {
+    let (mut bytes, code_offset, block_code, _) = image_of_a_closure_over_a_method_frame();
+    bytes[code_offset..code_offset + 4].copy_from_slice(&block_code.to_le_bytes());
+    let Err(error) = image::load(&bytes) else {
+        panic!("a method frame running a block body must be refused")
+    };
+    assert!(
+        error.contains("a frame's body is not one its kind runs"),
+        "{error}"
+    );
+}
+
+/// A frame's code id past the code table is refused where it is read: the
+/// crafted bytes would otherwise decode the frame against a body it never
+/// ran, or index past the table.
+#[test]
+fn a_frame_code_id_past_the_table_is_refused() {
+    let (mut bytes, code_offset, _, table_length) = image_of_a_closure_over_a_method_frame();
+    let past = u32::try_from(table_length).expect("a small code table");
+    bytes[code_offset..code_offset + 4].copy_from_slice(&past.to_le_bytes());
+    let Err(error) = image::load(&bytes) else {
+        panic!("a frame's code id past the table must be refused")
+    };
+    assert!(
+        error.contains(&decode::DecodeError::BadCodeId(past).to_string()),
+        "{error}"
+    );
 }
 
 /// `load` never calls the parser, so source that could not possibly parse
@@ -13244,6 +13337,7 @@ fn record_under(header: impl FnOnce(&mut encode::Writer), body: u8) -> Vec<u8> {
     writer.write_u8(body);
     if body == OBJECT_FRAME {
         writer.write_u8(FRAME_TOP_LEVEL);
+        no_body(&mut writer);
         frame_tail(&mut writer, 0, 0);
     } else {
         writer.write_u32(0);
@@ -13879,10 +13973,18 @@ fn the_mixin_application_message_frame_kind_decodes() {
     let mut writer = one_frame_prefix();
     writer.write_u8(FRAME_MIXIN_APPLICATION_MESSAGE);
     writer.write_shipped(OBJECT_NAME);
+    runs_body(&mut writer, 0);
     frame_tail(&mut writer, 0, 0);
     writer.write_u32(0); // no roots
     let bytes = writer.into_bytes();
-    GraphFixture::new().decoded(
+    let mut fixture = GraphFixture::new();
+    fixture.codes = vec![code_with(
+        CodeKind::SuperclassMessage,
+        0,
+        1,
+        vec![Instruction::Return { register: 0 }],
+    )];
+    fixture.decoded(
         &bytes,
         "a mixin application message frame",
         |heap, graph| {
@@ -15284,6 +15386,7 @@ fn a_shipped_name_in_a_forbidden_position_is_refused() {
         graph_counts(&mut writer, 1);
         frame_header(&mut writer, 0);
         writer.write_u8(FRAME_TOP_LEVEL);
+        no_body(&mut writer);
         writer.write_u32(0); // program counter
         writer.write_boolean(false); // continuable
         writer.write_u8(VALUE_SHIPPED_MODULE); // receiver: a shipped module

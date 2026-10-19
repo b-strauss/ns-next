@@ -243,7 +243,7 @@ fn slot_kind_from_tag(tag: u8) -> Result<(bool, bool), DecodeError> {
     }
 }
 
-fn access_from_tag(tag: u8) -> Result<AccessModifier, DecodeError> {
+pub(crate) fn access_from_tag(tag: u8) -> Result<AccessModifier, DecodeError> {
     match tag {
         0 => Ok(AccessModifier::Public),
         1 => Ok(AccessModifier::Protected),

@@ -229,7 +229,7 @@ pub const VALUE_SHIPPED_MODULE: u8 = 11;
 pub const RETIRED_VALUE_TAGS: [u8; 2] = [7, 8];
 
 /// An object record's body, following its class tag and identity hash.
-/// Next free number: 15.
+/// Next free number: 16.
 pub const OBJECT_INSTANCE: u8 = 0;
 pub const OBJECT_STRING: u8 = 1;
 pub const OBJECT_SYMBOL: u8 = 2;
@@ -251,13 +251,18 @@ pub const OBJECT_METACLASS: u8 = 8;
 /// `Kernel Activation` by its shipped name (`CLASS_SHIPPED`), the one record
 /// an image may give that class; any other header on this body, or that
 /// header on any other body, is refused. Its body is the frame's
-/// kind tag (`FRAME_*`) and that kind's payload, a `u32` program counter,
-/// `uncontinuable`, the receiver, the sender and the home (each a presence
-/// flag and an object id), the current class (a presence flag and a class
-/// tag), then a `u32` register count and that many values. The kind comes
-/// first and the register count is on the wire, so the decoder's first pass
-/// sizes the record from its own bytes (`decode::decode_graph_section`).
-pub const OBJECT_FRAME: u8 = 10;
+/// kind tag (`FRAME_*`) and that kind's payload, the body that runs in it
+/// (a presence flag and a `u32` code id, absent exactly for a top-level
+/// frame), a `u32` program counter, `uncontinuable`, the receiver, the
+/// sender and the home (each a presence flag and an object id), the
+/// current class (a presence flag and a class tag), then a `u32` register
+/// count and that many values. The kind comes first and the register count
+/// is on the wire, so the decoder's first pass sizes the record from its
+/// own bytes (`decode::decode_graph_section`). The body is named by code id
+/// rather than found through the frame's class, since after an edit the
+/// class's current version carries another body, and the code an older
+/// version runs is in the code table too.
+pub const OBJECT_FRAME: u8 = 15;
 /// A `ByteArray`: a `u32` length, then that many bytes, in order. The
 /// first pass sizes the record from its own bytes -- the length is refused
 /// when fewer bytes follow it, before anything is allocated -- and the
@@ -302,8 +307,10 @@ pub const OBJECT_MIXIN: u8 = 14;
 /// was the activation record while frames had a table of their own: its
 /// body was one frame-table id, which an object id read in its place would
 /// resolve to some other record, so the frame record took a new number
-/// (`OBJECT_FRAME`) rather than this one.
-pub const RETIRED_OBJECT_BODIES: [u8; 3] = [4, 5, 9];
+/// (`OBJECT_FRAME`) rather than this one. 10 was that frame record while
+/// it named no body and a method frame carried no access: its kind payload
+/// would otherwise be read with the bytes after it as a code id.
+pub const RETIRED_OBJECT_BODIES: [u8; 4] = [4, 5, 9, 10];
 
 /// How a class record names the mixin its class object applies, which also
 /// decides the rest of the record. Every class the graph creates applies a
@@ -378,6 +385,10 @@ pub const RETIRED_CLASS_TAGS: [u8; 7] = [0, 1, 3, 4, 5, 6, 7];
 
 /// What a frame was activated for, numbered in the order `types::FrameKind`
 /// declares it.
+///
+/// A method activation: the `u32` symbol id of its selector and its
+/// method's access tag (`mixins::access_tag`), which together with its
+/// body describe a method an edit superseded as well as a current one.
 pub const FRAME_METHOD: u8 = 0;
 /// A closure activation: the object id of the closure object it runs.
 pub const FRAME_CLOSURE: u8 = 1;

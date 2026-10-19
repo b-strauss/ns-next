@@ -3502,6 +3502,13 @@ impl<'gc> Heap<'gc> {
         self.tables.applications.get(index.index()).cloned()
     }
 
+    /// Every version of a mixin an install superseded, oldest first: the
+    /// code they carry still runs in the frames and closures that hold it,
+    /// so an image writes the bodies of those its graph reaches.
+    pub(crate) fn superseded_mixins(&self) -> &[Rc<Mixin>] {
+        &self.tables.superseded
+    }
+
     pub(crate) fn code_id(&mut self, code: &Rc<CompiledCode>) -> CodeId {
         self.register_code(code, None)
     }
@@ -4252,9 +4259,9 @@ impl<'gc> Heap<'gc> {
     }
 
     /// The body that runs (or ran) in `frame`, or `None` when it has none to
-    /// name: a top-level frame, or a decoded frame whose kind names a body
-    /// its class's mixin does not carry. `image::decode` reconciles a
-    /// decoded frame against it.
+    /// name: a top-level frame, or one filled without a body whose kind
+    /// finds none (`fill_frame_fields`). `image::decode` reconciles a decoded
+    /// frame against it.
     pub(crate) fn frame_code(&self, frame: FrameReference<'gc>) -> Option<Rc<CompiledCode>> {
         let id = self
             .frame_field(frame, frame_field::CODE_ID)
@@ -4489,10 +4496,13 @@ impl<'gc> Heap<'gc> {
     /// stays where it is, nil, for `fill_frame_register` to write register
     /// by register. The frame keeps its class, its guard and its identity
     /// hash, and ends identical to a frame `allocate_frame` builds from the
-    /// same fields and registers. Its code is found from the record's kind
-    /// (`kind_code`), so the record's split between arguments and
-    /// temporaries is not kept: a frame's arguments are its code's
-    /// (`image::decode::verify_graph` holds the register count to it).
+    /// same fields and registers. Its code is `code`, the body the image
+    /// names -- after an edit the class's current version carries another,
+    /// so the body is never looked up through the class when it is given --
+    /// or, when none is given, the one its kind finds (`kind_code`). The
+    /// record's split between arguments and temporaries is not kept: a
+    /// frame's arguments are its code's (`image::decode::verify_graph` holds
+    /// the register count to it, and the body to the frame's kind).
     ///
     /// The image decoder's second pass is the only caller. Call this on a
     /// handle something else already holds and it silently replaces that
@@ -4503,6 +4513,7 @@ impl<'gc> Heap<'gc> {
         &mut self,
         frame: FrameReference<'gc>,
         record: FrameRecord<'gc>,
+        code: Option<Rc<CompiledCode>>,
     ) {
         self.check_frame_origin(frame);
         let FrameRecord {
@@ -4520,7 +4531,7 @@ impl<'gc> Heap<'gc> {
             arguments.is_empty() && temporaries.is_empty(),
             "`fill_frame_register` writes a placeholder's registers"
         );
-        let code = self.kind_code(&kind);
+        let code = code.or_else(|| self.kind_code(&kind));
         let code = self.frame_code_id(&kind, code.as_ref());
         let words = self.frame_fixed_words(FrameFields {
             sender,
@@ -8279,6 +8290,7 @@ mod tests {
                 kind: FrameKind::TopLevel,
                 uncontinuable: true,
             },
+            None,
         );
         for (index, value) in registers.iter().enumerate() {
             assert!(heap.fill_frame_register(filled, index, *value));

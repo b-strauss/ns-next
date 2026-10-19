@@ -334,8 +334,7 @@ pub enum DecodeError {
     },
     /// A selector the image names has no declaration to bind to: a
     /// mixin-table row's code list naming a selector its own method
-    /// dictionary lacks, or a `FrameKind::Method` naming a selector its
-    /// `current_class` does not declare.
+    /// dictionary lacks.
     UnknownSelector(String),
     /// A mixin-table row declares slots or `initExpr`s but carries no
     /// compiled initializer. Instantiating such a class runs initializer
@@ -423,6 +422,13 @@ pub enum DecodeError {
     /// its own body is lexically nested in -- the link every
     /// `LoadOuterLocal`/`StoreOuterLocal` bound rests on.
     CapturedFrameMismatch,
+    /// A decoded frame's body is not one its kind runs: a method frame's
+    /// not a method body of its method's argument count, a closure frame's
+    /// not its closure's own code, a clause frame's not a body of that
+    /// clause's kind, or a body named for a top-level frame, or none for
+    /// any other. The program counter and the register file mean nothing
+    /// against a body the frame never ran.
+    FrameCodeMismatch,
     /// An identity hash the header word cannot hold: it is 22 bits wide.
     /// Refusing the image is the only answer that does not alias the hash
     /// to another one.
@@ -843,6 +849,9 @@ impl std::fmt::Display for DecodeError {
                 f,
                 "a decoded closure's captured frame does not run the body its own body is nested in"
             ),
+            DecodeError::FrameCodeMismatch => {
+                write!(f, "a frame's body is not one its kind runs")
+            }
             DecodeError::IdentityHashTooWide(hash) => write!(
                 f,
                 "identity hash {hash} does not fit the header word's 22 bits"
@@ -2869,7 +2878,9 @@ fn decode_fields_into<'gc>(
 }
 
 /// Re-resolves a `FrameKind::Method` against the decoded class's method
-/// map: the image names the method by selector, never by identity.
+/// map: the image names the method by selector and body, never by
+/// identity, and the method found is the frame's when its body is the one
+/// the frame names (`frame_method`).
 ///
 /// Against the frame's own `current_class`, which `dispatch::walk` sets to
 /// the level whose mixin declares the running method -- so that level's
@@ -2911,6 +2922,50 @@ fn method_declaration<'gc>(
     found.ok_or(DecodeError::UnknownSelector(selector.as_str().to_string()))
 }
 
+/// A frame's body off the wire: a `u32` code id, checked against the code
+/// table before it indexes it.
+fn frame_code(
+    reader: &mut Reader,
+    context: &DecodeContext<'_, '_>,
+) -> Result<Rc<CompiledCode>, DecodeError> {
+    let code_id = reader.read_u32()?;
+    context
+        .codes
+        .get(code_id as usize)
+        .cloned()
+        .ok_or(DecodeError::BadCodeId(code_id))
+}
+
+/// The method a decoded method frame runs: the current declaration's method
+/// of `selector` when its body is `code` (`method_declaration`), so that
+/// the frame names the very method dispatch finds, and otherwise one built
+/// over `code` -- the method of a version an install superseded, which the
+/// frame ran before the edit. `verify_graph` holds `code` to being a method
+/// body of the method's argument count.
+fn frame_method<'gc>(
+    context: &DecodeContext<'_, 'gc>,
+    tables: &Tables<'_, 'gc>,
+    current_class: Option<&ClassReference<'gc>>,
+    selector: Symbol,
+    access: ns_syntax::ast::AccessModifier,
+    code: &Rc<CompiledCode>,
+) -> Rc<crate::mixin::MixinMethod> {
+    match method_declaration(context, tables, current_class, selector) {
+        Ok(method) if Rc::ptr_eq(&method.code, code) => method,
+        _ => Rc::new(crate::mixin::MixinMethod {
+            selector,
+            access,
+            argument_count: usize::from(code.argument_count),
+            // A version an install superseded: no declaration, and no dispatch
+            // finds it, since a decoded frame is never entered again.
+            declaration: None,
+            code: Rc::clone(code),
+            fast_path: None,
+            class_accessor: None,
+        }),
+    }
+}
+
 /// An `OBJECT_FRAME` body (`opcodes::OBJECT_FRAME` gives the layout), filled
 /// into `frame`, its placeholder, in place: the fixed fields, then each
 /// register as it is read. Its registers arrive as one list: a frame's
@@ -2923,11 +2978,15 @@ fn decode_frame<'gc>(
     symbols: &symbols::Table,
     frame: FrameReference<'gc>,
 ) -> Result<(), DecodeError> {
-    // A method is named by selector, resolved once the current class that
-    // declares it has been read, below: until then the kind is the
-    // selector (`Err`), every other kind already itself (`Ok`).
+    // A method is named by selector and access, resolved once its body and
+    // the current class that declares it have been read, below: until then
+    // the kind is the selector and access (`Err`), every other kind already
+    // itself (`Ok`).
     let kind = match reader.read_u8()? {
-        FRAME_METHOD => Err(decode_symbol(reader, symbols)?),
+        FRAME_METHOD => Err((
+            decode_symbol(reader, symbols)?,
+            mixins::access_from_tag(reader.read_u8()?)?,
+        )),
         FRAME_TOP_LEVEL => Ok(FrameKind::TopLevel),
         FRAME_INITIALIZER => Ok(FrameKind::Initializer(decode_class_tag(
             reader,
@@ -2958,20 +3017,33 @@ fn decode_frame<'gc>(
             })
         }
     };
+    let code = if reader.read_boolean()? {
+        Some(frame_code(reader, context)?)
+    } else {
+        None
+    };
+    // A top-level frame runs no body and every other kind runs one: a
+    // frame without one would be reconciled against nothing.
+    if code.is_some() == matches!(kind, Ok(FrameKind::TopLevel)) {
+        return Err(DecodeError::FrameCodeMismatch);
+    }
     let program_counter = reader.read_u32()? as usize;
     let uncontinuable = reader.read_boolean()?;
     let receiver = decode_value(reader, context, tables, NamePosition::FrameRegister)?;
     let sender = decode_frame_reference(reader, context, tables)?;
     let home = decode_frame_reference(reader, context, tables)?;
     let current_class = decode_optional_class(reader, context, tables, NamePosition::FrameClass)?;
-    let kind = match kind {
-        Ok(kind) => kind,
-        Err(selector) => FrameKind::Method(method_declaration(
+    let kind = match (kind, &code) {
+        (Ok(kind), _) => kind,
+        (Err((selector, access)), Some(code)) => FrameKind::Method(frame_method(
             context,
             tables,
             current_class.as_ref(),
             selector,
-        )?),
+            access,
+            code,
+        )),
+        (Err(_), None) => return Err(DecodeError::FrameCodeMismatch),
     };
     context.mutator.heap.fill_frame_fields(
         frame,
@@ -2986,6 +3058,7 @@ fn decode_frame<'gc>(
             kind,
             uncontinuable,
         },
+        code,
     );
     let count = reader.read_u32()? as usize;
     for index in 0..count {
@@ -3597,6 +3670,7 @@ impl Sizing<'_, '_, '_> {
         match reader.read_u8()? {
             FRAME_METHOD => {
                 decode_symbol(reader, self.symbols)?;
+                mixins::access_from_tag(reader.read_u8()?)?;
             }
             FRAME_TOP_LEVEL => {}
             FRAME_INITIALIZER
@@ -3612,6 +3686,9 @@ impl Sizing<'_, '_, '_> {
                     tag,
                 })
             }
+        }
+        if reader.read_boolean()? {
+            frame_code(reader, self.context)?; // the body
         }
         reader.read_u32()?; // the program counter, checked by `verify_graph`
         reader.read_boolean()?; // uncontinuable
@@ -3932,7 +4009,8 @@ fn resolve_reified_mixin(
 /// itself be a record that appears later. `rebuild_applications` closes that
 /// gap once every record has been read. The frame records are filled after
 /// it, from where the second pass found them, since a `FRAME_METHOD` frame
-/// resolves its selector against `current_class`'s method dictionary.
+/// looks its selector up in `current_class`'s method dictionary to reuse
+/// the method there when it runs the frame's body (`frame_method`).
 ///
 /// Every pass is a flat loop over the table, and every reference between
 /// records is an id into it, never an inline nested record -- so no part of
@@ -4623,17 +4701,17 @@ fn decode_applied_clause(
 /// captured by one (`verify_closure` refuses that) -- so there is nothing to
 /// reconcile.
 fn frame_body<'gc>(heap: &Heap<'gc>, frame: FrameReference<'gc>) -> Option<Rc<CompiledCode>> {
-    // `fill_frame_fields` found it from the frame's kind, as a reified frame's is
-    // its activation's: a method's own, a closure's, and for a
-    // class-carrying kind the field of the class's mixin its body lives
-    // in -- each clause activation's own, never the instance initializer,
-    // which would reconcile a frame against a body that never ran in it.
+    // The body the record named by code id, which `fill_frame_fields`
+    // recorded as a reified frame records its activation's, and which
+    // `runs_its_kind` holds to the frame's kind.
     heap.frame_code(frame)
 }
 
 /// Every decoded frame and every decoded closure against the code the
-/// decoded mixins carry, closing the three gaps a per-record decoder
-/// cannot see:
+/// decoded mixins carry. First a frame's body, which its record names by
+/// code id, must be one its kind runs (`runs_its_kind`), since what
+/// follows means nothing against a body the frame never ran. Then the
+/// three gaps a per-record decoder cannot see are closed:
 ///
 /// 0. A frame's `program_counter` must be an instruction index of the body
 ///    that runs in it. A frame's `program_counter` counts instructions (an
@@ -4659,9 +4737,17 @@ pub fn verify_graph<'gc>(
     let parents = lexical_parents(table)?;
     let index_of = code_index(table);
     for frame in &graph.frames {
+        let kind = heap.frame_kind(*frame);
         let Some(code) = frame_body(heap, *frame) else {
-            continue;
+            // Only a top-level frame runs no body (`decode_frame`).
+            if matches!(kind, FrameKind::TopLevel) {
+                continue;
+            }
+            return Err(DecodeError::FrameCodeMismatch);
         };
+        if !runs_its_kind(heap, &kind, &code) {
+            return Err(DecodeError::FrameCodeMismatch);
+        }
         let (program_counter, argument_count, register_count) = heap.frame_register_shape(*frame);
         // The VM stores the index of the instruction it is
         // executing, and a body with no instructions is already refused
@@ -4695,6 +4781,32 @@ pub fn verify_graph<'gc>(
         }
     }
     Ok(())
+}
+
+/// Whether `code` is a body a frame of `kind` runs: a method frame a method
+/// body of its method's argument count, a closure frame its closure's own
+/// code, an initializer frame an initializer, a superclass clause frame a
+/// superclass clause, and a superclass message's or a `<:` clause's
+/// message frame a clause message, which both compile to. Nothing ties a
+/// decoded frame's body to its kind but this, since the image names the
+/// body by code id.
+fn runs_its_kind<'gc>(heap: &Heap<'gc>, kind: &FrameKind<'gc>, code: &Rc<CompiledCode>) -> bool {
+    match kind {
+        FrameKind::Method(method) => {
+            code.kind == CodeKind::Method
+                && Rc::ptr_eq(&method.code, code)
+                && usize::from(code.argument_count) == method.argument_count
+        }
+        FrameKind::Closure(closure) => heap
+            .closure_code(*closure)
+            .is_some_and(|own| Rc::ptr_eq(&own, code)),
+        FrameKind::Initializer(_) => code.kind == CodeKind::Initializer,
+        FrameKind::SuperclassClause(_) => code.kind == CodeKind::SuperclassClause,
+        FrameKind::SuperclassMessage(_) | FrameKind::MixinApplicationMessage(_) => {
+            code.kind == CodeKind::SuperclassMessage
+        }
+        FrameKind::TopLevel => false,
+    }
 }
 
 fn verify_closure<'gc>(

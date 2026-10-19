@@ -1698,9 +1698,10 @@ pub(crate) fn factory_selector(application: &crate::mixin::MixinApplication) -> 
 
 /// A `MessagePattern` rendered as the selector string it declares. Also the
 /// image encoder's `FrameKind::Method` representation: a frame names the
-/// method it activates by selector, re-resolved on load against the method
-/// map of the mixin the decoded mixin table rebuilt for the frame's own
-/// `current_class` (`image::decode::method_declaration`).
+/// method it activates by selector, access and body, and the load reuses
+/// the method of that selector in the mixin the decoded mixin table rebuilt
+/// for the frame's own `current_class` when it runs that very body
+/// (`image::decode::frame_method`).
 pub(crate) fn method_name(pattern: &ast::MessagePattern) -> String {
     match pattern {
         ast::MessagePattern::Unary { selector, .. } => selector.name.clone(),

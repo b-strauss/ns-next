@@ -222,9 +222,10 @@ pub struct CodeIds {
 }
 
 impl CodeIds {
-    /// A body no module the image carries compiled has no id: a graph that
-    /// reaches a closure over another module's code. An `Err` here, not a
-    /// panic, because what the graph reaches is the program's to decide.
+    /// A body no version of a declaration the image carries compiled has no
+    /// id: a graph that reaches a closure over another module's code. An
+    /// `Err` here, not a panic, because what the graph reaches is the
+    /// program's to decide.
     pub fn id_of(&self, code: &Rc<CompiledCode>) -> Result<u32, String> {
         self.ids
             .get(&(Rc::as_ptr(code) as usize))
@@ -253,8 +254,9 @@ pub fn code_kind_tag(kind: CodeKind) -> u8 {
 /// (`mixins::plan`) -- every mixin's methods, every mixin's initializer,
 /// every superclass clause and clause-message body, every `<:` clause's
 /// message body, and every nested block body -- then every body of
-/// `extra` and the blocks nested in it, with nested block code *before*
-/// the code that creates it. Flat and unnamed: *which* body belongs to
+/// `extra`, the code of an older version the graph still runs, and the
+/// blocks nested in it, with nested block code *before* the code that
+/// creates it. Flat and unnamed: *which* body belongs to
 /// which declaration is the mixin table's business (`image::mixins`),
 /// which addresses this table by id.
 ///
@@ -802,6 +804,7 @@ enum UsedName {
 /// The shipped names a graph section uses, in the order the graph first
 /// used each -- the order the shipped-name section lists them in and its
 /// references number them.
+#[derive(Clone)]
 pub struct UsedNames {
     names: Vec<UsedName>,
     index: HashMap<usize, u32>,
@@ -1900,6 +1903,7 @@ fn encode_frame<'gc>(
         FrameKind::Method(method) => {
             writer.write_u8(FRAME_METHOD);
             writer.write_u32(symbols.intern(method.selector.as_str()));
+            writer.write_u8(mixins::access_tag(method.access));
         }
         FrameKind::Closure(closure) => {
             writer.write_u8(FRAME_CLOSURE);
@@ -1922,6 +1926,24 @@ fn encode_frame<'gc>(
             writer.write_u8(FRAME_MIXIN_APPLICATION_MESSAGE);
             encode_class_tag(writer, *level, frame_class, context)?;
         }
+    }
+    // The body by code id, never left to the class: after an edit the
+    // class's current version carries another body than the one that ran.
+    // A top-level frame runs none.
+    if matches!(snapshot.kind, FrameKind::TopLevel) {
+        writer.write_boolean(false);
+    } else {
+        let id = context
+            .heap
+            .frame_code(frame)
+            .and_then(|code| context.code_ids.id_of(&code).ok())
+            .ok_or_else(|| {
+                "image encoding cannot serialize a frame running code that no module the \
+                 image carries compiled"
+                    .to_string()
+            })?;
+        writer.write_boolean(true);
+        writer.write_u32(id);
     }
     // An image's code table holds only compiled bodies, so a frame's
     // `program_counter` is always an instruction index and the record does not
@@ -1963,29 +1985,54 @@ pub struct EncodedGraph {
     pub module_roots: Vec<u32>,
 }
 
-/// The object table, frames included, and the roots. The count comes first;
-/// the decoder sizes every record and allocates it before filling any, so
-/// that records may reference each other freely.
-///
-/// Every carried module's root class (`module_roots`, in module order) is a
-/// record of the table, walked after the roots (`GraphTable::build`), and
-/// is held to its module's declaration and the root rule as the loader
-/// holds it (`modules::root_record_defect`), so no image is written that
-/// the loader refuses for its roots.
-///
-/// Answers the shipped names the section uses, which the caller writes
-/// ahead of it in the shipped-name section (`shipped_names::encode_section`):
-/// an object of the shipped world is named by its index there, not written.
-#[allow(clippy::too_many_arguments)]
-pub fn encode_graph_section<'gc>(
+/// The graph as `walk_graph` found it, before anything of it is written:
+/// the object table and the shipped names it reached, the shipped world's
+/// indexes it was resolved against, and the object id of every carried
+/// module's root class record. It holds handles, so it lives only within
+/// the one entry that writes the image, which allocates nothing.
+pub struct WalkedGraph<'gc> {
+    table: GraphTable<'gc>,
+    /// `ShippedWorld::index_by_object`, built for this encoding.
+    shipped_by_object: HashMap<usize, usize>,
+    /// `ShippedWorld::index_by_mixin`, built for this encoding.
+    shipped_by_mixin: HashMap<MixinId, usize>,
+    /// `ShippedWorld::declared_by_mixin`, built for this encoding.
+    shipped_declared_by_mixin: HashMap<MixinId, ShippedName>,
+    module_roots: Vec<u32>,
+}
+
+impl<'gc> WalkedGraph<'gc> {
+    /// Every body the graph runs or can run: each closure's code and each
+    /// frame's body, in object order. The code table must hold each of
+    /// them, which for a body only a superseded version carries is what
+    /// admits it there (`image::write_image`).
+    pub fn bodies(&self, heap: &Heap<'gc>) -> Vec<Rc<CompiledCode>> {
+        self.table
+            .objects()
+            .iter()
+            .filter_map(|object| match heap.object_shape(*object) {
+                ObjectShape::Closure => heap.closure_code(*object),
+                ObjectShape::Activation => heap
+                    .object_frame(*object)
+                    .and_then(|frame| heap.frame_code(frame)),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+/// Walks the graph from `roots` and the carried modules' root classes
+/// (`module_roots`, in module order), making every refusal the graph
+/// section makes before anything is written: a module root that is not
+/// its module's record or breaks the root rule, the VM mirror, an unnamed
+/// shipped class, and a shipped class as a module's root. Walked before
+/// the code table is written, since the bodies the graph reaches decide
+/// which code of an older version the table carries.
+pub fn walk_graph<'gc>(
     mutator: &Mutator<'gc>,
-    writer: &mut Writer,
     roots: &[Value<'gc>],
-    code_ids: &CodeIds,
     module_roots: &[ClassReference<'gc>],
-    mixin_ids: &mixins::MixinIds,
-    symbols: &mut symbols::Builder,
-) -> Result<EncodedGraph, String> {
+) -> Result<WalkedGraph<'gc>, String> {
     let heap = mutator.heap();
     let world = &mutator.shipped_world;
     for class in module_roots {
@@ -2060,13 +2107,47 @@ pub fn encode_graph_section<'gc>(
                 })
         })
         .collect::<Result<Vec<u32>, String>>()?;
+    Ok(WalkedGraph {
+        table,
+        shipped_by_object,
+        shipped_by_mixin,
+        shipped_declared_by_mixin,
+        module_roots: module_root_ids,
+    })
+}
+
+/// The object table, frames included, and the roots, as `walk_graph`
+/// found them. The count comes first; the decoder sizes every record and
+/// allocates it before filling any, so that records may reference each
+/// other freely.
+///
+/// Every carried module's root class is a record of the table, walked
+/// after the roots (`GraphTable::build`), and held to its module's
+/// declaration and the root rule as the loader holds it
+/// (`modules::root_record_defect`), so no image is written that the loader
+/// refuses for its roots.
+///
+/// Answers the shipped names the section uses, which the caller writes
+/// ahead of it in the shipped-name section (`shipped_names::encode_section`):
+/// an object of the shipped world is named by its index there, not written.
+pub fn encode_graph_section<'gc>(
+    mutator: &Mutator<'gc>,
+    writer: &mut Writer,
+    walked: &WalkedGraph<'gc>,
+    roots: &[Value<'gc>],
+    code_ids: &CodeIds,
+    mixin_ids: &mixins::MixinIds,
+    symbols: &mut symbols::Builder,
+) -> Result<EncodedGraph, String> {
+    let heap = mutator.heap();
+    let table = &walked.table;
     let context = EncodeContext {
-        table: &table,
+        table,
         code_ids,
-        world,
-        shipped_by_object: &shipped_by_object,
-        shipped_by_mixin: &shipped_by_mixin,
-        shipped_declared_by_mixin: &shipped_declared_by_mixin,
+        world: &mutator.shipped_world,
+        shipped_by_object: &walked.shipped_by_object,
+        shipped_by_mixin: &walked.shipped_by_mixin,
+        shipped_declared_by_mixin: &walked.shipped_declared_by_mixin,
         mixin_ids,
         heap,
     };
@@ -2076,8 +2157,8 @@ pub fn encode_graph_section<'gc>(
     }
     encode_values(writer, roots, NamePosition::Value, &context)?;
     Ok(EncodedGraph {
-        used: table.used,
-        module_roots: module_root_ids,
+        used: table.used.clone(),
+        module_roots: walked.module_roots.clone(),
     })
 }
 
