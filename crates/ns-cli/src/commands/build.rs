@@ -12,7 +12,7 @@ use crate::program;
 pub(crate) fn execute(
     file: &Path,
     out: &Path,
-    debug_source: bool,
+    with_source: bool,
     lowering: ns_runtime::Lowering,
 ) -> ExitCode {
     let program = match program::read_program(file) {
@@ -26,7 +26,7 @@ pub(crate) fn execute(
     };
     let classes = loaded.classes.clone();
     let bytes = loaded.interpreter.enter(|mutator| {
-        let modules = program::module_sources(&program, &classes, mutator, debug_source);
+        let modules = program::module_sources(&program, &classes, mutator, with_source);
         ns_runtime::image::package(mutator, &modules, mutator.fetch(&application))
     });
     let bytes = match bytes {

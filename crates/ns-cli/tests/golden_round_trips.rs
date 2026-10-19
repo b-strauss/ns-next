@@ -25,10 +25,9 @@ fn main() {
     for program in common::golden_programs() {
         let name = common::golden_name(&program);
         // A skipped golden records what the runtime does not answer yet, so
-        // the artifact cannot be held to `run` on it; one skipped in images
-        // runs under `run` but not from an image.
+        // the artifact cannot be held to `run` on it.
         let expectation = common::expectation_of(&program);
-        let skipped = expectation.skipped().is_some() || expectation.skipped_in_images().is_some();
+        let skipped = expectation.skipped().is_some();
         if !skipped {
             swept += 1;
         }
@@ -50,9 +49,9 @@ fn main() {
 }
 
 /// `build` then `load` must be indistinguishable from `run` on the same
-/// program -- exit status, stdout and stderr -- under both lowerings. An
-/// artifact carries no source, so comparing it against `run` is how one is
-/// checked at all; `run_goldens.rs` pins the same goldens against their
+/// program -- exit status, stdout and stderr -- under both lowerings. The
+/// artifact carries the program's source, so a mirror reads the same text
+/// from it that `run` reads from the file; `run_goldens.rs` pins the same goldens against their
 /// `.toml` files, so equality here also holds against a recorded answer.
 /// Under the reference lowering this also takes the encoder and decoder over
 /// code with no jumps and many registers.

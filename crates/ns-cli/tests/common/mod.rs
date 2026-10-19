@@ -85,7 +85,6 @@ pub fn benchmark_runs() -> Vec<BenchmarkRun> {
                     stdout: format!("{name}: ok\n"),
                     stderr: String::new(),
                     skipped: None,
-                    skipped_in_images: None,
                     arguments: vec![name],
                 },
             });
@@ -303,10 +302,6 @@ pub fn golden_name(source: &Path) -> String {
 /// for a known gap states the whole expectation up front, and closing the
 /// gap is deleting one line rather than rediscovering months later what
 /// the answer was meant to be.
-///
-/// `skipped_in_images` carries why the `images` profile alone cannot run
-/// the golden through `build` then `load`; every other sweep runs it and
-/// holds it to the recorded outcome.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Expectation {
@@ -318,8 +313,6 @@ pub struct Expectation {
     pub stderr: String,
     #[serde(default)]
     pub skipped: Option<String>,
-    #[serde(default)]
-    pub skipped_in_images: Option<String>,
     /// The program's arguments, passed after `--` to every command that
     /// sends the entry: what `main:args:` receives (§8.4). Empty for most.
     #[serde(default)]
@@ -341,12 +334,6 @@ impl Expectation {
     pub fn skipped(&self) -> Option<&str> {
         self.skipped.as_deref()
     }
-
-    /// Why this golden is not run through an image, if it is not: the
-    /// image round trips skip it, besides every golden `skipped` skips.
-    pub fn skipped_in_images(&self) -> Option<&str> {
-        self.skipped_in_images.as_deref()
-    }
 }
 
 /// The recorded outcome beside `source`, with its line endings normalized.
@@ -364,28 +351,22 @@ pub fn expectation_of(source: &Path) -> Expectation {
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
     let recorded: Expectation =
         toml::from_str(&text).unwrap_or_else(|error| panic!("parse {}: {error}", path.display()));
-    for (key, reason) in [
-        ("skipped", &recorded.skipped),
-        ("skipped_in_images", &recorded.skipped_in_images),
-    ] {
-        if let Some(reason) = reason {
-            // A blank reason is the whole failure mode either field could
-            // introduce: a golden switched off in a hurry, with nothing
-            // left saying what would switch it back on.
-            assert!(
-                !reason.trim().is_empty(),
-                "{} has an empty `{key}` -- a golden is skipped only with a \
-                 reason that says what would let it run",
-                path.display()
-            );
-        }
+    if let Some(reason) = &recorded.skipped {
+        // A blank reason is the whole failure mode the field could
+        // introduce: a golden switched off in a hurry, with nothing left
+        // saying what would switch it back on.
+        assert!(
+            !reason.trim().is_empty(),
+            "{} has an empty `skipped` -- a golden is skipped only with a \
+             reason that says what would let it run",
+            path.display()
+        );
     }
     Expectation {
         status: recorded.status,
         stdout: recorded.stdout.replace("\r\n", "\n"),
         stderr: recorded.stderr.replace("\r\n", "\n"),
         skipped: recorded.skipped,
-        skipped_in_images: recorded.skipped_in_images,
         arguments: recorded.arguments,
     }
 }

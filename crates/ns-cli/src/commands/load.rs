@@ -28,7 +28,7 @@ pub(crate) fn execute(image: &Path, print_source: bool, program_arguments: &[Str
         // or none does, so a module without one means the image has none.
         if loaded.modules.iter().any(|module| module.source.is_none()) {
             eprintln!(
-                "error: {} carries no source (it was not written with --debug-source)",
+                "error: {} carries no source (it was written with --strip-source)",
                 image.display()
             );
             return ExitCode::FAILURE;

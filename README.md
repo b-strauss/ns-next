@@ -162,8 +162,8 @@ cargo run -p ns-analyzer -- parse goldens/library/platform/hello.ns
 # package the application: assemble it exactly as `run` does -- its factory and
 # every initializer run, with no platform in existence -- and write it just
 # before `main:args:` as an image. `load` decodes it and sends it
-# `main: platform args:` with its own platform. --debug-source keeps every
-# module's source in the image, which `load --print-source` prints
+# `main: platform args:` with its own platform. The image carries every
+# module's source, which `load --print-source` prints; --strip-source leaves it out
 cargo run -p ns-cli -- build goldens/language/class/instantiation/instance_init.ns app.img
 cargo run -p ns-cli -- load app.img
 ```
