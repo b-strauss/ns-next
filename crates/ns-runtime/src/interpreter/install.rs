@@ -1445,4 +1445,104 @@ mod tests {
             assert_eq!(mutator.heap.assembled_text(&root).as_deref(), Some(source));
         });
     }
+
+    /// A program loaded from an image with source is edited like one
+    /// compiled from source, and its instances migrate.
+    #[test]
+    fn a_loaded_program_is_edited() {
+        let (mut interpreter, outer, _, inner, _) = module_and_inner(OUTER);
+        let bytes = image_of(&mut interpreter, &outer, &[inner]);
+        let mut image = loaded(&bytes);
+        let outer = image.modules[0].class.clone();
+        let inner = image.roots[0].clone();
+        let inner_id = nested_id_of(&mut image.interpreter, &outer, "Inner");
+        install(
+            &mut image.interpreter,
+            inner_id,
+            &header_edit("public class Inner = (| public x ::= 1. public y ::= 5. |)"),
+        );
+        let x_value = send(&mut image.interpreter, &inner, "x");
+        assert_eq!(integer(&mut image.interpreter, &x_value), Some(1));
+        let y_value = send(&mut image.interpreter, &inner, "y");
+        assert!(is_nil(&mut image.interpreter, &y_value));
+    }
+
+    /// Edited before an image and again after its load, written again and
+    /// loaded again: the second image holds both edits.
+    #[test]
+    fn a_loaded_program_edited_and_written_again_loads_with_both_edits() {
+        let (mut interpreter, outer, _, inner, inner_id) = module_and_inner(OUTER);
+        install(&mut interpreter, inner_id, &add_method("public b = ( ^2 )"));
+        let first = image_of(&mut interpreter, &outer, &[inner]);
+        let mut first = loaded(&first);
+        let outer = first.modules[0].class.clone();
+        let inner = first.roots[0].clone();
+        let inner_id = nested_id_of(&mut first.interpreter, &outer, "Inner");
+        install(
+            &mut first.interpreter,
+            inner_id,
+            &add_method("public c = ( ^3 )"),
+        );
+        let second = image_of(&mut first.interpreter, &outer, &[inner]);
+        let mut second = loaded(&second);
+        let inner = second.roots[0].clone();
+        let b_value = send(&mut second.interpreter, &inner, "b");
+        assert_eq!(integer(&mut second.interpreter, &b_value), Some(2));
+        let c_value = send(&mut second.interpreter, &inner, "c");
+        assert_eq!(integer(&mut second.interpreter, &c_value), Some(3));
+        let text = second.modules[0]
+            .source
+            .clone()
+            .expect("the image carries source");
+        assert!(text.contains("public b = ( ^2 )") && text.contains("public c = ( ^3 )"));
+    }
+
+    /// An image written without source: the edit answers 5b2a's
+    /// diagnostic and changes nothing.
+    #[test]
+    fn a_loaded_program_without_source_is_refused() {
+        let (mut interpreter, outer, _, inner, _) = module_and_inner(OUTER);
+        let bytes = image_with(&mut interpreter, &outer, &[inner], false);
+        let mut image = loaded(&bytes);
+        let outer = image.modules[0].class.clone();
+        let inner_id = nested_id_of(&mut image.interpreter, &outer, "Inner");
+        let refused = image
+            .interpreter
+            .enter(|mutator| mutator.install_edit(inner_id, &add_method("public b = ( ^2 )")));
+        match refused {
+            Err(message) => assert_eq!(message, "Inner has no source text to edit"),
+            Ok(_) => panic!("a program without source was edited"),
+        }
+    }
+
+    /// A crafted image whose text holds other classes than its code: the
+    /// edit is refused with the existing diagnostic, never a panic.
+    #[test]
+    fn a_loaded_program_whose_text_lacks_the_declaration_is_refused() {
+        let (mut interpreter, outer, _, inner, _) = module_and_inner(OUTER);
+        let mut bytes = image_of(&mut interpreter, &outer, &[inner]);
+        // `Inner`'s own text, swapped for text of the same length that
+        // declares a class of another name: the text table is
+        // length-prefixed, so the swap keeps every other byte, and the
+        // module assembles into a valid module without `Inner`.
+        let inner_text = "class Inner = (| public x ::= 1. |)";
+        let swapped = "class Other = (| public x ::= 1. |)";
+        let start = bytes
+            .windows(inner_text.len())
+            .position(|window| window == inner_text.as_bytes())
+            .expect("the image carries Inner's text");
+        bytes[start..start + inner_text.len()].copy_from_slice(swapped.as_bytes());
+        let mut image = loaded(&bytes);
+        let outer = image.modules[0].class.clone();
+        let inner_id = nested_id_of(&mut image.interpreter, &outer, "Inner");
+        let refused = image
+            .interpreter
+            .enter(|mutator| mutator.install_edit(inner_id, &add_method("public b = ( ^2 )")));
+        match refused {
+            Err(message) => {
+                assert_eq!(message, "Inner's source text does not hold its declaration");
+            }
+            Ok(_) => panic!("an edit was installed from a text without its declaration"),
+        }
+    }
 }

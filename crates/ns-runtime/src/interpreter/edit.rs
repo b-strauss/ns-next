@@ -184,11 +184,6 @@ impl<'gc> Mutator<'gc> {
                 "{name} is a class side; an edit names its instance side"
             ));
         }
-        if current.declaration.is_none() {
-            return Err(format!(
-                "{name} was loaded from an image, and a loaded program cannot be edited yet"
-            ));
-        }
         let (module_root, path) = self.path_from_module_root(id);
         let Some(original_text) = self.heap.module_source(module_root) else {
             return Err(format!("{name} has no source text to edit"));
