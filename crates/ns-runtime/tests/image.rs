@@ -11009,14 +11009,14 @@ fn a_source_free_image_still_reaches_its_nested_classes() {
 }
 
 #[test]
-fn the_debug_variant_still_carries_source() {
+fn an_image_with_source_still_carries_it() {
     let bytes = snapshot_module(SOURCE_FREE_MODULE, true, None);
     assert!(contains(&bytes, b"class Outer"));
     let mut loaded = image::load(&bytes).expect("load");
     assert_eq!(
         loaded.modules[0].source.as_deref(),
         Some(SOURCE_FREE_MODULE),
-        "the debug variant hands its source back verbatim"
+        "an image with source hands its source back verbatim"
     );
     // And it is still a working world, not merely a readable file.
     let instance = loaded.roots.first().cloned().expect("the root instance");
@@ -11620,18 +11620,18 @@ fn no_line_of_the_source_survives_in_a_source_free_image() {
     );
 
     // The control, from the other direction: the very same lines are all
-    // present in the debug variant. Without this, a bug that mangled the
+    // present in the image with source. Without this, a bug that mangled the
     // needles (a trim that ate the text, say) would make the sweep above
     // pass for the wrong reason.
-    let debug = snapshot_module(LEAK_PROBE_MODULE, true, None);
+    let with_source = snapshot_module(LEAK_PROBE_MODULE, true, None);
     for line in LEAK_PROBE_MODULE.lines() {
         let line = line.trim();
         if line.len() < MIN_DISTINCTIVE_LINE {
             continue;
         }
         assert!(
-            contains(&debug, line.as_bytes()),
-            "the debug variant is missing the source line {line:?}"
+            contains(&with_source, line.as_bytes()),
+            "the image with source is missing the source line {line:?}"
         );
     }
 

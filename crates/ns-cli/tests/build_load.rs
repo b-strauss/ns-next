@@ -211,8 +211,8 @@ fn a_load_reports_an_uncaught_error_exactly_as_run_does() {
 /// The image `build` writes carries the program's text, and `--strip-source`
 /// leaves it out: the application in a stripped image still runs, but it
 /// cannot be edited and `load --print-source` has nothing to print. The
-/// carried text is also how an image can be exported back to `.ns` while no
-/// decompiler exists.
+/// carried text is also what exporting an image back to `.ns` rests on;
+/// there is no decompiler.
 #[test]
 fn a_built_image_carries_its_source_unless_stripped() {
     let source = golden("library/number/integer/arithmetic");

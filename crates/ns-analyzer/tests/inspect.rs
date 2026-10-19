@@ -43,7 +43,7 @@ fn inspect_reports_the_sections_symbols_and_mixins_of_an_image() {
 
 #[test]
 fn inspect_reports_the_text_table_of_an_image_with_source() {
-    let directory = ScratchDirectory::new("debug-source");
+    let directory = ScratchDirectory::new("with-source");
     let image = directory.join("app.nsi");
     std::fs::write(
         &image,

@@ -448,8 +448,8 @@ pub struct LoadedImage {
 ///
 /// Both verification passes run before anything the image describes can be
 /// executed: `verify_code_table` and `verify_mixins` before anything is
-/// built on the code, `verify_graph` resolving each frame's
-/// body off the decoded mixins that carry it. A corrupt but version-matching
+/// built on the code, `verify_graph` holding each frame to the body it
+/// names, by code id or by its shipped declaration. A corrupt but version-matching
 /// image is an `Err` here, never a panic in the VM later.
 ///
 /// An image loads in two phases, and nothing the image describes runs

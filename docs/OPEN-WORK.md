@@ -15,51 +15,43 @@ when they were written.
 
 ## Next
 
-**Road step 5b2b, edited programs in images, and reclaiming ids** ("Step
-5, mirrors and atomic installation" below; split from road step 5b2a on
-2026-10-18, when the design of both was settled with the user:
-[liveness-and-reflection.md](design/liveness-and-reflection.md),
-"Planned: road step 5b2b, edited programs in images, and reclaiming
-ids"). It builds on what road step 5b2a built: the MirrorBuilder, the
-module's current text and the atomic install
-([liveness-and-reflection.md](design/liveness-and-reflection.md), "A
-MirrorBuilder and an atomic install"). In short:
+**Road step 5b2c, reclaiming ids** ("Step 5, mirrors and atomic
+installation" below; split from road step 5b2b on 2026-10-19, decided with
+the user: [liveness-and-reflection.md](design/liveness-and-reflection.md),
+"Planned: road step 5b2c, reclaiming ids"), a plan of its own. It builds
+on what road steps 5b2a and 5b2b built: the atomic install, which
+supersedes applications, guard ids and mixin versions without reclaiming
+any, and the declarations' own texts and the encoder's rows through the
+ids ([liveness-and-reflection.md](design/liveness-and-reflection.md), "A
+MirrorBuilder and an atomic install", "Edited programs in images"). In
+short:
 
-- **An edited program written to an image and loaded back edited**
-  ([image-format.md](design/image-format.md), "Planned: edited mixins in
-  the image"): the encoder's rows taken through the ids from the mixins
-  the program names now, with the code an older version still runs and
-  the module's current text as its source. The encoder's refusal of an
-  edited program goes (`image/mod.rs`'s `encode_describing`), and with it,
-  together with the refusal of a mixin decoded from an image, the
-  `skipped_in_images` line of every golden under
-  `goldens/library/mirror-builder/` and the key and its mechanism from
-  `crates/ns-cli/tests/common/mod.rs`, `golden_round_trips.rs` and
-  `run_goldens.rs`'s guard on it, so that
-  every golden goes through `build` then `load` again.
-- **Editing a program loaded from an image with source**: the builder
-  parses an image's module text at the first edit of one of its mixins,
-  so the load path stays free of the parser.
-- **The weak application cache and the ids' reuse rules**
-  ([object-model.md](design/object-model.md), "An application has two
-  ids"; [memory.md](design/memory.md), "Weak references"), so the
-  applications, guard ids and successors an install supersedes are
-  reclaimed.
-- **What road step 5b1 left otherwise**: `Mixin::nested` still
-  `Vec<Rc<Mixin>>`, and a cycle diagnosis a forward can lose -- a nested
+- **The weak application cache** ([object-model.md](design/object-model.md),
+  "An application has two ids"; [memory.md](design/memory.md), "Weak
+  references"), kept strong since road step 3a and growing with every
+  re-application an install makes.
+- **The ids' reuse rules**, so the applications, guard ids and successors
+  an install supersedes, and the mixin versions no class object names any
+  more (`Tables::superseded`), are reclaimed.
+- **`Mixin::nested` through ids**: a mixin's nested declarations, still
+  `Vec<Rc<Mixin>>`, which the image encoder and a module's assembly follow
+  to each nested declaration's current version through its id
+  ([liveness-and-reflection.md](design/liveness-and-reflection.md), "What
+  the id has to carry").
+- **The per-creation marker of the nested-class cache slot**: a nested
   class's superclass clause that forwards its enclosing object to one
   whose own creation of the same class is underway at the same slot index
   resets that creation's in-progress marker when it ends, so a cyclic
   definition in the other clause after that point is not diagnosed
   ([object-model.md](design/object-model.md), "What a slot access checks",
-  "The nested-class cache slot"); a per-creation marker would close it.
+  "The nested-class cache slot"); a marker per creation would close it.
 
 **What 5b1 cost.** Measured in release, three pinned builds a side, against
 master (`733c15bd`) and task by task: every program within noise, but
 `bench_megamorphic.ns`, +1.3-2.1% after the private and super accessor
 check, at the edge of build noise and not diagnosed ("Planned: performance
-and representation" below). Everything before road step 5b2b on the road
-is built, road step 5b2a last; each step has its entry in
+and representation" below). Everything before road step 5b2c on the road
+is built, road step 5b2b last; each step has its entry in
 [PROGRESS.md](PROGRESS.md), and the whole road is below.
 
 **Measuring.** The protocol is [execution.md](design/execution.md)'s "What
@@ -213,26 +205,32 @@ and `prior-art/newspeak-benchmarks`.
   every application of an edited mixin and their subclasses (§6.2),
   records a successor for every level whose slots stayed, migrates the
   instances whose layout changed by their fields' declaring level and name
-  and forwards them on the Rust side; every edit to a shipped mixin and to
-  a mixin decoded from an image refused, and the encoder refusing an
-  edited program. **5b2b -- next** ("Next" above): an edited program,
-  its edited mixins and their code included, written to an image and
-  loaded back edited (decided with the user on 2026-10-05;
-  [image-format.md](design/image-format.md), "Planned: edited mixins in
-  the image"), and editable again after the load; the application cache,
-  kept strong since road step 3a, reclaiming no mixin id, application
-  index or guard id until then, made weak with the reuse rules of
-  [object-model.md](design/object-model.md), "An application has two
-  ids" (decided with the user on 2026-10-03). Deferred beyond both: a
+  and forwards them on the Rust side; every edit to a shipped mixin
+  refused. **5b2b, edited programs in images -- built** (2026-10-19,
+  [its plan](superpowers/plans/2026-10-19-1702-edited-programs-in-images.md)):
+  every declaration holds its own text, its nested declarations cut out,
+  and a module's text is assembled from them; an edited program written
+  to an image through the ids and loaded back edited, the code an older
+  version runs in the code table and every frame naming its body; the
+  program's source in every image unless `--strip-source`; and a program
+  loaded from an image with source editable, so every golden goes through
+  `build` then `load` again. **5b2c -- next** ("Next" above): the
+  application cache, kept strong since road step 3a, reclaiming no mixin
+  id, application index or guard id until then, made weak with the reuse
+  rules of [object-model.md](design/object-model.md), "An application has
+  two ids" (decided with the user on 2026-10-03), `Mixin::nested` through
+  ids and the per-creation marker of the nested-class cache slot.
+  Deferred beyond them: a
   class declared from source with no predecessor, a shape-changing
   `setClass:`, a superclass change, edits of nested classes,
   `installAtomically:` over several builders, editing kernel methods,
   `ActivationMirror` and edit-and-continue, scoped invalidation
   ("Planned: images, liveness and reflection" below).
   [liveness-and-reflection.md](design/liveness-and-reflection.md),
-  "A MirrorBuilder and an atomic install",
-  "Planned: road step 5b2b, edited programs in images, and reclaiming
-  ids"; [memory.md](design/memory.md), "Weak references".
+  "A MirrorBuilder and an atomic install", "Edited programs in images",
+  "Planned: road step 5b2c, reclaiming ids";
+  [image-format.md](design/image-format.md), "Edited programs in the
+  image"; [memory.md](design/memory.md), "Weak references".
 - **Step 6, inline allocation in the interpreter**: a bump in eden for `new`,
   closures, boxed floats and `Array new:`, with headroom past the scavenge
   threshold so that collection stays at safepoints.
@@ -650,6 +648,19 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   to reach frames before one is handed out.
   [liveness-and-reflection.md](design/liveness-and-reflection.md), "Mirrors
   that read".
+- **A body's link to its declaration text** (2026-10-19), so that an
+  image carries the text of code an older version runs, with the
+  activation mirror that reads it. A closure or a frame of a method an
+  install replaced or removed runs its old body after a load, but the
+  image carries only the texts of the declarations' current versions, and
+  nothing links a body to the text of the version that compiled it; in
+  the live heap the superseded version keeps its text only while
+  something holds it. Nothing asks a body for its text yet -- a method
+  mirror reads the current version's methods -- so the link, and an image
+  carrying the old text it names, come with the activation mirror above.
+  [liveness-and-reflection.md](design/liveness-and-reflection.md),
+  "Edited programs in images"; [image-format.md](design/image-format.md),
+  "Edited programs in the image".
 - **`evaluate:` and `perform:` through a mirror** (2026-10-18): an object
   mirror that evaluates an expression in the reflectee's scope, or sends
   it a message, answering a mirror on the result, as Primordial Soup's
@@ -722,8 +733,9 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   loop runs the finalizer between turns, as JavaScript's
   `FinalizationRegistry` does. [core-library.md](design/core-library.md),
   "Weak references".
-- **A decompiler** for exporting an image back to `.ns`, and the other image
-  questions below. [image-format.md](design/image-format.md), "Open questions".
+- **Whether upstream strips source at packaging time**, a measurement and
+  a switch in `CompilerApp.ns` that disagree, to be re-checked.
+  [image-format.md](design/image-format.md), "Open questions".
 - **A script recorded into an image.** `ns-next build` takes no `--script`:
   it sends no `main:args:`, and `load` takes only the arguments after `--`.
   Recording a project's script, or its `scripts`, so that `load --script`
@@ -816,8 +828,7 @@ MirrorBuilder changes one class at a time and not every part of it
 the current activation ("The activation and thread mirrors" above),
 several builders are not installed as one, a superclass, the nested
 classes and a class from source with no predecessor are not edited
-("Reflection beyond road step 5b2a" above), and a program loaded from an
-image is not edited until road step 5b2b.
+("Reflection beyond road step 5b2a" above).
 
 ## Open design questions
 
@@ -928,8 +939,9 @@ image is not edited until road step 5b2b.
   lookup per non-matching level, which the pointer compare alone never
   paid. It is unmeasured; a release measurement of an exception-heavy
   program decides whether to narrow it, for example to look the
-  candidate's id up only when the id was edited (`Heap::mixin_is_edited`),
-  since an id never edited has one version.
+  candidate's id up only when the id was edited, since an id never edited
+  has one version; the heap keeps no mark of an edited id, so that would
+  add one, set by `Heap::replace_mixin`.
   [liveness-and-reflection.md](design/liveness-and-reflection.md), "A
   MirrorBuilder and an atomic install".
 

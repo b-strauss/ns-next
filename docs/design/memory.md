@@ -1112,7 +1112,7 @@ creator's frame record without registers.
 - **The application cache grows without bound** in the presence of live editing,
   because every re-application mints a fresh entry that nothing evicts, and
   road step 5b2a's install re-applies every class object of an edited
-  mixin. It is settled with road step 5b2b, after those edits, which
+  mixin. It is settled with road step 5b2c, after those edits, which
   replace a mixin under its id
   ([liveness-and-reflection.md](liveness-and-reflection.md), "An edit
   replaces the mixin under its id"). Its key is a pair
@@ -1188,8 +1188,10 @@ value stored as it is read and a string packed straight from the buffer, so
 no record is ever built beside its placeholder. Since every placeholder is
 sized from its own bytes, each byte belongs to exactly one record and one
 value, and the ratios below take a maximum rather than a sum. Against the
-bytes of the graph section and, for symbols' text, the symbol section (the
-derivation is `decode_value`'s doc comment, `image/decode.rs`):
+bytes of the graph section and, for symbols' text, the symbol section, and
+for declarations' texts the text table (the derivation is `decode_value`'s
+doc comment, `image/decode.rs`, and for the text table `texts::decode`'s,
+`image/texts.rs`):
 
 | Contribution | Release | Debug |
 |---|---|---|
@@ -1202,6 +1204,7 @@ derivation is `decode_value`'s doc comment, `image/decode.rs`):
 | A `VALUE_FRACTION` of two `i64` parts beyond 61 bits, 19 bytes for a word, a 32-byte fraction and two 24-byte `LargeInteger`s (its two digits held until each part's object is made, at most 5.5x while they live) | 4.6x | 4.6x |
 | The root list, read after every record into `Value`s, `reserve_for` capping its reservation at the bytes left | 8x | **16x** |
 | A symbol's text, allocated once per symbol-table entry | ≤ 4x of the symbol section | ≤ 4x of the symbol section |
+| A declaration's text, in an image with source: the 16 bytes of an empty text without holes become a 72-byte `Rc<DeclarationText>`, its 8-byte slot in the decoded table and a 16-byte entry of the check that each text has one owner; the last two are dropped before the graph pass, so 4.5x is held through it; a hole and a text's bytes cost what they take on the wire | ≤ 6x of the text table | ≤ 6x of the text table |
 
 The other record kinds stay below the metaclass record: a class record is at
 least 19 bytes for the same 80 (4.2x; 5.5x and 5.9x with the decoder's
@@ -1228,7 +1231,12 @@ here and in `CLAUDE.md` together is open ([OPEN-WORK.md](../OPEN-WORK.md)).
 **So the transient peak of a rejected load is about 10.7x of the graph
 section's bytes in a release build (a graph of metaclass records) and about
 16x in a debug one (a graph that is all root list), plus at most 4x of the
-symbol section's bytes.** A fraction of two integers beyond 61 bits but
+symbol section's bytes and, in an image with source, at most 6x of the
+text table's.** The texts are decoded and held to the rows before the
+graph pass, and a text belongs to one declaration, so the module texts
+assembled from them are at most the sum of their bytes, and are assembled
+only once the load has succeeded ([image-format.md](image-format.md),
+"Source"). A fraction of two integers beyond 61 bits but
 within `i64` is the worst allocating value: it costs a fraction and two
 `LargeInteger`s for the 19 bytes of a tag and two `i64`s, as a lone such
 integer costs a `LargeInteger` for the 9 bytes of an `i64`
@@ -1258,7 +1266,7 @@ and their resolution, a second resolution in the graph's own entry with the
 set dropped again -- is therefore bounded by the shipped world, a few KiB,
 not by the input. The figures above stand: about 10.7x of the graph section's
 bytes in a release build and 16x in a debug one, plus at most 4x of the
-symbol section's, plus that constant.
+symbol section's and 6x of the text table's, plus that constant.
 
 **What the figures do not count**: the Rust allocator's own overhead per
 allocation of the decoder's tables; a table's `Vec` that doubles while the
@@ -1271,9 +1279,10 @@ set ("The object space"); the old space the load's tenure commits before
 it copies, for the worst case of everything young being promoted, which
 the nursery bounds rather than the input; and the decoded `Vec<Instruction>` of
 one compiled body at a time while the code table is verified ("The trigger
-and the growth policy" below); and a module's source text, which an image
-with source holds once, its bytes in one `Rc<str>` that every mixin of the
-module and the host's `LoadedModule` share; and what the first pass keeps
+and the growth policy" below); the text table's `Vec`, reserved for the
+count the table claims, at most 8 bytes for every 16 that follow the count
+and dropped before the graph pass, the refusal coming as soon as the
+records run out; and what the first pass keeps
 of the reified mixins' records -- the mixin each names, a set of their ids,
 both dropped before the placeholders exist, and a class side resolving one
 may synthesize, a Rust value, at most one per instance-side mixin,
@@ -1645,9 +1654,9 @@ edit superseded included (`Tables::superseded`), so the ids are minted and
 none is reclaimed, and the cache stays strong until then (decided with the
 user on 2026-10-03); its unbounded growth under live editing
 ([liveness-and-reflection.md](liveness-and-reflection.md)) ends with the
-reclamation road step 5b2b brings after road step 5b2a's atomic install
+reclamation road step 5b2c brings after road step 5b2a's atomic install
 ([liveness-and-reflection.md](liveness-and-reflection.md), "Planned: road
-step 5b2b, edited programs in images, and reclaiming ids"). The same per-mixin id
+step 5b2c, reclaiming ids"). The same per-mixin id
 serves dispatch's open option of guarding a private lexical site on N's
 mixin ([dispatch.md](dispatch.md), "Decisions").
 

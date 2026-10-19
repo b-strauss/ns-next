@@ -109,6 +109,18 @@ const HOLE_BYTES: usize = 2 * 4;
 /// (`DeclarationText::from_parts`): a text whose parts do not describe a
 /// declaration is `MalformedText`, before any mixin holds it. Every count
 /// is bounded by the bytes left before anything is reserved for it.
+///
+/// What a rejected load can be made to allocate here, against the table's
+/// bytes (`docs/design/memory.md`, "The amplification bound of a rejected
+/// load"): an empty text without holes, the smallest record at 16 bytes,
+/// becomes a 72-byte `Rc<DeclarationText>` (56 bytes and the two counts)
+/// and an 8-byte slot of the answer, and `mixins::row_texts` adds a 16-byte
+/// owner entry per text while it checks the rows, **6x**; the slot and the
+/// entry are dropped before the graph pass, so 4.5x is held through it. A
+/// hole costs its 8 bytes and a text's bytes their length, 1x. The
+/// answer's reservation is for the count the table claims, at most 8 bytes
+/// for every 16 after the count, and a count past the records is refused
+/// as soon as they run out, before the graph pass.
 pub fn decode(reader: &mut Reader) -> Result<Vec<Rc<DeclarationText>>, DecodeError> {
     let count = bounded_count(reader.read_u32()? as usize, MIN_TEXT_BYTES, reader)?;
     let mut texts = Vec::with_capacity(count);

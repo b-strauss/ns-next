@@ -2695,7 +2695,8 @@ fn read_shipped_module<'gc>(
 ///
 /// So the peak is about **10.7x** in a release build (a graph of
 /// metaclass records) and **16x** in a debug one (a graph that is all root
-/// list), plus at most 4x of the symbol section. Not counted: each Rust
+/// list), plus at most 4x of the symbol section and, in an image with
+/// source, 6x of the text table (`texts::decode`). Not counted: each Rust
 /// allocation's own overhead in the allocator; a decoder table's `Vec`
 /// doubling as it grows, which holds both buffers for a moment; and the
 /// object space's commit growth, which commits at least double what it had

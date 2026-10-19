@@ -108,9 +108,10 @@ impl<'gc> Mutator<'gc> {
     /// A defensive lock behind `may_be_forwarded`: no program instance is
     /// known to reach it, since a user subclass of `Array`, `String` or
     /// `Ephemeron` has `FixedPointers` instances, which the forward
-    /// accepts. It is kept for the formats road step 5b2b's decoded
-    /// programs bring, so that an install refuses before it replaces
-    /// anything rather than meeting a refused forward inside its commit.
+    /// accepts. It is kept for any format a program brings that the
+    /// forward refuses, one loaded from an image as much as one read from
+    /// source, so that an install refuses before it replaces anything
+    /// rather than meeting a refused forward inside its commit.
     fn refuse_an_unmigratable_instance(
         &self,
         classes: &[ClassReference<'gc>],
