@@ -5454,10 +5454,10 @@ the collectors trace (`Heap`'s `mixin_objects`), and written to an image as
 `OBJECT_MIXIN` (body tag 14), which names its mixin by row or by the
 shipped declaration, built or not, and whose second record for one mixin
 is refused before anything is allocated. Every mixin knows its enclosing
-mixin (`Mixin::enclosing`, a `Weak` link) and holds its module's text
-(`Mixin::module_text`), shared with the host's `LoadedModule::source` on a
-load, so `source` answers a method's or a declaration's text, sliced only
-within the text and on character boundaries.
+mixin (`Mixin::enclosing`, a `Weak` link) and holds its declaration's own
+text, its nested declarations cut out (`Mixin::text`, a `DeclarationText`,
+since road step 5b2b), so `source` answers a method's or a declaration's
+text, and a slice that does not fit answers `nil`, never a panic.
 
 No existing golden's outcome changed. New goldens under
 `goldens/library/mirror/`; leaf tests in `builtins/reflection.rs`; host
@@ -5563,10 +5563,10 @@ fingerprint changed.
 
 What the batch left open -- the places still keyed by a mixin's address,
 the question whether an edit of methods alone keeps a class's
-applications, and a test not written -- road step 5b2a closed below, but
-for the image encoder's row ids, which it refuses an edited program on
-until road step 5b2b; `bench_megamorphic.ns`'s undiagnosed 1.3-2.1% is
-still in
+applications, and a test not written -- road step 5b2a closed below, and
+the image encoder's row ids, the last place keyed by address, road step
+5b2b ("Edited programs in images, road step 5b2b" below);
+`bench_megamorphic.ns`'s undiagnosed 1.3-2.1% is still in
 [OPEN-WORK.md](OPEN-WORK.md), "Next".
 
 ## A MirrorBuilder and an atomic install, road step 5b2a (2026-10-18)
@@ -5603,14 +5603,15 @@ accepts, so an initializer entered before an edit that kept its slots
 runs on -- copies each instance whose layout changed into the new one by
 its fields' declaring level, that level's occurrence in the chain and
 name (`FieldName`), restamps the rest, and forwards the copies in one
-bulk forward. A shipped mixin and one decoded from an image are refused;
-`inherits_mixin_of` and `Heap::with_level_applying_mixin_of` match
-applications of one id; the image encoder refuses an edited program with
-an error until road step 5b2b.
+bulk forward. A shipped mixin is refused; `inherits_mixin_of` and
+`Heap::with_level_applying_mixin_of` match applications of one id. An
+edited program is written to an image, and a program loaded from one is
+edited, since road step 5b2b ("Edited programs in images, road step 5b2b"
+below).
 
 No existing golden's outcome changed. New goldens under
-`goldens/library/mirror-builder/`, each with `skipped_in_images`, a new
-key of a golden's `.toml` that the round trip honours; new tests in
+`goldens/library/mirror-builder/`, which go through `build` then `load`
+like every golden since road step 5b2b; new tests in
 `interpreter/edit.rs`, `interpreter/install.rs`, `interpreter/mod.rs`,
 `builtins/reflection.rs` and `builtins/activation.rs`. The golden image
 fixture was regenerated for the changed shipped world, only its
@@ -5632,9 +5633,10 @@ fingerprint changed.
   alone.
 - This commit -- the documents.
 
-What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): road step
-5b2b, "Next", and the hash lookup `Heap::same_mixin` adds per
-non-matching level, unmeasured.
+What the batch left open, edited programs in images, road step 5b2b
+closed below; the reclaiming of ids, road step 5b2c, is "Next" in
+[OPEN-WORK.md](OPEN-WORK.md), and the hash lookup `Heap::same_mixin` adds
+per non-matching level is still there, unmeasured.
 
 ## Edited programs in images, road step 5b2b (2026-10-19)
 

@@ -1028,6 +1028,16 @@ one after another, and refuses an image without it. An image built with
 edited (`<name> has no source text to edit`) and every `source` answers
 `nil`.
 
+**The host asks for the source; the encoder reads it from the heap.** A
+host hands the writer each module as an `image::ModuleSource` -- its root
+class, its origin and `with_source: bool` -- and no text: the encoder
+reads every declaration's text from the heap (`Mixin::text`), because
+after an edit the host's file is no longer the program's text. Source
+travels for every module or for none, as the header's one flag says, so
+the encoder refuses a mix (``image encoding carries source for every
+module or for none: one module has none``), and refuses a module asked
+for its source one of whose declarations was built without a text.
+
 **The text is each declaration's own, in a table of its own** (decided
 with the user on 2026-10-19). Every declaration holds its own text, its
 nested declarations cut out as holes ([object-model.md](object-model.md),
