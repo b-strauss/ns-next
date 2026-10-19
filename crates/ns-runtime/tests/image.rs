@@ -11607,6 +11607,88 @@ fn a_crafted_declaration_text_is_refused() {
     );
 }
 
+/// A module of two nested classes with no nested class of their own, so
+/// that their rows name two texts of no hole each.
+const TWO_LEAVES_MODULE: &str = indoc! {"
+    class Outer usingPlatform: p = Object new () (
+      class First = Object new () ()
+      class Second = Object new () ()
+    ) : ()
+"};
+
+/// A text belongs to one declaration. A text two rows name would be
+/// assembled into the module's text once per row, so a short image could
+/// make the load build an arbitrarily large one: two instance-side rows
+/// naming one text, a class side naming another row's text and a text no
+/// row names are each refused, never loaded and never a panic.
+#[test]
+fn a_text_not_owned_by_exactly_one_declaration_is_refused() {
+    let (mut interpreter, class) = load(TWO_LEAVES_MODULE);
+    let bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        module_only_image(mutator, true, &Origin::File(PathBuf::from("t.ns")), class)
+            .expect("snapshot")
+    });
+    image::load(&bytes).expect("the image as written loads");
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    let row_named = |name: &str| {
+        report
+            .mixins
+            .iter()
+            .position(|line| line.starts_with(&format!("{name} ")))
+            .unwrap_or_else(|| panic!("a row for {name}"))
+    };
+    let text_of = |row: usize| {
+        report.mixin_texts[row]
+            .as_ref()
+            .expect("every row names a text")
+    };
+    let first = text_of(row_named("First"));
+    let second = text_of(row_named("Second"));
+    let root = text_of(0);
+    let class_side = (1..report.mixin_texts.len())
+        .find(|row| text_of(*row).index == root.index)
+        .expect("Outer's class side names Outer's text");
+    assert_eq!(
+        report.texts.len(),
+        3,
+        "one text per instance-side declaration"
+    );
+
+    let shared = with_u32_at(&bytes, second.offset, first.index);
+    let error = load_error(&shared);
+    assert!(
+        error.contains("is named by mixin-table rows"),
+        "two instance-side rows naming one text: {error}"
+    );
+
+    let class_side_elsewhere = with_u32_at(&bytes, text_of(class_side).offset, first.index);
+    let error = load_error(&class_side_elsewhere);
+    assert!(
+        error.contains("a class side, names text"),
+        "a class side naming another row's text: {error}"
+    );
+
+    // One more text at the end of the table: a valid one, over one byte.
+    let (texts_start, texts_end) = section_span(&report, "texts");
+    let mut unnamed = with_u32_at(
+        &bytes,
+        texts_start,
+        u32::try_from(report.texts.len() + 1).expect("a short table"),
+    );
+    let mut record = encode::Writer::new();
+    record.write_u32(0);
+    record.write_u32(1);
+    record.write_u32(0);
+    record.write_str("x");
+    unnamed.splice(texts_end..texts_end, record.into_bytes());
+    let error = load_error(&unnamed);
+    assert!(
+        error.contains("is named by no mixin-table row"),
+        "a text no row names: {error}"
+    );
+}
+
 /// Written with source and loaded, a module answers its text whole, and
 /// each mixin slices its methods from its own text.
 ///

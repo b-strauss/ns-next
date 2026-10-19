@@ -823,45 +823,85 @@ fn metaclass_factory_entries(raw: &[RawRow]) -> Vec<Option<(Symbol, MethodEntry)
 
 /// Each row's declaration text (`Mixin::text`), the text of the text
 /// table its index names; `None` for every row of an image without
-/// source. A class-side row names its instance side's text, whose holes
-/// are its instance side's nested declarations, so a row is held to the
-/// nested rows of the instance side it belongs to.
+/// source.
 ///
-/// Runs after `check_ids`, which is what lets this index `raw` by a row's
-/// class-side id.
+/// A text belongs to one declaration: every text of the table is named by
+/// exactly one instance-side row, and a class-side row names exactly its
+/// instance side's. A text named by two declarations would be assembled
+/// into the module's text once per naming, so a short image could make the
+/// load build an arbitrarily large text; a text no row names would be
+/// bytes the image carries for nothing. A row is held to the nested rows
+/// of the instance side it belongs to: a class side's text is its
+/// instance side's, holes and all.
+///
+/// Runs after `check_ids` and `check_preorder`, which are what let this
+/// index `raw` by a row's class-side id and know that an instance side's
+/// row comes before its class side's.
 fn row_texts(
     raw: &[RawRow],
     texts: &[Rc<DeclarationText>],
 ) -> Result<Vec<Option<Rc<DeclarationText>>>, DecodeError> {
-    let mut instance_side: Vec<usize> = (0..raw.len()).collect();
+    let row_id = |index: usize| u32::try_from(index).unwrap_or(u32::MAX);
+    let mut instance_side: Vec<Option<usize>> = vec![None; raw.len()];
     for (index, row) in raw.iter().enumerate() {
         if let Some(class_side) = row.class_side {
-            instance_side[class_side as usize] = index;
+            instance_side[class_side as usize] = Some(index);
         }
     }
+    // The instance-side row that names each text, once one has.
+    let mut named_by: Vec<Option<usize>> = vec![None; texts.len()];
     let mut row_texts = Vec::with_capacity(raw.len());
     for (index, row) in raw.iter().enumerate() {
         let Some(row_text) = row.text else {
             row_texts.push(None);
             continue;
         };
-        let row_id = u32::try_from(index).unwrap_or(u32::MAX);
         let text = texts
             .get(row_text.index as usize)
             .ok_or(DecodeError::TextIndexOutOfRange {
-                row: row_id,
+                row: row_id(index),
                 index: row_text.index,
                 texts: texts.len(),
             })?;
-        let nested = raw[instance_side[index]].nested.len();
+        let owner = match instance_side[index] {
+            Some(owner) => {
+                let owner_text = raw[owner].text.map(|text| text.index);
+                if owner_text != Some(row_text.index) {
+                    return Err(DecodeError::ClassSideTextMismatch {
+                        row: row_id(index),
+                        index: row_text.index,
+                        instance_side: row_id(owner),
+                    });
+                }
+                owner
+            }
+            None => {
+                let slot = &mut named_by[row_text.index as usize];
+                if let Some(first) = *slot {
+                    return Err(DecodeError::TextSharedByRows {
+                        text: row_text.index,
+                        first: row_id(first),
+                        second: row_id(index),
+                    });
+                }
+                *slot = Some(index);
+                index
+            }
+        };
+        let nested = raw[owner].nested.len();
         if text.holes().len() != nested {
             return Err(DecodeError::TextHolesMismatch {
-                row: row_id,
+                row: row_id(index),
                 holes: text.holes().len(),
                 nested,
             });
         }
         row_texts.push(Some(Rc::clone(text)));
+    }
+    if let Some(unnamed) = named_by.iter().position(Option::is_none) {
+        return Err(DecodeError::UnnamedText {
+            text: row_id(unnamed),
+        });
     }
     Ok(row_texts)
 }
@@ -875,8 +915,9 @@ fn row_texts(
 ///
 /// `texts` is the image's text table, empty for an image without source:
 /// each row is given the text its index names, and a row naming a text
-/// past the table or a text with another number of holes than it has
-/// nested declarations is refused (`row_texts`) before anything is built.
+/// past the table, another declaration's text or a text with another
+/// number of holes than it has nested declarations, and a text no row
+/// names, are refused (`row_texts`) before anything is built.
 ///
 /// Each method and each per-mixin body is handed the code-table entry its
 /// row names -- `read_row` range-checked every id against `codes` already.

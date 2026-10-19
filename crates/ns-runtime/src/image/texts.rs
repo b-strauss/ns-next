@@ -15,45 +15,38 @@ use std::rc::Rc;
 
 use ns_syntax::Span;
 
-use crate::mixin::{DeclarationText, Mixin};
+use crate::mixin::{mixin_key, DeclarationText, Mixin};
 
 use super::decode::{bounded_count, DecodeError, Reader};
 use super::encode::{u32_field, Writer};
 
-/// A text's key: its allocation, so that the texts the rows share -- a
-/// class side's is its instance side's -- are written once.
-fn text_key(text: &Rc<DeclarationText>) -> usize {
-    Rc::as_ptr(text) as usize
-}
-
-/// Each text's index in the table, by `text_key`.
+/// Each row's text index, by the row's `mixin_key`.
 pub struct TextIds {
     ids: HashMap<usize, u32>,
 }
 
 impl TextIds {
-    /// The index of `mixin`'s text. Every mixin of a module asked for
-    /// source has one in the table, since `encode` refused the image
-    /// otherwise; an `Err` rather than a panic all the same, as every
-    /// other refusal of the encoder.
-    pub fn id_of(&self, mixin: &Mixin) -> Result<u32, String> {
-        mixin
-            .text
-            .as_ref()
-            .and_then(|text| self.ids.get(&text_key(text)).copied())
-            .ok_or_else(|| {
-                format!(
-                    "image encoding cannot carry the source of `{}`, which was built without it",
-                    mixin.name
-                )
-            })
+    /// The index of the text of `mixin`'s row. Every row of a module asked
+    /// for source has one, since `encode` refused the image otherwise; an
+    /// `Err` rather than a panic all the same, as every other refusal of
+    /// the encoder.
+    pub fn id_of(&self, mixin: &Rc<Mixin>) -> Result<u32, String> {
+        self.ids.get(&mixin_key(mixin)).copied().ok_or_else(|| {
+            format!(
+                "image encoding cannot carry the source of `{}`, which was built without it",
+                mixin.name
+            )
+        })
     }
 }
 
-/// Writes the table: every distinct text the declarations under
-/// `module_roots` hold, in the order the mixin table's rows reach them.
-/// A module one of whose declarations holds no text -- one built without
-/// source -- is refused.
+/// Writes the table: one text per instance-side declaration under
+/// `module_roots`, in the order the mixin table's rows reach them, and
+/// answers each row's index -- a class side's its instance side's. This is
+/// the shape the decoder requires (`mixins::row_texts`): a text belongs to
+/// one declaration, so no two instance sides name one text even where two
+/// hold one allocation. A module one of whose declarations holds no text
+/// -- one built without source -- is refused.
 pub(crate) fn encode(writer: &mut Writer, module_roots: &[Rc<Mixin>]) -> Result<TextIds, String> {
     let mut texts: Vec<Rc<DeclarationText>> = Vec::new();
     let mut ids: HashMap<usize, u32> = HashMap::new();
@@ -61,16 +54,22 @@ pub(crate) fn encode(writer: &mut Writer, module_roots: &[Rc<Mixin>]) -> Result<
         let mut tree = Vec::new();
         crate::mixin::preorder(root, &mut tree);
         for mixin in &tree {
+            // A class side, registered with its instance side, which
+            // `preorder` reaches first.
+            if ids.contains_key(&mixin_key(mixin)) {
+                continue;
+            }
             let Some(text) = &mixin.text else {
                 return Err(format!(
-                    "image encoding cannot carry the source of module `{}`, which was built \
-                     without it",
+                    "image encoding cannot carry the source of module `{}`, which was built                      without it",
                     root.name
                 ));
             };
-            if let std::collections::hash_map::Entry::Vacant(entry) = ids.entry(text_key(text)) {
-                entry.insert(u32_field("text table id", texts.len()));
-                texts.push(Rc::clone(text));
+            let id = u32_field("text table id", texts.len());
+            texts.push(Rc::clone(text));
+            ids.insert(mixin_key(mixin), id);
+            if let Some(class_side) = &mixin.class_side {
+                ids.insert(mixin_key(class_side), id);
             }
         }
     }

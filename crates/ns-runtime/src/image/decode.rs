@@ -202,6 +202,27 @@ pub enum DecodeError {
         holes: usize,
         nested: usize,
     },
+    /// Two instance-side rows name one text. A text belongs to one
+    /// declaration; shared, it would be assembled into the module's text
+    /// once per row, and a short image could make the load build an
+    /// arbitrarily large one.
+    TextSharedByRows {
+        text: u32,
+        first: u32,
+        second: u32,
+    },
+    /// A class-side row names another text than its instance side's, which
+    /// is the one text of their declaration.
+    ClassSideTextMismatch {
+        row: u32,
+        index: u32,
+        instance_side: u32,
+    },
+    /// A text of the text table no row names: bytes the image carries for
+    /// no declaration.
+    UnnamedText {
+        text: u32,
+    },
     /// One mixin-table row declares a member twice: a method, a slot's
     /// accessor or a nested class under a name another of them already has.
     /// Its rebuilt method table would silently keep only one of the two, and
@@ -676,6 +697,19 @@ impl std::fmt::Display for DecodeError {
                 f,
                 "mixin-table row {row}'s text has {holes} nested declarations, and the row {nested}"
             ),
+            DecodeError::TextSharedByRows { text, first, second } => write!(
+                f,
+                "text {text} of the image is named by mixin-table rows {first} and {second}, \
+                 and a text belongs to one declaration"
+            ),
+            DecodeError::ClassSideTextMismatch { row, index, instance_side } => write!(
+                f,
+                "mixin-table row {row}, a class side, names text {index}, and not the text of \
+                 its instance side, row {instance_side}"
+            ),
+            DecodeError::UnnamedText { text } => {
+                write!(f, "text {text} of the image is named by no mixin-table row")
+            }
             DecodeError::DuplicateSelector(selector) => write!(
                 f,
                 "a mixin-table row declares member `{selector}` more than once"
