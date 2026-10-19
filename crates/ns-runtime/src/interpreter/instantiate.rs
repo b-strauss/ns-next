@@ -1885,6 +1885,47 @@ mod tests {
         });
     }
 
+    /// A class side synthesized for a declaration shares its instance
+    /// side's text, the same `Rc`, as a declared one does: no copy for the
+    /// class side, and one text per declaration.
+    #[test]
+    fn a_synthesized_class_side_shares_its_instance_sides_text() {
+        let source = indoc! {"
+            class Outer = Object new () (
+              class Inner = Object new () ()
+            )
+        "};
+        let module = ns_syntax::parse(source).expect("parse");
+        let resolved = crate::resolve(
+            module,
+            Rc::from(source),
+            SourceOrigin::File(PathBuf::from("t.ns")),
+        )
+        .expect("resolve");
+        let mut interpreter = Interpreter::bootstrap();
+        let class = interpreter.load_module(&resolved);
+        interpreter.enter(|mutator| {
+            let class = mutator
+                .fetch(&class)
+                .as_object()
+                .expect("a module's root class is an object");
+            let outer = mutator
+                .heap()
+                .class_application(class)
+                .expect("a root class has an application")
+                .mixin
+                .clone();
+            let inner = nested_named(&outer, "Inner");
+            assert!(inner.class_side.is_none(), "Inner declares no class side");
+            let class_side = mutator.metaclass_mixin(&inner);
+            let inner_text = inner.text.as_ref().expect("built from source");
+            assert!(class_side
+                .text
+                .as_ref()
+                .is_some_and(|text| Rc::ptr_eq(text, inner_text)));
+        });
+    }
+
     /// The mirror's class is the capability's own class, so the refusal
     /// carries nil as its `behavior`: a handler reading it must not be
     /// handed the class, and with it a way to the mirror.
