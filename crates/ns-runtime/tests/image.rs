@@ -4357,13 +4357,13 @@ fn frame_header(writer: &mut encode::Writer, hash: u32) {
 
 /// A frame record's body for a frame that runs none, a top-level one.
 fn no_body(writer: &mut encode::Writer) {
-    writer.write_boolean(false); // no body
+    writer.write_u8(FRAME_BODY_NONE);
 }
 
 /// A frame record's body: code id `code_id`.
 fn runs_body(writer: &mut encode::Writer, code_id: u32) {
-    writer.write_boolean(true); // a body...
-    writer.write_u32(code_id); // ...by code id
+    writer.write_u8(FRAME_BODY_CODE);
+    writer.write_u32(code_id);
 }
 
 /// Everything of a frame record after its kind and its body: `program_counter`,
@@ -11136,6 +11136,127 @@ fn a_frame_whose_code_disagrees_with_its_kind_is_refused() {
         error.contains("a frame's body is not one its kind runs"),
         "{error}"
     );
+}
+
+/// A method frame of a program class named by declaration rather than by
+/// code id is refused: only a shipped body is named so, and the crafted
+/// bytes would otherwise decode the frame against whatever the class's
+/// current version carries, which after an edit is a body it never ran.
+#[test]
+fn a_declared_body_on_a_program_frame_is_refused() {
+    let (mut bytes, code_offset, _, _) = image_of_a_closure_over_a_method_frame();
+    bytes[code_offset - 1] = FRAME_BODY_DECLARED;
+    bytes.drain(code_offset..code_offset + 4);
+    let Err(error) = image::load(&bytes) else {
+        panic!("a program frame named by declaration must be refused")
+    };
+    assert!(
+        error.contains(&decode::DecodeError::DeclaredBodyNotShipped.to_string()),
+        "{error}"
+    );
+}
+
+/// A top-level frame runs no body, so one named by declaration is
+/// refused: the crafted bytes would otherwise give the frame a body it
+/// never ran. The describing sections come from a real snapshot, the
+/// graph section is hand-written and spliced in where the snapshot's own
+/// graph began.
+#[test]
+fn a_declared_body_on_a_top_level_frame_is_refused() {
+    let (mut interpreter, class) = load(TRIVIAL_MODULE);
+    let mut bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        snapshot_one(
+            mutator,
+            false,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &[],
+        )
+        .expect("snapshot")
+    });
+    bytes = with_fixture_names(&bytes);
+    let graph_start = image::inspect::inspect(&bytes)
+        .expect("inspect")
+        .sections
+        .iter()
+        .find(|section| section.name == "graph")
+        .expect("a snapshot has a graph section")
+        .start;
+    bytes.truncate(graph_start);
+    let mut writer = one_frame_prefix();
+    writer.write_u8(FRAME_TOP_LEVEL); // frame kind: TopLevel
+    writer.write_u8(FRAME_BODY_DECLARED); // ...named by declaration
+    frame_tail(&mut writer, 0, 0);
+    writer.write_u32(0); // no roots
+    writer.write_u32(0); // no tag-named hashes
+    bytes.extend_from_slice(&writer.into_bytes());
+    assert_eq!(
+        load_error(&bytes),
+        decode::DecodeError::DeclaredBodyNotShipped.to_string()
+    );
+}
+
+/// An exception a handler returned out of with `^` keeps the frames of its
+/// `signal` and of the `on:do:` that caught it, both shipped code, which
+/// the code table never carries: the image names their bodies by
+/// declaration, and the exception loads answering what it answered.
+#[test]
+fn an_exception_returned_out_of_its_handler_round_trips() {
+    let source = indoc! {"
+        class Holder usingPlatform: platform = (
+          |
+            Error = platform kernel Error.
+          |
+        ) (
+          public caught = (
+            [Error new signal: 'x'] on: Error do: [:exception | ^exception].
+            ^nil
+          )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let platform = interpreter.platform();
+    let instance = expect_ok(
+        interpreter.send(&class, Symbol::intern("usingPlatform:"), &[platform]),
+        "usingPlatform:",
+    );
+    let exception = expect_ok(
+        interpreter.send(&instance, Symbol::intern("caught"), &[]),
+        "caught",
+    );
+    let bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let exception = mutator.fetch(&exception);
+        snapshot_one(
+            mutator,
+            false,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &[exception],
+        )
+        .unwrap_or_else(|error| panic!("snapshot: {error}"))
+    });
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    for selector in ["signal", "on:do:"] {
+        assert!(
+            report.graph_objects.iter().any(|object| object
+                .contains(&format!("frame method {selector} (public), declared body"))),
+            "the image holds the {selector} frame, named by declaration"
+        );
+    }
+    let mut loaded = image::load(&bytes).expect("load");
+    let exception = loaded.roots[0].clone();
+    let text = expect_ok(
+        loaded
+            .interpreter
+            .send(&exception, Symbol::intern("messageText"), &[]),
+        "messageText",
+    );
+    loaded.interpreter.enter(|mutator| {
+        let text = mutator.fetch(&text);
+        assert_eq!(text_or_class_name(mutator, text), "x");
+    });
 }
 
 /// A frame's code id past the code table is refused where it is read: the

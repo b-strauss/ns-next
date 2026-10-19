@@ -429,6 +429,12 @@ pub enum DecodeError {
     /// any other. The program counter and the register file mean nothing
     /// against a body the frame never ran.
     FrameCodeMismatch,
+    /// A frame record names its body by declaration (`FRAME_BODY_DECLARED`)
+    /// where the class it resolves through applies no shipped mixin, or
+    /// whose kind is a closure's or a top-level one: only a shipped body,
+    /// which the code table never carries, is named so, and every other has
+    /// one spelling, its code id.
+    DeclaredBodyNotShipped,
     /// An identity hash the header word cannot hold: it is 22 bits wide.
     /// Refusing the image is the only answer that does not alias the hash
     /// to another one.
@@ -852,6 +858,10 @@ impl std::fmt::Display for DecodeError {
             DecodeError::FrameCodeMismatch => {
                 write!(f, "a frame's body is not one its kind runs")
             }
+            DecodeError::DeclaredBodyNotShipped => write!(
+                f,
+                "a frame names its body by declaration, which only a frame of shipped code may"
+            ),
             DecodeError::IdentityHashTooWide(hash) => write!(
                 f,
                 "identity hash {hash} does not fit the header word's 22 bits"
@@ -2922,6 +2932,122 @@ fn method_declaration<'gc>(
     found.ok_or(DecodeError::UnknownSelector(selector.as_str().to_string()))
 }
 
+/// How a frame record named its body (`opcodes::FRAME_BODY_*`), as the
+/// second pass read it.
+enum FrameBody {
+    None,
+    Code(Rc<CompiledCode>),
+    Declared,
+}
+
+/// A frame kind whose body a shipped declaration may carry, with the class
+/// it resolves through: what `FRAME_BODY_DECLARED` names, read the same way
+/// by the encoder, which decides whether to write it, and the decoder,
+/// which finds the body by it.
+pub(crate) enum DeclaredKind<'gc> {
+    /// A method of the current class's mixin, by selector.
+    Method(ClassReference<'gc>, Symbol),
+    Initializer(ClassReference<'gc>),
+    SuperclassClause(ClassReference<'gc>),
+    SuperclassMessage(ClassReference<'gc>),
+    /// The message of the `<:` clause that added this level.
+    MixinApplicationMessage(ClassReference<'gc>),
+}
+
+impl<'gc> DeclaredKind<'gc> {
+    /// `kind`'s, with `current_class` for a method; `None` for a closure or
+    /// a top-level frame, and a method frame with no current class, none of
+    /// which a declaration names.
+    pub(crate) fn of(
+        kind: &FrameKind<'gc>,
+        current_class: Option<ClassReference<'gc>>,
+    ) -> Option<DeclaredKind<'gc>> {
+        Some(match kind {
+            FrameKind::Method(method) => DeclaredKind::Method(current_class?, method.selector),
+            FrameKind::Initializer(class) => DeclaredKind::Initializer(*class),
+            FrameKind::SuperclassClause(class) => DeclaredKind::SuperclassClause(*class),
+            FrameKind::SuperclassMessage(class) => DeclaredKind::SuperclassMessage(*class),
+            FrameKind::MixinApplicationMessage(level) => {
+                DeclaredKind::MixinApplicationMessage(*level)
+            }
+            FrameKind::Closure(_) | FrameKind::TopLevel => return None,
+        })
+    }
+
+    /// The declaration that carries the body: the mixin of the class it
+    /// resolves through, or for a `<:` clause's message the declaration
+    /// whose clause added the level.
+    fn declaration(&self, heap: &Heap<'gc>) -> Option<Rc<crate::mixin::Mixin>> {
+        match self {
+            DeclaredKind::Method(class, _)
+            | DeclaredKind::Initializer(class)
+            | DeclaredKind::SuperclassClause(class)
+            | DeclaredKind::SuperclassMessage(class) => heap
+                .class_application(*class)
+                .map(|application| application.mixin.clone()),
+            DeclaredKind::MixinApplicationMessage(level) => heap
+                .class_applied_origin(*level)
+                .map(|origin| origin.declaration),
+        }
+    }
+
+    /// Whether the body is a shipped declaration's: exactly when a frame
+    /// names it by declaration.
+    pub(crate) fn is_shipped(&self, heap: &Heap<'gc>) -> bool {
+        self.declaration(heap)
+            .is_some_and(|declaration| declaration.shipped)
+    }
+}
+
+/// The method `selector` names in the shipped mixin `class` applies: what
+/// a method frame written `FRAME_BODY_DECLARED` runs. Refused when the
+/// mixin is no shipped one, since every other body is named by code id.
+fn declared_method<'gc>(
+    heap: &Heap<'gc>,
+    class: ClassReference<'gc>,
+    selector: Symbol,
+) -> Result<Rc<crate::mixin::MixinMethod>, DecodeError> {
+    let declared = DeclaredKind::Method(class, selector);
+    if !declared.is_shipped(heap) {
+        return Err(DecodeError::DeclaredBodyNotShipped);
+    }
+    declared
+        .declaration(heap)
+        .and_then(|mixin| mixin.compiled_method(selector).cloned())
+        .ok_or(DecodeError::UnknownSelector(selector.as_str().to_string()))
+}
+
+/// The body a frame written `FRAME_BODY_DECLARED` runs, found through its
+/// kind in the shipped declaration it resolves through
+/// (`DeclaredKind::declaration`). Refused when that declaration is no
+/// shipped one, or carries no body of the kind.
+pub(crate) fn declared_body<'gc>(
+    heap: &Heap<'gc>,
+    declared: &DeclaredKind<'gc>,
+) -> Result<Rc<CompiledCode>, DecodeError> {
+    if !declared.is_shipped(heap) {
+        return Err(DecodeError::DeclaredBodyNotShipped);
+    }
+    let found = match declared {
+        DeclaredKind::Method(class, selector) => {
+            return declared_method(heap, *class, *selector).map(|method| method.code.clone())
+        }
+        DeclaredKind::Initializer(_) => declared
+            .declaration(heap)
+            .and_then(|mixin| mixin.initializer_code.clone()),
+        DeclaredKind::SuperclassClause(_) => declared
+            .declaration(heap)
+            .and_then(|mixin| mixin.superclass_clause_code.clone()),
+        DeclaredKind::SuperclassMessage(_) => declared
+            .declaration(heap)
+            .and_then(|mixin| mixin.superclass_message_code.clone()),
+        DeclaredKind::MixinApplicationMessage(level) => heap
+            .class_applied_clause(*level)
+            .and_then(|clause| clause.message_code),
+    };
+    found.ok_or(DecodeError::FrameCodeMismatch)
+}
+
 /// A frame's body off the wire: a `u32` code id, checked against the code
 /// table before it indexes it.
 fn frame_code(
@@ -3017,33 +3143,60 @@ fn decode_frame<'gc>(
             })
         }
     };
-    let code = if reader.read_boolean()? {
-        Some(frame_code(reader, context)?)
-    } else {
-        None
+    let top_level = matches!(kind, Ok(FrameKind::TopLevel));
+    // `None` for a body named by declaration, found below once the current
+    // class is read.
+    let body = match reader.read_u8()? {
+        // A top-level frame runs no body and every other kind runs one: a
+        // frame without one would be reconciled against nothing.
+        FRAME_BODY_NONE if top_level => FrameBody::None,
+        FRAME_BODY_NONE => return Err(DecodeError::FrameCodeMismatch),
+        FRAME_BODY_CODE if top_level => return Err(DecodeError::FrameCodeMismatch),
+        FRAME_BODY_CODE => FrameBody::Code(frame_code(reader, context)?),
+        FRAME_BODY_DECLARED if top_level || matches!(kind, Ok(FrameKind::Closure(_))) => {
+            return Err(DecodeError::DeclaredBodyNotShipped)
+        }
+        FRAME_BODY_DECLARED => FrameBody::Declared,
+        tag => {
+            return Err(DecodeError::InvalidTag {
+                what: "frame body",
+                tag,
+            })
+        }
     };
-    // A top-level frame runs no body and every other kind runs one: a
-    // frame without one would be reconciled against nothing.
-    if code.is_some() == matches!(kind, Ok(FrameKind::TopLevel)) {
-        return Err(DecodeError::FrameCodeMismatch);
-    }
     let program_counter = reader.read_u32()? as usize;
     let uncontinuable = reader.read_boolean()?;
     let receiver = decode_value(reader, context, tables, NamePosition::FrameRegister)?;
     let sender = decode_frame_reference(reader, context, tables)?;
     let home = decode_frame_reference(reader, context, tables)?;
     let current_class = decode_optional_class(reader, context, tables, NamePosition::FrameClass)?;
-    let kind = match (kind, &code) {
-        (Ok(kind), _) => kind,
-        (Err((selector, access)), Some(code)) => FrameKind::Method(frame_method(
-            context,
-            tables,
-            current_class.as_ref(),
-            selector,
-            access,
-            code,
-        )),
-        (Err(_), None) => return Err(DecodeError::FrameCodeMismatch),
+    let (kind, code) = match (kind, body) {
+        (Ok(kind), FrameBody::None) => (kind, None),
+        (Ok(kind), FrameBody::Code(code)) => (kind, Some(code)),
+        (Ok(kind), FrameBody::Declared) => {
+            let declared = DeclaredKind::of(&kind, current_class)
+                .ok_or(DecodeError::DeclaredBodyNotShipped)?;
+            let code = declared_body(&context.mutator.heap, &declared)?;
+            (kind, Some(code))
+        }
+        (Err((selector, access)), FrameBody::Code(code)) => (
+            FrameKind::Method(frame_method(
+                context,
+                tables,
+                current_class.as_ref(),
+                selector,
+                access,
+                &code,
+            )),
+            Some(code),
+        ),
+        (Err((selector, _)), FrameBody::Declared) => {
+            let class = current_class.ok_or(DecodeError::DeclaredBodyNotShipped)?;
+            let method = declared_method(&context.mutator.heap, class, selector)?;
+            let code = Rc::clone(&method.code);
+            (FrameKind::Method(method), Some(code))
+        }
+        (Err(_), FrameBody::None) => return Err(DecodeError::FrameCodeMismatch),
     };
     context.mutator.heap.fill_frame_fields(
         frame,
@@ -3687,8 +3840,17 @@ impl Sizing<'_, '_, '_> {
                 })
             }
         }
-        if reader.read_boolean()? {
-            frame_code(reader, self.context)?; // the body
+        match reader.read_u8()? {
+            FRAME_BODY_NONE | FRAME_BODY_DECLARED => {}
+            FRAME_BODY_CODE => {
+                frame_code(reader, self.context)?;
+            }
+            tag => {
+                return Err(DecodeError::InvalidTag {
+                    what: "frame body",
+                    tag,
+                })
+            }
         }
         reader.read_u32()?; // the program counter, checked by `verify_graph`
         reader.read_boolean()?; // uncontinuable

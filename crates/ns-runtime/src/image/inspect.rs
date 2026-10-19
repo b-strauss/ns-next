@@ -249,7 +249,8 @@ pub struct Frame {
     /// The frame's object id.
     pub object: usize,
     /// The byte offset of the `u32` code id naming the frame's body, or
-    /// `None` for a frame that names none, a top-level one.
+    /// `None` for a frame that names none, a top-level one, and for one
+    /// that names its body by declaration.
     pub code_offset: Option<usize>,
 }
 
@@ -415,11 +416,19 @@ fn read_frame_record(
             })
         }
     };
-    let (kind, code_offset) = if reader.read_boolean()? {
-        let offset = reader.position();
-        (format!("{kind}, code {}", reader.read_u32()?), Some(offset))
-    } else {
-        (kind, None)
+    let (kind, code_offset) = match reader.read_u8()? {
+        opcodes::FRAME_BODY_NONE => (kind, None),
+        opcodes::FRAME_BODY_CODE => {
+            let offset = reader.position();
+            (format!("{kind}, code {}", reader.read_u32()?), Some(offset))
+        }
+        opcodes::FRAME_BODY_DECLARED => (format!("{kind}, declared body"), None),
+        tag => {
+            return Err(decode::DecodeError::InvalidTag {
+                what: "frame body",
+                tag,
+            })
+        }
     };
     let program_counter = reader.read_u32()?;
     let uncontinuable = reader.read_boolean()?;

@@ -1927,24 +1927,7 @@ fn encode_frame<'gc>(
             encode_class_tag(writer, *level, frame_class, context)?;
         }
     }
-    // The body by code id, never left to the class: after an edit the
-    // class's current version carries another body than the one that ran.
-    // A top-level frame runs none.
-    if matches!(snapshot.kind, FrameKind::TopLevel) {
-        writer.write_boolean(false);
-    } else {
-        let id = context
-            .heap
-            .frame_code(frame)
-            .and_then(|code| context.code_ids.id_of(&code).ok())
-            .ok_or_else(|| {
-                "image encoding cannot serialize a frame running code that no module the \
-                 image carries compiled"
-                    .to_string()
-            })?;
-        writer.write_boolean(true);
-        writer.write_u32(id);
-    }
+    encode_frame_body(writer, frame, &snapshot, context)?;
     // An image's code table holds only compiled bodies, so a frame's
     // `program_counter` is always an instruction index and the record does not
     // say so.
@@ -1975,6 +1958,42 @@ fn encode_frame<'gc>(
         .chain(snapshot.temporaries)
         .collect();
     encode_values(writer, &registers, NamePosition::FrameRegister, context)
+}
+
+/// The body that runs in `frame` (`opcodes::FRAME_BODY_*`). A program's
+/// body by code id, never left to the class: after an edit the class's
+/// current version carries another body than the one that ran. A shipped
+/// declaration's body, which the code table never carries, by declaration:
+/// a shipped mixin is never edited, so the decoder's lookup finds that very
+/// body, which is checked here. A top-level frame runs none.
+fn encode_frame_body<'gc>(
+    writer: &mut Writer,
+    frame: FrameReference<'gc>,
+    snapshot: &crate::heap::FrameRecord<'gc>,
+    context: &EncodeContext<'_, 'gc>,
+) -> Result<(), String> {
+    let refusal = || {
+        "image encoding cannot serialize a frame running code that no module the image \
+         carries compiled"
+            .to_string()
+    };
+    if matches!(snapshot.kind, FrameKind::TopLevel) {
+        writer.write_u8(FRAME_BODY_NONE);
+        return Ok(());
+    }
+    let code = context.heap.frame_code(frame).ok_or_else(refusal)?;
+    let declared = super::decode::DeclaredKind::of(&snapshot.kind, snapshot.current_class);
+    if let Some(declared) = declared.filter(|declared| declared.is_shipped(context.heap)) {
+        let found = super::decode::declared_body(context.heap, &declared).ok();
+        if !found.is_some_and(|found| Rc::ptr_eq(&found, &code)) {
+            return Err(refusal());
+        }
+        writer.write_u8(FRAME_BODY_DECLARED);
+        return Ok(());
+    }
+    writer.write_u8(FRAME_BODY_CODE);
+    writer.write_u32(context.code_ids.id_of(&code).map_err(|_| refusal())?);
+    Ok(())
 }
 
 /// What `encode_graph_section` wrote besides its bytes: the shipped names

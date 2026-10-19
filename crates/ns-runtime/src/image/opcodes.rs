@@ -252,16 +252,16 @@ pub const OBJECT_METACLASS: u8 = 8;
 /// an image may give that class; any other header on this body, or that
 /// header on any other body, is refused. Its body is the frame's
 /// kind tag (`FRAME_*`) and that kind's payload, the body that runs in it
-/// (a presence flag and a `u32` code id, absent exactly for a top-level
-/// frame), a `u32` program counter, `uncontinuable`, the receiver, the
-/// sender and the home (each a presence flag and an object id), the
-/// current class (a presence flag and a class tag), then a `u32` register
-/// count and that many values. The kind comes first and the register count
-/// is on the wire, so the decoder's first pass sizes the record from its
-/// own bytes (`decode::decode_graph_section`). The body is named by code id
-/// rather than found through the frame's class, since after an edit the
-/// class's current version carries another body, and the code an older
-/// version runs is in the code table too.
+/// (a `FRAME_BODY_*` tag, followed by a `u32` code id for
+/// `FRAME_BODY_CODE`), a `u32` program counter, `uncontinuable`, the
+/// receiver, the sender and the home (each a presence flag and an object
+/// id), the current class (a presence flag and a class tag), then a `u32`
+/// register count and that many values. The kind comes first and the
+/// register count is on the wire, so the decoder's first pass sizes the
+/// record from its own bytes (`decode::decode_graph_section`). A program's
+/// body is named by code id rather than found through the frame's class,
+/// since after an edit the class's current version carries another body,
+/// and the code an older version runs is in the code table too.
 pub const OBJECT_FRAME: u8 = 15;
 /// A `ByteArray`: a `u32` length, then that many bytes, in order. The
 /// first pass sizes the record from its own bytes -- the length is refused
@@ -399,6 +399,22 @@ pub const FRAME_SUPERCLASS_MESSAGE: u8 = 5;
 /// A `<:` clause's message activation, followed by the class tag of the level
 /// the clause added -- whose clause names the body that ran.
 pub const FRAME_MIXIN_APPLICATION_MESSAGE: u8 = 6;
+
+/// How a frame record names the body that runs in it; each frame has one
+/// spelling. A top-level frame runs none (`FRAME_BODY_NONE`), and no other
+/// frame is written so. A body of a shipped declaration is
+/// `FRAME_BODY_DECLARED`: found through the frame's kind in the declaration
+/// of the class it resolves through -- a method by selector in the current
+/// class's mixin, the initializer and the superclass clause and message in
+/// the kind's class's mixin, a `<:` clause's message in the clause that
+/// added the kind's level -- since the code table carries no shipped code,
+/// and a shipped mixin is never edited, so the lookup finds that very
+/// body; a closure frame is never written so, its closure's code being in
+/// the table. Every other body is `FRAME_BODY_CODE`, followed by its `u32`
+/// code id. Next free number: 3.
+pub const FRAME_BODY_NONE: u8 = 0;
+pub const FRAME_BODY_CODE: u8 = 1;
+pub const FRAME_BODY_DECLARED: u8 = 2;
 
 /// Which tag-named object an entry of the graph section's closing hash table
 /// names: an object of the shipped-name section, which is no record, so

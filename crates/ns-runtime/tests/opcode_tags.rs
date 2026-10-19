@@ -288,6 +288,10 @@ fn graph_section_tags_are_fixed() {
     assert_eq!(FRAME_SUPERCLASS_MESSAGE, 5);
     assert_eq!(FRAME_MIXIN_APPLICATION_MESSAGE, 6);
 
+    assert_eq!(FRAME_BODY_NONE, 0);
+    assert_eq!(FRAME_BODY_CODE, 1);
+    assert_eq!(FRAME_BODY_DECLARED, 2);
+
     assert_eq!(HASHED_SHIPPED, 7);
     assert_eq!(RETIRED_HASHED_TAGS, [0, 1, 2, 3, 4, 5, 6]);
 }
@@ -354,7 +358,7 @@ fn retired_class_and_hashed_tags_are_never_reused() {
 /// stops two constants sharing one, and the compiler would not object.
 #[test]
 fn no_two_graph_tags_in_a_family_share_a_number() {
-    let families: [&[u8]; 6] = [
+    let families: [&[u8]; 7] = [
         &LIVE_VALUE_TAGS,
         &[
             OBJECT_INSTANCE,
@@ -381,6 +385,7 @@ fn no_two_graph_tags_in_a_family_share_a_number() {
             FRAME_SUPERCLASS_MESSAGE,
             FRAME_MIXIN_APPLICATION_MESSAGE,
         ],
+        &[FRAME_BODY_NONE, FRAME_BODY_CODE, FRAME_BODY_DECLARED],
         &LIVE_HASHED_TAGS,
     ];
     for family in families {
