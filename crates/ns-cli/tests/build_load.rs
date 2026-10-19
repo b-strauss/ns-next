@@ -208,20 +208,21 @@ fn a_load_reports_an_uncaught_error_exactly_as_run_does() {
     );
 }
 
-/// The image `build` writes by default carries no program text, and the
-/// application in it still runs. `--debug-source` opts the source back in,
-/// and `load --print-source` is what reads it out again -- which is how an
-/// image can be exported back to `.ns` while no decompiler exists.
+/// The image `build` writes carries the program's text, and `--strip-source`
+/// leaves it out: the application in a stripped image still runs, but it
+/// cannot be edited and `load --print-source` has nothing to print. The
+/// carried text is also what exporting an image back to `.ns` rests on;
+/// there is no decompiler.
 #[test]
-fn a_built_image_is_source_free_unless_debug_source_is_asked_for() {
+fn a_built_image_carries_its_source_unless_stripped() {
     let source = golden("library/number/integer/arithmetic");
     let text = std::fs::read_to_string(&source).expect("read golden");
     // Every line carrying program text, not one hand-picked needle: a
     // partial leak (one method body, one initializer statement) has to fail
-    // this too. Lines under 12 characters are structural punctuation --
-    // `)`, `) : ()` -- which an image's byte stream reproduces by
-    // chance, so checking them would report leaks that are not leaks.
-    // See `no_line_of_the_source_survives_in_a_source_free_image` in
+    // the stripped half too. Lines under 12 characters are structural
+    // punctuation -- `)`, `) : ()` -- which an image's byte stream
+    // reproduces by chance, so checking them would report leaks that are not
+    // leaks. See `no_line_of_the_source_survives_in_a_source_free_image` in
     // `ns-runtime`'s image tests for the same property with a module built
     // to probe it, and for what this does *not* claim (identifiers survive
     // in the symbol table by necessity -- dispatch is by name).
@@ -232,67 +233,69 @@ fn a_built_image_is_source_free_unless_debug_source_is_asked_for() {
         .collect();
     assert!(lines.len() >= 4, "the golden must have text to look for");
 
-    let plain_directory = ScratchDirectory::new("source-free");
-    let plain = plain_directory.join("app.nsi");
-    let (ok, _out, error) = ns_next(&["build".as_ref(), source.as_os_str(), plain.as_os_str()]);
+    let default_directory = ScratchDirectory::new("with-source");
+    let default = default_directory.join("app.nsi");
+    let (ok, _out, error) = ns_next(&["build".as_ref(), source.as_os_str(), default.as_os_str()]);
     assert!(ok, "{error}");
-    let plain_bytes = std::fs::read(&plain).expect("read image");
+    let default_bytes = std::fs::read(&default).expect("read image");
     for line in &lines {
         assert!(
-            !contains(&plain_bytes, line.as_bytes()),
-            "the default image contains the source line {line:?}"
+            contains(&default_bytes, line.as_bytes()),
+            "the default image is missing the source line {line:?}"
         );
     }
-    // ...and it still starts, not just a smaller file.
-    let (ok, out, error) = ns_next(&["load".as_ref(), plain.as_os_str()]);
-    assert!(ok, "{error}");
-    assert_eq!(out, "42\n");
-    // A source-free image has nothing to print, and says so.
-    let (ok, _out, error) = ns_next(&[
-        "load".as_ref(),
-        plain.as_os_str(),
-        "--print-source".as_ref(),
-    ]);
-    assert!(!ok);
-    assert!(error.contains("carries no source"), "{error}");
-
-    let debug_directory = ScratchDirectory::new("debug-source");
-    let debug = debug_directory.join("app.nsi");
-    let (ok, _out, error) = ns_next(&[
-        "build".as_ref(),
-        source.as_os_str(),
-        debug.as_os_str(),
-        "--debug-source".as_ref(),
-    ]);
-    assert!(ok, "{error}");
-    let debug_bytes = std::fs::read(&debug).expect("read image");
-    // The control: the very lines missing above are all present here, so
-    // the sweep cannot be passing because the needles were mangled.
-    for line in &lines {
-        assert!(
-            contains(&debug_bytes, line.as_bytes()),
-            "the debug variant is missing the source line {line:?}"
-        );
-    }
-    assert!(
-        debug_bytes.len() > plain_bytes.len(),
-        "the debug variant is the bigger of the two"
-    );
     let (ok, out, error) = ns_next(&[
         "load".as_ref(),
-        debug.as_os_str(),
+        default.as_os_str(),
         "--print-source".as_ref(),
     ]);
     assert!(ok, "{error}");
     assert_eq!(
         out.replace("\r\n", "\n"),
         text.replace("\r\n", "\n"),
-        "the debug variant round-trips the module's source verbatim"
+        "the default image round-trips the module's source verbatim"
     );
-    // And the debug variant still starts, exactly as the plain one does.
-    let (ok, out, error) = ns_next(&["load".as_ref(), debug.as_os_str()]);
+    let (ok, out, error) = ns_next(&["load".as_ref(), default.as_os_str()]);
     assert!(ok, "{error}");
     assert_eq!(out, "42\n");
+
+    let stripped_directory = ScratchDirectory::new("strip-source");
+    let stripped = stripped_directory.join("app.nsi");
+    let (ok, _out, error) = ns_next(&[
+        "build".as_ref(),
+        source.as_os_str(),
+        stripped.as_os_str(),
+        "--strip-source".as_ref(),
+    ]);
+    assert!(ok, "{error}");
+    let stripped_bytes = std::fs::read(&stripped).expect("read image");
+    // The control above holds every line present in the default image, so
+    // this sweep cannot be passing because the needles were mangled.
+    for line in &lines {
+        assert!(
+            !contains(&stripped_bytes, line.as_bytes()),
+            "the stripped image contains the source line {line:?}"
+        );
+    }
+    assert!(
+        stripped_bytes.len() < default_bytes.len(),
+        "the stripped image is the smaller of the two"
+    );
+    // ...and it still starts, not just a smaller file.
+    let (ok, out, error) = ns_next(&["load".as_ref(), stripped.as_os_str()]);
+    assert!(ok, "{error}");
+    assert_eq!(out, "42\n");
+    // A stripped image has nothing to print, and says so.
+    let (ok, _out, error) = ns_next(&[
+        "load".as_ref(),
+        stripped.as_os_str(),
+        "--print-source".as_ref(),
+    ]);
+    assert!(!ok);
+    assert!(
+        error.contains("carries no source (it was written with --strip-source)"),
+        "{error}"
+    );
 }
 
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
@@ -432,7 +435,7 @@ fn load_refuses_an_image_that_is_not_started() {
         let modules = [ns_runtime::image::ModuleSource {
             class,
             origin: &origin,
-            source: None,
+            with_source: false,
         }];
         ns_runtime::image::snapshot(mutator, &modules, &[]).expect("snapshot")
     });

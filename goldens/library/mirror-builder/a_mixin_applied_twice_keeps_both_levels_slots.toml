@@ -4,4 +4,3 @@ upper markerTag='upper' own=1 added=nil
 true
 upper markerTag='upper' own=1 added=2
 '''
-skipped_in_images = "a program loaded from an image cannot be edited until road step 5b2b"

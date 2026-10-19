@@ -297,7 +297,7 @@ struct Mixin {                    // one per declaration, shared for its lifetim
     class_side: Option<Rc<Mixin>>,
     mixin_applications: Vec<MixinApplicationClause>,  // its `<:` clauses (§6.2)
     enclosing: OnceCell<Weak<Mixin>>, // the mixin it is declared in, set once
-    module_text: Option<ModuleText>,  // its module's source, one Rc<str> shared
+    text: Option<Rc<DeclarationText>>, // its declaration's own text, nested ones cut out
 }
 
 struct MixinApplication {         // (mixin, super application) -> behaviour
@@ -332,7 +332,7 @@ builtin's mixin have none. It is `Weak`, so a tree is no cycle, and set
 once by every builder -- from source, from the embedded shipped code, from
 an image -- after the enclosing mixin's `Rc` exists
 (`Mixin::set_enclosing_of_children`); `Mixin::enclosing_mixin` reads it.
-`Mixin::module_text` is the module's source ("Source retention and
+`Mixin::text` is its declaration's own text ("Source retention and
 provenance" below). A mixin is no heap object; a mirror's reflectee stands
 for it, the one kernel-private `Mixin` object per mixin per heap
 ([liveness-and-reflection.md](liveness-and-reflection.md), "A mixin is
@@ -1588,22 +1588,57 @@ and cheap to carry.
 
 - Each loaded module keeps its full original source as one `Rc<str>`, attached to
   the module rather than duplicated per node (`ResolvedModule::source`).
-- The text reaches the heap through the mixins: every mixin of a module
-  holds that one `Rc<str>` (`Mixin::module_text`), whether it was built
-  from source, decoded from the embedded shipped code (one text per
-  shipped module per thread) or decoded from an image that carries source
-  (shared with the host's `LoadedModule::source`); a builtin's mixin, the
-  VM mirror's, a synthesized class side and a mixin of an image without
-  source hold none. A mirror's `source` reads it
-  ([liveness-and-reflection.md](liveness-and-reflection.md), "A mixin
-  knows its enclosing mixin and its module's source").
+- **Every declaration holds its own text, its nested declarations cut
+  out** (decided with the user on 2026-10-19), rather than its module's
+  whole text: `Mixin::text`, a `DeclarationText` (`mixin.rs`) -- the
+  declaration's range in the module text it was read in, the spans of the
+  declarations nested directly in it, its *holes*, and its text. A
+  module's root declaration's range is the whole module, prologue and
+  trailing text included, its nested declarations cut out. So no version
+  of a declaration keeps another's text alive, in the heap or in an image:
+  an edit of a nested class makes a fresh text for that class and its
+  subtree only, and the enclosing declaration's text, which holds no byte
+  of it, stays the same and valid. Chosen over keeping every module text
+  a version still points into, which duplicates whole modules in the heap
+  and the image, and over rebasing spans onto the current text when
+  writing an image, which leaves the heap's duplicates and drops an old
+  body's source.
+- **One text, two forms.** A shipped module's declarations share its one
+  text per thread (`interpreter/core_library.rs`'s `SHIPPED_MODULE_TEXTS`,
+  which exists so that no boot copies the core library), holes and all,
+  since a shipped mixin is never edited and so never outlives the text of
+  another version; a program's declarations each own a copy of their own
+  text with the holes cut out. Both answer the same `slice` and
+  `assemble`. A class side, declared or synthesized, shares its instance
+  side's text, the same `Rc`, and no builder makes one of its own. A
+  hole is a nested declaration and so never empty: every form refuses an
+  empty one, which only a crafted image could carry. A builtin's mixin, the VM mirror's and a mixin of an image
+  without source hold none, and their `source` answers `nil`.
+- **A module's text is assembled, never stored.** `Heap::assembled_text`
+  fills each hole of a declaration's text with the assembled text of the
+  current version of the declaration nested there, found through its id;
+  for a module's root that is the module's current text, every edit in it
+  included (`Heap::module_source`), which an edit starts from and a load
+  hands the host as `LoadedModule::source`. An unedited module assembles
+  to its file byte for byte (`an_unedited_module_assembles_to_its_text`,
+  `every_shipped_module_assembles_to_its_text`). A declaration mirror's
+  `source` is the assembled text sliced at the declaration's span
+  (`Heap::declaration_source`), its start counted from the text's start
+  and its end from its end, since an edit nested in it changes only what
+  lies between.
 - Every declaration already carries a `Span`, and every compiled body its
-  `CompiledCode::source`, so source text for any node is recovered on
-  demand, with no per-node copy: in the front end as
-  `span.text(&module_source)`, and from a mixin through
-  `mixin::source_text`, which answers nothing for a span past the text or
-  off a character boundary, since a span read from an image is the
-  image's to choose.
+  `CompiledCode::source`, both in the coordinates of the text its version
+  was read in, so source text for any node is recovered on demand, with
+  no per-node copy: in the front end as `span.text(&module_source)`, and
+  from a mixin through its own text's `slice`, which answers a span only
+  within the declaration and in no hole. A text is checked once when it is
+  made -- its range within the text, its holes in order, disjoint and
+  within it, every boundary a character boundary -- and slicing and
+  assembling answer nothing for a span or a hole that does not fit, never
+  a panic, since a text and a span read from an image are the image's to
+  choose ([image-format.md](image-format.md), "Source"). A mirror's
+  `source` reads it ([liveness-and-reflection.md](liveness-and-reflection.md),
+  "A mixin knows its enclosing mixin and its declaration's text").
 - `SourceOrigin` is attached once per module: `SourceOrigin::File(PathBuf)`
   for a source read from a file, `SourceOrigin::Embedded(String)` for one
   compiled into the binary, named by the file it was read from at build time
@@ -1678,7 +1713,8 @@ own:
    5a, mirrors that read, and 5b1, the VM's half of live editing -- the
    mixin id that carries every version, the forward and the recorded
    guards -- built; 5b2a, the MirrorBuilder and the atomic install,
-   built; 5b2b, edited programs in images and the reclaiming of ids, next.
+   built; 5b2b, declaration texts and edited programs in images, built;
+   5b2c, the reclaiming of ids, next.
 6. **Inline allocation in the interpreter** ([memory.md](memory.md),
    "Planned: inline allocation").
 7. **The execution model for compiled code** ([execution.md](execution.md),
@@ -1797,7 +1833,7 @@ applied-clause field names it. A class's change of application restamps
 every instance's header by a heap walk (`Heap::class_set_application`)
 before the old guard id can become reclaimable. Every version of a mixin
 answers the id it was first registered under: the row holds the current
-version, the id of the mixin it is declared in and its module's text, and
+version and the id of the mixin it is declared in, and
 `Heap::replace_mixin` installs a fresh version under an old id, keeping the
 one it supersedes in `Tables::superseded`, so the address map that answers
 a version's id (`mixin::mixin_key`) never names a dropped one
@@ -1805,7 +1841,7 @@ a version's id (`mixin::mixin_key`) never names a dropped one
 replaces the mixin under its id"). None of it is reclaimed: nothing drops a
 mixin, superseded versions included, and the application cache, keyed by
 the ids, stays strong; the reuse rules and a weak cache come with live
-editing (decided with the user on 2026-10-03), with road step 5b2b, after
+editing (decided with the user on 2026-10-03), with road step 5b2c, after
 road step 5b2a's atomic install, which supersedes applications and guards
 without reclaiming them ([OPEN-WORK.md](../OPEN-WORK.md), "Next").
 
@@ -2107,7 +2143,7 @@ every earlier predecessor at the newest; the cold path of
 an initializer or a lazy getter entered before the install runs to its
 end when its level's slots did not change, and raises the error above
 when they did; the hot path is unchanged. No successor is dropped; the
-rule for reusing an application's index is road step 5b2b's.
+rule for reusing an application's index is road step 5b2c's.
 
 **Private and super slot accessors.** `Lookup::SlotAccessor` answers the
 level whose own slot the field is, and `Resolved::Slot` and
@@ -2535,7 +2571,10 @@ no program can observe, since a value has no identity.
   and 5b2 split in turn into 5b2a, the MirrorBuilder, run-time
   compilation and the atomic install, built
   ([its plan](../superpowers/plans/2026-10-18-2138-mirror-builder-and-atomic-install.md)),
-  and 5b2b, the image's edited mixins and the weak application cache.
+  and 5b2b, split once more on 2026-10-19 (decided with the user): 5b2b,
+  declaration texts and the image's edited mixins, built
+  ([its plan](../superpowers/plans/2026-10-19-1702-edited-programs-in-images.md)),
+  and 5b2c, the weak application cache and the reuse of ids.
   The bulk forward runs inside its leaf, in the middle of a step, not at
   the next safepoint, so no instruction runs between the forward and the
   leaf's answer and it is atomic; nothing live moves, so no move epoch

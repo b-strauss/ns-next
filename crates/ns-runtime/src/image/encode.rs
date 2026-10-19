@@ -30,7 +30,7 @@ pub const MAGIC: &[u8; 4] = b"NSNX";
 /// (`opcodes.rs`) -- not from this field.
 ///
 /// The header's flag byte (`FLAG_HAS_SOURCE`) is what carries variation
-/// *within* the format: the modules' source text is optional, and a reader
+/// *within* the format: the program's source text is optional, and a reader
 /// distinguishes the two variants by the flag. A flag bit this build does
 /// not know is refused (`DecodeError::UnknownHeaderFlags`), which is what
 /// keeps an optional section from being silently skipped by a reader that
@@ -101,12 +101,15 @@ impl Writer {
     }
 }
 
-/// Header flag bits. Bit 0 says every module in the module section carries
-/// its source text (`modules::encode_modules`); every
-/// bit this build has not assigned a meaning to is reserved and must be
-/// zero, so a reader of this build refuses an image using a flag it does
-/// not implement rather than skipping a section it cannot see.
-pub const FLAG_HAS_SOURCE: u8 = 1;
+/// Header flag bits. Every bit this build has not assigned a meaning to is
+/// reserved and must be zero, so a reader of this build refuses an image
+/// using a flag it does not implement rather than skipping a section it
+/// cannot see.
+///
+/// The image carries its program's source: a table of every declaration's
+/// own text, and per mixin row the index of its text
+/// (`docs/design/image-format.md`, "Source").
+pub const FLAG_HAS_SOURCE: u8 = 8;
 
 /// The image is an application packaged just before `main:args:`: `load`
 /// starts it by sending `main: platform args:` to the graph's one root
@@ -116,11 +119,12 @@ pub const FLAG_START: u8 = 4;
 /// Every bit this build assigns a meaning to.
 pub const KNOWN_FLAGS: u8 = FLAG_HAS_SOURCE | FLAG_START;
 
-/// Header flag bits that no longer mean anything and are never reused: 2
-/// was `FLAG_STATELESS`, the stateless binary, retired 2026-09-29 when
-/// `build` began packaging the application before `main:args:`. A stale
-/// binary's header meets an unknown flag rather than whatever took the bit.
-pub const RETIRED_HEADER_FLAGS: u8 = 2;
+/// Flags that once meant something and are never reused: 2 was
+/// `FLAG_STATELESS`, the stateless binary, retired 2026-09-29; 1 was the
+/// source variant that carried one text per module, retired 2026-10-19
+/// when every declaration came to hold its own, so that an image of the
+/// old layout is refused rather than misread.
+pub const RETIRED_HEADER_FLAGS: u8 = 2 | 1;
 
 pub fn write_header(writer: &mut Writer, flags: u8) {
     writer.write_raw(MAGIC);
@@ -218,9 +222,10 @@ pub struct CodeIds {
 }
 
 impl CodeIds {
-    /// A body no module the image carries compiled has no id: a graph that
-    /// reaches a closure over another module's code. An `Err` here, not a
-    /// panic, because what the graph reaches is the program's to decide.
+    /// A body no version of a declaration the image carries compiled has no
+    /// id: a graph that reaches a closure over another module's code. An
+    /// `Err` here, not a panic, because what the graph reaches is the
+    /// program's to decide.
     pub fn id_of(&self, code: &Rc<CompiledCode>) -> Result<u32, String> {
         self.ids
             .get(&(Rc::as_ptr(code) as usize))
@@ -245,26 +250,27 @@ pub fn code_kind_tag(kind: CodeKind) -> u8 {
     }
 }
 
-/// The code table: every `CompiledCode` reachable from the mixin trees under
-/// `module_roots` -- every mixin's methods, every mixin's initializer, every
-/// superclass clause and clause-message body, every `<:` clause's message
-/// body, and every nested block body --
-/// with nested block code *before* the code that creates it. Flat and
-/// unnamed: *which* body belongs to which declaration is the mixin table's
-/// business (`image::mixins`), which addresses this table by id.
+/// The code table: every `CompiledCode` reachable from `rows`
+/// (`mixins::plan`) -- every mixin's methods, every mixin's initializer,
+/// every superclass clause and clause-message body, every `<:` clause's
+/// message body, and every nested block body -- then every body of
+/// `extra`, the code of an older version the graph still runs, and the
+/// blocks nested in it, with nested block code *before* the code that
+/// creates it. Flat and unnamed: *which* body belongs to
+/// which declaration is the mixin table's business (`image::mixins`),
+/// which addresses this table by id.
 ///
-/// Collected in `mixin::preorder` order, module after module -- the same
-/// order the mixin table's rows are written in -- so the same module always encodes to the same
-/// bytes.
+/// Collected in row order -- the order the mixin table's rows are written
+/// in -- so the same module always encodes to the same bytes.
 pub fn encode_code_table(
     writer: &mut Writer,
-    module_roots: &[Rc<crate::mixin::Mixin>],
+    rows: &[mixins::Row],
+    extra: &[Rc<CompiledCode>],
     symbols: &mut symbols::Builder,
 ) -> Result<CodeIds, String> {
     let mut order: Vec<Rc<CompiledCode>> = Vec::new();
     let mut ids = CodeIds::default();
-    let rows = mixins::plan(module_roots)?;
-    for row in &rows {
+    for row in rows {
         for method in &row.methods {
             collect_code(&method.code, &mut order, &mut ids);
         }
@@ -284,6 +290,9 @@ pub fn encode_code_table(
         {
             collect_code(code, &mut order, &mut ids);
         }
+    }
+    for code in extra {
+        collect_code(code, &mut order, &mut ids);
     }
     writer.write_u32(u32_field("code table entry count", order.len()));
     for code in &order {
@@ -795,6 +804,7 @@ enum UsedName {
 /// The shipped names a graph section uses, in the order the graph first
 /// used each -- the order the shipped-name section lists them in and its
 /// references number them.
+#[derive(Clone)]
 pub struct UsedNames {
     names: Vec<UsedName>,
     index: HashMap<usize, u32>,
@@ -1257,9 +1267,9 @@ pub struct EncodeContext<'a, 'gc> {
     shipped_by_mixin: &'a HashMap<MixinId, usize>,
     /// `ShippedWorld::declared_by_mixin`, built for this encoding.
     shipped_declared_by_mixin: &'a HashMap<MixinId, ShippedName>,
-    /// `mixin::mixin_key` -> mixin-table row id, as `mixins::encode`
+    /// A declaration's id -> mixin-table row id, as `mixins::encode`
     /// assigned them.
-    pub mixin_ids: &'a HashMap<usize, u32>,
+    pub mixin_ids: &'a mixins::MixinIds,
     pub heap: &'a Heap<'gc>,
 }
 
@@ -1541,9 +1551,8 @@ fn encode_class_record<'gc>(
     let applied_clause = heap.class_applied_origin(class);
     let superclass = heap.class_superclass(class);
     let applied_row = |applied: &crate::mixin::AppliedClause| {
-        context
-            .mixin_ids
-            .get(&crate::mixin::mixin_key(&applied.declaration))
+        heap.known_mixin_id(&applied.declaration)
+            .and_then(|id| context.mixin_ids.get(&id))
             .copied()
             .ok_or_else(|| {
                 format!(
@@ -1589,9 +1598,9 @@ fn encode_class_record<'gc>(
         writer.write_u32(u32_field("mixin application clause index", applied.index));
         return Ok(());
     }
-    let id = context
-        .mixin_ids
-        .get(&crate::mixin::mixin_key(mixin))
+    let id = heap
+        .known_mixin_id(mixin)
+        .and_then(|id| context.mixin_ids.get(&id))
         .copied()
         .ok_or_else(|| {
             format!(
@@ -1838,9 +1847,8 @@ fn encode_mixin_record<'gc>(
     context: &EncodeContext<'_, 'gc>,
 ) -> Result<(), String> {
     let (instance_side, class_side) = reified_mixin_reference(context.heap, object)?;
-    let key = crate::mixin::mixin_key(&instance_side);
     let id = context.heap.known_mixin_id(&instance_side);
-    if let Some(row) = context.mixin_ids.get(&key) {
+    if let Some(row) = id.and_then(|id| context.mixin_ids.get(&id)) {
         writer.write_u8(MIXIN_ROW);
         writer.write_u32(*row);
     } else if let Some(&world_index) = id.and_then(|id| context.shipped_by_mixin.get(&id)) {
@@ -1895,6 +1903,7 @@ fn encode_frame<'gc>(
         FrameKind::Method(method) => {
             writer.write_u8(FRAME_METHOD);
             writer.write_u32(symbols.intern(method.selector.as_str()));
+            writer.write_u8(mixins::access_tag(method.access));
         }
         FrameKind::Closure(closure) => {
             writer.write_u8(FRAME_CLOSURE);
@@ -1918,6 +1927,7 @@ fn encode_frame<'gc>(
             encode_class_tag(writer, *level, frame_class, context)?;
         }
     }
+    encode_frame_body(writer, frame, &snapshot, context)?;
     // An image's code table holds only compiled bodies, so a frame's
     // `program_counter` is always an instruction index and the record does not
     // say so.
@@ -1950,6 +1960,42 @@ fn encode_frame<'gc>(
     encode_values(writer, &registers, NamePosition::FrameRegister, context)
 }
 
+/// The body that runs in `frame` (`opcodes::FRAME_BODY_*`). A program's
+/// body by code id, never left to the class: after an edit the class's
+/// current version carries another body than the one that ran. A shipped
+/// declaration's body, which the code table never carries, by declaration:
+/// a shipped mixin is never edited, so the decoder's lookup finds that very
+/// body, which is checked here. A top-level frame runs none.
+fn encode_frame_body<'gc>(
+    writer: &mut Writer,
+    frame: FrameReference<'gc>,
+    snapshot: &crate::heap::FrameRecord<'gc>,
+    context: &EncodeContext<'_, 'gc>,
+) -> Result<(), String> {
+    let refusal = || {
+        "image encoding cannot serialize a frame running code that no module the image \
+         carries compiled"
+            .to_string()
+    };
+    if matches!(snapshot.kind, FrameKind::TopLevel) {
+        writer.write_u8(FRAME_BODY_NONE);
+        return Ok(());
+    }
+    let code = context.heap.frame_code(frame).ok_or_else(refusal)?;
+    let declared = super::decode::DeclaredKind::of(&snapshot.kind, snapshot.current_class);
+    if let Some(declared) = declared.filter(|declared| declared.is_shipped(context.heap)) {
+        let found = super::decode::declared_body(context.heap, &declared).ok();
+        if !found.is_some_and(|found| Rc::ptr_eq(&found, &code)) {
+            return Err(refusal());
+        }
+        writer.write_u8(FRAME_BODY_DECLARED);
+        return Ok(());
+    }
+    writer.write_u8(FRAME_BODY_CODE);
+    writer.write_u32(context.code_ids.id_of(&code).map_err(|_| refusal())?);
+    Ok(())
+}
+
 /// What `encode_graph_section` wrote besides its bytes: the shipped names
 /// the section uses, and the object id of every carried module's root
 /// class record, in module order, for the module section to name.
@@ -1958,29 +2004,54 @@ pub struct EncodedGraph {
     pub module_roots: Vec<u32>,
 }
 
-/// The object table, frames included, and the roots. The count comes first;
-/// the decoder sizes every record and allocates it before filling any, so
-/// that records may reference each other freely.
-///
-/// Every carried module's root class (`module_roots`, in module order) is a
-/// record of the table, walked after the roots (`GraphTable::build`), and
-/// is held to its module's declaration and the root rule as the loader
-/// holds it (`modules::root_record_defect`), so no image is written that
-/// the loader refuses for its roots.
-///
-/// Answers the shipped names the section uses, which the caller writes
-/// ahead of it in the shipped-name section (`shipped_names::encode_section`):
-/// an object of the shipped world is named by its index there, not written.
-#[allow(clippy::too_many_arguments)]
-pub fn encode_graph_section<'gc>(
+/// The graph as `walk_graph` found it, before anything of it is written:
+/// the object table and the shipped names it reached, the shipped world's
+/// indexes it was resolved against, and the object id of every carried
+/// module's root class record. It holds handles, so it lives only within
+/// the one entry that writes the image, which allocates nothing.
+pub struct WalkedGraph<'gc> {
+    table: GraphTable<'gc>,
+    /// `ShippedWorld::index_by_object`, built for this encoding.
+    shipped_by_object: HashMap<usize, usize>,
+    /// `ShippedWorld::index_by_mixin`, built for this encoding.
+    shipped_by_mixin: HashMap<MixinId, usize>,
+    /// `ShippedWorld::declared_by_mixin`, built for this encoding.
+    shipped_declared_by_mixin: HashMap<MixinId, ShippedName>,
+    module_roots: Vec<u32>,
+}
+
+impl<'gc> WalkedGraph<'gc> {
+    /// Every body the graph runs or can run: each closure's code and each
+    /// frame's body, in object order. The code table must hold each of
+    /// them, which for a body only a superseded version carries is what
+    /// admits it there (`image::write_image`).
+    pub fn bodies(&self, heap: &Heap<'gc>) -> Vec<Rc<CompiledCode>> {
+        self.table
+            .objects()
+            .iter()
+            .filter_map(|object| match heap.object_shape(*object) {
+                ObjectShape::Closure => heap.closure_code(*object),
+                ObjectShape::Activation => heap
+                    .object_frame(*object)
+                    .and_then(|frame| heap.frame_code(frame)),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+/// Walks the graph from `roots` and the carried modules' root classes
+/// (`module_roots`, in module order), making every refusal the graph
+/// section makes before anything is written: a module root that is not
+/// its module's record or breaks the root rule, the VM mirror, an unnamed
+/// shipped class, and a shipped class as a module's root. Walked before
+/// the code table is written, since the bodies the graph reaches decide
+/// which code of an older version the table carries.
+pub fn walk_graph<'gc>(
     mutator: &Mutator<'gc>,
-    writer: &mut Writer,
     roots: &[Value<'gc>],
-    code_ids: &CodeIds,
     module_roots: &[ClassReference<'gc>],
-    mixin_ids: &HashMap<usize, u32>,
-    symbols: &mut symbols::Builder,
-) -> Result<EncodedGraph, String> {
+) -> Result<WalkedGraph<'gc>, String> {
     let heap = mutator.heap();
     let world = &mutator.shipped_world;
     for class in module_roots {
@@ -2055,13 +2126,47 @@ pub fn encode_graph_section<'gc>(
                 })
         })
         .collect::<Result<Vec<u32>, String>>()?;
+    Ok(WalkedGraph {
+        table,
+        shipped_by_object,
+        shipped_by_mixin,
+        shipped_declared_by_mixin,
+        module_roots: module_root_ids,
+    })
+}
+
+/// The object table, frames included, and the roots, as `walk_graph`
+/// found them. The count comes first; the decoder sizes every record and
+/// allocates it before filling any, so that records may reference each
+/// other freely.
+///
+/// Every carried module's root class is a record of the table, walked
+/// after the roots (`GraphTable::build`), and held to its module's
+/// declaration and the root rule as the loader holds it
+/// (`modules::root_record_defect`), so no image is written that the loader
+/// refuses for its roots.
+///
+/// Answers the shipped names the section uses, which the caller writes
+/// ahead of it in the shipped-name section (`shipped_names::encode_section`):
+/// an object of the shipped world is named by its index there, not written.
+pub fn encode_graph_section<'gc>(
+    mutator: &Mutator<'gc>,
+    writer: &mut Writer,
+    walked: &WalkedGraph<'gc>,
+    roots: &[Value<'gc>],
+    code_ids: &CodeIds,
+    mixin_ids: &mixins::MixinIds,
+    symbols: &mut symbols::Builder,
+) -> Result<EncodedGraph, String> {
+    let heap = mutator.heap();
+    let table = &walked.table;
     let context = EncodeContext {
-        table: &table,
+        table,
         code_ids,
-        world,
-        shipped_by_object: &shipped_by_object,
-        shipped_by_mixin: &shipped_by_mixin,
-        shipped_declared_by_mixin: &shipped_declared_by_mixin,
+        world: &mutator.shipped_world,
+        shipped_by_object: &walked.shipped_by_object,
+        shipped_by_mixin: &walked.shipped_by_mixin,
+        shipped_declared_by_mixin: &walked.shipped_declared_by_mixin,
         mixin_ids,
         heap,
     };
@@ -2071,8 +2176,8 @@ pub fn encode_graph_section<'gc>(
     }
     encode_values(writer, roots, NamePosition::Value, &context)?;
     Ok(EncodedGraph {
-        used: table.used,
-        module_roots: module_root_ids,
+        used: table.used.clone(),
+        module_roots: walked.module_roots.clone(),
     })
 }
 

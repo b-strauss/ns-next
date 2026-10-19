@@ -45,7 +45,8 @@ first.
 | Road step 5a — mirrors that read | Complete | 2026-10-18 | [mirrors-that-read](superpowers/plans/2026-10-17-2355-mirrors-that-read.md) |
 | Road step 5b1 — the VM's half of live editing: one id for every version of a mixin, `become:` as an eager bulk forward, recorded guards | Complete | 2026-10-18 | [become-and-recorded-guards](superpowers/plans/2026-10-18-1236-become-and-recorded-guards.md) |
 | Road step 5b2a — MirrorBuilder and atomic installation: a `ClassDeclarationBuilder` over source, run-time compilation from the module's current text, an atomic install that migrates instances by their fields' level and name | Complete | 2026-10-18 | [mirror-builder-and-atomic-install](superpowers/plans/2026-10-18-2138-mirror-builder-and-atomic-install.md) |
-| Road step 5b2b — edited programs in images, and reclaiming ids | Not started | — | — |
+| Road step 5b2b — edited programs in images: every declaration's own text, an edited program written to an image through the ids with the code an older version runs, source in every image unless stripped, a loaded program editable | Complete | 2026-10-19 | [edited-programs-in-images](superpowers/plans/2026-10-19-1702-edited-programs-in-images.md) |
+| Road step 5b2c — reclaiming ids: the weak application cache and the ids' reuse rules | Not started | — | — |
 | Road step 6 — inline allocation in the interpreter | Not started | — | — |
 | Road step 7 — an execution model for compiled code | Not started | — | — |
 | Between road steps 7 and 8 — real Newspeak bodies for `whileTrue:`, `whileFalse:` and `do:` | Not started | — | — |
@@ -5453,10 +5454,10 @@ the collectors trace (`Heap`'s `mixin_objects`), and written to an image as
 `OBJECT_MIXIN` (body tag 14), which names its mixin by row or by the
 shipped declaration, built or not, and whose second record for one mixin
 is refused before anything is allocated. Every mixin knows its enclosing
-mixin (`Mixin::enclosing`, a `Weak` link) and holds its module's text
-(`Mixin::module_text`), shared with the host's `LoadedModule::source` on a
-load, so `source` answers a method's or a declaration's text, sliced only
-within the text and on character boundaries.
+mixin (`Mixin::enclosing`, a `Weak` link) and holds its declaration's own
+text, its nested declarations cut out (`Mixin::text`, a `DeclarationText`,
+since road step 5b2b), so `source` answers a method's or a declaration's
+text, and a slice that does not fit answers `nil`, never a panic.
 
 No existing golden's outcome changed. New goldens under
 `goldens/library/mirror/`; leaf tests in `builtins/reflection.rs`; host
@@ -5562,10 +5563,10 @@ fingerprint changed.
 
 What the batch left open -- the places still keyed by a mixin's address,
 the question whether an edit of methods alone keeps a class's
-applications, and a test not written -- road step 5b2a closed below, but
-for the image encoder's row ids, which it refuses an edited program on
-until road step 5b2b; `bench_megamorphic.ns`'s undiagnosed 1.3-2.1% is
-still in
+applications, and a test not written -- road step 5b2a closed below, and
+the image encoder's row ids, the last place keyed by address, road step
+5b2b ("Edited programs in images, road step 5b2b" below);
+`bench_megamorphic.ns`'s undiagnosed 1.3-2.1% is still in
 [OPEN-WORK.md](OPEN-WORK.md), "Next".
 
 ## A MirrorBuilder and an atomic install, road step 5b2a (2026-10-18)
@@ -5574,7 +5575,7 @@ Plan: [mirror-builder-and-atomic-install](superpowers/plans/2026-10-18-2138-mirr
 [liveness-and-reflection.md](design/liveness-and-reflection.md), "A
 MirrorBuilder and an atomic install"; [object-model.md](design/object-model.md),
 "What a slot access checks", "Everything stays editable";
-[image-format.md](design/image-format.md), "Planned: edited mixins in the
+[image-format.md](design/image-format.md), "Edited programs in the
 image".
 
 The first of road step 5b2's two plans (decided with the user on
@@ -5602,14 +5603,15 @@ accepts, so an initializer entered before an edit that kept its slots
 runs on -- copies each instance whose layout changed into the new one by
 its fields' declaring level, that level's occurrence in the chain and
 name (`FieldName`), restamps the rest, and forwards the copies in one
-bulk forward. A shipped mixin and one decoded from an image are refused;
-`inherits_mixin_of` and `Heap::with_level_applying_mixin_of` match
-applications of one id; the image encoder refuses an edited program with
-an error until road step 5b2b.
+bulk forward. A shipped mixin is refused; `inherits_mixin_of` and
+`Heap::with_level_applying_mixin_of` match applications of one id. An
+edited program is written to an image, and a program loaded from one is
+edited, since road step 5b2b ("Edited programs in images, road step 5b2b"
+below).
 
 No existing golden's outcome changed. New goldens under
-`goldens/library/mirror-builder/`, each with `skipped_in_images`, a new
-key of a golden's `.toml` that the round trip honours; new tests in
+`goldens/library/mirror-builder/`, which go through `build` then `load`
+like every golden since road step 5b2b; new tests in
 `interpreter/edit.rs`, `interpreter/install.rs`, `interpreter/mod.rs`,
 `builtins/reflection.rs` and `builtins/activation.rs`. The golden image
 fixture was regenerated for the changed shipped world, only its
@@ -5631,6 +5633,70 @@ fingerprint changed.
   alone.
 - This commit -- the documents.
 
+What the batch left open, edited programs in images, road step 5b2b
+closed below; the reclaiming of ids, road step 5b2c, is "Next" in
+[OPEN-WORK.md](OPEN-WORK.md), and the hash lookup `Heap::same_mixin` adds
+per non-matching level is still there, unmeasured.
+
+## Edited programs in images, road step 5b2b (2026-10-19)
+
+Plan: [edited-programs-in-images](superpowers/plans/2026-10-19-1702-edited-programs-in-images.md);
+[liveness-and-reflection.md](design/liveness-and-reflection.md), "Edited
+programs in images", "Compiling: the module's text is what an edit
+edits"; [image-format.md](design/image-format.md), "Source", "Edited
+programs in the image", "A frame names its body";
+[object-model.md](design/object-model.md), "Source retention and
+provenance".
+
+The second of road step 5b2's plans, road step 5b2b split once more on
+2026-10-19 (decided with the user), the reclaiming of ids becoming road
+step 5b2c. Every declaration holds its own text, its nested declarations
+cut out as holes (`DeclarationText`), a shipped module's declarations
+sharing its one text per thread; a module's text is assembled from its
+declarations' current versions, so an edit's preparation needs no table
+of current texts and no re-parse for a declaration's source, and no
+version keeps another's text alive. An image with source carries those
+texts in a text table of its own, each mixin row naming its text, the
+decoder refusing a text not named by exactly one declaration, so a few
+megabytes cannot assemble into a hundred gigabytes; the source flag took
+8 and 1 is retired. The encoder plans its rows through the ids, so an
+edited program is written as it now is and loads back edited; the graph
+is walked before the code table is written, which takes every body a
+closure or a frame runs that some version of a row's declaration
+compiled; a frame record, now body tag 15 with 10 retired, names its
+body by code id, or, for shipped code, by its declaration. `ns-next build`
+writes the source unless `--strip-source`, which replaced
+`--debug-source`, and a program loaded from an image with source is
+edited from the text the image carries, so every golden, the
+MirrorBuilder's included, goes through `build` then `load` again and
+`skipped_in_images` is gone. Exporting an image back to `.ns` rests on
+the carried source; the decompiler is dropped (decided with the user on
+2026-10-19). The bound of a rejected load counts the text table, at most
+6x of its bytes ([memory.md](design/memory.md), "The amplification bound
+of a rejected load").
+
+No golden's outcome changed. New tests in `mixin.rs`,
+`interpreter/install.rs`, `interpreter/core_library.rs`,
+`tests/image.rs`, `tests/opcode_tags.rs` and `crates/ns-cli/tests/build_load.rs`.
+The golden image fixture was regenerated for the changed shipped world,
+only its fingerprint changed.
+
+- `318ce032`, `aa43bd64` -- the plan.
+- `980c3ec9` -- every declaration holds its own text, its nested
+  declarations cut out.
+- `c01a6da2`, `f77b7496` -- the image's text table, each text owned by
+  exactly one declaration.
+- `dc5ab575` -- an edited program written to an image, every mixin named
+  by its id.
+- `2aafbd98`, `9b9cbaa9` -- the code an older version runs in the code
+  table, a frame naming its body by code id, a shipped frame's by its
+  declaration.
+- `c4c6b124` -- a program loaded from an image edited from the text the
+  image carries.
+- `8c10518a` -- the source in every image unless `--strip-source`, and
+  every golden through images.
+- This commit -- the documents.
+
 What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): road step
-5b2b, "Next", and the hash lookup `Heap::same_mixin` adds per
-non-matching level, unmeasured.
+5b2c, "Next", and a body's link to its declaration text, which comes with
+the activation mirror.

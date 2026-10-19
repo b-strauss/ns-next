@@ -15,42 +15,27 @@ use crate::mixin::Mixin;
 use crate::types::{BuiltinClass, ClassReference, SourceOrigin};
 use crate::Mutator;
 
-/// One module an artifact carries, as a writer is handed it.
+/// One module an artifact carries, as a writer is handed it. `with_source`
+/// asks for the module's text in the image, which the encoder reads from
+/// the heap, each declaration's own (`Mixin::text`): after an edit the
+/// host's file is no longer the program's text. Source travels for every
+/// module or for none.
 pub struct ModuleSource<'a, 'gc> {
     pub class: ClassReference<'gc>,
     pub origin: &'a SourceOrigin,
-    pub source: Option<&'a str>,
+    pub with_source: bool,
 }
 
-/// Every module's origin, source when `with_source`, and the object id of
-/// its root class's record (`root_ids`, in the same order), in module order
-/// -- the order of the mixin table's trees.
-///
-/// Source travels for every module or for none: the header's one flag says
-/// which, so a module handed none while another carries its own could only
-/// be written by inventing an empty text for it.
-pub fn encode_modules(
-    writer: &mut Writer,
-    modules: &[ModuleSource<'_, '_>],
-    root_ids: &[u32],
-    with_source: bool,
-) -> Result<(), String> {
+/// Every module's origin and the object id of its root class's record
+/// (`root_ids`, in the same order), in module order -- the order of the
+/// mixin table's trees. A module's text is not here: the text table holds
+/// its declarations' (`texts`), from which it is assembled.
+pub fn encode_modules(writer: &mut Writer, modules: &[ModuleSource<'_, '_>], root_ids: &[u32]) {
     writer.write_u32(encode::u32_field("module count", modules.len()));
     for (module, root_id) in modules.iter().zip(root_ids) {
         encode::encode_source_origin(writer, module.origin);
-        if with_source {
-            let Some(source) = module.source else {
-                return Err(
-                    "image encoding carries source for every module or for none: \
-                            one module was handed none"
-                        .to_string(),
-                );
-            };
-            writer.write_str(source);
-        }
         writer.write_u32(*root_id);
     }
-    Ok(())
 }
 
 /// The smallest a module record can be: an origin tag, an empty name's
@@ -60,9 +45,6 @@ const MIN_MODULE_BYTES: usize = 1 + 4 + 4;
 /// One module as the module section describes it.
 pub struct DecodedModule {
     pub origin: SourceOrigin,
-    /// The module's text, when the image carries source: one allocation,
-    /// which every mixin of the module and the host's `LoadedModule` share.
-    pub source: Option<Rc<str>>,
     /// The object id of the graph record that is the module's root class,
     /// held to the module by `module_root_classes` once the graph exists.
     pub root: u32,
@@ -78,7 +60,6 @@ pub struct DecodedModule {
 pub fn decode_modules(
     reader: &mut Reader,
     module_rows: &[u32],
-    with_source: bool,
 ) -> Result<Vec<DecodedModule>, DecodeError> {
     let declared = reader.read_u32()?;
     let trees = u32::try_from(module_rows.len()).unwrap_or(u32::MAX);
@@ -89,19 +70,8 @@ pub fn decode_modules(
     let mut modules = Vec::with_capacity(count);
     for _ in 0..count {
         let origin = decode::decode_source_origin(reader)?;
-        let source = if with_source {
-            // Lent out of the buffer and copied once, into the `Rc` the
-            // mixins and the host share.
-            Some(Rc::from(reader.read_text()?))
-        } else {
-            None
-        };
         let root = reader.read_u32()?;
-        modules.push(DecodedModule {
-            origin,
-            source,
-            root,
-        });
+        modules.push(DecodedModule { origin, root });
     }
     Ok(modules)
 }
@@ -136,9 +106,13 @@ pub fn root_record_defect<'gc>(
     class: ClassReference<'gc>,
 ) -> Option<RootRecordDefect> {
     let heap: &Heap<'gc> = &mutator.heap;
+    // By id, not by address: an edit of the root replaces it under its id,
+    // and the level its clause added still names the version that applied
+    // it.
+    let root_id = heap.known_mixin_id(root_mixin);
     let applies_the_root = heap
         .class_application(class)
-        .is_some_and(|application| Rc::ptr_eq(&application.mixin, root_mixin));
+        .is_some_and(|application| heap.same_mixin(&application.mixin, root_mixin, root_id));
     if !heap.is_class(class)
         || heap.class_this_class(class).is_some()
         || !applies_the_root
@@ -162,7 +136,7 @@ pub fn root_record_defect<'gc>(
             let added_by_the_root = heap
                 .class_applied_origin(superclass)
                 .is_some_and(|applied| {
-                    Rc::ptr_eq(&applied.declaration, root_mixin) && applied.index == 0
+                    heap.same_mixin(&applied.declaration, root_mixin, root_id) && applied.index == 0
                 });
             let applies_value = heap
                 .class_application(superclass)

@@ -3324,14 +3324,12 @@ impl<'gc> Heap<'gc> {
     }
 
     /// Mints the next id for `mixin`, declared in the mixin `enclosing`
-    /// names, and copies its module's text into the row.
+    /// names.
     fn register_mixin(&mut self, mixin: &Rc<Mixin>, enclosing: Option<MixinId>) -> MixinId {
         let id = MixinId::from_index(self.tables.mixins.len())
             .expect("more than u32::MAX mixins in one heap");
         self.tables.mixins.push(mixin.clone());
         self.tables.enclosing.push(enclosing);
-        self.tables.edited.push(false);
-        self.tables.module_texts.push(mixin.module_text.clone());
         self.tables
             .mixin_ids
             .insert(crate::mixin::mixin_key(mixin), id);
@@ -3376,39 +3374,64 @@ impl<'gc> Heap<'gc> {
         *self.tables.enclosing.get(id.index())?
     }
 
-    /// The text of the module the mixin `id` is read in; `None` where its
-    /// current version has none (`Mixin::module_text`) and for an id past
-    /// the table.
-    pub(crate) fn mixin_module_text(&self, id: MixinId) -> Option<crate::mixin::ModuleText> {
-        self.tables.module_texts.get(id.index())?.clone()
+    /// `mixin`'s text with every hole filled by the assembled text of the
+    /// current version of the nested declaration it stands for, found
+    /// through the nested mixin's id; a nested mixin nothing has
+    /// registered is its own current version. For a module's root, the
+    /// module's current text, every edit of a declaration in it included.
+    /// `None` where a declaration of the tree has no text. A class side
+    /// shares its instance side's text but declares no nested mixin, so
+    /// for one it answers that text only when the instance side has no
+    /// nested declaration, and `None` otherwise: a reader of a class
+    /// side's declaration asks for its instance side's (the mirrors'
+    /// `source` goes through `instance_side_id`).
+    ///
+    /// Recursive along the declarations' nesting, which the parser bounds
+    /// for a module read from source and `image::mixins::MAX_MIXIN_DEPTH`
+    /// for one decoded from an image.
+    pub(crate) fn assembled_text(&self, mixin: &Rc<Mixin>) -> Option<String> {
+        let text = mixin.text.as_ref()?;
+        let nested = mixin
+            .nested
+            .iter()
+            .map(|nested| {
+                let current = self
+                    .known_mixin_id(nested)
+                    .and_then(|id| self.mixin(id))
+                    .unwrap_or_else(|| Rc::clone(nested));
+                self.assembled_text(&current)
+            })
+            .collect::<Option<Vec<String>>>()?;
+        text.assemble(&nested)
+    }
+
+    /// The text of the declaration of the mixin `id`, an instance side,
+    /// from its access modifier (or `class`) to its closing parenthesis,
+    /// as its module's current text holds it: `assembled_text` sliced by
+    /// the declaration's span, which for a module's root cuts the prologue
+    /// and the trailing text. The span counts in the text the version was
+    /// read in, and an edit nested in it changes only what lies between
+    /// its ends, so its start counts from the assembled text's start and
+    /// its end from the assembled text's end. `None` where the version has
+    /// no text or its span does not lie within it.
+    pub(crate) fn declaration_source(&self, id: MixinId) -> Option<String> {
+        let mixin = self.mixin(id)?;
+        let range = mixin.text.as_ref()?.range();
+        let assembled = self.assembled_text(&mixin)?;
+        let start = usize::try_from(mixin.span.start.checked_sub(range.start)?).ok()?;
+        let trailing = usize::try_from(range.end.checked_sub(mixin.span.end)?).ok()?;
+        let end = assembled.len().checked_sub(trailing)?;
+        assembled.get(start..end).map(str::to_string)
     }
 
     /// The current text of the module whose root mixin `module_root`
-    /// names: the text its last edit made it, else the text the root was
-    /// read in (`mixin_module_text`). `None` for a module with no text.
-    pub(crate) fn current_module_text(
-        &self,
-        module_root: MixinId,
-    ) -> Option<crate::mixin::ModuleText> {
-        match self.tables.current_module_texts.get(&module_root) {
-            Some(text) => Some(text.clone()),
-            None => self.mixin_module_text(module_root),
-        }
+    /// names (`assembled_text`); `None` for a module with no text.
+    pub(crate) fn module_source(&self, module_root: MixinId) -> Option<String> {
+        self.assembled_text(&self.mixin(module_root)?)
     }
 
-    /// Makes `text` the current text of the module whose root mixin
-    /// `module_root` names, which the next edit of any of its classes
-    /// starts from.
-    pub(crate) fn set_current_module_text(
-        &mut self,
-        module_root: MixinId,
-        text: crate::mixin::ModuleText,
-    ) {
-        self.tables.current_module_texts.insert(module_root, text);
-    }
-
-    /// Makes `replacement` the current version of the mixin `id`, read in
-    /// `module_text`: from here on `replacement`'s address answers `id`,
+    /// Makes `replacement`, which holds its own text, the current version
+    /// of the mixin `id`: from here on `replacement`'s address answers `id`,
     /// as every earlier version's still does, and the id keeps the
     /// enclosing mixin it was registered with. What was built from an
     /// earlier version keeps it (`Mutator::replace_mixin`).
@@ -3418,12 +3441,7 @@ impl<'gc> Heap<'gc> {
     /// version, which is the binary's code and which the VM mirror's locks
     /// rest on; and a class side replacing an instance side or the other
     /// way round.
-    pub(crate) fn replace_mixin(
-        &mut self,
-        id: MixinId,
-        replacement: Rc<Mixin>,
-        module_text: Option<crate::mixin::ModuleText>,
-    ) {
+    pub(crate) fn replace_mixin(&mut self, id: MixinId, replacement: Rc<Mixin>) {
         assert!(
             self.known_mixin_id(&replacement).is_none(),
             "internal: a replacement mixin is registered under no id yet"
@@ -3449,14 +3467,6 @@ impl<'gc> Heap<'gc> {
             .insert(crate::mixin::mixin_key(&replacement), id);
         let superseded = std::mem::replace(&mut self.tables.mixins[id.index()], replacement);
         self.tables.superseded.push(superseded);
-        self.tables.module_texts[id.index()] = module_text;
-        self.tables.edited[id.index()] = true;
-    }
-
-    /// Whether a replacement has installed another version of the mixin
-    /// `id` names (`replace_mixin`); `false` for an id past the table.
-    pub(crate) fn mixin_is_edited(&self, id: MixinId) -> bool {
-        self.tables.edited.get(id.index()).copied().unwrap_or(false)
     }
 
     /// Enters `application` into the table, stamped with its index, and
@@ -3493,6 +3503,13 @@ impl<'gc> Heap<'gc> {
 
     pub fn application(&self, index: ApplicationIndex) -> Option<Rc<MixinApplication>> {
         self.tables.applications.get(index.index()).cloned()
+    }
+
+    /// Every version of a mixin an install superseded, oldest first: the
+    /// code they carry still runs in the frames and closures that hold it,
+    /// so an image writes the bodies of those its graph reaches.
+    pub(crate) fn superseded_mixins(&self) -> &[Rc<Mixin>] {
+        &self.tables.superseded
     }
 
     pub(crate) fn code_id(&mut self, code: &Rc<CompiledCode>) -> CodeId {
@@ -4245,9 +4262,9 @@ impl<'gc> Heap<'gc> {
     }
 
     /// The body that runs (or ran) in `frame`, or `None` when it has none to
-    /// name: a top-level frame, or a decoded frame whose kind names a body
-    /// its class's mixin does not carry. `image::decode` reconciles a
-    /// decoded frame against it.
+    /// name: a top-level frame, or one filled without a body whose kind
+    /// finds none (`fill_frame_fields`). `image::decode` reconciles a decoded
+    /// frame against it.
     pub(crate) fn frame_code(&self, frame: FrameReference<'gc>) -> Option<Rc<CompiledCode>> {
         let id = self
             .frame_field(frame, frame_field::CODE_ID)
@@ -4482,10 +4499,13 @@ impl<'gc> Heap<'gc> {
     /// stays where it is, nil, for `fill_frame_register` to write register
     /// by register. The frame keeps its class, its guard and its identity
     /// hash, and ends identical to a frame `allocate_frame` builds from the
-    /// same fields and registers. Its code is found from the record's kind
-    /// (`kind_code`), so the record's split between arguments and
-    /// temporaries is not kept: a frame's arguments are its code's
-    /// (`image::decode::verify_graph` holds the register count to it).
+    /// same fields and registers. Its code is `code`, the body the image
+    /// names -- after an edit the class's current version carries another,
+    /// so the body is never looked up through the class when it is given --
+    /// or, when none is given, the one its kind finds (`kind_code`). The
+    /// record's split between arguments and temporaries is not kept: a
+    /// frame's arguments are its code's (`image::decode::verify_graph` holds
+    /// the register count to it, and the body to the frame's kind).
     ///
     /// The image decoder's second pass is the only caller. Call this on a
     /// handle something else already holds and it silently replaces that
@@ -4496,6 +4516,7 @@ impl<'gc> Heap<'gc> {
         &mut self,
         frame: FrameReference<'gc>,
         record: FrameRecord<'gc>,
+        code: Option<Rc<CompiledCode>>,
     ) {
         self.check_frame_origin(frame);
         let FrameRecord {
@@ -4513,7 +4534,7 @@ impl<'gc> Heap<'gc> {
             arguments.is_empty() && temporaries.is_empty(),
             "`fill_frame_register` writes a placeholder's registers"
         );
-        let code = self.kind_code(&kind);
+        let code = code.or_else(|| self.kind_code(&kind));
         let code = self.frame_code_id(&kind, code.as_ref());
         let words = self.frame_fixed_words(FrameFields {
             sender,
@@ -8272,6 +8293,7 @@ mod tests {
                 kind: FrameKind::TopLevel,
                 uncontinuable: true,
             },
+            None,
         );
         for (index, value) in registers.iter().enumerate() {
             assert!(heap.fill_frame_register(filled, index, *value));

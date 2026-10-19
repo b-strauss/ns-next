@@ -94,7 +94,7 @@ fn snapshot() -> Vec<u8> {
         let modules = [image::ModuleSource {
             class,
             origin: &origin,
-            source: Some(SOURCE),
+            with_source: true,
         }];
         image::snapshot(mutator, &modules, &[instance, Value::object(byte_array)])
             .expect("snapshot")
@@ -112,7 +112,7 @@ fn packaged() -> Vec<u8> {
         let modules = [image::ModuleSource {
             class,
             origin: &origin,
-            source: Some(SOURCE),
+            with_source: true,
         }];
         image::package(mutator, &modules, instance).expect("package")
     })
@@ -131,7 +131,7 @@ fn packaged_application() -> Vec<u8> {
             let modules = [image::ModuleSource {
                 class: class_reference(mutator, &class),
                 origin: &origin,
-                source: None,
+                with_source: false,
             }];
             image::package(mutator, &modules, mutator.fetch(&application))
         })
@@ -179,7 +179,7 @@ fn weak() -> Vec<u8> {
         let modules = [image::ModuleSource {
             class,
             origin: &origin,
-            source: Some(WEAK_SOURCE),
+            with_source: true,
         }];
         image::snapshot(mutator, &modules, &[instance]).expect("snapshot")
     })
@@ -245,7 +245,7 @@ fn reified_mixin() -> Vec<u8> {
         let modules = [image::ModuleSource {
             class,
             origin: &origin,
-            source: Some(REIFIED_SOURCE),
+            with_source: true,
         }];
         image::snapshot(mutator, &modules, &[instance]).expect("snapshot")
     })

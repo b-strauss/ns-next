@@ -31,7 +31,7 @@ use ns_syntax::ast;
 use crate::builtins::primitive::ReflectionPrimitive;
 use crate::heap::{Heap, MixinId};
 use crate::interpreter::edit::{Edit, EditedTexts};
-use crate::mixin::{source_text, Mixin, MixinApplication, MixinMethod};
+use crate::mixin::{Mixin, MixinApplication, MixinMethod};
 use crate::types::*;
 use crate::{Mutator, Symbol};
 
@@ -110,7 +110,7 @@ pub(crate) fn execute<'gc>(
         ReflectionPrimitive::MixinSource => {
             let id = reified_id(mutator, receiver)?;
             let text = instance_side_id(&mutator.heap, id)
-                .and_then(|instance| mutator.current_declaration_source(instance));
+                .and_then(|instance| mutator.heap.declaration_source(instance));
             Some(string_or_nil(mutator, text))
         }
         ReflectionPrimitive::MixinIsShipped => {
@@ -520,13 +520,13 @@ fn method_source<'gc>(
     let method = declared_methods(&mixin)
         .into_iter()
         .find(|method| method.selector == selector)?;
-    // A class side's methods lie in its instance side's module, whose text
-    // a declared class side shares.
-    let heap = &mutator.heap;
-    let text = heap.mixin_module_text(id).or_else(|| {
-        instance_side_id(heap, id).and_then(|instance| heap.mixin_module_text(instance))
-    });
-    let source = text.and_then(|text| source_text(&text.0, method.code.source).map(str::to_string));
+    // A class side's methods lie in its instance side's declaration, whose
+    // text a class side shares.
+    let source = mixin
+        .text
+        .as_ref()
+        .and_then(|text| text.slice(method.code.source))
+        .map(str::to_string);
     Some(string_or_nil(mutator, source))
 }
 

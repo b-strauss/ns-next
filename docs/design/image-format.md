@@ -18,9 +18,14 @@
 > ("Shipped names"); a module's
 > root class is a record of the graph like any class. A load tenures
 > everything once before it decodes the graph, which it allocates old
-> ("The image under generations"). **Planned:** suspend and resume.
+> ("The image under generations"). An image carries its program's source
+> unless it is built with `--strip-source`, as each declaration's own text
+> in a table of its own ("Source"), and a program a MirrorBuilder edited is
+> written as it now is, with the code an older version still runs, and can
+> be edited again after a load ("Edited programs in the image").
+> **Planned:** suspend and resume.
 > **Code:** `crates/ns-runtime/src/image/` — `mod.rs` (`package`, `snapshot`,
-> `load`), `encode.rs`, `decode.rs`, `mixins.rs`, `modules.rs`,
+> `load`), `encode.rs`, `decode.rs`, `mixins.rs`, `modules.rs`, `texts.rs`,
 > `shipped_names.rs`, `fingerprint.rs`, `symbols.rs`, `opcodes.rs`,
 > `inspect.rs`; `crates/ns-runtime/src/interpreter/shipped_world.rs` (the
 > shipped world and what may be named where);
@@ -116,22 +121,30 @@ the same reason: encoding runs no code.
 ## Layout
 
 ```
-[header][symbols][code][mixins][modules][shipped names][graph][tag-named hashes]
+[header][symbols][code][texts?][mixins][modules][shipped names][graph][tag-named hashes]
 
 header:        magic "NSNX", FORMAT_VERSION (u32), flags (u8), fingerprint (u64)
-modules:       count (u32), then per module [origin][source?][root object id (u32)]
+texts:         only with FLAG_HAS_SOURCE: count (u32), then per text
+               [range (2 x u32)][hole count (u32)][holes (2 x u32 each)][cut text]
+mixins:        per row as "Mixin table" below, with FLAG_HAS_SOURCE a text index (u32)
+modules:       count (u32), then per module [origin][root object id (u32)]
 shipped names: count (u32), then per name [module][declaration][kind (u8)][clause (u32)?]
 graph:         object table, roots
 ```
 
 The header carries magic, `FORMAT_VERSION`, a flag byte and the shipped
 world's fingerprint ("Shipped names" below). Two flags are
-assigned (`image/encode.rs`): `FLAG_HAS_SOURCE` (1) says every module in the
-module section carries its source text, and `FLAG_START` (4) says the graph's
-one root is an application `load` starts. Bit 2 is retired
-(`RETIRED_HEADER_FLAGS`): it was `FLAG_STATELESS`, the stateless binary, and
-a stale binary's header now meets an unknown flag
+assigned (`image/encode.rs`): `FLAG_HAS_SOURCE` (8) says the image carries
+its program's source -- the text table, and a text index in every mixin
+row ("Source" below) -- and `FLAG_START` (4) says the graph's
+one root is an application `load` starts. The flags 1 and 2 are retired
+(`RETIRED_HEADER_FLAGS`): 2 was `FLAG_STATELESS`, the stateless binary,
+and 1 the source flag while the module section carried one text per
+module, retired on 2026-10-19 when every declaration came to hold its own,
+since a stale artifact's module text would otherwise be read as the next
+fields of its module record. A stale binary's header now meets an unknown flag
 (`a_retired_stateless_flag_is_refused_as_unknown`,
+`a_header_flag_of_the_retired_module_text_layout_is_rejected`,
 `crates/ns-runtime/tests/image.rs`). `read_header`
 **refuses any flag this build does not implement** rather than masking it off: an
 unimplemented flag means a section the reader cannot see, and continuing would
@@ -224,7 +237,8 @@ the binary's modules and classes the loader builds, never what they are.
 
 ## Sections
 
-In order: the symbol table, the code table, the mixin table, the module
+In order: the symbol table, the code table, the text table (only in an
+image with source, "Source" below), the mixin table, the module
 section, the shipped names, the graph (object table, roots),
 and the tag-named hashes. Each is described below; the code table's
 instruction encoding has a section of its own.
@@ -238,8 +252,11 @@ the file and turns interning into one pass over the table instead of one
 **Code table.** Every `CompiledCode` reachable from the modules — each method,
 each initializer, each superclass clause, every nested block body — in a flat
 id-addressed table, blocks before the code that creates them so a `MakeClosure`
-operand encodes as an already-decoded id. The image's bytecode is what runs after
-a load; nothing recompiles. How each instruction is encoded is below.
+operand encodes as an already-decoded id; after them, the bodies a closure or
+a frame of the graph runs that no row reaches, the code of a version an
+install superseded ("Edited programs in the image" below). The image's
+bytecode is what runs after a load; nothing recompiles. How each instruction
+is encoded is below.
 
 ## The instruction encoding
 
@@ -527,8 +544,10 @@ boxed float allocate, and count toward a failed load's peak
 **Mixin table.** One row per declaration: the name, its own slots, the primary
 factory selector and arity, the compiled methods as selector → code id, the ids
 of its nested declarations with their accessor names and accessibility, the
-class-side mixin id, the initializer code id, and the provenance span. This is
-what replaced the embedded source text and the re-parse on load.
+class-side mixin id, the initializer code id, the provenance span, and, in an
+image with source, the index of its declaration's text in the text table
+("Source" below). This is what replaced the embedded source text and the
+re-parse on load.
 
 The table is a **forest**: one tree per module, each in `mixin::preorder`
 order, the trees in module order (`image/mixins.rs`). A tree's first row is
@@ -610,9 +629,9 @@ record at all and allocates nothing.
 
 **Module section.** Which top-level modules the artifact carries
 (`image/modules.rs`): a `u32` count, equal to the mixin table's trees, then
-per module, in module order, its origin, its source text when the header
-sets `FLAG_HAS_SOURCE`, and the `u32` object id of its root class's record
-in the graph. **Module order** is the
+per module, in module order, its origin and the `u32` object id of its root
+class's record in the graph; a module's text is no field of it, since it is
+assembled from its declarations' texts ("Source" below). **Module order** is the
 application module (a project file's `main`) first, then a project file's
 modules in the order written, then the embedded `Manifest.ns` ("Packaging"
 below); a source file's program is its one module. The count is bounded by the bytes left before anything is
@@ -623,8 +642,9 @@ path the module was read from, or `ORIGIN_EMBEDDED` (1) followed by the name
 of a source compiled into the binary -- `Manifest.ns`'s. It is provenance, in
 every artifact, source or not; `inspect` shows it. Source travels for every
 module or for none, as the header's one flag says, so the encoder refuses a
-set of modules of which only some carry theirs rather than invent an empty
-text.
+set of modules of which only some ask for theirs rather than invent an empty
+text, and refuses a module asked for its source one of whose declarations
+was built without a text.
 
 A module's **root class is a record of the graph** like any class: a
 `MIXIN_ROW` class record applying the module's root row, with a metaclass
@@ -695,16 +715,18 @@ body tag 4 is retired (`opcodes::RETIRED_OBJECT_BODIES`) and the record is 6.
 **Frames are object records.** A reified frame is an object of the frame
 format, an instance of the kernel-private `Activation`
 ([object-model.md](object-model.md), "The object layout"), and it is written
-as one: `OBJECT_FRAME` (body tag 10) under a header that names
+as one: `OBJECT_FRAME` (body tag 15) under a header that names
 `Kernel Activation` by its shipped name (`CLASS_SHIPPED`) — the one record
 an image may give that class; a frame record under any other header is
 `FrameRecordUnderAnotherClass`, and `Kernel Activation` as the header of any
 other record is `ShippedNameNotAllowed`, as it is anywhere but a record's
 class and a frame's class ("What may be named where" below). The body is, in
 order: the frame's kind tag (`FRAME_*`) and that kind's payload — a method
-frame's selector symbol id, a closure frame's closure object id, nothing for
-a top-level frame, a class tag for the four class-carrying kinds — a `u32`
-`program_counter`, an instruction index into the frame's compiled body;
+frame's selector symbol id and its method's access tag, a closure frame's
+closure object id, nothing for a top-level frame, a class tag for the four
+class-carrying kinds — then the body that runs in it, a `FRAME_BODY_*` tag
+("A frame names its body" below), a `u32` `program_counter`, an instruction
+index into that body;
 `uncontinuable`; the receiver; the `sender` and the `home`, each a presence
 flag and an object id; the `current_class`, a presence flag and a class tag;
 then a `u32` register count and that many values — every register the frame
@@ -722,7 +744,35 @@ block written in such a message captures that frame, so a snapshot can hold
 one. The kernel's `Activation` object for a frame is the frame object itself,
 so an activation object in a graph is this one record. There is no frame
 table: tag 9, the activation record whose body was one frame-table id, is
-retired with it (`RETIRED_OBJECT_BODIES` is 4, 5 and 9).
+retired with it, and so is 10, the frame record while it named no body and
+a method frame carried no access, whose kind payload would otherwise be read
+with the bytes after it as a body (`RETIRED_OBJECT_BODIES` is 4, 5, 9 and
+10).
+
+**A frame names its body**, in one of three spellings, each frame in one
+(`opcodes.rs`, `FRAME_BODY_*`): a top-level frame runs none,
+`FRAME_BODY_NONE` (0), and no other frame is written so; a program's body is
+`FRAME_BODY_CODE` (1) and its `u32` code id; a body of a shipped declaration
+is `FRAME_BODY_DECLARED` (2), found through the frame's kind in the
+declaration of the class it resolves through -- a method by selector in the
+current class's mixin, the initializer and the superclass clause and message
+in the kind's class's mixin, a `<:` clause's message in the clause that
+added the kind's level. A program's body is named by code id rather than
+found through its class, because after an edit the class's current version
+carries another body and the frame runs the old one, whose code is in the
+code table too ("Edited programs in the image" below). A shipped body is
+named by declaration because the code table carries no shipped code, and a
+shipped mixin is never edited, so the lookup finds the very body that ran;
+the decoder accepts the spelling only when the declaration carrying the body
+is shipped (`DeclaredBodyNotShipped`), and on no top-level or closure frame,
+whose closure's code is in the table. So an exception returned out of its
+handler, whose `signal` and `on:do:` frames run kernel code, round-trips
+(`an_exception_returned_out_of_its_handler_round_trips`). A method frame of
+a method the current declaration still has with that very body takes the
+declaration's method; any other, the frame of a method an install replaced
+or removed, takes a method the decoder builds over the old body under the
+selector and access the record carries, which no dispatch finds -- a decoded
+frame is never entered again.
 
 **A `ByteArray` is a record of its own**, `OBJECT_BYTE_ARRAY` (body tag
 11): a `u32` length, then that
@@ -962,37 +1012,95 @@ The front end is not on the load path. `load` decodes the mixin table instead of
 re-running parse → resolve → bootstrap → `load_module`, which also keeps the
 parser away from attacker-controlled text.
 
-**Optional source text** remains behind a header flag, `FLAG_HAS_SOURCE`,
-in the module section, one text per module —
-`build --debug-source` writes every module's, `load --print-source` prints
-them in module order, one after another. It is never
-parsed, never resolved, never executed. It exists so that the liveness
-requirement "an image can be exported back to `.ns`" is met today, while the
-decompiler that is supposed to meet it properly does not exist, and so that
-a mirror's `source` answers a method's or a class declaration's text after
-a load: the module section is read before the mixins are built, and every
-mixin of a module holds the one text, shared with the host's
-`LoadedModule::source` (`Mixin::module_text`). A span read from the image
-is sliced only where it lies within the text and on character boundaries;
-without the flag, `source` answers `nil`
-([liveness-and-reflection.md](liveness-and-reflection.md), "A mixin knows
-its enclosing mixin and its module's source").
+**An image carries its program's source by default** (decided with the
+user on 2026-10-19): `ns-next build` writes it, and `--strip-source`
+leaves it out. The loader never parses, resolves or executes it; it is
+there so that a mirror's `source` answers a method's or a class
+declaration's text after a load, so that a program loaded from an image
+can be edited (a MirrorBuilder's edit parses it, after the load,
+[liveness-and-reflection.md](liveness-and-reflection.md), "Compiling: the
+module's text is what an edit edits"), and so that the liveness
+requirement "an image can be exported back to `.ns`" is met: exporting
+rests on the carried text, and there is no decompiler ("Decisions"
+below). `load --print-source` prints every module's text in module order,
+one after another, and refuses an image without it. An image built with
+`--strip-source` runs as well, but a program loaded from it cannot be
+edited (`<name> has no source text to edit`) and every `source` answers
+`nil`.
+
+**The host asks for the source; the encoder reads it from the heap.** A
+host hands the writer each module as an `image::ModuleSource` -- its root
+class, its origin and `with_source: bool` -- and no text: the encoder
+reads every declaration's text from the heap (`Mixin::text`), because
+after an edit the host's file is no longer the program's text. Source
+travels for every module or for none, as the header's one flag says, so
+the encoder refuses a mix (``image encoding carries source for every
+module or for none: one module has none``), and refuses a module asked
+for its source one of whose declarations was built without a text.
+
+**The text is each declaration's own, in a table of its own** (decided
+with the user on 2026-10-19). Every declaration holds its own text, its
+nested declarations cut out as holes ([object-model.md](object-model.md),
+"Source retention and provenance"), and the image carries exactly those:
+the **text table**, written only under `FLAG_HAS_SOURCE`, after the code
+table (`image/texts.rs`), holds one text per instance-side declaration, in
+row order -- its range in the text its spans count in, its holes, each a
+span, and its text with the holes cut out -- and every mixin row names its
+text by index, a class side its instance side's. A module's text is no
+field of the image: the load assembles it from its declarations' texts,
+each hole filled by the text of the declaration nested there
+(`Heap::assembled_text`), for the host's `LoadedModule::source` and for an
+edit. So an image of an edited program carries each declaration once, as
+it now is, and no text of an older version ("Edited programs in the image"
+below); an image of an unedited module carries its file's bytes once, in
+pieces, and assembles to it byte for byte.
+
+**The decoder holds the table to the rows** before any mixin holds a text
+(`texts::decode`, `mixins::row_texts`). Each text is checked against
+itself as it is read (`DeclarationText::from_parts`): its holes in order,
+none empty -- a hole is a nested declaration, which is never empty --
+disjoint and within its range, its length the range's less the holes', and
+every piece boundary a character boundary, or `MalformedText`; every count
+is bounded by the bytes left before anything is reserved for it. Then the
+rows: a text index past the table is `TextIndexOutOfRange`; a text with
+another number of holes than its row's instance side has nested
+declarations is `TextHolesMismatch` -- by count, never by span, since
+after an edit of a nested declaration the enclosing declaration's holes
+are in the coordinates of the text it was read in and the nested row's
+span in the edited text's, the two joined by the hole's index; and **a text belongs to one
+declaration** -- a text two instance-side rows name is `TextSharedByRows`,
+a class side naming another text than its instance side's
+`ClassSideTextMismatch`, and a text no row names `UnnamedText`. A text
+named by several declarations would be assembled once per naming, so a
+few megabytes of image could make the load build a text of some hundred
+gigabytes; with every text named once, a module's assembled text is at
+most the sum of its texts. Slicing and assembling a text answer nothing
+for a span or a hole that does not fit, never a panic, so a crafted span
+makes a mirror's `source` answer `nil`. A crafted text that disagrees with
+the code is no hazard either: nothing reads it but a mirror, which answers
+it as text, and an edit, which compiles it into the program it says
+(`the_source_an_image_carries_is_never_parsed`, `a_crafted_declaration_text_is_refused`,
+`a_text_not_owned_by_exactly_one_declaration_is_refused`,
+`crates/ns-runtime/tests/image.rs`).
 
 ## Verification
 
 Two structural passes run before anything the image describes can execute:
-`verify_code_table` over the decoded code table, and `verify_graph` resolving
-each frame's body off the decoded mixins that carry it. Between them,
+`verify_code_table` over the decoded code table, and `verify_graph` holding
+each frame to the body it names. Between them,
 `verify_mixins` reconciles every decoded mixin with the bodies its row attached
 — each body's kind and arity against the declaration's, and a body present
-wherever the declaration needs one. `load` reads the mixin table
-(`mixins::read`, which checks the rows and finds the trees), then the module
-section (`modules::decode_modules`), whose texts every mixin of a module
-holds, then builds the mixins (`mixins::build`, which attaches the bodies
-without checking) and only then reconciles them (`verify_mixins`); so a
-defect of the module section is reported before one of the mixins' bodies.
-`inspect` builds through `mixins::decode`, `read` and `build` with no texts,
-and runs no `verify_mixins`, so it can still display an artifact whose halves
+wherever the declaration needs one. `load` reads the text table, when the
+image carries source (`texts::decode`, each text checked against itself),
+then the mixin table (`mixins::read`, which checks the rows and finds the
+trees), then the module section (`modules::decode_modules`), then builds
+the mixins (`mixins::build`, which first holds the texts to the rows, then
+attaches the bodies without checking) and only then reconciles them
+(`verify_mixins`); so a defect of a text is reported before one of the
+rows, and a defect of the module section before one of the mixins' bodies.
+`inspect` reads the same sections and builds through `mixins::build` too,
+so it refuses texts that do not hold to the rows, but runs no
+`verify_mixins`, so it can still display an artifact whose halves
 disagree; only `load` refuses it. A corrupt but version-matching image is an
 error there, never a panic in the VM later.
 
@@ -1031,6 +1139,25 @@ record with no registers for a body that has some is refused,
 `a_frame_with_no_registers_for_a_body_that_has_some_is_refused`). A crafted
 image therefore cannot pair a by-reference closure with a frame too small
 for the registers its code reads, and no frame object ever grows.
+
+**A frame's body is one its kind runs.** Since a program frame names its
+body by code id ("A frame names its body" above), nothing but this check
+ties the two: the first pass reads a method frame's access tag and checks a
+code id against the code table (`BadCodeId`) before anything is allocated;
+the second refuses a body spelling its kind does not take
+(`FrameCodeMismatch`, `DeclaredBodyNotShipped`); and `verify_graph`, before
+it checks the program counter and the register file against the body,
+holds a method frame to a method body of its method's argument count, a
+closure frame to its closure's own code, an initializer frame to an
+initializer, a superclass clause frame to a superclass clause, and a
+superclass message's or a `<:` clause's message frame to a clause message,
+which both compile to (`runs_its_kind`;
+`a_frame_whose_code_disagrees_with_its_kind_is_refused`,
+`a_frame_code_id_past_the_table_is_refused`). A body is held to its kind,
+not to the frame's class: a crafted initializer frame may name another
+class's initializer, which is checked for its program counter, its
+registers and its closures' lexical parents like any, and a decoded frame
+is never entered again.
 
 **`Instruction::InitializeSlot`'s and `ReturnSlotIfFilled`'s `own_index` is not
 one of the counts these passes bound.** `verify_mixins` checks a body's kind and
@@ -1416,10 +1543,12 @@ are not reachable through `disasm` of the artifact (`inspect --full` shows
 them).
 
 `ns-next-analyzer inspect <artifact>` prints the file itself. Its default is a table of
-contents — header flags and the shipped world's fingerprint, section
-offsets, the symbol table, **the code table with every body named**, the
-mixin table, the module section, each module's origin, whether it carries
-source and its root's object id, and the count of shipped names — and
+contents — header flags, whether the image carries source (`source:
+yes`) and the shipped world's fingerprint, section offsets, the symbol
+table, **the code table with every body named**, the text table, one line
+a text (`text 0: 0..143, 1 hole, 95 bytes`), the mixin table, each row
+with its text's index, the module section, each module's origin and its
+root's object id, and the count of shipped names — and
 `--full` prints everything, the shipped names among it, each as
 `ShippedName::describe` spells it (`Kernel Array`, `Kernel Integer class`,
 `CollectionsFactory instance`):
@@ -1441,9 +1570,10 @@ materializes objects and resolves shipped names against a live shipped world, so
 an `Interpreter`; a viewer must not bootstrap one, any more than `javap`
 instantiates a class to print it. `inspect` therefore walks the same bytes and
 reports each record: an object's class reference, identity hash and slot values, a
-frame record's kind, `program_counter`, `uncontinuable`, receiver, sender,
-home, current class and registers (`class Activation, hash H, frame <kind>,
-pc P, …, registers [..]`), and the roots, and a started image's one root is
+frame record's kind, the body it names, `program_counter`, `uncontinuable`, receiver, sender,
+home, current class and registers (`class Activation, hash H, frame method
+signal (public), declared body, pc P, …, registers [..]`; a program's body
+reads `code N`), and the roots, and a started image's one root is
 the application. Nothing else shows
 the graph. A module count that disagrees with the mixin table's trees is
 refused, as `load` refuses it, rather than listed past: which tree a
@@ -1461,13 +1591,13 @@ dropped, because every fixture produced zero frames and no frame record was
 never walked. A source with a block in a slot, the only way a frame reaches the
 graph, is what makes it bite.
 
-`load --print-source` still only returns the debug variant's `.ns` text,
-every module's in module order with nothing marking where one ends; for
-anything else, `inspect` is the tool.
+`load --print-source` only returns the carried `.ns` text, every module's
+in module order with nothing marking where one ends; for anything else,
+`inspect` is the tool.
 
-This exists because an artifact ships **without** source unless `build` is
-asked for the debug variant: the one tool that prints bytecode would
-otherwise require the thing the artifact was built to do without. It also
+This exists because an artifact may ship **without** source, built with
+`--strip-source`, and its code is what runs even when it carries source:
+the one tool that prints bytecode must not require the text. It also
 makes checkable against the artifact itself what could otherwise be
 verified only by reading the encoder -- that a started image holds no
 platform, no module instance and names nothing of the shipped world but
@@ -1481,19 +1611,19 @@ is already met differently: the untrusted-input tests take real images and
 corrupt them at located offsets, which exercises real structures rather than the
 ones someone thought to write out.
 
-**This is not the decompiler**, and the two are easy to confuse:
+**This is not an export to `.ns`**, and the two are easy to confuse:
 
 | | Produces | Lets a reader understand |
 |---|---|---|
 | Dump | structure as text | the *file* |
-| Decompiler | `.ns` source | the *program* |
+| Export | `.ns` source, the text the image carries | the *program* |
 
-Part of why "export back to `.ns`" looks large is that the easy half gets counted
-into it. It is not in it.
+Export rests on the carried source, never on decompiling the code
+("Decisions" below).
 
 ## Packaging
 
-`ns-next build <file.ns | project> <out> [--debug-source] [--lowering
+`ns-next build <file.ns | project> <out> [--strip-source] [--lowering
 …]` assembles the application exactly as `run` does and writes it where `run`
 would send `main:args:`. `ns-next load <image> [-- args]` starts it. The CLI
 side is `crates/ns-cli/src/program.rs` (`read_program`, `load_program`,
@@ -1732,7 +1862,9 @@ main:args: reaches it"; `package_refuses_an_application_that_reaches_the_platfor
 instance, the kernel's included, which no program reaches. The loader
 refuses such a started image too ("Shipped names" below). An application
 that reached the platform could only have been handed it, and nothing hands
-one out before `main:args:`. `--debug-source` stores every module's source text. An error
+one out before `main:args:`. The image carries every module's source text,
+as its declarations' texts ("Source" above), unless `--strip-source` leaves
+it out. An error
 raised while assembling -- a refused factory, a resolve error, an
 initializer that raises -- fails the build with the status and report `run`
 gives the same error, so a golden whose assembly fails round-trips as that
@@ -2108,56 +2240,83 @@ load-bearing, and whoever wires up re-entry has to decide, deliberately,
 whether `verify_graph` gains the cross-check or the re-entry path treats a
 mismatched `home` as its own untrusted-input case.
 
-## Planned: edited mixins in the image
+## Edited programs in the image
 
-Would change: a program a MirrorBuilder edited is written to an image and
-loads back edited -- every mixin it names now, with its compiled code, is a
-row of the mixin table, whether a module declared it or an install put it
-there (decided with the user on 2026-10-05; road step 5b2b,
-[liveness-and-reflection.md](liveness-and-reflection.md), "Planned: road
-step 5b2b, edited programs in images, and reclaiming ids"). Until then the
-encoder refuses a program with an edited mixin, with an error, never a
-panic: `image/mod.rs`'s `encode_describing` walks every module's tree
-before it plans a row and refuses the first mixin whose id an install
-replaced (`Heap::mixin_is_edited`), with ``image encoding cannot yet
-serialize mixin `<name>`, which a MirrorBuilder edited``, since an edited
-mixin's code and layout live in the heap's tables, not in the tree the
-rows are planned from, and an image planned from the tree would load as
-the program before the edit
-([liveness-and-reflection.md](liveness-and-reflection.md), "A
-MirrorBuilder and an atomic install").
+A program a MirrorBuilder edited is written to an image and loads back
+edited, and a program loaded from an image with source can be edited again
+(road step 5b2b, decided with the user on 2026-10-05 and, in its details,
+on 2026-10-19; built on 2026-10-19,
+[its plan](../superpowers/plans/2026-10-19-1702-edited-programs-in-images.md);
+[liveness-and-reflection.md](liveness-and-reflection.md), "A
+MirrorBuilder and an atomic install"). Every golden, the MirrorBuilder's
+under `goldens/library/mirror-builder/` included, goes through `build` then
+`load` and is held to the outcome `run` gives.
 
-Today the rows come from what the modules declared: `image::mixins::encode`
-takes the module roots' mixins and plans one tree per module from them
-(`image/mixins.rs`), the code table holds the code those rows reach, and
-the encoder refuses a class object whose mixin is part of no module the
-image carries (`image/encode.rs`). An edit installs a fresh mixin under the
-old one's id ([liveness-and-reflection.md](liveness-and-reflection.md), "An
-edit replaces the mixin under its id"), so the encoder will walk each
-module's tree through the ids to the mixins they name now: an edited mixin
-is the row of the declaration it replaced, in the same place of the same
-tree, and its code enters the code table like any other. Nothing about the
-format's trust changes: a row an edit produced is verified as any row is
-("Verification"), the shipped mixins stay named by declaration, and an edit
-to a shipped mixin is refused, so no image carries one. This is the step
-toward the graph style for user-defined behaviour that "How upstream
+**The rows are the mixins the program names now.** An edit installs a fresh
+mixin under the old one's id ([liveness-and-reflection.md](liveness-and-reflection.md),
+"An edit replaces the mixin under its id"), so the encoder plans one tree
+per module by walking each module's declarations through their ids to their
+current versions (`mixins::plan`): an edited declaration is the row of the
+declaration it replaced, in the same place of the same tree, with its code,
+its slots and its text as they now are, and its code enters the code table
+like any other. Every record that names a mixin -- a class record, the
+declaration of a level's applied clause, a reified mixin -- names its row
+through the mixin's id (`mixins::MixinIds`), so a class object built over
+any version of a declaration names that declaration's one row. Nothing
+about the format's trust changes: a row an edit produced is verified as any
+row is ("Verification"), the shipped mixins stay named by declaration, and
+an edit to a shipped mixin is refused, so no image carries one. This is the
+step toward the graph style for user-defined behaviour that "How upstream
 compares" below names, taken in the table style: the row is the unit, not a
 graph of method objects.
 
-Open, for road step 5b2b's plan:
+**The code an older version runs is in the code table** (decided with the
+user on 2026-10-19). A closure keeps the code it was made with, and a frame
+the code it was running, after an install replaced its mixin, so the writer
+walks the graph before it writes the code table (`image/mod.rs`'s
+`write_image`: the describing refusals and the rows first, then the graph's
+walk with every refusal it makes, then the code, text and mixin tables, then
+the graph), and the code table takes every body a closure or a frame of the
+graph runs that no row reaches but some version of a row's declaration
+compiled -- the row's own or one an install superseded under its id
+(`Heap::superseded_mixins`), its methods, initializer, superclass clause and
+message and `<:` messages, and the blocks nested in them (`extra_bodies`).
+A frame names its body by code id ("A frame names its body" above), and a
+method frame of a method the current version no longer has, or has with
+another body, decodes to a method built over the old body that no dispatch
+finds. A body that belongs to no version of a mixin the image carries is
+still refused, as a closure over another module's code always was: ``image
+encoding cannot serialize a closure over code that no module the image
+carries compiled``, and ``image encoding cannot serialize a frame running
+code that no module the image carries compiled`` for a frame. So a closure
+of a removed method, or of a replaced one, runs its old code after a load
+(`a_closure_of_a_removed_method_runs_after_a_load`,
+`a_closure_of_a_replaced_method_keeps_its_old_code_after_a_load`,
+`interpreter/install.rs`).
 
-- **Code an older version of a mixin still runs.** A closure keeps the code
-  it was made with, and a frame the code it was running, after an edit
-  replaced its mixin; the code table holds today only code a row reaches,
-  so such code has to enter it from the graph's closures and frames, with
-  the decoder's reconciliation of a frame against its compiled body
-  ("Verification") unchanged.
-- **Source text and provenance of an edited mixin.** `FLAG_HAS_SOURCE`
-  carries one text per module ("Source") and a row's provenance span points
-  into it; an edited mixin's span points into text that no longer
-  describes it. Writing the edited declaration's own text, dropping the
-  module's text once any of its mixins was edited, or marking the row's
-  span absent are the candidates.
+**The source is each declaration's current text** ("Source" above): an
+image of an edited program carries each declaration once, as it now is, and
+no text an older version held, since no version keeps another's text
+([object-model.md](object-model.md), "Source retention and provenance");
+an enclosing declaration's method `source` answers its own text after a
+nested declaration was edited, live and through an image
+(`an_enclosing_method_keeps_its_source_through_an_image`,
+`an_image_of_an_edited_program_holds_no_old_text`). The text of a body an
+older version runs is not carried: nothing reads it yet -- a method mirror
+reads the current version's methods -- and the link from a body to its
+text comes with the activation mirror that will read it
+([OPEN-WORK.md](../OPEN-WORK.md)).
+
+**A loaded program is edited from the text the image carries.** The
+loader never parses; an edit of a mixin decoded from an image assembles
+its module's text from the declarations' texts and parses it then, as an
+edit of a program read from source does. An image written with
+`--strip-source` carries no text, so its program cannot be edited (`<name>
+has no source text to edit`); an image whose text was swapped for one that
+lacks the edited declaration is refused by the edit (`<name>'s source text
+does not hold its declaration`), and changes nothing. A crafted text that
+holds the declaration but disagrees with the code is edited into what the
+text says, which is a valid program, compiled and checked like any edit.
 
 ## How upstream compares
 
@@ -2187,9 +2346,10 @@ edges, and reuses one format for isolate messages. We get artifacts in kilobytes
 rather than a ~1.27 MB floor, and hold the untrusted-input invariant cheaply
 because a hostile file cannot replace a shipped class. **The decision is to
 stay with the table style**, and to move the line one step toward the graph
-style for *user-defined* behaviour only -- with road step 5b2b's edited
-mixins, as rows of the mixin table ("Planned: edited mixins in the
-image") -- never for the shipped world.
+style for *user-defined* behaviour only -- an edited mixin is written as
+the row of its declaration, and the code an older version still runs
+enters the code table ("Edited programs in the image") -- never for the
+shipped world.
 
 ## Decisions
 
@@ -2333,7 +2493,8 @@ image") -- never for the shipped world.
   road step 3a on 2026-10-03; "Frames are object records", "Two passes"). A
   reified frame is an object, so it joined the object table under the next
   free body tag, `OBJECT_FRAME` (10), and the frame table, its count and the
-  activation record (9, retired, not reused) went; every frame is written
+  activation record (9, retired, not reused) went (the record took 15 on
+  2026-10-19, when it came to name its body, below); every frame is written
   with its full register file, so its record's count is its size like any
   other's. A placeholder sized from its own record's bytes makes each byte
   count once, so the bound of a rejected load is the largest of the per-record
@@ -2391,11 +2552,41 @@ image") -- never for the shipped world.
   declaration, built or not, whatever the class's accessibility, since the
   object carries no authority; a second record for one mixin is refused,
   as a second for one symbol is, since the object is canonical.
+- **An image carries its program's source by default** (decided with the
+  user on 2026-10-19; "Source"). `ns-next build` writes it and
+  `--strip-source`, which replaced `--debug-source`, leaves it out, so a
+  program loaded from an image can be edited and read through mirrors as a
+  program run from source can; a program loaded from a stripped image
+  cannot be edited (`<name> has no source text to edit`).
+- **Exporting an image back to `.ns` rests on the carried source; there is
+  no decompiler** (decided with the user on 2026-10-19). A decompiler could
+  only invent the names and comments compiled code no longer has, where the
+  carried text is the program as it was written and as every edit left it.
+- **The code an older version runs goes into the code table, and a frame
+  record names its body** (decided with the user on 2026-10-19; "Edited
+  programs in the image", "A frame names its body"). A body that belongs to
+  no version of a mixin the image carries is still refused, as a closure
+  over another module's code is. A program's body is named by code id; a
+  shipped body by its declaration, since the code table carries no shipped
+  code and a shipped mixin is never edited (2026-10-19, while the step was
+  built, when the first spelling refused every frame running kernel code).
+  The frame record took the next free body tag, 15, and 10 is retired, so a
+  stale record is refused rather than misread.
+- **Every declaration's own text, in a table of its own** (decided with the
+  user on 2026-10-19; "Source"). Each declaration carries its own text, its
+  nested declarations cut out, and a module's text is assembled from them,
+  so no version keeps another's text alive, in the heap or in an image, and
+  every span slices the text of its own version. Chosen over carrying every
+  module text a version still points into, which duplicates whole modules
+  in the heap and the image, and over rebasing spans onto the current text
+  when writing, which leaves the heap's duplicates and drops an old body's
+  source. The source flag took the next free value, 8, and 1 is retired, so
+  an image of the old layout is refused rather than misread; a text belongs
+  to one declaration, refused otherwise, so assembly cannot multiply an
+  image's bytes.
 
 ## Open questions
 
-- **The decompiler** that is to provide export back to `.ns`. Mitigated by the
-  debug source text, unwritten.
 - **Whether upstream strips source at packaging time.** A measurement of four
   `.vfuel` artifacts concluded that nothing is stripped, ~44% long text runs in
   each. `CompilerApp.ns`'s `keepSource: (appName = 'TestRunner')` shows a switch

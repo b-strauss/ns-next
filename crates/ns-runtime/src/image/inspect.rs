@@ -19,7 +19,7 @@ use crate::bytecode::{CodeKind, CompiledCode};
 use std::rc::Rc;
 
 use crate::image::shipped_names::{self, ShippedName};
-use crate::image::{decode, mixins, modules, opcodes, symbols};
+use crate::image::{decode, mixins, modules, opcodes, symbols, texts};
 use crate::{ArbitraryInteger, SourceOrigin};
 
 /// One named span of the file. `end` is exclusive.
@@ -35,16 +35,32 @@ pub struct Section {
 pub struct ModuleReport {
     /// Where the module came from: `embedded <name>` or the file's path.
     pub origin: String,
-    /// Whether the module carries its source text.
-    pub has_source: bool,
     /// Which record of the graph is its root class: `root object {id}`.
     pub root: String,
+}
+
+/// One text of the text table, with where its parts lie in the file.
+pub struct Text {
+    /// Where its record starts: its range's start.
+    pub offset: usize,
+    /// Where its first hole lies, after the range and the hole count.
+    pub holes_offset: usize,
+    /// Where the cut text's length prefix lies, after the holes.
+    pub cut_text_offset: usize,
+    /// The declaration's extent in the module text it was read in.
+    pub range: ns_syntax::Span,
+    /// The declarations cut out of it, in source order.
+    pub holes: Vec<ns_syntax::Span>,
+    /// The length of the text with the holes cut out, in bytes.
+    pub length: usize,
 }
 
 pub struct Report {
     pub format_version: u32,
     pub shipped_world: u64,
     pub start: bool,
+    /// Whether the image carries its program's source: the text table.
+    pub has_source: bool,
     /// Every module the artifact carries, in module order.
     pub modules: Vec<ModuleReport>,
     pub sections: Vec<Section>,
@@ -53,8 +69,14 @@ pub struct Report {
     /// and what it is. This is the bridge between the two views: it tells a
     /// reader which body to ask `disasm` for.
     pub code: Vec<String>,
-    /// One line per mixin row: name, slot count, factory, method count.
+    /// The text table, in index order; empty for an image without source.
+    pub texts: Vec<Text>,
+    /// One line per mixin row: name, slot count, factory, method count,
+    /// and the text it names when the image carries source.
     pub mixins: Vec<String>,
+    /// The text each mixin row names, in row order; `None` for every row of
+    /// an image without source.
+    pub mixin_texts: Vec<Option<mixins::RowText>>,
     /// The same rows expanded: slot names rather than a count, each method
     /// against the code id that holds it, the nested declarations by name.
     /// Rendered only by `render_full`.
@@ -68,6 +90,8 @@ pub struct Report {
     /// The object graph, read record by record rather than rebuilt; a
     /// frame is an object record like any other.
     pub graph_objects: Vec<String>,
+    /// Every frame record of the graph, in object order.
+    pub frames: Vec<Frame>,
     pub graph_roots: Vec<String>,
     /// The identity hashes the graph section records for the objects it
     /// names by tag. Rendered only by `render_full`.
@@ -186,6 +210,9 @@ fn expand_mixin(mixin: &Rc<crate::mixin::Mixin>, code: &mixins::MixinCode) -> St
     for nested in &mixin.nested {
         let _ = writeln!(out, "      nested    {} ({:?})", nested.name, nested.access);
     }
+    if let Some(text) = code.text {
+        let _ = writeln!(out, "      text      {}", text.index);
+    }
     if mixin.class_side.is_some() {
         // Naming it would print "class side" twice: every class-side mixin
         // carries that as its name. It is a row of this table in its own
@@ -211,8 +238,20 @@ fn expand_mixin(mixin: &Rc<crate::mixin::Mixin>, code: &mixins::MixinCode) -> St
 /// printing plausible nonsense.
 struct GraphView {
     objects: Vec<String>,
+    frames: Vec<Frame>,
     roots: Vec<String>,
     tag_named: Vec<String>,
+}
+
+/// A frame record where the file has it: what a reader that patches or
+/// checks one byte of it needs, which the record's text does not say.
+pub struct Frame {
+    /// The frame's object id.
+    pub object: usize,
+    /// The byte offset of the `u32` code id naming the frame's body, or
+    /// `None` for a frame that names none, a top-level one, and for one
+    /// that names its body by declaration.
+    pub code_offset: Option<usize>,
 }
 
 /// What the graph's tags name by index: the shipped names. A reference
@@ -338,14 +377,23 @@ fn read_frame_reference(reader: &mut decode::Reader) -> Result<String, decode::D
     })
 }
 
-/// An `OBJECT_FRAME` body, in the order the wire has it.
+/// An `OBJECT_FRAME` body, in the order the wire has it, and the offset of
+/// its code id, if it names a body.
 fn read_frame_record(
     reader: &mut decode::Reader,
     symbols: &symbols::Table,
     targets: &TagTargets<'_>,
-) -> Result<String, decode::DecodeError> {
+) -> Result<(String, Option<usize>), decode::DecodeError> {
     let kind = match reader.read_u8()? {
-        opcodes::FRAME_METHOD => format!("method {}", symbols.get(reader.read_u32()?)?),
+        opcodes::FRAME_METHOD => {
+            let selector = symbols.get(reader.read_u32()?)?;
+            let access = match mixins::access_from_tag(reader.read_u8()?)? {
+                ns_syntax::ast::AccessModifier::Public => "public",
+                ns_syntax::ast::AccessModifier::Protected => "protected",
+                ns_syntax::ast::AccessModifier::Private => "private",
+            };
+            format!("method {selector} ({access})")
+        }
         opcodes::FRAME_TOP_LEVEL => "top level".to_string(),
         opcodes::FRAME_INITIALIZER => {
             format!("initializer of {}", read_class_tag(reader, targets)?)
@@ -368,6 +416,20 @@ fn read_frame_record(
             })
         }
     };
+    let (kind, code_offset) = match reader.read_u8()? {
+        opcodes::FRAME_BODY_NONE => (kind, None),
+        opcodes::FRAME_BODY_CODE => {
+            let offset = reader.position();
+            (format!("{kind}, code {}", reader.read_u32()?), Some(offset))
+        }
+        opcodes::FRAME_BODY_DECLARED => (format!("{kind}, declared body"), None),
+        tag => {
+            return Err(decode::DecodeError::InvalidTag {
+                what: "frame body",
+                tag,
+            })
+        }
+    };
     let program_counter = reader.read_u32()?;
     let uncontinuable = reader.read_boolean()?;
     let receiver = read_value(reader, targets)?;
@@ -375,11 +437,14 @@ fn read_frame_record(
     let home = read_frame_reference(reader)?;
     let current_class = read_optional_class(reader, targets)?;
     let registers = read_values(reader, targets)?;
-    Ok(format!(
-        "frame {kind}, pc {program_counter}, uncontinuable {uncontinuable}, \
-         receiver {receiver}, sender {sender}, home {home}, current class {current_class}, \
-         registers [{}]",
-        registers.join(", ")
+    Ok((
+        format!(
+            "frame {kind}, pc {program_counter}, uncontinuable {uncontinuable}, \
+             receiver {receiver}, sender {sender}, home {home}, current class {current_class}, \
+             registers [{}]",
+            registers.join(", ")
+        ),
+        code_offset,
     ))
 }
 
@@ -483,7 +548,8 @@ fn walk_graph(
     )?;
 
     let mut objects = Vec::with_capacity(object_count);
-    for _ in 0..object_count {
+    let mut frames = Vec::new();
+    for object in 0..object_count {
         let class = read_class_tag(reader, targets)?;
         let hash = reader.read_u32()?;
         let body = match reader.read_u8()? {
@@ -507,7 +573,14 @@ fn walk_graph(
             opcodes::OBJECT_METACLASS => {
                 format!("metaclass of {}", read_class_tag(reader, targets)?)
             }
-            opcodes::OBJECT_FRAME => read_frame_record(reader, symbols, targets)?,
+            opcodes::OBJECT_FRAME => {
+                let (record, code_offset) = read_frame_record(reader, symbols, targets)?;
+                frames.push(Frame {
+                    object,
+                    code_offset,
+                });
+                record
+            }
             opcodes::OBJECT_MIXIN => read_mixin_record(reader, targets)?,
             tag => {
                 return Err(decode::DecodeError::InvalidTag {
@@ -542,6 +615,7 @@ fn walk_graph(
 
     Ok(GraphView {
         objects,
+        frames,
         roots,
         tag_named,
     })
@@ -607,15 +681,49 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
     });
     offset = reader.position();
 
-    let decoded = mixins::decode(&mut reader, &symbol_table, &table.codes)
+    let decoded_texts = if header.has_source {
+        let texts_start = reader.position();
+        let decoded_texts = texts::decode(&mut reader).map_err(|error| error.to_string())?;
+        sections.push(Section {
+            name: "texts",
+            start: offset,
+            end: reader.position(),
+            detail: format!("{} texts", decoded_texts.len()),
+        });
+        offset = reader.position();
+        locate_texts(texts_start, &decoded_texts)
+    } else {
+        Vec::new()
+    };
+    let read = mixins::read(&mut reader, &symbol_table, &table.codes, header.has_source)
         .map_err(|error| error.to_string())?;
+    let mixins_end = reader.position();
+    // The module section is read with the mixin table, as `load` reads it,
+    // so a count that disagrees with the trees is refused here as there.
+    let decoded_modules = modules::decode_modules(&mut reader, &read.module_rows)
+        .map_err(|error| error.to_string())?;
+    let modules_end = reader.position();
+    let decoded = mixins::build(
+        read,
+        &table.codes,
+        &decoded_texts
+            .iter()
+            .map(|(_, text)| Rc::clone(text))
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|error| error.to_string())?;
+    let text_reports: Vec<Text> = decoded_texts.into_iter().map(|(text, _)| text).collect();
     let mixin_lines = decoded
         .mixins
         .iter()
         .zip(decoded.code.iter())
         .map(|(mixin, code)| {
+            let text = match code.text {
+                Some(text) => format!("  text: {}", text.index),
+                None => String::new(),
+            };
             format!(
-                "{}  slots: {}  factory: {}  methods: {}",
+                "{}  slots: {}  factory: {}  methods: {}{text}",
                 mixin.name,
                 mixin.slots.len(),
                 match &mixin.factory {
@@ -626,12 +734,14 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
             )
         })
         .collect::<Vec<_>>();
+    let mixin_texts = decoded.code.iter().map(|code| code.text).collect();
     sections.push(Section {
         name: "mixins",
         start: offset,
-        end: reader.position(),
+        end: mixins_end,
         detail: format!("{} mixins", decoded.mixins.len()),
     });
+    offset = mixins_end;
     let attributed = attribute_code(&decoded, &table.codes);
     let code_lines = attributed
         .iter()
@@ -668,16 +778,11 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
         })
         .collect::<Vec<_>>();
 
-    offset = reader.position();
-
-    // Each module's origin, source and the object id of its root class
-    // record, shown as written: the graph it indexes comes later. A count
-    // that disagrees with the mixin table's trees is refused here as it is
-    // by `load`: which tree a module's root is held to depends on the
-    // count, so a report past it would describe modules that are not there.
-    let decoded_modules =
-        modules::decode_modules(&mut reader, &decoded.module_rows, header.has_source)
-            .map_err(|error| error.to_string())?;
+    // Each module's origin and the object id of its root class record,
+    // shown as written: the graph it indexes comes later. A count that
+    // disagrees with the mixin table's trees was refused above as it is by
+    // `load`: which tree a module's root is held to depends on the count,
+    // so a report past it would describe modules that are not there.
     let module_reports = decoded_modules
         .iter()
         .map(|module| {
@@ -687,7 +792,6 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
                     SourceOrigin::Embedded(name) => format!("embedded {name}"),
                     SourceOrigin::File(_) => format!("{:?}", module.origin),
                 },
-                has_source: module.source.is_some(),
                 root,
             }
         })
@@ -695,7 +799,7 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
     sections.push(Section {
         name: "modules",
         start: offset,
-        end: reader.position(),
+        end: modules_end,
         detail: format!("{} modules", module_reports.len()),
     });
     offset = reader.position();
@@ -731,15 +835,19 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
         format_version: crate::image::encode::FORMAT_VERSION,
         shipped_world: header.fingerprint,
         start: header.start,
+        has_source: header.has_source,
         modules: module_reports,
         sections,
         symbols: symbol_list,
         code: code_lines,
+        texts: text_reports,
         mixins: mixin_lines,
+        mixin_texts,
         mixin_detail,
         bodies,
         shipped_names: names.iter().map(ShippedName::describe).collect(),
         graph_objects: graph.objects,
+        frames: graph.frames,
         graph_roots: graph.roots,
         graph_tag_named_hashes: graph.tag_named,
         total_length: bytes.len(),
@@ -751,19 +859,14 @@ pub fn render(report: &Report) -> String {
     let _ = writeln!(out, "format version {}", report.format_version);
     let _ = writeln!(out, "shipped world {:016x}", report.shipped_world);
     let _ = writeln!(out, "start: {}", if report.start { "yes" } else { "no" });
+    let _ = writeln!(
+        out,
+        "source: {}",
+        if report.has_source { "yes" } else { "no" }
+    );
     let _ = writeln!(out, "modules: {}", report.modules.len());
     for (index, module) in report.modules.iter().enumerate() {
-        let _ = writeln!(
-            out,
-            "  {index}: {}, source {}, {}",
-            module.origin,
-            if module.has_source {
-                "present"
-            } else {
-                "absent"
-            },
-            module.root
-        );
+        let _ = writeln!(out, "  {index}: {}, {}", module.origin, module.root);
     }
     let _ = writeln!(out, "total: {} bytes", report.total_length);
 
@@ -786,12 +889,64 @@ pub fn render(report: &Report) -> String {
         let _ = writeln!(out, "  {index:>4} {code}");
     }
 
+    render_texts(&mut out, report);
+
     let _ = writeln!(out, "\nmixins ({})", report.mixins.len());
     for (index, mixin) in report.mixins.iter().enumerate() {
         let _ = writeln!(out, "  {index:>4} {mixin}");
     }
 
     out
+}
+
+/// The text table, one line per text: `text 0: 120..480, 1 hole, 300
+/// bytes`. An image without source prints no heading.
+fn render_texts(out: &mut String, report: &Report) {
+    if !report.has_source {
+        return;
+    }
+    let _ = writeln!(out, "\ntexts ({})", report.texts.len());
+    for (index, text) in report.texts.iter().enumerate() {
+        let holes = text.holes.len();
+        let _ = writeln!(
+            out,
+            "  text {index}: {}..{}, {holes} {}, {} bytes",
+            text.range.start,
+            text.range.end,
+            if holes == 1 { "hole" } else { "holes" },
+            text.length
+        );
+    }
+}
+
+/// Where each decoded text's parts lie in the file, from `start`, the text
+/// table's count: a record is its range (8 bytes), its hole count (4), its
+/// holes (8 each) and its cut text, length-prefixed (4 and the bytes).
+/// Computed from the texts `texts::decode` read, which consumed exactly
+/// these bytes.
+fn locate_texts(
+    start: usize,
+    decoded: &[Rc<crate::mixin::DeclarationText>],
+) -> Vec<(Text, Rc<crate::mixin::DeclarationText>)> {
+    let mut offset = start + 4;
+    decoded
+        .iter()
+        .map(|text| {
+            let holes_offset = offset + 12;
+            let cut_text_offset = holes_offset + 8 * text.holes().len();
+            let length = text.cut_text().len();
+            let located = Text {
+                offset,
+                holes_offset,
+                cut_text_offset,
+                range: text.range(),
+                holes: text.holes().to_vec(),
+                length,
+            };
+            offset = cut_text_offset + 4 + length;
+            (located, Rc::clone(text))
+        })
+        .collect()
 }
 
 /// Everything the artifact says, rendered.
@@ -820,6 +975,8 @@ pub fn render_full(report: &Report) -> String {
     for (index, code) in report.code.iter().enumerate() {
         let _ = writeln!(out, "  {index:>4} {code}");
     }
+
+    render_texts(&mut out, report);
 
     let _ = writeln!(out, "\nmixins ({})", report.mixin_detail.len());
     for (index, mixin) in report.mixin_detail.iter().enumerate() {

@@ -832,9 +832,9 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// when the declaration may not be edited: '<name> belongs to the
     /// shipped core library, which no MirrorBuilder edits' for a class of
     /// a shipped core-library module, this one and the kernel among them;
-    /// '<name> was loaded from an image, and a loaded program cannot be
-    /// edited yet' for a class an image decoded; and '<name> has no source
-    /// text to edit' for one built without its module's text.
+    /// and '<name> has no source text to edit' for one built without its
+    /// module's text. A class an image decoded is edited from the text
+    /// the image carries.
     public asBuilder = (
       ^ClassDeclarationBuilder reflecting: subject.
     )

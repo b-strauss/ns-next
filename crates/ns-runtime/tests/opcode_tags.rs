@@ -206,10 +206,12 @@ fn retired_instruction_tags_are_never_reused() {
 /// perfectly valid closure; the class record's mixin became a tagged
 /// reference, so tag 5's row id would otherwise be read as that tag; and the
 /// activation record's frame id became an object id once frames joined the
-/// object table, so tag 9's id would otherwise name some other record.
+/// object table, so tag 9's id would otherwise name some other record; and
+/// the frame record gained its body's code id, so tag 10's kind payload
+/// would otherwise run into the bytes that follow it.
 #[test]
 fn retired_object_body_tags_are_refused() {
-    assert_eq!(RETIRED_OBJECT_BODIES, [4, 5, 9]);
+    assert_eq!(RETIRED_OBJECT_BODIES, [4, 5, 9, 10]);
     assert_eq!(OBJECT_CLOSURE, 6);
     assert_eq!(OBJECT_CLASS, 7);
     let live = [
@@ -229,6 +231,13 @@ fn retired_object_body_tags_are_refused() {
     for retired in RETIRED_OBJECT_BODIES {
         assert!(!live.contains(&retired), "tag {retired} is retired");
     }
+    // The next free number: every tag below it is live or retired.
+    let next_free = live
+        .iter()
+        .chain(RETIRED_OBJECT_BODIES.iter())
+        .max()
+        .map_or(0, |highest| highest + 1);
+    assert_eq!(next_free, 16);
 }
 
 /// The graph section's tags, pinned for the same reason as the instruction
@@ -257,7 +266,7 @@ fn graph_section_tags_are_fixed() {
     assert_eq!(OBJECT_CLOSURE, 6);
     assert_eq!(OBJECT_CLASS, 7);
     assert_eq!(OBJECT_METACLASS, 8);
-    assert_eq!(OBJECT_FRAME, 10);
+    assert_eq!(OBJECT_FRAME, 15);
     assert_eq!(OBJECT_BYTE_ARRAY, 11);
     assert_eq!(OBJECT_WEAK_ARRAY, 12);
     assert_eq!(OBJECT_EPHEMERON, 13);
@@ -278,6 +287,10 @@ fn graph_section_tags_are_fixed() {
     assert_eq!(FRAME_SUPERCLASS_CLAUSE, 4);
     assert_eq!(FRAME_SUPERCLASS_MESSAGE, 5);
     assert_eq!(FRAME_MIXIN_APPLICATION_MESSAGE, 6);
+
+    assert_eq!(FRAME_BODY_NONE, 0);
+    assert_eq!(FRAME_BODY_CODE, 1);
+    assert_eq!(FRAME_BODY_DECLARED, 2);
 
     assert_eq!(HASHED_SHIPPED, 7);
     assert_eq!(RETIRED_HASHED_TAGS, [0, 1, 2, 3, 4, 5, 6]);
@@ -345,7 +358,7 @@ fn retired_class_and_hashed_tags_are_never_reused() {
 /// stops two constants sharing one, and the compiler would not object.
 #[test]
 fn no_two_graph_tags_in_a_family_share_a_number() {
-    let families: [&[u8]; 6] = [
+    let families: [&[u8]; 7] = [
         &LIVE_VALUE_TAGS,
         &[
             OBJECT_INSTANCE,
@@ -372,6 +385,7 @@ fn no_two_graph_tags_in_a_family_share_a_number() {
             FRAME_SUPERCLASS_MESSAGE,
             FRAME_MIXIN_APPLICATION_MESSAGE,
         ],
+        &[FRAME_BODY_NONE, FRAME_BODY_CODE, FRAME_BODY_DECLARED],
         &LIVE_HASHED_TAGS,
     ];
     for family in families {
@@ -413,9 +427,10 @@ fn source_origin_tags_are_fixed() {
 #[test]
 fn header_flags_are_fixed() {
     use ns_runtime::image::encode;
-    assert_eq!(encode::FLAG_HAS_SOURCE, 1);
+    assert_eq!(encode::FLAG_HAS_SOURCE, 8);
     assert_eq!(encode::FLAG_START, 4);
-    // Bit 2 was `FLAG_STATELESS`; it is retired and never reused.
-    assert_eq!(encode::RETIRED_HEADER_FLAGS, 2);
+    // Bit 2 was `FLAG_STATELESS`, bit 1 the source variant that carried one
+    // text per module; both are retired and never reused.
+    assert_eq!(encode::RETIRED_HEADER_FLAGS, 2 | 1);
     assert_eq!(encode::KNOWN_FLAGS & encode::RETIRED_HEADER_FLAGS, 0);
 }

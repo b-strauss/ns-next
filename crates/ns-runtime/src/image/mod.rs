@@ -2,22 +2,23 @@
 //! live `ns-next` world, decoded on load (never a memory dump). See
 //! `docs/design/image-format.md`. Layout: header (magic, format version,
 //! flags, the shipped world's fingerprint), symbol table, code
-//! table, mixin table (one tree per module, in module order), module section
-//! (per module: `SourceOrigin`, optional source text, the object id of its
-//! root class record), then the shipped names, object table (frames
-//! included), roots, tag-named hashes.
+//! table, text table (only with `FLAG_HAS_SOURCE`: each declaration's own
+//! text, `texts`), mixin table (one tree per module, in module order, each
+//! row naming its text when the image carries source), module section
+//! (per module: `SourceOrigin`, the object id of its root class record),
+//! then the shipped names, object table (frames included), roots,
+//! tag-named hashes.
 //!
 //! **Loading never runs the front end.** `load` decodes the world; it does
 //! not parse, resolve, or compile anything. The symbol table, the mixin
 //! table and the class-object records together describe every declaration
 //! the world holds, so there is nothing left for a re-parse to rebuild --
 //! and the image's source text, which is attacker-controlled input like
-//! every other byte in the file, is never handed to the parser. It is not
-//! even required to be present: modules handed as `ModuleSource`s with no
-//! `source` write an image with no program text in it at all, and modules
-//! that all carry theirs write the debug variant, whose source exists so a
-//! loaded world can be shown (and, once a decompiler exists, compared) as
-//! `.ns`.
+//! every other byte in the file, is never handed to the parser by the
+//! load; only an edit after it parses a text. It is not even required to
+//! be present: modules handed as `ModuleSource`s without `with_source`
+//! write an image with no program text in it at all, and modules that all
+//! ask for theirs write an image that carries each declaration's text.
 
 pub mod decode;
 pub mod encode;
@@ -28,10 +29,16 @@ pub mod modules;
 pub mod opcodes;
 pub mod shipped_names;
 pub mod symbols;
+pub mod texts;
 
 pub use modules::ModuleSource;
 
-use crate::heap::{Heap, Root};
+use std::collections::HashSet;
+use std::rc::Rc;
+
+use crate::bytecode::{CompiledCode, Instruction};
+use crate::heap::{Heap, MixinId, Root};
+use crate::mixin::Mixin;
 use crate::types::{ClassReference, SourceOrigin, Value};
 use crate::{Interpreter, Mutator};
 
@@ -45,19 +52,28 @@ use crate::{Interpreter, Mutator};
 struct Describing {
     symbols: symbols::Builder,
     code: encode::Writer,
+    /// The text table, when the modules carry source.
+    texts: Option<encode::Writer>,
     mixins: encode::Writer,
     ids: encode::CodeIds,
     mixin_ids: mixins::MixinIds,
 }
 
-/// Encodes the code table and the mixin table into their own buffers,
-/// collecting every selector and name either one names into `symbols` along
-/// the way. The symbol table cannot be written before both are encoded, since
-/// it is the table's *contents* that fill it.
-fn encode_describing<'gc>(
+/// The rows the describing sections write, planned before the graph is
+/// walked, and whether they carry their texts.
+struct Planned {
+    rows: Vec<mixins::Row>,
+    with_source: bool,
+}
+
+/// Plans the mixin table's rows, making every refusal of the describing
+/// sections: a root that can never be instantiated, source for some modules
+/// but not all, and whatever `mixins::plan` refuses. Made before the graph
+/// is walked, so that these refusals come before the graph's.
+fn plan_describing<'gc>(
     heap: &Heap<'gc>,
     modules: &[ModuleSource<'_, 'gc>],
-) -> Result<Describing, String> {
+) -> Result<Planned, String> {
     // Each module's declarations, which carry its code. A root that is not a
     // class object has none and contributes no rows rather than an error:
     // the graph section is what refuses such a root.
@@ -77,59 +93,171 @@ fn encode_describing<'gc>(
             ));
         }
     }
-    // An edited mixin's code and layout live in the heap's tables, not in
-    // the tree the rows are planned from, so planning it would write an
-    // image that loads as the program before the edit. Refused before any
-    // row is planned, until images carry edits (road step 5b2b).
-    let mut tree = Vec::new();
-    for root in &module_roots {
-        crate::mixin::preorder(root, &mut tree);
+    // The header has one flag for the source of every module, so a module
+    // without text while another carries its own could only be written by
+    // inventing an empty text for it.
+    let with_source = modules.iter().any(|module| module.with_source);
+    if with_source && !modules.iter().all(|module| module.with_source) {
+        return Err(
+            "image encoding carries source for every module or for none: one module has none"
+                .to_string(),
+        );
     }
-    for mixin in &tree {
-        if heap
-            .known_mixin_id(mixin)
-            .is_some_and(|id| heap.mixin_is_edited(id))
-        {
-            return Err(format!(
-                "image encoding cannot yet serialize mixin `{}`, which a MirrorBuilder edited",
-                mixin.name
-            ));
-        }
-    }
+    // Planned once, from each declaration's current version, so that the
+    // code table, the text table and the mixin table describe one program:
+    // the program as an edit left it, each declaration's text once.
+    let rows = mixins::plan(heap, &module_roots)?;
+    Ok(Planned { rows, with_source })
+}
+
+/// Encodes the code table and the mixin table into their own buffers,
+/// collecting every selector and name either one names into `symbols` along
+/// the way. The symbol table cannot be written before both are encoded, since
+/// it is the table's *contents* that fill it.
+///
+/// `bodies` are the bodies the graph runs or can run
+/// (`encode::WalkedGraph::bodies`): the code table carries each one an
+/// older version of a carried declaration compiled (`extra_bodies`).
+fn encode_describing(
+    heap: &Heap<'_>,
+    planned: Planned,
+    bodies: &[Rc<CompiledCode>],
+) -> Result<Describing, String> {
+    let Planned { rows, with_source } = planned;
     let mut symbols = symbols::Builder::new();
     let mut code = encode::Writer::new();
-    let ids = encode::encode_code_table(&mut code, &module_roots, &mut symbols)?;
-    // After the code table, whose ids its rows name; before the graph, whose
-    // class objects might name its rows.
+    let extra = extra_bodies(heap, &rows, bodies);
+    let ids = encode::encode_code_table(&mut code, &rows, &extra, &mut symbols)?;
+    // The texts the heap holds, each declaration's own -- never the host's
+    // file, which after an edit is no longer the program's text.
+    let (texts, text_ids) = if with_source {
+        let mut texts = encode::Writer::new();
+        let text_ids = texts::encode(&mut texts, &rows)?;
+        (Some(texts), Some(text_ids))
+    } else {
+        (None, None)
+    };
+    // After the code table and the text table, whose ids its rows name;
+    // before the graph, whose class objects might name its rows.
     let mut mixin_writer = encode::Writer::new();
-    let mixin_ids = mixins::encode(&mut mixin_writer, &module_roots, &mut symbols, &ids)?;
+    let mixin_ids = mixins::encode(
+        &mut mixin_writer,
+        &rows,
+        &mut symbols,
+        &ids,
+        text_ids.as_ref(),
+    )?;
     Ok(Describing {
         symbols,
         code,
+        texts,
         mixins: mixin_writer,
         ids,
         mixin_ids,
     })
 }
 
+/// The bodies of `bodies`, in their order, that an older version of a
+/// declaration the rows describe compiled and the rows' own bodies do not
+/// include: a closure an edit's superseded method made, and the frame it
+/// captured, still run that code. Every version of a row's declaration
+/// counts -- the row's own and each one an install superseded under its id
+/// (`Heap::superseded_mixins`) -- with every body each carries and the
+/// blocks nested in them. A body no such version compiled is left out, and
+/// the graph section refuses the closure or frame that runs it, as it
+/// refuses one over another module's code.
+fn extra_bodies(
+    heap: &Heap<'_>,
+    rows: &[mixins::Row],
+    bodies: &[Rc<CompiledCode>],
+) -> Vec<Rc<CompiledCode>> {
+    let mut current = HashSet::new();
+    for row in rows {
+        version_bodies(&row.mixin, &mut current);
+    }
+    let ids: HashSet<MixinId> = rows.iter().filter_map(|row| row.id).collect();
+    let mut admitted = HashSet::new();
+    for version in heap.superseded_mixins() {
+        if heap
+            .known_mixin_id(version)
+            .is_some_and(|id| ids.contains(&id))
+        {
+            version_bodies(version, &mut admitted);
+        }
+    }
+    let mut extra: Vec<Rc<CompiledCode>> = Vec::new();
+    let mut seen = HashSet::new();
+    for body in bodies {
+        let key = Rc::as_ptr(body) as usize;
+        if !current.contains(&key) && admitted.contains(&key) && seen.insert(key) {
+            extra.push(Rc::clone(body));
+        }
+    }
+    extra
+}
+
+/// Every body `mixin` carries -- its methods, its initializer, its
+/// superclass clause and message, its `<:` clauses' messages -- and the
+/// blocks nested in them, by address.
+fn version_bodies(mixin: &Mixin, out: &mut HashSet<usize>) {
+    let mut pending: Vec<Rc<CompiledCode>> = mixin
+        .compiled_methods()
+        .map(|method| Rc::clone(&method.code))
+        .chain(
+            [
+                &mixin.initializer_code,
+                &mixin.superclass_clause_code,
+                &mixin.superclass_message_code,
+            ]
+            .into_iter()
+            .chain(
+                mixin
+                    .mixin_applications
+                    .iter()
+                    .map(|clause| &clause.message_code),
+            )
+            .flatten()
+            .cloned(),
+        )
+        .collect();
+    while let Some(code) = pending.pop() {
+        if !out.insert(Rc::as_ptr(&code) as usize) {
+            continue;
+        }
+        for instruction in &code.instructions() {
+            if let Instruction::MakeClosure { code: block, .. } = instruction {
+                pending.push(Rc::clone(block));
+            }
+        }
+    }
+}
+
+/// The current text of the module whose root declaration is `root`, as
+/// the heap holds it: assembled from its declarations' current versions
+/// (`Heap::module_source`). `None` for a module with no text.
+fn module_text(heap: &Heap<'_>, root: &std::rc::Rc<crate::mixin::Mixin>) -> Option<String> {
+    match heap.known_mixin_id(root) {
+        Some(id) => heap.module_source(id),
+        None => heap.assembled_text(root),
+    }
+}
+
 /// Writes header through the module section. Everything after that is the
 /// caller's: the graph.
 ///
-/// The header says the modules carry source when any one is handed some;
-/// `encode_modules` then refuses a module handed none, so a mix is an `Err`
-/// rather than an artifact that silently drops one module's text.
+/// The header says the image carries source when `encode_describing`
+/// wrote the text table, which it does for every module or for none.
 fn write_describing(
     writer: &mut encode::Writer,
     modules: &[ModuleSource<'_, '_>],
     module_root_ids: &[u32],
     flags: u8,
     describing: Describing,
-) -> Result<(), String> {
-    let with_source = modules.iter().any(|module| module.source.is_some());
+) {
     encode::write_header(
         writer,
         flags
-            | if with_source {
+            | if describing.texts.is_some() {
                 encode::FLAG_HAS_SOURCE
             } else {
                 0
@@ -142,8 +270,11 @@ fn write_describing(
     // consuming `describing` here loses nothing.
     describing.symbols.write(writer);
     writer.write_raw(&describing.code.into_bytes());
+    if let Some(texts) = describing.texts {
+        writer.write_raw(&texts.into_bytes());
+    }
     writer.write_raw(&describing.mixins.into_bytes());
-    modules::encode_modules(writer, modules, module_root_ids, with_source)
+    modules::encode_modules(writer, modules, module_root_ids);
 }
 
 /// Serializes a quiesced world: `roots` (the root instance and, if any,
@@ -152,12 +283,15 @@ fn write_describing(
 /// modules the image carries, the application's first; a graph reaching a
 /// class of any other user module is refused.
 ///
-/// A module's `source` is the debug variant's switch. `None` writes a module
-/// whose bytes contain no program text -- what a loaded world needs is the
-/// code table, the mixin table and the graph, and none of them quotes the
-/// source. `Some(source)` additionally stores `source` verbatim; `load` hands
-/// it back on `LoadedModule::source` and does nothing else with it. Source
-/// travels for every module or for none. The graph closes with the hashes of
+/// A module's `with_source` says whether the image carries its source.
+/// `false` writes a module whose bytes contain no program text -- what a
+/// loaded world needs is the code table, the mixin table and the graph,
+/// and none of them quotes the source. `true` additionally stores the text
+/// of each of its declarations as the heap holds it (`Mixin::text`), in
+/// the text table; `load` gives each decoded mixin its own and hands the
+/// module's text, assembled from them, back on `LoadedModule::source`.
+/// Source travels for every module or for none, and a module built
+/// without it cannot be written with it. The graph closes with the hashes of
 /// the objects it names by tag (`encode::encode_tag_named_hashes`), and is
 /// preceded by the shipped names it names the binary's own objects by
 /// (`shipped_names`); the platform, if the graph reaches it, is an ordinary
@@ -209,8 +343,12 @@ fn write_image<'gc>(
                 .to_string(),
         );
     }
-    let mut describing = encode_describing(heap, modules)?;
+    let planned = plan_describing(heap, modules)?;
     let classes: Vec<ClassReference<'gc>> = modules.iter().map(|module| module.class).collect();
+    // Walked before the code table is written: the bodies the graph runs
+    // decide which code of an older version the table carries.
+    let walked = encode::walk_graph(mutator, roots, &classes)?;
+    let mut describing = encode_describing(heap, planned, &walked.bodies(heap))?;
     // The graph section is encoded into its own buffer, against the same
     // `symbols` builder the describing sections used, before `write_describing`
     // consumes `describing` -- the graph needs the mixin table's row ids, and
@@ -223,9 +361,9 @@ fn write_image<'gc>(
     } = encode::encode_graph_section(
         mutator,
         &mut graph_writer,
+        &walked,
         roots,
         &describing.ids,
-        &classes,
         &describing.mixin_ids,
         &mut describing.symbols,
     )?;
@@ -257,7 +395,7 @@ fn write_image<'gc>(
         &mut describing.symbols,
     );
     let mut writer = encode::Writer::new();
-    write_describing(&mut writer, modules, &module_roots, flags, describing)?;
+    write_describing(&mut writer, modules, &module_roots, flags, describing);
     writer.write_raw(&names_writer.into_bytes());
     writer.write_raw(&graph_writer.into_bytes());
     Ok(writer.into_bytes())
@@ -274,11 +412,10 @@ pub struct LoadedModule {
     /// Where the module came from. Provenance, not program text -- it is
     /// in every artifact, source or not.
     pub origin: SourceOrigin,
-    /// The module's source text, for the debug variant only -- `None` for a
-    /// source-free artifact. Never parsed, never resolved, never executed:
-    /// `load` reads it out of the byte stream and hands it over unchanged,
-    /// the one allocation every mixin of the module holds as its
-    /// `Mixin::module_text`.
+    /// The module's source text, assembled once at load from the texts of
+    /// its declarations (`Heap::module_source`) -- `None` for a
+    /// source-free artifact. Never parsed, never resolved, never executed
+    /// by the load.
     pub source: Option<std::rc::Rc<str>>,
 }
 
@@ -311,8 +448,8 @@ pub struct LoadedImage {
 ///
 /// Both verification passes run before anything the image describes can be
 /// executed: `verify_code_table` and `verify_mixins` before anything is
-/// built on the code, `verify_graph` resolving each frame's
-/// body off the decoded mixins that carry it. A corrupt but version-matching
+/// built on the code, `verify_graph` holding each frame to the body it
+/// names, by code id or by its shipped declaration. A corrupt but version-matching
 /// image is an `Err` here, never a panic in the VM later.
 ///
 /// An image loads in two phases, and nothing the image describes runs
@@ -386,11 +523,14 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
                 .module_root(index)
                 .cloned()
                 .ok_or_else(|| decode::DecodeError::NotAClass.to_string())?;
+            let source = interpreter
+                .enter(|mutator| module_text(&mutator.heap, &declaration))
+                .map(std::rc::Rc::from);
             Ok(LoadedModule {
                 class,
                 declaration,
                 origin: decoded.origin,
-                source: decoded.source,
+                source,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -417,17 +557,16 @@ fn decode_described(
     // family's call-site numbers -- a block's depend on where its
     // `MakeClosure` sits in its root's emission order -- can be assigned.
     decode::number_call_site_families(&mut table).map_err(|error| error.to_string())?;
-    let read = mixins::read(reader, &symbols, &table.codes).map_err(|error| error.to_string())?;
-    // The module section follows the mixin table and holds each module's
-    // text, which every mixin of the module holds once built
-    // (`Mixin::module_text`), so it is read before the mixins are built.
-    let decoded_modules = modules::decode_modules(reader, &read.module_rows, header.has_source)
+    let texts = if header.has_source {
+        texts::decode(reader).map_err(|error| error.to_string())?
+    } else {
+        Vec::new()
+    };
+    let read = mixins::read(reader, &symbols, &table.codes, header.has_source)
         .map_err(|error| error.to_string())?;
-    let module_texts: Vec<Option<std::rc::Rc<str>>> = decoded_modules
-        .iter()
-        .map(|module| module.source.clone())
-        .collect();
-    let mixins = mixins::build(read, &table.codes, &module_texts);
+    let decoded_modules =
+        modules::decode_modules(reader, &read.module_rows).map_err(|error| error.to_string())?;
+    let mixins = mixins::build(read, &table.codes, &texts).map_err(|error| error.to_string())?;
     decode::verify_mixins(&mixins).map_err(|error| error.to_string())?;
     let names =
         shipped_names::decode_section(reader, &symbols).map_err(|error| error.to_string())?;

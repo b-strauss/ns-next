@@ -158,11 +158,12 @@ impl<'gc> Mutator<'gc> {
 pub(crate) fn synthesized_class_side(mixin: &Rc<crate::mixin::Mixin>) -> Rc<crate::mixin::Mixin> {
     let synthesized = Rc::new(crate::mixin::Mixin {
         methods: std::iter::once(crate::mixin::factory_entry(mixin.factory)).collect(),
+        text: mixin.text.clone(),
         ..crate::mixin::Mixin::empty(Symbol::CLASS_SIDE)
     });
-    // A synthesized class side names the instance side it stands for, as a
-    // declared one does; it has no text of its own. The cell is fresh, so
-    // the set cannot fail.
+    // A synthesized class side names the instance side it stands for and
+    // shares its text, as a declared one does. The cell is fresh, so the
+    // set cannot fail.
     let _ = synthesized.enclosing.set(Rc::downgrade(mixin));
     synthesized
 }

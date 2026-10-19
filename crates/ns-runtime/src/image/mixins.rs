@@ -27,9 +27,10 @@ use ns_syntax::ast::AccessModifier;
 use ns_syntax::Span;
 
 use crate::bytecode::CompiledCode;
+use crate::heap::{Heap, MixinId};
 use crate::mixin::{
-    mixin_key, slot_accessors, ClauseMessage, Factory, MethodEntry, Mixin, MixinApplicationClause,
-    MixinMethod, MixinSlot,
+    mixin_key, slot_accessors, ClauseMessage, DeclarationText, Factory, MethodEntry, Mixin,
+    MixinApplicationClause, MixinMethod, MixinSlot,
 };
 use crate::Symbol;
 
@@ -37,6 +38,7 @@ use super::decode::{reserve_for, DecodeError, Reader};
 use super::encode::{u16_field, u32_field, CodeIds, Writer};
 use super::opcodes::{SLOT_IMMUTABLE, SLOT_LAZY_IMMUTABLE, SLOT_LAZY_MUTABLE, SLOT_MUTABLE};
 use super::symbols;
+use super::texts::TextIds;
 
 /// `ns-syntax`'s own nesting ceiling: the parser refuses a module whose
 /// classes nest deeper than this (`MAX_DEPTH` in
@@ -87,7 +89,13 @@ const MAX_MIXIN_DEPTH: usize = PARSER_MAX_NESTED_CLASS_DEPTH + 2;
 /// One declaration's row, with its children already resolved to row ids.
 /// Its code is read off `mixin` and `methods` themselves, which carry it.
 pub struct Row {
+    /// The declaration's current version, whose code, layout and text the
+    /// row describes.
     pub mixin: Rc<Mixin>,
+    /// The id the heap registered the declaration under, by which every
+    /// record names the row (`MixinIds`); `None` for a declaration no class
+    /// object applied and nothing reified, which no record can name.
+    pub id: Option<MixinId>,
     pub nested: Vec<u32>,
     pub class_side: Option<u32>,
     /// The compiled methods, sorted by selector text: the mixin's method
@@ -98,40 +106,64 @@ pub struct Row {
     pub methods: Vec<Rc<MixinMethod>>,
 }
 
+/// `mixin`'s current version: an install replaced it under its id when
+/// one names it, and a mixin no class object applied has none.
+fn current(heap: &Heap<'_>, mixin: &Rc<Mixin>) -> Rc<Mixin> {
+    heap.known_mixin_id(mixin)
+        .and_then(|id| heap.mixin(id))
+        .unwrap_or_else(|| Rc::clone(mixin))
+}
+
+/// `mixin::preorder` over the current versions: a version's `nested` and
+/// `class_side` still hold the versions it was built with, which an edit
+/// may since have replaced under their ids.
+fn current_preorder(heap: &Heap<'_>, mixin: &Rc<Mixin>, out: &mut Vec<Rc<Mixin>>) {
+    let mixin = current(heap, mixin);
+    out.push(Rc::clone(&mixin));
+    for nested in &mixin.nested {
+        current_preorder(heap, nested, out);
+    }
+    if let Some(class_side) = &mixin.class_side {
+        current_preorder(heap, class_side, out);
+    }
+}
+
 /// Flattens the tree under each of `module_roots` into rows, in
-/// `mixin::preorder` order, one tree after another in module order. Row ids
-/// and the depth ceiling cover the whole forest: a class object's record
-/// names its declaration by row id whichever module declared it.
+/// `mixin::preorder` order over each declaration's current version, one
+/// tree after another in module order. Row ids and the depth ceiling cover
+/// the whole forest: a class object's record names its declaration by row
+/// id whichever module declared it.
 ///
-/// Called by both `encode::encode_code_table` (which needs the rows to know
-/// which `CompiledCode` is reachable, and in what order) and `encode` below
-/// (which needs them to write the table). Recomputing it is one walk of the
-/// tree and one `HashMap`; sharing a cached copy between the two would trade
-/// that for a lifetime that has to thread through `snapshot`.
-pub fn plan(module_roots: &[Rc<Mixin>]) -> Result<Vec<Row>, String> {
+/// A row describes the current version, never the one a reference reached
+/// it through, so an edited program is written as it now is: an install
+/// replaces a mixin under its id while a class object, an enclosing
+/// declaration or an applied clause may still name the version before.
+///
+/// Planned once per image and handed to every table it describes -- the
+/// code table, the text table and the mixin table -- so that all three
+/// follow the same rows.
+pub fn plan(heap: &Heap<'_>, module_roots: &[Rc<Mixin>]) -> Result<Vec<Row>, String> {
     let mut order = Vec::new();
     for root in module_roots {
-        crate::mixin::preorder(root, &mut order);
+        current_preorder(heap, root, &mut order);
     }
-    let ids: HashMap<usize, u32> = order
+    let rows_by_key: HashMap<usize, u32> = order
         .iter()
         .enumerate()
         .map(|(index, mixin)| (mixin_key(mixin), u32_field("mixin table id", index)))
         .collect();
+    // Every child's current version is in `order` -- `current_preorder`
+    // put it there -- so the lookup cannot miss.
+    let row_of = |child: &Rc<Mixin>| rows_by_key[&mixin_key(&current(heap, child))];
     let mut rows = Vec::with_capacity(order.len());
     for mixin in &order {
         let mut methods: Vec<Rc<MixinMethod>> = mixin.compiled_methods().cloned().collect();
         methods.sort_by(|left, right| left.selector.as_str().cmp(right.selector.as_str()));
         rows.push(Row {
             mixin: mixin.clone(),
-            // Every child is in `order` -- `preorder` put it there -- so the
-            // lookup cannot miss.
-            nested: mixin
-                .nested
-                .iter()
-                .map(|child| ids[&mixin_key(child)])
-                .collect(),
-            class_side: mixin.class_side.as_ref().map(|side| ids[&mixin_key(side)]),
+            id: heap.known_mixin_id(mixin),
+            nested: mixin.nested.iter().map(row_of).collect(),
+            class_side: mixin.class_side.as_ref().map(row_of),
             methods,
         });
     }
@@ -211,7 +243,7 @@ fn slot_kind_from_tag(tag: u8) -> Result<(bool, bool), DecodeError> {
     }
 }
 
-fn access_from_tag(tag: u8) -> Result<AccessModifier, DecodeError> {
+pub(crate) fn access_from_tag(tag: u8) -> Result<AccessModifier, DecodeError> {
     match tag {
         0 => Ok(AccessModifier::Public),
         1 => Ok(AccessModifier::Protected),
@@ -223,22 +255,25 @@ fn access_from_tag(tag: u8) -> Result<AccessModifier, DecodeError> {
     }
 }
 
-/// `mixin_key` -> mixin-table row id, as `encode` assigns them. Named so
-/// `image::mod`'s `Describing` struct can hold one without spelling out the
-/// map it happens to be today.
-pub(crate) type MixinIds = HashMap<usize, u32>;
+/// A declaration's id -> mixin-table row id, as `encode` assigns them:
+/// keyed by id rather than by address, since a class object, an applied
+/// clause or a reified mixin may name any version of a declaration, and
+/// the row describes the current one.
+pub type MixinIds = HashMap<MixinId, u32>;
 
-/// Writes the mixin table and returns the `mixin_key` -> row id map the
-/// object graph addresses a class object's mixin by.
+/// Writes the mixin table of `rows` (`plan`) and returns the id -> row id
+/// map the object graph addresses a class object's mixin by. With `texts`,
+/// the image carries its source, and each row ends with the index of its
+/// declaration's text in the text table (`texts::encode`).
 pub fn encode(
     writer: &mut Writer,
-    module_roots: &[Rc<Mixin>],
+    rows: &[Row],
     symbols: &mut symbols::Builder,
     codes: &CodeIds,
+    texts: Option<&TextIds>,
 ) -> Result<MixinIds, String> {
-    let rows = plan(module_roots)?;
     writer.write_u32(u32_field("mixin table entry count", rows.len()));
-    for row in &rows {
+    for (index, row) in rows.iter().enumerate() {
         let mixin = &row.mixin;
         writer.write_u32(symbols.intern(mixin.name.as_str()));
         writer.write_u8(access_tag(mixin.access));
@@ -326,11 +361,14 @@ pub fn encode(
                 .map(|code| codes.id_of(code))
                 .transpose()?,
         );
+        if let Some(texts) = texts {
+            writer.write_u32(texts.id_of(index, mixin)?);
+        }
     }
     Ok(rows
         .iter()
         .enumerate()
-        .map(|(index, row)| (mixin_key(&row.mixin), u32_field("mixin table id", index)))
+        .filter_map(|(index, row)| Some((row.id?, u32_field("mixin table id", index))))
         .collect())
 }
 
@@ -373,6 +411,16 @@ pub struct MixinCode {
     pub superclass_message: Option<u32>,
     /// Each `<:` clause's message body, in clause order.
     pub mixin_applications: Vec<Option<u32>>,
+    /// The text the row names, when the image carries source.
+    pub text: Option<RowText>,
+}
+
+/// A row's text as the row names it: its index in the text table, and
+/// where in the image the index lies, for `inspect`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RowText {
+    pub index: u32,
+    pub offset: usize,
 }
 
 /// The decoded mixin table: the rebuilt declarations, in row-id order (which
@@ -421,6 +469,7 @@ struct RawRow {
     initializer: Option<u32>,
     superclass_clause: Option<u32>,
     superclass_message: Option<u32>,
+    text: Option<RowText>,
 }
 
 /// A `<:` clause as read: its selector, whether its message takes arguments,
@@ -438,16 +487,15 @@ struct RawSlot {
     access: AccessModifier,
 }
 
-/// Reads the mixin table and builds its mixins, none of them holding a
-/// module's text: `read`, then `build` with no texts. For a reader that
-/// needs the mixins and not their source -- `inspect` -- and the tests;
-/// `load` reads the module section between the two, for the texts.
+/// Reads the mixin table of an image without source and builds its
+/// mixins, none of them holding a text: `read`, then `build` with no
+/// texts. For the tests, which craft tables of rows that name no text.
 pub fn decode(
     reader: &mut Reader,
     symbols: &symbols::Table,
     codes: &[Rc<CompiledCode>],
 ) -> Result<Decoded, DecodeError> {
-    Ok(build(read(reader, symbols, codes)?, codes, &[]))
+    build(read(reader, symbols, codes, false)?, codes, &[])
 }
 
 /// The mixin table as `read` leaves it: every row read and checked, the
@@ -463,7 +511,8 @@ pub struct ReadTable {
 ///
 /// `codes` is the already-decoded code table: every code id a row names is
 /// range-checked against it here, at the point of use, so no later pass can
-/// index it unchecked.
+/// index it unchecked. With `has_source`, each row ends with the index of
+/// its text, which `build` checks against the text table.
 ///
 /// Two passes, both iterative, before `build`'s third:
 ///
@@ -479,11 +528,12 @@ pub fn read(
     reader: &mut Reader,
     symbols: &symbols::Table,
     codes: &[Rc<CompiledCode>],
+    has_source: bool,
 ) -> Result<ReadTable, DecodeError> {
     let count = reader.read_u32()? as usize;
     let mut raw: Vec<RawRow> = reserve_for(count, reader);
     for _ in 0..count {
-        raw.push(read_row(reader, symbols, codes)?);
+        raw.push(read_row(reader, symbols, codes, has_source)?);
     }
     check_ids(&raw)?;
     let module_rows = check_preorder(&raw)?;
@@ -496,6 +546,7 @@ fn read_row(
     reader: &mut Reader,
     symbols: &symbols::Table,
     codes: &[Rc<CompiledCode>],
+    has_source: bool,
 ) -> Result<RawRow, DecodeError> {
     let name = read_symbol(reader, symbols)?;
     let access = access_from_tag(reader.read_u8()?)?;
@@ -552,6 +603,15 @@ fn read_row(
     let initializer = read_optional(reader, |reader| read_code_id(reader, codes))?;
     let superclass_clause = read_optional(reader, |reader| read_code_id(reader, codes))?;
     let superclass_message = read_optional(reader, |reader| read_code_id(reader, codes))?;
+    let text = if has_source {
+        let offset = reader.position();
+        Some(RowText {
+            index: reader.read_u32()?,
+            offset,
+        })
+    } else {
+        None
+    };
     Ok(RawRow {
         name,
         access,
@@ -567,6 +627,7 @@ fn read_row(
         initializer,
         superclass_clause,
         superclass_message,
+        text,
     })
 }
 
@@ -791,6 +852,98 @@ fn metaclass_factory_entries(raw: &[RawRow]) -> Vec<Option<(Symbol, MethodEntry)
     entries
 }
 
+/// Each row's declaration text (`Mixin::text`), the text of the text
+/// table its index names; `None` for every row of an image without
+/// source.
+///
+/// A text belongs to one declaration: every text of the table is named by
+/// exactly one instance-side row, and a class-side row names exactly its
+/// instance side's. A text named by two declarations would be assembled
+/// into the module's text once per naming, so a short image could make the
+/// load build an arbitrarily large text; a text no row names would be
+/// bytes the image carries for nothing. A row is held to the nested rows
+/// of the instance side it belongs to: a class side's text is its
+/// instance side's, holes and all.
+///
+/// Holes are held to the nested rows by count, never by span. After an
+/// edit of a nested declaration, the enclosing declaration's holes are
+/// still in the coordinates of the text it was read in, while the nested
+/// row's span and text are in the edited text's; the two are joined by a
+/// hole's index (`DeclarationText::assemble`), so a span comparison would
+/// refuse every image of an edited program.
+///
+/// Runs after `check_ids` and `check_preorder`, which are what let this
+/// index `raw` by a row's class-side id and know that an instance side's
+/// row comes before its class side's.
+fn row_texts(
+    raw: &[RawRow],
+    texts: &[Rc<DeclarationText>],
+) -> Result<Vec<Option<Rc<DeclarationText>>>, DecodeError> {
+    let row_id = |index: usize| u32::try_from(index).unwrap_or(u32::MAX);
+    let mut instance_side: Vec<Option<usize>> = vec![None; raw.len()];
+    for (index, row) in raw.iter().enumerate() {
+        if let Some(class_side) = row.class_side {
+            instance_side[class_side as usize] = Some(index);
+        }
+    }
+    // The instance-side row that names each text, once one has.
+    let mut named_by: Vec<Option<usize>> = vec![None; texts.len()];
+    let mut row_texts = Vec::with_capacity(raw.len());
+    for (index, row) in raw.iter().enumerate() {
+        let Some(row_text) = row.text else {
+            row_texts.push(None);
+            continue;
+        };
+        let text = texts
+            .get(row_text.index as usize)
+            .ok_or(DecodeError::TextIndexOutOfRange {
+                row: row_id(index),
+                index: row_text.index,
+                texts: texts.len(),
+            })?;
+        let owner = match instance_side[index] {
+            Some(owner) => {
+                let owner_text = raw[owner].text.map(|text| text.index);
+                if owner_text != Some(row_text.index) {
+                    return Err(DecodeError::ClassSideTextMismatch {
+                        row: row_id(index),
+                        index: row_text.index,
+                        instance_side: row_id(owner),
+                    });
+                }
+                owner
+            }
+            None => {
+                let slot = &mut named_by[row_text.index as usize];
+                if let Some(first) = *slot {
+                    return Err(DecodeError::TextSharedByRows {
+                        text: row_text.index,
+                        first: row_id(first),
+                        second: row_id(index),
+                    });
+                }
+                *slot = Some(index);
+                index
+            }
+        };
+        let nested = raw[owner].nested.len();
+        if text.holes().len() != nested {
+            return Err(DecodeError::TextHolesMismatch {
+                row: row_id(index),
+                holes: text.holes().len(),
+                nested,
+            });
+        }
+        row_texts.push(Some(Rc::clone(text)));
+    }
+    if let Some(unnamed) = named_by.iter().position(Option::is_none) {
+        return Err(DecodeError::UnnamedText {
+            text: row_id(unnamed),
+        });
+    }
+    Ok(row_texts)
+}
+
 /// Builds the `Rc<Mixin>`s back to front, the third pass after `read`'s
 /// two. `check_preorder` established that every child's row id is greater
 /// than its parent's, so a row's children are already built by the time
@@ -798,11 +951,11 @@ fn metaclass_factory_entries(raw: &[RawRow]) -> Vec<Option<(Symbol, MethodEntry)
 /// tree; each child is linked to its parent once the parent's `Rc` exists
 /// (`Mixin::enclosing`).
 ///
-/// `module_texts` holds each module's text, in module order, `None` for
-/// one the image carries no source for: every mixin of module `i`'s tree
-/// -- the rows `module_rows[i]` up to the next module's first row --
-/// holds module `i`'s (`Mixin::module_text`). A module past the slice
-/// holds none, which is how `decode` builds without texts.
+/// `texts` is the image's text table, empty for an image without source:
+/// each row is given the text its index names, and a row naming a text
+/// past the table, another declaration's text or a text with another
+/// number of holes than it has nested declarations, and a text no row
+/// names, are refused (`row_texts`) before anything is built.
 ///
 /// Each method and each per-mixin body is handed the code-table entry its
 /// row names -- `read_row` range-checked every id against `codes` already.
@@ -812,21 +965,11 @@ fn metaclass_factory_entries(raw: &[RawRow]) -> Vec<Option<(Symbol, MethodEntry)
 pub fn build(
     table: ReadTable,
     codes: &[Rc<CompiledCode>],
-    module_texts: &[Option<Rc<str>>],
-) -> Decoded {
+    texts: &[Rc<DeclarationText>],
+) -> Result<Decoded, DecodeError> {
     let ReadTable { raw, module_rows } = table;
     let code_at = |id: u32| codes[id as usize].clone();
-    // The module whose tree holds `row`: the last module whose first row
-    // is at or before it. The first tree starts at row 0, so a row of a
-    // non-empty table always has one.
-    let module_text_of = |row: usize| {
-        let module = module_rows.partition_point(|&first| first as usize <= row) - 1;
-        module_texts
-            .get(module)
-            .cloned()
-            .flatten()
-            .map(crate::mixin::ModuleText)
-    };
+    let mut texts = row_texts(&raw, texts)?;
     let mut factory_entries = metaclass_factory_entries(&raw);
     let mut built: Vec<Option<Rc<Mixin>>> = vec![None; raw.len()];
     let mut code: Vec<Option<MixinCode>> = (0..raw.len()).map(|_| None).collect();
@@ -895,6 +1038,7 @@ pub fn build(
                 .iter()
                 .map(|clause| clause.message_code)
                 .collect(),
+            text: row.text,
         });
         let nested = row
             .nested
@@ -944,12 +1088,12 @@ pub fn build(
             shipped: false,
             // Set by the parent's row, built after this one.
             enclosing: std::cell::OnceCell::new(),
-            module_text: module_text_of(index),
+            text: texts[index].take(),
         });
         Mixin::set_enclosing_of_children(&mixin);
         built[index] = Some(mixin);
     }
-    Decoded {
+    Ok(Decoded {
         mixins: built
             .into_iter()
             .map(|mixin| mixin.expect("every row was built"))
@@ -959,5 +1103,5 @@ pub fn build(
             .map(|code| code.expect("every row was built"))
             .collect(),
         module_rows,
-    }
+    })
 }

@@ -3,4 +3,3 @@ stdout = '''
 1 nil 2 4 3 5 6
 1 7 2 4 3 5 6
 '''
-skipped_in_images = "a program loaded from an image cannot be edited until road step 5b2b"

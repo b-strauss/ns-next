@@ -108,7 +108,8 @@ pub fn ns_next_analyzer(arguments: &[&std::ffi::OsStr]) -> (bool, String, String
 /// The image `ns-next build <source> <image>` writes for a single `.ns`
 /// source whose root is instantiated with `new`: the module loaded, its root
 /// instantiated, and the instance packaged as the application, with the
-/// source text stored when `with_source` (`--debug-source`). Built through
+/// source text stored when `with_source` (as `build` stores it unless
+/// `--strip-source`). Built through
 /// `ns-runtime` because a test cannot start another crate's binary, and the
 /// image is all an `inspect` or `disasm` test reads.
 pub fn build_image(source: &Path, lowering: ns_runtime::Lowering, with_source: bool) -> Vec<u8> {
@@ -133,7 +134,7 @@ pub fn build_image(source: &Path, lowering: ns_runtime::Lowering, with_source: b
         let modules = [ns_runtime::image::ModuleSource {
             class,
             origin: &origin,
-            source: with_source.then_some(text.as_str()),
+            with_source,
         }];
         ns_runtime::image::package(mutator, &modules, mutator.fetch(&application))
     });

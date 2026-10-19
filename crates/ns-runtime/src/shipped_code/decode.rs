@@ -13,8 +13,8 @@ use crate::bytecode::{
     UnwindMarker,
 };
 use crate::mixin::{
-    AccessorKind, ClassAccessor, ClauseMessage, Factory, FactoryMethod, MethodEntry,
-    MethodFastPath, Mixin, MixinApplicationClause, MixinMethod, MixinSlot, ModuleText,
+    AccessorKind, ClassAccessor, ClauseMessage, DeclarationText, Factory, FactoryMethod,
+    MethodEntry, MethodFastPath, Mixin, MixinApplicationClause, MixinMethod, MixinSlot,
     QuickConstant, SlotAccessor,
 };
 use crate::resolver::RootShape;
@@ -24,8 +24,9 @@ use crate::Symbol;
 
 use super::bytes::ByteReader;
 
-/// The root mixin of one module's section, every mixin of it holding
-/// `module_text`, the module's text.
+/// The root mixin of one module's section, every mixin of it sharing
+/// `module_text`, the module's text, as its declaration's
+/// (`DeclarationText::shared`).
 pub(crate) fn decode_section(section: &[u8], module_text: Rc<str>) -> Rc<Mixin> {
     let mut reader = ByteReader::new(section);
     let symbols = (0..reader.length())
@@ -36,13 +37,28 @@ pub(crate) fn decode_section(section: &[u8], module_text: Rc<str>) -> Rc<Mixin> 
         symbols,
         module_text,
     };
-    decoder.mixin()
+    let root = decoder.mixin_fields(Position::Root);
+    let root = Rc::new(root);
+    Mixin::set_enclosing_of_children(&root);
+    root
+}
+
+/// Where a decoded mixin stands, which decides its text.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Position {
+    /// The module's root, whose text is the whole module.
+    Root,
+    /// A nested declaration, whose text is its span.
+    Nested,
+    /// A class side, which takes its instance side's text and builds none.
+    ClassSide,
 }
 
 struct Decoder<'bytes> {
     reader: ByteReader<'bytes>,
     symbols: Vec<Symbol>,
-    /// The module's text, which every mixin decoded shares.
+    /// The module's text, which every mixin decoded shares: a shipped
+    /// mixin is never replaced, so no version of it outlives the text.
     module_text: Rc<str>,
 }
 
@@ -83,7 +99,18 @@ impl Decoder<'_> {
         Span::new(start, end)
     }
 
+    /// A nested declaration's mixin, shared and linked to its own.
     fn mixin(&mut self) -> Rc<Mixin> {
+        let mixin = Rc::new(self.mixin_fields(Position::Nested));
+        Mixin::set_enclosing_of_children(&mixin);
+        mixin
+    }
+
+    /// A mixin with its text, before it is shared: its class side, decoded
+    /// before its span, takes the text it shares only once the span is
+    /// read, and is decoded without one of its own (`Position::ClassSide`),
+    /// so a boot builds no text only to drop it.
+    fn mixin_fields(&mut self, position: Position) -> Mixin {
         let mut mixin = Mixin::empty(self.symbol());
         mixin.access = self.access();
         for _ in 0..self.reader.length() {
@@ -130,7 +157,7 @@ impl Decoder<'_> {
             .collect();
         mixin.has_initializer_expressions = self.reader.boolean();
         mixin.nested = (0..self.reader.length()).map(|_| self.mixin()).collect();
-        mixin.class_side = self.option(Decoder::mixin);
+        let class_side = self.option(|decoder| decoder.mixin_fields(Position::ClassSide));
         mixin.span = self.span();
         mixin.initializer_code = self.option(Decoder::code);
         mixin.superclass_clause_code = self.option(Decoder::code);
@@ -144,10 +171,36 @@ impl Decoder<'_> {
             }
         });
         mixin.shipped = self.reader.boolean();
-        mixin.module_text = Some(ModuleText(Rc::clone(&self.module_text)));
-        let mixin = Rc::new(mixin);
-        Mixin::set_enclosing_of_children(&mixin);
+        if position != Position::ClassSide {
+            mixin.text = self.declaration_text(&mixin, position == Position::Root);
+        }
+        mixin.class_side = class_side.map(|mut class_side| {
+            class_side.text = mixin.text.clone();
+            let class_side = Rc::new(class_side);
+            Mixin::set_enclosing_of_children(&class_side);
+            class_side
+        });
         mixin
+    }
+
+    /// `mixin`'s text over the module's: the whole module for its root,
+    /// its span otherwise, its nested mixins' spans cut out.
+    fn declaration_text(&self, mixin: &Mixin, root: bool) -> Option<Rc<DeclarationText>> {
+        let range = if root {
+            Span::new(
+                0,
+                u32::try_from(self.module_text.len()).expect("internal: a shipped module fits"),
+            )
+        } else {
+            mixin.span
+        };
+        let holes: Vec<Span> = mixin.nested.iter().map(|nested| nested.span).collect();
+        let text = DeclarationText::shared(Rc::clone(&self.module_text), range, &holes);
+        assert!(
+            text.is_some(),
+            "internal: the embedded shipped code's spans fit its module's text"
+        );
+        text.map(Rc::new)
     }
 
     fn method_entry(&mut self) -> MethodEntry {

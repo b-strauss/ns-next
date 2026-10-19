@@ -3759,7 +3759,7 @@ with an argument that is no `Message` fails inside the handler, on
   will be breaking the promise (§3.7).
 
 **The image format.** An `Activation` is a frame record (`OBJECT_FRAME`,
-body tag 10), its header `Activation`'s shipped name, `Kernel Activation`
+body tag 15), its header `Activation`'s shipped name, `Kernel Activation`
 ([image-format.md](image-format.md), "Frames are object records").
 `Exception`, `Error`, `MessageNotUnderstood`, `Message` and `Halt` are named
 by their shipped names like every kernel class

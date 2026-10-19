@@ -417,7 +417,7 @@ fn crafted_recursion_is_counted(block: &str, sender_reified: bool) {
             let modules = [image::ModuleSource {
                 class,
                 origin: &origin,
-                source: None,
+                with_source: false,
             }];
             image::package(mutator, &modules, mutator.fetch(&application))
         })

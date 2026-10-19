@@ -83,9 +83,8 @@ enum Command {
     /// the application ever sees.
     Load {
         image: PathBuf,
-        /// Print the source text a `--debug-source` image carries, instead
-        /// of starting it. Fails on a source-free image,
-        /// which by design has none.
+        /// Print the source text the image carries, instead of starting it.
+        /// Fails on an image written with `--strip-source`, which has none.
         #[arg(long)]
         print_source: bool,
         /// The program's arguments, after `--`: `main:args:` receives them
@@ -137,9 +136,11 @@ enum Command {
     Build {
         program: PathBuf,
         out: PathBuf,
-        /// Store every module's source text in the image (the debug variant).
+        /// Leave every module's source text out of the image. An image
+        /// without it runs as well, but a program loaded from it cannot be
+        /// edited and `load --print-source` has nothing to print.
         #[arg(long)]
-        debug_source: bool,
+        strip_source: bool,
         /// The lowering to compile the source with.
         #[arg(long, value_enum, default_value_t = LoweringArgument::Optimized)]
         lowering: LoweringArgument,
@@ -221,8 +222,8 @@ fn execute(command: Command) -> ExitCode {
         Command::Build {
             program,
             out,
-            debug_source,
+            strip_source,
             lowering,
-        } => commands::build::execute(&program, &out, debug_source, lowering.into()),
+        } => commands::build::execute(&program, &out, !strip_source, lowering.into()),
     }
 }
