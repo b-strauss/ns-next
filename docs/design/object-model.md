@@ -1610,7 +1610,9 @@ and cheap to carry.
   another version; a program's declarations each own a copy of their own
   text with the holes cut out. Both answer the same `slice` and
   `assemble`. A class side, declared or synthesized, shares its instance
-  side's text. A builtin's mixin, the VM mirror's and a mixin of an image
+  side's text, the same `Rc`, and no builder makes one of its own. A
+  hole is a nested declaration and so never empty: every form refuses an
+  empty one, which only a crafted image could carry. A builtin's mixin, the VM mirror's and a mixin of an image
   without source hold none, and their `source` answers `nil`.
 - **A module's text is assembled, never stored.** `Heap::assembled_text`
   fills each hole of a declaration's text with the assembled text of the

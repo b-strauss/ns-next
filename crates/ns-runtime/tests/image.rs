@@ -11754,9 +11754,9 @@ fn with_u32_at(bytes: &[u8], offset: usize, value: u32) -> Vec<u8> {
 }
 
 /// A text the decoder cannot hold to its declaration is refused before any
-/// mixin holds it: holes out of order, a hole past the range, a length that
-/// does not add up, a text index past the table, another number of holes
-/// than nested rows.
+/// mixin holds it: holes out of order, a hole past the range, an empty
+/// hole, a length that does not add up, a text index past the table,
+/// another number of holes than nested rows.
 #[test]
 fn a_crafted_declaration_text_is_refused() {
     let bytes = nested_module_with_source();
@@ -11792,6 +11792,22 @@ fn a_crafted_declaration_text_is_refused() {
     assert!(
         error.contains("does not describe a declaration"),
         "a hole whose start is past its end: {error}"
+    );
+
+    // An empty hole with the range shortened by the hole's width, so that
+    // the cut text's length still adds up and only the emptiness is wrong:
+    // a nested declaration is never empty.
+    let width = hole.end - hole.start;
+    let empty_hole = with_u32_at(&bytes, root_text.holes_offset + 4, hole.start);
+    let empty_hole = with_u32_at(
+        &empty_hole,
+        root_text.offset + 4,
+        root_text.range.end - width,
+    );
+    let error = load_error(&empty_hole);
+    assert!(
+        error.contains("does not describe a declaration"),
+        "an empty hole: {error}"
     );
 
     let longer = with_u32_at(

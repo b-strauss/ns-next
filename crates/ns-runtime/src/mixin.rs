@@ -736,9 +736,9 @@ enum TextStorage {
 impl DeclarationText {
     /// `range` of `module_text` with each of `holes` cut out, copied.
     /// `holes` are the spans of the declarations nested directly in it, in
-    /// source order. `None` when a hole is not within `range`, the holes
-    /// overlap or are out of order, or a boundary is not a character
-    /// boundary of `module_text`.
+    /// source order. `None` when a hole is empty or not within `range`,
+    /// the holes overlap or are out of order, or a boundary is not a
+    /// character boundary of `module_text`.
     pub fn cut(module_text: &str, range: Span, holes: &[Span]) -> Option<DeclarationText> {
         if !fits(module_text, range, holes) {
             return None;
@@ -768,10 +768,10 @@ impl DeclarationText {
     }
 
     /// The text an image carries, rebuilt from the parts `range`, `holes`
-    /// and `cut_text` answer: `None` unless the holes are in order, do not
-    /// overlap and lie within `range`, `cut_text` is as long as `range`
-    /// less the holes, and every piece between the holes begins and ends
-    /// on a character boundary of `cut_text`. Checked here, once, so that
+    /// and `cut_text` answer: `None` unless the holes are in order, none
+    /// empty, do not overlap and lie within `range`, `cut_text` is as long
+    /// as `range` less the holes, and every piece between the holes begins
+    /// and ends on a character boundary of `cut_text`. Checked here, once, so that
     /// a text an image chose answers `slice` and `assemble` like any other.
     pub fn from_parts(
         range: Span,
@@ -945,14 +945,17 @@ fn fits(module_text: &str, range: Span, holes: &[Span]) -> bool {
 }
 
 /// Whether `range` ends no earlier than it starts and each of `holes` lies
-/// within it, after the one before it.
+/// within it, after the one before it, and covers at least one byte. A
+/// hole is a nested declaration, which is never empty, so an empty one is
+/// a text no compiler made: an image's, refused like any other boundary
+/// it got wrong.
 fn holes_fit(range: Span, holes: &[Span]) -> bool {
     if range.start > range.end {
         return false;
     }
     let mut previous_end = range.start;
     for hole in holes {
-        if hole.start < previous_end || hole.start > hole.end || hole.end > range.end {
+        if hole.start < previous_end || hole.start >= hole.end || hole.end > range.end {
             return false;
         }
         previous_end = hole.end;
@@ -1448,6 +1451,7 @@ pub fn preorder(mixin: &Rc<Mixin>, out: &mut Vec<Rc<Mixin>>) {
 #[cfg(test)]
 mod declaration_text_tests {
     use super::DeclarationText;
+    use indoc::indoc;
     use ns_syntax::Span;
     use std::rc::Rc;
 
@@ -1483,7 +1487,19 @@ mod declaration_text_tests {
         assert_eq!(declaration.slice(reversed), None, "reversed");
     }
 
-    const MODULE: &str = "Newspeak3\n'Test'\nclass Outer = (\n  (* \u{e4} *) class Inner = (\n  ) ( public a = ( ^1 ) )\n  public b = ( ^2 )\n)\n";
+    /// A module with one nested declaration and a non-ASCII character
+    /// before it, so that a boundary can fall inside a character. The
+    /// `\u{e4}` escape keeps this file ASCII; `indoc!` resolves it as a
+    /// string literal does, and the closing line keeps the final newline.
+    const MODULE: &str = indoc! {"
+        Newspeak3
+        'Test'
+        class Outer = (
+          (* \u{e4} *) class Inner = (
+          ) ( public a = ( ^1 ) )
+          public b = ( ^2 )
+        )
+    "};
 
     fn span_of(text: &str, needle: &str) -> Span {
         let start = text.find(needle).expect("the needle is in the text");
@@ -1587,11 +1603,29 @@ mod declaration_text_tests {
         assert!(DeclarationText::from_parts(range, vec![Span::new(16, 21)], text()).is_none());
         assert!(DeclarationText::from_parts(range, vec![first], text()).is_none());
         assert!(DeclarationText::from_parts(
-            Span::new(0, 3),
-            vec![Span::new(1, 1)],
+            Span::new(0, 4),
+            vec![Span::new(1, 2)],
             Box::from("\u{e4}x")
         )
         .is_none());
+    }
+
+    /// A hole is a nested declaration, which is never empty: an empty hole
+    /// makes no text in any of the three forms, even where everything else
+    /// fits.
+    #[test]
+    fn an_empty_hole_makes_no_text() {
+        let whole = Span::new(0, MODULE.len() as u32);
+        let empty = Span::new(10, 10);
+        assert!(DeclarationText::cut(MODULE, whole, &[empty]).is_none());
+        assert!(DeclarationText::shared(Rc::from(MODULE), whole, &[empty]).is_none());
+        let range = Span::new(0, 4);
+        assert!(
+            DeclarationText::from_parts(range, vec![Span::new(2, 2)], Box::from("abcd")).is_none()
+        );
+        assert!(
+            DeclarationText::from_parts(range, vec![Span::new(2, 3)], Box::from("abc")).is_some()
+        );
     }
 }
 

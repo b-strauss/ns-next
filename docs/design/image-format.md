@@ -1058,12 +1058,16 @@ pieces, and assembles to it byte for byte.
 **The decoder holds the table to the rows** before any mixin holds a text
 (`texts::decode`, `mixins::row_texts`). Each text is checked against
 itself as it is read (`DeclarationText::from_parts`): its holes in order,
+none empty -- a hole is a nested declaration, which is never empty --
 disjoint and within its range, its length the range's less the holes', and
 every piece boundary a character boundary, or `MalformedText`; every count
 is bounded by the bytes left before anything is reserved for it. Then the
 rows: a text index past the table is `TextIndexOutOfRange`; a text with
 another number of holes than its row's instance side has nested
-declarations is `TextHolesMismatch`; and **a text belongs to one
+declarations is `TextHolesMismatch` -- by count, never by span, since
+after an edit of a nested declaration the enclosing declaration's holes
+are in the coordinates of the text it was read in and the nested row's
+span in the edited text's, the two joined by the hole's index; and **a text belongs to one
 declaration** -- a text two instance-side rows name is `TextSharedByRows`,
 a class side naming another text than its instance side's
 `ClassSideTextMismatch`, and a text no row names `UnnamedText`. A text
