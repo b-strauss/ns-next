@@ -690,36 +690,247 @@ pub struct Mixin {
     /// asks the heap (`Heap::enclosing_mixin_id`), since a replacement
     /// keeps the id's link whatever its own says.
     pub enclosing: OnceCell<Weak<Mixin>>,
-    /// The source text of the module this mixin is declared in, for the
-    /// mirrors' `source`: the one `Rc<str>` every mixin of the module
-    /// shares, sliced by `span` and each method's `CompiledCode::source`
-    /// through `source_text`. `None` for a builtin's mixin, the VM
-    /// mirror's, a synthesized class side's, which has no text of its
-    /// own, and a mixin of an image that carries no source. What a builder
-    /// records: the heap copies it into the mixin's row when it first
-    /// registers the mixin, a replacement brings its own
-    /// (`Heap::replace_mixin`), and a reader asks the heap
-    /// (`Heap::mixin_module_text`).
-    pub module_text: Option<ModuleText>,
+    /// The text of the declaration this mixin was read from, for the
+    /// mirrors' `source` and an edit: its own text with its nested
+    /// declarations cut out (`DeclarationText`), sliced by each method's
+    /// `CompiledCode::source`, and assembled with its nested declarations'
+    /// current versions into its module's text (`Heap::assembled_text`).
+    /// A class side, declared or synthesized from a declaration, shares
+    /// its instance side's. `None` for a builtin's mixin, the VM mirror's,
+    /// and a mixin of an image that carries no source or whose row's text
+    /// does not fit its module's. Each version holds its own, so that no
+    /// version keeps another's text alive.
+    pub text: Option<Rc<DeclarationText>>,
 }
 
-/// A module's source text, as every mixin of the module holds it
-/// (`Mixin::module_text`). A type of its own so that printing a mixin,
-/// whose `Debug` is derived, prints the text's length and not the module.
-#[derive(Clone)]
-pub struct ModuleText(pub Rc<str>);
+/// The text of one declaration as it was read: from its start to its end
+/// -- for a module's root declaration, the whole module -- with every
+/// declaration nested in it cut out, as a hole. A span the compiler
+/// recorded counts from the start of the module text the declaration was
+/// read in, and still slices it.
+///
+/// Every boundary is checked once, when the text is made (`cut`,
+/// `shared`), so that every later `slice` and `assemble` stays within the
+/// storage: a span or a hole an image chose answers no text, never a
+/// panic.
+pub struct DeclarationText {
+    /// Where the declaration's text is kept.
+    storage: TextStorage,
+    /// The declaration's extent in the module text it was read in.
+    range: Span,
+    /// The declarations nested directly in it, in source order, each by
+    /// its span in that module text.
+    holes: Vec<Span>,
+}
 
-impl std::fmt::Debug for ModuleText {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "ModuleText({} bytes)", self.0.len())
+enum TextStorage {
+    /// The module's text itself, holes and all: a shipped module's, which
+    /// every boot of the thread shares and no edit replaces.
+    Shared(Rc<str>),
+    /// `range` with the holes cut out, owned: a program's declaration,
+    /// whose versions an edit replaces one by one, so that no version
+    /// keeps another's text alive.
+    Cut(Box<str>),
+}
+
+impl DeclarationText {
+    /// `range` of `module_text` with each of `holes` cut out, copied.
+    /// `holes` are the spans of the declarations nested directly in it, in
+    /// source order. `None` when a hole is not within `range`, the holes
+    /// overlap or are out of order, or a boundary is not a character
+    /// boundary of `module_text`.
+    pub fn cut(module_text: &str, range: Span, holes: &[Span]) -> Option<DeclarationText> {
+        if !fits(module_text, range, holes) {
+            return None;
+        }
+        let mut owned = String::new();
+        for (start, end) in segment_bounds(range, holes) {
+            owned.push_str(module_text.get(offset(start)..offset(end))?);
+        }
+        Some(DeclarationText {
+            storage: TextStorage::Cut(owned.into_boxed_str()),
+            range,
+            holes: holes.to_vec(),
+        })
+    }
+
+    /// The same, sharing `module_text` instead of copying it: for a module
+    /// whose declarations are never replaced.
+    pub fn shared(module_text: Rc<str>, range: Span, holes: &[Span]) -> Option<DeclarationText> {
+        if !fits(&module_text, range, holes) {
+            return None;
+        }
+        Some(DeclarationText {
+            storage: TextStorage::Shared(module_text),
+            range,
+            holes: holes.to_vec(),
+        })
+    }
+
+    /// The text `span` covers, which must lie within the declaration and in
+    /// no hole; `None` otherwise.
+    pub fn slice(&self, span: Span) -> Option<&str> {
+        if span.start > span.end || span.start < self.range.start || span.end > self.range.end {
+            return None;
+        }
+        if self
+            .holes
+            .iter()
+            .any(|hole| span.start < hole.end && hole.start < span.end)
+        {
+            return None;
+        }
+        match &self.storage {
+            TextStorage::Shared(text) => source_text(text, span),
+            TextStorage::Cut(text) => {
+                let start = self.cut_offset(span.start);
+                text.get(start..start + offset(span.end - span.start))
+            }
+        }
+    }
+
+    /// The declaration's whole text with `nested[i]` in hole `i`; `None`
+    /// unless there is one text per hole.
+    pub fn assemble(&self, nested: &[String]) -> Option<String> {
+        if nested.len() != self.holes.len() {
+            return None;
+        }
+        let segments = self.segments()?;
+        let length = segments.iter().map(|segment| segment.len()).sum::<usize>()
+            + nested.iter().map(String::len).sum::<usize>();
+        let mut assembled = String::with_capacity(length);
+        for (index, segment) in segments.iter().enumerate() {
+            assembled.push_str(segment);
+            if let Some(filling) = nested.get(index) {
+                assembled.push_str(filling);
+            }
+        }
+        Some(assembled)
+    }
+
+    /// Where the declaration began and ended in the module text it was
+    /// read in: what an image writes.
+    pub fn range(&self) -> Span {
+        self.range
+    }
+
+    /// The spans of its holes in the module text it was read in, in source
+    /// order: what an image writes.
+    pub fn holes(&self) -> &[Span] {
+        &self.holes
+    }
+
+    /// The text with every hole cut out: what an image writes.
+    pub fn cut_text(&self) -> std::borrow::Cow<'_, str> {
+        match &self.storage {
+            TextStorage::Cut(text) => std::borrow::Cow::Borrowed(text),
+            TextStorage::Shared(_) => {
+                std::borrow::Cow::Owned(self.segments().unwrap_or_default().concat())
+            }
+        }
+    }
+
+    /// Whether the text shares its module's instead of owning a copy.
+    #[cfg(test)]
+    pub fn is_shared(&self) -> bool {
+        matches!(self.storage, TextStorage::Shared(_))
+    }
+
+    /// The text between the holes, one more piece than there are holes.
+    /// Never `None` for a text `cut` or `shared` made, which checked every
+    /// boundary.
+    fn segments(&self) -> Option<Vec<&str>> {
+        segment_bounds(self.range, &self.holes)
+            .map(|(start, end)| match &self.storage {
+                TextStorage::Shared(text) => text.get(offset(start)..offset(end)),
+                TextStorage::Cut(text) => {
+                    let cut_start = self.cut_offset(start);
+                    text.get(cut_start..cut_start + offset(end - start))
+                }
+            })
+            .collect()
+    }
+
+    /// Where the module text's offset `position`, in no hole, lies in the
+    /// cut text: past the range's start, less every hole before it.
+    fn cut_offset(&self, position: u32) -> usize {
+        let removed: u32 = self
+            .holes
+            .iter()
+            .filter(|hole| hole.end <= position)
+            .map(|hole| hole.end - hole.start)
+            .sum();
+        offset(position - self.range.start - removed)
+    }
+
+    /// The length of the text with every hole cut out.
+    fn cut_length(&self) -> usize {
+        let holes: u32 = self.holes.iter().map(|hole| hole.end - hole.start).sum();
+        offset(self.range.end - self.range.start - holes)
     }
 }
 
+/// Prints the extent, the hole count and the length, never the text, so
+/// that printing a mixin, whose `Debug` is derived, prints no module.
+impl std::fmt::Debug for DeclarationText {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "DeclarationText({}..{}, {} holes, {} bytes)",
+            self.range.start,
+            self.range.end,
+            self.holes.len(),
+            self.cut_length()
+        )
+    }
+}
+
+/// A `u32` offset as a `usize`, which holds every `u32` on the targets
+/// the runtime builds for.
+fn offset(value: u32) -> usize {
+    value as usize
+}
+
+/// Whether `range` lies within `module_text`, each of `holes` within
+/// `range` and after the one before it, and every boundary on a character
+/// boundary of `module_text`.
+fn fits(module_text: &str, range: Span, holes: &[Span]) -> bool {
+    let boundary = |position: u32| module_text.is_char_boundary(offset(position));
+    if range.start > range.end || offset(range.end) > module_text.len() {
+        return false;
+    }
+    if !boundary(range.start) || !boundary(range.end) {
+        return false;
+    }
+    let mut previous_end = range.start;
+    for hole in holes {
+        if hole.start < previous_end || hole.start > hole.end || hole.end > range.end {
+            return false;
+        }
+        if !boundary(hole.start) || !boundary(hole.end) {
+            return false;
+        }
+        previous_end = hole.end;
+    }
+    true
+}
+
+/// The module-text bounds of the pieces between `holes` within `range`:
+/// from the range's start to the first hole, between each two, and from
+/// the last hole to the range's end.
+fn segment_bounds(range: Span, holes: &[Span]) -> impl Iterator<Item = (u32, u32)> + '_ {
+    let starts = std::iter::once(range.start).chain(holes.iter().map(|hole| hole.end));
+    let ends = holes
+        .iter()
+        .map(|hole| hole.start)
+        .chain(std::iter::once(range.end));
+    starts.zip(ends)
+}
+
 /// The part of `text` that `span` covers, or `None` unless `span.start <=
-/// span.end <= text.len()` and both ends fall on character boundaries. The
-/// one way a module's text is sliced: a span read from an image is the
-/// image's to choose, so a span past the text or inside a character
-/// answers no source rather than a panic.
+/// span.end <= text.len()` and both ends fall on character boundaries: a
+/// span read from an image is the image's to choose, so a span past the
+/// text or inside a character answers no source rather than a panic.
 pub fn source_text(text: &str, span: Span) -> Option<&str> {
     let start = usize::try_from(span.start).ok()?;
     let end = usize::try_from(span.end).ok()?;
@@ -754,7 +965,7 @@ impl Mixin {
             root_shape: None,
             shipped: false,
             enclosing: OnceCell::new(),
-            module_text: None,
+            text: None,
         }
     }
 
@@ -1190,28 +1401,109 @@ pub fn preorder(mixin: &Rc<Mixin>, out: &mut Vec<Rc<Mixin>>) {
 }
 
 #[cfg(test)]
-mod source_text_tests {
-    use super::source_text;
+mod declaration_text_tests {
+    use super::DeclarationText;
     use ns_syntax::Span;
+    use std::rc::Rc;
 
-    /// A span from an image is untrusted: only one inside the text and on
-    /// character boundaries answers a slice.
+    /// A text with no hole, over the whole of `text`.
+    fn whole(text: &str) -> DeclarationText {
+        DeclarationText::cut(text, Span::new(0, text.len() as u32), &[]).expect("cut")
+    }
+
+    /// A span inside the text and on character boundaries answers a slice.
     #[test]
-    fn a_span_outside_the_text_answers_no_source() {
+    fn a_span_inside_the_text_answers_its_slice() {
         let text = "abc\u{e9}";
         assert_eq!(text.len(), 5);
-        assert_eq!(source_text(text, Span::new(0, 3)), Some("abc"));
-        assert_eq!(source_text(text, Span::new(0, 5)), Some("abc\u{e9}"));
+        let declaration = whole(text);
+        assert_eq!(declaration.slice(Span::new(0, 3)), Some("abc"));
+        assert_eq!(declaration.slice(Span::new(0, 5)), Some("abc\u{e9}"));
+    }
+
+    /// A span from an image is untrusted: one past the text, inside a
+    /// character or reversed answers no source.
+    #[test]
+    fn a_span_outside_the_text_answers_no_source() {
+        let declaration = whole("abc\u{e9}");
         assert_eq!(
-            source_text(text, Span::new(0, 4)),
+            declaration.slice(Span::new(0, 4)),
             None,
             "inside the e-acute"
         );
-        assert_eq!(source_text(text, Span::new(2, 9)), None, "past the end");
+        assert_eq!(declaration.slice(Span::new(2, 9)), None, "past the end");
         // `Span::new` refuses a reversed span in a debug build; an image's
         // bytes are not built through it.
         let reversed = Span { start: 3, end: 1 };
-        assert_eq!(source_text(text, reversed), None, "reversed");
+        assert_eq!(declaration.slice(reversed), None, "reversed");
+    }
+
+    const MODULE: &str = "Newspeak3\n'Test'\nclass Outer = (\n  (* \u{e4} *) class Inner = (\n  ) ( public a = ( ^1 ) )\n  public b = ( ^2 )\n)\n";
+
+    fn span_of(text: &str, needle: &str) -> Span {
+        let start = text.find(needle).expect("the needle is in the text");
+        Span::new(start as u32, (start + needle.len()) as u32)
+    }
+
+    /// The root's text is the whole module with its nested declaration cut
+    /// out; filling the hole back gives the module byte for byte.
+    #[test]
+    fn a_cut_text_assembles_to_the_module() {
+        let inner = span_of(MODULE, "class Inner = (\n  ) ( public a = ( ^1 ) )");
+        let whole = Span::new(0, MODULE.len() as u32);
+        let root = DeclarationText::cut(MODULE, whole, &[inner]).expect("cut");
+        let nested = DeclarationText::cut(MODULE, inner, &[]).expect("cut");
+        let nested_text = nested.assemble(&[]).expect("no holes");
+        assert_eq!(root.assemble(&[nested_text]).as_deref(), Some(MODULE));
+        assert!(!root.cut_text().contains("public a"));
+    }
+
+    /// A span after a hole still slices the text it was recorded against,
+    /// and one inside a hole or across one slices nothing.
+    #[test]
+    fn a_span_slices_around_the_holes() {
+        let inner = span_of(MODULE, "class Inner = (\n  ) ( public a = ( ^1 ) )");
+        let root =
+            DeclarationText::cut(MODULE, Span::new(0, MODULE.len() as u32), &[inner]).expect("cut");
+        assert_eq!(
+            root.slice(span_of(MODULE, "public b = ( ^2 )")),
+            Some("public b = ( ^2 )")
+        );
+        assert_eq!(
+            root.slice(span_of(MODULE, "(* \u{e4} *)")),
+            Some("(* \u{e4} *)")
+        );
+        assert_eq!(root.slice(span_of(MODULE, "public a = ( ^1 )")), None);
+        assert_eq!(root.slice(Span::new(inner.start - 1, inner.end + 1)), None);
+    }
+
+    /// Holes out of order, overlapping, outside the range or off a
+    /// character boundary cut nothing.
+    #[test]
+    fn a_hole_that_does_not_fit_cuts_nothing() {
+        let whole = Span::new(0, MODULE.len() as u32);
+        let first = span_of(MODULE, "class Inner");
+        let second = span_of(MODULE, "public b");
+        assert!(DeclarationText::cut(MODULE, whole, &[second, first]).is_none());
+        assert!(DeclarationText::cut(MODULE, whole, &[first, first]).is_none());
+        assert!(DeclarationText::cut(MODULE, first, &[second]).is_none());
+        let umlaut = MODULE.find('\u{e4}').expect("an umlaut") as u32;
+        assert!(
+            DeclarationText::cut(MODULE, whole, &[Span::new(umlaut + 1, umlaut + 2)]).is_none()
+        );
+    }
+
+    /// The shared form answers exactly what the cut form answers.
+    #[test]
+    fn the_shared_form_answers_as_the_cut_one() {
+        let inner = span_of(MODULE, "class Inner = (\n  ) ( public a = ( ^1 ) )");
+        let whole = Span::new(0, MODULE.len() as u32);
+        let cut = DeclarationText::cut(MODULE, whole, &[inner]).expect("cut");
+        let shared = DeclarationText::shared(Rc::from(MODULE), whole, &[inner]).expect("shared");
+        let probe = span_of(MODULE, "public b = ( ^2 )");
+        assert_eq!(cut.slice(probe), shared.slice(probe));
+        assert_eq!(cut.cut_text(), shared.cut_text());
+        assert_eq!(cut.assemble(&["X".into()]), shared.assemble(&["X".into()]));
     }
 }
 

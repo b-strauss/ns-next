@@ -432,7 +432,7 @@ fn load_refuses_an_image_that_is_not_started() {
         let modules = [ns_runtime::image::ModuleSource {
             class,
             origin: &origin,
-            source: None,
+            with_source: false,
         }];
         ns_runtime::image::snapshot(mutator, &modules, &[]).expect("snapshot")
     });

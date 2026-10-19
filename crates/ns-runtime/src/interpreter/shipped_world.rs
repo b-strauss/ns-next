@@ -1281,7 +1281,7 @@ mod tests {
                 .heap()
                 .known_mixin_id(&list)
                 .expect("List was built");
-            mutator.replace_mixin(id, Rc::new((*list).clone()), None);
+            mutator.replace_mixin(id, Rc::new((*list).clone()));
         });
     }
 

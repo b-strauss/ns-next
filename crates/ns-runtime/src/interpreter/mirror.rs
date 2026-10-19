@@ -647,7 +647,7 @@ mod tests {
             let modules = [crate::image::ModuleSource {
                 class,
                 origin: &origin,
-                source: None,
+                with_source: false,
             }];
             crate::image::snapshot(mutator, &modules, &[holder])
         });

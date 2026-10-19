@@ -2047,10 +2047,9 @@ impl<'gc> Mutator<'gc> {
         application
     }
 
-    /// Installs `replacement`, read in `module_text`, as the current
-    /// version of the mixin `id` (`Heap::replace_mixin`), and forgets the
-    /// applications and the synthesized class side built from the
-    /// previous one, so that the next application of the id applies the
+    /// Installs `replacement` as the current version of the mixin `id`
+    /// (`Heap::replace_mixin`), and forgets the applications and the
+    /// synthesized class side built from the previous one, so that the next application of the id applies the
     /// replacement. Applications already built, and the class objects
     /// naming them, keep the version they were built from; the install
     /// (`install_edit`) re-applies those.
@@ -2058,9 +2057,8 @@ impl<'gc> Mutator<'gc> {
         &mut self,
         id: crate::heap::MixinId,
         replacement: Rc<crate::mixin::Mixin>,
-        module_text: Option<crate::mixin::ModuleText>,
     ) {
-        self.heap.replace_mixin(id, replacement, module_text);
+        self.heap.replace_mixin(id, replacement);
         self.applications.retain(|(mixin, _), _| *mixin != id);
         self.metaclass_mixins.remove(&id);
     }
@@ -2321,13 +2319,11 @@ mod tests {
     "};
 
     /// A replacement for `OUTER`'s `Inner`: `REPLACEMENT`'s `Inner`, whose
-    /// `answer` answers 2, as a fresh mixin no id names yet, and the text it
-    /// is to be read in. The copy holds no text of its own and still names
+    /// `answer` answers 2, as a fresh mixin no id names yet. The copy holds
+    /// its own text, as an edit's fresh version does, and still names
     /// `Elsewhere` as its enclosing mixin, so that a reader that asks the
-    /// mixin rather than its id answers something else.
-    fn replacement_inner(
-        interpreter: &mut Interpreter,
-    ) -> (Rc<crate::mixin::Mixin>, crate::mixin::ModuleText) {
+    /// mixin rather than its id for the link answers something else.
+    fn replacement_inner(interpreter: &mut Interpreter) -> Rc<crate::mixin::Mixin> {
         let module = ns_syntax::parse(REPLACEMENT).expect("parse");
         let resolved = crate::resolve(
             module,
@@ -2337,14 +2333,7 @@ mod tests {
         .expect("resolve");
         let class = interpreter.load_module(&resolved);
         let inner = interpreter.enter(|mutator| root_mixin(mutator, &class).nested[0].clone());
-        let replacement = crate::mixin::Mixin {
-            module_text: None,
-            ..(*inner).clone()
-        };
-        (
-            Rc::new(replacement),
-            crate::mixin::ModuleText(Rc::from(REPLACEMENT)),
-        )
+        Rc::new((*inner).clone())
     }
 
     /// The mixin of the module root `class` holds.
@@ -2367,7 +2356,6 @@ mod tests {
         interpreter: &mut Interpreter,
         outer: &Root,
         replacement: Rc<crate::mixin::Mixin>,
-        text: crate::mixin::ModuleText,
     ) -> crate::heap::MixinId {
         interpreter.enter(|mutator| {
             let original = root_mixin(mutator, outer).nested[0].clone();
@@ -2375,7 +2363,7 @@ mod tests {
                 .heap()
                 .known_mixin_id(&original)
                 .expect("applying Outer registered Inner");
-            mutator.replace_mixin(id, replacement, Some(text));
+            mutator.replace_mixin(id, replacement);
             id
         })
     }
@@ -2402,7 +2390,7 @@ mod tests {
     #[test]
     fn every_version_of_a_mixin_answers_one_id() {
         let (mut interpreter, outer) = load(OUTER);
-        let (replacement, text) = replacement_inner(&mut interpreter);
+        let replacement = replacement_inner(&mut interpreter);
         interpreter.enter(|mutator| {
             let outer_mixin = root_mixin(mutator, &outer);
             let original = outer_mixin.nested[0].clone();
@@ -2411,7 +2399,7 @@ mod tests {
                 .known_mixin_id(&original)
                 .expect("applying Outer registered Inner");
             let reified = mutator.reified_mixin(&original);
-            mutator.replace_mixin(id, replacement.clone(), Some(text));
+            mutator.replace_mixin(id, replacement.clone());
             let heap = mutator.heap();
             assert_eq!(heap.known_mixin_id(&original), Some(id));
             assert_eq!(heap.known_mixin_id(&replacement), Some(id));
@@ -2437,8 +2425,8 @@ mod tests {
             small_integer_answer(&mut interpreter, &first, "fresh"),
             Some(1)
         );
-        let (replacement, text) = replacement_inner(&mut interpreter);
-        replace_inner(&mut interpreter, &outer, replacement, text);
+        let replacement = replacement_inner(&mut interpreter);
+        replace_inner(&mut interpreter, &outer, replacement);
         assert_eq!(
             small_integer_answer(&mut interpreter, &first, "fresh"),
             Some(1),
@@ -2486,7 +2474,7 @@ mod tests {
                 superclass: Option<&Rc<crate::mixin::MixinApplication>>,
             ) -> crate::heap::ApplicationIndex {
                 let version = Rc::new(mixin.clone());
-                mutator.replace_mixin(id, version.clone(), None);
+                mutator.replace_mixin(id, version.clone());
                 let application = mutator.apply_mixin(&version, superclass);
                 assert!(mutator
                     .heap_mut()
@@ -2518,8 +2506,8 @@ mod tests {
             interpreter.send(&first, Symbol::intern("inner"), &[]),
             "the first Inner",
         );
-        let (replacement, text) = replacement_inner(&mut interpreter);
-        replace_inner(&mut interpreter, &outer, replacement, text);
+        let replacement = replacement_inner(&mut interpreter);
+        replace_inner(&mut interpreter, &outer, replacement);
         let second = expect_ok(interpreter.instantiate(&outer, &[]), "the second Outer");
         let new_inner = expect_ok(
             interpreter.send(&second, Symbol::intern("inner"), &[]),
@@ -2571,27 +2559,19 @@ mod tests {
         )
     }
 
-    /// The mirrors read a replaced mixin's enclosing mixin and text from
-    /// its id's row, not from the replacement, whose own link and text a
-    /// builder set for wherever it was built. The text it is read in
-    /// becomes its module's current text, as an install makes it.
+    /// The mirrors read a replaced mixin's enclosing mixin from its id's
+    /// row, not from the replacement, whose own link a builder set for
+    /// wherever it was built; its source is its own text, which its
+    /// module's text holds from the replacement on.
     #[test]
-    fn a_replaced_mixin_reads_its_enclosing_mixin_and_text_through_the_id() {
+    fn a_replaced_mixin_reads_its_enclosing_mixin_through_the_id_and_its_own_text() {
         let (mut interpreter, outer) = load(OUTER);
-        let (replacement, text) = replacement_inner(&mut interpreter);
+        let replacement = replacement_inner(&mut interpreter);
         let expected = crate::mixin::source_text(REPLACEMENT, replacement.span)
             .expect("the replacement's span lies in its text")
             .to_string();
         assert!(expected.contains("^2"), "{expected}");
-        let id = replace_inner(&mut interpreter, &outer, replacement, text.clone());
-        interpreter.enter(|mutator| {
-            let root = root_mixin(mutator, &outer);
-            let root_id = mutator
-                .heap()
-                .known_mixin_id(&root)
-                .expect("loading Outer registered it");
-            mutator.heap.set_current_module_text(root_id, text);
-        });
+        let id = replace_inner(&mut interpreter, &outer, replacement);
         let (inner, outer_mixin) = interpreter.enter(|mutator| {
             let inner = mutator.heap().mixin(id).expect("the id has a row");
             let inner = mutator.reified_mixin(&inner);

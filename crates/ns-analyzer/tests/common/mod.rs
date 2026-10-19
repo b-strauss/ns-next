@@ -133,7 +133,7 @@ pub fn build_image(source: &Path, lowering: ns_runtime::Lowering, with_source: b
         let modules = [ns_runtime::image::ModuleSource {
             class,
             origin: &origin,
-            source: with_source.then_some(text.as_str()),
+            with_source,
         }];
         ns_runtime::image::package(mutator, &modules, mutator.fetch(&application))
     });

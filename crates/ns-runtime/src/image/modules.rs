@@ -15,38 +15,43 @@ use crate::mixin::Mixin;
 use crate::types::{BuiltinClass, ClassReference, SourceOrigin};
 use crate::Mutator;
 
-/// One module an artifact carries, as a writer is handed it.
+/// One module an artifact carries, as a writer is handed it. `with_source`
+/// asks for the module's text in the image, which the encoder reads from
+/// the heap (`Heap::module_source`): after an edit the host's file is no
+/// longer the program's text.
 pub struct ModuleSource<'a, 'gc> {
     pub class: ClassReference<'gc>,
     pub origin: &'a SourceOrigin,
-    pub source: Option<&'a str>,
+    pub with_source: bool,
 }
 
-/// Every module's origin, source when `with_source`, and the object id of
-/// its root class's record (`root_ids`, in the same order), in module order
-/// -- the order of the mixin table's trees.
+/// Every module's origin, its text when `with_source` (`texts`, in the
+/// same order, read from the heap), and the object id of its root class's
+/// record (`root_ids`, in the same order), in module order -- the order of
+/// the mixin table's trees.
 ///
 /// Source travels for every module or for none: the header's one flag says
-/// which, so a module handed none while another carries its own could only
-/// be written by inventing an empty text for it.
+/// which, so a module without text while another carries its own could
+/// only be written by inventing an empty text for it.
 pub fn encode_modules(
     writer: &mut Writer,
     modules: &[ModuleSource<'_, '_>],
+    texts: &[Option<String>],
     root_ids: &[u32],
     with_source: bool,
 ) -> Result<(), String> {
     writer.write_u32(encode::u32_field("module count", modules.len()));
-    for (module, root_id) in modules.iter().zip(root_ids) {
+    for ((module, text), root_id) in modules.iter().zip(texts).zip(root_ids) {
         encode::encode_source_origin(writer, module.origin);
         if with_source {
-            let Some(source) = module.source else {
+            let Some(text) = text.as_deref().filter(|_| module.with_source) else {
                 return Err(
                     "image encoding carries source for every module or for none: \
-                            one module was handed none"
+                     one module has none"
                         .to_string(),
                 );
             };
-            writer.write_str(source);
+            writer.write_str(text);
         }
         writer.write_u32(*root_id);
     }
@@ -61,7 +66,8 @@ const MIN_MODULE_BYTES: usize = 1 + 4 + 4;
 pub struct DecodedModule {
     pub origin: SourceOrigin,
     /// The module's text, when the image carries source: one allocation,
-    /// which every mixin of the module and the host's `LoadedModule` share.
+    /// which the host's `LoadedModule` holds and each mixin of the module
+    /// cuts its declaration's text from (`mixins::build`).
     pub source: Option<Rc<str>>,
     /// The object id of the graph record that is the module's root class,
     /// held to the module by `module_root_classes` once the graph exists.

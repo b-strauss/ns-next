@@ -13,7 +13,7 @@ use ns_syntax::ast;
 use super::instantiate::{method_name, ModuleSource};
 use super::Mutator;
 use crate::heap::{Heap, MixinId};
-use crate::mixin::{Mixin, ModuleText};
+use crate::mixin::Mixin;
 use crate::types::{SourceOrigin, Value};
 use crate::Symbol;
 
@@ -52,12 +52,13 @@ pub(crate) struct EditedTexts {
 /// What preparing an edit answers: everything the install needs, built and
 /// registered nowhere.
 pub(crate) struct PreparedEdit {
-    /// The module's root mixin's id, which keys its current text.
-    pub(crate) module_root: MixinId,
-    /// The whole edited module's text.
-    pub(crate) module_text: ModuleText,
-    /// The edited declaration's and its header's text, sliced from
-    /// `module_text`.
+    /// The whole edited module's text, from which each fresh mixin cut
+    /// its declaration's: the install reads each fresh mixin's own, and
+    /// the tests read the whole.
+    #[cfg(test)]
+    pub(crate) module_text: Rc<str>,
+    /// The edited declaration's and its header's text, sliced from the
+    /// edited module's text.
     pub(crate) texts: EditedTexts,
     /// Every fresh mixin with the id it is installed under: the edited
     /// declaration's instance side first, then its class side, then
@@ -189,10 +190,9 @@ impl<'gc> Mutator<'gc> {
             ));
         }
         let (module_root, path) = self.path_from_module_root(id);
-        let Some(original_text) = self.heap.current_module_text(module_root) else {
+        let Some(original_text) = self.heap.module_source(module_root) else {
             return Err(format!("{name} has no source text to edit"));
         };
-        let original_text: Rc<str> = original_text.0;
         let original = parse_module(&original_text, &name)?;
         let Some(original_declaration) = find_declaration(&original.root_class, &path) else {
             return Err(format!(
@@ -275,8 +275,8 @@ impl<'gc> Mutator<'gc> {
         let mut synthesized = Vec::new();
         self.pair(id, &current, &fresh, &mut replacements, &mut synthesized);
         Ok(PreparedEdit {
-            module_root,
-            module_text: ModuleText(text),
+            #[cfg(test)]
+            module_text: text,
             texts: EditedTexts {
                 declaration: declaration_text,
                 header: header_text,
@@ -284,29 +284,6 @@ impl<'gc> Mutator<'gc> {
             replacements,
             synthesized,
         })
-    }
-
-    /// The text of the declaration of the mixin `id`, an instance side,
-    /// from its access modifier (or `class`) to its closing parenthesis,
-    /// as its module's current text holds it; `None` where its version
-    /// has no text. A mixin outside an installed edit's subtree keeps the
-    /// text it was read in, which no longer holds what the edit changed
-    /// inside it, so its declaration is found again by its path of names
-    /// in the current text.
-    pub(crate) fn current_declaration_source(&self, id: MixinId) -> Option<String> {
-        let version_text = self.heap.mixin_module_text(id)?;
-        let (module_root, path) = self.path_from_module_root(id);
-        match self.heap.current_module_text(module_root) {
-            Some(current) if !Rc::ptr_eq(&current.0, &version_text.0) => {
-                let module = ns_syntax::parse(&current.0).ok()?;
-                let declaration = find_declaration(&module.root_class, &path)?;
-                crate::mixin::source_text(&current.0, declaration.span).map(str::to_string)
-            }
-            _ => {
-                let mixin = self.heap.mixin(id)?;
-                crate::mixin::source_text(&version_text.0, mixin.span).map(str::to_string)
-            }
-        }
     }
 
     /// The id of the module root the mixin `id` is declared in, and the
@@ -816,7 +793,7 @@ mod tests {
 
     fn refusal(interpreter: &mut Interpreter, id: MixinId, edit: &Edit) -> String {
         match interpreter.enter(|mutator| mutator.prepare_edit(id, edit)) {
-            Ok(prepared) => panic!("the edit was prepared: {}", prepared.module_text.0),
+            Ok(prepared) => panic!("the edit was prepared: {}", prepared.module_text),
             Err(diagnostic) => diagnostic,
         }
     }
@@ -844,12 +821,11 @@ mod tests {
     #[test]
     fn adding_a_method_answers_the_declaration_with_it() {
         let (mut interpreter, outer) = load(OUTER);
-        let (root_id, inner_id) = root_and_inner_ids(&mut interpreter, &outer);
+        let (_, inner_id) = root_and_inner_ids(&mut interpreter, &outer);
         let prepared = prepare(&mut interpreter, inner_id, &add_method("public b = (^2)"));
-        assert_eq!(prepared.module_root, root_id);
         let close = OUTER.find("\n  )\n)").expect("Inner's members close") + 3;
         let expected = format!("{}\npublic b = (^2)\n{}", &OUTER[..close], &OUTER[close..]);
-        assert_eq!(&*prepared.module_text.0, expected);
+        assert_eq!(&*prepared.module_text, expected);
         assert!(prepared.texts.declaration.contains("public a = ( ^1 )"));
         assert!(prepared.texts.declaration.contains("public b = (^2)"));
         assert!(prepared.texts.declaration.starts_with("public class Inner"));
@@ -897,17 +873,17 @@ mod tests {
         let (_, inner_id) = root_and_inner_ids(&mut interpreter, &outer);
         let replaced = prepare(&mut interpreter, inner_id, &add_method("public a = (^3)"));
         assert_eq!(
-            &*replaced.module_text.0,
+            &*replaced.module_text,
             source.replace("/// Answers one.\n    public a = ( ^1 )", "public a = (^3)")
         );
-        assert_eq!(replaced.module_text.0.matches("public a").count(), 1);
+        assert_eq!(replaced.module_text.matches("public a").count(), 1);
         let removed = prepare(
             &mut interpreter,
             inner_id,
             &instance_edit(vec![MemberEdit::RemoveMethod(Symbol::intern("a"))]),
         );
         assert_eq!(
-            &*removed.module_text.0,
+            &*removed.module_text,
             source.replace("/// Answers one.\n    public a = ( ^1 )", "")
         );
         let (_, fresh) = &removed.replacements[0];
@@ -918,7 +894,7 @@ mod tests {
             inner_id,
             &instance_edit(vec![MemberEdit::RemoveMethod(Symbol::intern("missing"))]),
         );
-        assert_eq!(&*unchanged.module_text.0, source);
+        assert_eq!(&*unchanged.module_text, source);
     }
 
     /// A new header gives the fresh mixin the slots it declares.
@@ -1014,7 +990,6 @@ mod tests {
         let prepared = prepare(&mut interpreter, inner_id, &edit);
         assert!(prepared
             .module_text
-            .0
             .contains(") : (\npublic make = ( ^self new )\n)"));
         let (_, fresh) = &prepared.replacements[0];
         let class_side = fresh.class_side.clone().expect("a declared class side");
@@ -1089,13 +1064,13 @@ mod tests {
         let (root_id, inner_id) = root_and_inner_ids(&mut interpreter, &outer);
         let first = prepare(&mut interpreter, inner_id, &add_method("public b = (^2)"));
         interpreter.enter(|mutator| {
-            mutator
-                .heap
-                .set_current_module_text(first.module_root, first.module_text.clone());
+            for (id, fresh) in &first.replacements {
+                mutator.replace_mixin(*id, Rc::clone(fresh));
+            }
         });
         let second = prepare(&mut interpreter, root_id, &add_method("public d = (^4)"));
-        assert!(second.module_text.0.contains("public b = (^2)"));
-        assert!(second.module_text.0.contains("public d = (^4)"));
+        assert!(second.module_text.contains("public b = (^2)"));
+        assert!(second.module_text.contains("public d = (^4)"));
         let (_, fresh_outer) = &second.replacements[0];
         assert!(fresh_outer.nested[0]
             .methods
@@ -1137,10 +1112,10 @@ mod tests {
             MemberEdit::AddMethod("public b = ( ^'é' )".to_string()),
         ]);
         let prepared = prepare(&mut interpreter, inner_id, &edit);
-        assert_eq!(&*prepared.module_text.0, expected);
+        assert_eq!(&*prepared.module_text, expected);
         let (_, fresh) = &prepared.replacements[0];
         let method_source = crate::mixin::source_text(
-            &prepared.module_text.0,
+            &prepared.module_text,
             compiled_method(fresh, "a").code.source,
         );
         assert_eq!(method_source, Some("public a = ( ^'ö🙂ü' )"));
@@ -1224,10 +1199,7 @@ mod tests {
         let (version, text, mixin_count, application_count) = interpreter.enter(|mutator| {
             (
                 mutator.heap.mixin(inner_id).expect("Inner's row"),
-                mutator
-                    .heap
-                    .current_module_text(root_id)
-                    .expect("Outer's text"),
+                mutator.heap.module_source(root_id).expect("Outer's text"),
                 mixin_count_of(mutator.heap()),
                 application_count_of(mutator.heap()),
             )
@@ -1237,11 +1209,8 @@ mod tests {
             interpreter.enter(|mutator| {
                 let current = mutator.heap.mixin(inner_id).expect("Inner's row");
                 assert!(Rc::ptr_eq(&current, &version));
-                let current_text = mutator
-                    .heap
-                    .current_module_text(root_id)
-                    .expect("Outer's text");
-                assert!(Rc::ptr_eq(&current_text.0, &text.0));
+                let current_text = mutator.heap.module_source(root_id).expect("Outer's text");
+                assert_eq!(current_text, text);
                 assert_eq!(mixin_count_of(mutator.heap()), mixin_count);
                 assert_eq!(application_count_of(mutator.heap()), application_count);
             });

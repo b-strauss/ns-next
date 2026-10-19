@@ -284,7 +284,7 @@ fn disasm_refuses_an_initializer_an_artifact_does_not_carry() {
         let modules = [ns_runtime::image::ModuleSource {
             class,
             origin: &origin,
-            source: None,
+            with_source: false,
         }];
         ns_runtime::image::package(mutator, &modules, mutator.fetch(&instance)).expect("package")
     });

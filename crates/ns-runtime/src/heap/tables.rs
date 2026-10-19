@@ -18,7 +18,7 @@ use std::rc::Rc;
 
 use crate::bytecode::CompiledCode;
 use crate::hash::IdentityMap;
-use crate::mixin::{Mixin, MixinApplication, MixinMethod, ModuleText};
+use crate::mixin::{Mixin, MixinApplication, MixinMethod};
 
 macro_rules! table_index {
     ($name:ident, $what:literal) => {
@@ -84,18 +84,6 @@ pub(crate) struct Tables {
     /// (`Mixin::enclosing`), read once, when the mixin is registered, and
     /// kept by a replacement.
     pub(crate) enclosing: Vec<Option<MixinId>>,
-    /// Per id, the text of the module the current version is read in
-    /// (`Mixin::module_text`), read when the mixin is registered and given
-    /// anew by a replacement.
-    pub(crate) module_texts: Vec<Option<ModuleText>>,
-    /// Per module, by its root mixin's id, the text an edit last made the
-    /// module's: the next edit of any of its classes starts from it, so it
-    /// carries every earlier one. Kept apart from `module_texts`, because
-    /// the root's row keeps the text its own version's spans point into,
-    /// which an edit of a nested class leaves the root's
-    /// (`docs/design/liveness-and-reflection.md`, "Compiling: the module's
-    /// text is what an edit edits").
-    pub(crate) current_module_texts: IdentityMap<MixinId, ModuleText>,
     pub(crate) applications: Vec<Rc<MixinApplication>>,
     /// Per application an install replaced, the application of the edited
     /// mixin that took its place, always the newest of its chain

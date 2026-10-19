@@ -3324,14 +3324,13 @@ impl<'gc> Heap<'gc> {
     }
 
     /// Mints the next id for `mixin`, declared in the mixin `enclosing`
-    /// names, and copies its module's text into the row.
+    /// names.
     fn register_mixin(&mut self, mixin: &Rc<Mixin>, enclosing: Option<MixinId>) -> MixinId {
         let id = MixinId::from_index(self.tables.mixins.len())
             .expect("more than u32::MAX mixins in one heap");
         self.tables.mixins.push(mixin.clone());
         self.tables.enclosing.push(enclosing);
         self.tables.edited.push(false);
-        self.tables.module_texts.push(mixin.module_text.clone());
         self.tables
             .mixin_ids
             .insert(crate::mixin::mixin_key(mixin), id);
@@ -3376,39 +3375,61 @@ impl<'gc> Heap<'gc> {
         *self.tables.enclosing.get(id.index())?
     }
 
-    /// The text of the module the mixin `id` is read in; `None` where its
-    /// current version has none (`Mixin::module_text`) and for an id past
-    /// the table.
-    pub(crate) fn mixin_module_text(&self, id: MixinId) -> Option<crate::mixin::ModuleText> {
-        self.tables.module_texts.get(id.index())?.clone()
+    /// `mixin`'s text with every hole filled by the assembled text of the
+    /// current version of the nested declaration it stands for, found
+    /// through the nested mixin's id; a nested mixin nothing has
+    /// registered is its own current version. For a module's root, the
+    /// module's current text, every edit of a declaration in it included.
+    /// `None` where a declaration of the tree has no text, and for a class
+    /// side, whose text is its instance side's and whose own nested list
+    /// is empty.
+    ///
+    /// Recursive along the declarations' nesting, which the parser bounds
+    /// for a module read from source and `image::mixins::MAX_MIXIN_DEPTH`
+    /// for one decoded from an image.
+    pub(crate) fn assembled_text(&self, mixin: &Rc<Mixin>) -> Option<String> {
+        let text = mixin.text.as_ref()?;
+        let nested = mixin
+            .nested
+            .iter()
+            .map(|nested| {
+                let current = self
+                    .known_mixin_id(nested)
+                    .and_then(|id| self.mixin(id))
+                    .unwrap_or_else(|| Rc::clone(nested));
+                self.assembled_text(&current)
+            })
+            .collect::<Option<Vec<String>>>()?;
+        text.assemble(&nested)
+    }
+
+    /// The text of the declaration of the mixin `id`, an instance side,
+    /// from its access modifier (or `class`) to its closing parenthesis,
+    /// as its module's current text holds it: `assembled_text` sliced by
+    /// the declaration's span, which for a module's root cuts the prologue
+    /// and the trailing text. The span counts in the text the version was
+    /// read in, and an edit nested in it changes only what lies between
+    /// its ends, so its start counts from the assembled text's start and
+    /// its end from the assembled text's end. `None` where the version has
+    /// no text or its span does not lie within it.
+    pub(crate) fn declaration_source(&self, id: MixinId) -> Option<String> {
+        let mixin = self.mixin(id)?;
+        let range = mixin.text.as_ref()?.range();
+        let assembled = self.assembled_text(&mixin)?;
+        let start = usize::try_from(mixin.span.start.checked_sub(range.start)?).ok()?;
+        let trailing = usize::try_from(range.end.checked_sub(mixin.span.end)?).ok()?;
+        let end = assembled.len().checked_sub(trailing)?;
+        assembled.get(start..end).map(str::to_string)
     }
 
     /// The current text of the module whose root mixin `module_root`
-    /// names: the text its last edit made it, else the text the root was
-    /// read in (`mixin_module_text`). `None` for a module with no text.
-    pub(crate) fn current_module_text(
-        &self,
-        module_root: MixinId,
-    ) -> Option<crate::mixin::ModuleText> {
-        match self.tables.current_module_texts.get(&module_root) {
-            Some(text) => Some(text.clone()),
-            None => self.mixin_module_text(module_root),
-        }
+    /// names (`assembled_text`); `None` for a module with no text.
+    pub(crate) fn module_source(&self, module_root: MixinId) -> Option<String> {
+        self.assembled_text(&self.mixin(module_root)?)
     }
 
-    /// Makes `text` the current text of the module whose root mixin
-    /// `module_root` names, which the next edit of any of its classes
-    /// starts from.
-    pub(crate) fn set_current_module_text(
-        &mut self,
-        module_root: MixinId,
-        text: crate::mixin::ModuleText,
-    ) {
-        self.tables.current_module_texts.insert(module_root, text);
-    }
-
-    /// Makes `replacement` the current version of the mixin `id`, read in
-    /// `module_text`: from here on `replacement`'s address answers `id`,
+    /// Makes `replacement`, which holds its own text, the current version
+    /// of the mixin `id`: from here on `replacement`'s address answers `id`,
     /// as every earlier version's still does, and the id keeps the
     /// enclosing mixin it was registered with. What was built from an
     /// earlier version keeps it (`Mutator::replace_mixin`).
@@ -3418,12 +3439,7 @@ impl<'gc> Heap<'gc> {
     /// version, which is the binary's code and which the VM mirror's locks
     /// rest on; and a class side replacing an instance side or the other
     /// way round.
-    pub(crate) fn replace_mixin(
-        &mut self,
-        id: MixinId,
-        replacement: Rc<Mixin>,
-        module_text: Option<crate::mixin::ModuleText>,
-    ) {
+    pub(crate) fn replace_mixin(&mut self, id: MixinId, replacement: Rc<Mixin>) {
         assert!(
             self.known_mixin_id(&replacement).is_none(),
             "internal: a replacement mixin is registered under no id yet"
@@ -3449,7 +3465,6 @@ impl<'gc> Heap<'gc> {
             .insert(crate::mixin::mixin_key(&replacement), id);
         let superseded = std::mem::replace(&mut self.tables.mixins[id.index()], replacement);
         self.tables.superseded.push(superseded);
-        self.tables.module_texts[id.index()] = module_text;
         self.tables.edited[id.index()] = true;
     }
 

@@ -266,7 +266,7 @@ pub(crate) fn module_sources<'program, 'gc>(
         .map(|(source, class)| ns_runtime::image::ModuleSource {
             class: crate::entry::class_reference(mutator, class),
             origin: &source.origin,
-            source: with_source.then_some(source.source.as_str()),
+            with_source,
         })
         .collect()
 }

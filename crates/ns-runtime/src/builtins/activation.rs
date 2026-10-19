@@ -356,7 +356,7 @@ mod tests {
                 .nested[0]
                 .clone();
             let id = mutator.heap().known_mixin_id(&inner).expect("registered");
-            mutator.replace_mixin(id, Rc::new((*inner).clone()), None);
+            mutator.replace_mixin(id, Rc::new((*inner).clone()));
         });
         let second = interpreter.instantiate(&outer, &[]).ok().expect("an Outer");
         let new_instance = send(&mut interpreter, &second, "fresh");

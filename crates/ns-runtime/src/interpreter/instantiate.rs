@@ -11,8 +11,8 @@ use ns_syntax::Span;
 use crate::hash::IdentityMap;
 use crate::heap::{Heap, Root};
 use crate::mixin::{
-    slot_accessors, ClauseMessage, Factory, MethodEntry, Mixin, MixinApplicationClause,
-    MixinMethod, MixinSlot,
+    slot_accessors, ClauseMessage, DeclarationText, Factory, MethodEntry, Mixin,
+    MixinApplicationClause, MixinMethod, MixinSlot,
 };
 use crate::types::*;
 use crate::Symbol;
@@ -131,6 +131,41 @@ fn mixin_application_clause_of(clause: &ast::SuperclassClause) -> MixinApplicati
         receiver: Some(Symbol::intern(&clause.receiver.name)),
         message_code: None,
     }
+}
+
+/// The text `declaration` was read in, its nested declarations cut out
+/// (`Mixin::text`): the whole of `module_text` for the module's root
+/// `root` -- its prologue and trailing text are the module's too -- and
+/// the declaration's span otherwise. A shipped module's mixins share the
+/// module's text, which every boot of the thread holds once and no edit
+/// replaces; a program's own a copy each, so that no version an edit
+/// supersedes keeps another's text alive.
+fn declaration_text(
+    declaration: &ast::ClassDeclaration,
+    root: &ast::ClassDeclaration,
+    source: ModuleSource,
+    module_text: &Rc<str>,
+) -> Option<Rc<DeclarationText>> {
+    let range = if std::ptr::eq(declaration, root) {
+        Span::new(0, u32::try_from(module_text.len()).ok()?)
+    } else {
+        declaration.span
+    };
+    let holes: Vec<Span> = declaration
+        .instance_side
+        .nested_classes()
+        .map(|nested| nested.span)
+        .collect();
+    let text = if source.is_shipped() {
+        DeclarationText::shared(Rc::clone(module_text), range, &holes)
+    } else {
+        DeclarationText::cut(module_text, range, &holes)
+    };
+    debug_assert!(
+        text.is_some(),
+        "internal: a parsed declaration's nested declarations lie within it, in order"
+    );
+    text.map(Rc::new)
 }
 
 impl Interpreter {
@@ -292,9 +327,10 @@ impl<'gc> Mutator<'gc> {
     /// and whether it is another shipped module which methods are
     /// recognized as class accessors of `root`, the module's root
     /// declaration (`MixinMethod::class_accessor`). `module_text` is the
-    /// module's text, which every mixin of the tree shares
-    /// (`Mixin::module_text`); each mixin's nested ones and its class side
-    /// are linked to it once it is shared (`Mixin::enclosing`).
+    /// module's text, from which each mixin of the tree takes its
+    /// declaration's (`Mixin::text`, `declaration_text`); each mixin's
+    /// nested ones and its class side are linked to it once it is shared
+    /// (`Mixin::enclosing`).
     pub(crate) fn build_mixin(
         &mut self,
         declaration: &ast::ClassDeclaration,
@@ -397,10 +433,11 @@ impl<'gc> Mutator<'gc> {
                 argument_count: 0,
             },
         };
+        let text = declaration_text(declaration, root, source, module_text);
         let class_side = declaration
             .class_side
             .as_ref()
-            .map(|side| self.build_class_side(side, factory, bindings, kernel, module_text));
+            .map(|side| self.build_class_side(side, factory, bindings, kernel, text.clone()));
         let mut mixin = Mixin {
             name: Symbol::intern(&declaration.name.name),
             access: crate::dispatch::effective_access(declaration.access),
@@ -437,7 +474,7 @@ impl<'gc> Mutator<'gc> {
             shipped: kernel,
             // Set by the caller once the mixin is shared.
             enclosing: std::cell::OnceCell::new(),
-            module_text: Some(crate::mixin::ModuleText(Rc::clone(module_text))),
+            text,
         };
         crate::compiler::compile_mixin_bodies(&mut mixin, bindings, self.lowering);
         mixin
@@ -456,14 +493,15 @@ impl<'gc> Mutator<'gc> {
     /// has no nested classes of its own to load -- only its instance side's
     /// `nested_classes` recurse. `declaration` is `None` because a
     /// `ClassBody` is not itself an `ast::ClassDeclaration`; there is no
-    /// single declaration node to keep as provenance for it.
+    /// single declaration node to keep as provenance for it. `text` is its
+    /// instance side's, whose declaration holds the class side's text.
     fn build_class_side(
         &mut self,
         side: &ast::ClassBody,
         factory: Factory,
         bindings: &Rc<HashMap<Span, Binding>>,
         kernel: bool,
-        module_text: &Rc<str>,
+        text: Option<Rc<DeclarationText>>,
     ) -> Rc<Mixin> {
         let slots = build_slots(side);
         let mut methods = build_methods(side, &slots, bindings, kernel, false, None, self.lowering);
@@ -476,7 +514,7 @@ impl<'gc> Mutator<'gc> {
             initializer_expressions: side.initializer_expressions.clone(),
             span: side.span,
             shipped: kernel,
-            module_text: Some(crate::mixin::ModuleText(Rc::clone(module_text))),
+            text,
             ..Mixin::empty(Symbol::CLASS_SIDE)
         };
         crate::compiler::compile_mixin_bodies(&mut mixin, bindings, self.lowering);
@@ -1773,8 +1811,9 @@ mod tests {
     }
 
     /// Every mixin of a module built from source names the one it is
-    /// declared in -- a class side its instance side -- and shares the
-    /// module's one text.
+    /// declared in -- a class side its instance side -- and holds its own
+    /// declaration's text, which a declared class side shares with its
+    /// instance side.
     #[test]
     fn a_module_built_from_source_links_every_mixin_to_its_enclosing_one() {
         let source = indoc! {"
@@ -1819,20 +1858,21 @@ mod tests {
             assert!(encloses(&outer, &inner));
             assert!(encloses(&inner, &innermost));
             assert!(encloses(&inner, &inner_class_side));
-            for mixin in [&outer, &inner, &innermost, &inner_class_side] {
-                let text = mixin.module_text.as_ref().expect("built from source");
-                assert!(
-                    Rc::ptr_eq(&text.0, &resolved.source),
-                    "{} shares the module's text",
-                    mixin.name
-                );
+            for mixin in [&outer, &inner, &innermost] {
+                let text = mixin.text.as_ref().expect("built from source");
+                assert!(!text.is_shared(), "{} owns its text", mixin.name);
             }
+            let inner_text = inner.text.as_ref().expect("built from source");
+            assert!(inner_class_side
+                .text
+                .as_ref()
+                .is_some_and(|text| Rc::ptr_eq(text, inner_text)));
         });
     }
 
     /// A class that declares no class side gets one synthesized, which
-    /// names the instance side it was synthesized for and has no text of
-    /// its own.
+    /// names the instance side it was synthesized for and shares its text,
+    /// none for a mixin with no declaration.
     #[test]
     fn a_synthesized_class_side_names_its_instance_side() {
         let mut interpreter = Interpreter::bootstrap();
@@ -1840,7 +1880,7 @@ mod tests {
             let instance_side = Rc::new(Mixin::empty(crate::Symbol::intern("Plain")));
             let class_side = mutator.metaclass_mixin(&instance_side);
             assert!(encloses(&instance_side, &class_side));
-            assert!(class_side.module_text.is_none());
+            assert!(class_side.text.is_none());
         });
     }
 

@@ -326,10 +326,11 @@ fn load(source: &str) -> (Interpreter, Root) {
     (interpreter, class)
 }
 
-/// `image::snapshot` of the one module `class`, `source` its debug source.
+/// `image::snapshot` of the one module `class`, with its text as the
+/// debug source when `with_source`.
 fn snapshot_one<'gc>(
     mutator: &Mutator<'gc>,
-    source: Option<&str>,
+    with_source: bool,
     origin: &SourceOrigin,
     class: ClassReference<'gc>,
     roots: &[Value<'gc>],
@@ -337,7 +338,7 @@ fn snapshot_one<'gc>(
     let modules = [image::ModuleSource {
         class,
         origin,
-        source,
+        with_source,
     }];
     image::snapshot(mutator, &modules, roots)
 }
@@ -346,11 +347,11 @@ fn snapshot_one<'gc>(
 /// structure, and a graph section holding nothing.
 fn module_only_image<'gc>(
     mutator: &Mutator<'gc>,
-    source: Option<&str>,
+    with_source: bool,
     origin: &SourceOrigin,
     class: ClassReference<'gc>,
 ) -> Result<Vec<u8>, String> {
-    snapshot_one(mutator, source, origin, class, &[])
+    snapshot_one(mutator, with_source, origin, class, &[])
 }
 
 /// The class object `root` holds, for the heap accessors and the encoder,
@@ -1256,7 +1257,7 @@ fn a_large_integer_value_round_trips() {
         let class = class_reference(mutator, &class);
         snapshot_one(
             mutator,
-            Some(source),
+            true,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[instance],
@@ -1312,7 +1313,7 @@ fn an_array_past_two_hundred_and_fifty_four_elements_round_trips() {
         let class = class_reference(mutator, &class);
         snapshot_one(
             mutator,
-            Some(source),
+            true,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[instance],
@@ -1362,7 +1363,7 @@ fn a_body_past_the_register_ceiling_round_trips_and_still_raises() {
         let class = class_reference(mutator, &class);
         snapshot_one(
             mutator,
-            None,
+            false,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[instance],
@@ -1394,7 +1395,7 @@ fn snapshot_error(source: &str) -> String {
     let (mut interpreter, class) = load(source);
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        match module_only_image(mutator, None, &Origin::File(PathBuf::from("t.ns")), class) {
+        match module_only_image(mutator, false, &Origin::File(PathBuf::from("t.ns")), class) {
             Ok(_) => panic!("expected the snapshot to be refused"),
             Err(message) => message,
         }
@@ -1462,7 +1463,7 @@ fn a_boxed_float_value_round_trips_without_a_record() {
         let class = class_reference(mutator, &class);
         snapshot_one(
             mutator,
-            Some(source),
+            true,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[instance],
@@ -1571,7 +1572,7 @@ fn a_crafted_small_integer_literal_beyond_61_bits_loads_as_a_large_integer() {
         let class = class_reference(mutator, &class);
         snapshot_one(
             mutator,
-            None,
+            false,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[instance],
@@ -1737,7 +1738,7 @@ fn a_large_integer_is_a_value_not_a_record() {
         let class = class_reference(mutator, &class);
         snapshot_one(
             mutator,
-            None,
+            false,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[instance],
@@ -1819,7 +1820,7 @@ fn fractions_image() -> Vec<u8> {
         let class = class_reference(mutator, &class);
         snapshot_one(
             mutator,
-            Some(FRACTIONS),
+            true,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[instance],
@@ -2073,7 +2074,7 @@ fn a_large_integer_in_i64_travels_as_an_i64_and_loads_as_a_large_integer() {
         let class = class_reference(mutator, &class);
         snapshot_one(
             mutator,
-            Some(source),
+            true,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[instance],
@@ -2127,7 +2128,7 @@ fn inspect_renders_a_huge_large_integer_elided_and_a_normal_one_in_decimal() {
             mutator.new_integer(ArbitraryInteger::from_parts(false, (1..=100_000).collect()));
         snapshot_one(
             mutator,
-            None,
+            false,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[instance, normal, huge],
@@ -2503,7 +2504,7 @@ ns_runtime::for_each_lowering! {
                 levels,
                 "{lowering:?}: every source level is a block in the code table"
             );
-            module_only_image(mutator, None, &Origin::File(PathBuf::from("t.ns")), class)
+            module_only_image(mutator, false, &Origin::File(PathBuf::from("t.ns")), class)
             .expect("snapshot")
         });
         let mut loaded = match image::load(&bytes) {
@@ -2803,7 +2804,7 @@ fn inspect_shows_a_byte_array_by_its_size_and_first_bytes() {
         let large = mutator.new_byte_array(&byte_array_contents(20));
         snapshot_one(
             mutator,
-            None,
+            false,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[instance, Value::object(small), Value::object(large)],
@@ -3105,7 +3106,7 @@ fn inspect_shows_a_weak_array_and_an_ephemeron() {
         let class = class_reference(mutator, &class);
         snapshot_one(
             mutator,
-            None,
+            false,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[instance],
@@ -3185,7 +3186,7 @@ fn reified_holder_snapshot(
             .instance_set_field(instance, 0, Value::object(array)));
         snapshot_one(
             mutator,
-            Some(REIFIED_HOLDER),
+            true,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[Value::object(instance)],
@@ -3498,7 +3499,7 @@ fn a_program_holding_mirrors_loads_back_holding_them() {
             let instance = mutator.fetch(&instance);
             snapshot_one(
                 mutator,
-                with_source.then_some(MIRROR_HOLDER),
+                with_source,
                 &Origin::File(PathBuf::from("t.ns")),
                 class,
                 &[instance],
@@ -3742,7 +3743,7 @@ fn a_view_and_a_builder_round_trip_through_a_package() {
         let class = class_reference(mutator, &class);
         snapshot_one(
             mutator,
-            Some(VIEWS_AND_A_BUILDER),
+            true,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[instance],
@@ -6047,7 +6048,7 @@ fn inspect_refuses_an_unknown_frame_kind_tag() {
         let class = class_reference(mutator, &class);
         snapshot_one(
             mutator,
-            None,
+            false,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[],
@@ -6097,7 +6098,7 @@ fn inspect_names_the_closure_object_a_closure_frame_runs() {
         let inner = mutator.fetch(&inner);
         snapshot_one(
             mutator,
-            None,
+            false,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[inner],
@@ -6312,7 +6313,7 @@ fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_c
         let class = class_reference(mutator, &class);
         let bytes = snapshot_one(
             mutator,
-            Some(source),
+            true,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[instance],
@@ -6370,7 +6371,7 @@ fn a_loaded_image_answers_the_dispatch_ids_its_classes_were_given() {
         let class = class_reference(mutator, &class);
         snapshot_one(
             mutator,
-            Some(source),
+            true,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[instance],
@@ -6438,7 +6439,7 @@ fn a_loaded_root_gets_its_dispatch_id_though_its_class_record_comes_after_it() {
         let class = class_reference(mutator, &class);
         snapshot_one(
             mutator,
-            Some(source),
+            true,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[alpha],
@@ -6510,7 +6511,7 @@ fn a_lazy_slot_survives_an_image_filled_and_unfilled() {
         let class = class_reference(mutator, &class);
         snapshot_one(
             mutator,
-            Some(source),
+            true,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[root],
@@ -6588,7 +6589,7 @@ fn a_lazy_slot_without_its_getter_is_refused() {
     let origin = Origin::File(PathBuf::from("t.ns"));
     let mut binary = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        module_only_image(mutator, None, &origin, class).expect("snapshot")
+        module_only_image(mutator, false, &origin, class).expect("snapshot")
     });
     assert!(image::load(&binary).is_ok(), "the fixture itself must load");
 
@@ -6632,7 +6633,7 @@ fn bytes_after_the_last_section_are_refused_not_ignored() {
         let class = class_reference(mutator, &class);
         snapshot_one(
             mutator,
-            Some(source),
+            true,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[],
@@ -6661,7 +6662,7 @@ fn load_refuses_a_version_mismatch() {
         let class = class_reference(mutator, &class);
         snapshot_one(
             mutator,
-            Some(source),
+            true,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[],
@@ -7695,7 +7696,7 @@ fn a_real_snapshots_graph_verifies_and_its_closures_still_read_their_captured_lo
         let instance = mutator.fetch(&instance);
         snapshot_one(
             mutator,
-            Some(source),
+            true,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[instance],
@@ -7747,7 +7748,7 @@ fn a_decoded_symbol_round_trips_to_the_loaded_worlds_canonical_object() {
         let instance = mutator.fetch(&instance);
         snapshot_one(
             mutator,
-            Some(source),
+            true,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[instance],
@@ -7797,7 +7798,7 @@ fn a_snapshot_whose_closure_was_captured_by_a_block_activation_loads_and_runs() 
         let instance = mutator.fetch(&instance);
         snapshot_one(
             mutator,
-            Some(source),
+            true,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[instance],
@@ -7908,7 +7909,7 @@ fn a_whole_image_missing_its_initializer_is_refused_by_load() {
         let instance = mutator.fetch(&instance);
         snapshot_one(
             mutator,
-            Some(NEEDS_INITIALIZER),
+            true,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[instance],
@@ -7965,7 +7966,7 @@ fn an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating() {
         let instance = mutator.fetch(&instance);
         snapshot_one(
             mutator,
-            Some(source),
+            true,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[instance],
@@ -8014,7 +8015,7 @@ fn an_unhashed_object_round_trips_unassigned_and_draws_past_the_image_maximum() 
         let unhashed_value = mutator.fetch(&unhashed);
         let bytes = snapshot_one(
             mutator,
-            Some(source),
+            true,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[hashed_value, unhashed_value],
@@ -8076,7 +8077,7 @@ fn the_hashes_of_objects_named_by_tag_survive_a_snapshot() {
             .object_ensure_identity_hash(object(platform));
         let bytes = snapshot_one(
             mutator,
-            None,
+            false,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[platform],
@@ -8153,7 +8154,7 @@ fn the_hash_of_a_shipped_level_survives_a_snapshot() {
         let metaclass_hash = mutator.heap_mut().object_ensure_identity_hash(metaclass);
         let bytes = snapshot_one(
             mutator,
-            None,
+            false,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[],
@@ -8435,7 +8436,7 @@ fn a_send_reaches_a_nested_mixins_method_after_a_snapshot_and_load() {
         let outer = mutator.fetch(&outer);
         snapshot_one(
             mutator,
-            Some(NESTED_MODULE),
+            true,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[outer],
@@ -8505,7 +8506,7 @@ fn the_nested_class_accessor_runs_a_reloaded_superclass_clause() {
         let outer = mutator.fetch(&outer);
         snapshot_one(
             mutator,
-            Some(NESTED_MODULE),
+            true,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[outer],
@@ -8563,18 +8564,13 @@ fn instantiated_world(source: &str) -> (Interpreter, Root, Root, Root) {
 
 /// `image::snapshot` of a world a test keeps as roots, each read out right
 /// before the encoder, which runs nothing, all inside one entry.
-fn snapshot_world(
-    interpreter: &mut Interpreter,
-    source: &str,
-    class: &Root,
-    roots: &[Root],
-) -> Vec<u8> {
+fn snapshot_world(interpreter: &mut Interpreter, class: &Root, roots: &[Root]) -> Vec<u8> {
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, class);
         let roots: Vec<Value> = roots.iter().map(|root| mutator.fetch(root)).collect();
         snapshot_one(
             mutator,
-            Some(source),
+            true,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &roots,
@@ -8673,12 +8669,7 @@ fn a_snapshot_after_a_nested_class_access_round_trips() {
     );
 
     // Reached as the cached value in Outer's hidden slot...
-    let bytes = snapshot_world(
-        &mut interpreter,
-        NESTED_MODULE,
-        &class,
-        std::slice::from_ref(&outer),
-    );
+    let bytes = snapshot_world(&mut interpreter, &class, std::slice::from_ref(&outer));
     let mut loaded = image::load(&bytes).expect("load");
     let reloaded_outer = loaded
         .roots
@@ -8705,7 +8696,6 @@ fn a_snapshot_after_a_nested_class_access_round_trips() {
     // ... and as the `.class` of one of its instances.
     let bytes = snapshot_world(
         &mut interpreter,
-        NESTED_MODULE,
         &class,
         std::slice::from_ref(&inner_instance),
     );
@@ -8740,12 +8730,7 @@ fn a_second_user_class_no_longer_decodes_as_the_root() {
         interpreter.send(&outer, Symbol::intern("Inner"), &[]),
         "Inner",
     );
-    let bytes = snapshot_world(
-        &mut interpreter,
-        NESTED_MODULE,
-        &class,
-        std::slice::from_ref(&outer),
-    );
+    let bytes = snapshot_world(&mut interpreter, &class, std::slice::from_ref(&outer));
     let mut loaded = image::load(&bytes).expect("load");
     let reloaded_outer = loaded
         .roots
@@ -8812,7 +8797,7 @@ fn one_application_shared_before_a_snapshot_is_still_shared_after_it() {
         );
     });
 
-    let bytes = snapshot_world(&mut interpreter, NESTED_MODULE, &class, &[first, second]);
+    let bytes = snapshot_world(&mut interpreter, &class, &[first, second]);
     let mut loaded = image::load(&bytes).expect("load");
     let outers: Vec<Root> = loaded.roots.clone();
     let first_inner = nested_class_of(&mut loaded, &outers[0], "Inner");
@@ -8884,7 +8869,7 @@ fn outer_still_resolves_through_a_declaration_chain_that_came_from_an_image() {
         interpreter.send(&outer, Symbol::intern("makeDeep"), &[]),
         "makeDeep",
     );
-    let bytes = snapshot_world(&mut interpreter, DEEP_OUTER_MODULE, &class, &[outer, deep]);
+    let bytes = snapshot_world(&mut interpreter, &class, &[outer, deep]);
     let mut loaded = image::load(&bytes).expect("load");
     let reloaded_deep = loaded.roots[1].clone();
     // `Deep`'s declaring class is `Base`, not `Derived` -- the two differ
@@ -8940,7 +8925,7 @@ fn a_reloaded_superclass_clause_message_still_passes_its_arguments() {
         let outer = mutator.fetch(&outer);
         snapshot_one(
             mutator,
-            Some(NESTED_SUPERCLASS_ARGUMENTS),
+            true,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[outer],
@@ -9092,7 +9077,7 @@ fn a_superclass_message_body_that_returns_no_argument_list_is_an_error_not_a_pan
         // the tampered mixin travels through one.
         snapshot_one(
             mutator,
-            None,
+            false,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[],
@@ -9179,7 +9164,7 @@ fn snapshot_of(source: &str) -> Vec<u8> {
         let class = class_reference(mutator, &class);
         snapshot_one(
             mutator,
-            Some(source),
+            true,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[],
@@ -9200,7 +9185,7 @@ fn a_modules_root_class_is_a_record_the_module_section_names() {
     let origin = SourceOrigin::File(PathBuf::from("t.ns"));
     let bytes = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        snapshot_one(mutator, Some(EMPTY), &origin, class, &[]).expect("snapshot")
+        snapshot_one(mutator, true, &origin, class, &[]).expect("snapshot")
     });
     let report = image::inspect::inspect(&bytes).expect("inspect");
     assert!(
@@ -9266,12 +9251,12 @@ fn two_module_image(
                 image::ModuleSource {
                     class: class_reference(mutator, first),
                     origin: &first_origin,
-                    source: None,
+                    with_source: false,
                 },
                 image::ModuleSource {
                     class: class_reference(mutator, second),
                     origin: &second_origin,
-                    source: None,
+                    with_source: false,
                 },
             ];
             image::snapshot(mutator, &modules, &[mutator.fetch(instance)])
@@ -9420,7 +9405,7 @@ fn empty_module_with_an_array() -> Vec<u8> {
         let class = class_reference(mutator, &class);
         snapshot_one(
             mutator,
-            None,
+            false,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[array],
@@ -9523,7 +9508,7 @@ fn a_root_class_over_kernel_array_is_not_written() {
         let class = class_reference(mutator, &class);
         let array = mutator.builtin_class(BuiltinClass::Array);
         mutator.heap_mut().class_set_superclass(class, array);
-        match module_only_image(mutator, None, &Origin::File(PathBuf::from("t.ns")), class) {
+        match module_only_image(mutator, false, &Origin::File(PathBuf::from("t.ns")), class) {
             Ok(_) => panic!("a root over Kernel Array must not be written"),
             Err(error) => error,
         }
@@ -9546,7 +9531,7 @@ fn a_root_class_with_a_declaring_class_is_not_written() {
         mutator
             .heap_mut()
             .class_set_lexical_context(class, None, Some(array));
-        match module_only_image(mutator, None, &Origin::File(PathBuf::from("t.ns")), class) {
+        match module_only_image(mutator, false, &Origin::File(PathBuf::from("t.ns")), class) {
             Ok(_) => panic!("a root with a declaring class must not be written"),
             Err(error) => error,
         }
@@ -9626,12 +9611,12 @@ fn a_module_root_is_held_to_its_own_modules_row() {
                 image::ModuleSource {
                     class: class_reference(mutator, &first),
                     origin: &first_origin,
-                    source: None,
+                    with_source: false,
                 },
                 image::ModuleSource {
                     class: class_reference(mutator, &second),
                     origin: &second_origin,
-                    source: None,
+                    with_source: false,
                 },
             ];
             image::snapshot(mutator, &modules, &[])
@@ -9657,7 +9642,7 @@ fn a_graph_reaching_a_module_the_image_does_not_carry_is_refused() {
     let result = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &first);
         let origin = SourceOrigin::File("First.ns".into());
-        snapshot_one(mutator, None, &origin, class, &[mutator.fetch(&instance)])
+        snapshot_one(mutator, false, &origin, class, &[mutator.fetch(&instance)])
     });
     match result {
         Ok(_) => panic!("a graph reaching a module the image does not carry must be refused"),
@@ -9686,7 +9671,7 @@ fn a_closure_over_code_no_module_carries_is_refused_not_a_panic() {
     let result = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &first);
         let origin = SourceOrigin::File("First.ns".into());
-        snapshot_one(mutator, None, &origin, class, &[mutator.fetch(&instance)])
+        snapshot_one(mutator, false, &origin, class, &[mutator.fetch(&instance)])
     });
     match result {
         Ok(_) => panic!("a closure over code no carried module compiled must be refused"),
@@ -9718,7 +9703,7 @@ fn a_module_levels_own_hash_survives_an_image() {
         let hash = mutator.heap_mut().object_ensure_identity_hash(level);
         let bytes = snapshot_one(
             mutator,
-            None,
+            false,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[mutator.fetch(&instance)],
@@ -10425,7 +10410,7 @@ fn a_class_whose_superclass_has_a_keyword_factory_survives_a_round_trip() {
         let outer = mutator.fetch(&outer);
         snapshot_one(
             mutator,
-            Some(NESTED_SUPERCLASS_ARGUMENTS),
+            true,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[outer],
@@ -10600,7 +10585,7 @@ fn a_class_tree_nested_past_the_ceiling_is_refused_when_the_image_is_written() {
         );
         let Err(error) = snapshot_one(
             mutator,
-            Some(TRIVIAL_MODULE),
+            true,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[],
@@ -10883,7 +10868,7 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 /// Instantiates `module_source` and snapshots the instance (plus, with
 /// `extra_send`, that send's result) -- with or without the module's source
 /// text in the image.
-fn snapshot_module(module_source: &str, source: Option<&str>, extra_send: Option<&str>) -> Vec<u8> {
+fn snapshot_module(module_source: &str, with_source: bool, extra_send: Option<&str>) -> Vec<u8> {
     let (mut interpreter, class) = load(module_source);
     let platform = interpreter.platform();
     let instance = expect_ok(
@@ -10903,7 +10888,7 @@ fn snapshot_module(module_source: &str, source: Option<&str>, extra_send: Option
         let roots: Vec<Value> = roots.iter().map(|root| mutator.fetch(root)).collect();
         snapshot_one(
             mutator,
-            source,
+            with_source,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &roots,
@@ -10936,7 +10921,7 @@ fn snapshot_module_holding(
         let instance = mutator.fetch(&instance);
         snapshot_one(
             mutator,
-            None,
+            false,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[instance],
@@ -10960,7 +10945,7 @@ fn a_second_platform(interpreter: &mut Interpreter, platform: &Root) -> Root {
 
 #[test]
 fn a_source_free_image_still_runs() {
-    let bytes = snapshot_module(SOURCE_FREE_MODULE, None, None);
+    let bytes = snapshot_module(SOURCE_FREE_MODULE, false, None);
     assert!(
         !contains(&bytes, b"class Outer"),
         "a source-free image must not contain the module's source text"
@@ -10991,7 +10976,7 @@ fn a_source_free_image_still_runs() {
 /// carry no program text at all.
 #[test]
 fn a_source_free_image_still_reaches_its_nested_classes() {
-    let bytes = snapshot_module(SOURCE_FREE_MODULE, None, None);
+    let bytes = snapshot_module(SOURCE_FREE_MODULE, false, None);
     let mut loaded = image::load(&bytes).expect("load");
     let outer = loaded.roots.first().cloned().expect("the root instance");
     let inner_class = nested_class_of(&mut loaded, &outer, "Inner");
@@ -11010,7 +10995,7 @@ fn a_source_free_image_still_reaches_its_nested_classes() {
 
 #[test]
 fn the_debug_variant_still_carries_source() {
-    let bytes = snapshot_module(SOURCE_FREE_MODULE, Some(SOURCE_FREE_MODULE), None);
+    let bytes = snapshot_module(SOURCE_FREE_MODULE, true, None);
     assert!(contains(&bytes, b"class Outer"));
     let mut loaded = image::load(&bytes).expect("load");
     assert_eq!(
@@ -11036,8 +11021,8 @@ fn the_debug_variant_still_carries_source() {
 /// the difference is exactly the length-prefixed source.
 #[test]
 fn the_two_variants_differ_only_by_the_source_blob() {
-    let with = snapshot_module(SOURCE_FREE_MODULE, Some(SOURCE_FREE_MODULE), None);
-    let without = snapshot_module(SOURCE_FREE_MODULE, None, None);
+    let with = snapshot_module(SOURCE_FREE_MODULE, true, None);
+    let without = snapshot_module(SOURCE_FREE_MODULE, false, None);
     assert_eq!(
         with.len() - without.len(),
         SOURCE_FREE_MODULE.len() + 4,
@@ -11066,18 +11051,32 @@ fn a_frame_program_counter_past_its_bodys_last_instruction_is_refused() {
 }
 
 /// `load` never calls the parser, so source that could not possibly parse
-/// is still just a blob the debug variant carries around.
+/// is still just a blob the debug variant carries around. The encoder
+/// writes the heap's text, so the module's text is overwritten in the
+/// bytes by one of the same length that is no Newspeak.
 #[test]
 fn the_debug_variants_source_is_never_parsed() {
-    let bytes = snapshot_module(
-        SOURCE_FREE_MODULE,
-        Some("this is not Newspeak at all ("),
-        None,
+    let mut bytes = snapshot_module(SOURCE_FREE_MODULE, true, None);
+    let not_newspeak: String = "this is not Newspeak at all ("
+        .chars()
+        .cycle()
+        .take(SOURCE_FREE_MODULE.len())
+        .collect();
+    let text = SOURCE_FREE_MODULE.as_bytes();
+    assert_eq!(
+        occurrences(&bytes, text),
+        1,
+        "the image carries the text once"
     );
+    let start = bytes
+        .windows(text.len())
+        .position(|window| window == text)
+        .expect("the image carries the text");
+    bytes[start..start + text.len()].copy_from_slice(not_newspeak.as_bytes());
     let loaded = image::load(&bytes).expect("load");
     assert_eq!(
         loaded.modules[0].source.as_deref(),
-        Some("this is not Newspeak at all (")
+        Some(not_newspeak.as_str())
     );
 }
 
@@ -11112,7 +11111,7 @@ fn a_snapshot_taken_while_an_activation_is_running_is_refused() {
         let class = class_reference(mutator, &class);
         let result = snapshot_one(
             mutator,
-            None,
+            false,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[],
@@ -11217,7 +11216,7 @@ fn an_activation_object_round_trips() {
         let class = class_reference(mutator, &class);
         snapshot_one(
             mutator,
-            Some(source),
+            true,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[instance],
@@ -11280,7 +11279,7 @@ fn a_return_into_a_decoded_home_is_cannot_return_even_if_the_file_calls_it_conti
         let closure = mutator.fetch(&closure);
         snapshot_one(
             mutator,
-            None,
+            false,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[instance, closure],
@@ -11358,7 +11357,7 @@ fn no_line_of_the_source_survives_in_a_source_free_image() {
     /// See the doc comment above for why 12.
     const MIN_DISTINCTIVE_LINE: usize = 12;
 
-    let bytes = snapshot_module(LEAK_PROBE_MODULE, None, None);
+    let bytes = snapshot_module(LEAK_PROBE_MODULE, false, None);
     let mut checked = 0;
     for line in LEAK_PROBE_MODULE.lines() {
         let line = line.trim();
@@ -11382,7 +11381,7 @@ fn no_line_of_the_source_survives_in_a_source_free_image() {
     // present in the debug variant. Without this, a bug that mangled the
     // needles (a trim that ate the text, say) would make the sweep above
     // pass for the wrong reason.
-    let debug = snapshot_module(LEAK_PROBE_MODULE, Some(LEAK_PROBE_MODULE), None);
+    let debug = snapshot_module(LEAK_PROBE_MODULE, true, None);
     for line in LEAK_PROBE_MODULE.lines() {
         let line = line.trim();
         if line.len() < MIN_DISTINCTIVE_LINE {
@@ -11473,7 +11472,7 @@ fn snapshot_of_without_source(source: &str) -> Vec<u8> {
         let instance = mutator.fetch(&instance);
         snapshot_one(
             mutator,
-            None,
+            false,
             &Origin::File(PathBuf::from("golden.ns")),
             class,
             &[instance],
@@ -11541,7 +11540,7 @@ fn a_snapshot_with_empty_roots_loads_with_no_roots_and_is_not_started() {
 
     let image = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        snapshot_one(mutator, None, &origin, class, &[]).expect("snapshot")
+        snapshot_one(mutator, false, &origin, class, &[]).expect("snapshot")
     });
 
     let loaded = image::load(&image).expect("load an image with no roots");
@@ -11585,7 +11584,7 @@ fn the_graph_walk_consumes_the_section_exactly() {
                 Err(_) => Vec::new(),
             };
             let class = class_reference(mutator, &class);
-            snapshot_one(mutator, None, &origin, class, &roots).expect("snapshot")
+            snapshot_one(mutator, false, &origin, class, &roots).expect("snapshot")
         });
 
         let report = image::inspect::inspect(&image).expect("inspect the image");
@@ -11641,7 +11640,7 @@ fn a_snapshot_with_full_caches_loads_with_empty_ones() {
         let instance = mutator.fetch(&instance);
         snapshot_one(
             mutator,
-            None,
+            false,
             &Origin::File(PathBuf::from("keeper.ns")),
             class,
             &[instance],
@@ -11749,7 +11748,7 @@ fn a_decoded_metaclass_is_rebuilt_over_class() {
         let instance = mutator.fetch(&instance);
         snapshot_one(
             mutator,
-            Some(source),
+            true,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[instance],
@@ -11868,12 +11867,7 @@ fn a_metaclass_in_a_slot_is_the_decoded_class_metaclass() {
     let (mut interpreter, class, outer, holder) = metaclass_world();
     let holder_metaclass = metaclass_root(&mut interpreter, &holder);
     store(&mut interpreter, &outer, "kept:", holder_metaclass);
-    let bytes = snapshot_world(
-        &mut interpreter,
-        METACLASS_MODULE,
-        &class,
-        std::slice::from_ref(&outer),
-    );
+    let bytes = snapshot_world(&mut interpreter, &class, std::slice::from_ref(&outer));
     let report = image::inspect::inspect(&bytes).expect("inspect walks an image with metaclasses");
     assert!(
         report
@@ -11931,12 +11925,7 @@ fn a_builtin_metaclass_round_trips_by_tag() {
     let root_metaclass = metaclass_root(&mut interpreter, &class);
     store(&mut interpreter, &outer, "kept:", integer_metaclass);
     store(&mut interpreter, &outer, "other:", root_metaclass);
-    let bytes = snapshot_world(
-        &mut interpreter,
-        METACLASS_MODULE,
-        &class,
-        std::slice::from_ref(&outer),
-    );
+    let bytes = snapshot_world(&mut interpreter, &class, std::slice::from_ref(&outer));
     let mut loaded = image::load(&bytes).expect("load");
     let loaded_outer = loaded.roots[0].clone();
     let kept = send_to(&mut loaded, &loaded_outer, "kept");
@@ -11988,12 +11977,7 @@ fn a_metaclass_identity_hash_survives() {
             .map(|metaclass| mutator.heap_mut().object_ensure_identity_hash(metaclass))
             .collect::<Vec<u32>>()
     });
-    let bytes = snapshot_world(
-        &mut interpreter,
-        METACLASS_MODULE,
-        &class,
-        std::slice::from_ref(&outer),
-    );
+    let bytes = snapshot_world(&mut interpreter, &class, std::slice::from_ref(&outer));
     let report = image::inspect::inspect(&bytes).expect("inspect");
     assert!(
         report
@@ -12045,7 +12029,7 @@ fn a_root_level_metaclass_round_trips_as_a_record() {
         let hash = mutator.heap_mut().object_ensure_identity_hash(metaclass);
         let bytes = snapshot_one(
             mutator,
-            None,
+            false,
             &Origin::File(PathBuf::from("t.ns")),
             root_class,
             &[Value::object(metaclass)],
@@ -12141,7 +12125,7 @@ fn a_graph_reaching_an_unnameable_class_is_refused() {
         ] {
             let refused = snapshot_one(
                 mutator,
-                None,
+                false,
                 &Origin::File(PathBuf::from("t.ns")),
                 root_class,
                 &[Value::object(unnameable)],
@@ -12184,7 +12168,7 @@ fn a_graph_reaching_the_vm_mirror_is_refused_as_the_mirror() {
             .expect("the kernel holds the mirror");
         let refused = snapshot_one(
             mutator,
-            None,
+            false,
             &Origin::File(PathBuf::from("t.ns")),
             root_class,
             &[mirror],
@@ -12490,12 +12474,7 @@ fn a_snapshot_of_a_world_with_applied_levels_loads_and_runs() {
         interpreter.send(&applied_class, Symbol::intern("from:"), &[argument]),
         "Applied from:",
     );
-    let bytes = snapshot_world(
-        &mut interpreter,
-        MIXIN_APPLICATION_MODULE,
-        &class,
-        &[host, instance],
-    );
+    let bytes = snapshot_world(&mut interpreter, &class, &[host, instance]);
 
     let mut loaded = image::load(&bytes).expect("load");
     let host = loaded.roots[0].clone();
@@ -12535,7 +12514,7 @@ fn an_image_of_a_module_applying_mixins_builds_its_levels_after_loading() {
     let (mut interpreter, class) = load(MIXIN_APPLICATION_MODULE);
     let bytes = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        module_only_image(mutator, None, &Origin::File(PathBuf::from("t.ns")), class)
+        module_only_image(mutator, false, &Origin::File(PathBuf::from("t.ns")), class)
             .expect("snapshot")
     });
     let mut loaded = image::load(&bytes).expect("load");
@@ -12572,11 +12551,11 @@ fn a_root_class_applying_a_builtin_mixin_round_trips() {
         let modules = [image::ModuleSource {
             class,
             origin: &origin,
-            source: None,
+            with_source: false,
         }];
         let packaged =
             image::package(mutator, &modules, mutator.fetch(&application)).expect("package");
-        let snapshot = snapshot_one(mutator, None, &origin, class, &[]).expect("snapshot");
+        let snapshot = snapshot_one(mutator, false, &origin, class, &[]).expect("snapshot");
         (packaged, snapshot)
     });
     for bytes in [packaged, snapshot] {
@@ -12643,7 +12622,7 @@ fn a_frame_a_mixin_application_message_ran_in_decodes_to_that_messages_body() {
         interpreter.send(&holder_class, Symbol::intern("from:"), &[argument]),
         "Holder from:",
     );
-    let bytes = snapshot_world(&mut interpreter, source, &class, &[holder]);
+    let bytes = snapshot_world(&mut interpreter, &class, &[holder]);
 
     let mut loaded = image::load(&bytes).expect("load");
     let holder = loaded.roots[0].clone();
@@ -13314,7 +13293,7 @@ fn a_resolved_future_is_written_as_its_value() {
         let class = class_reference(mutator, &class);
         snapshot_one(
             mutator,
-            Some(DATA_CYCLE),
+            true,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[holder],
@@ -13409,7 +13388,7 @@ fn an_unresolved_future_round_trips_and_computes_after_load() {
         let class = class_reference(mutator, &class);
         snapshot_one(
             mutator,
-            Some(source),
+            true,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[holder],
@@ -13506,7 +13485,7 @@ fn an_argument_error_a_proxy_and_a_programs_future_round_trip() {
         let class = class_reference(mutator, &class);
         snapshot_one(
             mutator,
-            Some(source),
+            true,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[holder],
@@ -13591,7 +13570,7 @@ fn a_future_with_corrupted_fields_is_refused_by_the_encoder() {
             let class = class_reference(mutator, &class);
             match snapshot_one(
                 mutator,
-                Some(source),
+                true,
                 &Origin::File(PathBuf::from("t.ns")),
                 class,
                 &[holder],
@@ -13764,10 +13743,10 @@ fn the_encoder_refuses_a_root_the_rule_forbids() {
         let modules = [image::ModuleSource {
             class,
             origin: &origin,
-            source: None,
+            with_source: false,
         }];
         (
-            snapshot_one(mutator, None, &origin, class, &[]),
+            snapshot_one(mutator, false, &origin, class, &[]),
             // The refusal comes before the graph is looked at, so the
             // application need not exist: no instance of this class can.
             image::package(mutator, &modules, Value::nil()),
@@ -13934,7 +13913,7 @@ fn inspect_prints_the_mixin_applications_an_image_describes() {
     let (mut interpreter, class, _platform, host) = instantiated_world(MIXIN_APPLICATION_MODULE);
     let expected = (5, 40, "Applied Stamp Marker Base".to_string());
     assert_eq!(applied_answers(&mut interpreter, &host, 4), expected);
-    let bytes = snapshot_world(&mut interpreter, MIXIN_APPLICATION_MODULE, &class, &[host]);
+    let bytes = snapshot_world(&mut interpreter, &class, &[host]);
     let report = image::inspect::render_full(&image::inspect::inspect(&bytes).expect("inspect"));
     for expected in [
         "mixin application 1  withMark: -> code ",
@@ -13986,7 +13965,7 @@ fn a_nested_level_applying_a_builtin_mixin_round_trips_as_a_record() {
         "Point",
     );
     let point = expect_ok(interpreter.instantiate(&point_class, &[]), "Point new");
-    let bytes = snapshot_world(&mut interpreter, source, &class, &[point]);
+    let bytes = snapshot_world(&mut interpreter, &class, &[point]);
 
     let report = image::inspect::render_full(&image::inspect::inspect(&bytes).expect("inspect"));
     assert!(
@@ -14041,7 +14020,7 @@ fn a_level_applying_a_shipped_class_that_is_no_builtin_round_trips() {
         interpreter.send(&listy, Symbol::intern("add:"), &[three]),
         "listy add: 3",
     );
-    let bytes = snapshot_world(&mut interpreter, source, &class, &[listy]);
+    let bytes = snapshot_world(&mut interpreter, &class, &[listy]);
 
     let report = image::inspect::render_full(&image::inspect::inspect(&bytes).expect("inspect"));
     assert!(
@@ -14130,7 +14109,6 @@ fn a_refused_value_class_stays_refused_after_a_snapshot_round_trip() {
 
     let bytes = snapshot_world(
         &mut interpreter,
-        source,
         &class,
         std::slice::from_ref(&stamped_class),
     );
@@ -14302,7 +14280,7 @@ fn equal(loaded: &mut image::LoadedImage, first: &Root, second: &Root) -> bool {
 /// a lazy slot is no part of a value's state -- and each answers as before.
 #[test]
 fn a_platform_member_round_trips_as_a_record() {
-    let bytes = snapshot_module(PLATFORM_MEMBERS, None, None);
+    let bytes = snapshot_module(PLATFORM_MEMBERS, false, None);
     let report = image::inspect::inspect(&bytes).expect("inspect");
     for name in [
         "TranscriptFactory Transcript",
@@ -14365,7 +14343,7 @@ fn a_stored_platform_and_a_stored_member_agree_after_a_load() {
         ) (
         ) : ()
     "};
-    let bytes = snapshot_module(source, None, None);
+    let bytes = snapshot_module(source, false, None);
     let mut loaded = image::load(&bytes).expect("load");
     let instance = loaded.roots.first().cloned().expect("the root instance");
     let kept = send_to(&mut loaded, &instance, "keptPlatform");
@@ -14392,7 +14370,7 @@ fn a_loaded_graph_naming_shipped_classes_and_a_module_class_survives_both_collec
         ) (
         ) : ()
     "};
-    let bytes = snapshot_module(source, None, None);
+    let bytes = snapshot_module(source, false, None);
     let mut loaded = image::load(&bytes).expect("load");
     loaded.interpreter.scavenge_now();
     loaded.interpreter.collect_now();
@@ -14422,7 +14400,7 @@ fn a_class_the_platform_hands_out_is_named_by_its_declaration() {
         ) (
         ) : ()
     "};
-    let bytes = snapshot_module(source, None, None);
+    let bytes = snapshot_module(source, false, None);
     let report = image::inspect::inspect(&bytes).expect("inspect");
     assert_eq!(
         report.shipped_names,
@@ -14491,7 +14469,7 @@ fn a_shipped_name_resolves_to_the_loading_boots_own_object() {
         let instance = mutator.fetch(&instance);
         snapshot_one(
             mutator,
-            None,
+            false,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[instance],
@@ -14599,7 +14577,7 @@ fn a_list_is_a_record_of_its_shipped_class() {
         ) (
         ) : ()
     "};
-    let bytes = snapshot_module(source, None, None);
+    let bytes = snapshot_module(source, false, None);
     let report = image::inspect::inspect(&bytes).expect("inspect");
     assert!(
         report
@@ -14649,7 +14627,7 @@ fn a_stopwatch_is_a_record_of_its_shipped_class() {
         ) (
         ) : ()
     "};
-    let bytes = snapshot_module(source, None, None);
+    let bytes = snapshot_module(source, false, None);
     let report = image::inspect::inspect(&bytes).expect("inspect");
     assert!(
         report
@@ -14809,22 +14787,25 @@ fn outer_and_inner(loaded: &image::LoadedImage) -> (Rc<Mixin>, Rc<Mixin>) {
     (outer, inner)
 }
 
-/// An image with source gives every decoded mixin of a module the
-/// module's one text, and each nested mixin its enclosing one.
+/// An image with source gives every decoded mixin of a module its
+/// declaration's text, cut from the module's -- the root's the whole
+/// module with `Inner` cut out, `Inner`'s its own -- and each nested
+/// mixin its enclosing one.
 #[test]
 fn a_mixin_decoded_from_an_image_with_source_carries_its_text_and_links() {
-    let bytes = snapshot_module(TWO_CLASS_MODULE, Some(TWO_CLASS_MODULE), None);
+    let bytes = snapshot_module(TWO_CLASS_MODULE, true, None);
     let loaded = image::load(&bytes).expect("load");
     let (outer, inner) = outer_and_inner(&loaded);
-    let text = outer
-        .module_text
-        .as_ref()
-        .expect("the image carries source");
-    assert_eq!(&*text.0, TWO_CLASS_MODULE);
-    assert!(inner
-        .module_text
-        .as_ref()
-        .is_some_and(|inner_text| Rc::ptr_eq(&inner_text.0, &text.0)));
+    let outer_text = outer.text.as_ref().expect("the image carries source");
+    let inner_text = inner.text.as_ref().expect("the image carries source");
+    let inner_declaration = "class Inner = Object new () ()";
+    assert_eq!(inner_text.cut_text(), inner_declaration);
+    assert_eq!(
+        outer_text
+            .assemble(&[inner_declaration.to_string()])
+            .as_deref(),
+        Some(TWO_CLASS_MODULE)
+    );
     assert!(inner
         .enclosing_mixin()
         .is_some_and(|enclosing| Rc::ptr_eq(&enclosing, &outer)));
@@ -14835,11 +14816,11 @@ fn a_mixin_decoded_from_an_image_with_source_carries_its_text_and_links() {
 /// enclosing ones all the same.
 #[test]
 fn a_mixin_decoded_from_an_image_without_source_carries_no_text() {
-    let bytes = snapshot_module(TWO_CLASS_MODULE, None, None);
+    let bytes = snapshot_module(TWO_CLASS_MODULE, false, None);
     let loaded = image::load(&bytes).expect("load");
     let (outer, inner) = outer_and_inner(&loaded);
-    assert!(outer.module_text.is_none());
-    assert!(inner.module_text.is_none());
+    assert!(outer.text.is_none());
+    assert!(inner.text.is_none());
     assert!(inner
         .enclosing_mixin()
         .is_some_and(|enclosing| Rc::ptr_eq(&enclosing, &outer)));
@@ -14986,7 +14967,7 @@ fn a_malformed_shipped_name_section_is_refused() {
 /// A reference past the section is refused before it indexes anything.
 #[test]
 fn an_index_past_the_shipped_name_section_is_refused() {
-    let bytes = snapshot_module(PLATFORM_MEMBERS, None, None);
+    let bytes = snapshot_module(PLATFORM_MEMBERS, false, None);
     let crafted = with_shipped_name_section(&bytes, |_, writer| writer.write_u32(0));
     assert_eq!(
         load_error(&crafted),
@@ -15205,7 +15186,7 @@ fn a_module_instance_outside_a_frame_is_refused() {
         ] {
             let refused = snapshot_one(
                 mutator,
-                None,
+                false,
                 &Origin::File(PathBuf::from("t.ns")),
                 root_class,
                 &[Value::object(shipped)],
@@ -15276,7 +15257,7 @@ fn an_object_reached_twice_is_listed_once() {
         ]));
         let bytes = snapshot_one(
             mutator,
-            None,
+            false,
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &[held],
@@ -15340,7 +15321,7 @@ fn packaged_application() -> Vec<u8> {
             let modules = [image::ModuleSource {
                 class: class_reference(mutator, &class),
                 origin: &origin,
-                source: None,
+                with_source: false,
             }];
             image::package(mutator, &modules, mutator.fetch(&application))
         })
@@ -15363,7 +15344,7 @@ fn package_refuses_an_application_that_reaches_the_platform() {
         let modules = [image::ModuleSource {
             class: class_reference(mutator, &class),
             origin: &origin,
-            source: None,
+            with_source: false,
         }];
         image::package(mutator, &modules, mutator.fetch(&application))
     });
@@ -15396,7 +15377,7 @@ fn a_started_image_naming_another_module_is_refused() {
             let modules = [image::ModuleSource {
                 class: class_reference(mutator, &class),
                 origin: &origin,
-                source: None,
+                with_source: false,
             }];
             image::package(mutator, &modules, mutator.fetch(&application))
         })
@@ -15462,7 +15443,7 @@ fn a_caught_non_boolean_receiver_round_trips_through_a_package() {
             let modules = [image::ModuleSource {
                 class: class_reference(mutator, &class),
                 origin: &origin,
-                source: None,
+                with_source: false,
             }];
             image::package(mutator, &modules, mutator.fetch(&application))
         })
@@ -15507,7 +15488,7 @@ fn non_boolean_receiver_as_a_value_is_refused() {
         let signalled = mutator.builtin_class(BuiltinClass::NonBooleanReceiver);
         let refused = snapshot_one(
             mutator,
-            None,
+            false,
             &Origin::File(PathBuf::from("t.ns")),
             root_class,
             &[Value::object(signalled)],
@@ -15570,7 +15551,7 @@ fn indexed_collection_as_a_value_or_a_superclass_is_refused() {
         };
         let refused = snapshot_one(
             mutator,
-            None,
+            false,
             &Origin::File(PathBuf::from("t.ns")),
             root_class,
             &[Value::object(resolved[0].object)],
@@ -15623,7 +15604,7 @@ fn a_start_image_with_other_than_one_root_is_refused() {
         let mut bytes = interpreter.enter(|mutator| {
             let class = class_reference(mutator, &class);
             let roots = [mutator.fetch(&first), mutator.fetch(&second)];
-            snapshot_one(mutator, None, &origin, class, &roots[..root_count]).expect("snapshot")
+            snapshot_one(mutator, false, &origin, class, &roots[..root_count]).expect("snapshot")
         });
         bytes[flag_offset] |= encode::FLAG_START;
         let error = match image::load(&bytes) {

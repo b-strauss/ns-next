@@ -181,11 +181,11 @@ impl<'gc> Mutator<'gc> {
 
     /// Every fresh mixin under the id it replaces, a synthesized class
     /// side under the old one's, so that every metaclass keeps its mixin's
-    /// id; and the edited text as its module's current one.
+    /// id. Each holds its own text, so the module's text, assembled from
+    /// its declarations' current versions, holds the edit from here on.
     fn replace_versions(&mut self, prepared: &PreparedEdit) {
-        let text = &prepared.module_text;
         for (id, fresh) in &prepared.replacements {
-            self.replace_mixin(*id, Rc::clone(fresh), Some(text.clone()));
+            self.replace_mixin(*id, Rc::clone(fresh));
         }
         // After the instance side's replacement, which forgets the class
         // side synthesized from its previous version; through the
@@ -193,12 +193,10 @@ impl<'gc> Mutator<'gc> {
         // applications, so a metaclass over the unchanged `Class` is not
         // answered the old one from the application cache.
         for (instance_side, class_side, fresh) in &prepared.synthesized {
-            self.replace_mixin(*class_side, Rc::clone(fresh), Some(text.clone()));
+            self.replace_mixin(*class_side, Rc::clone(fresh));
             self.metaclass_mixins
                 .insert(*instance_side, Rc::clone(fresh));
         }
-        self.heap
-            .set_current_module_text(prepared.module_root, text.clone());
     }
 
     /// Gives every class object of `classes` an application of its mixin's
@@ -486,7 +484,7 @@ mod tests {
             let modules = [crate::image::ModuleSource {
                 class,
                 origin: &origin,
-                source: None,
+                with_source: false,
             }];
             crate::image::snapshot(mutator, &modules, &[])
         });
@@ -1143,6 +1141,122 @@ mod tests {
             assert_eq!(current.own_slot_base, 2);
             assert_eq!(mutator.heap().activation_slot_base(activation), 1);
             mutator.heap_mut().pop_activation(activation);
+        });
+    }
+
+    /// `Outer`'s and `Inner`'s method source, sliced from each version's
+    /// own text.
+    fn method_source_of(mutator: &Mutator<'_>, id: MixinId, selector: &str) -> Option<String> {
+        let mixin = mutator.heap.mixin(id)?;
+        let method = mixin.compiled_method(Symbol::intern(selector))?;
+        mixin
+            .text
+            .as_ref()?
+            .slice(method.code.source)
+            .map(str::to_string)
+    }
+
+    const NESTED_AND_AFTER: &str = indoc! {"
+        Newspeak3
+        'Test'
+        class Outer = Object new () (
+          (* Inner's comment *)
+          public class Inner = (| public x ::= 1. |) (
+            public a = ( ^1 )
+          )
+          public after = ( ^2 )
+        )
+    "};
+
+    /// An edit that grows `Inner` leaves `Outer`'s text as it was read, so
+    /// `Outer`'s method still slices; the module's text holds the edit.
+    #[test]
+    fn an_enclosing_declaration_keeps_its_text_across_a_nested_edit() {
+        let (mut interpreter, outer) = load(NESTED_AND_AFTER);
+        let _instance = expect_ok(interpreter.instantiate(&outer, &[]), "an Outer");
+        let inner_id = nested_id_of(&mut interpreter, &outer, "Inner");
+        install(
+            &mut interpreter,
+            inner_id,
+            &add_method("public added = ( ^'a method that moves the text after it' )"),
+        );
+        interpreter.enter(|mutator| {
+            let outer_id = mutator
+                .heap
+                .known_mixin_id(&mixin_of(mutator, &outer))
+                .expect("Outer is applied");
+            assert_eq!(
+                method_source_of(mutator, outer_id, "after").as_deref(),
+                Some("public after = ( ^2 )")
+            );
+            assert_eq!(
+                method_source_of(mutator, inner_id, "added").as_deref(),
+                Some("public added = ( ^'a method that moves the text after it' )")
+            );
+            let module = mutator
+                .heap
+                .module_source(outer_id)
+                .expect("the module has text");
+            assert!(module.starts_with("Newspeak3\n'Test'\n"));
+            assert!(module.contains("public added") && module.contains("(* Inner's comment *)"));
+            assert_eq!(
+                mutator.heap.declaration_source(outer_id),
+                module
+                    .find("class Outer")
+                    .map(|start| module[start..].trim_end().to_string())
+            );
+        });
+    }
+
+    /// After the edit, no text the module's mixins hold contains `Inner`'s
+    /// old members: the old version is held by the table of superseded
+    /// versions alone, never by its enclosing declaration's text.
+    #[test]
+    fn an_edit_leaves_no_old_text_in_the_enclosing_declaration() {
+        let (mut interpreter, outer) = load(NESTED_AND_AFTER);
+        let _instance = expect_ok(interpreter.instantiate(&outer, &[]), "an Outer");
+        let inner_id = nested_id_of(&mut interpreter, &outer, "Inner");
+        install(
+            &mut interpreter,
+            inner_id,
+            &instance_edit(vec![MemberEdit::RemoveMethod(Symbol::intern("a"))]),
+        );
+        interpreter.enter(|mutator| {
+            let outer_mixin = mixin_of(mutator, &outer);
+            let outer_text = outer_mixin.text.as_ref().expect("Outer has text");
+            assert!(!outer_text.cut_text().contains("public a = ( ^1 )"));
+            let inner = mutator.heap.mixin(inner_id).expect("Inner is registered");
+            let inner_text = inner.text.as_ref().expect("Inner has text");
+            assert!(!inner_text.cut_text().contains("public a = ( ^1 )"));
+        });
+    }
+
+    /// An unedited module assembles to the text it was read in, byte for
+    /// byte: prologue, comments around and between members, a class side,
+    /// non-ASCII text and declarations three deep.
+    #[test]
+    fn an_unedited_module_assembles_to_its_text() {
+        let source = indoc! {"
+            Newspeak3
+            'Test'
+            (* the module's comment *)
+            class Outer = Object new () (
+              (* \u{e4}\u{1F600} *)
+              public class Middle = () (
+                public class Innermost = () ( public c = ( ^'\u{e9}' ) )
+                public b = ( ^2 )
+              ) : ( public made = ( ^self new ) )
+              public a = ( ^1 )
+            ) : (
+              public marker = ( ^7 )
+            )
+            (* trailing *)
+        "};
+        let (mut interpreter, outer) = load(source);
+        let _instance = expect_ok(interpreter.instantiate(&outer, &[]), "an Outer");
+        interpreter.enter(|mutator| {
+            let root = mixin_of(mutator, &outer);
+            assert_eq!(mutator.heap.assembled_text(&root).as_deref(), Some(source));
         });
     }
 }

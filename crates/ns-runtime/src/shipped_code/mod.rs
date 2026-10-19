@@ -135,7 +135,7 @@ const GENERATING_WITHOUT_PRIMITIVE_METHODS: &str =
      methods, so it is not generated under it; unset the variable and run again";
 
 /// The root mixin of the module `name` in the artifact `bytes`, every
-/// mixin of it holding `module_text`, the module's text.
+/// mixin of it sharing `module_text`, the module's text.
 pub(crate) fn decode_module(bytes: &[u8], name: &str, module_text: Rc<str>) -> Rc<Mixin> {
     let mut reader = ByteReader::new(bytes);
     assert!(

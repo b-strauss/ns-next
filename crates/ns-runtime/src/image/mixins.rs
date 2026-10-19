@@ -28,8 +28,8 @@ use ns_syntax::Span;
 
 use crate::bytecode::CompiledCode;
 use crate::mixin::{
-    mixin_key, slot_accessors, ClauseMessage, Factory, MethodEntry, Mixin, MixinApplicationClause,
-    MixinMethod, MixinSlot,
+    mixin_key, slot_accessors, ClauseMessage, DeclarationText, Factory, MethodEntry, Mixin,
+    MixinApplicationClause, MixinMethod, MixinSlot,
 };
 use crate::Symbol;
 
@@ -791,6 +791,64 @@ fn metaclass_factory_entries(raw: &[RawRow]) -> Vec<Option<(Symbol, MethodEntry)
     entries
 }
 
+/// Each row's declaration text (`Mixin::text`), cut from its module's text:
+/// the module's root row over the whole text, every other row over its
+/// span, the holes its nested rows' spans; a class-side row shares its
+/// instance side's. A cut that does not fit -- a span the image chose --
+/// leaves the row without text, which its `source` answers as `nil`.
+///
+/// Runs after `check_ids`, which is what lets this index `raw` by a row's
+/// nested and class-side ids.
+fn declaration_texts(
+    raw: &[RawRow],
+    module_rows: &[u32],
+    module_texts: &[Option<Rc<str>>],
+) -> Vec<Option<Rc<DeclarationText>>> {
+    let mut is_class_side = vec![false; raw.len()];
+    for row in raw {
+        if let Some(class_side) = row.class_side {
+            is_class_side[class_side as usize] = true;
+        }
+    }
+    let mut texts: Vec<Option<Rc<DeclarationText>>> = vec![None; raw.len()];
+    for (index, row) in raw.iter().enumerate() {
+        if is_class_side[index] {
+            continue;
+        }
+        // The module whose tree holds the row: the last module whose first
+        // row is at or before it.
+        let Some(module) = module_rows
+            .partition_point(|&first| first as usize <= index)
+            .checked_sub(1)
+        else {
+            continue;
+        };
+        let Some(module_text) = module_texts.get(module).and_then(Option::as_ref) else {
+            continue;
+        };
+        let range = if module_rows[module] as usize == index {
+            let Ok(length) = u32::try_from(module_text.len()) else {
+                continue;
+            };
+            Span::new(0, length)
+        } else {
+            row.span
+        };
+        let holes: Vec<Span> = row
+            .nested
+            .iter()
+            .map(|nested| raw[*nested as usize].span)
+            .collect();
+        texts[index] = DeclarationText::cut(module_text, range, &holes).map(Rc::new);
+    }
+    for (index, row) in raw.iter().enumerate() {
+        if let Some(class_side) = row.class_side {
+            texts[class_side as usize] = texts[index].clone();
+        }
+    }
+    texts
+}
+
 /// Builds the `Rc<Mixin>`s back to front, the third pass after `read`'s
 /// two. `check_preorder` established that every child's row id is greater
 /// than its parent's, so a row's children are already built by the time
@@ -801,8 +859,9 @@ fn metaclass_factory_entries(raw: &[RawRow]) -> Vec<Option<(Symbol, MethodEntry)
 /// `module_texts` holds each module's text, in module order, `None` for
 /// one the image carries no source for: every mixin of module `i`'s tree
 /// -- the rows `module_rows[i]` up to the next module's first row --
-/// holds module `i`'s (`Mixin::module_text`). A module past the slice
-/// holds none, which is how `decode` builds without texts.
+/// cuts its declaration's text from module `i`'s (`declaration_texts`).
+/// A module past the slice holds none, which is how `decode` builds
+/// without texts.
 ///
 /// Each method and each per-mixin body is handed the code-table entry its
 /// row names -- `read_row` range-checked every id against `codes` already.
@@ -816,17 +875,7 @@ pub fn build(
 ) -> Decoded {
     let ReadTable { raw, module_rows } = table;
     let code_at = |id: u32| codes[id as usize].clone();
-    // The module whose tree holds `row`: the last module whose first row
-    // is at or before it. The first tree starts at row 0, so a row of a
-    // non-empty table always has one.
-    let module_text_of = |row: usize| {
-        let module = module_rows.partition_point(|&first| first as usize <= row) - 1;
-        module_texts
-            .get(module)
-            .cloned()
-            .flatten()
-            .map(crate::mixin::ModuleText)
-    };
+    let mut texts = declaration_texts(&raw, &module_rows, module_texts);
     let mut factory_entries = metaclass_factory_entries(&raw);
     let mut built: Vec<Option<Rc<Mixin>>> = vec![None; raw.len()];
     let mut code: Vec<Option<MixinCode>> = (0..raw.len()).map(|_| None).collect();
@@ -944,7 +993,7 @@ pub fn build(
             shipped: false,
             // Set by the parent's row, built after this one.
             enclosing: std::cell::OnceCell::new(),
-            module_text: module_text_of(index),
+            text: texts[index].take(),
         });
         Mixin::set_enclosing_of_children(&mixin);
         built[index] = Some(mixin);

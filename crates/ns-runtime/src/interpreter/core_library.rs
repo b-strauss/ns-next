@@ -137,8 +137,8 @@ thread_local! {
 thread_local! {
     /// The text of `Kernel`, then of each `SHIPPED_MODULES` entry, in that
     /// order, each made the first time a decode of the embedded shipped
-    /// code on this thread asks for it: every mixin a decode builds holds
-    /// its module's text (`Mixin::module_text`), and one copy per module
+    /// code on this thread asks for it: every mixin a decode builds shares
+    /// its module's text (`Mixin::text`), and one copy per module
     /// per thread serves every boot, where one per decode would copy every
     /// module's text into every interpreter.
     static SHIPPED_MODULE_TEXTS: Vec<OnceCell<Rc<str>>> =
@@ -531,8 +531,9 @@ mod tests {
     }
 
     /// `CollectionsFactory`'s root mixin holds the module's text byte for
-    /// byte, and its `List` names the root as its enclosing mixin, whether
-    /// the boot decodes the embedded shipped code or compiles the source.
+    /// byte, its `List` its own declaration's, both sharing the module's,
+    /// and `List` names the root as its enclosing mixin, whether the boot
+    /// decodes the embedded shipped code or compiles the source.
     #[test]
     fn a_shipped_module_decoded_from_the_embedded_code_carries_its_text_and_links() {
         for path in [ShippedCodePath::Embedded, ShippedCodePath::Source] {
@@ -540,11 +541,10 @@ mod tests {
                 crate::Interpreter::bootstrap_on(crate::compiler::Lowering::Optimized, path);
             interpreter.enter(|mutator| {
                 let root = mutator.shipped_root_mixin("CollectionsFactory");
-                let text = root
-                    .module_text
-                    .as_ref()
-                    .expect("a shipped module has its text");
-                assert_eq!(&*text.0, COLLECTIONS_FACTORY_SOURCE);
+                assert_eq!(
+                    mutator.heap.assembled_text(&root).as_deref(),
+                    Some(COLLECTIONS_FACTORY_SOURCE)
+                );
                 let list = root
                     .nested
                     .iter()
@@ -554,10 +554,39 @@ mod tests {
                     .enclosing_mixin()
                     .is_some_and(|enclosing| Rc::ptr_eq(&enclosing, &root)));
                 assert!(list
-                    .module_text
+                    .text
                     .as_ref()
-                    .is_some_and(|list_text| Rc::ptr_eq(&list_text.0, &text.0)));
+                    .is_some_and(|list_text| list_text.is_shared()));
+                assert_eq!(
+                    mutator.heap.assembled_text(list).as_deref(),
+                    crate::mixin::source_text(COLLECTIONS_FACTORY_SOURCE, list.span)
+                );
                 assert!(root.enclosing_mixin().is_none());
+            });
+        }
+    }
+
+    /// Every shipped module's root mixin assembles to the module's text,
+    /// sharing it rather than copying it, whether the boot decodes the
+    /// embedded shipped code or compiles the source.
+    #[test]
+    fn every_shipped_module_assembles_to_its_text() {
+        for path in [ShippedCodePath::Embedded, ShippedCodePath::Source] {
+            let mut interpreter =
+                crate::Interpreter::bootstrap_on(crate::compiler::Lowering::Optimized, path);
+            interpreter.enter(|mutator| {
+                let names = std::iter::once(KERNEL_MODULE)
+                    .chain(SHIPPED_MODULES.iter().map(|shipped| shipped.name));
+                for name in names {
+                    let root = mutator.shipped_root_mixin(name);
+                    assert_eq!(
+                        mutator.heap.assembled_text(&root),
+                        Some(shipped_module_text(name).to_string()),
+                        "{name} assembles to its text"
+                    );
+                    let text = root.text.as_ref().expect("a shipped module has its text");
+                    assert!(text.is_shared(), "{name}'s root shares its module's text");
+                }
             });
         }
     }

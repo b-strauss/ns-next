@@ -13,11 +13,11 @@
 //! the world holds, so there is nothing left for a re-parse to rebuild --
 //! and the image's source text, which is attacker-controlled input like
 //! every other byte in the file, is never handed to the parser. It is not
-//! even required to be present: modules handed as `ModuleSource`s with no
-//! `source` write an image with no program text in it at all, and modules
-//! that all carry theirs write the debug variant, whose source exists so a
-//! loaded world can be shown (and, once a decompiler exists, compared) as
-//! `.ns`.
+//! even required to be present: modules handed as `ModuleSource`s without
+//! `with_source` write an image with no program text in it at all, and
+//! modules that all ask for theirs write the debug variant, whose source
+//! exists so a loaded world can be shown (and, once a decompiler exists,
+//! compared) as `.ns`.
 
 pub mod decode;
 pub mod encode;
@@ -48,6 +48,9 @@ struct Describing {
     mixins: encode::Writer,
     ids: encode::CodeIds,
     mixin_ids: mixins::MixinIds,
+    /// Each module's text, in module order, for a module handed
+    /// `with_source`; `None` for one handed without, or with no text.
+    module_texts: Vec<Option<String>>,
 }
 
 /// Encodes the code table and the mixin table into their own buffers,
@@ -103,21 +106,44 @@ fn encode_describing<'gc>(
     // class objects might name its rows.
     let mut mixin_writer = encode::Writer::new();
     let mixin_ids = mixins::encode(&mut mixin_writer, &module_roots, &mut symbols, &ids)?;
+    let module_texts = modules
+        .iter()
+        .map(|module| {
+            module
+                .with_source
+                .then(|| module_text(heap, module.class))
+                .flatten()
+        })
+        .collect();
     Ok(Describing {
         symbols,
         code,
         mixins: mixin_writer,
         ids,
         mixin_ids,
+        module_texts,
     })
+}
+
+/// The current text of the module whose root class is `class`, as the
+/// heap holds it (`Heap::module_source`) -- never the host's file, which
+/// after an edit is no longer the program's text. `None` for a root that
+/// is no class object and for a module with no text.
+fn module_text<'gc>(heap: &Heap<'gc>, class: ClassReference<'gc>) -> Option<String> {
+    let root = heap.class_application(class)?.mixin.clone();
+    match heap.known_mixin_id(&root) {
+        Some(id) => heap.module_source(id),
+        None => heap.assembled_text(&root),
+    }
 }
 
 /// Writes header through the module section. Everything after that is the
 /// caller's: the graph.
 ///
-/// The header says the modules carry source when any one is handed some;
-/// `encode_modules` then refuses a module handed none, so a mix is an `Err`
-/// rather than an artifact that silently drops one module's text.
+/// The header says the modules carry source when any one is handed
+/// `with_source`; `encode_modules` then refuses a module without text, so
+/// a mix is an `Err` rather than an artifact that silently drops one
+/// module's text.
 fn write_describing(
     writer: &mut encode::Writer,
     modules: &[ModuleSource<'_, '_>],
@@ -125,7 +151,8 @@ fn write_describing(
     flags: u8,
     describing: Describing,
 ) -> Result<(), String> {
-    let with_source = modules.iter().any(|module| module.source.is_some());
+    let describing_texts = describing.module_texts;
+    let with_source = modules.iter().any(|module| module.with_source);
     encode::write_header(
         writer,
         flags
@@ -143,7 +170,13 @@ fn write_describing(
     describing.symbols.write(writer);
     writer.write_raw(&describing.code.into_bytes());
     writer.write_raw(&describing.mixins.into_bytes());
-    modules::encode_modules(writer, modules, module_root_ids, with_source)
+    modules::encode_modules(
+        writer,
+        modules,
+        &describing_texts,
+        module_root_ids,
+        with_source,
+    )
 }
 
 /// Serializes a quiesced world: `roots` (the root instance and, if any,
@@ -152,12 +185,13 @@ fn write_describing(
 /// modules the image carries, the application's first; a graph reaching a
 /// class of any other user module is refused.
 ///
-/// A module's `source` is the debug variant's switch. `None` writes a module
-/// whose bytes contain no program text -- what a loaded world needs is the
-/// code table, the mixin table and the graph, and none of them quotes the
-/// source. `Some(source)` additionally stores `source` verbatim; `load` hands
-/// it back on `LoadedModule::source` and does nothing else with it. Source
-/// travels for every module or for none. The graph closes with the hashes of
+/// A module's `with_source` is the debug variant's switch. `false` writes a
+/// module whose bytes contain no program text -- what a loaded world needs
+/// is the code table, the mixin table and the graph, and none of them
+/// quotes the source. `true` additionally stores the module's current text
+/// as the heap holds it (`Heap::module_source`), verbatim; `load` hands it
+/// back on `LoadedModule::source` and cuts each declaration's text from it.
+/// Source travels for every module or for none. The graph closes with the hashes of
 /// the objects it names by tag (`encode::encode_tag_named_hashes`), and is
 /// preceded by the shipped names it names the binary's own objects by
 /// (`shipped_names`); the platform, if the graph reaches it, is an ordinary
@@ -277,8 +311,8 @@ pub struct LoadedModule {
     /// The module's source text, for the debug variant only -- `None` for a
     /// source-free artifact. Never parsed, never resolved, never executed:
     /// `load` reads it out of the byte stream and hands it over unchanged,
-    /// the one allocation every mixin of the module holds as its
-    /// `Mixin::module_text`.
+    /// after each mixin of the module has cut its declaration's text from
+    /// it (`Mixin::text`).
     pub source: Option<std::rc::Rc<str>>,
 }
 
@@ -419,8 +453,8 @@ fn decode_described(
     decode::number_call_site_families(&mut table).map_err(|error| error.to_string())?;
     let read = mixins::read(reader, &symbols, &table.codes).map_err(|error| error.to_string())?;
     // The module section follows the mixin table and holds each module's
-    // text, which every mixin of the module holds once built
-    // (`Mixin::module_text`), so it is read before the mixins are built.
+    // text, from which every mixin of the module cuts its declaration's
+    // (`Mixin::text`), so it is read before the mixins are built.
     let decoded_modules = modules::decode_modules(reader, &read.module_rows, header.has_source)
         .map_err(|error| error.to_string())?;
     let module_texts: Vec<Option<std::rc::Rc<str>>> = decoded_modules
