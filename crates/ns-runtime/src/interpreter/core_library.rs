@@ -567,7 +567,8 @@ mod tests {
     }
 
     /// Every shipped module's root mixin assembles to the module's text,
-    /// sharing it rather than copying it, whether the boot decodes the
+    /// sharing it rather than copying it, and every declared class side
+    /// shares its instance side's text, whether the boot decodes the
     /// embedded shipped code or compiles the source.
     #[test]
     fn every_shipped_module_assembles_to_its_text() {
@@ -586,6 +587,24 @@ mod tests {
                     );
                     let text = root.text.as_ref().expect("a shipped module has its text");
                     assert!(text.is_shared(), "{name}'s root shares its module's text");
+                    let mut tree = Vec::new();
+                    crate::mixin::preorder(&root, &mut tree);
+                    for mixin in &tree {
+                        let Some(class_side) = &mixin.class_side else {
+                            continue;
+                        };
+                        assert!(
+                            class_side
+                                .text
+                                .as_ref()
+                                .zip(mixin.text.as_ref())
+                                .is_some_and(|(class_side, instance)| Rc::ptr_eq(
+                                    class_side, instance
+                                )),
+                            "{}'s class side shares its text",
+                            mixin.name
+                        );
+                    }
                 }
             });
         }
