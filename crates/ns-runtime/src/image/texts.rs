@@ -10,28 +10,29 @@
 //! declarations' after the load (`Heap::assembled_text`), never stored
 //! beside them.
 
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use ns_syntax::Span;
 
-use crate::mixin::{mixin_key, DeclarationText, Mixin};
+use crate::mixin::{DeclarationText, Mixin};
 
 use super::decode::{bounded_count, DecodeError, Reader};
 use super::encode::{u32_field, Writer};
+use super::mixins::Row;
 
-/// Each row's text index, by the row's `mixin_key`.
+/// Each row's text index, by row id.
 pub struct TextIds {
-    ids: HashMap<usize, u32>,
+    ids: Vec<Option<u32>>,
 }
 
 impl TextIds {
-    /// The index of the text of `mixin`'s row. Every row of a module asked
-    /// for source has one, since `encode` refused the image otherwise; an
-    /// `Err` rather than a panic all the same, as every other refusal of
-    /// the encoder.
-    pub fn id_of(&self, mixin: &Rc<Mixin>) -> Result<u32, String> {
-        self.ids.get(&mixin_key(mixin)).copied().ok_or_else(|| {
+    /// The index of the text of row `row`, which declares `mixin`. Every
+    /// row of a module asked for source has one, since `encode` refused
+    /// the image otherwise; an `Err` rather than a panic all the same, as
+    /// every other refusal of the encoder.
+    pub fn id_of(&self, row: usize, mixin: &Mixin) -> Result<u32, String> {
+        self.ids.get(row).copied().flatten().ok_or_else(|| {
             format!(
                 "image encoding cannot carry the source of `{}`, which was built without it",
                 mixin.name
@@ -40,37 +41,46 @@ impl TextIds {
     }
 }
 
-/// Writes the table: one text per instance-side declaration under
-/// `module_roots`, in the order the mixin table's rows reach them, and
-/// answers each row's index -- a class side's its instance side's. This is
-/// the shape the decoder requires (`mixins::row_texts`): a text belongs to
-/// one declaration, so no two instance sides name one text even where two
-/// hold one allocation. A module one of whose declarations holds no text
-/// -- one built without source -- is refused.
-pub(crate) fn encode(writer: &mut Writer, module_roots: &[Rc<Mixin>]) -> Result<TextIds, String> {
+/// Writes the table: one text per instance-side declaration among `rows`
+/// (`mixins::plan`), in row order, and answers each row's index -- a
+/// class side's its instance side's. The rows describe each declaration's
+/// current version, so an edited program's image holds the text of each
+/// declaration once, as it now is. This is the shape the decoder requires
+/// (`mixins::row_texts`): a text belongs to one declaration, so no two
+/// instance sides name one text even where two hold one allocation. A row
+/// whose declaration holds no text -- one built without source -- is
+/// refused.
+pub(crate) fn encode(writer: &mut Writer, rows: &[Row]) -> Result<TextIds, String> {
     let mut texts: Vec<Rc<DeclarationText>> = Vec::new();
-    let mut ids: HashMap<usize, u32> = HashMap::new();
-    for root in module_roots {
-        let mut tree = Vec::new();
-        crate::mixin::preorder(root, &mut tree);
-        for mixin in &tree {
-            // A class side, registered with its instance side, which
-            // `preorder` reaches first.
-            if ids.contains_key(&mixin_key(mixin)) {
-                continue;
-            }
-            let Some(text) = &mixin.text else {
-                return Err(format!(
-                    "image encoding cannot carry the source of module `{}`, which was built                      without it",
-                    root.name
-                ));
-            };
-            let id = u32_field("text table id", texts.len());
-            texts.push(Rc::clone(text));
-            ids.insert(mixin_key(mixin), id);
-            if let Some(class_side) = &mixin.class_side {
-                ids.insert(mixin_key(class_side), id);
-            }
+    let mut ids: Vec<Option<u32>> = vec![None; rows.len()];
+    let class_sides: HashSet<u32> = rows.iter().filter_map(|row| row.class_side).collect();
+    let nested: HashSet<u32> = rows
+        .iter()
+        .flat_map(|row| row.nested.iter().copied())
+        .collect();
+    // The rows are in preorder, module after module, so the module a row
+    // belongs to is the last row that is no row's child.
+    let mut module = None;
+    for (index, row) in rows.iter().enumerate() {
+        let row_id = u32_field("mixin table id", index);
+        if class_sides.contains(&row_id) {
+            continue;
+        }
+        if !nested.contains(&row_id) {
+            module = Some(&row.mixin.name);
+        }
+        let Some(text) = &row.mixin.text else {
+            return Err(format!(
+                "image encoding cannot carry the source of module `{}`, which was built \
+                 without it",
+                module.unwrap_or(&row.mixin.name)
+            ));
+        };
+        let id = u32_field("text table id", texts.len());
+        texts.push(Rc::clone(text));
+        ids[index] = Some(id);
+        if let Some(class_side) = row.class_side {
+            ids[class_side as usize] = Some(id);
         }
     }
     writer.write_u32(u32_field("text table entry count", texts.len()));

@@ -81,25 +81,6 @@ fn encode_describing<'gc>(
             ));
         }
     }
-    // An edited mixin's code and layout live in the heap's tables, not in
-    // the tree the rows are planned from, so planning it would write an
-    // image that loads as the program before the edit. Refused before any
-    // row is planned, until images carry edits (road step 5b2b).
-    let mut tree = Vec::new();
-    for root in &module_roots {
-        crate::mixin::preorder(root, &mut tree);
-    }
-    for mixin in &tree {
-        if heap
-            .known_mixin_id(mixin)
-            .is_some_and(|id| heap.mixin_is_edited(id))
-        {
-            return Err(format!(
-                "image encoding cannot yet serialize mixin `{}`, which a MirrorBuilder edited",
-                mixin.name
-            ));
-        }
-    }
     // The header has one flag for the source of every module, so a module
     // without text while another carries its own could only be written by
     // inventing an empty text for it.
@@ -112,12 +93,16 @@ fn encode_describing<'gc>(
     }
     let mut symbols = symbols::Builder::new();
     let mut code = encode::Writer::new();
-    let ids = encode::encode_code_table(&mut code, &module_roots, &mut symbols)?;
+    // Planned once, from each declaration's current version, so that the
+    // code table, the text table and the mixin table describe one program:
+    // the program as an edit left it, each declaration's text once.
+    let rows = mixins::plan(heap, &module_roots)?;
+    let ids = encode::encode_code_table(&mut code, &rows, &[], &mut symbols)?;
     // The texts the heap holds, each declaration's own -- never the host's
     // file, which after an edit is no longer the program's text.
     let (texts, text_ids) = if with_source {
         let mut texts = encode::Writer::new();
-        let text_ids = texts::encode(&mut texts, &module_roots)?;
+        let text_ids = texts::encode(&mut texts, &rows)?;
         (Some(texts), Some(text_ids))
     } else {
         (None, None)
@@ -127,7 +112,7 @@ fn encode_describing<'gc>(
     let mut mixin_writer = encode::Writer::new();
     let mixin_ids = mixins::encode(
         &mut mixin_writer,
-        &module_roots,
+        &rows,
         &mut symbols,
         &ids,
         text_ids.as_ref(),

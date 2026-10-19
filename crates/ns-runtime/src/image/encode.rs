@@ -249,26 +249,26 @@ pub fn code_kind_tag(kind: CodeKind) -> u8 {
     }
 }
 
-/// The code table: every `CompiledCode` reachable from the mixin trees under
-/// `module_roots` -- every mixin's methods, every mixin's initializer, every
-/// superclass clause and clause-message body, every `<:` clause's message
-/// body, and every nested block body --
-/// with nested block code *before* the code that creates it. Flat and
-/// unnamed: *which* body belongs to which declaration is the mixin table's
-/// business (`image::mixins`), which addresses this table by id.
+/// The code table: every `CompiledCode` reachable from `rows`
+/// (`mixins::plan`) -- every mixin's methods, every mixin's initializer,
+/// every superclass clause and clause-message body, every `<:` clause's
+/// message body, and every nested block body -- then every body of
+/// `extra` and the blocks nested in it, with nested block code *before*
+/// the code that creates it. Flat and unnamed: *which* body belongs to
+/// which declaration is the mixin table's business (`image::mixins`),
+/// which addresses this table by id.
 ///
-/// Collected in `mixin::preorder` order, module after module -- the same
-/// order the mixin table's rows are written in -- so the same module always encodes to the same
-/// bytes.
+/// Collected in row order -- the order the mixin table's rows are written
+/// in -- so the same module always encodes to the same bytes.
 pub fn encode_code_table(
     writer: &mut Writer,
-    module_roots: &[Rc<crate::mixin::Mixin>],
+    rows: &[mixins::Row],
+    extra: &[Rc<CompiledCode>],
     symbols: &mut symbols::Builder,
 ) -> Result<CodeIds, String> {
     let mut order: Vec<Rc<CompiledCode>> = Vec::new();
     let mut ids = CodeIds::default();
-    let rows = mixins::plan(module_roots)?;
-    for row in &rows {
+    for row in rows {
         for method in &row.methods {
             collect_code(&method.code, &mut order, &mut ids);
         }
@@ -288,6 +288,9 @@ pub fn encode_code_table(
         {
             collect_code(code, &mut order, &mut ids);
         }
+    }
+    for code in extra {
+        collect_code(code, &mut order, &mut ids);
     }
     writer.write_u32(u32_field("code table entry count", order.len()));
     for code in &order {
@@ -1261,9 +1264,9 @@ pub struct EncodeContext<'a, 'gc> {
     shipped_by_mixin: &'a HashMap<MixinId, usize>,
     /// `ShippedWorld::declared_by_mixin`, built for this encoding.
     shipped_declared_by_mixin: &'a HashMap<MixinId, ShippedName>,
-    /// `mixin::mixin_key` -> mixin-table row id, as `mixins::encode`
+    /// A declaration's id -> mixin-table row id, as `mixins::encode`
     /// assigned them.
-    pub mixin_ids: &'a HashMap<usize, u32>,
+    pub mixin_ids: &'a mixins::MixinIds,
     pub heap: &'a Heap<'gc>,
 }
 
@@ -1545,9 +1548,8 @@ fn encode_class_record<'gc>(
     let applied_clause = heap.class_applied_origin(class);
     let superclass = heap.class_superclass(class);
     let applied_row = |applied: &crate::mixin::AppliedClause| {
-        context
-            .mixin_ids
-            .get(&crate::mixin::mixin_key(&applied.declaration))
+        heap.known_mixin_id(&applied.declaration)
+            .and_then(|id| context.mixin_ids.get(&id))
             .copied()
             .ok_or_else(|| {
                 format!(
@@ -1593,9 +1595,9 @@ fn encode_class_record<'gc>(
         writer.write_u32(u32_field("mixin application clause index", applied.index));
         return Ok(());
     }
-    let id = context
-        .mixin_ids
-        .get(&crate::mixin::mixin_key(mixin))
+    let id = heap
+        .known_mixin_id(mixin)
+        .and_then(|id| context.mixin_ids.get(&id))
         .copied()
         .ok_or_else(|| {
             format!(
@@ -1842,9 +1844,8 @@ fn encode_mixin_record<'gc>(
     context: &EncodeContext<'_, 'gc>,
 ) -> Result<(), String> {
     let (instance_side, class_side) = reified_mixin_reference(context.heap, object)?;
-    let key = crate::mixin::mixin_key(&instance_side);
     let id = context.heap.known_mixin_id(&instance_side);
-    if let Some(row) = context.mixin_ids.get(&key) {
+    if let Some(row) = id.and_then(|id| context.mixin_ids.get(&id)) {
         writer.write_u8(MIXIN_ROW);
         writer.write_u32(*row);
     } else if let Some(&world_index) = id.and_then(|id| context.shipped_by_mixin.get(&id)) {
@@ -1982,7 +1983,7 @@ pub fn encode_graph_section<'gc>(
     roots: &[Value<'gc>],
     code_ids: &CodeIds,
     module_roots: &[ClassReference<'gc>],
-    mixin_ids: &HashMap<usize, u32>,
+    mixin_ids: &mixins::MixinIds,
     symbols: &mut symbols::Builder,
 ) -> Result<EncodedGraph, String> {
     let heap = mutator.heap();

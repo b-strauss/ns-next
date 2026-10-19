@@ -106,9 +106,13 @@ pub fn root_record_defect<'gc>(
     class: ClassReference<'gc>,
 ) -> Option<RootRecordDefect> {
     let heap: &Heap<'gc> = &mutator.heap;
+    // By id, not by address: an edit of the root replaces it under its id,
+    // and the level its clause added still names the version that applied
+    // it.
+    let root_id = heap.known_mixin_id(root_mixin);
     let applies_the_root = heap
         .class_application(class)
-        .is_some_and(|application| Rc::ptr_eq(&application.mixin, root_mixin));
+        .is_some_and(|application| heap.same_mixin(&application.mixin, root_mixin, root_id));
     if !heap.is_class(class)
         || heap.class_this_class(class).is_some()
         || !applies_the_root
@@ -132,7 +136,7 @@ pub fn root_record_defect<'gc>(
             let added_by_the_root = heap
                 .class_applied_origin(superclass)
                 .is_some_and(|applied| {
-                    Rc::ptr_eq(&applied.declaration, root_mixin) && applied.index == 0
+                    heap.same_mixin(&applied.declaration, root_mixin, root_id) && applied.index == 0
                 });
             let applies_value = heap
                 .class_application(superclass)

@@ -467,34 +467,178 @@ mod tests {
         (interpreter, instance, inner_class, inner, inner_id)
     }
 
-    /// The image encoder, entered the way the host's `build` enters it,
-    /// refuses a program whose mixin an edit replaced -- with an error, not
-    /// a panic -- until images carry edits.
-    #[test]
-    fn an_edited_program_is_refused_with_an_error() {
-        let (mut interpreter, outer) = load(OUTER);
-        let inner_id = nested_id_of(&mut interpreter, &outer, "Inner");
-        install(&mut interpreter, inner_id, &add_method("public b = ( ^2 )"));
-        let refused = interpreter.enter(|mutator| {
-            let class = mutator
-                .fetch(&outer)
-                .as_object()
-                .expect("the module is a class object");
+    // Images of an edited program
+
+    /// `class`'s module written with its source, `roots` the graph's roots.
+    fn image_of(interpreter: &mut Interpreter, class: &Root, roots: &[Root]) -> Vec<u8> {
+        image_with(interpreter, class, roots, true)
+    }
+
+    fn image_with(
+        interpreter: &mut Interpreter,
+        class: &Root,
+        roots: &[Root],
+        with_source: bool,
+    ) -> Vec<u8> {
+        interpreter.enter(|mutator| {
+            let class = mutator.fetch(class).as_object().expect("a class object");
             let origin = SourceOrigin::File(PathBuf::from("t.ns"));
             let modules = [crate::image::ModuleSource {
                 class,
                 origin: &origin,
-                with_source: false,
+                with_source,
             }];
-            crate::image::snapshot(mutator, &modules, &[])
-        });
-        match refused {
-            Err(message) => assert_eq!(
-                message,
-                "image encoding cannot yet serialize mixin `Inner`, which a MirrorBuilder edited"
-            ),
-            Ok(_) => panic!("an edited program was encoded"),
+            let roots: Vec<Value<'_>> = roots.iter().map(|root| mutator.fetch(root)).collect();
+            crate::image::snapshot(mutator, &modules, &roots).expect("snapshot")
+        })
+    }
+
+    fn loaded(bytes: &[u8]) -> crate::image::LoadedImage {
+        match crate::image::load(bytes) {
+            Ok(image) => image,
+            Err(message) => panic!("load: {message}"),
         }
+    }
+
+    /// `source` loaded and instantiated: the module class, its `Inner`
+    /// class object, an `Inner` made before any edit, and `Inner`'s id.
+    fn module_and_inner(source: &str) -> (Interpreter, Root, Root, Root, MixinId) {
+        let (mut interpreter, outer) = load(source);
+        let instance = expect_ok(interpreter.instantiate(&outer, &[]), "an Outer");
+        let inner_class = send(&mut interpreter, &instance, "Inner");
+        let inner = send(&mut interpreter, &inner_class, "new");
+        let inner_id = nested_id_of(&mut interpreter, &outer, "Inner");
+        (interpreter, outer, inner_class, inner, inner_id)
+    }
+
+    fn is_nil(interpreter: &mut Interpreter, root: &Root) -> bool {
+        interpreter.enter(|mutator| mutator.fetch(root).is_nil())
+    }
+
+    fn contains(bytes: &[u8], needle: &str) -> bool {
+        bytes
+            .windows(needle.len())
+            .any(|window| window == needle.as_bytes())
+    }
+
+    /// A module whose root class applies `Value` through its one `<:`
+    /// clause.
+    const ROOT_WITH_A_VALUE_CLAUSE: &str = indoc! {"
+        class Root = Object new <: Value () (
+          public a = ( ^1 )
+        )
+    "};
+
+    /// An edited nested class is written and loads edited: its added
+    /// method answers on an instance made before the edit.
+    #[test]
+    fn an_edited_program_loads_edited() {
+        let (mut interpreter, outer, _, inner, inner_id) = module_and_inner(OUTER);
+        install(
+            &mut interpreter,
+            inner_id,
+            &add_method("public b = ( ^x + 41 )"),
+        );
+        let bytes = image_of(&mut interpreter, &outer, &[inner]);
+        let mut image = loaded(&bytes);
+        let inner = image.roots[0].clone();
+        let answer = send(&mut image.interpreter, &inner, "b");
+        assert_eq!(integer(&mut image.interpreter, &answer), Some(42));
+    }
+
+    /// A slot added through the header is in the image's layout: an old
+    /// instance migrated to `nil`, a new one initialized.
+    #[test]
+    fn a_header_edit_loads_with_its_layout() {
+        let (mut interpreter, outer, inner_class, old, inner_id) = module_and_inner(OUTER);
+        install(
+            &mut interpreter,
+            inner_id,
+            &header_edit("public class Inner = (| public x ::= 1. public y ::= 2. |)"),
+        );
+        let new = send(&mut interpreter, &inner_class, "new");
+        let bytes = image_of(&mut interpreter, &outer, &[old, new]);
+        let mut image = loaded(&bytes);
+        let (old, new) = (image.roots[0].clone(), image.roots[1].clone());
+        let old_y = send(&mut image.interpreter, &old, "y");
+        assert!(is_nil(&mut image.interpreter, &old_y));
+        let new_y = send(&mut image.interpreter, &new, "y");
+        assert_eq!(integer(&mut image.interpreter, &new_y), Some(2));
+        let old_x = send(&mut image.interpreter, &old, "x");
+        assert_eq!(integer(&mut image.interpreter, &old_x), Some(1));
+    }
+
+    /// After a growing edit of `Inner`, the loaded `Outer` still slices
+    /// its method from its own text, and the loaded module's text holds
+    /// the edit.
+    #[test]
+    fn an_enclosing_method_keeps_its_source_through_an_image() {
+        let (mut interpreter, outer, inner_class, _, inner_id) = module_and_inner(NESTED_AND_AFTER);
+        install(
+            &mut interpreter,
+            inner_id,
+            &add_method("public added = ( ^'a method that moves the text after it' )"),
+        );
+        let bytes = image_of(&mut interpreter, &outer, &[inner_class]);
+        let mut image = loaded(&bytes);
+        let outer = image.modules[0].class.clone();
+        let inner_id = nested_id_of(&mut image.interpreter, &outer, "Inner");
+        image.interpreter.enter(|mutator| {
+            let outer_id = mutator
+                .heap
+                .known_mixin_id(&mixin_of(mutator, &outer))
+                .expect("Outer is applied");
+            assert_eq!(
+                method_source_of(mutator, outer_id, "after").as_deref(),
+                Some("public after = ( ^2 )")
+            );
+            assert_eq!(
+                method_source_of(mutator, inner_id, "added").as_deref(),
+                Some("public added = ( ^'a method that moves the text after it' )")
+            );
+        });
+        let module = image.modules[0]
+            .source
+            .clone()
+            .expect("the image carries source");
+        assert!(module.contains("public added") && module.contains("public after = ( ^2 )"));
+    }
+
+    /// An image of an edited program holds each declaration's text once:
+    /// the removed method's text is nowhere in it.
+    #[test]
+    fn an_image_of_an_edited_program_holds_no_old_text() {
+        let (mut interpreter, outer, inner_class, _, inner_id) = module_and_inner(NESTED_AND_AFTER);
+        install(
+            &mut interpreter,
+            inner_id,
+            &instance_edit(vec![MemberEdit::RemoveMethod(Symbol::intern("a"))]),
+        );
+        let bytes = image_of(&mut interpreter, &outer, &[inner_class]);
+        assert!(!contains(&bytes, "public a = ( ^1 )"));
+        assert!(contains(&bytes, "public after = ( ^2 )"));
+    }
+
+    /// An edit of a module's root class whose `<:` clause applies `Value`
+    /// is written: the clause's level names the root's old version, and
+    /// the root rule holds by id.
+    #[test]
+    fn an_edited_root_with_a_clause_is_written() {
+        let (mut interpreter, root) = load(ROOT_WITH_A_VALUE_CLAUSE);
+        let instance = expect_ok(interpreter.instantiate(&root, &[]), "a Root");
+        let root_id = interpreter.enter(|mutator| {
+            let mixin = mixin_of(mutator, &root);
+            mutator
+                .heap
+                .known_mixin_id(&mixin)
+                .expect("the root is applied")
+        });
+        install(&mut interpreter, root_id, &add_method("public b = ( ^2 )"));
+        let bytes = image_of(&mut interpreter, &root, &[instance]);
+        let mut image = loaded(&bytes);
+        let instance = image.roots[0].clone();
+        let answer = send(&mut image.interpreter, &instance, "b");
+        assert_eq!(integer(&mut image.interpreter, &answer), Some(2));
     }
 
     /// A method added to a class answers on an instance made before.
@@ -776,6 +920,7 @@ mod tests {
         let second_edited = send(&mut interpreter, &second_base, "Edited");
         let edited_id = nested_id_of(&mut interpreter, &base_class, "Edited");
         let failure_id = nested_id_of(&mut interpreter, &base_class, "Failure");
+        let before = snapshot(&mut interpreter, &[edited_id, failure_id], &[]);
 
         install(
             &mut interpreter,
@@ -829,10 +974,12 @@ mod tests {
         assert_eq!(string(&mut interpreter, &text).as_deref(), Some("boom"));
         let extra = send(&mut interpreter, &failure, "extra");
         assert!(interpreter.enter(|mutator| mutator.fetch(&extra).is_nil()));
-        interpreter.enter(|mutator| {
-            assert!(mutator.heap.mixin_is_edited(edited_id));
-            assert!(mutator.heap.mixin_is_edited(failure_id));
-        });
+        // Both ids name a fresh version: `Edited` the edit's, `Failure`
+        // one compiled anew over it.
+        let after = snapshot(&mut interpreter, &[edited_id, failure_id], &[]);
+        for (old, new) in before.versions.iter().zip(&after.versions) {
+            assert!(!Rc::ptr_eq(old, new));
+        }
     }
 
     const HOLDERS: &str = indoc! {"
@@ -1045,7 +1192,6 @@ mod tests {
             }
             assert_eq!(before.applications, after.applications);
             assert!(before.guards == after.guards);
-            interpreter.enter(|mutator| assert!(!mutator.heap.mixin_is_edited(inner_id)));
         }
         let answer = send(&mut interpreter, &inner, "a");
         assert_eq!(integer(&mut interpreter, &answer), Some(1));

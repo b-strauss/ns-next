@@ -3330,7 +3330,6 @@ impl<'gc> Heap<'gc> {
             .expect("more than u32::MAX mixins in one heap");
         self.tables.mixins.push(mixin.clone());
         self.tables.enclosing.push(enclosing);
-        self.tables.edited.push(false);
         self.tables
             .mixin_ids
             .insert(crate::mixin::mixin_key(mixin), id);
@@ -3465,13 +3464,6 @@ impl<'gc> Heap<'gc> {
             .insert(crate::mixin::mixin_key(&replacement), id);
         let superseded = std::mem::replace(&mut self.tables.mixins[id.index()], replacement);
         self.tables.superseded.push(superseded);
-        self.tables.edited[id.index()] = true;
-    }
-
-    /// Whether a replacement has installed another version of the mixin
-    /// `id` names (`replace_mixin`); `false` for an id past the table.
-    pub(crate) fn mixin_is_edited(&self, id: MixinId) -> bool {
-        self.tables.edited.get(id.index()).copied().unwrap_or(false)
     }
 
     /// Enters `application` into the table, stamped with its index, and

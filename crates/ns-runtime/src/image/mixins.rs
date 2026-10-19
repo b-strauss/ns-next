@@ -27,6 +27,7 @@ use ns_syntax::ast::AccessModifier;
 use ns_syntax::Span;
 
 use crate::bytecode::CompiledCode;
+use crate::heap::{Heap, MixinId};
 use crate::mixin::{
     mixin_key, slot_accessors, ClauseMessage, DeclarationText, Factory, MethodEntry, Mixin,
     MixinApplicationClause, MixinMethod, MixinSlot,
@@ -88,7 +89,13 @@ const MAX_MIXIN_DEPTH: usize = PARSER_MAX_NESTED_CLASS_DEPTH + 2;
 /// One declaration's row, with its children already resolved to row ids.
 /// Its code is read off `mixin` and `methods` themselves, which carry it.
 pub struct Row {
+    /// The declaration's current version, whose code, layout and text the
+    /// row describes.
     pub mixin: Rc<Mixin>,
+    /// The id the heap registered the declaration under, by which every
+    /// record names the row (`MixinIds`); `None` for a declaration no class
+    /// object applied and nothing reified, which no record can name.
+    pub id: Option<MixinId>,
     pub nested: Vec<u32>,
     pub class_side: Option<u32>,
     /// The compiled methods, sorted by selector text: the mixin's method
@@ -99,40 +106,64 @@ pub struct Row {
     pub methods: Vec<Rc<MixinMethod>>,
 }
 
+/// `mixin`'s current version: an install replaced it under its id when
+/// one names it, and a mixin no class object applied has none.
+fn current(heap: &Heap<'_>, mixin: &Rc<Mixin>) -> Rc<Mixin> {
+    heap.known_mixin_id(mixin)
+        .and_then(|id| heap.mixin(id))
+        .unwrap_or_else(|| Rc::clone(mixin))
+}
+
+/// `mixin::preorder` over the current versions: a version's `nested` and
+/// `class_side` still hold the versions it was built with, which an edit
+/// may since have replaced under their ids.
+fn current_preorder(heap: &Heap<'_>, mixin: &Rc<Mixin>, out: &mut Vec<Rc<Mixin>>) {
+    let mixin = current(heap, mixin);
+    out.push(Rc::clone(&mixin));
+    for nested in &mixin.nested {
+        current_preorder(heap, nested, out);
+    }
+    if let Some(class_side) = &mixin.class_side {
+        current_preorder(heap, class_side, out);
+    }
+}
+
 /// Flattens the tree under each of `module_roots` into rows, in
-/// `mixin::preorder` order, one tree after another in module order. Row ids
-/// and the depth ceiling cover the whole forest: a class object's record
-/// names its declaration by row id whichever module declared it.
+/// `mixin::preorder` order over each declaration's current version, one
+/// tree after another in module order. Row ids and the depth ceiling cover
+/// the whole forest: a class object's record names its declaration by row
+/// id whichever module declared it.
 ///
-/// Called by both `encode::encode_code_table` (which needs the rows to know
-/// which `CompiledCode` is reachable, and in what order) and `encode` below
-/// (which needs them to write the table). Recomputing it is one walk of the
-/// tree and one `HashMap`; sharing a cached copy between the two would trade
-/// that for a lifetime that has to thread through `snapshot`.
-pub fn plan(module_roots: &[Rc<Mixin>]) -> Result<Vec<Row>, String> {
+/// A row describes the current version, never the one a reference reached
+/// it through, so an edited program is written as it now is: an install
+/// replaces a mixin under its id while a class object, an enclosing
+/// declaration or an applied clause may still name the version before.
+///
+/// Planned once per image and handed to every table it describes -- the
+/// code table, the text table and the mixin table -- so that all three
+/// follow the same rows.
+pub fn plan(heap: &Heap<'_>, module_roots: &[Rc<Mixin>]) -> Result<Vec<Row>, String> {
     let mut order = Vec::new();
     for root in module_roots {
-        crate::mixin::preorder(root, &mut order);
+        current_preorder(heap, root, &mut order);
     }
-    let ids: HashMap<usize, u32> = order
+    let rows_by_key: HashMap<usize, u32> = order
         .iter()
         .enumerate()
         .map(|(index, mixin)| (mixin_key(mixin), u32_field("mixin table id", index)))
         .collect();
+    // Every child's current version is in `order` -- `current_preorder`
+    // put it there -- so the lookup cannot miss.
+    let row_of = |child: &Rc<Mixin>| rows_by_key[&mixin_key(&current(heap, child))];
     let mut rows = Vec::with_capacity(order.len());
     for mixin in &order {
         let mut methods: Vec<Rc<MixinMethod>> = mixin.compiled_methods().cloned().collect();
         methods.sort_by(|left, right| left.selector.as_str().cmp(right.selector.as_str()));
         rows.push(Row {
             mixin: mixin.clone(),
-            // Every child is in `order` -- `preorder` put it there -- so the
-            // lookup cannot miss.
-            nested: mixin
-                .nested
-                .iter()
-                .map(|child| ids[&mixin_key(child)])
-                .collect(),
-            class_side: mixin.class_side.as_ref().map(|side| ids[&mixin_key(side)]),
+            id: heap.known_mixin_id(mixin),
+            nested: mixin.nested.iter().map(row_of).collect(),
+            class_side: mixin.class_side.as_ref().map(row_of),
             methods,
         });
     }
@@ -224,25 +255,25 @@ fn access_from_tag(tag: u8) -> Result<AccessModifier, DecodeError> {
     }
 }
 
-/// `mixin_key` -> mixin-table row id, as `encode` assigns them. Named so
-/// `image::mod`'s `Describing` struct can hold one without spelling out the
-/// map it happens to be today.
-pub(crate) type MixinIds = HashMap<usize, u32>;
+/// A declaration's id -> mixin-table row id, as `encode` assigns them:
+/// keyed by id rather than by address, since a class object, an applied
+/// clause or a reified mixin may name any version of a declaration, and
+/// the row describes the current one.
+pub type MixinIds = HashMap<MixinId, u32>;
 
-/// Writes the mixin table and returns the `mixin_key` -> row id map the
-/// object graph addresses a class object's mixin by. With `texts`, the
-/// image carries its source, and each row ends with the index of its
+/// Writes the mixin table of `rows` (`plan`) and returns the id -> row id
+/// map the object graph addresses a class object's mixin by. With `texts`,
+/// the image carries its source, and each row ends with the index of its
 /// declaration's text in the text table (`texts::encode`).
 pub fn encode(
     writer: &mut Writer,
-    module_roots: &[Rc<Mixin>],
+    rows: &[Row],
     symbols: &mut symbols::Builder,
     codes: &CodeIds,
     texts: Option<&TextIds>,
 ) -> Result<MixinIds, String> {
-    let rows = plan(module_roots)?;
     writer.write_u32(u32_field("mixin table entry count", rows.len()));
-    for row in &rows {
+    for (index, row) in rows.iter().enumerate() {
         let mixin = &row.mixin;
         writer.write_u32(symbols.intern(mixin.name.as_str()));
         writer.write_u8(access_tag(mixin.access));
@@ -331,13 +362,13 @@ pub fn encode(
                 .transpose()?,
         );
         if let Some(texts) = texts {
-            writer.write_u32(texts.id_of(mixin)?);
+            writer.write_u32(texts.id_of(index, mixin)?);
         }
     }
     Ok(rows
         .iter()
         .enumerate()
-        .map(|(index, row)| (mixin_key(&row.mixin), u32_field("mixin table id", index)))
+        .filter_map(|(index, row)| Some((row.id?, u32_field("mixin table id", index))))
         .collect())
 }
 

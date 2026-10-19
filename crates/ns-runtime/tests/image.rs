@@ -3,7 +3,6 @@
 //! whole-image `snapshot`/`load`, and the two verification passes.
 
 use indoc::{formatdoc, indoc};
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -786,17 +785,11 @@ fn round_trip_code_table<'gc>(
 ) -> (decode::DecodedCodeTable, mixins::Decoded, encode::CodeIds) {
     let mut writer = encode::Writer::new();
     let mut symbols = symbols::Builder::new();
-    let ids = encode::encode_code_table(&mut writer, &[root_mixin_of(heap, class)], &mut symbols)
+    let rows = rows_of(heap, class);
+    let ids = encode::encode_code_table(&mut writer, &rows, &[], &mut symbols)
         .expect("encode code table");
     let mut mixin_writer = encode::Writer::new();
-    mixins::encode(
-        &mut mixin_writer,
-        &[root_mixin_of(heap, class)],
-        &mut symbols,
-        &ids,
-        None,
-    )
-    .expect("encode mixin table");
+    mixins::encode(&mut mixin_writer, &rows, &mut symbols, &ids, None).expect("encode mixin table");
     let bytes = writer.into_bytes();
     let mixin_bytes = mixin_writer.into_bytes();
     let table = symbols.build();
@@ -2191,7 +2184,8 @@ fn a_truncated_code_table_is_a_decode_error_not_a_panic() {
         let mut symbols = symbols::Builder::new();
         encode::encode_code_table(
             &mut writer,
-            &[root_mixin_of(mutator.heap(), class)],
+            &rows_of(mutator.heap(), class),
+            &[],
             &mut symbols,
         )
         .expect("encode code table");
@@ -2566,11 +2560,11 @@ fn mixin_ids_for<'gc>(
     class: ClassReference<'gc>,
     symbols: &mut symbols::Builder,
     ids: &encode::CodeIds,
-) -> HashMap<usize, u32> {
+) -> mixins::MixinIds {
     let mut scratch = encode::Writer::new();
     mixins::encode(
         &mut scratch,
-        &[root_mixin_of(mutator.heap(), class)],
+        &rows_of(mutator.heap(), class),
         symbols,
         ids,
         None,
@@ -2598,7 +2592,8 @@ fn round_trip_graph(
         let mut writer = encode::Writer::new();
         let ids = encode::encode_code_table(
             &mut writer,
-            &[root_mixin_of(mutator.heap(), class)],
+            &rows_of(mutator.heap(), class),
+            &[],
             &mut symbols,
         )
         .expect("encode code table");
@@ -4103,7 +4098,8 @@ fn the_graph_section_encoding_is_deterministic() {
             let mut writer = encode::Writer::new();
             let ids = encode::encode_code_table(
                 &mut writer,
-                &[root_mixin_of(mutator.heap(), class)],
+                &rows_of(mutator.heap(), class),
+                &[],
                 &mut symbols,
             )
             .expect("encode code table");
@@ -5841,7 +5837,8 @@ fn a_truncated_graph_section_is_a_decode_error_not_a_panic() {
         let mut writer = encode::Writer::new();
         let ids = encode::encode_code_table(
             &mut writer,
-            &[root_mixin_of(mutator.heap(), class)],
+            &rows_of(mutator.heap(), class),
+            &[],
             &mut symbols,
         )
         .expect("encode code table");
@@ -8382,6 +8379,12 @@ fn root_mixin_of<'gc>(heap: &Heap<'gc>, class: ClassReference<'gc>) -> Rc<Mixin>
         .clone()
 }
 
+/// The mixin-table rows of `class`'s module, as `image::snapshot` plans
+/// them.
+fn rows_of<'gc>(heap: &Heap<'gc>, class: ClassReference<'gc>) -> Vec<mixins::Row> {
+    mixins::plan(heap, &[root_mixin_of(heap, class)]).expect("plan")
+}
+
 #[test]
 fn a_snapshotted_nested_mixins_method_and_initializer_survive_a_load() {
     // `encode_code_table` must write more than the root's own section:
@@ -10326,7 +10329,7 @@ fn two_modules_encode_as_two_trees_in_module_order() {
             root_mixin_of(mutator.heap(), class_reference(mutator, &first)),
             root_mixin_of(mutator.heap(), class_reference(mutator, &second)),
         ];
-        let rows = mixins::plan(&roots).expect("plan");
+        let rows = mixins::plan(mutator.heap(), &roots).expect("plan");
         let names: Vec<&str> = rows.iter().map(|row| row.mixin.name.as_str()).collect();
         // First's tree -- itself, its nested Inner, Inner's and its own
         // class sides in preorder -- then Second's.
@@ -10339,10 +10342,10 @@ fn two_modules_encode_as_two_trees_in_module_order() {
         assert!(!names[second_at..].contains(&"Inner"));
         let mut symbols = symbols::Builder::new();
         let mut code = encode::Writer::new();
-        let ids =
-            encode::encode_code_table(&mut code, &roots, &mut symbols).expect("encode code table");
+        let ids = encode::encode_code_table(&mut code, &rows, &[], &mut symbols)
+            .expect("encode code table");
         let mut writer = encode::Writer::new();
-        mixins::encode(&mut writer, &roots, &mut symbols, &ids, None).expect("encode mixin table");
+        mixins::encode(&mut writer, &rows, &mut symbols, &ids, None).expect("encode mixin table");
         let table = symbols.build();
         let code_bytes = code.into_bytes();
         let decoded_code = decode::decode_code_table(&mut decode::Reader::new(&code_bytes), &table)
