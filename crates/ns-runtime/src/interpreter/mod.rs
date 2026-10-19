@@ -2049,8 +2049,8 @@ impl<'gc> Mutator<'gc> {
 
     /// Installs `replacement` as the current version of the mixin `id`
     /// (`Heap::replace_mixin`), and forgets the applications and the
-    /// synthesized class side built from the previous one, so that the next application of the id applies the
-    /// replacement. Applications already built, and the class objects
+    /// synthesized class side built from the previous one, so that the
+    /// next application of the id applies the replacement. Applications already built, and the class objects
     /// naming them, keep the version they were built from; the install
     /// (`install_edit`) re-applies those.
     pub(crate) fn replace_mixin(

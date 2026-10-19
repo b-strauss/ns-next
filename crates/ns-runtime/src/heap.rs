@@ -3379,9 +3379,12 @@ impl<'gc> Heap<'gc> {
     /// through the nested mixin's id; a nested mixin nothing has
     /// registered is its own current version. For a module's root, the
     /// module's current text, every edit of a declaration in it included.
-    /// `None` where a declaration of the tree has no text, and for a class
-    /// side, whose text is its instance side's and whose own nested list
-    /// is empty.
+    /// `None` where a declaration of the tree has no text. A class side
+    /// shares its instance side's text but declares no nested mixin, so
+    /// for one it answers that text only when the instance side has no
+    /// nested declaration, and `None` otherwise: a reader of a class
+    /// side's declaration asks for its instance side's (the mirrors'
+    /// `source` goes through `instance_side_id`).
     ///
     /// Recursive along the declarations' nesting, which the parser bounds
     /// for a module read from source and `image::mixins::MAX_MIXIN_DEPTH`

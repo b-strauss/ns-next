@@ -51,8 +51,9 @@ fn main() {
 /// `build` then `load` must be indistinguishable from `run` on the same
 /// program -- exit status, stdout and stderr -- under both lowerings. The
 /// artifact carries the program's source, so a mirror reads the same text
-/// from it that `run` reads from the file; `run_goldens.rs` pins the same goldens against their
-/// `.toml` files, so equality here also holds against a recorded answer.
+/// from it that `run` reads from the file; `run_goldens.rs` pins the same
+/// goldens against their `.toml` files, so equality here also holds
+/// against a recorded answer.
 /// Under the reference lowering this also takes the encoder and decoder over
 /// code with no jumps and many registers.
 ///

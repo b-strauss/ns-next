@@ -865,6 +865,13 @@ fn metaclass_factory_entries(raw: &[RawRow]) -> Vec<Option<(Symbol, MethodEntry)
 /// of the instance side it belongs to: a class side's text is its
 /// instance side's, holes and all.
 ///
+/// Holes are held to the nested rows by count, never by span. After an
+/// edit of a nested declaration, the enclosing declaration's holes are
+/// still in the coordinates of the text it was read in, while the nested
+/// row's span and text are in the edited text's; the two are joined by a
+/// hole's index (`DeclarationText::assemble`), so a span comparison would
+/// refuse every image of an edited program.
+///
 /// Runs after `check_ids` and `check_preorder`, which are what let this
 /// index `raw` by a row's class-side id and know that an instance side's
 /// row comes before its class side's.
