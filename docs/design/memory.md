@@ -32,8 +32,13 @@
 > movable handle carries a lifetime brand, so that holding one across a
 > safepoint is a compile error (step 2c). The canonical symbol table, a
 > `WeakArray`'s slots and the fields of an `Ephemeron` whose key nothing
-> else reaches are weak; everything else the collector traces is strong
-> ("Weak references").
+> else reaches are weak, and the table of reified mixins is weak in a full
+> collection, which a scavenge traces strongly; everything else the
+> collector traces is strong ("Weak references"). Beside the space, a full
+> collection gives back the per-heap ids nothing live names any more --
+> applications, guard ids, mixin trees, compiled bodies, cache ranges --
+> gathered while marking ("Marking"; [object-model.md](object-model.md),
+> "An application has two ids").
 > **Planned:** allocation by a bump in eden inlined into the instructions
 > that allocate ("Planned: inline allocation").
 > **Code:** `crates/ns-runtime/src/heap.rs` (the activation stack, the

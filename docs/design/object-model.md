@@ -5,10 +5,15 @@
 > handles (road step 3b, "Handles into the object space") included, and
 > `become:` as an eager bulk forward behind one VM-mirror leaf and the
 > recorded guards of a slot access (road step 5b1, "`become:` is an eager
-> bulk forward", "What a slot access checks"); the rest of the road to a
-> high-performance VM -- the atomic install that calls the forward, inline
-> allocation and the JIT tiers -- is planned ("Planned: the road to a
-> high-performance VM").
+> bulk forward", "What a slot access checks"), the atomic install that
+> calls the forward and re-applies every class object of an edited mixin
+> (road step 5b2a, "Everything stays editable"), and the reclamation of
+> the per-heap ids -- every application, guard id, module tree of mixin
+> ids, superseded version and code id nothing names any more, freed in a
+> full collection and minted again smallest first, the application cache
+> pruned by them (road step 5b2c, "An application has two ids"); the rest
+> of the road to a high-performance VM -- inline allocation and the JIT
+> tiers -- is planned ("Planned: the road to a high-performance VM").
 > **Code:** `crates/ns-runtime/src/heap.rs` (the handle types and every read
 > and write of one), `heap/value.rs` (`Value`, `ValueKind`, `Word`, the
 > `SmallInteger` bounds and the arithmetic on tagged words),
@@ -16,6 +21,9 @@
 > of words an object is, the fixed fields of a class object, a closure and
 > a frame, tracing by format), `heap/records.rs` (the seam's value types),
 > `heap/tables.rs` (the per-heap tables of mixins, applications and code),
+> `heap/ids.rs` and `heap/reclaim.rs` (their free rows and what a full
+> collection reads to free them), `interpreter/reclaim.rs` (the
+> reclamation's decisions),
 > `mixin.rs`, `interpreter/instantiate.rs`, `interpreter/nested.rs` (the
 > nested-class accessor and `build_applied_levels`, §6.2's levels),
 > `interpreter/kernel.rs` (the builtin classes, filled from `Kernel.ns`),
@@ -1709,7 +1717,7 @@ own:
 5. **Mirrors and atomic installation**, built on `become:` as an eager bulk
    forward ("`become:` is an eager bulk forward" below;
    [liveness-and-reflection.md](liveness-and-reflection.md), "Mirrors and
-   MirrorBuilder"; decided with the user on 2026-10-05), in four plans:
+   MirrorBuilder"; decided with the user on 2026-10-05), in five plans:
    5a, mirrors that read, and 5b1, the VM's half of live editing -- the
    mixin id that carries every version, the forward and the recorded
    guards -- built; 5b2a, the MirrorBuilder and the atomic install,
