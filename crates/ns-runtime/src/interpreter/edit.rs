@@ -360,7 +360,7 @@ impl<'gc> Mutator<'gc> {
             let current = self
                 .heap
                 .mixin(nested_id)
-                .expect("internal: a nested id has a row");
+                .expect("internal: the counterpart was found by its row");
             self.pair(nested_id, &current, nested, replacements, synthesized);
         }
     }

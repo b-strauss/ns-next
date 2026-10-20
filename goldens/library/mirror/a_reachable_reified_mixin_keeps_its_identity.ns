@@ -1,0 +1,23 @@
+/// A mixin a slot keeps, through its mirror, is the same mixin after a full
+/// collection: the collection keeps the reified mixin and its id while the
+/// object is reached, so a mirror on the class's mixin made afresh reflects
+/// that very object. A mixin mirror's `=` compares the reified mixins by
+/// identity; two mirrors are two objects, so `==` would compare those.
+class AReachableReifiedMixinKeepsItsIdentity = Object new (
+  |
+    kept.
+  |
+) (
+  class Outer = Object new () ()
+
+  public main: platform args: arguments = (
+    |
+      ClassMirror = platform mirrors ClassMirror.
+    |
+    kept:: (ClassMirror reflecting: Outer) mixin.
+    platform kernel garbageCollect.
+    platform transcript
+        print: kept = (ClassMirror reflecting: Outer) mixin;
+        newLine.
+  )
+)

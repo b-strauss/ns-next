@@ -7,10 +7,10 @@ use std::collections::{BTreeSet, HashSet};
 use std::rc::Rc;
 
 use super::value::{Value, Word};
-use super::{ApplicationIndex, Heap};
+use super::{ApplicationIndex, Heap, MixinId, Tables};
 use crate::hash::IdentityBuildHasher;
 use crate::interpreter::FeedbackBase;
-use crate::mixin::{AppliedClause, DispatchId, MixinApplication};
+use crate::mixin::{mixin_key, AppliedClause, DispatchId, Mixin, MixinApplication};
 
 /// What a full marking found named: one bit per row of each table.
 #[derive(Default)]
@@ -160,6 +160,27 @@ impl Heap<'_> {
         self.tables.applications.len()
     }
 
+    /// How many rows the mixin table has, free ones included.
+    // Read by the tests that bound the tables' growth.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn mixin_rows(&self) -> usize {
+        self.tables.mixins.len()
+    }
+
+    /// How many superseded versions the tables hold.
+    // Read by the tests that bound the tables' growth.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn superseded_count(&self) -> usize {
+        self.tables.superseded.len()
+    }
+
+    /// How many rows the code table has, free ones included.
+    // Read by the tests that bound the tables' growth.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn code_rows(&self) -> usize {
+        self.tables.codes.len()
+    }
+
     /// Takes the application out of row `index` and frees the index, which
     /// the next `register_application` may mint again. A compiler-invariant
     /// violation panics: freeing a row that holds nothing.
@@ -190,4 +211,295 @@ impl Heap<'_> {
             &mut self.tables.free_applications,
         );
     }
+
+    /// The id of every live application's mixin, a superseded version's
+    /// included, which answers its id as the current one does.
+    pub(crate) fn applied_mixin_ids(&self) -> BitSet {
+        let mut named = BitSet::default();
+        for application in self.tables.applications.iter().flatten() {
+            if let Some(id) = self.known_mixin_id(&application.mixin) {
+                named.insert(mixin_row_number(id));
+            }
+        }
+        named
+    }
+
+    /// The id of every mixin whose reified object survived the prune
+    /// (`prune_mixin_objects`): a program can still compare it.
+    pub(crate) fn reified_mixin_ids(&self) -> BitSet {
+        let mut named = BitSet::default();
+        for (index, object) in self.mixin_objects.iter().enumerate() {
+            if object.is_some() {
+                named.insert(u32::try_from(index).expect("a mixin row fits a u32"));
+            }
+        }
+        named
+    }
+
+    /// Every registered module's tree of mixin ids, each its root first: a
+    /// row belongs to the tree of the root its chain of enclosing mixins
+    /// ends at, so a tree holds the root's nested declarations at every
+    /// depth, the class sides registered under any of them, and a nested
+    /// declaration an install removed, whose row still names the mixin it
+    /// was declared in. Every row is in exactly one tree.
+    pub(crate) fn module_trees(&self) -> Vec<Vec<MixinId>> {
+        let rows = self.tables.mixins.len();
+        // Per row, the index of its tree in `trees`; walked, not recursed,
+        // because an image chooses how deep its declarations nest.
+        let mut tree_of: Vec<Option<usize>> = vec![None; rows];
+        let mut trees: Vec<Vec<MixinId>> = Vec::new();
+        let mut path = Vec::new();
+        for row in 0..rows {
+            let id = mixin_id_of_row(row);
+            if self.mixin_row(id).is_none() || tree_of[row].is_some() {
+                continue;
+            }
+            let mut current = id;
+            let tree = loop {
+                if let Some(tree) = tree_of[current.index()] {
+                    break tree;
+                }
+                path.push(current);
+                match self.enclosing_mixin_id(current) {
+                    Some(enclosing) if self.mixin_row(enclosing).is_some() => {
+                        debug_assert!(path.len() <= rows, "internal: a cycle of enclosing mixins");
+                        current = enclosing;
+                    }
+                    enclosing => {
+                        debug_assert!(
+                            enclosing.is_none(),
+                            "internal: a mixin's enclosing mixin has a row"
+                        );
+                        trees.push(Vec::new());
+                        break trees.len() - 1;
+                    }
+                }
+            };
+            for member in path.drain(..) {
+                tree_of[member.index()] = Some(tree);
+            }
+        }
+        for (row, tree) in tree_of.iter().enumerate() {
+            if let Some(tree) = tree {
+                trees[*tree].push(mixin_id_of_row(row));
+            }
+        }
+        for tree in &mut trees {
+            // The root first: the only row of its tree with no enclosing.
+            if let Some(root) = tree
+                .iter()
+                .position(|id| self.enclosing_mixin_id(*id).is_none())
+            {
+                tree[..=root].rotate_right(1);
+            }
+        }
+        trees
+    }
+
+    /// The ids among `trees`' rows of which some version, current or
+    /// superseded, is held outside the tables: by a host, an activation's
+    /// nested-class creation, a cache entry. Such a holder can present the
+    /// version again, and must find it under the same id, so its tree
+    /// lives.
+    ///
+    /// A version's own holders inside the tables are counted rather than
+    /// listed: its row or its place in `superseded`, the `class_side` of
+    /// every version of its tree that declares it, and `memo`'s entry
+    /// for a synthesized class side, which is a memo of its tree and is
+    /// dropped with it. A holder in another tree is a holder outside, so
+    /// that a tree is never freed while another one still holds a version
+    /// of it.
+    pub(crate) fn held_mixin_ids(
+        &self,
+        trees: &[Vec<MixinId>],
+        memo: &crate::hash::IdentityMap<MixinId, Rc<Mixin>>,
+    ) -> BitSet {
+        let mut tree_of: Vec<Option<usize>> = vec![None; self.tables.mixins.len()];
+        for (tree, members) in trees.iter().enumerate() {
+            for id in members {
+                tree_of[id.index()] = Some(tree);
+            }
+        }
+        let same_tree = |holder: MixinId, held: MixinId| {
+            let tree = |id: MixinId| tree_of.get(id.index()).copied().flatten();
+            tree(holder).is_some() && tree(holder) == tree(held)
+        };
+        // Every version the tables hold, with its id.
+        let versions: Vec<(MixinId, &Rc<Mixin>)> = self
+            .tables
+            .mixins
+            .iter()
+            .enumerate()
+            .filter_map(|(row, entry)| Some((mixin_id_of_row(row), &entry.as_ref()?.current)))
+            .chain(
+                self.tables
+                    .superseded
+                    .iter()
+                    .filter_map(|version| Some((self.known_mixin_id(version)?, version))),
+            )
+            .collect();
+        let mut structural: crate::hash::IdentityMap<usize, usize> =
+            crate::hash::IdentityMap::default();
+        for (id, version) in &versions {
+            *structural.entry(mixin_key(version)).or_default() += 1;
+            if let Some(class_side) = &version.class_side {
+                if self
+                    .known_mixin_id(class_side)
+                    .is_some_and(|class_side_id| same_tree(*id, class_side_id))
+                {
+                    *structural.entry(mixin_key(class_side)).or_default() += 1;
+                }
+            }
+        }
+        for (instance_side, synthesized) in memo {
+            if self
+                .known_mixin_id(synthesized)
+                .is_some_and(|class_side_id| same_tree(*instance_side, class_side_id))
+            {
+                *structural.entry(mixin_key(synthesized)).or_default() += 1;
+            }
+        }
+        let mut held = BitSet::default();
+        for (id, version) in &versions {
+            let inside = structural.get(&mixin_key(version)).copied().unwrap_or(0);
+            if Rc::strong_count(version) > inside {
+                held.insert(mixin_row_number(*id));
+            }
+        }
+        held
+    }
+
+    /// Frees the row of every id in `freed`, and drops every superseded
+    /// version of one: the index goes to the free rows, and each version's
+    /// address leaves `mixin_ids`, so that neither the id nor the address
+    /// minted again is ever taken for the dead mixin. Answers the dropped
+    /// versions, which the caller lets go of once it has checked that
+    /// nothing else holds one. `freed` must be whole trees
+    /// (`module_trees`) none of whose versions is held outside the tables
+    /// (`held_mixin_ids`).
+    pub(crate) fn free_mixins(&mut self, freed: &BitSet) -> Vec<Rc<Mixin>> {
+        let mut dropped = Vec::new();
+        for row in 0..self.tables.mixins.len() {
+            let number = u32::try_from(row).expect("a mixin row fits a u32");
+            if !freed.contains(number) {
+                continue;
+            }
+            let Some(entry) = self.tables.mixins[row].take() else {
+                continue;
+            };
+            self.tables.mixin_ids.remove(&mixin_key(&entry.current));
+            self.tables.free_mixins.free(number);
+            dropped.push(entry.current);
+        }
+        let Tables {
+            superseded,
+            mixin_ids,
+            ..
+        } = &mut self.tables;
+        superseded.retain(|version| {
+            let key = mixin_key(version);
+            let of_a_freed_id = mixin_ids
+                .get(&key)
+                .is_some_and(|id| freed.contains(mixin_row_number(*id)));
+            if of_a_freed_id {
+                mixin_ids.remove(&key);
+                dropped.push(Rc::clone(version));
+            }
+            !of_a_freed_id
+        });
+        dropped
+    }
+
+    /// The address of every body that may still run: each one a marked
+    /// closure or frame names by id (`codes`) and each one an activation
+    /// runs.
+    pub(crate) fn running_bodies(&self, codes: &BitSet) -> HashSet<usize> {
+        let mut running: HashSet<usize> = self
+            .tables
+            .codes
+            .iter()
+            .enumerate()
+            .filter(|(row, _)| codes.contains(u32::try_from(*row).expect("a code row fits a u32")))
+            .filter_map(|(_, entry)| Some(Rc::as_ptr(&entry.as_ref()?.code) as usize))
+            .collect();
+        running.extend(
+            self.stack
+                .entries
+                .iter()
+                .map(|entry| Rc::as_ptr(&entry.code) as usize),
+        );
+        running
+    }
+
+    /// Drops every superseded version only `superseded` holds and no
+    /// running body (`running`) was compiled in, with its `mixin_ids`
+    /// entry, until none is left: a superseded instance side holds its
+    /// class side, which the next round may drop. A version a closure or
+    /// frame still runs code of is kept, because it is what admits that
+    /// code into an image of its module (`image::extra_bodies`).
+    pub(crate) fn drop_superseded(&mut self, running: &HashSet<usize>) {
+        let Tables {
+            superseded,
+            mixin_ids,
+            ..
+        } = &mut self.tables;
+        let still_running: HashSet<usize> = superseded
+            .iter()
+            .filter(|version| {
+                let mut bodies = HashSet::new();
+                crate::image::version_bodies(version, &mut bodies);
+                !bodies.is_disjoint(running)
+            })
+            .map(mixin_key)
+            .collect();
+        loop {
+            let before = superseded.len();
+            superseded.retain(|version| {
+                let key = mixin_key(version);
+                let dropped = Rc::strong_count(version) == 1 && !still_running.contains(&key);
+                if dropped {
+                    mixin_ids.remove(&key);
+                }
+                !dropped
+            });
+            if superseded.len() == before {
+                break;
+            }
+        }
+    }
+
+    /// Gives back the mixin table's trailing free rows.
+    pub(crate) fn truncate_mixin_rows(&mut self) {
+        super::ids::truncate_trailing(&mut self.tables.mixins, &mut self.tables.free_mixins);
+    }
+
+    /// Frees every code id no marked closure or frame names (`codes`): an
+    /// activation holds its body itself, never by id, so the marked
+    /// objects are every holder of one. The body leaves `code_ids` with
+    /// its row and lives on with whoever else holds it; a frame reified
+    /// later registers it again.
+    pub(crate) fn free_unnamed_codes(&mut self, codes: &BitSet) {
+        for row in 0..self.tables.codes.len() {
+            let number = u32::try_from(row).expect("a code row fits a u32");
+            if codes.contains(number) {
+                continue;
+            }
+            if let Some(entry) = self.tables.codes[row].take() {
+                self.tables
+                    .code_ids
+                    .remove(&(Rc::as_ptr(&entry.code) as usize));
+                self.tables.free_codes.free(number);
+            }
+        }
+        super::ids::truncate_trailing(&mut self.tables.codes, &mut self.tables.free_codes);
+    }
+}
+
+/// The `BitSet` row of a mixin id.
+pub(crate) fn mixin_row_number(id: MixinId) -> u32 {
+    u32::try_from(id.index()).expect("a mixin row fits a u32")
+}
+
+fn mixin_id_of_row(row: usize) -> MixinId {
+    MixinId::from_index(row).expect("a mixin row fits a u32")
 }

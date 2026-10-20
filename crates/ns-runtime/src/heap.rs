@@ -60,7 +60,7 @@ use space::{
     REGION_SLACK,
 };
 pub use tables::{ApplicationIndex, CodeId, MixinId};
-pub(crate) use tables::{CodeEntry, Tables};
+pub(crate) use tables::{CodeEntry, MixinRow, Tables};
 pub(crate) use value::is_small_float_bits;
 use value::{at_rest, branded};
 pub use value::{
@@ -3358,7 +3358,17 @@ impl<'gc> Heap<'gc> {
             let mut ids = Vec::with_capacity(children.len());
             for child in children {
                 let child_id = match self.known_mixin_id(&child) {
-                    Some(child_id) => child_id,
+                    Some(child_id) => {
+                        // Rows form trees, which a collection frees whole:
+                        // a child named under a second parent would keep
+                        // a row of another tree, freed without it.
+                        debug_assert_eq!(
+                            self.enclosing_mixin_id(child_id),
+                            Some(parent),
+                            "internal: a known child is declared in the mixin it is nested in"
+                        );
+                        child_id
+                    }
                     None => {
                         let child_id = self.push_mixin_row(&child, Some(parent));
                         pending.push((child_id, child.take_declared_nested()));
@@ -3367,18 +3377,26 @@ impl<'gc> Heap<'gc> {
                 };
                 ids.push(child_id);
             }
-            self.tables.nested[parent.index()] = ids;
+            self.mixin_row_mut(parent).nested = ids;
         }
     }
 
     /// One row for `mixin`, declared in `enclosing`'s, with no nested ids
-    /// yet.
+    /// yet: the smallest free row, else a new one.
     fn push_mixin_row(&mut self, mixin: &Rc<Mixin>, enclosing: Option<MixinId>) -> MixinId {
-        let id = MixinId::from_index(self.tables.mixins.len())
-            .expect("more than u32::MAX mixins in one heap");
-        self.tables.mixins.push(Rc::clone(mixin));
-        self.tables.enclosing.push(enclosing);
-        self.tables.nested.push(Vec::new());
+        let row = match self.tables.free_mixins.take_smallest() {
+            Some(free) => free as usize,
+            None => {
+                self.tables.mixins.push(None);
+                self.tables.mixins.len() - 1
+            }
+        };
+        let id = MixinId::from_index(row).expect("more than u32::MAX mixins in one heap");
+        self.tables.mixins[row] = Some(MixinRow {
+            current: Rc::clone(mixin),
+            enclosing,
+            nested: Vec::new(),
+        });
         self.tables
             .mixin_ids
             .insert(crate::mixin::mixin_key(mixin), id);
@@ -3389,12 +3407,25 @@ impl<'gc> Heap<'gc> {
     /// declaration order, the same for every version of it: what every
     /// reader of a registered mixin's nested declarations reads, through
     /// `mixin` for each one's current version. Empty for an id past the
-    /// table.
+    /// table or freed.
     pub fn nested_of(&self, id: MixinId) -> &[MixinId] {
+        self.mixin_row(id).map_or(&[], |row| row.nested.as_slice())
+    }
+
+    /// The row of the mixin `id`; `None` for an id past the table or freed.
+    fn mixin_row(&self, id: MixinId) -> Option<&MixinRow> {
+        self.tables.mixins.get(id.index())?.as_ref()
+    }
+
+    /// The row of a registered mixin. A compiler-invariant violation
+    /// panics: an id with no row, which nothing registered or a
+    /// collection freed while something still named it.
+    fn mixin_row_mut(&mut self, id: MixinId) -> &mut MixinRow {
         self.tables
-            .nested
-            .get(id.index())
-            .map_or(&[], Vec::as_slice)
+            .mixins
+            .get_mut(id.index())
+            .and_then(Option::as_mut)
+            .expect("internal: a registered mixin's id names a row")
     }
 
     /// The current versions of the declarations nested directly in
@@ -3406,6 +3437,8 @@ impl<'gc> Heap<'gc> {
             Some(id) => self
                 .nested_of(id)
                 .iter()
+                // A collection frees a module's tree whole, so a mixin
+                // with a row never names a freed child.
                 .map(|nested_id| {
                     self.mixin(*nested_id)
                         .expect("internal: a nested id has a row")
@@ -3448,17 +3481,18 @@ impl<'gc> Heap<'gc> {
             .copied()
     }
 
-    /// The current version of the mixin `id` names.
+    /// The current version of the mixin `id` names; `None` for an id
+    /// past the table or freed.
     pub fn mixin(&self, id: MixinId) -> Option<Rc<Mixin>> {
-        self.tables.mixins.get(id.index()).cloned()
+        self.mixin_row(id).map(|row| row.current.clone())
     }
 
     /// The id of the mixin the mixin `id` is declared in: a nested
     /// declaration's enclosing declaration, a class side's instance side.
     /// `None` for a module's root, a builtin's mixin, and an id past the
-    /// table.
+    /// table or freed.
     pub(crate) fn enclosing_mixin_id(&self, id: MixinId) -> Option<MixinId> {
-        *self.tables.enclosing.get(id.index())?
+        self.mixin_row(id)?.enclosing
     }
 
     /// `mixin`'s text with every hole filled by the assembled text of the
@@ -3532,11 +3566,7 @@ impl<'gc> Heap<'gc> {
             self.known_mixin_id(&replacement).is_none(),
             "internal: a replacement mixin is registered under no id yet"
         );
-        let current = self
-            .tables
-            .mixins
-            .get(id.index())
-            .expect("internal: a replaced mixin's id names a row");
+        let current = &self.mixin_row_mut(id).current;
         assert!(
             !current.shipped,
             "internal: the shipped mixin {} is never replaced",
@@ -3552,7 +3582,7 @@ impl<'gc> Heap<'gc> {
             .mixin_ids
             .insert(crate::mixin::mixin_key(&replacement), id);
         let children = replacement.take_declared_nested();
-        let superseded = std::mem::replace(&mut self.tables.mixins[id.index()], replacement);
+        let superseded = std::mem::replace(&mut self.mixin_row_mut(id).current, replacement);
         self.tables.superseded.push(superseded);
         children
     }
@@ -3622,15 +3652,23 @@ impl<'gc> Heap<'gc> {
     ) -> CodeId {
         let key = Rc::as_ptr(code) as usize;
         if let Some(id) = self.tables.code_ids.get(&key).copied() {
-            let entry = &mut self.tables.codes[id.index()];
+            let entry = self.tables.codes[id.index()]
+                .as_mut()
+                .expect("internal: a body's id names a row while the map names the body");
             if entry.method.is_none() {
                 entry.method = method.cloned();
             }
             return id;
         }
-        let id = CodeId::from_index(self.tables.codes.len())
-            .expect("more than u32::MAX compiled bodies in one heap");
-        self.tables.codes.push(CodeEntry {
+        let row = match self.tables.free_codes.take_smallest() {
+            Some(free) => free as usize,
+            None => {
+                self.tables.codes.push(None);
+                self.tables.codes.len() - 1
+            }
+        };
+        let id = CodeId::from_index(row).expect("more than u32::MAX compiled bodies in one heap");
+        self.tables.codes[row] = Some(CodeEntry {
             code: code.clone(),
             method: method.cloned(),
         });
@@ -3638,17 +3676,22 @@ impl<'gc> Heap<'gc> {
         id
     }
 
+    /// The body `id` names; `None` for an id past the table or freed.
     pub fn code(&self, id: CodeId) -> Option<Rc<CompiledCode>> {
         self.tables
             .codes
-            .get(id.index())
+            .get(id.index())?
+            .as_ref()
             .map(|entry| entry.code.clone())
     }
 
+    /// The method whose body `id` names; `None` for a block's body, and an
+    /// id past the table or freed.
     pub fn code_method(&self, id: CodeId) -> Option<Rc<MixinMethod>> {
         self.tables
             .codes
-            .get(id.index())
+            .get(id.index())?
+            .as_ref()
             .and_then(|entry| entry.method.clone())
     }
 
@@ -3744,7 +3787,7 @@ impl<'gc> Heap<'gc> {
             .class_field(class, class_field::APPLIED_CLAUSE)?
             .as_small_integer()?;
         let (mixin, index, named_builtin) = crate::mixin::AppliedClause::unpack(packed)?;
-        let declaration = self.tables.mixins.get(mixin.index())?;
+        let declaration = &self.mixin_row(mixin)?.current;
         Some((declaration, index, named_builtin))
     }
 

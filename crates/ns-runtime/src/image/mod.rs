@@ -199,7 +199,7 @@ fn extra_bodies(
 /// Every body `mixin` carries -- its methods, its initializer, its
 /// superclass clause and message, its `<:` clauses' messages -- and the
 /// blocks nested in them, by address.
-fn version_bodies(mixin: &Mixin, out: &mut HashSet<usize>) {
+pub(crate) fn version_bodies(mixin: &Mixin, out: &mut HashSet<usize>) {
     let mut pending: Vec<Rc<CompiledCode>> = mixin
         .compiled_methods()
         .map(|method| Rc::clone(&method.code))

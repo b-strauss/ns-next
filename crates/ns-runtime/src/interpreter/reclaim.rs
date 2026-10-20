@@ -3,25 +3,27 @@
 //! has two ids").
 
 use std::collections::HashSet;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use super::Mutator;
 use crate::hash::{IdentityBuildHasher, IdentityMap};
-use crate::heap::reclaim::{FreedIds, GatheredIds};
+use crate::heap::reclaim::{mixin_row_number, BitSet, FreedIds, GatheredIds};
 use crate::heap::ApplicationIndex;
-use crate::mixin::DispatchId;
+use crate::mixin::{DispatchId, Mixin};
 
 impl Mutator<'_> {
     /// Frees every application nothing names any more, with its index and
     /// its guard id, and vacates exactly the cache entries that named one,
     /// so that the next application minted at a freed index or with a
-    /// freed guard is never mistaken for the dead one. Runs in a full
+    /// freed guard is never mistaken for the dead one; then every mixin id
+    /// and code id nothing names any more. Runs in a full
     /// collection between marking and compaction (`World::collect`):
     /// `gathered` is what the marked objects name, and nothing here moves
     /// or allocates an object.
     ///
     /// The steps run in order, each releasing the `Rc`s the next one
-    /// counts: the applications, then the caches that hold them.
+    /// counts: the applications, the caches that hold them, the mixins
+    /// the applications applied, and the code ids.
     pub(crate) fn reclaim_ids(&mut self, gathered: GatheredIds) {
         let stack = self.heap.stack_roots();
         // Step 1: applications. Live: what a marked class object names,
@@ -127,6 +129,72 @@ impl Mutator<'_> {
         }
         drop(dropped);
         self.heap.truncate_application_rows();
+        self.reclaim_mixins(&gathered);
+        // Step 4: codes. No activation names a body by id, so the marked
+        // closures and frames are every holder of one.
+        self.heap.free_unnamed_codes(&gathered.codes);
+    }
+
+    /// Step 3: frees every module's tree of mixin ids nothing names any
+    /// more, then the superseded versions only the table holds and no
+    /// closure, frame or activation runs code of. A tree
+    /// lives while any of its ids is named by a live application, a marked
+    /// class object's applied clause or a reified mixin a program can still
+    /// compare, or any of its versions is held outside the tables: a
+    /// holder that presents a version again must find it under the id it
+    /// had, which is why a tree dies whole -- a live mixin names the ids of
+    /// the mixins it is declared in and of those declared in it.
+    fn reclaim_mixins(&mut self, gathered: &GatheredIds) {
+        let trees = self.heap.module_trees();
+        let applied = self.heap.applied_mixin_ids();
+        let reified = self.heap.reified_mixin_ids();
+        let held = self.heap.held_mixin_ids(&trees, &self.metaclass_mixins);
+        let mut freed = BitSet::default();
+        let mut any_freed = false;
+        for tree in &trees {
+            let lives = tree.iter().any(|id| {
+                let row = mixin_row_number(*id);
+                applied.contains(row)
+                    || gathered.applied_clauses.contains(row)
+                    || reified.contains(row)
+                    || held.contains(row)
+            });
+            if lives {
+                continue;
+            }
+            for id in tree {
+                freed.insert(mixin_row_number(*id));
+                // A memo of the tree, keyed by an id about to be minted
+                // again for another mixin.
+                self.metaclass_mixins.remove(id);
+            }
+            any_freed = true;
+        }
+        if any_freed {
+            debug_assert!(
+                self.applications
+                    .keys()
+                    .all(|(mixin, _)| !freed.contains(mixin_row_number(*mixin))),
+                "internal: a cached application's mixin is named by the application"
+            );
+            let dropped = self.heap.free_mixins(&freed);
+            // Nothing outside the tables may still hold a dropped version:
+            // it would find its id minted again for another mixin.
+            let watched: Vec<Weak<Mixin>> = if cfg!(debug_assertions) {
+                dropped.iter().map(Rc::downgrade).collect()
+            } else {
+                Vec::new()
+            };
+            drop(dropped);
+            assert!(
+                watched.iter().all(|version| version.upgrade().is_none()),
+                "internal: a freed mixin is held outside the tables"
+            );
+        }
+        // Before step 4 frees the code ids that say which bodies run.
+        let running = self.heap.running_bodies(&gathered.codes);
+        self.heap.drop_superseded(&running);
+        self.heap.truncate_mixin_rows();
     }
 }
 
@@ -141,7 +209,10 @@ fn application_index(row: usize) -> ApplicationIndex {
 
 #[cfg(test)]
 mod tests {
-    use crate::interpreter::{HostResult, HostSignal, Interpreter};
+    use crate::heap::MixinId;
+    use crate::interpreter::edit::{Edit, MemberEdit};
+    use crate::interpreter::{HostResult, HostSignal, Interpreter, Mutator};
+    use crate::mixin::Mixin;
     use crate::types::SourceOrigin;
     use crate::{Lowering, Root, Symbol};
     use indoc::indoc;
@@ -404,6 +475,202 @@ mod tests {
           )
         )
     "};
+
+    /// The mixin the class object `class` applies.
+    fn mixin_of(mutator: &Mutator<'_>, class: &Root) -> Rc<Mixin> {
+        let class = mutator.fetch(class).as_object().expect("a class object");
+        mutator
+            .heap()
+            .class_application(class)
+            .expect("a class object")
+            .mixin
+            .clone()
+    }
+
+    /// The id of the mixin the class object `class` applies.
+    fn id_of(interpreter: &mut Interpreter, class: &Root) -> MixinId {
+        interpreter.enter(|mutator| {
+            let mixin = mixin_of(mutator, class);
+            mutator.heap.mixin_id(&mixin)
+        })
+    }
+
+    fn install(interpreter: &mut Interpreter, id: MixinId, edit: &Edit) {
+        if let Err(diagnostic) = interpreter.enter(|mutator| mutator.install_edit(id, edit)) {
+            panic!("the install was refused: {diagnostic}");
+        }
+    }
+
+    fn add_method(text: &str) -> Edit {
+        Edit {
+            header: None,
+            instance_side: vec![MemberEdit::AddMethod(text.to_string())],
+            class_side: Vec::new(),
+        }
+    }
+
+    /// The mixin rows, the superseded versions and the code rows.
+    fn table_counts(interpreter: &mut Interpreter) -> (usize, usize, usize) {
+        interpreter.enter(|mutator| {
+            (
+                mutator.heap.mixin_rows(),
+                mutator.heap.superseded_count(),
+                mutator.heap.code_rows(),
+            )
+        })
+    }
+
+    const OUTER: &str = indoc! {"
+        Newspeak3
+        'Test'
+        class Outer = (
+          | public kept ::= nil. |
+        ) (
+          public class Inner = (
+          ) (
+            public answer = (
+              ^1
+            )
+          )
+          public make = (
+            ^[ 7 ]
+          )
+        )
+    "};
+
+    /// A module nothing names any more gives back every row of its tree --
+    /// the root, the nested class and the class sides their metaclasses
+    /// registered -- so that the table is back at its size before the load.
+    /// The collection before the load gives back the rows the boot left
+    /// behind -- the placeholder mixins the builtins were built with before
+    /// the kernel's -- so that the second one frees only the module's.
+    #[test]
+    fn a_dead_module_tree_is_reclaimed() {
+        let mut interpreter = Interpreter::bootstrap();
+        interpreter.collect_now();
+        let (rows, _, _) = table_counts(&mut interpreter);
+        let outer = load_into(&mut interpreter, OUTER);
+        let instance = expect_ok(interpreter.instantiate(&outer, &[]), "an Outer");
+        let inner_class = send(&mut interpreter, &instance, "Inner");
+        let inner = send(&mut interpreter, &inner_class, "new");
+        drop(send(&mut interpreter, &inner, "answer"));
+        // Numbers, which hold nothing.
+        let outer_id = id_of(&mut interpreter, &outer);
+        let inner_id = id_of(&mut interpreter, &inner_class);
+        drop((outer, instance, inner_class, inner));
+        interpreter.collect_now();
+        assert_eq!(table_counts(&mut interpreter).0, rows);
+        interpreter.enter(|mutator| {
+            assert!(mutator.heap.mixin(outer_id).is_none());
+            assert!(mutator.heap.mixin(inner_id).is_none());
+        });
+    }
+
+    /// A host's `Rc` of a module's mixin keeps the whole tree's ids: the
+    /// mixin answers its id after a collection nothing else survives, and
+    /// its nested declaration the same one as before.
+    #[test]
+    fn a_host_held_mixin_keeps_its_id() {
+        let (mut interpreter, outer) = load(OUTER);
+        let instance = expect_ok(interpreter.instantiate(&outer, &[]), "an Outer");
+        drop(send(&mut interpreter, &instance, "Inner"));
+        let (held, id, nested) = interpreter.enter(|mutator| {
+            let held = mixin_of(mutator, &outer);
+            let id = mutator.heap.mixin_id(&held);
+            let nested = mutator.heap.nested_of(id).to_vec();
+            (held, id, nested)
+        });
+        assert_eq!(nested.len(), 1);
+        drop((outer, instance));
+        interpreter.collect_now();
+        interpreter.enter(|mutator| {
+            assert_eq!(mutator.heap.known_mixin_id(&held), Some(id));
+            assert_eq!(mutator.heap.nested_of(id), nested.as_slice());
+            let inner = mutator.heap.mixin(nested[0]).expect("Inner keeps its row");
+            assert_eq!(inner.name.as_str(), "Inner");
+        });
+    }
+
+    /// Three edits of `Outer` leave three superseded versions of it, and of
+    /// `Inner`, which the install replaced with it; once no activation,
+    /// closure or class object holds one, a collection drops them all.
+    #[test]
+    fn superseded_versions_nothing_holds_are_dropped() {
+        let (mut interpreter, outer) = load(OUTER);
+        let instance = expect_ok(interpreter.instantiate(&outer, &[]), "an Outer");
+        let id = id_of(&mut interpreter, &outer);
+        for answer in 1..=3 {
+            install(
+                &mut interpreter,
+                id,
+                &add_method(&format!("public answer = ( ^{answer} )")),
+            );
+            let result = send(&mut interpreter, &instance, "answer");
+            assert_eq!(integer(&mut interpreter, &result), Some(answer));
+        }
+        assert!(table_counts(&mut interpreter).1 >= 3);
+        interpreter.collect_now();
+        assert_eq!(table_counts(&mut interpreter).1, 0);
+        let result = send(&mut interpreter, &instance, "answer");
+        assert_eq!(integer(&mut interpreter, &result), Some(3));
+    }
+
+    /// A closure made by a version three edits superseded still runs after
+    /// a collection: its body lives on with the closure, though no
+    /// superseded version is kept for it.
+    #[test]
+    fn a_closure_of_a_superseded_version_runs_after_a_collection() {
+        let (mut interpreter, outer) = load(OUTER);
+        let instance = expect_ok(interpreter.instantiate(&outer, &[]), "an Outer");
+        let block = send(&mut interpreter, &instance, "make");
+        drop(send_with(&mut interpreter, &instance, "kept:", &[block]));
+        let id = id_of(&mut interpreter, &outer);
+        for answer in 8..=10 {
+            install(
+                &mut interpreter,
+                id,
+                &add_method(&format!("public make = ( ^[ {answer} ] )")),
+            );
+        }
+        interpreter.collect_now();
+        assert!(table_counts(&mut interpreter).1 <= 1);
+        let kept = send(&mut interpreter, &instance, "kept");
+        let answer = send(&mut interpreter, &kept, "value");
+        assert_eq!(integer(&mut interpreter, &answer), Some(7));
+        let fresh = send(&mut interpreter, &instance, "make");
+        let answer = send(&mut interpreter, &fresh, "value");
+        assert_eq!(integer(&mut interpreter, &answer), Some(10));
+    }
+
+    /// A hundred closures, each of a body of its own -- the method is
+    /// edited every round -- and each dropped: the collection frees the
+    /// code ids nothing names, so the code table ends no larger than after
+    /// the first round.
+    #[test]
+    fn codes_nothing_names_are_freed() {
+        let (mut interpreter, outer) = load(OUTER);
+        let instance = expect_ok(interpreter.instantiate(&outer, &[]), "an Outer");
+        let id = id_of(&mut interpreter, &outer);
+        let mut after_first_round = None;
+        for round in 1..=100 {
+            install(
+                &mut interpreter,
+                id,
+                &add_method(&format!("public make = ( ^[ {round} ] )")),
+            );
+            let block = send(&mut interpreter, &instance, "make");
+            let answer = send(&mut interpreter, &block, "value");
+            assert_eq!(integer(&mut interpreter, &answer), Some(round));
+            drop((block, answer));
+            if round == 1 {
+                interpreter.collect_now();
+                after_first_round = Some(table_counts(&mut interpreter).2);
+            }
+        }
+        interpreter.collect_now();
+        let after_first_round = after_first_round.expect("the first round ran");
+        assert!(table_counts(&mut interpreter).2 <= after_first_round);
+    }
 
     crate::for_each_lowering! {
         /// A guard a collection freed is minted again for a new class, and

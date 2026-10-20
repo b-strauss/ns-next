@@ -723,6 +723,27 @@ mod tests {
         assert_eq!(integer(&mut image.interpreter, &answer), Some(1));
     }
 
+    /// The same across a full collection before the snapshot: the
+    /// superseded version whose code the closure runs is what admits that
+    /// code into the image, so the collection keeps it while a closure
+    /// runs its code, though nothing else holds it.
+    #[test]
+    fn a_closure_of_a_removed_method_reaches_an_image_after_a_collection() {
+        let (mut interpreter, outer, _, inner, inner_id) = module_and_inner(OUTER);
+        let block = send(&mut interpreter, &inner, "block");
+        install(
+            &mut interpreter,
+            inner_id,
+            &instance_edit(vec![MemberEdit::RemoveMethod(Symbol::intern("block"))]),
+        );
+        interpreter.collect_now();
+        let bytes = image_of(&mut interpreter, &outer, &[block]);
+        let mut image = loaded(&bytes);
+        let block = image.roots[0].clone();
+        let answer = send(&mut image.interpreter, &block, "value");
+        assert_eq!(integer(&mut image.interpreter, &answer), Some(1));
+    }
+
     /// A replaced method's closure keeps the old block's answer after a
     /// load, while the method answers the new one.
     #[test]

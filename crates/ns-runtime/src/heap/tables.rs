@@ -1,11 +1,12 @@
 //! What a heap object names by a `SmallInteger` because it cannot live in
 //! the words: a mixin, a mixin application, a compiled body
 //! (`docs/design/object-model.md`, "The object layout"). Per heap, because
-//! the objects naming them are. The application table gives its rows back:
-//! a full collection frees the row of every application nothing names any
-//! more, and the next registration takes the smallest free row
-//! (`interpreter::reclaim`). The mixin and code tables are still
-//! append-only.
+//! the objects naming them are. Every table gives its rows back: a full
+//! collection frees the row of every application, every module's tree of
+//! mixins and every compiled body nothing names any more
+//! (`interpreter::reclaim`), and the next registration takes the smallest
+//! free row, so that a table stays dense and its trailing free rows are
+//! given back.
 //!
 //! A mixin's id is its identity: every version of it answers the id it was
 //! first registered under, and the row holds the current version, the id
@@ -14,7 +15,9 @@
 //! installs a fresh mixin under the old id and everything that names the
 //! mixin by id sees the edited one
 //! (`docs/design/liveness-and-reflection.md`, "An edit replaces the mixin
-//! under its id").
+//! under its id"). A module's mixins live and die together, as one tree:
+//! a live mixin keeps the ids of those it is declared in and of those
+//! declared in it.
 
 use std::rc::Rc;
 
@@ -62,33 +65,47 @@ pub(crate) struct CodeEntry {
     pub(crate) method: Option<Rc<MixinMethod>>,
 }
 
-/// The three tables. The address maps are keyed by `Rc::as_ptr`, which is
-/// sound only because the table holds the strong `Rc` that keeps each
-/// address valid and unique for as long as the entry lives -- forever, in
-/// 3a. `mixin_ids` names every version of a mixin, so every version is
-/// held: the current one in `mixins`, each earlier one in `superseded`,
-/// until road step 5b2c's weak application cache decides which of them may
-/// be dropped.
-#[derive(Default)]
-pub(crate) struct Tables {
-    /// Per id, the mixin's current version.
-    pub(crate) mixins: Vec<Rc<Mixin>>,
-    /// The address of every version of every mixin to its id.
-    pub(crate) mixin_ids: IdentityMap<usize, MixinId>,
-    /// Every version a replacement superseded, held so that its address
-    /// stays unique while `mixin_ids` names it.
-    pub(crate) superseded: Vec<Rc<Mixin>>,
-    /// Per id, the id of the mixin it is declared in: a nested
-    /// declaration's enclosing declaration, a class side's instance side
+/// The current version of a registered mixin and where it stands in its
+/// module's tree.
+pub(crate) struct MixinRow {
+    /// The mixin's current version.
+    pub(crate) current: Rc<Mixin>,
+    /// The id of the mixin it is declared in: a nested declaration's
+    /// enclosing declaration, a class side's instance side
     /// (`Mixin::enclosing`), read once, when the mixin is registered, and
     /// kept by a replacement.
-    pub(crate) enclosing: Vec<Option<MixinId>>,
-    /// Per id, the ids of the declarations nested directly in the mixin,
-    /// in declaration order, the same for every version of it
+    pub(crate) enclosing: Option<MixinId>,
+    /// The ids of the declarations nested directly in the mixin, in
+    /// declaration order, the same for every version of it
     /// (`Heap::nested_of`): registration takes them out of the declared
     /// tree (`Mixin::take_declared_nested`), so a mixin holds no other
     /// mixin's `Rc` once a heap names it.
-    pub(crate) nested: Vec<Vec<MixinId>>,
+    pub(crate) nested: Vec<MixinId>,
+}
+
+/// The tables. The address maps are keyed by `Rc::as_ptr`, which is sound
+/// only because the table holds the strong `Rc` that keeps each address
+/// valid and unique for as long as the entry lives: a version or a body
+/// leaves its map when the table lets go of it, so an address the
+/// allocator hands out again is never found under a key that named its
+/// earlier occupant. `mixin_ids` names every version of a mixin the tables
+/// hold: the current one in its row, each earlier one in `superseded`
+/// until nothing but the table holds it.
+#[derive(Default)]
+pub(crate) struct Tables {
+    /// Per id, the mixin's row, or `None` for an id a collection freed
+    /// with its module's tree.
+    pub(crate) mixins: Vec<Option<MixinRow>>,
+    /// The free rows of `mixins`, minted smallest first.
+    pub(crate) free_mixins: FreeIndices,
+    /// The address of every version the tables hold to its id.
+    pub(crate) mixin_ids: IdentityMap<usize, MixinId>,
+    /// Every version a replacement superseded that may still be held -- by
+    /// an application built from it, a host, a nested class's creation
+    /// underway -- kept so that its address stays unique while `mixin_ids`
+    /// names it. A collection drops a version once only this table holds it
+    /// (`Heap::drop_superseded`).
+    pub(crate) superseded: Vec<Rc<Mixin>>,
     /// Per index, the application, or `None` for a row a collection freed
     /// (`Heap::free_application`).
     pub(crate) applications: Vec<Option<Rc<MixinApplication>>>,
@@ -104,6 +121,11 @@ pub(crate) struct Tables {
     /// index (`Heap::retain_successors`), so an index minted again never
     /// inherits a successor.
     pub(crate) successors: IdentityMap<ApplicationIndex, ApplicationIndex>,
-    pub(crate) codes: Vec<CodeEntry>,
+    /// Per id, the body, or `None` for an id a collection freed because
+    /// no closure or frame named it any more.
+    pub(crate) codes: Vec<Option<CodeEntry>>,
+    /// The free rows of `codes`, minted smallest first.
+    pub(crate) free_codes: FreeIndices,
+    /// The address of every body the table holds to its id.
     pub(crate) code_ids: IdentityMap<usize, CodeId>,
 }

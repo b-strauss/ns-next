@@ -730,7 +730,7 @@ fn mixin_preorder<'gc>(heap: &Heap<'gc>, class: ClassReference<'gc>) -> Vec<Rc<M
 /// `class`'s own mixin as a value a test can edit. The clone is shallow: its
 /// methods and class side are the same `Rc`s. It holds no nested
 /// declarations, which the heap took when it registered the mixin
-/// (`with_nested` gives a copy them).
+/// (`with_nested` gives a copy copies of them).
 fn mixin_of<'gc>(heap: &Heap<'gc>, class: ClassReference<'gc>) -> Mixin {
     (*heap.class_application(class).expect("a class object").mixin).clone()
 }
@@ -772,22 +772,42 @@ fn with_method_code(mut mixin: Mixin, selector: &str, code: Rc<CompiledCode>) ->
     mixin
 }
 
-/// `class`'s own mixin, copied, with its direct nested declarations, the
-/// one named `name` replaced by `edit`'s result.
+/// `class`'s own mixin, copied, with copies of its nested declarations, the
+/// one named `name` replaced by `edit`'s result. Every nested declaration is
+/// copied, its own nested ones with it, so that the copy is a tree of its
+/// own: a heap registers each mixin under one parent, and frees a tree
+/// whole.
 fn with_nested<'gc>(
     heap: &Heap<'gc>,
     class: ClassReference<'gc>,
     name: &str,
     edit: impl FnOnce(Mixin) -> Mixin,
 ) -> Mixin {
-    let mut nested = heap.nested_mixins(&root_mixin_of(heap, class));
-    let index = nested
+    let mut edit = Some(edit);
+    let nested: Vec<Rc<Mixin>> = heap
+        .nested_mixins(&root_mixin_of(heap, class))
         .iter()
-        .position(|nested| nested.name.as_str() == name)
-        .expect("a nested declaration of that name");
-    let edited = edit((*nested[index]).clone());
-    nested[index] = Rc::new(edited);
+        .map(|nested| {
+            let copy = tree_copy(heap, nested);
+            match edit.take_if(|_| nested.name.as_str() == name) {
+                Some(edit) => Rc::new(edit(copy)),
+                None => Rc::new(copy),
+            }
+        })
+        .collect();
+    assert!(edit.is_none(), "a nested declaration of that name");
     mixin_of(heap, class).with_declared_nested(nested)
+}
+
+/// `mixin`, copied with copies of its nested declarations at every depth,
+/// none of them registered.
+fn tree_copy(heap: &Heap<'_>, mixin: &Rc<Mixin>) -> Mixin {
+    let nested = heap
+        .nested_mixins(mixin)
+        .iter()
+        .map(|nested| Rc::new(tree_copy(heap, nested)))
+        .collect();
+    (**mixin).clone().with_declared_nested(nested)
 }
 
 /// Encodes a class's code table and mixin table into fresh bytes and
