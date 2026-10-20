@@ -46,7 +46,7 @@ first.
 | Road step 5b1 — the VM's half of live editing: one id for every version of a mixin, `become:` as an eager bulk forward, recorded guards | Complete | 2026-10-18 | [become-and-recorded-guards](superpowers/plans/2026-10-18-1236-become-and-recorded-guards.md) |
 | Road step 5b2a — MirrorBuilder and atomic installation: a `ClassDeclarationBuilder` over source, run-time compilation from the module's current text, an atomic install that migrates instances by their fields' level and name | Complete | 2026-10-18 | [mirror-builder-and-atomic-install](superpowers/plans/2026-10-18-2138-mirror-builder-and-atomic-install.md) |
 | Road step 5b2b — edited programs in images: every declaration's own text, an edited program written to an image through the ids with the code an older version runs, source in every image unless stripped, a loaded program editable | Complete | 2026-10-19 | [edited-programs-in-images](superpowers/plans/2026-10-19-1702-edited-programs-in-images.md) |
-| Road step 5b2c — reclaiming ids: the weak application cache and the ids' reuse rules | Not started | — | — |
+| Road step 5b2c — reclaiming ids: the weak application cache and the ids' reuse rules, enforced by a full collection; nested declarations by id; a serial per nested-class creation | Complete | 2026-10-20 | [reclaiming-ids](superpowers/plans/2026-10-20-1318-reclaiming-ids.md) |
 | Road step 6 — inline allocation in the interpreter | Not started | — | — |
 | Road step 7 — an execution model for compiled code | Not started | — | — |
 | Between road steps 7 and 8 — real Newspeak bodies for `whileTrue:`, `whileFalse:` and `do:` | Not started | — | — |
@@ -2158,9 +2158,7 @@ the last numbered step of M4.
   request path and the collect stress mode.
 - Task 4 (`d383a96`) — the canonical symbol table becomes weak: after
   marking and before compaction, an entry whose object is unmarked becomes
-  `None`, and the rest are forwarded like everything else. The application
-  cache stays strong, because its key is `Rc::as_ptr`, which needs the
-  strong reference to keep the address unique.
+  `None`, and the rest are forwarded like everything else.
 - Task 5 (`843cc5a`) — the retention gate: `heap_statistics` answers live
   and occupied slots per arena, so a program that discards `n` closures is
   pinned back at its starting size and one that keeps `n` closures is pinned
@@ -4106,7 +4104,7 @@ below).
   0, `VACANT` 1, `FORWARDED` 2), and minting stops below 2^22.
 - `a7e6254` -- mixins, applications and compiled code have per-heap ids
   (`MixinId`, `ApplicationIndex`, `CodeId`, `heap/tables.rs`), and the
-  application cache is keyed by them; none is reclaimed before live editing.
+  application cache is keyed by them.
 - `c9e4e7e` -- the applied clause packs into one `SmallInteger` (mixin id,
   clause index, builtin tag: 32, 23 and 6 bits), and more than 2^23 clauses
   is a resolve and a decode error.
@@ -5634,8 +5632,8 @@ fingerprint changed.
 - This commit -- the documents.
 
 What the batch left open, edited programs in images, road step 5b2b
-closed below; the reclaiming of ids, road step 5b2c, is "Next" in
-[OPEN-WORK.md](OPEN-WORK.md), and the hash lookup `Heap::same_mixin` adds
+closed below, and the reclaiming of ids, road step 5b2c, closed after it;
+the hash lookup `Heap::same_mixin` adds
 per non-matching level is still there, unmeasured.
 
 ## Edited programs in images, road step 5b2b (2026-10-19)
@@ -5697,6 +5695,62 @@ only its fingerprint changed.
   every golden through images.
 - This commit -- the documents.
 
-What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): road step
-5b2c, "Next", and a body's link to its declaration text, which comes with
-the activation mirror.
+What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): a body's
+link to its declaration text, which comes with the activation mirror. Road
+step 5b2c, closed below, reclaims the ids.
+
+## Reclaiming ids, road step 5b2c (2026-10-20)
+
+Plan: [reclaiming-ids](superpowers/plans/2026-10-20-1318-reclaiming-ids.md);
+[object-model.md](design/object-model.md), "An application has two ids",
+"What a slot access checks"; [memory.md](design/memory.md), "Marking",
+"Weak references"; [dispatch.md](design/dispatch.md), "The dispatch id",
+"Code families", "Invalidation";
+[liveness-and-reflection.md](design/liveness-and-reflection.md), "What
+the id has to carry".
+
+The last of road step 5's plans (decided with the user on 2026-10-20).
+Every per-heap table live editing grows gives its rows back: a full
+collection gathers, in one arm of the marking loop, the applications,
+applied clauses, code ids and feedback ranges the marked class objects,
+closures and frames name, reads the entered levels, recorded guards and
+feedback bases of the activation stack, and `Mutator::reclaim_ids` then
+frees, in order, every application nothing names with its index, its
+guard id and its successor entry; exactly the cache entries and the
+verified pair that named a freed guard or index, every other entry
+staying warm; every module's tree of mixin ids that no live application,
+class object, surviving reified mixin object or Rust holder names, and
+every superseded version only the table holds whose code nothing runs;
+every code id no marked closure or frame names; and the range of every
+family nothing runs. Every table mints its smallest free row first and is
+truncated by its trailing free rows; the guard ids likewise, and running
+out of them requests a full collection. The table of reified mixins and
+the application cache are weak. A registered mixin's nested declarations
+are named by id in its row (`Heap::nested_of`), so a mixin holds no other
+mixin's `Rc` once a heap names it. A nested class's cache slot holds a
+serial per creation, so a forward to an object with a creation of its own
+underway at the same index no longer loses that creation's
+cyclic-definition diagnosis. A hundred edit-install-call-collect rounds
+grow no table past its size after the second round. The ids are per heap
+and never on the wire, so no tag and no image layout changed.
+
+No golden's outcome changed. New tests in `heap/ids.rs`,
+`interpreter/inline_cache.rs`, `interpreter/reclaim.rs`,
+`interpreter/install.rs` and `builtins/reflection.rs`, and the golden `goldens/library/mirror/a_reachable_reified_mixin_keeps_its_identity.ns`.
+
+- `639c07f6`, `36d1be3d` -- the design and the plan.
+- `1c8d9fd5` -- the smallest free id minted first, and a full collection
+  requested when the guard ids run out.
+- `8ab8af59` -- a serial per nested-class creation.
+- `e0fefd77` -- a registered mixin's nested declarations named by id.
+- `12cb1602`, `4a1fee85` -- dead applications and their guard ids
+  reclaimed, the caches scrubbed selectively, the reified mixins weak.
+- `cc00f63a` -- dead mixin trees, superseded versions and code ids.
+- `bcae0207` -- the feedback ranges of families nothing runs.
+- This commit -- the documents.
+
+What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): what the
+reclamation costs a full collection, unmeasured in a release build; the
+feedback range of a decoded closure, which no family holds and nothing
+frees; and the name a superseded class side answers once its instance
+side is dropped.

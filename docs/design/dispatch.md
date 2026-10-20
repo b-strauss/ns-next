@@ -922,7 +922,8 @@ two sittings ([execution.md](execution.md), "What the inline caches moved").
 #### The dispatch id
 
 The id (`mixin::DispatchId`) is a dense number of 22 bits, minted per heap
-by a counter in the `Mutator` when `apply_mixin` creates an application —
+by an allocator in the `Mutator` (`Mutator.dispatch_ids`, `heap/ids.rs`'s
+`DispatchIdAllocator`) when `apply_mixin` creates an application —
 one per application, for its instances (`MixinApplication.dispatch_ids`,
 `DispatchIds.instances`). There is no second, class-side id: a class
 object's class is its metaclass (§3.2), an application of its own, so a
@@ -977,8 +978,12 @@ answers; and `DispatchId::FORWARDED`, 2, the guard the bulk forward stamps
 on each forwarder, never minted, so that a cache could never hit on one --
 and no send meets one, since the forward is eager
 ([object-model.md](object-model.md), "The reserved guard values sit at
-the low end"). The counter mints from 3 and below 2^22; an exhausted counter
-hands out `NONE`, so that application runs uncached.
+the low end"). The allocator mints the smallest id a full collection freed,
+else the next never minted, from 3 and below 2^22; once every one is in
+use it hands out `NONE`, so that application runs uncached, and requests a
+full collection, which gives back the ids of the applications nothing
+names any more ([object-model.md](object-model.md), "An application has
+two ids").
 
 #### Resolve, then act
 
@@ -1164,6 +1169,27 @@ way:
   (`InlineCaches::fresh_range`) when it is first activated, written back into
   its feedback-base field. Any range of that size is a correct one.
 
+**A family's range is reclaimed.** The map holds each family's root body
+(`Family`), so that the body's address, its key, is never another body's
+while the entry lives. A full collection drops every family whose root body
+only the map holds and whose base no marked closure and no activation
+names (`InlineCaches::forget_families`, from `Mutator::reclaim_ids`): such
+a body can never be activated again, and a range freed under a live
+closure or activation of the family would be filled by another family's
+sends, whose hits would act on them. The dropped family's sites and
+polymorphic blocks are vacated, so a family given the range again starts
+with empty sites, and the range joins the free ranges, kept by start and
+merged with their neighbours; `fresh_range` takes the first free range that
+fits, its remainder staying free, else appends to the table, and a free
+range at the table's end truncates it. A family's root body can be held by
+a cache entry -- its own sites', for a recursive method, or another
+family's -- and the family lives until the entry is vacated: by the scrub
+of the application the entry names ("Invalidation" below), by an
+invalidation, or, for an entry of a family the same collection dropped, by
+the next collection. A range a decoded closure is given on its first
+activation is no family's, and is not reclaimed
+([OPEN-WORK.md](../OPEN-WORK.md)).
+
 #### `site_index`'s rule
 
 A send runs uncached — the full lookup, nothing recorded — when its number is at
@@ -1289,9 +1315,8 @@ uncached path would.
 
 #### Invalidation
 
-Nothing mutates a method table at run time yet, so nothing has to be
-invalidated, but the mechanism exists, because the entries are designed for it:
-they hold no handle, so `InlineCaches::invalidate`
+The entries are designed for invalidation: they hold no handle, so
+`InlineCaches::invalidate`
 (`Interpreter::invalidate_caches`) vacates every site, clears the pool and its
 free list, and vacates the global cache, keeping every family's range, since
 running activations keep their bases — the next send through a vacated site
@@ -1309,6 +1334,22 @@ nothing, since it changed class objects' applications under unchanged
 guards. Scoping an invalidation to the application a change affects — the
 dependency key of [liveness-and-reflection.md](liveness-and-reflection.md),
 "Caches and their dependency keys" — is deferred beyond that step.
+
+**A collection scrubs selectively.** A full collection that frees a guard
+id or an application index ([object-model.md](object-model.md), "An
+application has two ids") vacates exactly the entries that name one --
+a site's or a polymorphic slot's guard, a `Lexical` rule's N, a global
+cache entry's guard or key, a slot target's level -- and forgets the
+verified pair if it names one (`InlineCaches::forget_freed`), so a guard or
+an index minted again never meets an entry filled for the application it
+named before; a polymorphic site stays polymorphic with its matching slots
+vacant, and a megamorphic one holds no guard. Every other entry stays warm,
+since nothing about the live applications changed; Spur instead flushes
+its method cache and unlinks every send before each full collection
+(`preGCAction`, `prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:18983-18989`),
+and Primordial Soup clears its lookup cache after every collection
+(`prior-art/primordialsoup/vm/interpreter.cc:1891-1908`). A collection that
+freed nothing scrubs nothing (decided with the user on 2026-10-20).
 
 #### What stays uncached
 
@@ -1535,11 +1576,11 @@ Two things follow for the caches. The application cache
 application's full-width index rather than by two `Rc::as_ptr` addresses,
 since the mixins and `MixinApplication`s live in the heap's tables indexed by
 their ids (`heap/tables.rs`), and a class object names its application by
-that full-width index, separate from the 22-bit guard id; with ids that are
-never reused while a key can name them, the cache is free to become weak
-([memory.md](memory.md), "Weak references") -- it stays strong until live
-editing reclaims an id ([object-model.md](object-model.md), "An application
-has two ids"). And no cache ever meets a forwarder: `become:` is an eager
+that full-width index, separate from the 22-bit guard id; an id is minted
+again only once nothing names it, and the full collection that frees it
+drops the cache entries naming it, so the cache is weak
+([memory.md](memory.md), "Weak references"; [object-model.md](object-model.md),
+"An application has two ids"). And no cache ever meets a forwarder: `become:` is an eager
 bulk forward ([object-model.md](object-model.md), "`become:` is an eager
 bulk forward"), whose forwarders nothing names once it ends, rewritten out
 of every root and every object before any send runs again, after which
@@ -1566,11 +1607,11 @@ full-width index instead: the application cache's key and value,
 `behavior:sharesApplicationWith:` (`Kernel.ns`), class-object equality
 (`builtins/value.rs`), and the global cache's `Lexical` key, which never
 records a `NONE` guard, as step 6 of the lookup order in "3b — The caches"
-says. So an application without a guard id stays reachable and distinct. None
-of the ids is reclaimed yet; their reuse rules are
-[object-model.md](object-model.md), "An application has two ids". A class's
-change of application restamps every instance's header by a heap walk
-(`Heap::class_set_application`) before the old guard id could become
+says. So an application without a guard id stays reachable and distinct. A
+full collection reclaims both ids by their reuse rules
+([object-model.md](object-model.md), "An application has two ids"). A
+class's change of application restamps every instance's header by a heap
+walk (`Heap::class_set_application`) before the old guard id can become
 reclaimable.
 
 ### Considered and rejected

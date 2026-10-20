@@ -1714,7 +1714,7 @@ own:
    mixin id that carries every version, the forward and the recorded
    guards -- built; 5b2a, the MirrorBuilder and the atomic install,
    built; 5b2b, declaration texts and edited programs in images, built;
-   5b2c, the reclaiming of ids, next.
+   5b2c, the reclaiming of ids, built.
 6. **Inline allocation in the interpreter** ([memory.md](memory.md),
    "Planned: inline allocation").
 7. **The execution model for compiled code** ([execution.md](execution.md),
@@ -1760,7 +1760,7 @@ the lock bits into one 64-bit word:
 
 | Bits | Holds |
 |---|---|
-| 0-21 | the application id -- the inline caches' guard ([dispatch.md](dispatch.md), "The dispatch id"); 0 is `NONE`, 1 `VACANT`, 2 reserved (`FORWARDED`), and the counter mints from 3 |
+| 0-21 | the application id -- the inline caches' guard ([dispatch.md](dispatch.md), "The dispatch id"); 0 is `NONE`, 1 `VACANT`, 2 reserved (`FORWARDED`), and the allocator mints from 3 |
 | 22-26 | the format |
 | 27-30 | the age: the scavenges a young object has survived, at most 15; 0 for a new object and meaningless for an old one ([memory.md](memory.md), "The age table and the tenuring threshold") |
 | 31 | the remembered bit: set on an old object in the remembered set, never on a young one ([memory.md](memory.md), "The remembered set and its limit") |
@@ -1783,8 +1783,9 @@ reserved class ids do (`kIllegalCid = 0`, `kForwardingCorpseCid = 1`,
 `prior-art/primordialsoup/vm/object.h:64-68`), and Spur keeps its own
 puns below 32 (`isFreeObjectClassIndexPun` 0, `isForwardedObjectClassIndexPun`
 8, `prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:2815-2817`):
-`DispatchId::NONE` is 0, `VACANT` 1 and `FORWARDED` 2, and the counter mints
-from 3 below 2^22, answering `NONE` once it is exhausted (`mixin.rs`). So a
+`DispatchId::NONE` is 0, `VACANT` 1 and `FORWARDED` 2, and the allocator
+(`heap/ids.rs`'s `DispatchIdAllocator`) mints from 3 below 2^22, answering
+`NONE` once every id is in use ("An application has two ids" below). So a
 header word left zero by a missed initialization carries `NONE`, which is
 never cached, rather than a guard some application was minted, and the
 debug build's recomputation in `Heap::dispatch_id` reports it (decided with
@@ -1819,31 +1820,128 @@ whose guard id is `NONE` stays reachable and distinct from every other.
 The tables are `heap/tables.rs`'s, one set per heap because the objects
 naming them are: a `MixinId` for a mixin, an `ApplicationIndex` for an
 application and a `CodeId` for a compiled body, each registered on first
-sight (`Heap::mixin_id`, `register_application`, `code_id`). They are
-append-only. Each id has its own reuse rule, and the collector can tell
-both of an application's, so reusing either will be safe: a guard id is
-reclaimable once no object header, no inline- or global-cache entry and no
-recorded guard -- an activation's, a slot accessor's cache entry's or the
-caches' verified pair -- names it; a full-width index once no class object, no
-application-cache key or value and no other application's superclass link
-names it. A mixin id is reclaimable once the `Mixin` itself is dropped --
-its table entry freed, no declaration, enclosing mixin or code holding it --
-and no application, no application-cache key or value and no class object's
-applied-clause field names it. A class's change of application restamps
-every instance's header by a heap walk (`Heap::class_set_application`)
-before the old guard id can become reclaimable. Every version of a mixin
-answers the id it was first registered under: the row holds the current
-version and the id of the mixin it is declared in, and
-`Heap::replace_mixin` installs a fresh version under an old id, keeping the
-one it supersedes in `Tables::superseded`, so the address map that answers
-a version's id (`mixin::mixin_key`) never names a dropped one
+sight (`Heap::mixin_id`, `register_application`, `code_id`). Every version
+of a mixin answers the id it was first registered under: the row holds the
+current version, the id of the mixin it is declared in and the ids of those
+declared in it (`Heap::nested_of`), and `Heap::replace_mixin` installs a
+fresh version under an old id, keeping the one it supersedes in
+`Tables::superseded`, so the address map that answers a version's id
+(`mixin::mixin_key`) never names a dropped one
 ([liveness-and-reflection.md](liveness-and-reflection.md), "An edit
-replaces the mixin under its id"). None of it is reclaimed: nothing drops a
-mixin, superseded versions included, and the application cache, keyed by
-the ids, stays strong; the reuse rules and a weak cache come with live
-editing (decided with the user on 2026-10-03), with road step 5b2c, after
-road step 5b2a's atomic install, which supersedes applications and guards
-without reclaiming them ([OPEN-WORK.md](../OPEN-WORK.md), "Next").
+replaces the mixin under its id"). The ids are per heap and never on the
+wire: the image encoder numbers its own records and bodies.
+
+**Each id has its own reuse rule, and a full collection enforces them.** A
+guard id is reusable once no object header, no inline- or global-cache
+entry and no recorded guard -- an activation's, a slot accessor's cache
+entry's or the caches' verified pair -- names it; a full-width index once
+no class object, no activation's entered level, no application-cache key
+or value and no other application's superclass link or successor entry
+names it; a mixin id once no application, no class object's applied-clause
+field, no reified mixin object and no holder of one of its versions names
+it or any other id of its module's tree; a code id once no closure or
+frame object names it. A class's change of application restamps every
+instance's header by a heap walk (`Heap::class_set_application`) before
+the old guard id can become reusable. `Mutator::reclaim_ids`
+(`interpreter/reclaim.rs`) applies the rules. `World::collect` runs it
+between marking and compaction, after `prune_canonical_symbols` and
+`prune_mixin_objects`: it reads the mark bits, and nothing in it moves or
+allocates an object. A scavenge frees no id. The design is Spur's, whose
+class table is weak and whose full collection frees the unmarked classes'
+indices (`expungeDuplicateAndUnmarkedClasses:`,
+`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:54844-54886`), and
+Primordial Soup's, which keeps freed class ids on a free list
+(`prior-art/primordialsoup/vm/heap.cc:1022-1070`); decided with the user on
+2026-10-03, its details on 2026-10-20.
+
+**What names an id is gathered while marking.** `drain_marking` already
+matches on each object's format; for a class object it records the rows
+its `APPLICATION` and `APPLIED_CLAUSE` fields name, for a closure its
+`CODE_ID` and `FEEDBACK_BASE`, for a frame its `CODE_ID`, in the marker's
+bit sets (`heap/reclaim.rs`'s `GatheredIds`), so the pass needs no second
+walk of the heap. A word that is no `SmallInteger` names nothing, as the
+field's readers refuse it. The activation stack holds ids as numbers no
+marking reaches, so `Heap::stack_roots` reads every activation's entered
+level, recorded guard and feedback base. A Rust holder of a mixin version
+-- a host's `LoadedModule`, the world's `value_mixin`, a nested class's
+creation underway, a cache entry -- is never listed: the pass compares the
+version's `Rc::strong_count` with its holders inside the tables.
+`Heap::mixin_objects` is weak ([memory.md](memory.md), "Weak references"):
+a reified mixin object that survived the marking keeps its mixin's id, and
+one nothing reaches is dropped, since nothing can compare it any more.
+
+**The order.** Each step releases the `Rc`s the next one counts.
+
+1. **Applications.** Live: every gathered index, every activation's
+   entered level, and every application whose guard an activation
+   recorded -- a receiver forwarded under that guard must never meet it
+   minted again -- closed over superclass links and successors. A
+   successor entry is kept only while its old index lives, and then keeps
+   its new one (`Heap::retain_successors`), so an index minted again never
+   inherits a successor. Every other row is freed with its index and its
+   guard id (`Heap::free_application`).
+2. **Caches**, only when step 1 freed something. The application cache
+   loses every entry whose value or superclass key was freed; the inline
+   caches, the polymorphic blocks, the global cache and the verified pair
+   lose exactly the entries that name a freed guard id or index
+   (`InlineCaches::forget_freed`; [dispatch.md](dispatch.md),
+   "Invalidation"). A debug build asserts that nothing else holds a freed
+   application.
+3. **Mixins** (`reclaim_mixins`). A module's mixins live and die as one
+   tree (`Heap::module_trees`): its root, its nested declarations at every
+   depth and the class sides registered under any of them. A tree lives
+   while any of its ids is named by a live application, a gathered applied
+   clause or a surviving reified mixin object, or while any of its
+   versions, current or superseded, is held outside the tables
+   (`Heap::held_mixin_ids`). The tables' own holders are counted
+   structurally rather than listed: a version's row or its place in
+   `superseded`, the `class_side` of a version of the same tree, and the
+   `metaclass_mixins` memo's entry for a synthesized class side of the
+   same tree; a holder in another tree counts as one outside. A tree dies
+   whole because a live mixin names the ids of the mixins it is declared
+   in and of those declared in it, and a holder that presents a version
+   again must find it under the id it had, so a version a host holds
+   keeps its whole tree. A dead tree's rows are freed, its superseded
+   versions and their `mixin_ids` entries dropped (`Heap::free_mixins`),
+   and its memo entries removed; a debug build asserts that no dropped
+   version is held anywhere else. Then the superseded versions of live
+   ids: one is dropped once only `superseded` holds it and no body that a
+   marked closure or frame names, or that an activation runs, was compiled
+   in it (`Heap::running_bodies`, `drop_superseded`), because such a
+   version is what admits that code into an image of its module
+   (`image::extra_bodies`).
+4. **Codes.** Every code id no marked closure or frame names is freed with
+   its `code_ids` entry (`Heap::free_unnamed_codes`). An activation holds
+   its body itself, never by id, so the marked objects are every holder of
+   one; the body lives on with whoever else holds it, and a frame reified
+   later registers it again.
+5. **Feedback ranges**, whether or not anything above was freed, since a
+   body steps 3 and 4 let go of can end a family on its own: a family whose
+   root body only the caches hold and whose base no marked closure and no
+   activation names is dropped, its sites vacated and its range freed
+   (`InlineCaches::forget_families`; [dispatch.md](dispatch.md), "3b — The
+   caches").
+
+**The smallest free id is minted first.** Each table is a
+`Vec<Option<…>>` with its free rows (`heap/ids.rs`'s `FreeIndices`):
+registering takes the smallest free row, else appends, and the pass
+truncates every table by its trailing free rows (`truncate_trailing`), so a
+table stays dense and a program that edits, installs and collects in a loop
+keeps its tables at a bounded size -- Spur likewise lowers its class
+table's next index to the smallest freed one. The guard ids follow the same
+rule (`DispatchIdAllocator`): the smallest freed id, else the next never
+minted, below 2^22. Once every one is in use, `Mutator::mint_dispatch_ids`
+answers `NONE`, so the new application runs uncached, and requests a full
+collection at the next safepoint (`Heap::request_collection`), as Primordial
+Soup collects before growing its class table (`AllocateClassId`,
+`heap.cc:1279-1310`): nothing but the old space's growth would otherwise
+start one, and a program that makes and drops applications quickly would
+run out with plenty of dead ones to reclaim. The feedback ranges take the
+first free range that fits ([dispatch.md](dispatch.md), "3b — The caches").
+`interpreter/reclaim.rs`'s tests pin it: a hundred edit-install-call-collect
+rounds grow no table past its size after the second round, and a guard
+minted again misses every cache entry filled for its dead application
+under both lowerings.
 
 **The class word** is an ordinary stored word naming the object's class
 object, written through `Heap::store` and read through `Heap::load` like a
@@ -1969,13 +2067,12 @@ superclass clause is in prospect, and a second field would cost every class
 object eight bytes for it.
 
 The application cache is keyed by the mixin's id and the superclass
-application's full-width index rather than by `Rc` addresses, which lets it
-become weak ([memory.md](memory.md), "Weak references") when live editing
-needs it to. A closure keeps its code id, captured frame and feedback base in
+application's full-width index rather than by `Rc` addresses, which lets a
+full collection prune it by the ids it frees ("An application has two ids"
+above). A closure keeps its code id, captured frame and feedback base in
 three fixed fields (`closure_field`) and its copied values inline; a code id
-indexes the heap's table of compiled code, append-only, its entries never
-freed or reused, since compiled code is shared by mixins and reclaiming it
-belongs with live editing. Each entry also records the code's owning
+indexes the heap's table of compiled code, whose row a full collection
+frees once no closure or frame object names it. Each entry also records the code's owning
 `MixinMethod`, where it has one, so a method frame's code id names its
 method too -- the declaration the encoder writes and `frame_body` reads.
 
@@ -2142,8 +2239,9 @@ every earlier predecessor at the newest; the cold path of
 `Heap::receiver_has_level` accepts the entered level or its successor. So
 an initializer or a lazy getter entered before the install runs to its
 end when its level's slots did not change, and raises the error above
-when they did; the hot path is unchanged. No successor is dropped; the
-rule for reusing an application's index is road step 5b2c's.
+when they did; the hot path is unchanged. A successor entry lives while
+its old application does and keeps the new one alive; a full collection
+drops it with the old index ("An application has two ids" above).
 
 **Private and super slot accessors.** `Lookup::SlotAccessor` answers the
 level whose own slot the field is, and `Resolved::Slot` and
@@ -2188,7 +2286,10 @@ chain does not change while the caches persist. Whatever changes a class
 object's application or chain under an unchanged guard must invalidate the
 caches after it -- `Heap::class_set_application` on a superclass is the
 case -- which the atomic install does. Recorded guards follow the
-guard id's reuse rule ("An application has two ids" above).
+guard id's reuse rule: an activation's recorded guard keeps its
+application, and so the guard, from being reclaimed, and a collection
+that frees a guard vacates every cache entry and the verified pair that
+name it ("An application has two ids" above).
 
 **A reified frame has no field for it.** The recorded guard and the entered
 level live in the activation stack's entry alone. An activation resumed
@@ -2214,7 +2315,11 @@ its `<:` clause's message forwarded the instance.
 **The nested-class cache slot.** A nested class is cached in a hidden slot
 of its enclosing object, whose index `cache_slot` (`interpreter/nested.rs`)
 decides from the enclosing object's layout before the superclass clause
-runs, and where `begin_creation` writes the in-progress marker. The clause
+runs, and where `begin_creation` writes the in-progress marker: the serial
+of that one creation, a `SmallInteger` taken from
+`Mutator::next_creation_serial`, which a class object never is, so any
+`SmallInteger` in the slot says a creation is underway
+(`is_creation_in_progress`). The clause
 is user code on the enclosing object and can forward it. So `after_clause`
 looks the slot up again, by the declaration's id in the enclosing object's
 current application, before it builds the class, and reads what that slot
@@ -2241,15 +2346,14 @@ run in:
 
 `<class>` is the declaring level's mixin's name and `<name>` the
 declaration's; the error's selector is the declaration's name.
-`end_creation` resets the marker only while the slot it was written to is
-still the slot the current layout has, so a replacement's own field that
-holds `false` is left alone. What remains: when the replacement has a
-creation of its own underway at the same index, `end_creation` cannot tell
-that creation's marker from its own and resets it, so the first of the two
-to finish caches its class and the other answers it -- one class still,
-but a cyclic definition in the other creation's clause after that point
-goes undiagnosed ([OPEN-WORK.md](../OPEN-WORK.md), "Next"). The tests are
-`builtins/reflection.rs`'s, under both lowerings.
+`end_creation` resets the marker to `nil` only while the slot it was
+written to is still the slot the current layout has (`current_cache`) and
+still holds its own serial: a replacement's own field at that index is
+left alone, and so is the marker of a creation the replacement has
+underway at the same index, whose clause is still on the stack and which
+resets it itself -- so a cyclic definition in that creation's clause is
+still diagnosed. The tests are `builtins/reflection.rs`'s, under both
+lowerings.
 
 ## `become:` is an eager bulk forward
 
@@ -2561,8 +2665,9 @@ no program can observe, since a value has no identity.
   error -- a limit taken knowingly against the rarity rule; the reserved
   guards are `NONE` 0, `VACANT` 1 and `FORWARDED` 2; a value-class
   refusal is heap data, not a Rust-side table; and the ids are minted per
-  heap, key the application cache and are reclaimed by nothing until live
-  editing.
+  heap and key the application cache, which a full collection prunes by
+  the ids it reclaims (built by road step 5b2c on 2026-10-20, "An
+  application has two ids" above).
 - **Road step 5b is built as two plans, 5b1 the VM's half of live editing
   and 5b2 the MirrorBuilder, the atomic install, the weak application
   cache, the image's edited mixins and run-time compilation**, 5b1 built
@@ -2574,7 +2679,8 @@ no program can observe, since a value has no identity.
   and 5b2b, split once more on 2026-10-19 (decided with the user): 5b2b,
   declaration texts and the image's edited mixins, built
   ([its plan](../superpowers/plans/2026-10-19-1702-edited-programs-in-images.md)),
-  and 5b2c, the weak application cache and the reuse of ids.
+  and 5b2c, the weak application cache and the reuse of ids, built
+  ([its plan](../superpowers/plans/2026-10-20-1318-reclaiming-ids.md)).
   The bulk forward runs inside its leaf, in the middle of a step, not at
   the next safepoint, so no instruction runs between the forward and the
   leaf's answer and it is atomic; nothing live moves, so no move epoch

@@ -328,8 +328,10 @@ pub struct Mutator<'gc> {
     /// behaviour. Keyed on the superclass's *application*, never on a
     /// superclass class object: a nested superclass has one class object per
     /// enclosing instance, so a class-object key would never hit and every
-    /// instance would get its own behaviour. Strong until live editing, as
-    /// the heap's tables are.
+    /// instance would get its own behaviour. Weak, as the heap's tables are:
+    /// a full collection drops every entry whose application or superclass
+    /// key it frees (`Mutator::reclaim_ids`), so a key never names an index
+    /// minted again for another application.
     pub(crate) applications: IdentityMap<
         (crate::heap::MixinId, Option<crate::heap::ApplicationIndex>),
         Rc<crate::mixin::MixinApplication>,

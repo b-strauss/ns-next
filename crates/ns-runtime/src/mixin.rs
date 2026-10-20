@@ -60,7 +60,7 @@ impl DispatchId {
     /// never hit on a forwarder even if a reader met one -- and none does,
     /// since the forward is eager and leaves no handle naming a forwarder.
     pub(crate) const FORWARDED: DispatchId = DispatchId(2);
-    /// The first id the counter mints.
+    /// The first id the allocator mints (`heap::ids::DispatchIdAllocator`).
     pub(crate) const FIRST_MINTED: u32 = 3;
     /// One past the last id: the header word's guard field is 22 bits wide.
     pub(crate) const LIMIT: u32 = 1 << 22;
@@ -87,7 +87,7 @@ impl DispatchId {
 }
 
 // The assertion keeps the forwarder's reserved guard below every minted id,
-// so that the counter can never mint it.
+// so that the allocator can never mint it.
 const _: () = assert!(DispatchId::FORWARDED.0 < DispatchId::FIRST_MINTED);
 
 /// An application's id, for its instances. There is no second, class-side

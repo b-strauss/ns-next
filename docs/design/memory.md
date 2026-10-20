@@ -742,11 +742,11 @@ check").
 - The heap's table of reified mixins (`Heap`'s `mixin_objects`), the one
   kernel-private `Mixin` object of each mixin a mirror has reached
   ([liveness-and-reflection.md](liveness-and-reflection.md), "A mixin is
-  reified as a kernel-private object"): a strong root, marked, forwarded
-  by every move and scavenged like `activation_class`, since a mixin lives
-  as long as the heap's mixin table, and an object let go would make the
-  next mirror on the mixin answer a second one, so `==` would no longer be
-  the mixin's identity.
+  reified as a kernel-private object"): forwarded by every move and traced
+  by a scavenge, which reclaims no id, but weak in a full collection,
+  which prunes it ("Weak references" below) -- an object nothing else
+  reaches can be compared with nothing, so `==` stays the mixin's identity
+  for every comparison a program can make.
 - The depth limit's reserve, `Mutator.depth_reserve`: the frame of the
   activation an error near the limit arose in, marked, forwarded and
   scavenged with the bootstrap's roots through `StepRoots`
@@ -1109,15 +1109,6 @@ creator's frame record without registers.
   the control that would settle the doubling explanation, and it has not been
   run. This is recorded because a collector's design should know the interim
   may have a latency cost as well as a memory one.
-- **The application cache grows without bound** in the presence of live editing,
-  because every re-application mints a fresh entry that nothing evicts, and
-  road step 5b2a's install re-applies every class object of an edited
-  mixin. It is settled with road step 5b2c, after those edits, which
-  replace a mixin under its id
-  ([liveness-and-reflection.md](liveness-and-reflection.md), "An edit
-  replaces the mixin under its id"). Its key is a pair
-  of the heap's ids since road step 3a, so evicting weakly is decidable; it
-  stays strong until live editing reclaims an id ("Weak references" below).
 
 ### What an object costs
 
@@ -1177,8 +1168,9 @@ every record as the second will and allocates nothing in the object space:
 beside transient, bounded buffers, it interns the mixin each reified
 mixin's record names, and resolving one that names a class side may
 synthesize that class side, a Rust value of the heap's mixin table, at
-most one per instance-side mixin, which lives as long as the interpreter
-the load returns or drops; it sizes each record's object from the record's own bytes,
+most one per instance-side mixin, which lives until a full collection
+finds its module's tree dead or the interpreter the load returns or drops
+goes; it sizes each record's object from the record's own bytes,
 refuses what the second pass would refuse about counts, ids, a symbol or a
 mixin named twice and a `FutureImplementation` record of another field count, and refuses before
 anything is allocated when the objects would take more than eight words a
@@ -1286,8 +1278,9 @@ records run out; and what the first pass keeps
 of the reified mixins' records -- the mixin each names, a set of their ids,
 both dropped before the placeholders exist, and a class side resolving one
 may synthesize, a Rust value, at most one per instance-side mixin,
-entered in the heap's mixin table and so living as long as the
-interpreter the load returns or drops. Each stays proportional to the input.
+entered in the heap's mixin table and so living until a full collection
+finds its module's tree dead or the interpreter the load returns or drops
+goes. Each stays proportional to the input.
 
 `bounded_count` is what keeps all of this proportional to the input rather
 than to a 32-bit count -- without it a crafted `u32::MAX` would allocate
@@ -1403,12 +1396,23 @@ marking and forwarding is what keeps the two from drifting: a field a later
 change adds is named in exactly one place, and the compiler refuses that
 place until it is named.
 
+**Marking gathers the ids the objects name.** A class object names its
+application and its applied clause's mixin, a closure its body and its
+feedback range, a frame its body, each as a `SmallInteger` no pointer range
+reaches. `drain_marking` already matches on the visited object's format,
+so one arm of that match records those rows in the marker's bit sets
+(`heap/reclaim.rs`'s `GatheredIds`), the ephemeron fixpoint's visits
+included, and `World::collect` hands them to `Mutator::reclaim_ids` after
+the prune, while the mark bits still say what lives
+([object-model.md](object-model.md), "An application has two ids"). A
+second walk of the heap would cost what the marking already reads.
+
 The roots are the ones a move forwards -- the heap's own, which
 `Heap::begin_marking` pushes (the `Activation` class, the activation
 stack's entries and registers, the host roots), and the step state's,
 `StepRoots` (the builtin classes, the `platform` singleton, the VM mirror,
 the kernel, the shipped world and the depth limit's reserve) -- with the canonical symbol
-table removed, since that is weak. The remembered set is not a root here:
+table and the table of reified mixins removed, since those are weak. The remembered set is not a root here:
 marking reaches every reachable object of both generations along its
 edges, an old one that names a young one included. The difference from a
 move is the direction: a move walks every object because everything counts
@@ -1553,9 +1557,11 @@ In a release build the two triggers are what the safepoint's slow path serves.
 
 ### Weak references
 
-Three things are weak: the canonical symbol table, a `WeakArray`'s slots,
-and an `Ephemeron`'s fields while its key is reached by nothing but
-ephemerons.
+In the space, four things are weak: the canonical symbol table, the table
+of reified mixins, a `WeakArray`'s slots, and an `Ephemeron`'s fields while
+its key is reached by nothing but ephemerons. Beside it, the per-heap tables
+of mixins, applications and compiled code, and the caches keyed by them,
+hold an entry only while something live names its id.
 
 **A `WeakArray` and an `Ephemeron` have formats of their own**, codes 10
 and 11 (`heap/header.rs`): `WeakPointers`, whose fields are a `WeakArray`'s
@@ -1626,39 +1632,36 @@ belongs to the object rather than to the symbol; a program that keeps the
 number `identityHash` answered instead of the object has no guarantee today
 either, and Squeak's weak symbol table behaves the same way.
 
-**The application cache stays strong, and the reason is live editing rather
-than the collector.** Its key is a pair of the heap's ids -- the mixin's
-`MixinId` and the superclass application's `ApplicationIndex`
-(`heap/tables.rs`) -- not two addresses, so a freed `Rc<Mixin>` handing its
-address to a newly allocated one can no longer make the new mixin hit the
-old entry and be given a **different, perfectly valid** application, the
-failure class the handle invariants exist to prevent. The heap's tables
-still map a mixin's and a body's address to its id (`Rc::as_ptr`), which is
-sound only because each table holds the strong `Rc` that keeps the address
-valid and unique for as long as the entry lives -- forever, until an id is
-reclaimed. So weakness is decidable now, and what makes it sound when it
-comes is that the cache's key and value use an application's full-width
-index, never its 22-bit guard id, and the reuse rules: a full-width index
-is reclaimable once no class object, no application-cache key or value and
-no other application's superclass link names it; a guard id once no object
-header, no inline- or global-cache entry and no recorded guard (an
-activation's, a slot accessor's cache entry's or the caches' verified pair)
-names it; a mixin id once the `Mixin` itself is dropped -- its table entry
-freed, no declaration, enclosing mixin or code holding it -- and no
-application, no application-cache key or value and no class object's
-applied-clause field names it ([object-model.md](object-model.md), "An
-application has two ids"). A class's change of application restamps every
-instance's header by a heap walk (`Heap::class_set_application`) before the
-old guard id could become reclaimable. Nothing drops a mixin, a version an
-edit superseded included (`Tables::superseded`), so the ids are minted and
-none is reclaimed, and the cache stays strong until then (decided with the
-user on 2026-10-03); its unbounded growth under live editing
-([liveness-and-reflection.md](liveness-and-reflection.md)) ends with the
-reclamation road step 5b2c brings after road step 5b2a's atomic install
-([liveness-and-reflection.md](liveness-and-reflection.md), "Planned: road
-step 5b2c, reclaiming ids"). The same per-mixin id
-serves dispatch's open option of guarding a private lexical site on N's
-mixin ([dispatch.md](dispatch.md), "Decisions").
+**The table of reified mixins is weak** (`mixin_objects`,
+`Heap::prune_mixin_objects`), as the symbol table is, for the same
+reason: as a root it would keep every mixin a mirror ever reached, and with
+it the mixin's id. It is not a root for marking; after marking and before
+compaction, beside `prune_canonical_symbols`, an entry whose object is
+unmarked becomes `None`. While anything reaches the object it is marked
+and stays the one object of its mixin, so `==` stays the mixin's identity;
+once nothing does, nothing can compare it, and the next reflection makes a
+fresh one. A marked entry keeps its mixin's id alive. A scavenge traces the
+table strongly, since a scavenge reclaims no id
+(`goldens/library/mirror/a_reachable_reified_mixin_keeps_its_identity.ns`).
+
+**The application cache and the id tables are weak.** The cache's key is a
+pair of the heap's ids -- the mixin's `MixinId` and the superclass
+application's `ApplicationIndex` (`heap/tables.rs`) -- not two addresses,
+so a freed `Rc<Mixin>` handing its address to a newly allocated one cannot
+make the new mixin hit the old entry and be given a **different, perfectly
+valid** application, the failure class the handle invariants exist to
+prevent. A full collection reclaims every application, every module's tree
+of mixins, every compiled body and every cache range nothing live names
+any more (`Mutator::reclaim_ids`), and drops every application-cache entry
+whose application or superclass key it freed, so the cache's size follows
+the live applications, edits or not ([object-model.md](object-model.md),
+"An application has two ids", which has the reuse rule of each id). The
+heap's tables still map a mixin's and a body's address to its id
+(`Rc::as_ptr`), which is sound because each table holds the strong `Rc`
+that keeps the address valid and unique for as long as the entry lives,
+and a version or a body leaves its map when the table lets go of it. The
+same per-mixin id serves dispatch's open option of guarding a private
+lexical site on N's mixin ([dispatch.md](dispatch.md), "Decisions").
 
 The cache holds no handle at all — a pair of numbers for a key, an `Rc` for a
 value — so it is neither a root nor a forwarding target.
@@ -2762,12 +2765,15 @@ the groundwork the JIT tiers take over, as Cogit's `genPrimitiveNew` and
   come from `windows-sys` and `libc`, declaration-only crates, rather than
   hand-written declarations whose constants differ per platform and would be
   wrong only on the platforms nobody here runs.
-- **The canonical symbol table is the runtime's only weak structure of its
-  own**; a program's are `WeakArray`, `Ephemeron` and `WeakMap`
-  ([core-library.md](core-library.md), "Weak references"). §5.1.6
-  survives the table being weak because `Mutator::new_symbol` is the only
-  way to make a symbol object, so one that is collected was held by
-  nothing.
+- **The runtime's own weak structures in the space are the canonical
+  symbol table and the table of reified mixins** (the latter weak since
+  road step 5b2c, 2026-10-20); a program's are `WeakArray`, `Ephemeron`
+  and `WeakMap` ([core-library.md](core-library.md), "Weak references").
+  §5.1.6 survives the symbol table being weak because
+  `Mutator::new_symbol` is the only way to make a symbol object, so one
+  that is collected was held by nothing; a mixin's identity survives its
+  object being dropped because nothing that could compare the object
+  holds it any more, and the next reflection makes a fresh one.
 - **A weak word is forwarded like a strong one and traced for liveness
   apart** (built on 2026-10-16): `pointer_ranges` stays the one
   enumeration of pointer words, which forwarding and the moves need whole,
@@ -2798,11 +2804,11 @@ the groundwork the JIT tiers take over, as Cogit's `genPrimitiveNew` and
   every round did (37.6 and 44.8): every dead-keyed ephemeron entered the
   index before it was mourned. A 4,000-link chain costs 4.4 ms a run
   with the scans, 4.2 without them, and 67.5 with a rescan per round.
-- **The application cache stays strong until live editing** (decided with
-  the user on 2026-10-03). Its key was an address, which needs the strong
-  reference to keep it unique; since road step 3a it is a pair of the heap's
-  ids, so a weak cache is decidable, but nothing drops a mixin before live
-  editing, so the ids are minted and none is reclaimed
+- **The application cache is weak, pruned by the ids a full collection
+  reclaims** (decided with the user on 2026-10-03, built by road step 5b2c
+  on 2026-10-20). Its key was an address, which needs the strong reference
+  to keep it unique; since road step 3a it is a pair of the heap's ids, so
+  the collection that frees an id can drop the entries naming it
   ([object-model.md](object-model.md), "An application has two ids").
 - **A collection is requested by comparing the bytes the objects occupy
   against a limit** -- eden's against the scavenge threshold, the old
