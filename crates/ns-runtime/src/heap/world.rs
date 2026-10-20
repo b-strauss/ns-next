@@ -137,6 +137,7 @@ impl World {
                 shipped_code_path,
                 argument_buffer: Vec::new(),
                 dispatch_ids: crate::heap::DispatchIdAllocator::new(),
+                next_creation_serial: 1,
                 caches: crate::interpreter::inline_cache::InlineCaches::new(),
                 unhandled_exceptions_to_resume: 0,
                 depth_reserve: None,

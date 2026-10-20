@@ -152,7 +152,7 @@ pub(crate) fn nested_class<'gc>(
     };
     // Step 1: the receiver's own cache. `Nil` is "not yet" -- `instantiate`
     // fills every slot, hidden ones included, with `Nil`, and a materialized
-    // class object is never `Nil` -- and `creation_in_progress()` is "underway,
+    // class object is never `Nil` -- and a serial is "underway,
     // further down the stack", so the slot answers both questions and no
     // side table is needed.
     match cached {
@@ -163,11 +163,16 @@ pub(crate) fn nested_class<'gc>(
         cached => return Ok(Step::Value(cached)),
     }
     // Step 2: the superclass clause, evaluated in the receiver's context.
+    // Taken even by a declaration without a clause, which never marks: the
+    // number is simply never read there.
+    let serial = mutator.next_creation_serial;
+    mutator.next_creation_serial += 1;
     let creation = NestedClassCreation {
         enclosing: receiver_object,
         index,
         nested: nested.clone(),
         declaring_class,
+        serial,
     };
     // Whether there is a clause at all is read off the mixin, not off its
     // declaration: a mixin decoded from an image has no declaration, and the
@@ -212,6 +217,7 @@ pub(crate) fn after_clause<'gc>(
         index: _,
         nested,
         declaring_class,
+        serial: _,
     } = creation;
     // A declaration that applies mixins builds its levels out of line, so a
     // declaration without `<:` takes only the two tests it always took.
@@ -243,7 +249,7 @@ pub(crate) fn after_clause<'gc>(
     // may have its own class cached, which stays the one class of the
     // declaration for it, or its own creation underway further down the
     // stack, whose clause this one would race. Only an empty slot -- every
-    // creation's, once `end_creation` has reset its marker -- takes the
+    // creation's, once `end_creation` has reset its own marker -- takes the
     // class built here.
     match cached {
         cached if cached.is_nil() => {}
@@ -609,11 +615,13 @@ fn no_longer_caches_error<'gc>(
         ),
     ))
 }
-
-/// What a nested class's cache slot holds while the class is being created
-/// for that enclosing object -- exactly while the activation evaluating its
-/// superclass clause is on the stack. An access that finds it is a cycle
-/// (`cyclic_definition_error`).
+/// Whether a nested class's cache slot says a creation is underway -- exactly
+/// while the activation evaluating its superclass clause is on the stack: it
+/// holds the serial of that creation (`begin_creation`), a `SmallInteger`,
+/// which a class object never is. An access that finds it is a cycle
+/// (`cyclic_definition_error`). An image that stores any `SmallInteger` in a
+/// hidden slot gets a cyclic-definition error on access, the same
+/// wrong-but-safe answer as for any other non-class value it puts there.
 ///
 /// The slot itself, rather than a list of the creations underway, because
 /// the slot is already keyed by exactly the pair a cycle is: the enclosing
@@ -630,29 +638,26 @@ fn no_longer_caches_error<'gc>(
 /// only by `begin_creation`, and replaced by the class or by `Nil` again when
 /// the clause's activation is popped, so no Newspeak code ever reads it --
 /// nothing but this accessor reads a hidden slot -- and no image holds it,
-/// since only a host snapshots, between runs. An image that stores `false`
-/// in a hidden slot itself gets a cyclic-definition error on access, the
-/// same kind of wrong-but-safe answer as any other non-class value it puts
-/// there, which the accessor answers as the class.
-fn creation_in_progress<'gc>() -> Value<'gc> {
-    Value::boolean(false)
-}
-
+/// since only a host snapshots, between runs.
 fn is_creation_in_progress<'gc>(value: Value<'gc>) -> bool {
-    value.as_boolean() == Some(false)
+    value.as_small_integer().is_some()
 }
 
 /// The clause activation of a creation has just been pushed: mark its class
-/// as being created, in slot `index` of `enclosing`, where it will be cached.
-/// Only a slot `nested_class` found `Nil` gets here.
+/// as being created, in slot `index` of `enclosing`, where it will be cached,
+/// with the creation's `serial`. Only a slot `nested_class` found `Nil` gets
+/// here.
 pub(super) fn begin_creation<'gc>(
     mutator: &mut Mutator<'gc>,
     enclosing: ObjectReference<'gc>,
     index: usize,
+    serial: u64,
 ) {
-    mutator
-        .heap
-        .instance_set_field(enclosing, index, creation_in_progress());
+    let marker = i64::try_from(serial)
+        .ok()
+        .map(Value::small_integer)
+        .expect("internal: a creation serial fits a SmallInteger");
+    mutator.heap.instance_set_field(enclosing, index, marker);
     #[cfg(debug_assertions)]
     {
         mutator.creations_in_progress += 1;
@@ -663,22 +668,26 @@ pub(super) fn begin_creation<'gc>(
 /// unwind: the class is no longer being created, and its slot is `Nil` again
 /// until `after_clause` caches the class there.
 ///
-/// It resets the marker only where the marker still is. A slot the program
-/// can reach never changes under it, but the decoder does not bound
-/// `InitializeSlot`'s field index, so an image's clause body can overwrite the
-/// slot; that value is left as the image wrote it, and is why this is not an
-/// assertion, which such an image would turn into a panic. And only while
-/// the slot is still the one the marker was written to: the clause can
-/// forward `enclosing` to an object whose field at that index is one of the
-/// program's own, which may hold `false` itself.
+/// It resets the marker only where it still is, and only if it is this
+/// creation's own serial. A slot the program can reach never changes under
+/// it, but the decoder does not bound `InitializeSlot`'s field index, so an
+/// image's clause body can overwrite the slot; that value is left as the
+/// image wrote it, and is why this is not an assertion, which such an image
+/// would turn into a panic. The clause can forward `enclosing`, so the slot
+/// is looked up again (`still_the_slot`): the replacement's field at that
+/// index may be one of the program's own, which may hold the same number
+/// itself. And what is there may be another creation's marker -- the
+/// replacement has a creation of its own underway at the same index, whose
+/// clause is still on the stack -- which is left for that creation to reset.
 pub(super) fn end_creation<'gc>(mutator: &mut Mutator<'gc>, creation: &NestedClassCreation<'gc>) {
     let still_the_slot = current_cache(mutator, creation.enclosing, &creation.nested)
         .is_some_and(|(index, _)| index == creation.index);
+    let own_serial = i64::try_from(creation.serial).ok();
     if still_the_slot
         && mutator
             .heap
             .instance_field(creation.enclosing, creation.index)
-            .is_some_and(is_creation_in_progress)
+            .is_some_and(|value| value.as_small_integer() == own_serial)
     {
         mutator
             .heap
@@ -726,8 +735,8 @@ fn not_a_mixin_error<'gc>(name: Symbol, index: usize, value: Value<'gc>) -> Sign
 /// This is a cycle in class *creation*, not general user recursion: the
 /// creation of one class object for one receiver happens exactly once, so a
 /// second entry for the same (receiver, declaration) is unconditionally a
-/// cycle. The cache slot detects it, holding `creation_in_progress()` while the
-/// first entry's clause runs.
+/// cycle. The cache slot detects it, holding the first entry's serial while its
+/// clause runs.
 fn cyclic_definition_error<'gc>(receiver: Value<'gc>, name: Symbol) -> Signal<'gc> {
     Signal::Error(NewspeakError::error(
         name,

@@ -381,6 +381,10 @@ pub struct Mutator<'gc> {
     /// which is never cached: slower, never wrong, and a collection is
     /// requested so that the ids of dead applications come back.
     pub(crate) dispatch_ids: crate::heap::DispatchIdAllocator,
+    /// The number the next nested-class creation takes as its marker
+    /// (`nested::begin_creation`), from 1. A `u64` counts creations beyond
+    /// any run, and `begin_creation` checks the `SmallInteger` range.
+    pub(crate) next_creation_serial: u64,
     /// The inline caches (`inline_cache.rs`): per heap, since a dispatch id
     /// means nothing in another heap.
     pub(crate) caches: inline_cache::InlineCaches,
@@ -1317,7 +1321,8 @@ impl<'gc> Mutator<'gc> {
                 let code = nested::superclass_clause_code(&creation.nested);
                 let feedback_base = self.caches.base_for(&code);
                 let temporaries = (code.register_count - code.argument_count) as usize;
-                let (enclosing, index) = (creation.enclosing, creation.index);
+                let (enclosing, index, serial) =
+                    (creation.enclosing, creation.index, creation.serial);
                 let activation = self.push(
                     ActivationHeader {
                         receiver: Value::object(enclosing),
@@ -1336,7 +1341,7 @@ impl<'gc> Mutator<'gc> {
                 // has succeeded, and unmarked by `resume` or `abandon` when
                 // the activation is popped. A push refused at the depth limit
                 // marks nothing.
-                nested::begin_creation(self, enclosing, index);
+                nested::begin_creation(self, enclosing, index, serial);
                 Ok(activation)
             }
             // Pushed as `Step::Method` pushes it, and only then given its

@@ -2375,6 +2375,20 @@ mod tests {
                 public probe = (^Inner)
               )
               public class HostChild = Host () ()
+              public class Twin = (
+                | public mirror ::= nil. public target ::= nil. public peer ::= nil. |
+              ) (
+                public class Inner = clause () ()
+                clause = (
+                  peer isNil ifFalse: [peer Inner].
+                  mirror isNil ifFalse: [
+                    mirror elementsOf: {self} forwardIdentityToElementsOf: {target} ifFail: [nil].
+                  ].
+                  ^Object
+                )
+                public probe = (^Inner)
+              )
+              public twin = (^Twin new)
               public wide = (^Wide new)
               public falsy = (^Falsy new)
               public aLazy = (^Lazy new)
@@ -2517,8 +2531,8 @@ mod tests {
 
     crate::for_each_lowering! {
         /// The same forward to an object whose field at the cache slot's
-        /// index holds `false`, the in-progress marker's value: the end of
-        /// the creation leaves that field as the program wrote it.
+        /// index holds `false`, a value that is no marker: the end of the
+        /// creation leaves that field as the program wrote it.
         fn a_forwarded_enclosing_object_keeps_a_false_field(lowering) {
             let (mut interpreter, fixture) = a_pushed_guard_fixture(lowering);
             let falsy = send(&mut interpreter, &fixture, "falsy");
@@ -2557,6 +2571,39 @@ mod tests {
             assert!(same(&mut interpreter, &created, &cached));
             let again = send(&mut interpreter, &child, "probe");
             assert!(same(&mut interpreter, &again, &cached));
+        }
+    }
+
+    crate::for_each_lowering! {
+        /// The first twin's `Inner` clause creates the second twin's `Inner`,
+        /// whose clause forwards the second twin to the first: the inner
+        /// creation now ends in the slot the outer one marked. It must leave
+        /// that marker alone, so the second twin's access, a cycle through
+        /// the first twin's creation, is still diagnosed rather than
+        /// answering a class.
+        fn a_cycle_after_a_forward_to_a_creation_underway_is_diagnosed(lowering) {
+            let (mut interpreter, fixture) = a_pushed_guard_fixture(lowering);
+            let mirror = the_vm_mirror(&mut interpreter);
+            let first = send(&mut interpreter, &fixture, "twin");
+            let second = send(&mut interpreter, &fixture, "twin");
+            expect_ok(
+                interpreter.send(&second, Symbol::intern("mirror:"), &[mirror]),
+                "mirror:",
+            );
+            expect_ok(
+                interpreter.send(&second, Symbol::intern("target:"), std::slice::from_ref(&first)),
+                "target:",
+            );
+            expect_ok(
+                interpreter.send(&first, Symbol::intern("peer:"), std::slice::from_ref(&second)),
+                "peer:",
+            );
+            let result = interpreter.send(&first, Symbol::intern("probe"), &[]);
+            assert_eq!(
+                error_text(result, "probe"),
+                "cyclic class definition: evaluating the superclass clause of class Inner \
+                 requires class Inner itself"
+            );
         }
     }
 

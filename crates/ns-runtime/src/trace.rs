@@ -159,6 +159,8 @@ impl Trace for NestedClassCreation<'_> {
             index: _,
             nested: _,
             declaring_class,
+            // A number: no handle.
+            serial: _,
         } = self;
         tracer.object(enclosing);
         tracer.object(declaring_class);

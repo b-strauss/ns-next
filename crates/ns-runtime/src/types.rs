@@ -504,6 +504,10 @@ pub struct NestedClassCreation<'gc> {
     pub(crate) nested: Rc<crate::mixin::Mixin>,
     /// The class object of the level that declares it.
     pub(crate) declaring_class: ClassReference<'gc>,
+    /// This creation's own number (`Mutator::next_creation_serial`), which
+    /// `begin_creation` writes into the slot as the in-progress marker: the
+    /// end of a creation resets only the marker that is its own.
+    pub(crate) serial: u64,
 }
 
 /// An instantiation in progress (`newspeak-spec.pdf` §6.2, and the six steps
