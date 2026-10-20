@@ -38,7 +38,9 @@ Rust 1.98.0, edition 2021, six crates:
   each object its words -- header word, class word, fields, in road step 3's
   layout (`heap/header.rs`, `heap/object.rs`; the seam's value types in
   `heap/records.rs`, the per-heap tables of mixins, applications and compiled
-  code in `heap/tables.rs`) -- named by handles that are 64-bit byte
+  code in `heap/tables.rs`, whose rows and ids a full collection reclaims
+  (`heap/reclaim.rs`, `interpreter/reclaim.rs`; `object-model.md`, "An
+  application has two ids")) -- named by handles that are 64-bit byte
   offsets; an activation stack reified on demand into frame objects; a
   Cheney scavenger with age-based tenuring (`heap/scavenge.rs`) beside a
   mark-and-slide collector, which compacts both generations into the old
