@@ -13,8 +13,14 @@ use crate::interpreter::FeedbackBase;
 use crate::mixin::{mixin_key, AppliedClause, DispatchId, Mixin, MixinApplication};
 
 /// What a full marking found named: one bit per row of each table.
-#[derive(Default)]
 pub(crate) struct GatheredIds {
+    /// The length of the application, mixin and code tables when marking
+    /// began. A word naming a row at or past it names nothing, since the
+    /// gathered rows are only compared with table rows; dropping it keeps a
+    /// crafted image's `u32::MAX` row from sizing a bit set at 512 MiB.
+    application_rows: usize,
+    mixin_rows: usize,
+    code_rows: usize,
     /// `class_field::APPLICATION` of every marked class object.
     pub(crate) applications: BitSet,
     /// The mixin id `class_field::APPLIED_CLAUSE` packs, of every marked
@@ -28,16 +34,34 @@ pub(crate) struct GatheredIds {
 }
 
 impl GatheredIds {
+    /// An empty gathering for tables of the given lengths.
+    pub(super) fn new(application_rows: usize, mixin_rows: usize, code_rows: usize) -> GatheredIds {
+        GatheredIds {
+            application_rows,
+            mixin_rows,
+            code_rows,
+            applications: BitSet::default(),
+            applied_clauses: BitSet::default(),
+            codes: BitSet::default(),
+            feedback_bases: BTreeSet::new(),
+        }
+    }
+
     /// A marked class object's application and applied-clause words, as
     /// stored. A word that is no `SmallInteger` names nothing: a crafted
     /// image's, which the readers of the field refuse the same way.
     pub(super) fn class_words(&mut self, application: u64, applied_clause: u64) {
-        if let Some(row) = small_integer(application).and_then(row_of) {
+        if let Some(row) = small_integer(application)
+            .and_then(row_of)
+            .filter(|row| (*row as usize) < self.application_rows)
+        {
             self.applications.insert(row);
         }
         if let Some((mixin, _, _)) = small_integer(applied_clause).and_then(AppliedClause::unpack) {
             if let Ok(row) = u32::try_from(mixin.index()) {
-                self.applied_clauses.insert(row);
+                if (row as usize) < self.mixin_rows {
+                    self.applied_clauses.insert(row);
+                }
             }
         }
     }
@@ -55,7 +79,10 @@ impl GatheredIds {
     /// A marked frame's code-id word, as stored: nil for a top-level
     /// frame's, which names no body.
     pub(super) fn frame_word(&mut self, code: u64) {
-        if let Some(row) = small_integer(code).and_then(row_of) {
+        if let Some(row) = small_integer(code)
+            .and_then(row_of)
+            .filter(|row| (*row as usize) < self.code_rows)
+        {
             self.codes.insert(row);
         }
     }
@@ -508,4 +535,34 @@ pub(crate) fn mixin_row_number(id: MixinId) -> u32 {
 
 fn mixin_id_of_row(row: usize) -> MixinId {
     MixinId::from_index(row).expect("a mixin row fits a u32")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn number(value: i64) -> u64 {
+        Value::small_integer(value).word().bits()
+    }
+
+    /// A row at or past its table names nothing: gathering it marks no row
+    /// and does not size the bit set, so a crafted image cannot make
+    /// marking allocate 512 MiB with a field of `u32::MAX`.
+    #[test]
+    fn a_row_past_its_table_is_not_gathered() {
+        let mut gathered = GatheredIds::new(4, 4, 4);
+        let huge = number(i64::from(u32::MAX));
+        gathered.class_words(huge, huge);
+        gathered.closure_words(huge, huge);
+        gathered.frame_word(huge);
+        gathered.class_words(number(4), number(4));
+        assert!(gathered.applications.words.is_empty());
+        assert!(gathered.applied_clauses.words.is_empty());
+        assert!(gathered.codes.words.is_empty());
+        gathered.class_words(number(3), huge);
+        gathered.frame_word(number(3));
+        assert!(gathered.applications.contains(3));
+        assert!(gathered.codes.contains(3));
+        assert_eq!(gathered.codes.words.len(), 1);
+    }
 }

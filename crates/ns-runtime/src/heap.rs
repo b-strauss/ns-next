@@ -3347,10 +3347,10 @@ impl<'gc> Heap<'gc> {
     /// in declaration order, and registers every one this heap does not
     /// name yet with its own subtree, declared in its parent's.
     /// Registration takes each child's children out of the tree, so no
-    /// registered mixin keeps an unregistered child. A child the heap
-    /// already names -- one an install paired with an earlier version,
-    /// one a copy of a registered mixin shares with it -- keeps its id and
-    /// the enclosing mixin it was registered with.
+    /// registered mixin keeps an unregistered child. The one child the heap
+    /// may already name is one an install paired with an earlier version,
+    /// registered under the id it keeps with this same `id` as its
+    /// enclosing mixin; a child registered under another parent is refused.
     fn register_nested(&mut self, id: MixinId, children: Vec<Rc<Mixin>>) {
         // Walked, not recursed: an image chooses how deep its declarations nest.
         let mut pending = vec![(id, children)];
@@ -6219,7 +6219,11 @@ impl<'gc> Heap<'gc> {
                 }
             }
         }
-        let mut marker = mark::Marker::new();
+        let mut marker = mark::Marker::new(reclaim::GatheredIds::new(
+            self.tables.applications.len(),
+            self.tables.mixins.len(),
+            self.tables.codes.len(),
+        ));
         if let Some(class) = &mut self.activation_class {
             marker.object(class);
         }

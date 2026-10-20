@@ -25,13 +25,15 @@ impl FreeIndices {
         assert!(inserted, "internal: index {index} freed twice");
     }
 
-    // Freed by the collection's reclamation of dead rows.
+    /// Whether `index` is free. Read by the tests that check the
+    /// collection's reclamation of dead rows.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn is_free(&self, index: u32) -> bool {
         self.free.contains(&index)
     }
 
-    // Freed by the collection's reclamation of dead rows.
+    /// How many indices are free. Read by the tests that check the
+    /// collection's reclamation of dead rows.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn len(&self) -> usize {
         self.free.len()

@@ -38,13 +38,13 @@ pub(crate) struct Marker {
 }
 
 impl Marker {
-    pub(crate) fn new() -> Marker {
+    pub(crate) fn new(gathered: GatheredIds) -> Marker {
         Marker {
             work: Vec::new(),
             weak_objects: Vec::new(),
             ephemerons: Vec::new(),
             reached: Vec::new(),
-            gathered: GatheredIds::default(),
+            gathered,
         }
     }
 

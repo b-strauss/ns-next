@@ -247,7 +247,7 @@ impl World {
         roots.trace(&mut marker);
         heap.drain_marking(&mut marker);
         heap.finish_marking(&mut marker);
-        std::mem::take(&mut marker.gathered)
+        marker.gathered
     }
 
     /// One scavenge (`Heap::scavenge`), with the step state's roots traced

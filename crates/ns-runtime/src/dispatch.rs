@@ -336,13 +336,6 @@ fn walk<'gc>(
     Lookup::NotFound
 }
 
-/// The answer a method-table entry found at `level_class`'s level gives: a
-/// compiled method with that level as its defining class, a slot accessor
-/// with its field resolved against that level's application -- the level
-/// whose mixin declares the slot, so `own_slot_base` places it (§6.3.2, as
-/// `InitializeSlot` places a slot's initial value) -- a primitive with
-/// that level, which an inline cache counts from, or the primary factory with
-/// that level, which the resolution checks is the receiver's own metaclass.
 /// The current version of the declaration named `selector` nested
 /// directly in `application`'s mixin, read through the mixin's id, so that
 /// an edit of the nested declaration is what the accessor reaches. An
@@ -363,6 +356,13 @@ fn nested_declaration(
         .find(|nested| nested.name == selector)
 }
 
+/// The answer a method-table entry found at `level_class`'s level gives: a
+/// compiled method with that level as its defining class, a slot accessor
+/// with its field resolved against that level's application -- the level
+/// whose mixin declares the slot, so `own_slot_base` places it (§6.3.2, as
+/// `InitializeSlot` places a slot's initial value) -- a primitive with
+/// that level, which an inline cache counts from, or the primary factory with
+/// that level, which the resolution checks is the receiver's own metaclass.
 fn found_entry<'gc>(
     entry: &MethodEntry,
     application: &MixinApplication,

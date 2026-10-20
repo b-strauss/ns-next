@@ -789,7 +789,11 @@ mod tests {
         /// A closure whose method an edit superseded keeps its family's
         /// range across a collection: another family run afterwards takes
         /// the smallest free range, and the closure's site, monomorphic on
-        /// `Array`s, still answers what it filled.
+        /// `Array`s, still answers what it filled. `drop_superseded`'s
+        /// running-body rule already keeps the root body here, so this
+        /// guards the superseded-but-running path;
+        /// `a_family_nothing_runs_gives_its_range_back` is what guards
+        /// `live_bases`.
         fn a_closure_keeps_its_feedback_range_across_a_collection(lowering) {
             let (mut interpreter, keeper) = load_with(lowering, KEEPER);
             let instance = expect_ok(interpreter.instantiate(&keeper, &[]), "a Keeper");
