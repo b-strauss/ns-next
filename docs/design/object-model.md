@@ -420,8 +420,8 @@ instead of a hash lookup.
 class exists for each declaration given in the declaration of C *and its
 superclasses*, so the hidden slots are part of the absolute layout an application
 computes, contributed at the level that declares them, exactly like ordinary
-inherited slots. They are derived from a mixin's `nested` list rather than
-declared, so nothing stores them separately. The hidden slot is keyed by the
+inherited slots. They are derived from a mixin's nested declarations
+(`Heap::nested_of`) rather than declared, so nothing stores them separately. The hidden slot is keyed by the
 declaration's mixin, not by its name: keying by name would make an override and
 the declaration it overrides share one slot.
 

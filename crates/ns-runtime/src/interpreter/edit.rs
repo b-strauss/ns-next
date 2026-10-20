@@ -305,7 +305,7 @@ impl<'gc> Mutator<'gc> {
                 .iter()
                 .all(|class_side| self.heap.known_mixin_id(class_side).is_none())
             && fresh
-                .nested
+                .declared_nested()
                 .iter()
                 .all(|nested| self.nothing_registers(nested))
     }
@@ -323,12 +323,12 @@ impl<'gc> Mutator<'gc> {
     }
 
     /// Pairs `fresh` with `old`, registered under `id`: the instance side,
-    /// then a declared class side, then each nested mixin with the old one
-    /// of its name, preorder. A fresh mixin that declares no class side
-    /// gets a synthesized one in `synthesized`, under the id of the class
-    /// side its old version had, so that every metaclass of the subtree
-    /// keeps its mixin's id. An old mixin with no id has no counterpart to
-    /// replace, nor does anything nested in it.
+    /// then a declared class side, then each nested mixin with the
+    /// current version of the one of its name the id declares
+    /// (`Heap::nested_of`), preorder. A fresh mixin that declares no class
+    /// side gets a synthesized one in `synthesized`, under the id of the
+    /// class side its old version had, so that every metaclass of the
+    /// subtree keeps its mixin's id.
     fn pair(
         &self,
         id: MixinId,
@@ -348,23 +348,19 @@ impl<'gc> Mutator<'gc> {
                 )),
             }
         }
-        for nested in &fresh.nested {
-            let counterpart = old
-                .nested
-                .iter()
-                .find(|old_nested| old_nested.name == nested.name);
-            let Some(counterpart) = counterpart else {
+        for nested in fresh.declared_nested().iter() {
+            let counterpart = self.heap.nested_of(id).iter().copied().find(|old_id| {
+                self.heap
+                    .mixin(*old_id)
+                    .is_some_and(|old_nested| old_nested.name == nested.name)
+            });
+            let Some(nested_id) = counterpart else {
                 continue;
             };
-            let Some(nested_id) = self.heap.known_mixin_id(counterpart) else {
-                continue;
-            };
-            // The id's current version, which an earlier install may have
-            // made another than the one the old tree holds.
             let current = self
                 .heap
                 .mixin(nested_id)
-                .unwrap_or_else(|| Rc::clone(counterpart));
+                .expect("internal: a nested id has a row");
             self.pair(nested_id, &current, nested, replacements, synthesized);
         }
     }
@@ -754,8 +750,8 @@ mod tests {
     fn root_and_inner_ids(interpreter: &mut Interpreter, class: &Root) -> (MixinId, MixinId) {
         interpreter.enter(|mutator| {
             let root = root_mixin(mutator, class);
-            let inner = root.nested[0].clone();
-            (mutator.heap.mixin_id(&root), mutator.heap.mixin_id(&inner))
+            let root_id = mutator.heap.mixin_id(&root);
+            (root_id, mutator.heap.nested_of(root_id)[0])
         })
     }
 
@@ -932,7 +928,10 @@ mod tests {
                     )
                 })
         };
-        let old_inner = interpreter.enter(|mutator| root_mixin(mutator, &outer).nested[0].clone());
+        let old_inner = interpreter.enter(|mutator| {
+            let root = root_mixin(mutator, &outer);
+            mutator.heap.nested_mixins(&root)[0].clone()
+        });
         assert!(!target_at_depth_one(&old_inner));
         let prepared = prepare(
             &mut interpreter,
@@ -941,14 +940,14 @@ mod tests {
         );
         let (id, fresh_outer) = &prepared.replacements[0];
         assert_eq!(*id, root_id);
-        assert!(target_at_depth_one(&fresh_outer.nested[0]));
+        assert!(target_at_depth_one(&fresh_outer.declared_nested()[0]));
         let fresh_inner = prepared
             .replacements
             .iter()
             .find(|(id, _)| *id == inner_id)
             .map(|(_, fresh)| fresh.clone())
             .expect("the registered Inner is replaced");
-        assert!(Rc::ptr_eq(&fresh_inner, &fresh_outer.nested[0]));
+        assert!(Rc::ptr_eq(&fresh_inner, &fresh_outer.declared_nested()[0]));
     }
 
     /// A class-side method added to a class that declares no class side
@@ -1048,7 +1047,7 @@ mod tests {
         assert!(entry
             .2
             .enclosing_mixin()
-            .is_some_and(|enclosing| Rc::ptr_eq(&enclosing, &fresh_outer.nested[0])));
+            .is_some_and(|enclosing| Rc::ptr_eq(&enclosing, &fresh_outer.declared_nested()[0])));
     }
 
     /// The next edit of a module starts from its current text, so an
@@ -1067,7 +1066,7 @@ mod tests {
         assert!(second.module_text.contains("public b = (^2)"));
         assert!(second.module_text.contains("public d = (^4)"));
         let (_, fresh_outer) = &second.replacements[0];
-        assert!(fresh_outer.nested[0]
+        assert!(fresh_outer.declared_nested()[0]
             .methods
             .contains_key(&Symbol::intern("b")));
     }
@@ -1172,7 +1171,7 @@ mod tests {
         let list_id = interpreter.enter(|mutator| {
             let collections = mutator.shipped_root_mixin("CollectionsFactory");
             let list = collections
-                .nested
+                .declared_nested()
                 .iter()
                 .find(|nested| nested.name.as_str() == "List")
                 .expect("CollectionsFactory declares List")

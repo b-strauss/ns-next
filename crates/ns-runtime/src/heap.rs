@@ -3301,42 +3301,122 @@ impl<'gc> Heap<'gc> {
 
     /// The id of `mixin`, any version of it, minted on first sight. A
     /// mixin's row names the row of the mixin it is declared in, so the
-    /// enclosing mixins not registered yet are registered first, outermost
-    /// first; walked, not recursed, because an image chooses how deep its
-    /// declarations nest.
+    /// outermost enclosing mixin not registered yet is registered, and with
+    /// it its whole declared tree, `mixin` included; walked, not recursed,
+    /// because an image chooses how deep its declarations nest.
     pub(crate) fn mixin_id(&mut self, mixin: &Rc<Mixin>) -> MixinId {
         if let Some(id) = self.known_mixin_id(mixin) {
             return id;
         }
         let mut unregistered = vec![mixin.clone()];
-        let mut enclosing = None;
         while let Some(parent) = unregistered
             .last()
             .and_then(|innermost| innermost.enclosing_mixin())
         {
-            if let Some(id) = self.known_mixin_id(&parent) {
-                enclosing = Some(id);
+            if self.known_mixin_id(&parent).is_some() {
                 break;
             }
             unregistered.push(parent);
         }
         for each in unregistered.into_iter().rev() {
-            enclosing = Some(self.register_mixin(&each, enclosing));
+            if self.known_mixin_id(&each).is_none() {
+                let enclosing = each
+                    .enclosing_mixin()
+                    .and_then(|parent| self.known_mixin_id(&parent));
+                self.register_mixin(&each, enclosing);
+            }
         }
-        enclosing.expect("internal: `mixin` itself was registered last")
+        self.known_mixin_id(mixin)
+            .expect("internal: registering its outermost unregistered ancestor registered it")
     }
 
     /// Mints the next id for `mixin`, declared in the mixin `enclosing`
-    /// names.
+    /// names, and one for every declaration nested in it, each declared in
+    /// its parent's (`register_nested`).
     fn register_mixin(&mut self, mixin: &Rc<Mixin>, enclosing: Option<MixinId>) -> MixinId {
+        let id = self.push_mixin_row(mixin, enclosing);
+        self.register_nested(id, mixin.take_declared_nested());
+        id
+    }
+
+    /// Gives the mixin `id` the ids of `children`, its nested declarations
+    /// in declaration order, and registers every one this heap does not
+    /// name yet with its own subtree, declared in its parent's.
+    /// Registration takes each child's children out of the tree, so no
+    /// registered mixin keeps an unregistered child. A child the heap
+    /// already names -- one an install paired with an earlier version,
+    /// one a copy of a registered mixin shares with it -- keeps its id and
+    /// the enclosing mixin it was registered with.
+    fn register_nested(&mut self, id: MixinId, children: Vec<Rc<Mixin>>) {
+        // Walked, not recursed: an image chooses how deep its declarations nest.
+        let mut pending = vec![(id, children)];
+        while let Some((parent, children)) = pending.pop() {
+            let mut ids = Vec::with_capacity(children.len());
+            for child in children {
+                let child_id = match self.known_mixin_id(&child) {
+                    Some(child_id) => child_id,
+                    None => {
+                        let child_id = self.push_mixin_row(&child, Some(parent));
+                        pending.push((child_id, child.take_declared_nested()));
+                        child_id
+                    }
+                };
+                ids.push(child_id);
+            }
+            self.tables.nested[parent.index()] = ids;
+        }
+    }
+
+    /// One row for `mixin`, declared in `enclosing`'s, with no nested ids
+    /// yet.
+    fn push_mixin_row(&mut self, mixin: &Rc<Mixin>, enclosing: Option<MixinId>) -> MixinId {
         let id = MixinId::from_index(self.tables.mixins.len())
             .expect("more than u32::MAX mixins in one heap");
-        self.tables.mixins.push(mixin.clone());
+        self.tables.mixins.push(Rc::clone(mixin));
         self.tables.enclosing.push(enclosing);
+        self.tables.nested.push(Vec::new());
         self.tables
             .mixin_ids
             .insert(crate::mixin::mixin_key(mixin), id);
         id
+    }
+
+    /// The ids of the declarations nested directly in the mixin `id`, in
+    /// declaration order, the same for every version of it: what every
+    /// reader of a registered mixin's nested declarations reads, through
+    /// `mixin` for each one's current version. Empty for an id past the
+    /// table.
+    pub fn nested_of(&self, id: MixinId) -> &[MixinId] {
+        self.tables
+            .nested
+            .get(id.index())
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// The current versions of the declarations nested directly in
+    /// `mixin`, in declaration order: through its id (`nested_of`) once
+    /// this heap registered it, whatever version `mixin` is, and its
+    /// declared tree (`Mixin::declared_nested`) while nothing has.
+    pub fn nested_mixins(&self, mixin: &Rc<Mixin>) -> Vec<Rc<Mixin>> {
+        match self.known_mixin_id(mixin) {
+            Some(id) => self
+                .nested_of(id)
+                .iter()
+                .map(|nested_id| {
+                    self.mixin(*nested_id)
+                        .expect("internal: a nested id has a row")
+                })
+                .collect(),
+            None => mixin.declared_nested().to_vec(),
+        }
+    }
+
+    /// Gives the mixin `id`'s current version its nested row: each child
+    /// the install replaced keeps the id it was paired with, and a child
+    /// with no counterpart is registered fresh, with its subtree, declared
+    /// in `id`.
+    pub(crate) fn adopt_nested(&mut self, id: MixinId, children: Vec<Rc<Mixin>>) {
+        self.register_nested(id, children);
     }
 
     /// Whether `candidate` is `mixin` or another version of the mixin `id`
@@ -3378,32 +3458,25 @@ impl<'gc> Heap<'gc> {
     }
 
     /// `mixin`'s text with every hole filled by the assembled text of the
-    /// current version of the nested declaration it stands for, found
-    /// through the nested mixin's id; a nested mixin nothing has
-    /// registered is its own current version. For a module's root, the
-    /// module's current text, every edit of a declaration in it included.
-    /// `None` where a declaration of the tree has no text. A class side
-    /// shares its instance side's text but declares no nested mixin, so
-    /// for one it answers that text only when the instance side has no
-    /// nested declaration, and `None` otherwise: a reader of a class
-    /// side's declaration asks for its instance side's (the mirrors'
-    /// `source` goes through `instance_side_id`).
+    /// current version of the nested declaration it stands for
+    /// (`nested_mixins`). For a module's root, the module's current text,
+    /// every edit of a declaration in it included. `None` where a
+    /// declaration of the tree has no text. A class side shares its
+    /// instance side's text but declares no nested mixin, so for one it
+    /// answers that text only when the instance side has no nested
+    /// declaration, and `None` otherwise: a reader of a class side's
+    /// declaration asks for its instance side's (the mirrors' `source` goes
+    /// through `instance_side_id`).
     ///
     /// Recursive along the declarations' nesting, which the parser bounds
     /// for a module read from source and `image::mixins::MAX_MIXIN_DEPTH`
     /// for one decoded from an image.
     pub(crate) fn assembled_text(&self, mixin: &Rc<Mixin>) -> Option<String> {
         let text = mixin.text.as_ref()?;
-        let nested = mixin
-            .nested
+        let nested = self
+            .nested_mixins(mixin)
             .iter()
-            .map(|nested| {
-                let current = self
-                    .known_mixin_id(nested)
-                    .and_then(|id| self.mixin(id))
-                    .unwrap_or_else(|| Rc::clone(nested));
-                self.assembled_text(&current)
-            })
+            .map(|nested| self.assembled_text(nested))
             .collect::<Option<Vec<String>>>()?;
         text.assemble(&nested)
     }
@@ -3444,7 +3517,13 @@ impl<'gc> Heap<'gc> {
     /// version, which is the binary's code and which the VM mirror's locks
     /// rest on; and a class side replacing an instance side or the other
     /// way round.
-    pub(crate) fn replace_mixin(&mut self, id: MixinId, replacement: Rc<Mixin>) {
+    ///
+    /// Answers the replacement's declared nested declarations, in order,
+    /// taken out of it: the id's nested row is the earlier version's until
+    /// `adopt_nested` gives it the replacement's, once every replacement of
+    /// an install is in place, so that a child paired with an old one
+    /// keeps its id.
+    pub(crate) fn replace_mixin(&mut self, id: MixinId, replacement: Rc<Mixin>) -> Vec<Rc<Mixin>> {
         assert!(
             self.known_mixin_id(&replacement).is_none(),
             "internal: a replacement mixin is registered under no id yet"
@@ -3468,8 +3547,10 @@ impl<'gc> Heap<'gc> {
         self.tables
             .mixin_ids
             .insert(crate::mixin::mixin_key(&replacement), id);
+        let children = replacement.take_declared_nested();
         let superseded = std::mem::replace(&mut self.tables.mixins[id.index()], replacement);
         self.tables.superseded.push(superseded);
+        children
     }
 
     /// Enters `application` into the table, stamped with its index, and

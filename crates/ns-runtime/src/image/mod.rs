@@ -407,7 +407,9 @@ pub struct LoadedModule {
     /// it or snapshot it again.
     pub class: Root,
     /// The module's root declaration, which carries its code: what a host
-    /// after the code alone reads, with no heap to reach it through.
+    /// after the code alone reads. The image's heap registered it, so its
+    /// nested declarations are read through that heap
+    /// (`Heap::nested_mixins`), while `LoadedImage::interpreter` lives.
     pub declaration: std::rc::Rc<crate::mixin::Mixin>,
     /// Where the module came from. Provenance, not program text -- it is
     /// in every artifact, source or not.

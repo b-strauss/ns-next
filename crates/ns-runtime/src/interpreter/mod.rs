@@ -1937,8 +1937,8 @@ impl<'gc> Mutator<'gc> {
                 superclass_application.nested_slot.clone()
             });
         let mut next = inherited + mixin.slots.len();
-        for nested in &mixin.nested {
-            nested_slot.insert(self.heap.mixin_id(nested), next);
+        for nested_id in self.heap.nested_of(id) {
+            nested_slot.insert(*nested_id, next);
             next += 1;
         }
         // §3.1.1's two questions about a value class, asked once here rather
@@ -2062,15 +2062,18 @@ impl<'gc> Mutator<'gc> {
     /// synthesized class side built from the previous one, so that the
     /// next application of the id applies the replacement. Applications already built, and the class objects
     /// naming them, keep the version they were built from; the install
-    /// (`install_edit`) re-applies those.
+    /// (`install_edit`) re-applies those. Answers the replacement's
+    /// declared nested declarations, which `Heap::adopt_nested` gives the
+    /// id's row; until then the row names the previous version's.
     pub(crate) fn replace_mixin(
         &mut self,
         id: crate::heap::MixinId,
         replacement: Rc<crate::mixin::Mixin>,
-    ) {
-        self.heap.replace_mixin(id, replacement);
+    ) -> Vec<Rc<crate::mixin::Mixin>> {
+        let children = self.heap.replace_mixin(id, replacement);
         self.applications.retain(|(mixin, _), _| *mixin != id);
         self.metaclass_mixins.remove(&id);
+        children
     }
 }
 
@@ -2342,7 +2345,10 @@ mod tests {
         )
         .expect("resolve");
         let class = interpreter.load_module(&resolved);
-        let inner = interpreter.enter(|mutator| root_mixin(mutator, &class).nested[0].clone());
+        let inner = interpreter.enter(|mutator| {
+            let root = root_mixin(mutator, &class);
+            mutator.heap().nested_mixins(&root)[0].clone()
+        });
         Rc::new((*inner).clone())
     }
 
@@ -2368,7 +2374,8 @@ mod tests {
         replacement: Rc<crate::mixin::Mixin>,
     ) -> crate::heap::MixinId {
         interpreter.enter(|mutator| {
-            let original = root_mixin(mutator, outer).nested[0].clone();
+            let root = root_mixin(mutator, outer);
+            let original = mutator.heap().nested_mixins(&root)[0].clone();
             let id = mutator
                 .heap()
                 .known_mixin_id(&original)
@@ -2403,7 +2410,7 @@ mod tests {
         let replacement = replacement_inner(&mut interpreter);
         interpreter.enter(|mutator| {
             let outer_mixin = root_mixin(mutator, &outer);
-            let original = outer_mixin.nested[0].clone();
+            let original = mutator.heap().nested_mixins(&outer_mixin)[0].clone();
             let id = mutator
                 .heap()
                 .known_mixin_id(&original)

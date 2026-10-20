@@ -114,14 +114,15 @@ fn current(heap: &Heap<'_>, mixin: &Rc<Mixin>) -> Rc<Mixin> {
         .unwrap_or_else(|| Rc::clone(mixin))
 }
 
-/// `mixin::preorder` over the current versions: a version's `nested` and
-/// `class_side` still hold the versions it was built with, which an edit
-/// may since have replaced under their ids.
+/// `mixin::preorder` over the current versions: a version's `class_side`
+/// still holds the version it was built with, which an edit may since
+/// have replaced under its id, and a registered version's nested
+/// declarations are the heap's (`Heap::nested_mixins`).
 fn current_preorder(heap: &Heap<'_>, mixin: &Rc<Mixin>, out: &mut Vec<Rc<Mixin>>) {
     let mixin = current(heap, mixin);
     out.push(Rc::clone(&mixin));
-    for nested in &mixin.nested {
-        current_preorder(heap, nested, out);
+    for nested in heap.nested_mixins(&mixin) {
+        current_preorder(heap, &nested, out);
     }
     if let Some(class_side) = &mixin.class_side {
         current_preorder(heap, class_side, out);
@@ -162,7 +163,7 @@ pub fn plan(heap: &Heap<'_>, module_roots: &[Rc<Mixin>]) -> Result<Vec<Row>, Str
         rows.push(Row {
             mixin: mixin.clone(),
             id: heap.known_mixin_id(mixin),
-            nested: mixin.nested.iter().map(row_of).collect(),
+            nested: heap.nested_mixins(mixin).iter().map(row_of).collect(),
             class_side: mixin.class_side.as_ref().map(row_of),
             methods,
         });
@@ -1073,7 +1074,7 @@ pub fn build(
                 .collect(),
             has_initializer_expressions: row.has_initializer_expressions,
             initializer_expressions: Vec::new(),
-            nested,
+            nested_declarations: crate::mixin::NestedDeclarations::new(nested),
             class_side,
             span: row.span,
             declaration: None,

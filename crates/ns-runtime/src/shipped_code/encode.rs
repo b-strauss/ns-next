@@ -102,7 +102,8 @@ fn write_mixin(out: &mut Out, mixin: &Mixin) {
         has_initializer_expressions,
         // Read only by the compiler, which has run.
         initializer_expressions: _,
-        nested,
+        // A tree no heap registered: read through `declared_nested`.
+        nested_declarations: _,
         class_side,
         span,
         // Read only by the compiler and the source path's checks.
@@ -173,8 +174,9 @@ fn write_mixin(out: &mut Out, mixin: &Mixin) {
         out.option(message_code.as_ref(), |out, code| out.code(code));
     }
     out.boolean(*has_initializer_expressions);
+    let nested = mixin.declared_nested();
     out.length(nested.len());
-    for nested in nested {
+    for nested in nested.iter() {
         write_mixin(out, nested);
     }
     out.option(class_side.as_ref(), |out, class_side| {

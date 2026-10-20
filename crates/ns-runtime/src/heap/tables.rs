@@ -7,8 +7,9 @@
 //! "Next").
 //!
 //! A mixin's id is its identity: every version of it answers the id it was
-//! first registered under, and the row holds the current version and the
-//! id of the mixin it is declared in, so that an edit
+//! first registered under, and the row holds the current version, the id
+//! of the mixin it is declared in and the ids of those declared in it, so
+//! that an edit
 //! installs a fresh mixin under the old id and everything that names the
 //! mixin by id sees the edited one
 //! (`docs/design/liveness-and-reflection.md`, "An edit replaces the mixin
@@ -80,6 +81,12 @@ pub(crate) struct Tables {
     /// (`Mixin::enclosing`), read once, when the mixin is registered, and
     /// kept by a replacement.
     pub(crate) enclosing: Vec<Option<MixinId>>,
+    /// Per id, the ids of the declarations nested directly in the mixin,
+    /// in declaration order, the same for every version of it
+    /// (`Heap::nested_of`): registration takes them out of the declared
+    /// tree (`Mixin::take_declared_nested`), so a mixin holds no other
+    /// mixin's `Rc` once a heap names it.
+    pub(crate) nested: Vec<Vec<MixinId>>,
     pub(crate) applications: Vec<Rc<MixinApplication>>,
     /// Per application an install replaced, the application of the edited
     /// mixin that took its place, always the newest of its chain

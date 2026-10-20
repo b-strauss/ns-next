@@ -1040,8 +1040,13 @@ where a mirror needs one as its reflectee.
 (`MixinApplication::nested_slot`, keyed by `MixinId`), the shipped world's
 two maps (`ShippedWorld::index_by_mixin`, `declared_by_mixin`), the
 application cache, a mixin's enclosing link, which the reflection leaves
-read through the id, a module's current text, assembled through the ids
-of its nested declarations (`Heap::assembled_text`), the image encoder's
+read through the id, a mixin's nested declarations, which registration
+takes out of the declared tree into the id's row (`Heap::nested_of`), so
+that every reader -- the lookup of a nested-class accessor, the
+reflection leaves, the install, the kernel phase, the shipped world, the
+image encoder -- reaches each one's current version through its id, a
+module's current text, assembled through those ids
+(`Heap::assembled_text`), the image encoder's
 rows and every record naming a mixin (`image/mixins.rs`'s `plan` and
 `MixinIds`), the names an install migrates a field
 by (`FieldName`), and `builtins/activation.rs`'s `inherits_mixin_of` and
@@ -1053,10 +1058,12 @@ letting the next application mint a fresh one. Still on a mixin's address
 or its builder's link: `reflection.rs`'s `instance_side`,
 `Mixin::reflected_name` and `is_shipped`, which follow the builder's
 `Weak` link and stay so -- what they answer, a name, an access and the
-shipped flag, no replacement changes; and, road step 5b2c's, a mixin's
-nested declarations, still `Vec<Rc<Mixin>>` (`Mixin::nested`), which the
-image encoder and a module's assembly follow to each nested declaration's
-current version through its id. The application cache, today strong
+shipped flag, no replacement changes. Until a heap registers a mixin, its
+nested declarations are the tree its builder declared
+(`Mixin::declared_nested`), which the compiler, the shipped-code decoder,
+the image's mixin builder and an edit's pairing read; registering a mixin
+registers its whole declared tree, and a mixin is registered in at most
+one heap. The application cache, today strong
 and growing with every re-application, gets the reuse rules of the ids
 and becomes weak with road step 5b2c
 (decided with the user on 2026-10-03; [object-model.md](object-model.md),

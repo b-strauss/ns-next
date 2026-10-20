@@ -357,10 +357,11 @@ fn check_names(
         } else if name.kind == ShippedKind::ModuleInstance {
             None
         } else {
-            root.nested
-                .iter()
+            mutator
+                .heap()
+                .nested_mixins(&root)
+                .into_iter()
                 .find(|nested| nested.name == name.declaration)
-                .cloned()
         };
         let Some(declared) = declared else {
             return Err(unknown());
@@ -424,12 +425,10 @@ fn unbuilt_class(mutator: &mut Mutator<'_>, name: &ShippedName) -> Option<(Root,
     let root = heap
         .class_application(heap.object_class(instance))
         .expect("internal: a shipped module's root class is a class object");
-    let nested = root
-        .mixin
-        .nested
-        .iter()
+    let nested = heap
+        .nested_mixins(&root.mixin)
+        .into_iter()
         .find(|nested| nested.name == name.declaration)
-        .cloned()
         .unwrap_or_else(|| panic!("internal: {} was checked to be declared", name.describe()));
     Some((mutator.stash(Value::object(instance)), nested))
 }

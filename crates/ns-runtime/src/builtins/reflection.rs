@@ -98,8 +98,8 @@ pub(crate) fn execute<'gc>(
             Some(mixin_methods(mutator, &mixin))
         }
         ReflectionPrimitive::MixinNested => {
-            let mixin = reified(mutator, receiver)?;
-            Some(mixin_nested(mutator, &mixin))
+            let id = reified_id(mutator, receiver)?;
+            Some(mixin_nested(mutator, id))
         }
         ReflectionPrimitive::MixinAccess => {
             let mixin = reified(mutator, receiver)?;
@@ -490,18 +490,20 @@ fn mixin_methods<'gc>(mutator: &mut Mutator<'gc>, mixin: &Mixin) -> Value<'gc> {
     Value::object(mutator.new_array(elements))
 }
 
-/// `nestedClasses` of a mixin: its nested mixins, reified, in declaration
-/// order; none for a class side, which declares no class.
-fn mixin_nested<'gc>(mutator: &mut Mutator<'gc>, mixin: &Mixin) -> Value<'gc> {
-    let nested: Vec<Value<'gc>> = if mixin.is_class_side() {
-        Vec::new()
-    } else {
-        mixin
-            .nested
-            .iter()
-            .map(|nested| Value::object(mutator.reified_mixin(nested)))
-            .collect()
-    };
+/// `nestedClasses` of the mixin `id`: the current versions of its nested
+/// mixins, reified, in declaration order; none for a class side, which
+/// declares no class.
+fn mixin_nested<'gc>(mutator: &mut Mutator<'gc>, id: MixinId) -> Value<'gc> {
+    let nested: Vec<Rc<Mixin>> = mutator
+        .heap
+        .nested_of(id)
+        .iter()
+        .filter_map(|nested_id| mutator.heap.mixin(*nested_id))
+        .collect();
+    let nested: Vec<Value<'gc>> = nested
+        .iter()
+        .map(|nested| Value::object(mutator.reified_mixin(nested)))
+        .collect();
     Value::object(mutator.new_array(nested))
 }
 

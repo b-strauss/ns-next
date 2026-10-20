@@ -348,14 +348,18 @@ mod tests {
         let old_class = send(&mut interpreter, &first, "inner");
         interpreter.enter(|mutator| {
             let class = mutator.fetch(&outer).as_object().expect("a class");
-            let inner = mutator
+            let outer_mixin = mutator
                 .heap()
                 .class_application(class)
                 .expect("a class object")
                 .mixin
-                .nested[0]
                 .clone();
-            let id = mutator.heap().known_mixin_id(&inner).expect("registered");
+            let outer_id = mutator
+                .heap()
+                .known_mixin_id(&outer_mixin)
+                .expect("registered");
+            let id = mutator.heap().nested_of(outer_id)[0];
+            let inner = mutator.heap().mixin(id).expect("a row");
             mutator.replace_mixin(id, Rc::new((*inner).clone()));
         });
         let second = interpreter.instantiate(&outer, &[]).ok().expect("an Outer");

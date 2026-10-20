@@ -22,7 +22,7 @@
 //! superclass-clause bodies) and on its methods (`MixinMethod::code`), for a
 //! built mixin and a decoded one alike.
 
-use std::cell::OnceCell;
+use std::cell::{Cell, OnceCell, Ref, RefCell};
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
@@ -629,9 +629,11 @@ pub struct Mixin {
     /// The `initExpr` statements themselves -- lowered by the compiler into the
     /// instance initializer. Empty for a decoded mixin.
     pub initializer_expressions: Vec<ast::Statement>,
-    /// The nested class declarations, in declaration order. Each one gets an
-    /// implicit accessor and a hidden cache slot.
-    pub nested: Vec<Rc<Mixin>>,
+    /// The nested class declarations, in declaration order, as they were
+    /// built: each one gets an implicit accessor and a hidden cache slot.
+    /// Read through `declared_nested` until a heap registers the mixin,
+    /// which takes them (`Heap::nested_of` names them by id from then on).
+    pub nested_declarations: NestedDeclarations,
     pub class_side: Option<Rc<Mixin>>,
     /// Provenance for reflection and the image.
     pub span: Span,
@@ -680,8 +682,9 @@ pub struct Mixin {
     /// The mixin this one is declared in, for the mirrors' `enclosingMixin`
     /// and a class side's `instanceMixin`: a nested declaration's names the
     /// declaration it is nested in, a class side's -- declared or
-    /// synthesized -- its instance side's. A mixin holds its nested mixins,
-    /// not the one it is nested in, so this is the upward link, `Weak` so
+    /// synthesized -- its instance side's. A mixin holds its declared
+    /// nested mixins until a heap registers it, not the one it is nested
+    /// in, so this is the upward link, `Weak` so
     /// that a tree is no cycle, and set once, after the enclosing mixin's
     /// `Rc` exists (`set_enclosing_of_children`). Empty for a module's root
     /// and a builtin's mixin. What a builder records: the heap copies it,
@@ -701,6 +704,37 @@ pub struct Mixin {
     /// its own, so that no
     /// version keeps another's text alive.
     pub text: Option<Rc<DeclarationText>>,
+}
+
+/// A mixin's nested declarations until a heap registers it
+/// (`Mixin::nested_declarations`). Its parts are private so that every
+/// reader goes through `Mixin::declared_nested`, which a debug build
+/// refuses once the list was taken.
+#[derive(Debug, Default)]
+pub struct NestedDeclarations {
+    /// The declarations, in declaration order; empty once taken.
+    list: RefCell<Vec<Rc<Mixin>>>,
+    /// Whether a heap took `list`.
+    adopted: Cell<bool>,
+}
+
+impl NestedDeclarations {
+    /// Declarations no heap has taken.
+    pub fn new(nested: Vec<Rc<Mixin>>) -> NestedDeclarations {
+        NestedDeclarations {
+            list: RefCell::new(nested),
+            adopted: Cell::new(false),
+        }
+    }
+}
+
+/// A copy of a mixin is a fresh mixin no heap has registered: it holds
+/// the same declarations as long as its original still did, and none once
+/// a heap took them -- the heap's row keeps naming them by id.
+impl Clone for NestedDeclarations {
+    fn clone(&self) -> NestedDeclarations {
+        NestedDeclarations::new(self.list.borrow().clone())
+    }
 }
 
 /// The text of one declaration as it was read: from its start to its end
@@ -1002,7 +1036,7 @@ impl Mixin {
             mixin_applications: Vec::new(),
             has_initializer_expressions: false,
             initializer_expressions: Vec::new(),
-            nested: Vec::new(),
+            nested_declarations: NestedDeclarations::default(),
             class_side: None,
             span: Span::new(0, 0),
             declaration: None,
@@ -1050,10 +1084,53 @@ impl Mixin {
     /// image's rows are one (`check_preorder`), so no child has two
     /// parents to choose between.
     pub fn set_enclosing_of_children(parent: &Rc<Mixin>) {
-        for child in parent.nested.iter().chain(parent.class_side.iter()) {
+        for child in parent
+            .declared_nested()
+            .iter()
+            .chain(parent.class_side.iter())
+        {
             // `Err` is a cell already set, which keeps its link.
             let _ = child.enclosing.set(Rc::downgrade(parent));
         }
+    }
+
+    /// `self` with `nested` as its nested declarations, in declaration
+    /// order: what a builder sets before the mixin's `Rc` exists.
+    pub fn with_declared_nested(mut self, nested: Vec<Rc<Mixin>>) -> Mixin {
+        self.nested_declarations = NestedDeclarations::new(nested);
+        self
+    }
+
+    /// The nested declarations as they were built, before any heap
+    /// registered the mixin: what the compiler, the shipped-code decoder,
+    /// the image's mixin builder and an edit's pairing read. Empty once a
+    /// heap has registered the mixin, which took them (`Heap::nested_of`
+    /// answers them by id from then on); a debug build refuses that read,
+    /// since an empty answer there is a reader that should have asked the
+    /// heap.
+    pub fn declared_nested(&self) -> Ref<'_, [Rc<Mixin>]> {
+        debug_assert!(
+            !self.is_adopted(),
+            "internal: read nested_of for a registered mixin"
+        );
+        Ref::map(self.nested_declarations.list.borrow(), Vec::as_slice)
+    }
+
+    /// Whether a heap has taken this mixin's nested declarations.
+    pub fn is_adopted(&self) -> bool {
+        self.nested_declarations.adopted.get()
+    }
+
+    /// Hands the declared list to the heap registering the mixin and marks
+    /// it adopted: from here on the heap's ids are the only names of its
+    /// nested declarations, so freeing a row can drop one.
+    pub(crate) fn take_declared_nested(&self) -> Vec<Rc<Mixin>> {
+        debug_assert!(
+            !self.is_adopted(),
+            "internal: a mixin is registered in at most one heap"
+        );
+        self.nested_declarations.adopted.set(true);
+        std::mem::take(&mut *self.nested_declarations.list.borrow_mut())
     }
 
     /// The compiled method `selector` names, if the table holds one under it.
@@ -1401,8 +1478,8 @@ impl MixinApplication {
 /// in the heap's object space, with nothing to unwind on drop -- which
 /// makes this the only hand-written iterative `Drop` in the crate. It is
 /// not the only
-/// recursive graph: `Mixin`'s `nested` and `class_side` links are also
-/// `Rc` and also drop recursively, but their depth is bounded by the
+/// recursive graph: `Mixin`'s declared nested and `class_side` links are
+/// also `Rc` and also drop recursively, but their depth is bounded by the
 /// parser and `image::mixins::read` refuses anything deeper, so a ceiling
 /// covers them (`image/mixins.rs`, `MAX_MIXIN_DEPTH`).
 ///
@@ -1427,12 +1504,12 @@ pub fn mixin_key(mixin: &Rc<Mixin>) -> usize {
 }
 
 /// `mixin`, then every nested declaration (recursively), then its class
-/// side (recursively) -- the traversal order `image::encode`/`decode` both
-/// walk the mixin tree in, so an image's code table and its mixin table
-/// always enumerate the same mixins in the same order. Sharing one
-/// definition is what keeps the two from drifting apart: the image's mixin
-/// table assigns row ids in exactly this order, so a decoded row and the
-/// mixin it describes are found at the same position under either walk.
+/// side (recursively) -- the order the image's mixin table assigns row ids
+/// in (`image::mixins::plan` walks a registered tree so, through the
+/// heap), so a decoded row and the mixin it describes are found at the
+/// same position under either walk. This walk reads the declared tree
+/// (`Mixin::declared_nested`), so it takes one no heap registered: a tree
+/// just built, compiled or decoded.
 ///
 /// Recursive, and deliberately so: the trees it walks are either built from
 /// a parsed module (whose nesting depth the parser already bounds) or
@@ -1440,7 +1517,7 @@ pub fn mixin_key(mixin: &Rc<Mixin>) -> usize {
 /// its own ceiling. An unbounded tree can never reach this function.
 pub fn preorder(mixin: &Rc<Mixin>, out: &mut Vec<Rc<Mixin>>) {
     out.push(mixin.clone());
-    for nested in &mixin.nested {
+    for nested in mixin.declared_nested().iter() {
         preorder(nested, out);
     }
     if let Some(class_side) = &mixin.class_side {

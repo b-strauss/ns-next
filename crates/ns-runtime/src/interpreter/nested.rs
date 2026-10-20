@@ -349,12 +349,12 @@ fn name_a_shipped_class<'gc>(
     else {
         return;
     };
-    if root
-        .mixin
-        .nested
-        .iter()
-        .any(|declared| Rc::ptr_eq(declared, nested))
-    {
+    let declared_in_root = mutator
+        .heap
+        .known_mixin_id(&root.mixin)
+        .zip(mutator.heap.known_mixin_id(nested))
+        .is_some_and(|(root_id, nested_id)| mutator.heap.nested_of(root_id).contains(&nested_id));
+    if declared_in_root {
         mutator.record_shipped_class(module, nested, class);
     }
 }
@@ -573,11 +573,12 @@ fn current_declaring_class<'gc>(
             .heap
             .class_application(class)
             .is_some_and(|application| {
-                application
-                    .mixin
-                    .nested
-                    .iter()
-                    .any(|declared| mutator.heap.known_mixin_id(declared) == Some(id))
+                mutator
+                    .heap
+                    .known_mixin_id(&application.mixin)
+                    .is_some_and(|application_id| {
+                        mutator.heap.nested_of(application_id).contains(&id)
+                    })
             });
         if declares {
             return Some(class);

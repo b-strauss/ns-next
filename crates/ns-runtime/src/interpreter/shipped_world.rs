@@ -224,17 +224,21 @@ impl<'gc> ShippedWorld<'gc> {
     pub(crate) fn declared_by_mixin(&self, heap: &Heap<'gc>) -> HashMap<MixinId, ShippedName> {
         let mut declared = HashMap::new();
         for (module, instance) in &self.module_instances {
-            for nested in &root_application(heap, *instance).mixin.nested {
+            let root = &root_application(heap, *instance).mixin;
+            let Some(root_id) = heap.known_mixin_id(root) else {
+                continue;
+            };
+            for id in heap.nested_of(root_id) {
+                let Some(nested) = heap.mixin(*id) else {
+                    continue;
+                };
                 let name = ShippedName {
                     module: *module,
                     declaration: nested.name,
                     kind: ShippedKind::Class,
                 };
-                // A mixin nothing registered has no id, and so no reified
-                // object an image could name it through.
-                let id = heap.known_mixin_id(nested);
-                if let Some(id) = id.filter(|_| self.index_of_name(&name).is_none()) {
-                    declared.insert(id, name);
+                if self.index_of_name(&name).is_none() {
+                    declared.insert(*id, name);
                 }
             }
         }
@@ -318,7 +322,7 @@ impl crate::interpreter::Interpreter {
     /// them answers the class it cached. Only the binary's own code runs,
     /// so the world is a function of the binary.
     pub(crate) fn complete_shipped_world(&mut self) {
-        let modules: Vec<(Symbol, Root, Rc<Mixin>)> = self.enter(|mutator| {
+        let modules: Vec<(Symbol, Root, Vec<Rc<Mixin>>)> = self.enter(|mutator| {
             mutator
                 .shipped_world
                 .module_instances()
@@ -326,12 +330,13 @@ impl crate::interpreter::Interpreter {
                 .map(|(module, instance)| {
                     let heap = mutator.heap();
                     let mixin = root_application(heap, *instance).mixin.clone();
-                    (*module, mutator.stash(Value::object(*instance)), mixin)
+                    let nested = heap.nested_mixins(&mixin);
+                    (*module, mutator.stash(Value::object(*instance)), nested)
                 })
                 .collect()
         });
-        for (module, instance, mixin) in &modules {
-            for nested in &mixin.nested {
+        for (module, instance, nested_mixins) in &modules {
+            for nested in nested_mixins {
                 super::core_library::booted(
                     self.build_nested_class(instance, nested),
                     &format!("building {} {}", module.as_str(), nested.name.as_str()),
@@ -380,7 +385,7 @@ impl<'gc> Mutator<'gc> {
     pub(crate) fn record_shipped_module(&mut self, module: Symbol, instance: ObjectReference<'gc>) {
         self.shipped_world.add_module_instance(module, instance);
         let heap = self.heap();
-        let accessed = accessed_classes(&root_application(heap, instance).mixin);
+        let accessed = accessed_classes(heap, &root_application(heap, instance).mixin);
         let mut entries = vec![ShippedEntry {
             name: ShippedName {
                 module,
@@ -425,16 +430,16 @@ impl<'gc> Mutator<'gc> {
         instance: ObjectReference<'gc>,
     ) {
         let application = root_application(self.heap(), instance);
-        for nested in &application.mixin.nested {
+        for nested in self.heap().nested_mixins(&application.mixin) {
             let built = self
                 .heap()
-                .known_mixin_id(nested)
+                .known_mixin_id(&nested)
                 .and_then(|id| application.nested_slot.get(&id))
                 .and_then(|index| self.heap().instance_field(instance, *index))
                 .and_then(Value::as_object)
                 .filter(|class| self.heap().is_class(*class));
             if let Some(class) = built {
-                self.record_shipped_class(module, nested, class);
+                self.record_shipped_class(module, &nested, class);
             }
         }
     }
@@ -641,9 +646,9 @@ fn own_levels<'gc>(heap: &Heap<'gc>, class: ClassReference<'gc>) -> Vec<ClassRef
 /// declares, instance or class side, is a recognized class accessor of
 /// (`MixinMethod::class_accessor`): a private class such a method answers
 /// may be a value, since any holder of that method's receiver reaches it.
-fn accessed_classes(root: &Rc<Mixin>) -> HashSet<Symbol> {
+fn accessed_classes(heap: &Heap<'_>, root: &Rc<Mixin>) -> HashSet<Symbol> {
     let mut accessed = HashSet::new();
-    let mut pending: Vec<&Rc<Mixin>> = vec![root];
+    let mut pending: Vec<Rc<Mixin>> = vec![Rc::clone(root)];
     while let Some(mixin) = pending.pop() {
         for entry in mixin.methods.values() {
             if let MethodEntry::Compiled(method) = entry {
@@ -654,8 +659,8 @@ fn accessed_classes(root: &Rc<Mixin>) -> HashSet<Symbol> {
                 }
             }
         }
-        pending.extend(mixin.nested.iter());
-        pending.extend(mixin.class_side.iter());
+        pending.extend(heap.nested_mixins(&mixin));
+        pending.extend(mixin.class_side.iter().cloned());
     }
     accessed
 }
@@ -921,9 +926,9 @@ mod tests {
                 }
             }
             let platform = root_mixin("PlatformFactory");
-            let kernel_namespace = platform
-                .nested
-                .iter()
+            let kernel_namespace = heap
+                .nested_mixins(&platform)
+                .into_iter()
                 .find(|nested| nested.name.as_str() == "KernelNamespace")
                 .expect("PlatformFactory declares KernelNamespace");
             for entry in kernel_namespace.methods.values() {
@@ -933,8 +938,8 @@ mod tests {
                     }
                 }
             }
-            let mut for_shipped_modules: Vec<String> = root_mixin("Kernel")
-                .nested
+            let mut for_shipped_modules: Vec<String> = heap
+                .nested_mixins(&root_mixin("Kernel"))
                 .iter()
                 .filter(|nested| nested.access == AccessModifier::Public)
                 .map(|nested| nested.name.as_str().to_string())
@@ -1094,8 +1099,8 @@ mod tests {
                 .expect("the root has an application")
                 .mixin
                 .clone();
-            let middle = &root.nested[0];
-            let inner = &middle.nested[0];
+            let middle = mutator.heap().nested_mixins(&root)[0].clone();
+            let inner = mutator.heap().nested_mixins(&middle)[0].clone();
             inner
                 .compiled_method(Symbol::intern("Other"))
                 .expect("Inner declares Other")
@@ -1240,13 +1245,12 @@ mod tests {
                 .module_instance(collections)
                 .expect("CollectionsFactory is built with its List");
             let application = root_application(mutator.heap(), instance);
-            let list = application
-                .mixin
-                .nested
-                .iter()
+            let list = mutator
+                .heap()
+                .nested_mixins(&application.mixin)
+                .into_iter()
                 .find(|nested| nested.name.as_str() == "List")
-                .expect("CollectionsFactory declares List")
-                .clone();
+                .expect("CollectionsFactory declares List");
             let class = mutator
                 .heap()
                 .known_mixin_id(&list)
@@ -1270,13 +1274,13 @@ mod tests {
                 .shipped_world
                 .module_instance(Symbol::intern("CollectionsFactory"))
                 .expect("CollectionsFactory is built with its List");
-            let list = root_application(mutator.heap(), instance)
-                .mixin
-                .nested
-                .iter()
+            let root = root_application(mutator.heap(), instance).mixin.clone();
+            let list = mutator
+                .heap()
+                .nested_mixins(&root)
+                .into_iter()
                 .find(|nested| nested.name.as_str() == "List")
-                .expect("CollectionsFactory declares List")
-                .clone();
+                .expect("CollectionsFactory declares List");
             let id = mutator
                 .heap()
                 .known_mixin_id(&list)

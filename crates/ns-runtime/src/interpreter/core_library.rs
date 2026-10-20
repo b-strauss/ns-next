@@ -420,7 +420,7 @@ impl<'gc> Mutator<'gc> {
                 super::instantiate::ModuleSource::Kernel,
                 &resolved.source,
             );
-            super::kernel::check_kernel_shape(&root_mixin, &resolved);
+            super::kernel::check_kernel_shape(&self.heap, &root_mixin, &resolved);
             root_mixin
         } else {
             let resolved = resolved_shipped_module(name);
@@ -545,9 +545,10 @@ mod tests {
                     mutator.heap.assembled_text(&root).as_deref(),
                     Some(COLLECTIONS_FACTORY_SOURCE)
                 );
-                let list = root
-                    .nested
-                    .iter()
+                let list = mutator
+                    .heap
+                    .nested_mixins(&root)
+                    .into_iter()
                     .find(|nested| nested.name.as_str() == "List")
                     .expect("CollectionsFactory declares List");
                 assert!(list
@@ -558,7 +559,7 @@ mod tests {
                     .as_ref()
                     .is_some_and(|list_text| list_text.is_shared()));
                 assert_eq!(
-                    mutator.heap.assembled_text(list).as_deref(),
+                    mutator.heap.assembled_text(&list).as_deref(),
                     crate::mixin::source_text(COLLECTIONS_FACTORY_SOURCE, list.span)
                 );
                 assert!(root.enclosing_mixin().is_none());
@@ -794,14 +795,15 @@ mod tests {
         let list = interpreter.enter(|mutator| {
             let instance = mutator.fetch(&instance).as_object().expect("an object");
             let heap = mutator.heap();
-            heap.class_application(heap.object_class(instance))
+            let root = heap
+                .class_application(heap.object_class(instance))
                 .expect("the root is a class object")
                 .mixin
-                .nested
-                .iter()
+                .clone();
+            heap.nested_mixins(&root)
+                .into_iter()
                 .find(|nested| nested.name.as_str() == "List")
                 .expect("CollectionsFactory declares List")
-                .clone()
         });
         let built = expect_ok(
             interpreter.build_nested_class(&instance, &list),

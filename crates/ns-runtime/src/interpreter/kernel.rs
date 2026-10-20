@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use ns_syntax::ast;
 
-use crate::heap::Root;
+use crate::heap::{Heap, Root};
 use crate::interpreter::core_library::KERNEL_MODULE;
 use crate::interpreter::{HostSignal, Interpreter, Mutator};
 use crate::mixin::Mixin;
@@ -205,7 +205,7 @@ impl<'gc> Mutator<'gc> {
         let mut applied_classes: Vec<(Rc<Mixin>, ClassReference<'gc>)> = Vec::new();
         let mut levels: Vec<ClassReference<'gc>> = Vec::new();
         let mut filled: Vec<BuiltinClass> = Vec::new();
-        for kind in fill_order(root_mixin) {
+        for kind in fill_order(&self.heap, root_mixin) {
             let class = self.builtin_class(kind);
             let mixin = if kind == BuiltinClass::VmMirror {
                 self.heap
@@ -213,9 +213,9 @@ impl<'gc> Mutator<'gc> {
                     .map(|application| application.mixin.clone())
                     .expect("internal: the mirror's class has its placeholder application")
             } else {
-                nested_named(root_mixin, kernel_class_name(kind)).clone()
+                nested_named(&self.heap, root_mixin, kernel_class_name(kind))
             };
-            let superclass = superclass_of_kind(root_mixin, kind)
+            let superclass = superclass_of_kind(&self.heap, root_mixin, kind)
                 .map(|superclass| self.builtin_class(superclass));
             let super_application =
                 superclass.and_then(|superclass| self.heap.class_application(superclass));
@@ -382,7 +382,7 @@ impl<'gc> Mutator<'gc> {
         if let Some((_, class)) = built.iter().find(|(mixin, _)| mixin.name.as_str() == name) {
             return *class;
         }
-        let mixin = nested_named(root_mixin, name).clone();
+        let mixin = nested_named(&self.heap, root_mixin, name);
         let superclass_kind = superclass_kind(&mixin)
             .unwrap_or_else(|| panic!("internal: Kernel.ns's {name} names no superclass"));
         let superclass = self.builtin_class(superclass_kind);
@@ -541,11 +541,13 @@ impl<'gc> Mutator<'gc> {
     }
 }
 
-/// The kernel's nested class called `name`. `check_kernel_shape` has made
-/// sure there is exactly one.
-fn nested_named<'mixin>(root: &'mixin Rc<Mixin>, name: &str) -> &'mixin Rc<Mixin> {
-    root.nested
-        .iter()
+/// The kernel's nested class called `name`, its current version
+/// (`Heap::nested_mixins`): the fill applies the nested classes one by one,
+/// and the first application registers the root with its whole tree.
+/// `check_kernel_shape` has made sure there is exactly one.
+fn nested_named(heap: &Heap<'_>, root: &Rc<Mixin>, name: &str) -> Rc<Mixin> {
+    heap.nested_mixins(root)
+        .into_iter()
         .find(|nested| nested.name.as_str() == name)
         .unwrap_or_else(|| panic!("internal: Kernel.ns declares no class {name}"))
 }
@@ -562,9 +564,9 @@ fn nested_named<'mixin>(root: &'mixin Rc<Mixin>, name: &str) -> &'mixin Rc<Mixin
 /// `sort_by_cached_key`, not `sort_by_key`: `depth_below_top` walks the
 /// chain and allocates, and every bootstrap runs this -- the test suite
 /// bootstraps well over a hundred interpreters.
-fn fill_order(root: &Rc<Mixin>) -> Vec<BuiltinClass> {
+fn fill_order(heap: &Heap<'_>, root: &Rc<Mixin>) -> Vec<BuiltinClass> {
     let mut order: Vec<BuiltinClass> = BuiltinClass::ALL.into_iter().collect();
-    order.sort_by_cached_key(|kind| depth_below_top(root, *kind));
+    order.sort_by_cached_key(|kind| depth_below_top(heap, root, *kind));
     order
 }
 
@@ -573,10 +575,10 @@ fn fill_order(root: &Rc<Mixin>) -> Vec<BuiltinClass> {
 /// defect in `Kernel.ns`, not in a program, so it panics naming where the
 /// walk went wrong: a subclass whose chain does not reach the root would be
 /// filled over a placeholder, and a cycle would not terminate.
-fn depth_below_top(root: &Rc<Mixin>, kind: BuiltinClass) -> usize {
+fn depth_below_top(heap: &Heap<'_>, root: &Rc<Mixin>, kind: BuiltinClass) -> usize {
     let mut walked: Vec<BuiltinClass> = Vec::with_capacity(BuiltinClass::ALL.len());
     let mut current = kind;
-    while let Some(superclass) = superclass_of_kind(root, current) {
+    while let Some(superclass) = superclass_of_kind(heap, root, current) {
         assert!(
             !walked.contains(&superclass),
             "internal: Kernel.ns's superclass chain from {kind:?} returns to {superclass:?}"
@@ -598,11 +600,15 @@ fn depth_below_top(root: &Rc<Mixin>, kind: BuiltinClass) -> usize {
 /// with no slots and no `==`, as SOMns asserts (`vm/ObjectSystem.java`,
 /// `assert vmMirror.isValue()`). `fill_order` sorts by depth, so `Value` is
 /// still filled first.
-fn superclass_of_kind(root: &Rc<Mixin>, kind: BuiltinClass) -> Option<BuiltinClass> {
+fn superclass_of_kind(
+    heap: &Heap<'_>,
+    root: &Rc<Mixin>,
+    kind: BuiltinClass,
+) -> Option<BuiltinClass> {
     if kind == BuiltinClass::VmMirror {
         return Some(BuiltinClass::Value);
     }
-    superclass_kind(nested_named(root, kernel_class_name(kind)))
+    superclass_kind(&nested_named(heap, root, kernel_class_name(kind)))
 }
 
 /// The builtin a kernel class's clause names, read off its mixin and never
@@ -638,7 +644,7 @@ pub(crate) fn kernel_kind_named(name: &str) -> Option<BuiltinClass> {
 /// an ordinary class, unchecked here: its accessor builds it, running its
 /// clause, as any class's does. And every mirror send passes a literal
 /// block only as its failure block (`check_mirror_send_arguments`).
-pub(super) fn check_kernel_shape(root: &Rc<Mixin>, resolved: &ResolvedModule) {
+pub(super) fn check_kernel_shape(heap: &Heap<'_>, root: &Rc<Mixin>, resolved: &ResolvedModule) {
     check_mirror_send_arguments(resolved, KERNEL_MODULE);
     let kinds: Vec<BuiltinClass> = BuiltinClass::ALL
         .into_iter()
@@ -652,8 +658,8 @@ pub(super) fn check_kernel_shape(root: &Rc<Mixin>, resolved: &ResolvedModule) {
     );
     for kind in kinds.iter().copied() {
         let name = kernel_class_name(kind);
-        let matching = root
-            .nested
+        let matching = heap
+            .nested_mixins(root)
             .iter()
             .filter(|nested| nested.name.as_str() == name)
             .count();
@@ -661,7 +667,7 @@ pub(super) fn check_kernel_shape(root: &Rc<Mixin>, resolved: &ResolvedModule) {
             matching, 1,
             "internal: Kernel.ns must declare the class {name} exactly once"
         );
-        let nested = nested_named(root, name);
+        let nested = nested_named(heap, root, name);
         // Rust builds a builtin's instances with a payload and no fields, so
         // a slot would have nowhere to live -- except on the exception
         // classes, whose instances `decide_instantiation` gives an ordinary
@@ -741,7 +747,7 @@ pub(super) fn check_kernel_shape(root: &Rc<Mixin>, resolved: &ResolvedModule) {
             (Some(clause), _) => check_clause(name, kind, clause),
         }
         for applied in &declaration.mixin_applications {
-            check_applied_kernel_class(root, name, applied);
+            check_applied_kernel_class(heap, root, name, applied);
         }
     }
     // Every chain ends at `Top` without repeating, which is what lets
@@ -749,7 +755,7 @@ pub(super) fn check_kernel_shape(root: &Rc<Mixin>, resolved: &ResolvedModule) {
     // known to be readable, so a malformed one is reported as itself rather
     // than as a broken chain.
     for kind in kinds {
-        depth_below_top(root, kind);
+        depth_below_top(heap, root, kind);
     }
 }
 
@@ -785,7 +791,12 @@ fn check_clause(name: &str, kind: BuiltinClass, clause: &ast::SuperclassClause) 
 /// a class of. The bootstrap builds that class before any kernel code
 /// runs, so its own clause must be readable the same way, a bare builtin
 /// name, and it may apply no mixin of its own.
-fn check_applied_kernel_class(root: &Rc<Mixin>, name: &str, applied: &ast::SuperclassClause) {
+fn check_applied_kernel_class(
+    heap: &Heap<'_>,
+    root: &Rc<Mixin>,
+    name: &str,
+    applied: &ast::SuperclassClause,
+) {
     let applied_name = applied.receiver.name.as_str();
     assert!(
         applied.prefix.is_none() && applied.messages.is_empty(),
@@ -795,9 +806,9 @@ fn check_applied_kernel_class(root: &Rc<Mixin>, name: &str, applied: &ast::Super
         kernel_kind_named(applied_name).is_none(),
         "internal: Kernel.ns's {name} applies the builtin {applied_name}; only a kernel class that is no builtin may be applied"
     );
-    let nested = root
-        .nested
-        .iter()
+    let nested = heap
+        .nested_mixins(root)
+        .into_iter()
         .find(|nested| nested.name.as_str() == applied_name)
         .unwrap_or_else(|| {
             panic!("internal: Kernel.ns's {name} applies {applied_name}, which is no kernel class")
@@ -841,8 +852,8 @@ pub(super) fn hidden_slot_of<'gc>(
     kind: BuiltinClass,
 ) -> usize {
     let application = kernel_application(mutator, kernel);
-    let nested = nested_named(&application.mixin, kernel_class_name(kind));
-    hidden_slot_of_mixin(mutator, kernel, nested)
+    let nested = nested_named(mutator.heap(), &application.mixin, kernel_class_name(kind));
+    hidden_slot_of_mixin(mutator, kernel, &nested)
 }
 
 /// The kernel instance's hidden slot caching the nested class whose mixin
@@ -1028,7 +1039,7 @@ mod tests {
     #[test]
     fn every_kernel_class_records_the_receiver_its_clauses_name() {
         check_kernel_root_from_source(|root, _| {
-            for nested in &root.nested {
+            for nested in root.declared_nested().iter() {
                 let declaration = nested.declaration.as_ref().expect("built from source");
                 let written = declaration
                     .superclass
@@ -1817,7 +1828,7 @@ mod tests {
                 panic!("the kernel is instantiated at bootstrap");
             };
             let kernel_mixin = super::kernel_application(mutator, kernel).mixin.clone();
-            for mixin in &kernel_mixin.nested {
+            for mixin in &mutator.heap().nested_mixins(&kernel_mixin) {
                 let class_name = mixin.name.as_str();
                 // `Proxy`'s methods forward nothing to a leaf: each is a
                 // protected override of one of `Object`'s public members,
@@ -2361,10 +2372,10 @@ mod tests {
                     .heap()
                     .class_application(class)
                     .expect("the root class has an application");
-                let block = application
-                    .mixin
-                    .nested
-                    .iter()
+                let block = mutator
+                    .heap()
+                    .nested_mixins(&application.mixin)
+                    .into_iter()
                     .find(|nested| nested.name.as_str() == "Closure")
                     .expect("the module declares Closure");
                 assert!(block.shipped, "the module is shipped source");
@@ -2526,9 +2537,8 @@ mod tests {
                 panic!("the kernel is instantiated at bootstrap");
             };
             let application = super::kernel_application(mutator, kernel);
-            let builtins = application
-                .mixin
-                .nested
+            let declared = mutator.heap().nested_mixins(&application.mixin);
+            let builtins = declared
                 .iter()
                 .filter(|nested| super::kernel_kind_named(nested.name.as_str()).is_some())
                 .count();
@@ -2539,15 +2549,13 @@ mod tests {
             );
             for private in PRIVATE_KERNEL_CLASSES {
                 assert!(
-                    application
-                        .mixin
-                        .nested
+                    declared
                         .iter()
                         .any(|nested| nested.name.as_str() == *private),
                     "the kernel declares {private}"
                 );
             }
-            for nested in &application.mixin.nested {
+            for nested in &declared {
                 let name = nested.name.as_str();
                 let expected = if PRIVATE_KERNEL_CLASSES.contains(&name) {
                     ns_syntax::ast::AccessModifier::Private
@@ -2641,7 +2649,7 @@ mod tests {
                     .clone();
                 assert!(std::rc::Rc::ptr_eq(
                     &level_mixin,
-                    super::nested_named(&kernel_mixin, "IndexedCollection")
+                    &super::nested_named(heap, &kernel_mixin, "IndexedCollection")
                 ));
                 assert!(
                     heap.class_superclass(level)
@@ -2741,8 +2749,8 @@ mod tests {
         kernel: crate::types::ObjectReference<'gc>,
     ) -> Option<crate::types::ClassReference<'gc>> {
         let application = super::kernel_application(mutator, kernel);
-        let nested = super::nested_named(&application.mixin, "IndexedCollection");
-        let id = mutator.heap().known_mixin_id(nested)?;
+        let nested = super::nested_named(mutator.heap(), &application.mixin, "IndexedCollection");
+        let id = mutator.heap().known_mixin_id(&nested)?;
         let slot = application.nested_slot.get(&id).copied()?;
         mutator
             .heap()

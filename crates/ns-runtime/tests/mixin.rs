@@ -2,7 +2,7 @@ use indoc::indoc;
 use std::rc::Rc;
 
 use ns_runtime::dispatch::{self, Lookup};
-use ns_runtime::mixin::{AccessorKind, Mixin, MixinApplication};
+use ns_runtime::mixin::{AccessorKind, Mixin, MixinApplication, NestedDeclarations};
 use ns_runtime::{HostResult, HostSignal, Interpreter, Mutator, Root, Symbol, ValueKind};
 use ns_syntax::{ast, span::Span};
 
@@ -207,8 +207,9 @@ fn the_mixin_tree_contains_nested_and_class_side_declarations() {
             .class_application(object(mutator, &class))
             .unwrap_or_else(|| panic!("expected a class object"));
         let mixin = &application.mixin;
-        assert_eq!(mixin.nested.len(), 1, "Inner must be in the mixin tree");
-        assert_eq!(mixin.nested[0].name, Symbol::intern("Inner"));
+        let nested = mutator.heap().nested_mixins(mixin);
+        assert_eq!(nested.len(), 1, "Inner must be in the mixin tree");
+        assert_eq!(nested[0].name, Symbol::intern("Inner"));
         assert!(
             mixin.class_side.is_some(),
             "a class side is a mixin now, not something to discard"
@@ -228,7 +229,7 @@ fn a_nested_declaration_reserves_a_hidden_cache_slot() {
             application.slot_count, 1,
             "Outer declares no slots but nests Inner"
         );
-        let inner = &application.mixin.nested[0];
+        let inner = &mutator.heap().nested_mixins(&application.mixin)[0];
         assert_eq!(inner.name, Symbol::intern("Inner"));
         let id = mutator
             .heap()
@@ -262,9 +263,9 @@ fn inherited_nested_declarations_keep_their_declaring_levels_slot() {
     {
         let superclass_mixin = Rc::get_mut(&mut superclass_mixin).unwrap();
         superclass_mixin.slots = vec![slot_declaration("a")];
-        superclass_mixin.nested = vec![bare_mixin("Inner")];
+        superclass_mixin.nested_declarations = NestedDeclarations::new(vec![bare_mixin("Inner")]);
     }
-    let superclass_inner = superclass_mixin.nested[0].clone();
+    let superclass_inner = superclass_mixin.declared_nested()[0].clone();
     let superclass_application =
         interpreter.enter(|mutator| mutator.apply_mixin(&superclass_mixin, None));
     assert_eq!(superclass_application.own_slot_base, 0);
@@ -338,14 +339,18 @@ fn a_slot_declaration_defines_accessor_entries() {
 fn a_redeclared_nested_class_gets_its_own_cache_slot() {
     let mut interpreter = Interpreter::bootstrap();
     let mut superclass_mixin = bare_mixin("Sup");
-    Rc::get_mut(&mut superclass_mixin).unwrap().nested = vec![bare_mixin("Inner")];
-    let superclass_inner = superclass_mixin.nested[0].clone();
+    Rc::get_mut(&mut superclass_mixin)
+        .unwrap()
+        .nested_declarations = NestedDeclarations::new(vec![bare_mixin("Inner")]);
+    let superclass_inner = superclass_mixin.declared_nested()[0].clone();
     let superclass_application =
         interpreter.enter(|mutator| mutator.apply_mixin(&superclass_mixin, None));
 
     let mut subclass_mixin = bare_mixin("Sub");
-    Rc::get_mut(&mut subclass_mixin).unwrap().nested = vec![bare_mixin("Inner")];
-    let subclass_inner = subclass_mixin.nested[0].clone();
+    Rc::get_mut(&mut subclass_mixin)
+        .unwrap()
+        .nested_declarations = NestedDeclarations::new(vec![bare_mixin("Inner")]);
+    let subclass_inner = subclass_mixin.declared_nested()[0].clone();
     let subclass_application = interpreter
         .enter(|mutator| mutator.apply_mixin(&subclass_mixin, Some(&superclass_application)));
 
