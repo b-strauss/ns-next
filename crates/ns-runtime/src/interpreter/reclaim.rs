@@ -261,6 +261,13 @@ mod tests {
         drop(send_with(&mut interpreter, &instance, "run:", &[second]));
         interpreter.collect_now();
         assert_eq!(id_counts(&mut interpreter), counts);
+        // Between runs no activation is live, so the stack roots nothing.
+        interpreter.enter(|mutator| {
+            let stack = mutator.heap.stack_roots();
+            assert!(stack.entered_levels.is_empty());
+            assert!(stack.recorded_guards.is_empty());
+            assert!(stack.feedback_bases.is_empty());
+        });
     }
 
     const SUPERSEDED: &str = indoc! {"
@@ -268,10 +275,16 @@ mod tests {
         'Test'
         class Superseded = (
         ) (
-          class Subject during: action = (
+          class Base = (
+            | public zero = 10. |
+          ) (
+          )
+          class Subject before: install after: collect = Base (
             |
-              public first = action value.
+              public first = install value.
               public second = 2.
+              public third = collect value.
+              public fourth = 4.
             |
           ) (
           )
@@ -280,20 +293,30 @@ mod tests {
             builder:: (platform mirrors ClassMirror reflecting: Subject) mixin declaration
                 asBuilder.
             builder instanceSide methods addFromSource: 'public added = (^3)'.
-            instance:: Subject during: [
-              builder install.
-              platform kernel garbageCollect.
-              1
-            ].
-            ^instance first + instance second + instance added
+            instance:: Subject
+                before: [
+                  builder install.
+                  1
+                ]
+                after: [
+                  platform kernel garbageCollect.
+                  3
+                ].
+            ^instance zero + instance first + instance second + instance third
+              + instance fourth + instance added
           )
         )
     "};
 
     /// An initializer whose class an install re-applied, keeping its
-    /// slots, runs on at the level it was entered at across the full
-    /// collection that follows: the superseded application stays, so the
-    /// slot after the install is written where the code expects it.
+    /// slots, runs on at the level it was entered at across a later full
+    /// collection: the superseded application stays, so the slots after
+    /// the collection are written where the code expects them. `second`,
+    /// written between the install and the collection, passes the slot
+    /// check's cold path and records the receiver's new guard, so that only
+    /// the activation's entered level keeps the old application live; and
+    /// `Base`'s slot puts `Subject`'s at base 1, so that a slot base read
+    /// off a freed row would write `third` over `zero`.
     #[test]
     fn an_activation_at_a_superseded_level_runs_on_across_a_collection() {
         let (mut interpreter, class) = load(SUPERSEDED);
@@ -302,7 +325,7 @@ mod tests {
         let collections = interpreter.collector_statistics().collections;
         let answer = send_with(&mut interpreter, &instance, "run:", &[platform]);
         assert!(interpreter.collector_statistics().collections > collections);
-        assert_eq!(integer(&mut interpreter, &answer), Some(6));
+        assert_eq!(integer(&mut interpreter, &answer), Some(23));
     }
 
     /// `A` is made through a fresh `Maker` each time, so that once the

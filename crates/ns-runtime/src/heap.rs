@@ -5969,8 +5969,9 @@ impl<'gc> Heap<'gc> {
         if let Some(class) = &mut self.activation_class {
             forwarder.object(class);
         }
-        // Weak too, and pruned before a compaction as the symbols below are:
-        // every entry left names a live object.
+        // Weak against a full collection, which prunes it before compacting,
+        // as it does the symbols below; a move collects nothing. Either
+        // way, every entry left names a live object.
         for object in self.mixin_objects.iter_mut().flatten() {
             forwarder.object(object);
         }

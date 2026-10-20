@@ -123,7 +123,7 @@ pub(crate) struct StackRoots {
     pub(crate) recorded_guards: Vec<DispatchId>,
     /// Every activation's feedback base, `NOT_ASSIGNED` included.
     // Read by the collection's reclamation of feedback ranges.
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) feedback_bases: Vec<FeedbackBase>,
 }
 
