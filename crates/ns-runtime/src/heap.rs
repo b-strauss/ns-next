@@ -30,6 +30,7 @@ use std::rc::Rc;
 
 mod compaction;
 mod header;
+mod ids;
 pub(crate) mod mark;
 mod object;
 mod pending;
@@ -44,6 +45,8 @@ use compaction::ForwardingTable;
 use compaction::{Shift, ShiftedRegion};
 pub(crate) use header::IDENTITY_HASH_LIMIT;
 use header::{Format, Header, MAX_AGE, WORD_COUNT_OVERFLOW};
+#[allow(unused_imports)] // the tables' free rows use it in the reclamation of dead rows
+pub(crate) use ids::{DispatchIdAllocator, FreeIndices};
 pub use object::Element;
 use object::{
     class_field, closure_field, frame_field, trace_block, PackedString, CLASS, FIELDS, HEADER,

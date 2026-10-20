@@ -136,7 +136,7 @@ impl World {
                 lowering,
                 shipped_code_path,
                 argument_buffer: Vec::new(),
-                next_dispatch_id: crate::mixin::DispatchId::FIRST_MINTED,
+                dispatch_ids: crate::heap::DispatchIdAllocator::new(),
                 caches: crate::interpreter::inline_cache::InlineCaches::new(),
                 unhandled_exceptions_to_resume: 0,
                 depth_reserve: None,

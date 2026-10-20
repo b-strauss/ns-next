@@ -160,6 +160,62 @@ pub(crate) enum CacheRule {
 pub(crate) const POLYMORPHIC_WIDTH: usize = 4;
 pub(crate) const GLOBAL_CACHE_ENTRIES: usize = 1024;
 
+/// The free ranges of the site table, by start, never two adjacent.
+#[derive(Default)]
+struct FreeRanges {
+    /// Start -> size.
+    ranges: std::collections::BTreeMap<u32, u32>,
+}
+
+impl FreeRanges {
+    /// The first range of at least `size` sites, taken; its remainder stays
+    /// free.
+    fn take_first_fit(&mut self, size: u32) -> Option<u32> {
+        let (start, range_size) = self
+            .ranges
+            .iter()
+            .find(|(_, range_size)| **range_size >= size)
+            .map(|(start, range_size)| (*start, *range_size))?;
+        self.ranges.remove(&start);
+        if range_size > size {
+            self.ranges.insert(start + size, range_size - size);
+        }
+        Some(start)
+    }
+
+    /// Makes `start..start + size` free, merged with its neighbours, so that
+    /// two adjacent freed families serve one larger one.
+    // Freed by the collection's reclamation of feedback ranges.
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn free(&mut self, start: u32, size: u32) {
+        let mut start = start;
+        let mut size = size;
+        if let Some((&before_start, &before_size)) = self.ranges.range(..start).next_back() {
+            if before_start + before_size == start {
+                self.ranges.remove(&before_start);
+                start = before_start;
+                size += before_size;
+            }
+        }
+        if let Some(after_size) = self.ranges.remove(&(start + size)) {
+            size += after_size;
+        }
+        self.ranges.insert(start, size);
+    }
+
+    /// Removes and answers the free range that ends at `end`, if one does:
+    /// what `InlineCaches` truncates `sites` by.
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn take_ending_at(&mut self, end: u32) -> Option<(u32, u32)> {
+        let (&start, &size) = self.ranges.range(..end).next_back()?;
+        if start + size != end {
+            return None;
+        }
+        self.ranges.remove(&start);
+        Some((start, size))
+    }
+}
+
 pub(crate) struct InlineCaches {
     /// Every call site of every family that has run, `VACANT` until filled.
     sites: Vec<CacheEntry>,
@@ -168,6 +224,8 @@ pub(crate) struct InlineCaches {
     pool: Vec<[CacheEntry; POLYMORPHIC_WIDTH]>,
     /// Blocks a megamorphic transition or an invalidation gave back.
     free_blocks: Vec<u32>,
+    /// Ranges of `sites` whose family died, served first by `fresh_range`.
+    free_ranges: FreeRanges,
     global: GlobalCache,
     /// The last receiver guard a private or super slot accessor's cold
     /// check found to have a level, with that level
@@ -200,6 +258,7 @@ impl InlineCaches {
             sites: Vec::new(),
             pool: Vec::new(),
             free_blocks: Vec::new(),
+            free_ranges: FreeRanges::default(),
             global: GlobalCache::with_groups(GLOBAL_CACHE_ENTRIES / 2),
             verified_slot_level: None,
             families: IdentityMap::default(),
@@ -225,10 +284,13 @@ impl InlineCaches {
         base
     }
 
-    /// A new range of `size` sites at the end of the table. `NOT_ASSIGNED`
-    /// if the table cannot grow that far, which leaves every site of the
-    /// family uncached.
+    /// A range of `size` sites: the first free one that fits, else a new one
+    /// at the end of the table. `NOT_ASSIGNED` if the table cannot grow that
+    /// far, which leaves every site of the family uncached.
     pub(crate) fn fresh_range(&mut self, size: u32) -> FeedbackBase {
+        if let Some(start) = self.free_ranges.take_first_fit(size) {
+            return FeedbackBase(start);
+        }
         let start = self.sites.len();
         match start
             .checked_add(size as usize)
@@ -1371,6 +1433,27 @@ mod tests {
     use super::*;
     use crate::bytecode::{CodeKind, CompiledCode, Instruction};
     use ns_syntax::Span;
+
+    #[test]
+    fn free_ranges_coalesce_and_fit_first() {
+        let mut free = FreeRanges::default();
+        free.free(10, 4);
+        free.free(20, 3);
+        free.free(14, 6); // joins 10..14 and 20..23 into 10..23
+        assert_eq!(free.take_first_fit(5), Some(10));
+        assert_eq!(free.take_first_fit(8), Some(15));
+        assert_eq!(free.take_first_fit(1), None);
+    }
+
+    #[test]
+    fn the_free_range_ending_at_the_table_is_taken_for_truncation() {
+        let mut free = FreeRanges::default();
+        free.free(4, 2);
+        free.free(30, 10);
+        assert_eq!(free.take_ending_at(40), Some((30, 10)));
+        assert_eq!(free.take_ending_at(40), None);
+        assert_eq!(free.take_ending_at(6), Some((4, 2)));
+    }
 
     fn body(family_size: u32) -> Rc<CompiledCode> {
         let mut code = CompiledCode::new(
