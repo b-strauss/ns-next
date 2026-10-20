@@ -3,7 +3,7 @@
 //! marking finds named, the roots the activation stack holds outside the
 //! heap, and the table operations `Mutator::reclaim_ids` decides with.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 use super::value::{Value, Word};
@@ -122,8 +122,6 @@ pub(crate) struct StackRoots {
     /// Every activation's `recorded_guard`, `NONE` included.
     pub(crate) recorded_guards: Vec<DispatchId>,
     /// Every activation's feedback base, `NOT_ASSIGNED` included.
-    // Read by the collection's reclamation of feedback ranges.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) feedback_bases: Vec<FeedbackBase>,
 }
 
@@ -179,6 +177,12 @@ impl Heap<'_> {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn code_rows(&self) -> usize {
         self.tables.codes.len()
+    }
+
+    /// How many replaced applications name a successor.
+    #[cfg(test)]
+    pub(crate) fn successor_count(&self) -> usize {
+        self.tables.successors.len()
     }
 
     /// Takes the application out of row `index` and frees the index, which
@@ -443,24 +447,26 @@ impl Heap<'_> {
             mixin_ids,
             ..
         } = &mut self.tables;
-        let still_running: HashSet<usize> = superseded
-            .iter()
-            .filter(|version| {
-                let mut bodies = HashSet::new();
-                crate::image::version_bodies(version, &mut bodies);
-                !bodies.is_disjoint(running)
-            })
-            .map(mixin_key)
-            .collect();
+        // Whether a version runs is asked only of one only the table holds,
+        // and once: decoding the bodies of every version kept anyway would
+        // cost each full collection for nothing.
+        let mut runs: HashMap<usize, bool> = HashMap::new();
         loop {
             let before = superseded.len();
             superseded.retain(|version| {
+                if Rc::strong_count(version) > 1 {
+                    return true;
+                }
                 let key = mixin_key(version);
-                let dropped = Rc::strong_count(version) == 1 && !still_running.contains(&key);
-                if dropped {
+                let still_running = *runs.entry(key).or_insert_with(|| {
+                    let mut bodies = HashSet::new();
+                    crate::image::version_bodies(version, &mut bodies);
+                    !bodies.is_disjoint(running)
+                });
+                if !still_running {
                     mixin_ids.remove(&key);
                 }
-                !dropped
+                still_running
             });
             if superseded.len() == before {
                 break;

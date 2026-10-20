@@ -16,14 +16,15 @@ impl Mutator<'_> {
     /// its guard id, and vacates exactly the cache entries that named one,
     /// so that the next application minted at a freed index or with a
     /// freed guard is never mistaken for the dead one; then every mixin id
-    /// and code id nothing names any more. Runs in a full
+    /// and code id nothing names any more, and the cache range of every
+    /// family nothing runs any more. Runs in a full
     /// collection between marking and compaction (`World::collect`):
     /// `gathered` is what the marked objects name, and nothing here moves
     /// or allocates an object.
     ///
     /// The steps run in order, each releasing the `Rc`s the next one
     /// counts: the applications, the caches that hold them, the mixins
-    /// the applications applied, and the code ids.
+    /// the applications applied, the code ids, and the feedback ranges.
     pub(crate) fn reclaim_ids(&mut self, gathered: GatheredIds) {
         let stack = self.heap.stack_roots();
         // Step 1: applications. Live: what a marked class object names,
@@ -133,6 +134,11 @@ impl Mutator<'_> {
         // Step 4: codes. No activation names a body by id, so the marked
         // closures and frames are every holder of one.
         self.heap.free_unnamed_codes(&gathered.codes);
+        // Step 5: feedback ranges. Whether or not anything above was freed:
+        // a body steps 3 and 4 let go of can end a family on its own.
+        let mut live_bases = gathered.feedback_bases;
+        live_bases.extend(stack.feedback_bases.iter().map(|base| base.raw()));
+        self.caches.forget_families(&live_bases);
     }
 
     /// Step 3: frees every module's tree of mixin ids nothing names any
@@ -540,16 +546,10 @@ mod tests {
 
     /// A module nothing names any more gives back every row of its tree --
     /// the root, the nested class and the class sides their metaclasses
-    /// registered -- so that the table is back at its size before the load.
-    /// The collection before the load gives back the rows the boot left
-    /// behind -- the placeholder mixins the builtins were built with before
-    /// the kernel's -- so that the second one frees only the module's.
+    /// registered: every row of the tree is free after the collection.
     #[test]
     fn a_dead_module_tree_is_reclaimed() {
-        let mut interpreter = Interpreter::bootstrap();
-        interpreter.collect_now();
-        let (rows, _, _) = table_counts(&mut interpreter);
-        let outer = load_into(&mut interpreter, OUTER);
+        let (mut interpreter, outer) = load(OUTER);
         let instance = expect_ok(interpreter.instantiate(&outer, &[]), "an Outer");
         let inner_class = send(&mut interpreter, &instance, "Inner");
         let inner = send(&mut interpreter, &inner_class, "new");
@@ -557,12 +557,26 @@ mod tests {
         // Numbers, which hold nothing.
         let outer_id = id_of(&mut interpreter, &outer);
         let inner_id = id_of(&mut interpreter, &inner_class);
+        let tree = interpreter.enter(|mutator| {
+            mutator
+                .heap
+                .module_trees()
+                .into_iter()
+                .find(|tree| tree.contains(&outer_id))
+                .expect("the module has a tree")
+        });
+        assert!(tree.contains(&inner_id));
+        // The two class sides besides the two instance sides.
+        assert!(tree.len() >= 4, "the tree holds the class sides too");
         drop((outer, instance, inner_class, inner));
         interpreter.collect_now();
-        assert_eq!(table_counts(&mut interpreter).0, rows);
         interpreter.enter(|mutator| {
-            assert!(mutator.heap.mixin(outer_id).is_none());
-            assert!(mutator.heap.mixin(inner_id).is_none());
+            for id in &tree {
+                assert!(
+                    mutator.heap.mixin(*id).is_none(),
+                    "a row of the tree is free"
+                );
+            }
         });
     }
 
@@ -670,6 +684,134 @@ mod tests {
         interpreter.collect_now();
         let after_first_round = after_first_round.expect("the first round ran");
         assert!(table_counts(&mut interpreter).2 <= after_first_round);
+    }
+
+    /// Every table a hundred edit-install-call-collect rounds could grow.
+    #[derive(Debug, PartialEq, Eq)]
+    struct TableSizes {
+        mixin_rows: usize,
+        superseded: usize,
+        application_rows: usize,
+        successors: usize,
+        code_rows: usize,
+        cached_applications: usize,
+        metaclass_mixins: usize,
+        cache_sites: usize,
+        guard_high_water: u32,
+    }
+
+    fn table_sizes(interpreter: &mut Interpreter) -> TableSizes {
+        interpreter.enter(|mutator| TableSizes {
+            mixin_rows: mutator.heap.mixin_rows(),
+            superseded: mutator.heap.superseded_count(),
+            application_rows: mutator.heap.application_rows(),
+            successors: mutator.heap.successor_count(),
+            code_rows: mutator.heap.code_rows(),
+            cached_applications: mutator.applications.len(),
+            metaclass_mixins: mutator.metaclass_mixins.len(),
+            cache_sites: mutator.caches.table_len(),
+            guard_high_water: mutator.dispatch_ids.high_water(),
+        })
+    }
+
+    impl TableSizes {
+        /// Whether no table is larger than in `bound`.
+        fn within(&self, bound: &TableSizes) -> bool {
+            self.mixin_rows <= bound.mixin_rows
+                && self.superseded <= bound.superseded
+                && self.application_rows <= bound.application_rows
+                && self.successors <= bound.successors
+                && self.code_rows <= bound.code_rows
+                && self.cached_applications <= bound.cached_applications
+                && self.metaclass_mixins <= bound.metaclass_mixins
+                && self.cache_sites <= bound.cache_sites
+                && self.guard_high_water <= bound.guard_high_water
+        }
+    }
+
+    /// A hundred rounds, each installing an edit of `value`, calling it and
+    /// collecting, grow no table past the size the second round left it,
+    /// and the hundredth ends at exactly that size: each round's dead
+    /// version, body, family and ids are given back and taken again by the
+    /// next. The second round, not the first, is the measure: from it on,
+    /// each round's body is given its range while the previous round's
+    /// still holds one -- the collection that frees it comes after the
+    /// call -- so the family alternates between two ranges, the first
+    /// round's having had no predecessor; and the first round's
+    /// applications fill holes the boot's collection left, which the
+    /// second round's give back from the table's end.
+    #[test]
+    fn a_hundred_edits_grow_no_table_past_its_second_round_size() {
+        let (mut interpreter, outer) = load(OUTER);
+        let instance = expect_ok(interpreter.instantiate(&outer, &[]), "an Outer");
+        let id = id_of(&mut interpreter, &outer);
+        let mut after_second_round = None;
+        for round in 1..=100 {
+            install(
+                &mut interpreter,
+                id,
+                &add_method(&format!("public value = ( ^{round} yourself )")),
+            );
+            let answer = send(&mut interpreter, &instance, "value");
+            assert_eq!(integer(&mut interpreter, &answer), Some(round));
+            drop(answer);
+            interpreter.collect_now();
+            let sizes = table_sizes(&mut interpreter);
+            if round == 2 {
+                after_second_round = Some(sizes);
+            } else if let Some(bound) = &after_second_round {
+                assert!(
+                    sizes.within(bound),
+                    "round {round}: {sizes:?} outgrew {bound:?}"
+                );
+            }
+        }
+        let after_second_round = after_second_round.expect("the second round ran");
+        assert_eq!(table_sizes(&mut interpreter), after_second_round);
+    }
+
+    const KEEPER: &str = indoc! {"
+        Newspeak3
+        'Test'
+        class Keeper = (
+          | public kept ::= nil. |
+        ) (
+          public make = (
+            ^[:object | object size]
+          )
+          public probe = (
+            ^kept value: {1. 2. 3}
+          )
+        )
+    "};
+
+    crate::for_each_lowering! {
+        /// A closure whose method an edit superseded keeps its family's
+        /// range across a collection: another family run afterwards takes
+        /// the smallest free range, and the closure's site, monomorphic on
+        /// `Array`s, still answers what it filled.
+        fn a_closure_keeps_its_feedback_range_across_a_collection(lowering) {
+            let (mut interpreter, keeper) = load_with(lowering, KEEPER);
+            let instance = expect_ok(interpreter.instantiate(&keeper, &[]), "a Keeper");
+            let block = send(&mut interpreter, &instance, "make");
+            drop(send_with(&mut interpreter, &instance, "kept:", &[block]));
+            for _ in 0..3 {
+                let answer = send(&mut interpreter, &instance, "probe");
+                assert_eq!(integer(&mut interpreter, &answer), Some(3));
+            }
+            let id = id_of(&mut interpreter, &keeper);
+            install(&mut interpreter, id, &add_method("public make = ( ^[:object | object hash] )"));
+            interpreter.collect_now();
+            install(
+                &mut interpreter,
+                id,
+                &add_method("public other = ( ^{1. 2. 3. 4. 5} size yourself )"),
+            );
+            let answer = send(&mut interpreter, &instance, "other");
+            assert_eq!(integer(&mut interpreter, &answer), Some(5));
+            let answer = send(&mut interpreter, &instance, "probe");
+            assert_eq!(integer(&mut interpreter, &answer), Some(3));
+        }
     }
 
     crate::for_each_lowering! {

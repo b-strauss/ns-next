@@ -8,6 +8,7 @@
 //! on a `Resolved` rebuilt from an entry, so it can do nothing a miss would
 //! not (`resolve.rs`).
 
+use std::collections::BTreeSet;
 use std::hash::BuildHasher;
 use std::rc::Rc;
 
@@ -186,9 +187,10 @@ impl FreeRanges {
 
     /// Makes `start..start + size` free, merged with its neighbours, so that
     /// two adjacent freed families serve one larger one.
-    // Freed by the collection's reclamation of feedback ranges.
-    #[cfg_attr(not(test), allow(dead_code))]
     fn free(&mut self, start: u32, size: u32) {
+        // An empty range would sit at another one's start or end and break
+        // the rule that no two are adjacent.
+        debug_assert!(size > 0, "internal: an empty range is never freed");
         let mut start = start;
         let mut size = size;
         if let Some((&before_start, &before_size)) = self.ranges.range(..start).next_back() {
@@ -206,7 +208,6 @@ impl FreeRanges {
 
     /// Removes and answers the free range that ends at `end`, if one does:
     /// what `InlineCaches` truncates `sites` by.
-    #[cfg_attr(not(test), allow(dead_code))]
     fn take_ending_at(&mut self, end: u32) -> Option<(u32, u32)> {
         let (&start, &size) = self.ranges.range(..end).next_back()?;
         if start + size != end {
@@ -246,11 +247,17 @@ pub(crate) struct InlineCaches {
     /// migrates no instance, else through the bulk forward
     /// (`heap::forward_identity`), which vacates them.
     verified_slot_level: Option<(DispatchId, ApplicationIndex)>,
-    /// Code identity -> the start of its family's range.
-    families: IdentityMap<usize, FeedbackBase>,
-    /// Every body in `families`, held so that its address -- the key -- is
-    /// never reused by another body while the key is in the map.
-    family_codes: Vec<Rc<CompiledCode>>,
+    /// Root body identity -> its family. A collection drops a family nothing
+    /// runs any more (`forget_families`).
+    families: IdentityMap<usize, Family>,
+}
+
+/// A family that has run: its range and its root body, held so that the
+/// body's address -- the key in `families` -- is never another body's
+/// while the entry lives.
+struct Family {
+    base: FeedbackBase,
+    code: Rc<CompiledCode>,
 }
 
 impl InlineCaches {
@@ -263,7 +270,6 @@ impl InlineCaches {
             global: GlobalCache::with_groups(GLOBAL_CACHE_ENTRIES / 2),
             verified_slot_level: None,
             families: IdentityMap::default(),
-            family_codes: Vec::new(),
         }
     }
 
@@ -276,13 +282,69 @@ impl InlineCaches {
             return FeedbackBase(0);
         }
         let key = Rc::as_ptr(code) as usize;
-        if let Some(base) = self.families.get(&key) {
-            return *base;
+        if let Some(family) = self.families.get(&key) {
+            return family.base;
         }
         let base = self.fresh_range(code.family_size);
-        self.families.insert(key, base);
-        self.family_codes.push(code.clone());
+        self.families.insert(
+            key,
+            Family {
+                base,
+                code: Rc::clone(code),
+            },
+        );
         base
+    }
+
+    /// Drops every family whose root body only the family holds and whose
+    /// range no live closure or activation names (`live_bases`), vacates
+    /// its sites and frees its range for the next family, then gives back
+    /// the table's free tail. A body nothing else holds can never be
+    /// activated again, so no new activation asks for the range; a closure
+    /// or activation of the family still names it by base, which is what
+    /// `live_bases` keeps -- a range freed under one would be filled by
+    /// another family's sends, and its hits would act on them. Run by a
+    /// full collection (`Mutator::reclaim_ids`).
+    pub(crate) fn forget_families(&mut self, live_bases: &BTreeSet<u32>) {
+        let mut freed = Vec::new();
+        self.families.retain(|_, family| {
+            let held = Rc::strong_count(&family.code) > 1;
+            if held || live_bases.contains(&family.base.raw()) {
+                return true;
+            }
+            freed.push((family.base, family.code.family_size));
+            false
+        });
+        let InlineCaches {
+            sites,
+            pool,
+            free_blocks,
+            free_ranges,
+            ..
+        } = self;
+        for (base, size) in freed {
+            // `base_for` records no family without sends, and an empty range
+            // inside another free one would break the map's coalescing. A
+            // family the table had no room for holds no range to free.
+            if size == 0 || base == FeedbackBase::NOT_ASSIGNED {
+                continue;
+            }
+            for entry in &mut sites[base.index()..][..size as usize] {
+                if let Target::Polymorphic { block, .. } = entry.target {
+                    if let Some(slots) = pool.get_mut(block as usize) {
+                        *slots = CacheEntry::vacant_block();
+                        free_blocks.push(block);
+                    }
+                }
+                *entry = CacheEntry::vacant();
+            }
+            free_ranges.free(base.raw(), size);
+        }
+        let mut end = u32::try_from(sites.len()).expect("the site table fits a u32");
+        while let Some((start, _)) = free_ranges.take_ending_at(end) {
+            end = start;
+        }
+        sites.truncate(end as usize);
     }
 
     /// A range of `size` sites: the first free one that fits, else a new one
@@ -408,10 +470,11 @@ impl InlineCaches {
     /// Vacates every site, every polymorphic block and the global cache
     /// (`docs/design/dispatch.md`, "Invalidation"): a class redefinition
     /// invalidates every guard at once, rather than tracking which ones a
-    /// change could affect. `families` and `family_codes` stay -- an
-    /// activation already running still names its family's range, so the
-    /// next send through a vacated site fills the same index again instead
-    /// of minting a new one. Clearing the pool rather than only the sites
+    /// change could affect. `families` stays -- an activation already
+    /// running still names its family's range, so the next send through a
+    /// vacated site fills the same index again instead of minting a new
+    /// one; only a collection's `forget_families` drops a family, once
+    /// nothing runs it. Clearing the pool rather than only the sites
     /// is what leaves every polymorphic block vacant too, not merely
     /// unreachable from a site that still names it.
     pub(crate) fn invalidate(&mut self) {
@@ -1428,8 +1491,7 @@ impl InlineCaches {
         let base = self
             .families
             .get(&(Rc::as_ptr(code) as usize))
-            .copied()
-            .unwrap_or(FeedbackBase::NOT_ASSIGNED);
+            .map_or(FeedbackBase::NOT_ASSIGNED, |family| family.base);
         numbers
             .into_iter()
             .map(|number| {
@@ -1554,6 +1616,28 @@ mod tests {
         assert_eq!(first_base.index(), 0);
         assert_eq!(second_base.index(), 3);
         assert_eq!(caches.table_len(), 5);
+    }
+
+    /// A family whose body only the table holds gives its range back unless
+    /// a live closure or activation names its base; a range inside the
+    /// table is taken by the next family, one at its end is cut off.
+    #[test]
+    fn a_family_nothing_runs_gives_its_range_back() {
+        let mut caches = InlineCaches::new();
+        let (named, unnamed, held, last) = (body(2), body(3), body(1), body(4));
+        let named_base = caches.base_for(&named);
+        let unnamed_base = caches.base_for(&unnamed);
+        caches.base_for(&held);
+        let last_base = caches.base_for(&last);
+        assert_eq!(caches.table_len(), 10);
+        drop((named, unnamed, last));
+        let live_bases = BTreeSet::from([named_base.raw()]);
+        caches.forget_families(&live_bases);
+        // `last`'s range was the table's end; `unnamed`'s stays free inside.
+        assert_eq!(last_base.index(), 6);
+        assert_eq!(caches.table_len(), 6);
+        assert_eq!(caches.base_for(&body(3)), unnamed_base);
+        drop(held);
     }
 
     /// A body with no sends needs no range and never allocates one.

@@ -90,7 +90,7 @@ pub(crate) struct MixinRow {
 /// allocator hands out again is never found under a key that named its
 /// earlier occupant. `mixin_ids` names every version of a mixin the tables
 /// hold: the current one in its row, each earlier one in `superseded`
-/// until nothing but the table holds it.
+/// until nothing but the table holds it and nothing runs code of it.
 #[derive(Default)]
 pub(crate) struct Tables {
     /// Per id, the mixin's row, or `None` for an id a collection freed
@@ -104,7 +104,8 @@ pub(crate) struct Tables {
     /// an application built from it, a host, a nested class's creation
     /// underway -- kept so that its address stays unique while `mixin_ids`
     /// names it. A collection drops a version once only this table holds it
-    /// (`Heap::drop_superseded`).
+    /// and no running body -- of a closure, a frame or an activation -- was
+    /// compiled in it (`Heap::drop_superseded`).
     pub(crate) superseded: Vec<Rc<Mixin>>,
     /// Per index, the application, or `None` for a row a collection freed
     /// (`Heap::free_application`).
