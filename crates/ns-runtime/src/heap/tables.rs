@@ -1,10 +1,11 @@
 //! What a heap object names by a `SmallInteger` because it cannot live in
 //! the words: a mixin, a mixin application, a compiled body
 //! (`docs/design/object-model.md`, "The object layout"). Per heap, because
-//! the objects naming them are, and append-only: road step 3a mints these
-//! ids and reclaims none, since nothing drops a mixin, a superseded version
-//! included, before road step 5b2c's reclamation (`docs/OPEN-WORK.md`,
-//! "Next").
+//! the objects naming them are. The application table gives its rows back:
+//! a full collection frees the row of every application nothing names any
+//! more, and the next registration takes the smallest free row
+//! (`interpreter::reclaim`). The mixin and code tables are still
+//! append-only.
 //!
 //! A mixin's id is its identity: every version of it answers the id it was
 //! first registered under, and the row holds the current version, the id
@@ -19,6 +20,7 @@ use std::rc::Rc;
 
 use crate::bytecode::CompiledCode;
 use crate::hash::IdentityMap;
+use crate::heap::FreeIndices;
 use crate::mixin::{Mixin, MixinApplication, MixinMethod};
 
 macro_rules! table_index {
@@ -87,14 +89,20 @@ pub(crate) struct Tables {
     /// tree (`Mixin::take_declared_nested`), so a mixin holds no other
     /// mixin's `Rc` once a heap names it.
     pub(crate) nested: Vec<Vec<MixinId>>,
-    pub(crate) applications: Vec<Rc<MixinApplication>>,
+    /// Per index, the application, or `None` for a row a collection freed
+    /// (`Heap::free_application`).
+    pub(crate) applications: Vec<Option<Rc<MixinApplication>>>,
+    /// The free rows of `applications`, minted smallest first.
+    pub(crate) free_applications: FreeIndices,
     /// Per application an install replaced, the application of the edited
     /// mixin that took its place, always the newest of its chain
     /// (`Heap::record_successor` repoints the earlier entries): an
     /// activation entered at the old level passes the slot check's cold
     /// path against the new one, because an edit that reaches the install
-    /// keeps the level's slots. No entry is dropped; the rule for reusing
-    /// an application's index is road step 5b2c's.
+    /// keeps the level's slots. An entry lives while its old index does,
+    /// and keeps its new one alive; a collection drops it with the old
+    /// index (`Heap::retain_successors`), so an index minted again never
+    /// inherits a successor.
     pub(crate) successors: IdentityMap<ApplicationIndex, ApplicationIndex>,
     pub(crate) codes: Vec<CodeEntry>,
     pub(crate) code_ids: IdentityMap<usize, CodeId>,

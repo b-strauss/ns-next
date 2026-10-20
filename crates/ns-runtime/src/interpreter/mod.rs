@@ -16,6 +16,7 @@ pub(crate) mod locals;
 mod metaclass;
 pub(crate) mod mirror;
 pub(crate) mod nested;
+mod reclaim;
 pub(crate) mod resolve;
 pub(crate) mod safepoint;
 pub(crate) mod sends;
@@ -3025,6 +3026,10 @@ mod tests {
     fn minting_stops_below_twenty_two_bits_and_answers_none_once_exhausted() {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
+            // A fresh allocator: a collection during the boot, which the
+            // collection stress mode makes, frees ids that would be
+            // minted first.
+            mutator.dispatch_ids = crate::heap::DispatchIdAllocator::new();
             mutator
                 .dispatch_ids
                 .set_next_for_test(crate::mixin::DispatchId::LIMIT - 1);

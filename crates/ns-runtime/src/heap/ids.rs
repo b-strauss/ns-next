@@ -40,8 +40,6 @@ impl FreeIndices {
 
 /// Pops `rows`' trailing `None`s and forgets their indices in `free`, so a
 /// table whose last rows died gives their memory back.
-// Used by the tables' reclamation of dead rows.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn truncate_trailing<T>(rows: &mut Vec<Option<T>>, free: &mut FreeIndices) {
     while matches!(rows.last(), Some(None)) {
         rows.pop();
@@ -81,8 +79,6 @@ impl DispatchIdAllocator {
 
     /// Gives `id` back. `NONE`, `VACANT` and `FORWARDED` are never minted
     /// and never freed.
-    // Freed by the collection's reclamation of dead applications.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn free(&mut self, id: DispatchId) {
         debug_assert!(id.bits() >= DispatchId::FIRST_MINTED && id.bits() < self.next);
         self.free.free(id.bits());

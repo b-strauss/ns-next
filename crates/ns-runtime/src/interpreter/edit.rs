@@ -1220,10 +1220,11 @@ mod tests {
             .count()
     }
 
-    /// The number of applications `heap` has registered.
+    /// The number of applications `heap` holds: its rows but those a
+    /// collection freed.
     fn application_count_of(heap: &Heap<'_>) -> usize {
-        (0..)
-            .take_while(|index| {
+        (0..heap.application_rows())
+            .filter(|index| {
                 crate::heap::ApplicationIndex::from_index(*index)
                     .is_some_and(|index| heap.application(index).is_some())
             })

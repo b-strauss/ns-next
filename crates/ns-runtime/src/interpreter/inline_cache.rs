@@ -15,6 +15,7 @@ use crate::builtins::primitive::Primitive;
 use crate::bytecode::{CallSite, CompiledCode, Instruction};
 use crate::dispatch;
 use crate::hash::IdentityMap;
+use crate::heap::reclaim::FreedIds;
 use crate::heap::{ActivationReference, ApplicationIndex, Heap};
 use crate::mixin::{AccessorKind, DispatchId, Mixin, MixinMethod};
 use crate::types::*;
@@ -423,6 +424,51 @@ impl InlineCaches {
         self.verified_slot_level = None;
     }
 
+    /// Vacates exactly the entries that name an id a collection freed --
+    /// a guard, as an entry's own or a lexical rule's N, and an
+    /// application, as a slot target's level, with the guard it recorded
+    /// -- and forgets the verified slot level if it names one. The one
+    /// scrub a collection makes, run only when it freed something: a guard
+    /// or an index minted again must never meet an entry filled for the
+    /// application it named before, and every other entry stays warm
+    /// (`docs/design/dispatch.md`, "Invalidation"). A polymorphic site
+    /// stays polymorphic with its matching slots vacant; a megamorphic one
+    /// holds no guard.
+    pub(crate) fn forget_freed(&mut self, freed: &FreedIds) {
+        let names_freed = |entry: &CacheEntry| {
+            freed.guards.contains(&entry.guard) || target_names(&entry.target, freed)
+        };
+        for entry in &mut self.sites {
+            match entry.target {
+                Target::Vacant | Target::Megamorphic { .. } => {}
+                Target::Polymorphic { block, .. } => {
+                    if let Some(slots) = self.pool.get_mut(block as usize) {
+                        for slot in slots.iter_mut().filter(|slot| names_freed(slot)) {
+                            *slot = CacheEntry::vacant();
+                        }
+                    }
+                }
+                _ => {
+                    if names_freed(entry) {
+                        *entry = CacheEntry::vacant();
+                    }
+                }
+            }
+        }
+        self.global.retain(|entry| {
+            let lexical_freed =
+                matches!(entry.rule, CacheRule::Lexical(guard) if freed.guards.contains(&guard));
+            !(freed.guards.contains(&entry.guard)
+                || lexical_freed
+                || target_names(&entry.target, freed))
+        });
+        if self.verified_slot_level.is_some_and(|(guard, level)| {
+            freed.guards.contains(&guard) || freed.applications.contains(&level)
+        }) {
+            self.verified_slot_level = None;
+        }
+    }
+
     /// The table's sizes: how much of what is allocated is actually filled,
     /// and how large one entry of each kind is, for
     /// `Interpreter::cache_statistics` and `--cache-statistics`.
@@ -487,6 +533,20 @@ pub struct CacheStatistics {
     pub filled_global_entries: usize,
     pub entry_bytes: usize,
     pub global_entry_bytes: usize,
+}
+
+/// Whether `target` names a freed application or guard: a slot target's
+/// level, and the guard it recorded for a receiver with that level. Every
+/// other target names no id but its entry's guard.
+fn target_names(target: &Target, freed: &FreedIds) -> bool {
+    match target {
+        Target::Slot {
+            level,
+            recorded_guard,
+            ..
+        } => freed.applications.contains(level) || freed.guards.contains(recorded_guard),
+        _ => false,
+    }
 }
 
 /// The index of `site` in its activation's range, or `None` when the send
@@ -609,6 +669,17 @@ impl GlobalCache {
     fn clear(&mut self) {
         for entry in &mut self.entries {
             *entry = GlobalEntry::vacant();
+        }
+    }
+
+    /// Vacates every entry `keep` refuses: `InlineCaches::forget_freed`'s
+    /// global half. A group whose first slot is vacated keeps its second,
+    /// which `get` still finds there.
+    fn retain(&mut self, keep: impl Fn(&GlobalEntry) -> bool) {
+        for entry in &mut self.entries {
+            if !entry.is_vacant() && !keep(entry) {
+                *entry = GlobalEntry::vacant();
+            }
         }
     }
 
@@ -1699,6 +1770,69 @@ mod tests {
         caches.record_slot_level(guard(1), level(1));
         assert!(!caches.slot_level_verified(guard(0), level(1)));
         caches.invalidate();
+        assert!(!caches.slot_level_verified(guard(1), level(1)));
+    }
+
+    /// A collection's scrub vacates exactly what names a freed id -- a
+    /// monomorphic entry's guard, a slot target's level and the guard it
+    /// recorded, a polymorphic block's matching slot, a global entry's
+    /// guard and a lexical rule's N, the verified slot level -- and keeps
+    /// every other entry warm.
+    #[test]
+    fn forgetting_freed_ids_vacates_exactly_the_entries_naming_them() {
+        let mut caches = InlineCaches::new();
+        let guard = |number: u32| DispatchId::from_counter(DispatchId::FIRST_MINTED + number);
+        let level = |index: usize| ApplicationIndex::from_index(index).expect("a small index");
+        let slot = |level, recorded_guard| Target::Slot {
+            field: 0,
+            kind: AccessorKind::Getter,
+            chain: Chain::Public,
+            level,
+            recorded_guard,
+        };
+        let kept = level(9);
+        let base = caches.fresh_range(5).index();
+        caches.advance(base, guard(0), slot(kept, DispatchId::NONE), false);
+        caches.advance(base + 1, guard(1), slot(level(1), DispatchId::NONE), false);
+        caches.advance(base + 2, guard(1), slot(kept, guard(2)), false);
+        caches.advance(base + 3, guard(1), slot(kept, DispatchId::NONE), false);
+        caches.advance(base + 4, guard(0), slot(kept, DispatchId::NONE), false);
+        caches.advance(base + 4, guard(1), slot(kept, DispatchId::NONE), false);
+        let selector = Symbol::intern("value");
+        let lexical = CacheRule::Lexical(guard(0));
+        for (key, rule) in [
+            (guard(0), CacheRule::Public),
+            (guard(1), lexical),
+            (guard(1), CacheRule::Public),
+        ] {
+            caches
+                .global
+                .insert(key, selector, rule, slot(kept, DispatchId::NONE));
+        }
+        caches.record_slot_level(guard(1), level(1));
+        let mut freed = FreedIds::default();
+        freed.guards.extend([guard(0), guard(2)]);
+        freed.applications.insert(level(1));
+        caches.forget_freed(&freed);
+        for index in base..base + 3 {
+            assert!(matches!(caches.sites[index].target, Target::Vacant));
+        }
+        assert!(!matches!(caches.sites[base + 3].target, Target::Vacant));
+        assert!(matches!(
+            caches.sites[base + 4].target,
+            Target::Polymorphic { .. }
+        ));
+        assert!(caches.polymorphic_hit(base + 4, guard(0)).is_none());
+        assert!(caches.polymorphic_hit(base + 4, guard(1)).is_some());
+        assert!(caches
+            .global
+            .get(guard(0), selector, CacheRule::Public)
+            .is_none());
+        assert!(caches.global.get(guard(1), selector, lexical).is_none());
+        assert!(caches
+            .global
+            .get(guard(1), selector, CacheRule::Public)
+            .is_some());
         assert!(!caches.slot_level_verified(guard(1), level(1)));
     }
 

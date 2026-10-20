@@ -34,6 +34,7 @@ mod ids;
 pub(crate) mod mark;
 mod object;
 mod pending;
+pub(crate) mod reclaim;
 mod records;
 mod scavenge;
 mod space;
@@ -45,7 +46,6 @@ use compaction::ForwardingTable;
 use compaction::{Shift, ShiftedRegion};
 pub(crate) use header::IDENTITY_HASH_LIMIT;
 use header::{Format, Header, MAX_AGE, WORD_COUNT_OVERFLOW};
-#[allow(unused_imports)] // the tables' free rows use it in the reclamation of dead rows
 pub(crate) use ids::{DispatchIdAllocator, FreeIndices};
 pub use object::Element;
 use object::{
@@ -623,19 +623,22 @@ pub struct Heap<'gc> {
     /// instance of the kernel-private `Mixin`, the reflectee of a mixin
     /// mirror (`docs/design/liveness-and-reflection.md`, "A mixin is
     /// reified as a kernel-private object"). Filled lazily by
-    /// `Mutator::reified_mixin` (`record_mixin_object`). Strong, unlike
-    /// `canonical_symbols`: a mixin lives as long as the heap's mixin table,
-    /// so its object must too, or a mirror reached later would answer a
-    /// second object for the same mixin and `==` would no longer be the
-    /// mixin's identity. A table of handles, so a collection marks it as a
-    /// root and every move forwards it.
+    /// `Mutator::reified_mixin` (`record_mixin_object`). Weak, as
+    /// `canonical_symbols` is: not a root for marking, and pruned by
+    /// `prune_mixin_objects` between marking and compaction. An entry lives
+    /// while its object is reachable, so `==` stays the mixin's identity for
+    /// every comparison a program can make -- an object nothing reaches
+    /// can be compared with nothing, and the next reflection makes a fresh
+    /// one. A marked entry keeps its mixin's id alive. A scavenge traces the
+    /// table strongly, since a scavenge reclaims no id, and every move
+    /// forwards it.
     mixin_objects: Vec<Option<ObjectReference<'gc>>>,
     /// The one object each symbol is, indexed by `Symbol::index` (§5.1.6:
     /// equal symbols are one object; `docs/design/object-model.md`,
     /// "Values and objects"). Filled lazily by `Mutator::new_symbol`, the one
     /// way to make a symbol, and by the image decoder. Per heap, because a
-    /// handle means nothing against another heap. The system's one weak
-    /// structure: not a root for marking, pruned by
+    /// handle means nothing against another heap. Weak, as
+    /// `mixin_objects` is: not a root for marking, pruned by
     /// `prune_canonical_symbols` between marking and compaction, and
     /// forwarded by `compact` like everything else that survives
     /// (`docs/design/memory.md`, "Weak references").
@@ -1466,6 +1469,7 @@ impl<'gc> Heap<'gc> {
             self.tables
                 .applications
                 .get(application.index().index())
+                .and_then(Option::as_ref)
                 .is_some_and(|entry| Rc::ptr_eq(entry, &application)),
             "internal: a class object's application is registered (`Heap::register_application`)"
         );
@@ -3559,11 +3563,18 @@ impl<'gc> Heap<'gc> {
         &mut self,
         mut application: MixinApplication,
     ) -> Rc<MixinApplication> {
-        let index = ApplicationIndex::from_index(self.tables.applications.len())
-            .expect("more than u32::MAX applications in one heap");
+        let row = match self.tables.free_applications.take_smallest() {
+            Some(free) => free as usize,
+            None => {
+                self.tables.applications.push(None);
+                self.tables.applications.len() - 1
+            }
+        };
+        let index =
+            ApplicationIndex::from_index(row).expect("more than u32::MAX applications in one heap");
         application.index = index;
         let application = Rc::new(application);
-        self.tables.applications.push(application.clone());
+        self.tables.applications[row] = Some(application.clone());
         application
     }
 
@@ -3586,7 +3597,7 @@ impl<'gc> Heap<'gc> {
     }
 
     pub fn application(&self, index: ApplicationIndex) -> Option<Rc<MixinApplication>> {
-        self.tables.applications.get(index.index()).cloned()
+        self.tables.applications.get(index.index())?.clone()
     }
 
     /// Every version of a mixin an install superseded, oldest first: the
@@ -3685,7 +3696,10 @@ impl<'gc> Heap<'gc> {
         let index = self
             .class_field(class, class_field::APPLICATION)?
             .as_small_integer()?;
-        self.tables.applications.get(usize::try_from(index).ok()?)
+        self.tables
+            .applications
+            .get(usize::try_from(index).ok()?)?
+            .as_ref()
     }
 
     /// Runs `read` over the application of the first level of `class`'s
@@ -4177,6 +4191,7 @@ impl<'gc> Heap<'gc> {
             self.tables
                 .applications
                 .get(application.index().index())
+                .and_then(Option::as_ref)
                 .is_some_and(|entry| Rc::ptr_eq(entry, &application)),
             "internal: a class object's application is registered (`Heap::register_application`)"
         );
@@ -5056,6 +5071,7 @@ impl<'gc> Heap<'gc> {
                     .entered_level
                     .index(),
             )
+            .and_then(Option::as_ref)
             .map_or(0, |application| application.own_slot_base)
     }
 
@@ -5953,6 +5969,8 @@ impl<'gc> Heap<'gc> {
         if let Some(class) = &mut self.activation_class {
             forwarder.object(class);
         }
+        // Weak too, and pruned before a compaction as the symbols below are:
+        // every entry left names a live object.
         for object in self.mixin_objects.iter_mut().flatten() {
             forwarder.object(object);
         }
@@ -6131,11 +6149,12 @@ impl<'gc> Heap<'gc> {
     /// the step state's roots (`World::mark_everything_reachable`) before
     /// the traversal runs.
     ///
-    /// The canonical symbol table is deliberately not among these roots: it
-    /// is the runtime's own weak structure, beside the `WeakArray`s,
-    /// `Ephemeron`s and `WeakMap`s of a program (`docs/design/memory.md`,
-    /// "Weak references"), pruned against the finished marking by
-    /// `prune_canonical_symbols` rather than kept alive by it. The space
+    /// The canonical symbol table and the reified mixins are deliberately
+    /// not among these roots: they are the runtime's own weak structures,
+    /// beside the `WeakArray`s, `Ephemeron`s and `WeakMap`s of a program
+    /// (`docs/design/memory.md`, "Weak references"), pruned against the
+    /// finished marking by `prune_canonical_symbols` and
+    /// `prune_mixin_objects` rather than kept alive by it. The space
     /// itself is never a root, only what the roots reach.
     pub(crate) fn begin_marking(&mut self) -> mark::Marker {
         use crate::trace::{Trace, Tracer};
@@ -6159,9 +6178,6 @@ impl<'gc> Heap<'gc> {
         let mut marker = mark::Marker::new();
         if let Some(class) = &mut self.activation_class {
             marker.object(class);
-        }
-        for object in self.mixin_objects.iter_mut().flatten() {
-            marker.object(object);
         }
         for entry in &mut self.stack.entries {
             entry.trace(&mut marker);
@@ -6277,6 +6293,30 @@ impl<'gc> Heap<'gc> {
             }
             let block = block_range(words, index);
             let format = header.format();
+            // The ids an object names as numbers, which no pointer range
+            // reaches: what keeps an application, a mixin, a body and a
+            // feedback range from being reclaimed. A field past a short
+            // block reads as nil, as `pointer_ranges` clamps it.
+            let field = |field: usize| {
+                let position = block.start + FIELDS + field;
+                if position < block.end {
+                    words[position]
+                } else {
+                    Word::NIL.bits()
+                }
+            };
+            match format {
+                Format::Class => marker.gathered.class_words(
+                    field(class_field::APPLICATION),
+                    field(class_field::APPLIED_CLAUSE),
+                ),
+                Format::Closure => marker.gathered.closure_words(
+                    field(closure_field::CODE_ID),
+                    field(closure_field::FEEDBACK_BASE),
+                ),
+                Format::Frame => marker.gathered.frame_word(field(frame_field::CODE_ID)),
+                _ => {}
+            }
             let ranges = match format {
                 Format::WeakPointers | Format::Ephemeron => {
                     let mut key_died = false;
@@ -6503,8 +6543,8 @@ impl<'gc> Heap<'gc> {
     }
 
     /// Marks from the heap's own roots and `roots`, finishes the marking's
-    /// weak objects and ephemerons, prunes the canonical symbol table,
-    /// compacts, and forwards `roots`, for the heap's own
+    /// weak objects and ephemerons, prunes the canonical symbol table and
+    /// the reified mixins, compacts, and forwards `roots`, for the heap's own
     /// tests. A real collection goes through
     /// `World`.
     #[cfg(test)]
@@ -6517,6 +6557,7 @@ impl<'gc> Heap<'gc> {
         self.drain_marking(&mut marker);
         self.finish_marking(&mut marker);
         self.prune_canonical_symbols();
+        self.prune_mixin_objects();
         let mut forwarder = self.compact();
         for root in roots.iter_mut() {
             forwarder.value(root);
@@ -6902,11 +6943,13 @@ mod tests {
         (mixin, id)
     }
 
-    /// The table of reified mixins is strong and a root: with nothing else
-    /// naming it, a reified mixin survives a scavenge, a full collection and
-    /// a move, and stays the one object the table answers for its id.
+    /// The table of reified mixins is weak against a full collection
+    /// alone: with nothing else naming it, a reified mixin survives a
+    /// scavenge and a move, and stays the one object the table answers for
+    /// its id; a full collection keeps it, as that one object, while a root
+    /// reaches it, and clears its entry once nothing does.
     #[test]
-    fn a_reified_mixin_survives_every_collection_and_move() {
+    fn a_reified_mixin_survives_every_scavenge_and_move_and_lives_while_reached() {
         let mut heap = Heap::new();
         let class = builtin_named_class(&mut heap, "Mixin", Some(BuiltinClass::Mixin));
         let (_mixin, id) = recorded_mixin_object(&mut heap, class, "Reified");
@@ -6919,13 +6962,21 @@ mod tests {
         still_reified(&heap);
         scavenge_bare(&mut heap, true, &mut []);
         still_reified(&heap);
-        heap.collect_for_test(&mut []);
-        still_reified(&heap);
         #[cfg(debug_assertions)]
         {
             move_bare_heap(&mut heap);
             still_reified(&heap);
         }
+        let mut reached = Value::object(heap.mixin_object(id).expect("the table holds it"));
+        heap.collect_for_test(&mut [&mut reached]);
+        still_reified(&heap);
+        assert_eq!(
+            heap.mixin_object(id).map(|object| object.offset),
+            reached.as_object().map(|object| object.offset),
+            "the root and the table name one object"
+        );
+        heap.collect_for_test(&mut []);
+        assert!(heap.mixin_object(id).is_none());
     }
 
     /// Only the canonical object of a mixin is read as one: neither a

@@ -205,8 +205,13 @@ fn a_site_on_true_and_false_is_bimorphic() {
     );
 }
 
+/// `run` keeps its two cells in `cells`, so that both applications of
+/// `Cell` stay live after it: a full collection between the run and the
+/// reading of a site -- the collection stress mode makes one at every
+/// safepoint -- frees the guard of an application nothing holds, and
+/// vacates every entry naming it.
 const TWO_APPLICATIONS: &str = indoc! {"
-    class Subject = Object new () (
+    class Subject = Object new (| cells |) (
       class Narrow = Object new (| first ::= 1. |) ( public describe = ( ^1 ) )
       class Wide = Object new (| first ::= 1. second ::= 2. third ::= 3. |) ( public describe = ( ^2 ) )
       class Box on: base = Object new (| base = base. |) (
@@ -218,8 +223,8 @@ const TWO_APPLICATIONS: &str = indoc! {"
       public run = (
         | sum |
         sum:: 0.
-        {(Box on: Narrow) Cell new. (Box on: Wide) Cell new}
-          do: [:each | sum:: sum + each held + each describe].
+        cells:: {(Box on: Narrow) Cell new. (Box on: Wide) Cell new}.
+        cells do: [:each | sum:: sum + each held + each describe].
         ^sum
       )
     ) : ()

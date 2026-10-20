@@ -1,0 +1,193 @@
+//! What a full collection reads and frees to give the per-heap ids back
+//! (`docs/design/object-model.md`, "An application has two ids"): the ids
+//! marking finds named, the roots the activation stack holds outside the
+//! heap, and the table operations `Mutator::reclaim_ids` decides with.
+
+use std::collections::{BTreeSet, HashSet};
+use std::rc::Rc;
+
+use super::value::{Value, Word};
+use super::{ApplicationIndex, Heap};
+use crate::hash::IdentityBuildHasher;
+use crate::interpreter::FeedbackBase;
+use crate::mixin::{AppliedClause, DispatchId, MixinApplication};
+
+/// What a full marking found named: one bit per row of each table.
+#[derive(Default)]
+pub(crate) struct GatheredIds {
+    /// `class_field::APPLICATION` of every marked class object.
+    pub(crate) applications: BitSet,
+    /// The mixin id `class_field::APPLIED_CLAUSE` packs, of every marked
+    /// class object that has one.
+    pub(crate) applied_clauses: BitSet,
+    /// `CODE_ID` of every marked closure and frame.
+    pub(crate) codes: BitSet,
+    /// `FEEDBACK_BASE` of every marked closure, raw, but for
+    /// `FeedbackBase::NOT_ASSIGNED`.
+    pub(crate) feedback_bases: BTreeSet<u32>,
+}
+
+impl GatheredIds {
+    /// A marked class object's application and applied-clause words, as
+    /// stored. A word that is no `SmallInteger` names nothing: a crafted
+    /// image's, which the readers of the field refuse the same way.
+    pub(super) fn class_words(&mut self, application: u64, applied_clause: u64) {
+        if let Some(row) = small_integer(application).and_then(row_of) {
+            self.applications.insert(row);
+        }
+        if let Some((mixin, _, _)) = small_integer(applied_clause).and_then(AppliedClause::unpack) {
+            if let Ok(row) = u32::try_from(mixin.index()) {
+                self.applied_clauses.insert(row);
+            }
+        }
+    }
+
+    /// A marked closure's code-id and feedback-base words, as stored.
+    pub(super) fn closure_words(&mut self, code: u64, feedback_base: u64) {
+        self.frame_word(code);
+        if let Some(raw) = small_integer(feedback_base).and_then(row_of) {
+            if raw != FeedbackBase::NOT_ASSIGNED.raw() {
+                self.feedback_bases.insert(raw);
+            }
+        }
+    }
+
+    /// A marked frame's code-id word, as stored: nil for a top-level
+    /// frame's, which names no body.
+    pub(super) fn frame_word(&mut self, code: u64) {
+        if let Some(row) = small_integer(code).and_then(row_of) {
+            self.codes.insert(row);
+        }
+    }
+}
+
+/// The `SmallInteger` a stored word holds, if it holds one: the decoding
+/// `Heap::load` makes, without the heap, which marking holds borrowed.
+fn small_integer(bits: u64) -> Option<i64> {
+    Value::from_word(
+        Word::from_bits(bits),
+        #[cfg(debug_assertions)]
+        0,
+        #[cfg(debug_assertions)]
+        0,
+    )
+    .as_small_integer()
+}
+
+/// A table row a stored number names, if it can be one.
+fn row_of(number: i64) -> Option<u32> {
+    u32::try_from(number).ok()
+}
+
+/// A growable set of `u32` rows, a word per 64.
+#[derive(Default)]
+pub(crate) struct BitSet {
+    words: Vec<u64>,
+}
+
+impl BitSet {
+    pub(crate) fn insert(&mut self, index: u32) {
+        let word = (index / 64) as usize;
+        if self.words.len() <= word {
+            self.words.resize(word + 1, 0);
+        }
+        self.words[word] |= 1 << (index % 64);
+    }
+
+    pub(crate) fn contains(&self, index: u32) -> bool {
+        self.words
+            .get((index / 64) as usize)
+            .is_some_and(|word| word & (1 << (index % 64)) != 0)
+    }
+}
+
+/// What a reclamation freed, for the caches' scrub.
+#[derive(Default)]
+pub(crate) struct FreedIds {
+    pub(crate) guards: HashSet<DispatchId, IdentityBuildHasher>,
+    pub(crate) applications: HashSet<ApplicationIndex, IdentityBuildHasher>,
+}
+
+impl FreedIds {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.guards.is_empty() && self.applications.is_empty()
+    }
+}
+
+/// What the live activations name outside the heap's objects: no
+/// marking reaches these, since a stack entry holds them as numbers.
+pub(crate) struct StackRoots {
+    /// Every activation's `entered_level`, `UNREGISTERED` included.
+    pub(crate) entered_levels: Vec<ApplicationIndex>,
+    /// Every activation's `recorded_guard`, `NONE` included.
+    pub(crate) recorded_guards: Vec<DispatchId>,
+    /// Every activation's feedback base, `NOT_ASSIGNED` included.
+    // Read by the collection's reclamation of feedback ranges.
+    #[allow(dead_code)]
+    pub(crate) feedback_bases: Vec<FeedbackBase>,
+}
+
+impl Heap<'_> {
+    /// Clears every reified mixin object the marking did not reach. The
+    /// table is weak: while anything reaches the object it is marked and
+    /// stays the one object of its mixin, so `==` stays the mixin's
+    /// identity for every comparison a program can make; once nothing
+    /// reaches it, nothing can compare it, and the next reflection makes a
+    /// fresh one. Between marking and compaction, as
+    /// `prune_canonical_symbols` is, for the same reason.
+    pub(crate) fn prune_mixin_objects(&mut self) {
+        for index in 0..self.mixin_objects.len() {
+            if let Some(object) = self.mixin_objects[index] {
+                if !self.header(object).marked() {
+                    self.mixin_objects[index] = None;
+                }
+            }
+        }
+    }
+
+    /// The ids every live activation names (`StackRoots`).
+    pub(crate) fn stack_roots(&self) -> StackRoots {
+        let entries = &self.stack.entries;
+        StackRoots {
+            entered_levels: entries.iter().map(|entry| entry.entered_level).collect(),
+            recorded_guards: entries.iter().map(|entry| entry.recorded_guard).collect(),
+            feedback_bases: entries.iter().map(|entry| entry.feedback_base).collect(),
+        }
+    }
+
+    /// How many rows the application table has, free ones included.
+    pub(crate) fn application_rows(&self) -> usize {
+        self.tables.applications.len()
+    }
+
+    /// Takes the application out of row `index` and frees the index, which
+    /// the next `register_application` may mint again. A compiler-invariant
+    /// violation panics: freeing a row that holds nothing.
+    pub(crate) fn free_application(&mut self, index: ApplicationIndex) -> Rc<MixinApplication> {
+        let application = self
+            .tables
+            .applications
+            .get_mut(index.index())
+            .and_then(Option::take)
+            .expect("internal: a freed application row holds an application");
+        self.tables
+            .free_applications
+            .free(u32::try_from(index.index()).expect("an application index is 32 bits"));
+        application
+    }
+
+    /// Drops every successor entry whose replaced application `live` calls
+    /// dead: its index is about to be freed, and an entry left under it
+    /// would hand the next application minted there a successor of its own.
+    pub(crate) fn retain_successors(&mut self, live: impl Fn(ApplicationIndex) -> bool) {
+        self.tables.successors.retain(|old, _| live(*old));
+    }
+
+    /// Gives back the application table's trailing free rows.
+    pub(crate) fn truncate_application_rows(&mut self) {
+        super::ids::truncate_trailing(
+            &mut self.tables.applications,
+            &mut self.tables.free_applications,
+        );
+    }
+}
