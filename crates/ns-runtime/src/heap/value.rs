@@ -324,7 +324,7 @@ impl<'gc> Value<'gc> {
         match self.word & TAG_MASK {
             CONSTANT_TAG => (self.word >> TAG_BITS) as usize,
             SMALL_INTEGER_TAG => 3,
-            SMALL_FLOAT_TAG => 4,
+            SMALL_FLOAT_TAG => super::FLOAT_DISPATCH_INDEX,
             _ => unreachable!("an object carries its own class"),
         }
     }

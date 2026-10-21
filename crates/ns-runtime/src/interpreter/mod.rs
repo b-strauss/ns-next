@@ -859,7 +859,9 @@ impl<'gc> Mutator<'gc> {
     /// An immediate has no class field to read a dispatch id from, so the
     /// ids `dispatch_id` answers for one are read off the builtin class
     /// objects and kept in a table of their own
-    /// (`Heap::set_immediate_dispatch_ids`) -- once when the placeholders
+    /// (`Heap::set_immediate_dispatch_ids`), and the guards a closure's and
+    /// a frame's headers carry beside them (`Heap::set_builtin_guards`), so
+    /// that their allocation looks none up -- once when the placeholders
     /// are built, and again when the kernel phase gives them their
     /// applications (`interpreter::kernel`).
     pub(crate) fn refresh_immediate_dispatch_ids(&mut self) {
@@ -877,6 +879,11 @@ impl<'gc> Mutator<'gc> {
             instances(self, BuiltinClass::Float),
         ];
         self.heap.set_immediate_dispatch_ids(ids);
+        let guards = crate::heap::BuiltinGuards {
+            closure: instances(self, BuiltinClass::Closure),
+            frame: instances(self, BuiltinClass::Activation),
+        };
+        self.heap.set_builtin_guards(guards);
     }
 
     /// The smallest freed dispatch id, else the next never minted, or

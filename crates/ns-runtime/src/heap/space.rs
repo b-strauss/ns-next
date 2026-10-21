@@ -259,7 +259,9 @@ impl Space {
     /// the limit is eden's start, which no bump fits under.
     fn place_eden_top(&mut self, top: usize) {
         let limit = match self.young_threshold {
-            Some(threshold) => (self.eden_start + threshold)
+            Some(threshold) => self
+                .eden_start
+                .saturating_add(threshold)
                 .saturating_sub(8)
                 .min(NURSERY_END - REGION_SLACK),
             None => self.eden_start,
@@ -302,10 +304,6 @@ impl Space {
     /// `bump_object` for an object of exactly `BLOCK_WORDS` words, its
     /// header included, which `header`'s count must say, lent whole as an
     /// array: the caller writes its fields from `FIELDS` on.
-    #[expect(
-        dead_code,
-        reason = "the compiled allocations of road step 6 call it next"
-    )]
     #[inline(always)]
     pub(in crate::heap) fn bump_object_array<const BLOCK_WORDS: usize>(
         &mut self,
@@ -375,7 +373,7 @@ impl Space {
         }
         let region = match name {
             RegionName::PastSurvivor => &mut self.survivors[self.past],
-            RegionName::Eden => unreachable!(),
+            RegionName::Eden => unreachable!("internal: eden was placed above"),
             RegionName::Old => &mut self.old,
         };
         debug_assert!(region.base <= start && start <= top && top <= region.end);
