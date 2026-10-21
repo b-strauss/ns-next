@@ -995,6 +995,22 @@ fn write_words(slots: &mut [u64], words: impl IntoIterator<Item = Word>) {
     }
 }
 
+/// Asserts that a fast bump's object holds no word a scavenge poisoned:
+/// every field of an object filled explicitly, rather than with nil, must
+/// have been written. Asked only of pointer fields, whose valid words never
+/// carry the poison's tag.
+#[cfg(debug_assertions)]
+#[expect(
+    dead_code,
+    reason = "the compiled allocations of road step 6 call it next"
+)]
+fn assert_no_poison(words: &[u64]) {
+    assert!(
+        !words.contains(&header::POISON),
+        "internal: a fresh object kept a word the scavenge poisoned"
+    );
+}
+
 /// `count_word`'s value, for a field written through `set_pointer_word`.
 fn count_value<'gc>(count: usize) -> Value<'gc> {
     let count = i64::try_from(count).unwrap_or(SMALL_INTEGER_MAX);
@@ -1020,7 +1036,7 @@ impl<'gc> Heap<'gc> {
     /// Private to the heap module: `World` builds the one heap an interpreter
     /// has, and only this module's own tests build a bare one.
     fn new() -> Heap<'gc> {
-        Heap {
+        let mut heap = Heap {
             next_identity_hash: 1,
             stack: ActivationStack::default(),
             space: Space::new(space::DEFAULT_RESERVATION)
@@ -1057,7 +1073,10 @@ impl<'gc> Heap<'gc> {
             heap_id: next_heap_id(),
             #[cfg(debug_assertions)]
             epoch: 0,
-        }
+        };
+        heap.space
+            .set_young_threshold(Some(heap.scavenge_threshold));
+        heap
     }
 
     /// Draws the next number from the counter, which wraps from the widest
@@ -1121,6 +1140,16 @@ impl<'gc> Heap<'gc> {
     ) -> (ObjectReference<'gc>, Range<usize>) {
         let guard = self.header_dispatch_id(class);
         let class_word = self.store(Value::object(class));
+        let word_count = field_count + 1;
+        if word_count < WORD_COUNT_OVERFLOW {
+            let header = Header::new(guard, format, unused, word_count).with_negative(negative);
+            if let Some((offset, fields)) = self.space.bump_object(header, class_word.bits()) {
+                fields.fill(Word::NIL.bits());
+                self.count_young_allocation();
+                let first = offset.get() as usize / 8 + FIELDS;
+                return (self.object_handle(offset), first..first + field_count);
+            }
+        }
         self.allocate_block(class_word, guard, format, unused, negative, field_count)
     }
 
@@ -1751,6 +1780,14 @@ impl<'gc> Heap<'gc> {
     /// what it holds; nothing moves before it has. A 64-bit handle has no
     /// ceiling the space could reach, so none is checked; a reservation used
     /// up is running out of memory.
+    ///
+    /// The cold path of every allocation: a fast bump (`Space::bump_object`)
+    /// takes every young object whose header holds its count while eden is
+    /// below its threshold, so this is reached for an object that crosses
+    /// the threshold, one eden cannot hold, a large one, one with an
+    /// overflow word, and everything the image decoder allocates.
+    #[cold]
+    #[inline(never)]
     fn allocate_block(
         &mut self,
         class: Word,
@@ -1816,6 +1853,13 @@ impl<'gc> Heap<'gc> {
             self.remember(offset);
         }
         (self.object_handle(offset), fields)
+    }
+
+    /// Counts a fast bump's object, as `allocate_block` counts its own.
+    #[inline(always)]
+    fn count_young_allocation(&mut self) {
+        self.young_objects += 1;
+        self.object_count += 1;
     }
 
     /// The one place an `ObjectReference` is built, so the `cfg` on `origin`
@@ -5409,6 +5453,8 @@ impl<'gc> Heap<'gc> {
     /// tenured before it began (`image::load`).
     pub(crate) fn set_allocating_old(&mut self, allocating_old: bool) {
         self.allocating_old = allocating_old;
+        let threshold = (!allocating_old).then_some(self.scavenge_threshold);
+        self.space.set_young_threshold(threshold);
     }
 
     /// Whether an allocation past eden's threshold, a spent eden or the
@@ -5490,6 +5536,9 @@ impl<'gc> Heap<'gc> {
     #[cfg(debug_assertions)]
     pub(crate) fn set_scavenge_threshold(&mut self, bytes: usize) {
         self.scavenge_threshold = bytes;
+        if !self.allocating_old {
+            self.space.set_young_threshold(Some(bytes));
+        }
     }
 
     /// The bytes the old space holds.
@@ -9687,6 +9736,73 @@ mod tests {
             "the load tenured everything it names"
         );
         assert!(space::is_young(heap.allocate_instance(class, 0).offset));
+    }
+
+    #[test]
+    fn a_fast_bump_up_to_the_threshold_asks_for_nothing_and_the_next_asks_for_a_scavenge() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential(0);
+        // 32 words a block: the header, the class word and 30 fields.
+        let fields = 30;
+        let block_bytes = 8 * (fields + 2);
+        let eden = heap.space.region(RegionName::Eden);
+        while heap.space.region(RegionName::Eden).top + block_bytes
+            < eden.start + heap.scavenge_threshold
+        {
+            heap.allocate_instance(class, fields);
+            assert!(!heap.scavenge_requested);
+        }
+        heap.allocate_instance(class, fields);
+        assert!(
+            heap.scavenge_requested,
+            "the allocation that reached the threshold asks"
+        );
+    }
+
+    #[test]
+    fn while_allocating_old_no_fast_bump_succeeds() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential(0);
+        heap.set_allocating_old(true);
+        let decoded = heap.allocate_instance(class, 2);
+        heap.set_allocating_old(false);
+        assert!(!space::is_young(decoded.offset));
+        assert!(!heap.header(decoded).remembered());
+        assert!(space::is_young(heap.allocate_instance(class, 2).offset));
+    }
+
+    #[test]
+    fn a_fast_and_a_cold_allocation_write_the_same_words() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential(0);
+        let fast = heap.allocate_instance(class, 3);
+        assert!(space::is_young(fast.offset));
+        // The same object made by the cold path: eden refused.
+        heap.space.set_young_threshold(Some(0));
+        let cold = heap.allocate_instance(class, 3);
+        heap.space
+            .set_young_threshold(Some(heap.scavenge_threshold));
+        assert!(
+            space::is_young(cold.offset),
+            "the cold path still bumps eden"
+        );
+        assert_eq!(heap.block(fast), heap.block(cold));
+    }
+
+    #[test]
+    fn an_object_of_254_words_takes_the_fast_path_and_one_of_255_takes_an_overflow_word() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential(0);
+        let top = heap.space.region(RegionName::Eden).top;
+        let largest = heap.allocate_instance(class, 253);
+        assert_eq!(largest.offset.get() as usize, top, "no overflow word");
+        let top = heap.space.region(RegionName::Eden).top;
+        let overflowing = heap.allocate_instance(class, 254);
+        assert_eq!(
+            overflowing.offset.get() as usize,
+            top + 8,
+            "an overflow word first"
+        );
     }
 
     #[test]
