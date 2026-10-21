@@ -149,6 +149,10 @@ pub(in crate::heap) struct Space {
     old: Region,
     /// The end of the committed range, which starts at the base.
     committed: usize,
+    /// How many fast bumps succeeded, so a test tells a fast allocation
+    /// from a cold one: both bump eden and write the same words.
+    #[cfg(test)]
+    fast_bumps: usize,
 }
 
 impl Space {
@@ -173,6 +177,8 @@ impl Space {
             young_threshold: None,
             old,
             committed,
+            #[cfg(test)]
+            fast_bumps: 0,
         };
         space.place_eden_top(EDEN_START);
         Ok(space)
@@ -296,6 +302,10 @@ impl Space {
         let word_count = header.word_count();
         debug_assert!(word_count < WORD_COUNT_OVERFLOW);
         let (start, block) = self.reservation.bump(word_count as u8 + 1)?;
+        #[cfg(test)]
+        {
+            self.fast_bumps += 1;
+        }
         block[HEADER] = header.0;
         block[CLASS] = class;
         Some((young_offset(start), &mut block[FIELDS..]))
@@ -312,9 +322,19 @@ impl Space {
     ) -> Option<(NonZeroU64, &mut [u64; BLOCK_WORDS])> {
         debug_assert_eq!(header.word_count() + 1, BLOCK_WORDS);
         let (start, block) = self.reservation.bump_array::<BLOCK_WORDS>()?;
+        #[cfg(test)]
+        {
+            self.fast_bumps += 1;
+        }
         block[HEADER] = header.0;
         block[CLASS] = class;
         Some((young_offset(start), block))
+    }
+
+    /// How many fast bumps have succeeded (`fast_bumps`).
+    #[cfg(test)]
+    pub(in crate::heap) fn fast_bumps(&self) -> usize {
+        self.fast_bumps
     }
 
     pub(in crate::heap) fn allocate_survivor(&mut self, words: usize) -> Option<usize> {

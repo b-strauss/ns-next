@@ -1443,9 +1443,9 @@ impl<'gc> Heap<'gc> {
         for value in &copied {
             self.store(*value);
         }
-        let field_count = closure_field::COUNT + copied.len();
+        let field_count = closure_field::COUNT.saturating_add(copied.len());
         let class_word = self.store(Value::object(class));
-        if field_count + 1 < WORD_COUNT_OVERFLOW {
+        if field_count.saturating_add(1) < WORD_COUNT_OVERFLOW {
             let header = Header::new(
                 self.builtin_guards.closure,
                 Format::Closure,
@@ -1503,9 +1503,9 @@ impl<'gc> Heap<'gc> {
         for register in copied {
             self.store(self.register(register_base, *register));
         }
-        let field_count = closure_field::COUNT + copied.len();
+        let field_count = closure_field::COUNT.saturating_add(copied.len());
         let class_word = self.store(Value::object(class));
-        if field_count + 1 < WORD_COUNT_OVERFLOW {
+        if field_count.saturating_add(1) < WORD_COUNT_OVERFLOW {
             let header = Header::new(
                 self.builtin_guards.closure,
                 Format::Closure,
@@ -2043,9 +2043,9 @@ impl<'gc> Heap<'gc> {
         for register in registers {
             self.store(*register);
         }
-        let field_count = frame_field::COUNT + register_count;
+        let field_count = frame_field::COUNT.saturating_add(register_count);
         let class_word = self.store(Value::object(class));
-        if field_count + 1 < WORD_COUNT_OVERFLOW {
+        if field_count.saturating_add(1) < WORD_COUNT_OVERFLOW {
             let header = Header::new(self.builtin_guards.frame, Format::Frame, 0, field_count + 1);
             debug_assert_eq!(header.guard(), self.header_dispatch_id(class));
             if let Some((offset, fields)) = self.space.bump_object(header, class_word.bits()) {
@@ -9918,17 +9918,43 @@ mod tests {
         assert!(space::is_young(heap.allocate_instance(class, 2).offset));
     }
 
+    /// What `allocate` answers and how many fast bumps it made: the cold
+    /// path bumps eden too and writes the same words, so only the count
+    /// tells which of the two ran.
+    fn counting_fast_bumps<'gc, T>(
+        heap: &mut Heap<'gc>,
+        allocate: impl FnOnce(&mut Heap<'gc>) -> T,
+    ) -> (T, usize) {
+        let before = heap.space.fast_bumps();
+        let answer = allocate(heap);
+        (answer, heap.space.fast_bumps() - before)
+    }
+
+    /// `counting_fast_bumps` with eden refusing every fast bump, as it does
+    /// past the threshold: the cold path's object.
+    fn counting_fast_bumps_refused<'gc, T>(
+        heap: &mut Heap<'gc>,
+        allocate: impl FnOnce(&mut Heap<'gc>) -> T,
+    ) -> (T, usize) {
+        heap.space.set_young_threshold(Some(0));
+        let counted = counting_fast_bumps(heap, allocate);
+        heap.space
+            .set_young_threshold(Some(heap.scavenge_threshold));
+        counted
+    }
+
     #[test]
     fn a_fast_and_a_cold_allocation_write_the_same_words() {
         let mut heap = Heap::new();
         let class = heap.allocate_self_referential(0);
-        let fast = heap.allocate_instance(class, 3);
+        let (fast, fast_bumps) =
+            counting_fast_bumps(&mut heap, |heap| heap.allocate_instance(class, 3));
+        assert_eq!(fast_bumps, 1);
         assert!(space::is_young(fast.offset));
         // The same object made by the cold path: eden refused.
-        heap.space.set_young_threshold(Some(0));
-        let cold = heap.allocate_instance(class, 3);
-        heap.space
-            .set_young_threshold(Some(heap.scavenge_threshold));
+        let (cold, cold_bumps) =
+            counting_fast_bumps_refused(&mut heap, |heap| heap.allocate_instance(class, 3));
+        assert_eq!(cold_bumps, 0);
         assert!(
             space::is_young(cold.offset),
             "the cold path still bumps eden"
@@ -9957,11 +9983,11 @@ mod tests {
         let class = builtin_named_class(&mut heap, "Float", Some(BuiltinClass::Float));
         let activation = heap.activation_class.expect("frame_heap records one");
         set_guards_from(&mut heap, class, activation);
-        let fast = heap.allocate_float(class, 1e300);
-        heap.space.set_young_threshold(Some(0));
-        let cold = heap.allocate_float(class, 1e300);
-        heap.space
-            .set_young_threshold(Some(heap.scavenge_threshold));
+        let (fast, fast_bumps) =
+            counting_fast_bumps(&mut heap, |heap| heap.allocate_float(class, 1e300));
+        let (cold, cold_bumps) =
+            counting_fast_bumps_refused(&mut heap, |heap| heap.allocate_float(class, 1e300));
+        assert_eq!((fast_bumps, cold_bumps), (1, 0));
         assert!(space::is_young(fast.offset) && space::is_young(cold.offset));
         assert_eq!(heap.block(fast), heap.block(cold));
         assert_eq!(heap.float_value(Value::object(fast)), Some(1e300));
@@ -9981,25 +10007,27 @@ mod tests {
             2,
         );
         let base = heap.activation_register_base(activation);
-        let fast = heap.allocate_closure_from_registers(
-            class,
-            &code,
-            captured_frame,
-            FeedbackBase::NOT_ASSIGNED,
-            base,
-            &[1, 0],
-        );
-        heap.space.set_young_threshold(Some(0));
-        let cold = heap.allocate_closure_from_registers(
-            class,
-            &code,
-            captured_frame,
-            FeedbackBase::NOT_ASSIGNED,
-            base,
-            &[1, 0],
-        );
-        heap.space
-            .set_young_threshold(Some(heap.scavenge_threshold));
+        let (fast, fast_bumps) = counting_fast_bumps(&mut heap, |heap| {
+            heap.allocate_closure_from_registers(
+                class,
+                &code,
+                captured_frame,
+                FeedbackBase::NOT_ASSIGNED,
+                base,
+                &[1, 0],
+            )
+        });
+        let (cold, cold_bumps) = counting_fast_bumps_refused(&mut heap, |heap| {
+            heap.allocate_closure_from_registers(
+                class,
+                &code,
+                captured_frame,
+                FeedbackBase::NOT_ASSIGNED,
+                base,
+                &[1, 0],
+            )
+        });
+        assert_eq!((fast_bumps, cold_bumps), (1, 0));
         assert_eq!(heap.block(fast), heap.block(cold));
         let new_closure = || NewClosure {
             code: code.clone(),
@@ -10007,11 +10035,13 @@ mod tests {
             copied: vec![Value::object(class), Value::small_integer(7)],
             feedback_base: FeedbackBase::NOT_ASSIGNED,
         };
-        let fast_listed = heap.allocate_closure(class, new_closure());
-        heap.space.set_young_threshold(Some(0));
-        let cold_listed = heap.allocate_closure(class, new_closure());
-        heap.space
-            .set_young_threshold(Some(heap.scavenge_threshold));
+        let (fast_listed, fast_bumps) = counting_fast_bumps(&mut heap, |heap| {
+            heap.allocate_closure(class, new_closure())
+        });
+        let (cold_listed, cold_bumps) = counting_fast_bumps_refused(&mut heap, |heap| {
+            heap.allocate_closure(class, new_closure())
+        });
+        assert_eq!((fast_bumps, cold_bumps), (1, 0));
         assert_eq!(heap.block(fast_listed), heap.block(cold_listed));
         assert_eq!(heap.block(fast), heap.block(fast_listed));
         for closure in [fast, cold, fast_listed, cold_listed] {
@@ -10032,11 +10062,9 @@ mod tests {
         let arguments = [Value::small_integer(1), Value::object(closure_class)];
         let first = heap.push_activation(header(), &arguments, 3);
         let second = heap.push_activation(header(), &arguments, 3);
-        let fast = heap.reify(first);
-        heap.space.set_young_threshold(Some(0));
-        let cold = heap.reify(second);
-        heap.space
-            .set_young_threshold(Some(heap.scavenge_threshold));
+        let (fast, fast_bumps) = counting_fast_bumps(&mut heap, |heap| heap.reify(first));
+        let (cold, cold_bumps) = counting_fast_bumps_refused(&mut heap, |heap| heap.reify(second));
+        assert_eq!((fast_bumps, cold_bumps), (1, 0));
         let fast_object = heap.frame_object(fast);
         let cold_object = heap.frame_object(cold);
         assert!(space::is_young(fast_object.offset) && space::is_young(cold_object.offset));
@@ -10055,7 +10083,7 @@ mod tests {
     }
 
     #[test]
-    fn a_closure_and_a_float_allocated_while_allocating_old_go_old() {
+    fn a_closure_a_frame_and_a_float_allocated_while_allocating_old_go_old() {
         let mut heap = frame_heap();
         let float_class = builtin_named_class(&mut heap, "Float", Some(BuiltinClass::Float));
         let closure_class = named_class(&mut heap, "Closure");
@@ -10063,6 +10091,7 @@ mod tests {
         set_guards_from(&mut heap, closure_class, activation_class);
         let captured_frame = top_level_frame(&mut heap, 0);
         heap.set_allocating_old(true);
+        let bumps = heap.space.fast_bumps();
         let float = heap.allocate_float(float_class, 1e300);
         let closure = heap.allocate_closure(
             closure_class,
@@ -10073,8 +10102,11 @@ mod tests {
                 feedback_base: FeedbackBase::NOT_ASSIGNED,
             },
         );
+        let frame = heap.allocate_placeholder_frame(2);
+        let frame = heap.frame_object(frame);
+        assert_eq!(heap.space.fast_bumps(), bumps, "no fast bump ran");
         heap.set_allocating_old(false);
-        for object in [float, closure] {
+        for object in [float, closure, frame] {
             assert!(!space::is_young(object.offset));
             assert!(!heap.header(object).remembered());
         }
