@@ -145,7 +145,15 @@ collection -- is the one ns-next already follows.
    build runs the full walk after every fast instantiation and asserts it
    answers the same instance as a value. The refusals
    (`instantiation_refusal`, and `class_has_value_refusal`, which belongs to
-   the class object) still come first. Order is unchanged: a `<:` clause's
+   the class object) still come first. The walk itself reads per-level
+   facts -- whether the level needs initializer code, its clause's
+   selector and whether it passes arguments, its factory's selector and
+   arity -- copied out of each level's application, computed from the
+   level's own mixin when the row is registered, instead of cloning the
+   application several times a level; its shape, order and errors are
+   unchanged. Running `new` as compiled code, as both references do, is
+   the next piece of work after this batch (`OPEN-WORK.md`). Order is
+   unchanged: a `<:` clause's
    message runs with the applying class's factory arguments just before the
    initializer of the level it adds.
 7. **A closure's code id without the map.** `CompiledCode` carries a

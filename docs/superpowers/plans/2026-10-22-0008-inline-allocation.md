@@ -1414,6 +1414,66 @@ pub(crate) fn instantiates_without_code(
      Use the identity comparison `ObjectReference` has (`same`, per `object-model.md`). If `Step` has no wildcard-friendly variants, add the arms explicitly.
   3. **The refusal paths.** A refused class, a value-refused class, or one with a wrong arity falls through to `instantiate_allocating`, which raises exactly as today. The existing refusal and arity tests pin it.
 
+- [ ] **Step 5b: The walk reads per-level facts instead of cloning applications.** Every instantiation that still walks benefits, classes with initializers and `<:` levels included. Today `check_factory_arity`, `clause_message_body` (twice: the level's application and `primary_factory_selector`'s) and `class_has_initializer_code` (once per level per `initializing_level_below` call) each clone the level's application `Rc`. The facts they read belong to the level's own mixin alone, so they are copied out once per level.
+  1. In `mixin.rs`:
+
+```rust
+/// What the instantiation walk asks of one level, read off the level's own
+/// mixin when its application is registered, so the walk copies it out
+/// instead of cloning the application: whether the level needs initializer
+/// code, its superclass clause's selector and whether that clause passes
+/// arguments, and its primary factory's selector and arity. Nothing here
+/// depends on the superclass: the walk compares a level's clause selector
+/// with its superclass's factory selector itself, from both levels' facts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LevelFacts {
+    pub needs_initializer_code: bool,
+    pub clause_selector: Symbol,
+    pub clause_has_arguments: bool,
+    pub factory_selector: Symbol,
+    pub factory_arity: Option<usize>,
+}
+
+impl LevelFacts {
+    pub(crate) fn of(mixin: &Mixin) -> LevelFacts {
+        LevelFacts {
+            needs_initializer_code:
+                crate::interpreter::instantiate::mixin_needs_initializer_code(mixin),
+            clause_selector: mixin.superclass.map_or(Symbol::NEW, |clause| clause.selector),
+            clause_has_arguments: mixin.superclass.is_some_and(|clause| clause.has_arguments),
+            factory_selector: mixin.factory.map_or(Symbol::NEW, |factory| factory.selector),
+            factory_arity: mixin.factory.map(|factory| usize::from(factory.argument_count)),
+        }
+    }
+}
+```
+
+     Add `pub level_facts: LevelFacts` to `MixinApplication`, documented "set by `Heap::register_application` from `mixin`". `register_application` sets it with `LevelFacts::of(&application.mixin)`. The other literals (`types.rs`, `dispatch.rs`) set `LevelFacts::of(&mixin)` from the mixin they hold. `InstantiationFacts::factory_arity` above reads `application.level_facts.factory_arity`.
+  2. In `heap.rs`:
+
+```rust
+    /// The instantiation walk's facts of `class`'s level, copied out of its
+    /// application without cloning it; `None` for a class object with no
+    /// application.
+    pub(crate) fn class_level_facts(&self, class: ClassReference<'gc>) -> Option<LevelFacts> {
+        self.class_application_entry(class)
+            .map(|application| application.level_facts)
+    }
+```
+
+  3. In `instantiate.rs`, the three readers ask `class_level_facts` and touch the application only where they must hand out code or build an error, which are cold:
+     - **`check_factory_arity`:** `let declared_arity = self.heap.class_level_facts(class).and_then(|facts| facts.factory_arity);`, then the rest unchanged.
+     - **`clause_message_body`:**
+       - `let facts = self.heap.class_level_facts(applying);`
+       - `let selector = facts.map_or(Symbol::NEW, |facts| facts.clause_selector);`
+       - `let expected = self.heap.class_level_facts(superclass).map(|facts| facts.factory_selector);`
+       - The error branch is unchanged. Then `if !facts.is_some_and(|facts| facts.clause_has_arguments) { return Ok(None); }`. Only past that line is the application cloned to take `superclass_message_code`.
+     - **`primary_factory_selector`** (also used by `applied_clause_message_body` and the error texts): reads `class_level_facts(class).map(|facts| facts.factory_selector)`.
+     - **`class_has_initializer_code`:** reads `class_level_facts(class).is_some_and(|facts| facts.needs_initializer_code)`.
+
+     The walk's shape, its order and every error text stay as they are. Only where the facts come from changes.
+  4. Test, in `instantiate.rs`'s tests, `level_facts_agree_with_the_mixin`: for every application of a loaded module's chain (walk `superclass` from a class's application up), assert `application.level_facts == LevelFacts::of(&application.mixin)`. The goldens, under both lowerings, pin the behaviour.
+
 - [ ] **Step 6: Run the tests and the suite in debug** (the cross-check runs on every fast instantiation of every golden):
 
 Run: `cargo nextest run --workspace` (timeout 600000)
@@ -1439,7 +1499,12 @@ git commit -m "perf: new of a class with no initializer code is a bump and a nil
   - `docs/design/execution.md`: a "What inline allocation moved" section with the measurement.
   - `docs/PROGRESS.md`: the entry for road step 6.
   - `docs/OPEN-WORK.md`:
-    - "Next" becomes road step 7.
+    - "Next" becomes **`new` as compiled code** (decided with the user on 2026-10-22, before road step 7). The primary factory runs as code the compiler emits, as both references do, instead of the walk in Rust:
+      - Squeak-Newspeak compiles it as `basicNew` followed by an ordinary send to the initializer (`prior-art/newspeak/Newspeak2SqueakCompilation.ns:1991-2020`); SOMns does the same in `MixinBuilder.assemblePrimaryFactoryMethod`.
+      - Then `new` takes the inline caches, and road steps 8 and 9 can inline it.
+      - The entry records why the walk exists. Milestone 1 built it in Rust, and Milestone 4's step 2a made it a state machine with its semantics unchanged. 3b took the factory's place in the method table from the references but kept it bodiless, and the `<:` clauses were built into the walk. No document weighed compiled code against it.
+      - It names what the compiled form must keep: §6.1's superclass-selector check at run time, the per-level arity check an untrusted image relies on, and the deferred `<:` messages just before their level's initializer.
+      - Road step 7 follows it.
     - The road's step 6 line is marked built.
     - A new "clean blocks" item records a block that needs neither `self`, outer registers, an implicit receiver nor `^`, which needs no frame and could be one closure made once, as Cog's clean blocks are: a lowering change still to be weighed.
     - The "Factory entry carrying its bases" item stays.
