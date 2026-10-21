@@ -6,7 +6,9 @@
 //! the only crate in the workspace with `unsafe` code: every operating-system
 //! call is in `platform`, and everything this crate hands out is safe to use.
 //! The heap reads through `Reservation::prefix`, the committed read-write
-//! range at the base, which is lent in O(1).
+//! range at the base, which is lent in O(1). The heap's young allocations
+//! bump a cursor the reservation holds (`Reservation::bump`), one
+//! comparison against a limit inside that prefix.
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(clippy::undocumented_unsafe_blocks)]
 
@@ -82,6 +84,17 @@ impl std::fmt::Display for MemoryError {
 
 impl std::error::Error for MemoryError {}
 
+/// Where the next bump allocation begins and where none may end, in byte
+/// offsets. The limit never lies past the committed read-write prefix
+/// (`set_bump` checks it, and `record` clamps it when the prefix
+/// shrinks), and the top is a multiple of 8 inside the reservation, so a
+/// bump that stays within the limit lends committed, initialized words.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BumpCursor {
+    top: usize,
+    limit: usize,
+}
+
 /// One contiguous reserved address range and the record of which pages of it
 /// are committed and how they are protected. The base never moves, so a byte
 /// offset from it can serve as a handle. The heap's access path is
@@ -92,6 +105,7 @@ pub struct Reservation {
     size: usize,
     pages: PageMap,
     accessible_prefix: usize,
+    bump: BumpCursor,
 }
 
 impl Reservation {
@@ -122,6 +136,7 @@ impl Reservation {
             size,
             pages: PageMap::new(),
             accessible_prefix: 0,
+            bump: BumpCursor { top: 0, limit: 0 },
         })
     }
 
@@ -271,6 +286,94 @@ impl Reservation {
     fn record(&mut self, range: Range<usize>, state: Option<Protection>) {
         self.pages.set(range, state);
         self.accessible_prefix = self.pages.accessible_prefix();
+        // A shrunken prefix takes the cursor's limit with it, so no bump
+        // lends memory that is no longer committed.
+        self.bump.limit = self.bump.limit.min(self.accessible_prefix);
+    }
+
+    /// Where the next bump begins.
+    #[inline(always)]
+    pub fn bump_top(&self) -> usize {
+        self.bump.top
+    }
+
+    /// Where no bump may end past.
+    pub fn bump_limit(&self) -> usize {
+        self.bump.limit
+    }
+
+    /// Places the bump cursor. Both offsets are multiples of 8; `top` lies
+    /// inside the reservation and `limit` inside the committed read-write
+    /// prefix. A `limit` below `top` is allowed, and refuses every bump
+    /// until the cursor is placed again. `InvalidRange` otherwise, the
+    /// cursor untouched.
+    pub fn set_bump(&mut self, top: usize, limit: usize) -> Result<(), MemoryError> {
+        let aligned = top.is_multiple_of(8) && limit.is_multiple_of(8);
+        if !aligned || top > self.size || limit > self.accessible_prefix {
+            return Err(MemoryError::InvalidRange);
+        }
+        self.bump = BumpCursor { top, limit };
+        Ok(())
+    }
+
+    /// Bumps the cursor by `words` words when they end within its limit,
+    /// and lends exactly those words, whatever they hold, with their byte
+    /// offset; `None`, the cursor untouched, otherwise. One comparison:
+    /// a `u8` count cannot carry the top past the end of the address
+    /// space, and the subtraction saturates when the limit lies below the
+    /// top.
+    #[inline(always)]
+    pub fn bump(&mut self, words: u8) -> Option<(usize, &mut [u64])> {
+        let start = self.bump.top;
+        let bytes = usize::from(words) * 8;
+        if bytes > self.bump.limit.saturating_sub(start) {
+            return None;
+        }
+        self.bump.top = start + bytes;
+        // SAFETY: `start + bytes <= limit <= accessible_prefix`, so every
+        // byte lent is committed read-write and initialized; `start` is a
+        // multiple of 8 above a page-aligned base, so the words are
+        // aligned; the cursor moved past them, so no later bump lends them
+        // again, and `&mut self` keeps every other slice away while this
+        // one lives.
+        let words = unsafe {
+            std::slice::from_raw_parts_mut(self.address(start).cast::<u64>(), usize::from(words))
+        };
+        Some((start, words))
+    }
+
+    /// `bump` for a fixed number of words, lent as an array, so that a
+    /// caller's stores into it carry no index check.
+    #[inline(always)]
+    pub fn bump_array<const COUNT: usize>(&mut self) -> Option<(usize, &mut [u64; COUNT])> {
+        const { assert!(COUNT <= u8::MAX as usize) };
+        let start = self.bump.top;
+        let bytes = COUNT * 8;
+        if bytes > self.bump.limit.saturating_sub(start) {
+            return None;
+        }
+        self.bump.top = start + bytes;
+        // SAFETY: as for `bump`, for `COUNT` words; an array of `u64` has
+        // their alignment.
+        let words = unsafe { &mut *self.address(start).cast::<[u64; COUNT]>() };
+        Some((start, words))
+    }
+
+    /// The cold bump, of any size, within `ceiling` rather than the limit:
+    /// answers the byte offset of the first word, and lends nothing (the
+    /// caller writes through `prefix_mut`). `None`, the cursor untouched,
+    /// when the words would end past `ceiling` or `ceiling` lies past the
+    /// committed read-write prefix.
+    pub fn bump_up_to(&mut self, words: usize, ceiling: usize) -> Option<usize> {
+        let start = self.bump.top;
+        let end = words
+            .checked_mul(8)
+            .and_then(|bytes| start.checked_add(bytes))?;
+        if end > ceiling || ceiling > self.accessible_prefix {
+            return None;
+        }
+        self.bump.top = end;
+        Some(start)
     }
 
     /// The words of `0..end` when every byte of it is committed read-write --
@@ -394,5 +497,102 @@ mod tests {
         assert!(reservation.words(page..page + 8).is_some());
         reservation.record_failure(page..2 * page, None);
         assert!(reservation.words(page..page + 8).is_none());
+    }
+
+    /// A reservation of four pages with the first two committed.
+    fn two_committed_pages() -> (Reservation, usize) {
+        let page = Reservation::page_size();
+        let mut reservation = Reservation::reserve(4 * page).expect("reserve");
+        reservation.commit(0..2 * page).expect("commit");
+        (reservation, page)
+    }
+
+    #[test]
+    fn a_bump_lends_exactly_its_words_and_moves_the_top() {
+        let (mut reservation, page) = two_committed_pages();
+        reservation.set_bump(64, page).expect("inside the prefix");
+        let (start, words) = reservation.bump(3).expect("room");
+        assert_eq!(start, 64);
+        assert_eq!(words.len(), 3);
+        words.copy_from_slice(&[1, 2, 3]);
+        assert_eq!(reservation.bump_top(), 64 + 3 * 8);
+        let prefix = reservation.prefix(page).expect("committed");
+        assert_eq!(&prefix[8..11], &[1, 2, 3]);
+    }
+
+    #[test]
+    fn a_bump_past_the_limit_fails_and_leaves_the_top() {
+        let (mut reservation, _) = two_committed_pages();
+        reservation
+            .set_bump(64, 64 + 2 * 8)
+            .expect("inside the prefix");
+        assert!(reservation.bump(3).is_none());
+        assert_eq!(reservation.bump_top(), 64);
+        assert!(reservation.bump(2).is_some());
+        assert!(reservation.bump(1).is_none());
+    }
+
+    #[test]
+    fn a_fixed_bump_lends_an_array() {
+        let (mut reservation, page) = two_committed_pages();
+        reservation.set_bump(0, page).expect("inside the prefix");
+        let (start, words) = reservation.bump_array::<3>().expect("room");
+        assert_eq!(start, 0);
+        *words = [7, 8, 9];
+        assert_eq!(reservation.bump_top(), 24);
+    }
+
+    #[test]
+    fn set_bump_refuses_a_limit_past_the_committed_prefix_or_unaligned() {
+        let (mut reservation, page) = two_committed_pages();
+        assert_eq!(
+            reservation.set_bump(0, 2 * page + 8),
+            Err(MemoryError::InvalidRange)
+        );
+        assert_eq!(
+            reservation.set_bump(4, page),
+            Err(MemoryError::InvalidRange)
+        );
+        assert_eq!(
+            reservation.set_bump(0, page + 4),
+            Err(MemoryError::InvalidRange)
+        );
+        assert_eq!(
+            reservation.set_bump(reservation.size() + 8, page),
+            Err(MemoryError::InvalidRange)
+        );
+    }
+
+    #[test]
+    fn a_limit_below_the_top_refuses_every_bump() {
+        let (mut reservation, page) = two_committed_pages();
+        reservation
+            .set_bump(page, 64)
+            .expect("a limit below the top is allowed");
+        assert!(reservation.bump(1).is_none());
+        assert!(reservation.bump_array::<1>().is_none());
+    }
+
+    #[test]
+    fn a_decommit_clamps_the_limit_to_the_new_prefix() {
+        let (mut reservation, page) = two_committed_pages();
+        reservation
+            .set_bump(page - 16, 2 * page)
+            .expect("inside the prefix");
+        reservation.decommit(page..2 * page).expect("decommit");
+        assert_eq!(reservation.bump_limit(), page);
+        assert!(reservation.bump(2).is_some());
+        assert!(reservation.bump(1).is_none());
+    }
+
+    #[test]
+    fn the_cold_bump_takes_any_size_up_to_a_ceiling_inside_the_prefix() {
+        let (mut reservation, page) = two_committed_pages();
+        reservation.set_bump(0, 0).expect("inside the prefix");
+        assert_eq!(reservation.bump_up_to(300, 2 * page), Some(0));
+        assert_eq!(reservation.bump_top(), 300 * 8);
+        assert_eq!(reservation.bump_up_to(1, 2 * page + 8), None);
+        assert_eq!(reservation.bump_up_to(usize::MAX, 2 * page), None);
+        assert_eq!(reservation.bump_top(), 300 * 8);
     }
 }
