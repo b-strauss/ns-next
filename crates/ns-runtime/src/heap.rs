@@ -1220,6 +1220,55 @@ impl<'gc> Heap<'gc> {
         object
     }
 
+    /// An `Array`-shaped object of `class` of `length` nils: `Array new:`'s
+    /// and `MakeVector`'s, with no list of elements in between.
+    pub(crate) fn allocate_nil_array(
+        &mut self,
+        class: ClassReference<'gc>,
+        length: usize,
+    ) -> ObjectReference<'gc> {
+        self.allocate_object(class, Format::IndexablePointers, 0, false, length)
+            .0
+    }
+
+    /// An `Array`-shaped object of `class` holding the registers
+    /// `registers` names in the window at `register_base`, in order:
+    /// `MakeArray`'s, with each value going from its register straight
+    /// into its element.
+    pub(crate) fn allocate_array_from_registers(
+        &mut self,
+        class: ClassReference<'gc>,
+        register_base: RegisterBase,
+        registers: &[u16],
+    ) -> ObjectReference<'gc> {
+        // `register`'s window check and `store`'s origin check, made apart
+        // from the copy, which reads the registers' words directly.
+        #[cfg(debug_assertions)]
+        for register in registers {
+            self.store(self.register(register_base, *register));
+        }
+        let (object, fields) =
+            self.allocate_object(class, Format::IndexablePointers, 0, false, registers.len());
+        let base = register_base.index as usize;
+        let Heap { space, stack, .. } = self;
+        for (slot, register) in space.words_mut()[fields].iter_mut().zip(registers) {
+            *slot = stack.values[base + usize::from(*register)].bits();
+        }
+        object
+    }
+
+    /// Whether an `Array` of `length` elements can be allocated, asked
+    /// before a length the program chose is. One below the large-object
+    /// threshold is allocated young, where eden is committed, and needs no
+    /// probe; a larger one is asked of `fields_fit`, as `byte_array_fits`
+    /// asks for a `ByteArray`.
+    pub(crate) fn array_fits(&self, length: usize) -> bool {
+        let small = record_size::block_words(length)
+            .checked_mul(8)
+            .is_some_and(|bytes| bytes < LARGE_OBJECT_BYTES);
+        small || self.fields_fit(length)
+    }
+
     /// A `WeakArray` of `class` of `size` slots, every one nil.
     pub(crate) fn allocate_weak_array(
         &mut self,
@@ -1280,7 +1329,7 @@ impl<'gc> Heap<'gc> {
     /// The block, its reserve and overflow word included, must fit the old
     /// space of the reservation, which no commit can enlarge. And the
     /// operating system must grant memory of the object's size, probed as
-    /// `Array new:` probes it, with `try_reserve_exact` of its field words
+    /// `Array new:` probes a large array, with `try_reserve_exact` of its field words
     /// dropped at once: a size inside the reservation can still be one a
     /// host that does not overcommit refuses to commit.
     pub(crate) fn byte_array_fits(&self, size: usize) -> bool {
@@ -12243,5 +12292,44 @@ mod tests {
                 &copy
             ));
         });
+    }
+
+    #[test]
+    fn a_nil_array_is_the_array_of_nils() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential(0);
+        let made = heap.allocate_nil_array(class, 5);
+        let listed = heap.allocate_array(class, &[Value::nil(); 5]);
+        assert_eq!(heap.block(made).to_vec(), heap.block(listed).to_vec());
+    }
+
+    #[test]
+    fn arrays_either_side_of_the_fast_edge_are_alike() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential(0);
+        for length in [252, 253, 254, 255] {
+            let array = heap.allocate_nil_array(class, length);
+            assert!(space::is_young(array.offset));
+            assert_eq!(heap.array_element_count(array), Some(length));
+            assert!(heap
+                .array_element(array, length - 1)
+                .is_some_and(|value| value.is_nil()));
+        }
+    }
+
+    #[test]
+    fn a_large_array_goes_old() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential(0);
+        let array = heap.allocate_nil_array(class, LARGE_OBJECT_BYTES / 8);
+        assert!(!space::is_young(array.offset));
+        assert!(heap.header(array).remembered());
+    }
+
+    #[test]
+    fn a_length_past_the_old_space_does_not_fit() {
+        let heap = Heap::new();
+        assert!(heap.array_fits(10));
+        assert!(!heap.array_fits(usize::MAX / 8));
     }
 }

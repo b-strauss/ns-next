@@ -348,9 +348,9 @@ fn element_at_put<'gc>(
 /// `Array new: size`: an array of `size` `nil`s. Its subject is the class
 /// the forwarder runs in, which is only ever `Array` itself -- §3.2's
 /// metaclasses are flat, so no subclass inherits `new:` -- and anything
-/// else declines. A size that cannot be allocated is an error, found with
-/// `try_reserve_exact` before anything is filled, never a Rust allocation
-/// abort: the size is the program's, and an abort is not catchable.
+/// else declines. A size that cannot be allocated is an error, found by
+/// `Heap::array_fits` before anything is allocated, never an abort: the size
+/// is the program's, and an abort is not catchable.
 fn allocate<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
@@ -388,7 +388,7 @@ fn allocate<'gc>(
     }
     // A non-negative size that does not fit a `usize` -- above `u32::MAX` on
     // a 32-bit target -- is refused as an allocation that cannot be made,
-    // like one `try_reserve_exact` refuses, not as a negative size.
+    // like one `array_fits` refuses, not as a negative size.
     let cannot_allocate = || {
         refusal(format!(
             "{selector} cannot allocate an Array of {size} elements"
@@ -397,12 +397,12 @@ fn allocate<'gc>(
     let Ok(length) = usize::try_from(size) else {
         return Some(Err(cannot_allocate()));
     };
-    let mut elements: Vec<Value<'gc>> = Vec::new();
-    if elements.try_reserve_exact(length).is_err() {
+    if !mutator.heap.array_fits(length) {
         return Some(Err(cannot_allocate()));
     }
-    elements.resize(length, Value::nil());
-    Some(Ok(Value::object(mutator.new_array(elements))))
+    Some(Ok(Value::object(
+        mutator.heap.allocate_nil_array(class, length),
+    )))
 }
 
 /// Lifts a leaf's result into the step it is, so `execute`'s leaf arms don't

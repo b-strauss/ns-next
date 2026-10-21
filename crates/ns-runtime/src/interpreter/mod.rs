@@ -1605,6 +1605,23 @@ impl<'gc> Mutator<'gc> {
         self.heap.allocate_array(class, &elements)
     }
 
+    /// An `Array` of `length` nils.
+    pub(crate) fn new_nil_array(&mut self, length: usize) -> ObjectReference<'gc> {
+        let class = self.builtin_class(BuiltinClass::Array);
+        self.heap.allocate_nil_array(class, length)
+    }
+
+    /// An `Array` of the registers `registers` names: `MakeArray`'s.
+    pub(crate) fn new_array_from_registers(
+        &mut self,
+        register_base: crate::heap::RegisterBase,
+        registers: &[u16],
+    ) -> ObjectReference<'gc> {
+        let class = self.builtin_class(BuiltinClass::Array);
+        self.heap
+            .allocate_array_from_registers(class, register_base, registers)
+    }
+
     /// A `ByteArray` of the kernel's class holding `bytes`, in order.
     pub fn new_byte_array(&mut self, bytes: &[u8]) -> ObjectReference<'gc> {
         let class = self.builtin_class(BuiltinClass::ByteArray);

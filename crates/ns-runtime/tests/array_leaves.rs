@@ -141,3 +141,37 @@ fn replace_stores_a_young_element_into_an_old_array_through_the_barrier() {
     );
     assert_eq!(text_of(&mut interpreter, &result), "an Object");
 }
+
+#[test]
+fn array_new_refuses_a_size_it_cannot_allocate_as_an_error() {
+    // `1 << 60` is past every SmallInteger, `1 << 59` is one, so the two
+    // reach the refusal by the large-integer path and by the size probe.
+    let source = indoc! {"
+        class Foo = Object new () (
+            public large = ( ^[Array new: 1 << 60] on: Error do: [:error | error messageText] )
+            public small = ( ^[Array new: 1 << 59] on: Error do: [:error | error messageText] )
+        ) : ()
+    "};
+    for selector in ["large", "small"] {
+        let text = answer_text(source, selector);
+        assert!(
+            text.contains("cannot allocate an Array"),
+            "{selector}: {text}"
+        );
+    }
+}
+
+#[test]
+fn array_new_answers_an_array_of_nils_past_the_fast_path() {
+    let source = indoc! {"
+        class Foo = Object new () (
+            public m = (
+                | array |
+                array:: Array new: 300.
+                ^array size printString, ' ',
+                    (array allSatisfy: [:element | element isNil]) printString
+            )
+        ) : ()
+    "};
+    assert_eq!(answer_text(source, "m"), "300 true");
+}
