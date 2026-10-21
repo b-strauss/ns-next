@@ -126,22 +126,28 @@ collection -- is the one ns-next already follows.
    `header::POISON` word is left in the new object. The identity hash stays
    0. The `heap` module stays the one writer of a header: two entries, one
    template.
-6. **`new`: one read of the application, and a precomputed plan.** The
-   application row carries, besides its template, its instantiation plan,
-   computed with the row and never changed: the refusals
-   (`instantiation_refusal`), which levels of the chain have a clause
-   message with arguments or initializer code, and whether any has. The
-   plan holds no handle; the levels' class objects are still walked through
-   the object. `decide_instantiation` reads the row once (borrowed, no
-   `Rc` clone, no second lookup for the guard). With no initializer code
-   anywhere, `new` is a bump, a nil fill and `Step::Value`, and
-   `climb_levels` and `descend_levels` are not entered; otherwise the walk
-   visits only the levels the plan names. The value-class refusal
-   (`class_has_value_refusal`) stays where it is, since it belongs to the
-   class object. The arguments go into a reused buffer instead of `to_vec`,
-   as `return_argument_buffer` already does for sends. Order is unchanged:
-   a `<:` clause's message runs with the applying class's factory
-   arguments just before the initializer of the level it adds.
+6. **`new`: one read of the application, and a precomputed fact.** The
+   application row carries, besides its template,
+   `instantiates_without_code`, computed with the row and never changed:
+   no level of its application chain needs initializer code, every level's
+   superclass clause names its superclass's primary factory selector with
+   no arguments, and every level above the first takes no factory
+   arguments. `decide_instantiation` reads the row once (copied out, no
+   `Rc` clone, no second lookup for the guard). When the row's fact holds,
+   the arguments match the class's factory arity, and no class object of
+   the chain is a level a `<:` clause added, `new` is a bump, a nil fill
+   and `Step::Value`, with no argument copy and no walk. The last condition
+   is read off the class objects per instantiation, two field reads a
+   level, because it is a fact of the class objects and not of the
+   application: a class object can name another declaration's applied
+   level as its superclass, and the application key does not record it.
+   Every other instantiation walks the chain exactly as today. A debug
+   build runs the full walk after every fast instantiation and asserts it
+   answers the same instance as a value. The refusals
+   (`instantiation_refusal`, and `class_has_value_refusal`, which belongs to
+   the class object) still come first. Order is unchanged: a `<:` clause's
+   message runs with the applying class's factory arguments just before the
+   initializer of the level it adds.
 7. **A closure's code id without the map.** `CompiledCode` carries a
    one-entry cache, `Cell<(table_epoch, CodeId)>`. `table_epoch` identifies
    the heap's code table: unique across every heap of the process (a
