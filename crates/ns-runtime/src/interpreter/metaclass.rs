@@ -110,11 +110,10 @@ impl<'gc> Mutator<'gc> {
         if let Some(class_side) = &mixin.class_side {
             return class_side.clone();
         }
-        // Keyed by the instance side's id, which interns it: the heap's
-        // table keeps it alive, so no key outlives its mixin -- the
-        // decoder asks for the class side of an image's row before
-        // anything else interns the row, and a load rejected afterwards
-        // drops the row.
+        // Keyed by the instance side's id, which interns it -- the decoder
+        // asks for the class side of an image's row before anything else
+        // interns the row. A collection that frees the id's tree drops
+        // the entry with it, so no key outlives its mixin.
         let key = self.heap.mixin_id(mixin);
         if let Some(existing) = self.metaclass_mixins.get(&key) {
             return existing.clone();

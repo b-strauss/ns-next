@@ -462,7 +462,7 @@ impl<'gc> Mutator<'gc> {
             // initializer by `compiler::compile_mixin_initializer` (step 5 of
             // the six in `docs/design/object-model.md`, "Instantiation").
             initializer_expressions: declaration.instance_side.initializer_expressions.clone(),
-            nested,
+            nested_declarations: crate::mixin::NestedDeclarations::new(nested),
             class_side,
             span: declaration.span,
             declaration: Some(Rc::new(declaration.clone())),
@@ -1795,12 +1795,10 @@ mod tests {
     use crate::Interpreter;
 
     /// The nested mixin of `mixin` named `name`.
-    fn nested_named(mixin: &Rc<Mixin>, name: &str) -> Rc<Mixin> {
-        mixin
-            .nested
-            .iter()
+    fn nested_named(heap: &crate::heap::Heap<'_>, mixin: &Rc<Mixin>, name: &str) -> Rc<Mixin> {
+        heap.nested_mixins(mixin)
+            .into_iter()
             .find(|nested| nested.name.as_str() == name)
-            .cloned()
             .unwrap_or_else(|| panic!("{} declares {name}", mixin.name))
     }
 
@@ -1846,8 +1844,8 @@ mod tests {
                 .expect("a root class has an application")
                 .mixin
                 .clone();
-            let inner = nested_named(&outer, "Inner");
-            let innermost = nested_named(&inner, "Innermost");
+            let inner = nested_named(mutator.heap(), &outer, "Inner");
+            let innermost = nested_named(mutator.heap(), &inner, "Innermost");
             let inner_class_side = inner
                 .class_side
                 .clone()
@@ -1915,7 +1913,7 @@ mod tests {
                 .expect("a root class has an application")
                 .mixin
                 .clone();
-            let inner = nested_named(&outer, "Inner");
+            let inner = nested_named(mutator.heap(), &outer, "Inner");
             assert!(inner.class_side.is_none(), "Inner declares no class side");
             let class_side = mutator.metaclass_mixin(&inner);
             let inner_text = inner.text.as_ref().expect("built from source");

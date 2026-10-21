@@ -16,6 +16,7 @@ pub(crate) mod locals;
 mod metaclass;
 pub(crate) mod mirror;
 pub(crate) mod nested;
+mod reclaim;
 pub(crate) mod resolve;
 pub(crate) mod safepoint;
 pub(crate) mod sends;
@@ -327,8 +328,10 @@ pub struct Mutator<'gc> {
     /// behaviour. Keyed on the superclass's *application*, never on a
     /// superclass class object: a nested superclass has one class object per
     /// enclosing instance, so a class-object key would never hit and every
-    /// instance would get its own behaviour. Strong until live editing, as
-    /// the heap's tables are.
+    /// instance would get its own behaviour. Weak, as the heap's tables are:
+    /// a full collection drops every entry whose application or superclass
+    /// key it frees (`Mutator::reclaim_ids`), so a key never names an index
+    /// minted again for another application.
     pub(crate) applications: IdentityMap<
         (crate::heap::MixinId, Option<crate::heap::ApplicationIndex>),
         Rc<crate::mixin::MixinApplication>,
@@ -344,9 +347,10 @@ pub struct Mutator<'gc> {
     /// instance, and a fresh `Rc<Mixin>` each time would give every one of
     /// them its own application and its own dispatch id, so no two instances
     /// would share behaviour and every `X new` site would go megamorphic.
-    /// Keyed by the instance side's `MixinId`, which the heap's mixin table
-    /// holds for as long as the heap lives, so a key never outlives its
-    /// mixin and never names another one.
+    /// Keyed by the instance side's `MixinId`. A memo of the id's tree, not
+    /// a holder: a full collection that frees the tree drops its entries
+    /// (`Mutator::reclaim_ids`), so a key never names another mixin minted
+    /// at a freed id.
     pub(crate) metaclass_mixins: IdentityMap<crate::heap::MixinId, Rc<crate::mixin::Mixin>>,
     /// How many nested classes are marked as being created
     /// (`nested::begin_creation`), for `run_from_host`'s check that none
@@ -375,11 +379,16 @@ pub struct Mutator<'gc> {
     /// when it is given back, so it holds no handle a move would have to
     /// find.
     pub(crate) argument_buffer: Vec<Value<'gc>>,
-    /// The next dispatch id `apply_mixin` mints. It starts at
-    /// `DispatchId::FIRST_MINTED` and mints below `DispatchId::LIMIT` (22
-    /// bits, the header word's guard field); once exhausted applications get
-    /// `NONE`, which is never cached: slower, never wrong.
-    pub(crate) next_dispatch_id: u32,
+    /// The dispatch ids `apply_mixin` mints: the smallest freed one first,
+    /// else the next never minted, below `DispatchId::LIMIT` (22 bits, the
+    /// header word's guard field). Once exhausted applications get `NONE`,
+    /// which is never cached: slower, never wrong, and a collection is
+    /// requested so that the ids of dead applications come back.
+    pub(crate) dispatch_ids: crate::heap::DispatchIdAllocator,
+    /// The number the next nested-class creation takes as its marker
+    /// (`nested::begin_creation`), from 1. A `u64` counts creations beyond
+    /// any run, and `begin_creation` checks the `SmallInteger` range.
+    pub(crate) next_creation_serial: u64,
     /// The inline caches (`inline_cache.rs`): per heap, since a dispatch id
     /// means nothing in another heap.
     pub(crate) caches: inline_cache::InlineCaches,
@@ -870,24 +879,28 @@ impl<'gc> Mutator<'gc> {
         self.heap.set_immediate_dispatch_ids(ids);
     }
 
-    /// The next dispatch id, or `DispatchIds::NONE` once the counter is
-    /// exhausted: an application built after that point is simply never
-    /// cached, which is slower but never wrong, so running out is not an
-    /// error. The counter starts at `DispatchId::FIRST_MINTED`, above the
-    /// reserved guards, and stops below `DispatchId::LIMIT`, which is what
-    /// keeps `DispatchId::from_counter`'s assertion from ever firing on a
-    /// minted id.
+    /// The smallest freed dispatch id, else the next never minted, or
+    /// `DispatchIds::NONE` once every id below `DispatchId::LIMIT` is in use:
+    /// an application built after that point is simply never cached, which
+    /// is slower but never wrong, so running out is not an error. Ids start
+    /// at `DispatchId::FIRST_MINTED`, above the reserved guards, and stop
+    /// below `DispatchId::LIMIT`, which is what keeps
+    /// `DispatchId::from_counter`'s assertion from ever firing on a minted
+    /// id. Freed ids come back only in a full collection (`reclaim_ids`).
     ///
     /// One id per application: a class object's class is its metaclass, an
     /// application of its own, so no second, class-side id goes with it.
     pub(crate) fn mint_dispatch_ids(&mut self) -> crate::mixin::DispatchIds {
-        let first = self.next_dispatch_id;
-        if first >= crate::mixin::DispatchId::LIMIT {
-            return crate::mixin::DispatchIds::NONE;
-        }
-        self.next_dispatch_id = first + 1;
-        crate::mixin::DispatchIds {
-            instances: crate::mixin::DispatchId::from_counter(first),
+        match self.dispatch_ids.mint() {
+            Some(instances) => crate::mixin::DispatchIds { instances },
+            None => {
+                // Freed ids come back only in a full collection, which
+                // nothing but the old space's growth would otherwise start:
+                // a program that makes and drops applications quickly would
+                // run out with plenty of dead ones to reclaim.
+                self.heap.request_collection();
+                crate::mixin::DispatchIds::NONE
+            }
         }
     }
 
@@ -1312,7 +1325,8 @@ impl<'gc> Mutator<'gc> {
                 let code = nested::superclass_clause_code(&creation.nested);
                 let feedback_base = self.caches.base_for(&code);
                 let temporaries = (code.register_count - code.argument_count) as usize;
-                let (enclosing, index) = (creation.enclosing, creation.index);
+                let (enclosing, index, serial) =
+                    (creation.enclosing, creation.index, creation.serial);
                 let activation = self.push(
                     ActivationHeader {
                         receiver: Value::object(enclosing),
@@ -1331,7 +1345,7 @@ impl<'gc> Mutator<'gc> {
                 // has succeeded, and unmarked by `resume` or `abandon` when
                 // the activation is popped. A push refused at the depth limit
                 // marks nothing.
-                nested::begin_creation(self, enclosing, index);
+                nested::begin_creation(self, enclosing, index, serial);
                 Ok(activation)
             }
             // Pushed as `Step::Method` pushes it, and only then given its
@@ -1927,8 +1941,8 @@ impl<'gc> Mutator<'gc> {
                 superclass_application.nested_slot.clone()
             });
         let mut next = inherited + mixin.slots.len();
-        for nested in &mixin.nested {
-            nested_slot.insert(self.heap.mixin_id(nested), next);
+        for nested_id in self.heap.nested_of(id) {
+            nested_slot.insert(*nested_id, next);
             next += 1;
         }
         // §3.1.1's two questions about a value class, asked once here rather
@@ -2052,15 +2066,18 @@ impl<'gc> Mutator<'gc> {
     /// synthesized class side built from the previous one, so that the
     /// next application of the id applies the replacement. Applications already built, and the class objects
     /// naming them, keep the version they were built from; the install
-    /// (`install_edit`) re-applies those.
+    /// (`install_edit`) re-applies those. Answers the replacement's
+    /// declared nested declarations, which `Heap::adopt_nested` gives the
+    /// id's row; until then the row names the previous version's.
     pub(crate) fn replace_mixin(
         &mut self,
         id: crate::heap::MixinId,
         replacement: Rc<crate::mixin::Mixin>,
-    ) {
-        self.heap.replace_mixin(id, replacement);
+    ) -> Vec<Rc<crate::mixin::Mixin>> {
+        let children = self.heap.replace_mixin(id, replacement);
         self.applications.retain(|(mixin, _), _| *mixin != id);
         self.metaclass_mixins.remove(&id);
+        children
     }
 }
 
@@ -2332,7 +2349,10 @@ mod tests {
         )
         .expect("resolve");
         let class = interpreter.load_module(&resolved);
-        let inner = interpreter.enter(|mutator| root_mixin(mutator, &class).nested[0].clone());
+        let inner = interpreter.enter(|mutator| {
+            let root = root_mixin(mutator, &class);
+            mutator.heap().nested_mixins(&root)[0].clone()
+        });
         Rc::new((*inner).clone())
     }
 
@@ -2358,7 +2378,8 @@ mod tests {
         replacement: Rc<crate::mixin::Mixin>,
     ) -> crate::heap::MixinId {
         interpreter.enter(|mutator| {
-            let original = root_mixin(mutator, outer).nested[0].clone();
+            let root = root_mixin(mutator, outer);
+            let original = mutator.heap().nested_mixins(&root)[0].clone();
             let id = mutator
                 .heap()
                 .known_mixin_id(&original)
@@ -2393,7 +2414,7 @@ mod tests {
         let replacement = replacement_inner(&mut interpreter);
         interpreter.enter(|mutator| {
             let outer_mixin = root_mixin(mutator, &outer);
-            let original = outer_mixin.nested[0].clone();
+            let original = mutator.heap().nested_mixins(&outer_mixin)[0].clone();
             let id = mutator
                 .heap()
                 .known_mixin_id(&original)
@@ -2990,7 +3011,7 @@ mod tests {
     fn the_first_mint_follows_the_reserved_guards() {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
-            mutator.next_dispatch_id = crate::mixin::DispatchId::FIRST_MINTED;
+            mutator.dispatch_ids = crate::heap::DispatchIdAllocator::new();
             assert_eq!(
                 mutator.mint_dispatch_ids().instances,
                 crate::mixin::DispatchId::from_counter(crate::mixin::DispatchId::FIRST_MINTED)
@@ -3008,12 +3029,19 @@ mod tests {
     fn minting_stops_below_twenty_two_bits_and_answers_none_once_exhausted() {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
-            mutator.next_dispatch_id = crate::mixin::DispatchId::LIMIT - 1;
+            // A fresh allocator: a collection during the boot, which the
+            // collection stress mode makes, frees ids that would be
+            // minted first.
+            mutator.dispatch_ids = crate::heap::DispatchIdAllocator::new();
+            mutator
+                .dispatch_ids
+                .set_next_for_test(crate::mixin::DispatchId::LIMIT - 1);
             assert_eq!(
                 mutator.mint_dispatch_ids().instances,
                 crate::mixin::DispatchId::from_counter(crate::mixin::DispatchId::LIMIT - 1)
             );
             assert_eq!(mutator.mint_dispatch_ids(), crate::mixin::DispatchIds::NONE);
+            assert!(mutator.heap.collection_requested());
             assert_eq!(mutator.mint_dispatch_ids(), crate::mixin::DispatchIds::NONE);
         });
     }

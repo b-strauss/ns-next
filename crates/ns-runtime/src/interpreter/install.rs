@@ -165,11 +165,16 @@ impl<'gc> Mutator<'gc> {
                         .iter()
                         .map(|slot| slot.name)
                         .eq(fresh.slots.iter().map(|slot| slot.name));
-                    let same_nested = old
-                        .nested
+                    let same_nested = self
+                        .heap
+                        .known_mixin_id(old)
+                        .map_or(&[][..], |id| self.heap.nested_of(id))
                         .iter()
-                        .map(|nested| nested.name)
-                        .eq(fresh.nested.iter().map(|nested| nested.name));
+                        .map(|nested_id| self.heap.mixin(*nested_id).map(|nested| nested.name))
+                        .eq(fresh
+                            .declared_nested()
+                            .iter()
+                            .map(|nested| Some(nested.name)));
                     if !same_slots || !same_nested {
                         return true;
                     }
@@ -185,8 +190,15 @@ impl<'gc> Mutator<'gc> {
     /// id. Each holds its own text, so the module's text, assembled from
     /// its declarations' current versions, holds the edit from here on.
     fn replace_versions(&mut self, prepared: &PreparedEdit) {
+        let mut adopted = Vec::with_capacity(prepared.replacements.len());
         for (id, fresh) in &prepared.replacements {
-            self.replace_mixin(*id, Rc::clone(fresh));
+            let children = self.replace_mixin(*id, Rc::clone(fresh));
+            adopted.push((*id, children));
+        }
+        // After every replacement, so that each fresh child is known by
+        // the id it was paired with and keeps it.
+        for (id, children) in adopted {
+            self.heap.adopt_nested(id, children);
         }
         // After the instance side's replacement, which forgets the class
         // side synthesized from its previous version; through the
@@ -411,11 +423,12 @@ mod tests {
     /// applies.
     fn nested_id_of(interpreter: &mut Interpreter, class: &Root, name: &str) -> MixinId {
         interpreter.enter(|mutator| {
-            let nested = mixin_of(mutator, class)
-                .nested
-                .iter()
+            let mixin = mixin_of(mutator, class);
+            let nested = mutator
+                .heap
+                .nested_mixins(&mixin)
+                .into_iter()
                 .find(|nested| nested.name.as_str() == name)
-                .cloned()
                 .expect("the declaration is nested there");
             mutator.heap.mixin_id(&nested)
         })
@@ -710,6 +723,27 @@ mod tests {
         assert_eq!(integer(&mut image.interpreter, &answer), Some(1));
     }
 
+    /// The same across a full collection before the snapshot: the
+    /// superseded version whose code the closure runs is what admits that
+    /// code into the image, so the collection keeps it while a closure
+    /// runs its code, though nothing else holds it.
+    #[test]
+    fn a_closure_of_a_removed_method_reaches_an_image_after_a_collection() {
+        let (mut interpreter, outer, _, inner, inner_id) = module_and_inner(OUTER);
+        let block = send(&mut interpreter, &inner, "block");
+        install(
+            &mut interpreter,
+            inner_id,
+            &instance_edit(vec![MemberEdit::RemoveMethod(Symbol::intern("block"))]),
+        );
+        interpreter.collect_now();
+        let bytes = image_of(&mut interpreter, &outer, &[block]);
+        let mut image = loaded(&bytes);
+        let block = image.roots[0].clone();
+        let answer = send(&mut image.interpreter, &block, "value");
+        assert_eq!(integer(&mut image.interpreter, &answer), Some(1));
+    }
+
     /// A replaced method's closure keeps the old block's answer after a
     /// load, while the method answers the new one.
     #[test]
@@ -772,6 +806,98 @@ mod tests {
             Ok(_) => panic!("a removed method answered"),
             Err(HostSignal::Return) => panic!("a non-local return escaped"),
         }
+    }
+
+    // Nested declarations through ids
+
+    /// After `Inner` was edited, `Outer`'s current version names `Inner` by
+    /// id, so every reader reaches the edited version; the version `Outer`
+    /// was built with holds no `Inner` any more, since registering it took
+    /// its nested declarations.
+    #[test]
+    fn an_enclosing_mixin_reaches_its_nested_edit_through_the_id() {
+        let (mut interpreter, outer) = load(OUTER);
+        let inner = nested_id_of(&mut interpreter, &outer, "Inner");
+        install(
+            &mut interpreter,
+            inner,
+            &add_method("public added = ( ^42 )"),
+        );
+        interpreter.enter(|mutator| {
+            let outer_mixin = mixin_of(mutator, &outer);
+            let outer_id = mutator
+                .heap
+                .known_mixin_id(&outer_mixin)
+                .expect("registered");
+            assert!(outer_mixin.is_adopted());
+            assert_eq!(mutator.heap.nested_of(outer_id), &[inner]);
+            let current = mutator.heap.mixin(inner).expect("a row");
+            assert!(current.compiled_method(Symbol::intern("added")).is_some());
+        });
+    }
+
+    /// Registering a module's root registers every declaration nested in
+    /// it, so no tree keeps an unregistered child.
+    #[test]
+    fn registering_a_root_registers_its_whole_tree() {
+        let (mut interpreter, outer) = load(indoc! {"
+            Newspeak3
+            'Test'
+            class Outer = (
+            ) (
+              class Middle = (
+              ) (
+                class Inner = (
+                ) (
+                )
+              )
+            )
+        "});
+        interpreter.enter(|mutator| {
+            let outer_id = mutator
+                .heap
+                .known_mixin_id(&mixin_of(mutator, &outer))
+                .expect("registered");
+            let mut parent = outer_id;
+            for name in ["Middle", "Inner"] {
+                let children = mutator.heap.nested_of(parent).to_vec();
+                assert_eq!(children.len(), 1, "{name} is the only declaration there");
+                let child = children[0];
+                let mixin = mutator.heap.mixin(child).expect("a row");
+                assert_eq!(mixin.name.as_str(), name);
+                assert!(mixin.is_adopted(), "{name} is registered");
+                assert_eq!(mutator.heap.enclosing_mixin_id(child), Some(parent));
+                parent = child;
+            }
+            assert!(mutator.heap.nested_of(parent).is_empty());
+        });
+    }
+
+    /// The nested-class accessor of an enclosing class edited before its
+    /// nested class reaches the nested class's later edit: the lookup reads
+    /// the nested declaration through its id (`dispatch.rs`), not the
+    /// version the enclosing class's current version was built with.
+    #[test]
+    fn the_nested_class_accessor_reaches_the_edited_version() {
+        let (mut interpreter, outer) = load(OUTER);
+        let outer_id = interpreter.enter(|mutator| {
+            let outer_mixin = mixin_of(mutator, &outer);
+            mutator.heap.mixin_id(&outer_mixin)
+        });
+        install(
+            &mut interpreter,
+            outer_id,
+            &add_method("public innerAdded = ( ^Inner new added )"),
+        );
+        let inner = nested_id_of(&mut interpreter, &outer, "Inner");
+        install(
+            &mut interpreter,
+            inner,
+            &add_method("public added = ( ^42 )"),
+        );
+        let instance = expect_ok(interpreter.instantiate(&outer, &[]), "an Outer");
+        let answer = send(&mut interpreter, &instance, "innerAdded");
+        assert_eq!(integer(&mut interpreter, &answer), Some(42));
     }
 
     /// A slot the header adds is nil on a migrated instance, whose other

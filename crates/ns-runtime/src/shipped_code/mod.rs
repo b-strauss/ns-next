@@ -293,7 +293,7 @@ mod tests {
             )
             .sum::<usize>();
         own + mixin
-            .nested
+            .declared_nested()
             .iter()
             .chain(&mixin.class_side)
             .map(|nested| count_in_mixin(nested))
@@ -345,9 +345,10 @@ mod tests {
             crate::interpreter::core_library::shipped_module_text("Kernel"),
         );
         let object = kernel
-            .nested
+            .declared_nested()
             .iter()
             .find(|nested| nested.name.as_str() == "Object")
+            .cloned()
             .expect("Kernel.ns declares Object");
         let mut mirror_sends = 0;
         let mut fast_paths = 0;

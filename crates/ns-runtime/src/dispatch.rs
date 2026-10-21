@@ -193,14 +193,9 @@ pub fn private_member<'gc>(
             Lookup::NotFound
         };
     }
-    match application
-        .mixin
-        .nested
-        .iter()
-        .find(|nested| nested.name == selector)
-    {
-        Some(nested) if nested_access(nested) == ast::AccessModifier::Private => {
-            Lookup::NestedClass(nested.clone(), lexical_class)
+    match nested_declaration(heap, &application, selector) {
+        Some(nested) if nested_access(&nested) == ast::AccessModifier::Private => {
+            Lookup::NestedClass(nested, lexical_class)
         }
         _ => Lookup::NotFound,
     }
@@ -322,16 +317,11 @@ fn walk<'gc>(
         // same level and under the same access rules -- after the method
         // dictionary, because a method is the only thing that can shadow
         // an accessor the compiler generated implicitly. A linear scan of
-        // `nested` costs nothing on the hot path: it runs only once the
-        // method dictionary has already missed, and `nested` is empty for
-        // every builtin and for most user classes.
-        if let Some(nested) = application
-            .mixin
-            .nested
-            .iter()
-            .find(|nested| nested.name == selector)
-            .cloned()
-        {
+        // the nested declarations costs nothing on the hot path: it runs
+        // only once the method dictionary has already missed, and
+        // `nested_declaration` declines at once for every builtin and for
+        // most user classes, whose chains declare none.
+        if let Some(nested) = nested_declaration(heap, &application, selector) {
             match rule.verdict(nested_access(&nested)) {
                 Verdict::Accept => return Lookup::NestedClass(nested, level_class),
                 Verdict::Stop => return Lookup::NotFound,
@@ -344,6 +334,26 @@ fn walk<'gc>(
         level = next_level(superclass, &application);
     }
     Lookup::NotFound
+}
+
+/// The current version of the declaration named `selector` nested
+/// directly in `application`'s mixin, read through the mixin's id, so that
+/// an edit of the nested declaration is what the accessor reaches. An
+/// application whose chain caches no nested class declares none, so it
+/// declines without asking the heap for the id.
+fn nested_declaration(
+    heap: &Heap<'_>,
+    application: &MixinApplication,
+    selector: Symbol,
+) -> Option<Rc<Mixin>> {
+    if application.nested_slot.is_empty() {
+        return None;
+    }
+    let id = heap.known_mixin_id(&application.mixin)?;
+    heap.nested_of(id)
+        .iter()
+        .filter_map(|nested_id| heap.mixin(*nested_id))
+        .find(|nested| nested.name == selector)
 }
 
 /// The answer a method-table entry found at `level_class`'s level gives: a

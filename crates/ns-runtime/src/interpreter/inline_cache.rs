@@ -8,6 +8,7 @@
 //! on a `Resolved` rebuilt from an entry, so it can do nothing a miss would
 //! not (`resolve.rs`).
 
+use std::collections::BTreeSet;
 use std::hash::BuildHasher;
 use std::rc::Rc;
 
@@ -15,6 +16,7 @@ use crate::builtins::primitive::Primitive;
 use crate::bytecode::{CallSite, CompiledCode, Instruction};
 use crate::dispatch;
 use crate::hash::IdentityMap;
+use crate::heap::reclaim::FreedIds;
 use crate::heap::{ActivationReference, ApplicationIndex, Heap};
 use crate::mixin::{AccessorKind, DispatchId, Mixin, MixinMethod};
 use crate::types::*;
@@ -160,6 +162,62 @@ pub(crate) enum CacheRule {
 pub(crate) const POLYMORPHIC_WIDTH: usize = 4;
 pub(crate) const GLOBAL_CACHE_ENTRIES: usize = 1024;
 
+/// The free ranges of the site table, by start, never two adjacent.
+#[derive(Default)]
+struct FreeRanges {
+    /// Start -> size.
+    ranges: std::collections::BTreeMap<u32, u32>,
+}
+
+impl FreeRanges {
+    /// The first range of at least `size` sites, taken; its remainder stays
+    /// free.
+    fn take_first_fit(&mut self, size: u32) -> Option<u32> {
+        let (start, range_size) = self
+            .ranges
+            .iter()
+            .find(|(_, range_size)| **range_size >= size)
+            .map(|(start, range_size)| (*start, *range_size))?;
+        self.ranges.remove(&start);
+        if range_size > size {
+            self.ranges.insert(start + size, range_size - size);
+        }
+        Some(start)
+    }
+
+    /// Makes `start..start + size` free, merged with its neighbours, so that
+    /// two adjacent freed families serve one larger one.
+    fn free(&mut self, start: u32, size: u32) {
+        // An empty range would sit at another one's start or end and break
+        // the rule that no two are adjacent.
+        debug_assert!(size > 0, "internal: an empty range is never freed");
+        let mut start = start;
+        let mut size = size;
+        if let Some((&before_start, &before_size)) = self.ranges.range(..start).next_back() {
+            if before_start + before_size == start {
+                self.ranges.remove(&before_start);
+                start = before_start;
+                size += before_size;
+            }
+        }
+        if let Some(after_size) = self.ranges.remove(&(start + size)) {
+            size += after_size;
+        }
+        self.ranges.insert(start, size);
+    }
+
+    /// Removes and answers the free range that ends at `end`, if one does:
+    /// what `InlineCaches` truncates `sites` by.
+    fn take_ending_at(&mut self, end: u32) -> Option<(u32, u32)> {
+        let (&start, &size) = self.ranges.range(..end).next_back()?;
+        if start + size != end {
+            return None;
+        }
+        self.ranges.remove(&start);
+        Some((start, size))
+    }
+}
+
 pub(crate) struct InlineCaches {
     /// Every call site of every family that has run, `VACANT` until filled.
     sites: Vec<CacheEntry>,
@@ -168,6 +226,8 @@ pub(crate) struct InlineCaches {
     pool: Vec<[CacheEntry; POLYMORPHIC_WIDTH]>,
     /// Blocks a megamorphic transition or an invalidation gave back.
     free_blocks: Vec<u32>,
+    /// Ranges of `sites` whose family died, served first by `fresh_range`.
+    free_ranges: FreeRanges,
     global: GlobalCache,
     /// The last receiver guard a private or super slot accessor's cold
     /// check found to have a level, with that level
@@ -187,11 +247,17 @@ pub(crate) struct InlineCaches {
     /// migrates no instance, else through the bulk forward
     /// (`heap::forward_identity`), which vacates them.
     verified_slot_level: Option<(DispatchId, ApplicationIndex)>,
-    /// Code identity -> the start of its family's range.
-    families: IdentityMap<usize, FeedbackBase>,
-    /// Every body in `families`, held so that its address -- the key -- is
-    /// never reused by another body while the key is in the map.
-    family_codes: Vec<Rc<CompiledCode>>,
+    /// Root body identity -> its family. A collection drops a family nothing
+    /// runs any more (`forget_families`).
+    families: IdentityMap<usize, Family>,
+}
+
+/// A family that has run: its range and its root body, held so that the
+/// body's address -- the key in `families` -- is never another body's
+/// while the entry lives.
+struct Family {
+    base: FeedbackBase,
+    code: Rc<CompiledCode>,
 }
 
 impl InlineCaches {
@@ -200,10 +266,10 @@ impl InlineCaches {
             sites: Vec::new(),
             pool: Vec::new(),
             free_blocks: Vec::new(),
+            free_ranges: FreeRanges::default(),
             global: GlobalCache::with_groups(GLOBAL_CACHE_ENTRIES / 2),
             verified_slot_level: None,
             families: IdentityMap::default(),
-            family_codes: Vec::new(),
         }
     }
 
@@ -216,19 +282,78 @@ impl InlineCaches {
             return FeedbackBase(0);
         }
         let key = Rc::as_ptr(code) as usize;
-        if let Some(base) = self.families.get(&key) {
-            return *base;
+        if let Some(family) = self.families.get(&key) {
+            return family.base;
         }
         let base = self.fresh_range(code.family_size);
-        self.families.insert(key, base);
-        self.family_codes.push(code.clone());
+        self.families.insert(
+            key,
+            Family {
+                base,
+                code: Rc::clone(code),
+            },
+        );
         base
     }
 
-    /// A new range of `size` sites at the end of the table. `NOT_ASSIGNED`
-    /// if the table cannot grow that far, which leaves every site of the
-    /// family uncached.
+    /// Drops every family whose root body only the family holds and whose
+    /// range no live closure or activation names (`live_bases`), vacates
+    /// its sites and frees its range for the next family, then gives back
+    /// the table's free tail. A body nothing else holds can never be
+    /// activated again, so no new activation asks for the range; a closure
+    /// or activation of the family still names it by base, which is what
+    /// `live_bases` keeps -- a range freed under one would be filled by
+    /// another family's sends, and its hits would act on them. Run by a
+    /// full collection (`Mutator::reclaim_ids`).
+    pub(crate) fn forget_families(&mut self, live_bases: &BTreeSet<u32>) {
+        let mut freed = Vec::new();
+        self.families.retain(|_, family| {
+            let held = Rc::strong_count(&family.code) > 1;
+            if held || live_bases.contains(&family.base.raw()) {
+                return true;
+            }
+            freed.push((family.base, family.code.family_size));
+            false
+        });
+        let InlineCaches {
+            sites,
+            pool,
+            free_blocks,
+            free_ranges,
+            ..
+        } = self;
+        for (base, size) in freed {
+            // `base_for` records no family without sends, and an empty range
+            // inside another free one would break the map's coalescing. A
+            // family the table had no room for holds no range to free.
+            if size == 0 || base == FeedbackBase::NOT_ASSIGNED {
+                continue;
+            }
+            for entry in &mut sites[base.index()..][..size as usize] {
+                if let Target::Polymorphic { block, .. } = entry.target {
+                    if let Some(slots) = pool.get_mut(block as usize) {
+                        *slots = CacheEntry::vacant_block();
+                        free_blocks.push(block);
+                    }
+                }
+                *entry = CacheEntry::vacant();
+            }
+            free_ranges.free(base.raw(), size);
+        }
+        let mut end = u32::try_from(sites.len()).expect("the site table fits a u32");
+        while let Some((start, _)) = free_ranges.take_ending_at(end) {
+            end = start;
+        }
+        sites.truncate(end as usize);
+    }
+
+    /// A range of `size` sites: the first free one that fits, else a new one
+    /// at the end of the table. `NOT_ASSIGNED` if the table cannot grow that
+    /// far, which leaves every site of the family uncached.
     pub(crate) fn fresh_range(&mut self, size: u32) -> FeedbackBase {
+        if let Some(start) = self.free_ranges.take_first_fit(size) {
+            return FeedbackBase(start);
+        }
         let start = self.sites.len();
         match start
             .checked_add(size as usize)
@@ -345,10 +470,11 @@ impl InlineCaches {
     /// Vacates every site, every polymorphic block and the global cache
     /// (`docs/design/dispatch.md`, "Invalidation"): a class redefinition
     /// invalidates every guard at once, rather than tracking which ones a
-    /// change could affect. `families` and `family_codes` stay -- an
-    /// activation already running still names its family's range, so the
-    /// next send through a vacated site fills the same index again instead
-    /// of minting a new one. Clearing the pool rather than only the sites
+    /// change could affect. `families` stays -- an activation already
+    /// running still names its family's range, so the next send through a
+    /// vacated site fills the same index again instead of minting a new
+    /// one; only a collection's `forget_families` drops a family, once
+    /// nothing runs it. Clearing the pool rather than only the sites
     /// is what leaves every polymorphic block vacant too, not merely
     /// unreachable from a site that still names it.
     pub(crate) fn invalidate(&mut self) {
@@ -359,6 +485,51 @@ impl InlineCaches {
         self.free_blocks.clear();
         self.global.clear();
         self.verified_slot_level = None;
+    }
+
+    /// Vacates exactly the entries that name an id a collection freed --
+    /// a guard, as an entry's own or a lexical rule's N, and an
+    /// application, as a slot target's level, with the guard it recorded
+    /// -- and forgets the verified slot level if it names one. The one
+    /// scrub a collection makes, run only when it freed something: a guard
+    /// or an index minted again must never meet an entry filled for the
+    /// application it named before, and every other entry stays warm
+    /// (`docs/design/dispatch.md`, "Invalidation"). A polymorphic site
+    /// stays polymorphic with its matching slots vacant; a megamorphic one
+    /// holds no guard.
+    pub(crate) fn forget_freed(&mut self, freed: &FreedIds) {
+        let names_freed = |entry: &CacheEntry| {
+            freed.guards.contains(&entry.guard) || target_names(&entry.target, freed)
+        };
+        for entry in &mut self.sites {
+            match entry.target {
+                Target::Vacant | Target::Megamorphic { .. } => {}
+                Target::Polymorphic { block, .. } => {
+                    if let Some(slots) = self.pool.get_mut(block as usize) {
+                        for slot in slots.iter_mut().filter(|slot| names_freed(slot)) {
+                            *slot = CacheEntry::vacant();
+                        }
+                    }
+                }
+                _ => {
+                    if names_freed(entry) {
+                        *entry = CacheEntry::vacant();
+                    }
+                }
+            }
+        }
+        self.global.retain(|entry| {
+            let lexical_freed =
+                matches!(entry.rule, CacheRule::Lexical(guard) if freed.guards.contains(&guard));
+            !(freed.guards.contains(&entry.guard)
+                || lexical_freed
+                || target_names(&entry.target, freed))
+        });
+        if self.verified_slot_level.is_some_and(|(guard, level)| {
+            freed.guards.contains(&guard) || freed.applications.contains(&level)
+        }) {
+            self.verified_slot_level = None;
+        }
     }
 
     /// The table's sizes: how much of what is allocated is actually filled,
@@ -425,6 +596,20 @@ pub struct CacheStatistics {
     pub filled_global_entries: usize,
     pub entry_bytes: usize,
     pub global_entry_bytes: usize,
+}
+
+/// Whether `target` names a freed application or guard: a slot target's
+/// level, and the guard it recorded for a receiver with that level. Every
+/// other target names no id but its entry's guard.
+fn target_names(target: &Target, freed: &FreedIds) -> bool {
+    match target {
+        Target::Slot {
+            level,
+            recorded_guard,
+            ..
+        } => freed.applications.contains(level) || freed.guards.contains(recorded_guard),
+        _ => false,
+    }
 }
 
 /// The index of `site` in its activation's range, or `None` when the send
@@ -547,6 +732,17 @@ impl GlobalCache {
     fn clear(&mut self) {
         for entry in &mut self.entries {
             *entry = GlobalEntry::vacant();
+        }
+    }
+
+    /// Vacates every entry `keep` refuses: `InlineCaches::forget_freed`'s
+    /// global half. A group whose first slot is vacated keeps its second,
+    /// which `get` still finds there.
+    fn retain(&mut self, keep: impl Fn(&GlobalEntry) -> bool) {
+        for entry in &mut self.entries {
+            if !entry.is_vacant() && !keep(entry) {
+                *entry = GlobalEntry::vacant();
+            }
         }
     }
 
@@ -1295,8 +1491,7 @@ impl InlineCaches {
         let base = self
             .families
             .get(&(Rc::as_ptr(code) as usize))
-            .copied()
-            .unwrap_or(FeedbackBase::NOT_ASSIGNED);
+            .map_or(FeedbackBase::NOT_ASSIGNED, |family| family.base);
         numbers
             .into_iter()
             .map(|number| {
@@ -1372,6 +1567,27 @@ mod tests {
     use crate::bytecode::{CodeKind, CompiledCode, Instruction};
     use ns_syntax::Span;
 
+    #[test]
+    fn free_ranges_coalesce_and_fit_first() {
+        let mut free = FreeRanges::default();
+        free.free(10, 4);
+        free.free(20, 3);
+        free.free(14, 6); // joins 10..14 and 20..23 into 10..23
+        assert_eq!(free.take_first_fit(5), Some(10));
+        assert_eq!(free.take_first_fit(8), Some(15));
+        assert_eq!(free.take_first_fit(1), None);
+    }
+
+    #[test]
+    fn the_free_range_ending_at_the_table_is_taken_for_truncation() {
+        let mut free = FreeRanges::default();
+        free.free(4, 2);
+        free.free(30, 10);
+        assert_eq!(free.take_ending_at(40), Some((30, 10)));
+        assert_eq!(free.take_ending_at(40), None);
+        assert_eq!(free.take_ending_at(6), Some((4, 2)));
+    }
+
     fn body(family_size: u32) -> Rc<CompiledCode> {
         let mut code = CompiledCode::new(
             CodeKind::Method,
@@ -1400,6 +1616,28 @@ mod tests {
         assert_eq!(first_base.index(), 0);
         assert_eq!(second_base.index(), 3);
         assert_eq!(caches.table_len(), 5);
+    }
+
+    /// A family whose body only the table holds gives its range back unless
+    /// a live closure or activation names its base; a range inside the
+    /// table is taken by the next family, one at its end is cut off.
+    #[test]
+    fn a_family_nothing_runs_gives_its_range_back() {
+        let mut caches = InlineCaches::new();
+        let (named, unnamed, held, last) = (body(2), body(3), body(1), body(4));
+        let named_base = caches.base_for(&named);
+        let unnamed_base = caches.base_for(&unnamed);
+        caches.base_for(&held);
+        let last_base = caches.base_for(&last);
+        assert_eq!(caches.table_len(), 10);
+        drop((named, unnamed, last));
+        let live_bases = BTreeSet::from([named_base.raw()]);
+        caches.forget_families(&live_bases);
+        // `last`'s range was the table's end; `unnamed`'s stays free inside.
+        assert_eq!(last_base.index(), 6);
+        assert_eq!(caches.table_len(), 6);
+        assert_eq!(caches.base_for(&body(3)), unnamed_base);
+        drop(held);
     }
 
     /// A body with no sends needs no range and never allocates one.
@@ -1616,6 +1854,69 @@ mod tests {
         caches.record_slot_level(guard(1), level(1));
         assert!(!caches.slot_level_verified(guard(0), level(1)));
         caches.invalidate();
+        assert!(!caches.slot_level_verified(guard(1), level(1)));
+    }
+
+    /// A collection's scrub vacates exactly what names a freed id -- a
+    /// monomorphic entry's guard, a slot target's level and the guard it
+    /// recorded, a polymorphic block's matching slot, a global entry's
+    /// guard and a lexical rule's N, the verified slot level -- and keeps
+    /// every other entry warm.
+    #[test]
+    fn forgetting_freed_ids_vacates_exactly_the_entries_naming_them() {
+        let mut caches = InlineCaches::new();
+        let guard = |number: u32| DispatchId::from_counter(DispatchId::FIRST_MINTED + number);
+        let level = |index: usize| ApplicationIndex::from_index(index).expect("a small index");
+        let slot = |level, recorded_guard| Target::Slot {
+            field: 0,
+            kind: AccessorKind::Getter,
+            chain: Chain::Public,
+            level,
+            recorded_guard,
+        };
+        let kept = level(9);
+        let base = caches.fresh_range(5).index();
+        caches.advance(base, guard(0), slot(kept, DispatchId::NONE), false);
+        caches.advance(base + 1, guard(1), slot(level(1), DispatchId::NONE), false);
+        caches.advance(base + 2, guard(1), slot(kept, guard(2)), false);
+        caches.advance(base + 3, guard(1), slot(kept, DispatchId::NONE), false);
+        caches.advance(base + 4, guard(0), slot(kept, DispatchId::NONE), false);
+        caches.advance(base + 4, guard(1), slot(kept, DispatchId::NONE), false);
+        let selector = Symbol::intern("value");
+        let lexical = CacheRule::Lexical(guard(0));
+        for (key, rule) in [
+            (guard(0), CacheRule::Public),
+            (guard(1), lexical),
+            (guard(1), CacheRule::Public),
+        ] {
+            caches
+                .global
+                .insert(key, selector, rule, slot(kept, DispatchId::NONE));
+        }
+        caches.record_slot_level(guard(1), level(1));
+        let mut freed = FreedIds::default();
+        freed.guards.extend([guard(0), guard(2)]);
+        freed.applications.insert(level(1));
+        caches.forget_freed(&freed);
+        for index in base..base + 3 {
+            assert!(matches!(caches.sites[index].target, Target::Vacant));
+        }
+        assert!(!matches!(caches.sites[base + 3].target, Target::Vacant));
+        assert!(matches!(
+            caches.sites[base + 4].target,
+            Target::Polymorphic { .. }
+        ));
+        assert!(caches.polymorphic_hit(base + 4, guard(0)).is_none());
+        assert!(caches.polymorphic_hit(base + 4, guard(1)).is_some());
+        assert!(caches
+            .global
+            .get(guard(0), selector, CacheRule::Public)
+            .is_none());
+        assert!(caches.global.get(guard(1), selector, lexical).is_none());
+        assert!(caches
+            .global
+            .get(guard(1), selector, CacheRule::Public)
+            .is_some());
         assert!(!caches.slot_level_verified(guard(1), level(1)));
     }
 

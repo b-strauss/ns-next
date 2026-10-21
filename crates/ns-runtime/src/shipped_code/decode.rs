@@ -156,7 +156,8 @@ impl Decoder<'_> {
             })
             .collect();
         mixin.has_initializer_expressions = self.reader.boolean();
-        mixin.nested = (0..self.reader.length()).map(|_| self.mixin()).collect();
+        let nested = (0..self.reader.length()).map(|_| self.mixin()).collect();
+        mixin = mixin.with_declared_nested(nested);
         let class_side = self.option(|decoder| decoder.mixin_fields(Position::ClassSide));
         mixin.span = self.span();
         mixin.initializer_code = self.option(Decoder::code);
@@ -194,7 +195,11 @@ impl Decoder<'_> {
         } else {
             mixin.span
         };
-        let holes: Vec<Span> = mixin.nested.iter().map(|nested| nested.span).collect();
+        let holes: Vec<Span> = mixin
+            .declared_nested()
+            .iter()
+            .map(|nested| nested.span)
+            .collect();
         let text = DeclarationText::shared(Rc::clone(&self.module_text), range, &holes);
         assert!(
             text.is_some(),

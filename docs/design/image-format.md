@@ -2281,6 +2281,10 @@ graph runs that no row reaches but some version of a row's declaration
 compiled -- the row's own or one an install superseded under its id
 (`Heap::superseded_mixins`), its methods, initializer, superclass clause and
 message and `<:` messages, and the blocks nested in them (`extra_bodies`).
+A full collection keeps every superseded version whose code a closure, a
+frame or an activation still runs (`Heap::drop_superseded`;
+[object-model.md](object-model.md), "An application has two ids"), so
+such a body stays admissible for as long as anything runs it.
 A frame names its body by code id ("A frame names its body" above), and a
 method frame of a method the current version no longer has, or has with
 another body, decodes to a method built over the old body that no dispatch

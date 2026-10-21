@@ -23,9 +23,12 @@
 > to an image and loads back edited, the code an older version runs
 > included, and a program loaded from an image with source can be edited,
 > road step 5b2b ("Edited programs in images").
-> **Planned:** the reclaiming of ids, road step 5b2c ("Planned: road step
-> 5b2c, reclaiming ids"); the debugger, edit-and-continue and actors
-> after it.
+> A full collection reclaims the ids live editing leaves behind -- dead
+> applications and their guard ids, superseded mixin versions, the mixin
+> trees and code ids nothing names, the caches' ranges -- so a program
+> that edits and installs in a loop keeps its tables at a bounded size,
+> road step 5b2c ("What the id has to carry").
+> **Planned:** the debugger, edit-and-continue and actors.
 > What else is built is the groundwork every part of it depends on —
 > reified activations and the kernel-private activation objects the
 > exceptions are built on ([core-library.md](core-library.md),
@@ -38,8 +41,9 @@
 > leaves), the reified mixin (`Mutator::reified_mixin`, `Heap`'s
 > `mixin_objects`, `Kernel.ns`'s private class `Mixin`), the mixin table's
 > rows (`heap/tables.rs`; `Heap::mixin_id`, `replace_mixin`,
-> `enclosing_mixin_id`, `assembled_text`, `declaration_source`,
-> `module_source`; `Mutator::replace_mixin`), a declaration's text
+> `enclosing_mixin_id`, `nested_of`, `assembled_text`, `declaration_source`,
+> `module_source`; `Mutator::replace_mixin`), their reclamation
+> (`interpreter/reclaim.rs`, `heap/reclaim.rs`), a declaration's text
 > (`mixin.rs`'s `DeclarationText`), the edit and the install
 > (`interpreter/edit.rs`, `interpreter/install.rs`), the image's
 > `OBJECT_MIXIN` (`image/encode.rs`, `image/decode.rs`).
@@ -125,7 +129,11 @@ cache the same way after its walk (`InlineCaches::invalidate`, from
 and an atomic install" below), which forwards, flushes them, and flushes
 them itself when it migrated nothing; nothing else mutates a method table
 at run time. Scoping an invalidation to the applications a change affects
-is deferred beyond road step 5b2a. The dispatch id a cache guards on is a copy in the
+is deferred beyond road step 5b2a. A full collection that reclaims a guard
+id or an application index vacates exactly the entries that name it and
+leaves every other one warm (`InlineCaches::forget_freed`;
+[dispatch.md](dispatch.md), "Invalidation"), so an id minted again never
+meets an entry filled for the application it named before. The dispatch id a cache guards on is a copy in the
 object header ([dispatch.md](dispatch.md), "The dispatch id"), so `become:`
 must not let a stale guard hit, and a class change must restamp it, as
 `Heap::class_set_application` already does when a class's application changes;
@@ -466,10 +474,14 @@ reflectee -- as both prior arts' mixins are heap objects
 That object is an instance of `Kernel.ns`'s private class `Mixin`
 (`BuiltinClass::Mixin`), format `FixedPointers`, of one field, the
 `MixinId` as a `SmallInteger`. There is one per mixin per heap, made on
-first demand by `Mutator::reified_mixin` and kept in a strong table on the
-heap indexed by the id (`Heap`'s `mixin_objects`, a root of every
-collection, forwarded by every move), so `==` is the mixin's identity and
-the object will survive an edit that installs a new mixin under the id.
+first demand by `Mutator::reified_mixin` and kept in a table on the heap
+indexed by the id (`Heap`'s `mixin_objects`, forwarded by every move),
+weak in a full collection: while anything reaches the object it stays the
+one object of its mixin and keeps the mixin's id, so `==` is the mixin's
+identity for every comparison a program can make and the object survives
+an edit that installs a new mixin under the id; once nothing reaches it,
+nothing can compare it, and the next reflection makes a fresh one
+([memory.md](memory.md), "Weak references").
 `Heap::mixin_object_id` reads an object as a mixin only when it is the one
 the table holds for the id its field names, so no other object of the
 class ever stands for a mixin. `Mixin new` is refused (`decide_factory`),
@@ -756,7 +768,7 @@ safepoint:
   clause's level, a metaclass, and the class object of a nested mixin in
   every enclosing instance -- and every object whose class is one of
   them. §6.2 requires every application to see the edit; the walk finds
-  them without a weak list of applications, which road step 5b2c brings.
+  them without a list of each application's class objects.
   An instance whose layout may change -- a replaced level of its class's
   chain declares another slot list or another nested list -- and which the
   bulk forward would refuse is refused here, the last place anything
@@ -877,7 +889,7 @@ edits (`interpreter/mod.rs`), the two leaves under both lowerings
 (`builtins/reflection.rs`) and the id match of `inherits_mixin_of`
 (`builtins/activation.rs`).
 
-Deferred beyond the step: road step 5b2c's reclamation below; a class
+Deferred beyond the step: a class
 declared from source with no predecessor (`ClassDeclarationBuilder
 fromSource:`, loading a module at run time); a shape-changing `setClass:`
 ([object-model.md](object-model.md), "`become:` is an eager bulk
@@ -1040,8 +1052,13 @@ where a mirror needs one as its reflectee.
 (`MixinApplication::nested_slot`, keyed by `MixinId`), the shipped world's
 two maps (`ShippedWorld::index_by_mixin`, `declared_by_mixin`), the
 application cache, a mixin's enclosing link, which the reflection leaves
-read through the id, a module's current text, assembled through the ids
-of its nested declarations (`Heap::assembled_text`), the image encoder's
+read through the id, a mixin's nested declarations, which registration
+takes out of the declared tree into the id's row (`Heap::nested_of`), so
+that every reader -- the lookup of a nested-class accessor, the
+reflection leaves, the install, the kernel phase, the shipped world, the
+image encoder -- reaches each one's current version through its id, a
+module's current text, assembled through those ids
+(`Heap::assembled_text`), the image encoder's
 rows and every record naming a mixin (`image/mixins.rs`'s `plan` and
 `MixinIds`), the names an install migrates a field
 by (`FieldName`), and `builtins/activation.rs`'s `inherits_mixin_of` and
@@ -1053,17 +1070,25 @@ letting the next application mint a fresh one. Still on a mixin's address
 or its builder's link: `reflection.rs`'s `instance_side`,
 `Mixin::reflected_name` and `is_shipped`, which follow the builder's
 `Weak` link and stay so -- what they answer, a name, an access and the
-shipped flag, no replacement changes; and, road step 5b2c's, a mixin's
-nested declarations, still `Vec<Rc<Mixin>>` (`Mixin::nested`), which the
-image encoder and a module's assembly follow to each nested declaration's
-current version through its id. The application cache, today strong
-and growing with every re-application, gets the reuse rules of the ids
-and becomes weak with road step 5b2c
-(decided with the user on 2026-10-03; [object-model.md](object-model.md),
-"An application has two ids"; [memory.md](memory.md), "Weak references");
-a mixin that no class object names any more is reclaimed by marking the
-ids that live class objects name during a full collection, as HotSpot
-unloads classes.
+shipped flag, no replacement changes. Until a heap registers a mixin, its
+nested declarations are the tree its builder declared
+(`Mixin::declared_nested`), which the compiler, the shipped-code decoder,
+the image's mixin builder and an edit's pairing read; registering a mixin
+registers its whole declared tree, and a mixin is registered in at most
+one heap. A full collection reclaims what live editing leaves behind by
+the ids the live objects name, gathered while marking, as HotSpot unloads
+classes (decided with the user on 2026-10-03; built by road step 5b2c on
+2026-10-20, [its plan](../superpowers/plans/2026-10-20-1318-reclaiming-ids.md);
+[object-model.md](object-model.md), "An application has two ids", has the
+rules and the order): the applications nothing names, with their guard
+ids, and the successors of dead applications; the application cache's
+entries for them, so the cache is weak ([memory.md](memory.md), "Weak
+references"); a module's tree of mixin ids, as one, once no live
+application, class object, reified mixin object or Rust holder names any
+of it; a superseded version once only the table holds it and no closure,
+frame or activation runs code compiled in it; and every code id and cache
+range nothing names. Every table mints its smallest free row first and
+gives its trailing free rows back.
 
 **The image follows.** Because a mixin is a table row rather than a graph
 object, an edited mixin reaches an image only because the encoder takes
@@ -1071,23 +1096,6 @@ the rows from the mixins the program names now, through the ids, rather
 than from what its modules declared (decided with the user on 2026-10-05,
 built with road step 5b2b; [image-format.md](image-format.md), "Edited
 programs in the image").
-
-### Planned: road step 5b2c, reclaiming ids
-
-Would change: what road step 5b leaves after road step 5b2b (split from it
-on 2026-10-19, decided with the user), a plan of its own:
-
-- **The weak application cache and the ids' reuse rules**
-  ([object-model.md](object-model.md), "An application has two ids";
-  [memory.md](memory.md), "Weak references"), so the applications, guard
-  ids and successors an install supersedes, and the mixin versions no
-  class object names any more, are reclaimed.
-- **`Mixin::nested` through ids**: a mixin's nested declarations, still
-  `Vec<Rc<Mixin>>`, named by id instead ("What the id has to carry"
-  above).
-- **The per-creation marker of the nested-class cache slot**: a cycle
-  diagnosis a forward can lose ([object-model.md](object-model.md), "The
-  nested-class cache slot") closed by a marker per creation.
 
 ## Concurrency: actors, not threads
 

@@ -12,11 +12,13 @@ use ns_tooling::source;
 /// path is given, its first segment must name the root -- every path
 /// `disasm` accepts or reports is then rooted at the same place the
 /// source's own class declaration is -- and each further segment either
-/// names a nested class declaration in the previous level's `nested` list
-/// or is the literal `class`, meaning that level's own class side.
+/// names a nested class declaration of the previous level, as `nested`
+/// answers them, or is the literal `class`, meaning that level's own class
+/// side.
 fn resolve_mixin_path(
     root: &Rc<ns_runtime::Mixin>,
     path: Option<&str>,
+    mut nested: impl FnMut(&Rc<ns_runtime::Mixin>) -> Vec<Rc<ns_runtime::Mixin>>,
 ) -> Result<Rc<ns_runtime::Mixin>, String> {
     let Some(path) = path else {
         return Ok(root.clone());
@@ -37,11 +39,9 @@ fn resolve_mixin_path(
                 .clone()
                 .ok_or_else(|| format!("`{}` has no class side", current.name))?
         } else {
-            current
-                .nested
-                .iter()
+            nested(&current)
+                .into_iter()
                 .find(|nested| nested.name.as_str() == segment)
-                .cloned()
                 .ok_or_else(|| format!("`{}` has no nested class `{segment}`", current.name))?
         };
     }
@@ -100,7 +100,11 @@ pub(crate) fn execute(
     // already carries compiled bodies, so loading it is a decode and nothing
     // is recompiled. Neither reads the mixin off a class object: the code is
     // all `disasm` prints, so it holds no handle that would tie it to the
-    // heap that minted it.
+    // heap that minted it. A loaded image's heap registered its mixins,
+    // and names their nested declarations by id from then on, so the
+    // artifact path keeps the interpreter for the `--class` path to read
+    // them through.
+    let mut loaded_interpreter: Option<ns_runtime::Interpreter> = None;
     let root_mixin = if looks_like_an_artifact(&raw) {
         if lowering.is_some() {
             eprintln!(
@@ -115,6 +119,7 @@ pub(crate) fn execute(
                     eprintln!("error: {} carries no module", file.display());
                     return ExitCode::FAILURE;
                 };
+                loaded_interpreter = Some(loaded.interpreter);
                 application.declaration
             }
             Err(error) => {
@@ -130,7 +135,11 @@ pub(crate) fn execute(
         ns_runtime::Interpreter::bootstrap_with(lowering.unwrap_or(ns_runtime::Lowering::Optimized))
             .compile_module(&loaded.resolved)
     };
-    let mixin = match resolve_mixin_path(&root_mixin, class_path) {
+    let nested = |mixin: &Rc<ns_runtime::Mixin>| match &mut loaded_interpreter {
+        Some(interpreter) => interpreter.enter(|mutator| mutator.heap().nested_mixins(mixin)),
+        None => mixin.declared_nested().to_vec(),
+    };
+    let mixin = match resolve_mixin_path(&root_mixin, class_path, nested) {
         Ok(mixin) => mixin,
         Err(message) => {
             eprintln!("error: {message}");

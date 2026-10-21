@@ -211,7 +211,7 @@ fn every_mixin_in_the_tree_gets_its_bodies() {
 
     // The nested mixin's own method must be compiled -- proof the tree was
     // compiled past the root's own method table into `nested`.
-    let inner = &mixin.nested[0];
+    let inner = &interpreter.enter(|mutator| mutator.heap().nested_mixins(&mixin))[0];
     let inner_value = inner
         .compiled_method(Symbol::intern("value"))
         .expect("Inner declares `value`");

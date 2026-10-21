@@ -7,6 +7,7 @@
 //! handed, a root's included, without testing anything; a root reached
 //! twice costs one extra pop, which finds the object already marked.
 
+use crate::heap::reclaim::GatheredIds;
 use crate::heap::{FrameReference, ObjectReference, Word};
 use crate::trace::Tracer;
 use std::num::NonZeroU64;
@@ -30,15 +31,20 @@ pub(crate) struct Marker {
     /// ephemeron was pending, and not yet looked up among the pending
     /// ephemerons' keys; the main marking records nothing.
     pub(super) reached: Vec<NonZeroU64>,
+    /// The ids every object this marking visited names
+    /// (`GatheredIds`), for the reclamation between marking and
+    /// compaction; the main marking and the ephemeron fixpoint both fill it.
+    pub(super) gathered: GatheredIds,
 }
 
 impl Marker {
-    pub(crate) fn new() -> Marker {
+    pub(crate) fn new(gathered: GatheredIds) -> Marker {
         Marker {
             work: Vec::new(),
             weak_objects: Vec::new(),
             ephemerons: Vec::new(),
             reached: Vec::new(),
+            gathered,
         }
     }
 

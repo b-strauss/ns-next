@@ -136,7 +136,8 @@ impl World {
                 lowering,
                 shipped_code_path,
                 argument_buffer: Vec::new(),
-                next_dispatch_id: crate::mixin::DispatchId::FIRST_MINTED,
+                dispatch_ids: crate::heap::DispatchIdAllocator::new(),
+                next_creation_serial: 1,
                 caches: crate::interpreter::inline_cache::InlineCaches::new(),
                 unhandled_exceptions_to_resume: 0,
                 depth_reserve: None,
@@ -237,14 +238,16 @@ impl World {
 
     /// Marks everything reachable: the heap's own roots, then the step
     /// state's (`StepRoots`), then the traversal, then the ephemerons and
-    /// weak objects it found (`Heap::finish_marking`).
-    pub(crate) fn mark_everything_reachable(&mut self) {
+    /// weak objects it found (`Heap::finish_marking`). Answers the ids the
+    /// marked objects name, for the reclamation.
+    pub(crate) fn mark_everything_reachable(&mut self) -> crate::heap::reclaim::GatheredIds {
         use crate::trace::Trace;
         let (heap, mut roots) = split(&mut self.mutator);
         let mut marker = heap.begin_marking();
         roots.trace(&mut marker);
         heap.drain_marking(&mut marker);
         heap.finish_marking(&mut marker);
+        marker.gathered
     }
 
     /// One scavenge (`Heap::scavenge`), with the step state's roots traced
@@ -286,8 +289,9 @@ impl World {
         self.mutator.heap.set_scavenge_threshold(bytes);
     }
 
-    /// One collection: mark everything reachable, compact the space, and
-    /// forward what the step state holds beside the heap (`StepRoots`)
+    /// One collection: mark everything reachable, give back the ids
+    /// nothing names any more (`Mutator::reclaim_ids`), compact the space,
+    /// and forward what the step state holds beside the heap (`StepRoots`)
     /// exactly as a move does.
     ///
     /// Timed end to end with one `Instant::now()`/`elapsed()`, folded into
@@ -305,12 +309,16 @@ impl World {
         if let Some(futures) = crate::interpreter::future::resolved_futures(&self.mutator) {
             self.mutator.heap.replace_resolved_futures(futures);
         }
-        self.mark_everything_reachable();
+        let gathered = self.mark_everything_reachable();
         // Between marking and compacting: compaction clears the mark bits,
         // and before marking finishes an
         // entry cleared here could resurrect nothing but would be read
         // before it is complete (`docs/design/memory.md`, "Weak references").
         self.mutator.heap.prune_canonical_symbols();
+        self.mutator.heap.prune_mixin_objects();
+        // After the prune, whose survivors keep their mixins, and before
+        // the compaction, while the mark bits still say what lives.
+        self.mutator.reclaim_ids(gathered);
         let mut forwarder = self.mutator.heap.compact();
         self.forward_step_state(&mut forwarder);
         self.mutator.heap.reset_collection_limits();

@@ -207,7 +207,7 @@ fn expand_mixin(mixin: &Rc<crate::mixin::Mixin>, code: &mixins::MixinCode) -> St
             clause.message.selector
         );
     }
-    for nested in &mixin.nested {
+    for nested in mixin.declared_nested().iter() {
         let _ = writeln!(out, "      nested    {} ({:?})", nested.name, nested.access);
     }
     if let Some(text) = code.text {

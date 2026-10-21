@@ -199,7 +199,7 @@ fn extra_bodies(
 /// Every body `mixin` carries -- its methods, its initializer, its
 /// superclass clause and message, its `<:` clauses' messages -- and the
 /// blocks nested in them, by address.
-fn version_bodies(mixin: &Mixin, out: &mut HashSet<usize>) {
+pub(crate) fn version_bodies(mixin: &Mixin, out: &mut HashSet<usize>) {
     let mut pending: Vec<Rc<CompiledCode>> = mixin
         .compiled_methods()
         .map(|method| Rc::clone(&method.code))
@@ -407,7 +407,9 @@ pub struct LoadedModule {
     /// it or snapshot it again.
     pub class: Root,
     /// The module's root declaration, which carries its code: what a host
-    /// after the code alone reads, with no heap to reach it through.
+    /// after the code alone reads. The image's heap registered it, so its
+    /// nested declarations are read through that heap
+    /// (`Heap::nested_mixins`), while `LoadedImage::interpreter` lives.
     pub declaration: std::rc::Rc<crate::mixin::Mixin>,
     /// Where the module came from. Provenance, not program text -- it is
     /// in every artifact, source or not.

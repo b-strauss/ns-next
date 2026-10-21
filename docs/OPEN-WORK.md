@@ -15,43 +15,24 @@ when they were written.
 
 ## Next
 
-**Road step 5b2c, reclaiming ids** ("Step 5, mirrors and atomic
-installation" below; split from road step 5b2b on 2026-10-19, decided with
-the user: [liveness-and-reflection.md](design/liveness-and-reflection.md),
-"Planned: road step 5b2c, reclaiming ids"), a plan of its own. It builds
-on what road steps 5b2a and 5b2b built: the atomic install, which
-supersedes applications, guard ids and mixin versions without reclaiming
-any, and the declarations' own texts and the encoder's rows through the
-ids ([liveness-and-reflection.md](design/liveness-and-reflection.md), "A
-MirrorBuilder and an atomic install", "Edited programs in images"). In
-short:
-
-- **The weak application cache** ([object-model.md](design/object-model.md),
-  "An application has two ids"; [memory.md](design/memory.md), "Weak
-  references"), kept strong since road step 3a and growing with every
-  re-application an install makes.
-- **The ids' reuse rules**, so the applications, guard ids and successors
-  an install supersedes, and the mixin versions no class object names any
-  more (`Tables::superseded`), are reclaimed.
-- **`Mixin::nested` through ids**: a mixin's nested declarations, still
-  `Vec<Rc<Mixin>>`, which the image encoder and a module's assembly follow
-  to each nested declaration's current version through its id
-  ([liveness-and-reflection.md](design/liveness-and-reflection.md), "What
-  the id has to carry").
-- **The per-creation marker of the nested-class cache slot**: a nested
-  class's superclass clause that forwards its enclosing object to one
-  whose own creation of the same class is underway at the same slot index
-  resets that creation's in-progress marker when it ends, so a cyclic
-  definition in the other clause after that point is not diagnosed
-  ([object-model.md](design/object-model.md), "What a slot access checks",
-  "The nested-class cache slot"); a marker per creation would close it.
+**Road step 6, inline allocation in the interpreter** ("The road to a
+high-performance VM" below; [memory.md](design/memory.md), "Planned:
+inline allocation"), a plan of its own, not yet designed: the instructions
+that allocate -- `new` of a class whose instances fall below the
+large-object threshold, `MakeClosure`, a boxed `Float` and `Array new:`
+below that threshold -- take their memory by a bump in eden instead of a
+call into `Heap::allocate_block`, the bump path living in `heap.rs`. It
+builds on road step 4's eden, whose reserve past the scavenge threshold
+lets an allocation that crosses it succeed and only request a safepoint,
+and whose spent case goes old ([memory.md](design/memory.md),
+"Allocation: eden, its reserve, and what goes old").
 
 **What 5b1 cost.** Measured in release, three pinned builds a side, against
 master (`733c15bd`) and task by task: every program within noise, but
 `bench_megamorphic.ns`, +1.3-2.1% after the private and super accessor
 check, at the edge of build noise and not diagnosed ("Planned: performance
-and representation" below). Everything before road step 5b2c on the road
-is built, road step 5b2b last; each step has its entry in
+and representation" below). Everything before road step 6 on the road
+is built, road step 5b2c last; each step has its entry in
 [PROGRESS.md](PROGRESS.md), and the whole road is below.
 
 **Measuring.** The protocol is [execution.md](design/execution.md)'s "What
@@ -214,13 +195,19 @@ and `prior-art/newspeak-benchmarks`.
   version runs in the code table and every frame naming its body; the
   program's source in every image unless `--strip-source`; and a program
   loaded from an image with source editable, so every golden goes through
-  `build` then `load` again. **5b2c -- next** ("Next" above): the
-  application cache, kept strong since road step 3a, reclaiming no mixin
-  id, application index or guard id until then, made weak with the reuse
-  rules of [object-model.md](design/object-model.md), "An application has
-  two ids" (decided with the user on 2026-10-03), `Mixin::nested` through
-  ids and the per-creation marker of the nested-class cache slot.
-  Deferred beyond them: a
+  `build` then `load` again. **5b2c, reclaiming ids -- built**
+  (2026-10-20,
+  [its plan](superpowers/plans/2026-10-20-1318-reclaiming-ids.md)): a
+  full collection gathers, while marking, the ids the live objects name
+  and frees every application, guard id, successor entry, module tree of
+  mixin ids, superseded version, code id and cache range nothing names
+  any more, scrubbing from the caches exactly the entries that named a
+  freed id; every table mints its smallest free row first and gives its
+  trailing free rows back; running out of guard ids requests a full
+  collection; the table of reified mixins and the application cache are
+  weak; a mixin's nested declarations are named by id; and a nested
+  class's cache slot holds a serial per creation, so a forward can no
+  longer lose a cyclic-definition diagnosis. Deferred beyond them: a
   class declared from source with no predecessor, a shape-changing
   `setClass:`, a superclass change, edits of nested classes,
   `installAtomically:` over several builders, editing kernel methods,
@@ -228,7 +215,8 @@ and `prior-art/newspeak-benchmarks`.
   ("Planned: images, liveness and reflection" below).
   [liveness-and-reflection.md](design/liveness-and-reflection.md),
   "A MirrorBuilder and an atomic install", "Edited programs in images",
-  "Planned: road step 5b2c, reclaiming ids";
+  "What the id has to carry"; [object-model.md](design/object-model.md),
+  "An application has two ids";
   [image-format.md](design/image-format.md), "Edited programs in the
   image"; [memory.md](design/memory.md), "Weak references".
 - **Step 6, inline allocation in the interpreter**: a bump in eden for `new`,
@@ -625,7 +613,12 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   no predecessor (`ClassDeclarationBuilder fromSource:`, loading a module
   at run time), a shape-changing `setClass:`, a superclass change, adding,
   replacing and removing nested classes, and `installAtomically:` over
-  several builders.
+  several builders. Once an install can remove a nested declaration, the
+  removed declaration's row stays in its module's tree, which a full
+  collection frees only whole (`Heap::module_trees`), so it lives until
+  the whole module dies; whether to free such a row on its own then is
+  that step's to decide ([object-model.md](design/object-model.md), "An
+  application has two ids").
   [liveness-and-reflection.md](design/liveness-and-reflection.md), "A
   MirrorBuilder and an atomic install".
 - **A syntax error found while applying an earlier staged operation**
@@ -655,7 +648,8 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   image carries only the texts of the declarations' current versions, and
   nothing links a body to the text of the version that compiled it; in
   the live heap the superseded version keeps its text only while
-  something holds it. Nothing asks a body for its text yet -- a method
+  something holds it or a closure, frame or activation runs code compiled
+  in it. Nothing asks a body for its text yet -- a method
   mirror reads the current version's methods -- so the link, and an image
   carrying the old text it names, come with the activation mirror above.
   [liveness-and-reflection.md](design/liveness-and-reflection.md),
@@ -928,6 +922,19 @@ classes and a class from source with no predecessor are not edited
   stage 3.
 
 ## Unexplained measurements and unmeasured decisions
+
+- **What the reclamation of ids costs a full collection is unmeasured**
+  (2026-10-20). `drain_marking` gained one match arm that records the ids
+  a class object, a closure and a frame name (`GatheredIds`), and
+  `Mutator::reclaim_ids` walks every table once per full collection; a
+  superseded version only the table holds has its bodies decoded once per
+  collection to ask whether a closure, frame or activation still runs one
+  (`Heap::drop_superseded`, `image::version_bodies`). None of it was
+  measured in a release build; a release measurement of a
+  collection-heavy program (`NS_NEXT_STRESS_COLLECT` is a debug-only stress
+  mode, not a measure) decides whether any of it shows.
+  [object-model.md](design/object-model.md), "An application has two
+  ids"; [memory.md](design/memory.md), "Marking".
 
 - **`Heap::same_mixin` looks an id up for every level that differs by
   reference** (2026-10-18). Since road step 5b2a an old and a new
@@ -1486,6 +1493,24 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
   program reaches the path; route it
   through `decide_factory`. Noted 2026-10-16.
   [core-library.md](design/core-library.md), "Weak references".
+- **The feedback range a decoded closure is given is never reclaimed**
+  (2026-10-20). A closure an image decoded carries no base and is given a
+  range of its own on its first activation (`InlineCaches::fresh_range`,
+  from `Mutator`'s closure push), which belongs to no family in the
+  family map, so the full collection that frees the ranges of families
+  nothing runs (`InlineCaches::forget_families`) never frees it, even once
+  the closure is dead. The table grows by one range per decoded closure
+  ever run, bounded by the image, not by how often anything runs.
+  [dispatch.md](design/dispatch.md), "Code families".
+- **A superseded class side held after its instance side was dropped
+  names itself `class side`** (2026-10-20). A full collection drops a
+  superseded instance side that only the table holds while a Rust holder
+  may still keep its class side; the class side's `Weak` link to its
+  instance side then no longer upgrades, so `Mixin::reflected_name`
+  answers the bare class-side name instead of `Foo class`. No reader a
+  program reaches meets such a version, since reflection goes through the
+  id to the current version. [object-model.md](design/object-model.md),
+  "An application has two ids".
 
 ## Missing tests
 

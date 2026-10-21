@@ -716,12 +716,21 @@ fn method_code<'gc>(
 /// that class's own tree, which is the same walk.
 fn mixin_preorder<'gc>(heap: &Heap<'gc>, class: ClassReference<'gc>) -> Vec<Rc<Mixin>> {
     let mut order = Vec::new();
-    ns_runtime::mixin::preorder(&root_mixin_of(heap, class), &mut order);
+    let mut pending = vec![root_mixin_of(heap, class)];
+    while let Some(mixin) = pending.pop() {
+        order.push(Rc::clone(&mixin));
+        // Reversed onto the stack, so that the first is taken first: each
+        // nested declaration's subtree, then the class side's.
+        pending.extend(mixin.class_side.iter().cloned());
+        pending.extend(heap.nested_mixins(&mixin).into_iter().rev());
+    }
     order
 }
 
 /// `class`'s own mixin as a value a test can edit. The clone is shallow: its
-/// methods, nested declarations and class side are the same `Rc`s.
+/// methods and class side are the same `Rc`s. It holds no nested
+/// declarations, which the heap took when it registered the mixin
+/// (`with_nested` gives a copy copies of them).
 fn mixin_of<'gc>(heap: &Heap<'gc>, class: ClassReference<'gc>) -> Mixin {
     (*heap.class_application(class).expect("a class object").mixin).clone()
 }
@@ -763,17 +772,42 @@ fn with_method_code(mut mixin: Mixin, selector: &str, code: Rc<CompiledCode>) ->
     mixin
 }
 
-/// `mixin` with its direct nested declaration `name` replaced by `edit`'s
-/// result.
-fn with_nested(mut mixin: Mixin, name: &str, edit: impl FnOnce(Mixin) -> Mixin) -> Mixin {
-    let index = mixin
-        .nested
+/// `class`'s own mixin, copied, with copies of its nested declarations, the
+/// one named `name` replaced by `edit`'s result. Every nested declaration is
+/// copied, its own nested ones with it, so that the copy is a tree of its
+/// own: a heap registers each mixin under one parent, and frees a tree
+/// whole.
+fn with_nested<'gc>(
+    heap: &Heap<'gc>,
+    class: ClassReference<'gc>,
+    name: &str,
+    edit: impl FnOnce(Mixin) -> Mixin,
+) -> Mixin {
+    let mut edit = Some(edit);
+    let nested: Vec<Rc<Mixin>> = heap
+        .nested_mixins(&root_mixin_of(heap, class))
         .iter()
-        .position(|nested| nested.name.as_str() == name)
-        .expect("a nested declaration of that name");
-    let edited = edit((*mixin.nested[index]).clone());
-    mixin.nested[index] = Rc::new(edited);
-    mixin
+        .map(|nested| {
+            let copy = tree_copy(heap, nested);
+            match edit.take_if(|_| nested.name.as_str() == name) {
+                Some(edit) => Rc::new(edit(copy)),
+                None => Rc::new(copy),
+            }
+        })
+        .collect();
+    assert!(edit.is_none(), "a nested declaration of that name");
+    mixin_of(heap, class).with_declared_nested(nested)
+}
+
+/// `mixin`, copied with copies of its nested declarations at every depth,
+/// none of them registered.
+fn tree_copy(heap: &Heap<'_>, mixin: &Rc<Mixin>) -> Mixin {
+    let nested = heap
+        .nested_mixins(mixin)
+        .iter()
+        .map(|nested| Rc::new(tree_copy(heap, nested)))
+        .collect();
+    (**mixin).clone().with_declared_nested(nested)
 }
 
 /// Encodes a class's code table and mixin table into fresh bytes and
@@ -3243,7 +3277,7 @@ fn a_reified_mixin_round_trips_onto_the_same_mixin() {
     let bytes = reified_holder_snapshot(|mutator, class, _list| {
         let own = applied_mixin(mutator.heap(), class);
         let synthesized = class_side_of(mutator.heap(), class);
-        let declared = own.nested[0]
+        let declared = mutator.heap().nested_mixins(&own)[0]
             .class_side
             .clone()
             .expect("Inner declares one");
@@ -3266,7 +3300,7 @@ fn a_reified_mixin_round_trips_onto_the_same_mixin() {
         ));
         let synthesized = class_side_of(mutator.heap(), class);
         assert!(synthesized.is_class_side() && declaration.class_side.is_none());
-        let declared = declaration.nested[0]
+        let declared = mutator.heap().nested_mixins(&declaration)[0]
             .class_side
             .clone()
             .expect("Inner declares one");
@@ -3311,8 +3345,10 @@ fn unbuilt_collections_class<'gc>(mutator: &Mutator<'gc>, list: ClassReference<'
     let root = applied_mixin(mutator.heap(), list)
         .enclosing_mixin()
         .expect("List is declared in its module's root");
-    root.nested
-        .iter()
+    mutator
+        .heap()
+        .nested_mixins(&root)
+        .into_iter()
         .find(|nested| {
             let name = ShippedName {
                 module: Symbol::intern("CollectionsFactory"),
@@ -3321,7 +3357,6 @@ fn unbuilt_collections_class<'gc>(mutator: &Mutator<'gc>, list: ClassReference<'
             };
             shipped_names::resolve_in(mutator, &[name], false).is_err()
         })
-        .cloned()
         .expect("a CollectionsFactory class that is not built yet")
 }
 
@@ -8404,11 +8439,17 @@ fn a_snapshotted_nested_mixins_method_and_initializer_survive_a_load() {
         // The *decoded* nested mixin, not the live one: its bodies are the
         // ones the mixin table attached, which is what a loaded world's
         // class objects apply.
-        let inner_mixin = &decoded_mixins.module_root(0).expect("a root row").nested[0];
+        let inner_mixin = decoded_mixins
+            .module_root(0)
+            .expect("a root row")
+            .declared_nested()[0]
+            .clone();
         let value_method = inner_mixin
             .compiled_method(Symbol::intern("value"))
             .expect("Inner declares `value`");
-        let live_inner = &root_mixin_of(mutator.heap(), class).nested[0];
+        let live_inner = &mutator
+            .heap()
+            .nested_mixins(&root_mixin_of(mutator.heap(), class))[0];
         assert_eq!(
             *value_method.code,
             *live_inner
@@ -8456,7 +8497,7 @@ fn a_send_reaches_a_nested_mixins_method_after_a_snapshot_and_load() {
     let inner_class = loaded.interpreter.enter(|mutator| {
         let root_class = class_reference(mutator, &loaded.modules[0].class);
         let root_mixin = root_mixin_of(mutator.heap(), root_class);
-        let inner_mixin = root_mixin.nested[0].clone();
+        let inner_mixin = mutator.heap().nested_mixins(&root_mixin)[0].clone();
 
         // Nothing materializes a nested class's own class object without the
         // accessor, which does not exist yet, so this reproduces what it will
@@ -8983,17 +9024,17 @@ fn an_image_with_no_superclass_clause_message_for_a_clause_that_needs_one_is_ref
     let (mut interpreter, class) = load(NESTED_SUPERCLASS_ARGUMENTS);
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        let derived = mixin_of(mutator.heap(), class)
-            .nested
-            .iter()
+        let derived = mutator
+            .heap()
+            .nested_mixins(&root_mixin_of(mutator.heap(), class))
+            .into_iter()
             .find(|nested| nested.name.as_str() == "Derived")
-            .cloned()
             .expect("Args declares Derived");
         assert!(
             derived.superclass_message_code.is_some(),
             "Derived's clause really does compile a message body"
         );
-        let doctored = with_nested(mixin_of(mutator.heap(), class), "Derived", |nested| Mixin {
+        let doctored = with_nested(mutator.heap(), class, "Derived", |nested| Mixin {
             superclass_message_code: None,
             ..nested
         });
@@ -9018,17 +9059,17 @@ fn an_image_with_no_superclass_clause_for_a_clause_that_needs_one_is_refused() {
     let (mut interpreter, class) = load(NESTED_SUPERCLASS_ARGUMENTS);
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        let derived = mixin_of(mutator.heap(), class)
-            .nested
-            .iter()
+        let derived = mutator
+            .heap()
+            .nested_mixins(&root_mixin_of(mutator.heap(), class))
+            .into_iter()
             .find(|nested| nested.name.as_str() == "Derived")
-            .cloned()
             .expect("Args declares Derived");
         assert!(
             derived.superclass_clause_code.is_some(),
             "Derived's clause really does compile a clause body"
         );
-        let doctored = with_nested(mixin_of(mutator.heap(), class), "Derived", |nested| Mixin {
+        let doctored = with_nested(mutator.heap(), class, "Derived", |nested| Mixin {
             superclass_clause_code: None,
             ..nested
         });
@@ -9070,7 +9111,7 @@ fn a_superclass_message_body_that_returns_no_argument_list_is_an_error_not_a_pan
             vec![(0, 0..2)],
             Span::new(0, 0),
         ));
-        let doctored = with_nested(mixin_of(mutator.heap(), class), "Derived", |nested| {
+        let doctored = with_nested(mutator.heap(), class, "Derived", |nested| {
             assert!(
                 nested.superclass_message_code.is_some(),
                 "Derived's clause compiles a message body"
@@ -10185,8 +10226,9 @@ fn a_nested_mixin_round_trips_through_the_table() {
         root.class_side.is_some(),
         "a class side is a row of its own, referenced by id"
     );
-    assert_eq!(root.nested.len(), 1);
-    let inner = &root.nested[0];
+    let nested = root.declared_nested();
+    assert_eq!(nested.len(), 1);
+    let inner = &nested[0];
     assert_eq!(inner.name, Symbol::intern("Inner"));
     assert_eq!(
         inner.access,
@@ -10247,7 +10289,10 @@ fn a_mixin_tree_just_inside_the_nesting_ceiling_still_decodes() {
     assert_eq!(decoded.mixins.len(), 128);
     let mut level = decoded.module_root(0).expect("a root row").clone();
     let mut depth = 1;
-    while let Some(next) = level.nested.first().cloned() {
+    loop {
+        let Some(next) = level.declared_nested().first().cloned() else {
+            break;
+        };
         level = next;
         depth += 1;
     }
@@ -10435,13 +10480,12 @@ fn a_class_whose_superclass_has_a_keyword_factory_survives_a_round_trip() {
 
     let decoded = mixin_table_of(&bytes);
     let root = decoded.module_root(0).expect("a root row").clone();
-    let base = root
-        .nested
+    let nested = root.declared_nested();
+    let base = nested
         .iter()
         .find(|nested| nested.name == Symbol::intern("Base"))
         .expect("Base is a nested declaration");
-    let derived = root
-        .nested
+    let derived = nested
         .iter()
         .find(|nested| nested.name == Symbol::intern("Derived"))
         .expect("Derived is a nested declaration");
@@ -10547,7 +10591,10 @@ fn the_deepest_module_the_parser_accepts_round_trips() {
     );
     let mut level = decoded.module_root(0).expect("a root row").clone();
     let mut depth = 1;
-    while let Some(next) = level.nested.first().cloned() {
+    loop {
+        let Some(next) = level.declared_nested().first().cloned() else {
+            break;
+        };
         level = next;
         depth += 1;
     }
@@ -10568,10 +10615,9 @@ fn the_deepest_module_the_parser_accepts_round_trips() {
 fn deep_mixin_chain(levels: usize) -> Rc<Mixin> {
     let mut mixin = Rc::new(Mixin::empty(Symbol::intern("C0")));
     for level in 1..levels {
-        mixin = Rc::new(Mixin {
-            nested: vec![mixin],
-            ..Mixin::empty(Symbol::intern(&format!("C{level}")))
-        });
+        mixin = Rc::new(
+            Mixin::empty(Symbol::intern(&format!("C{level}"))).with_declared_nested(vec![mixin]),
+        );
     }
     mixin
 }
@@ -11930,18 +11976,18 @@ fn a_text_not_owned_by_exactly_one_declaration_is_refused() {
 #[test]
 fn a_loaded_module_answers_its_text_and_every_method_source() {
     let bytes = snapshot_module(SOURCE_FREE_MODULE, true, None);
-    let loaded = image::load(&bytes).expect("load");
+    let mut loaded = image::load(&bytes).expect("load");
     assert_eq!(
         loaded.modules[0].source.as_deref(),
         Some(SOURCE_FREE_MODULE),
         "the module answers its text whole"
     );
     let root = loaded.modules[0].declaration.clone();
-    let inner = root
-        .nested
-        .iter()
+    let inner = loaded
+        .interpreter
+        .enter(|mutator| mutator.heap().nested_mixins(&root))
+        .into_iter()
         .find(|nested| nested.name.as_str() == "Inner")
-        .cloned()
         .expect("Outer declares Inner");
     for (mixin, selectors) in [(&root, vec!["answer", "block"]), (&inner, vec!["value"])] {
         let text = mixin.text.as_ref().expect("the image carries source");
@@ -14268,7 +14314,7 @@ fn verify_doctored_applied(edit: impl FnOnce(Mixin) -> Mixin) -> Result<(), deco
     let (mut interpreter, class) = load(MIXIN_APPLICATION_MODULE);
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        let doctored = with_nested(mixin_of(mutator.heap(), class), "Applied", edit);
+        let doctored = with_nested(mutator.heap(), class, "Applied", edit);
         install_mixin(mutator, class, doctored);
         let (_table, decoded_mixins, _ids) = round_trip_code_table(mutator.heap(), class);
         decode::verify_mixins(&decoded_mixins)
@@ -15281,13 +15327,13 @@ const TWO_CLASS_MODULE: &str = indoc! {"
 "};
 
 /// The root mixin of a loaded image's one module, and its `Inner`.
-fn outer_and_inner(loaded: &image::LoadedImage) -> (Rc<Mixin>, Rc<Mixin>) {
+fn outer_and_inner(loaded: &mut image::LoadedImage) -> (Rc<Mixin>, Rc<Mixin>) {
     let outer = loaded.modules[0].declaration.clone();
-    let inner = outer
-        .nested
-        .iter()
+    let inner = loaded
+        .interpreter
+        .enter(|mutator| mutator.heap().nested_mixins(&outer))
+        .into_iter()
         .find(|nested| nested.name.as_str() == "Inner")
-        .cloned()
         .expect("Outer declares Inner");
     (outer, inner)
 }
@@ -15299,8 +15345,8 @@ fn outer_and_inner(loaded: &image::LoadedImage) -> (Rc<Mixin>, Rc<Mixin>) {
 #[test]
 fn a_mixin_decoded_from_an_image_with_source_carries_its_text_and_links() {
     let bytes = snapshot_module(TWO_CLASS_MODULE, true, None);
-    let loaded = image::load(&bytes).expect("load");
-    let (outer, inner) = outer_and_inner(&loaded);
+    let mut loaded = image::load(&bytes).expect("load");
+    let (outer, inner) = outer_and_inner(&mut loaded);
     let outer_text = outer.text.as_ref().expect("the image carries source");
     let inner_text = inner.text.as_ref().expect("the image carries source");
     let inner_declaration = "class Inner = Object new () ()";
@@ -15322,8 +15368,8 @@ fn a_mixin_decoded_from_an_image_with_source_carries_its_text_and_links() {
 #[test]
 fn a_mixin_decoded_from_an_image_without_source_carries_no_text() {
     let bytes = snapshot_module(TWO_CLASS_MODULE, false, None);
-    let loaded = image::load(&bytes).expect("load");
-    let (outer, inner) = outer_and_inner(&loaded);
+    let mut loaded = image::load(&bytes).expect("load");
+    let (outer, inner) = outer_and_inner(&mut loaded);
     assert!(outer.text.is_none());
     assert!(inner.text.is_none());
     assert!(inner

@@ -30,9 +30,11 @@ use std::rc::Rc;
 
 mod compaction;
 mod header;
+mod ids;
 pub(crate) mod mark;
 mod object;
 mod pending;
+pub(crate) mod reclaim;
 mod records;
 mod scavenge;
 mod space;
@@ -44,6 +46,7 @@ use compaction::ForwardingTable;
 use compaction::{Shift, ShiftedRegion};
 pub(crate) use header::IDENTITY_HASH_LIMIT;
 use header::{Format, Header, MAX_AGE, WORD_COUNT_OVERFLOW};
+pub(crate) use ids::{DispatchIdAllocator, FreeIndices};
 pub use object::Element;
 use object::{
     class_field, closure_field, frame_field, trace_block, PackedString, CLASS, FIELDS, HEADER,
@@ -57,7 +60,7 @@ use space::{
     REGION_SLACK,
 };
 pub use tables::{ApplicationIndex, CodeId, MixinId};
-pub(crate) use tables::{CodeEntry, Tables};
+pub(crate) use tables::{CodeEntry, MixinRow, Tables};
 pub(crate) use value::is_small_float_bits;
 use value::{at_rest, branded};
 pub use value::{
@@ -620,19 +623,22 @@ pub struct Heap<'gc> {
     /// instance of the kernel-private `Mixin`, the reflectee of a mixin
     /// mirror (`docs/design/liveness-and-reflection.md`, "A mixin is
     /// reified as a kernel-private object"). Filled lazily by
-    /// `Mutator::reified_mixin` (`record_mixin_object`). Strong, unlike
-    /// `canonical_symbols`: a mixin lives as long as the heap's mixin table,
-    /// so its object must too, or a mirror reached later would answer a
-    /// second object for the same mixin and `==` would no longer be the
-    /// mixin's identity. A table of handles, so a collection marks it as a
-    /// root and every move forwards it.
+    /// `Mutator::reified_mixin` (`record_mixin_object`). Weak, as
+    /// `canonical_symbols` is: not a root for marking, and pruned by
+    /// `prune_mixin_objects` between marking and compaction. An entry lives
+    /// while its object is reachable, so `==` stays the mixin's identity for
+    /// every comparison a program can make -- an object nothing reaches
+    /// can be compared with nothing, and the next reflection makes a fresh
+    /// one. A marked entry keeps its mixin's id alive. A scavenge traces the
+    /// table strongly, since a scavenge reclaims no id, and every move
+    /// forwards it.
     mixin_objects: Vec<Option<ObjectReference<'gc>>>,
     /// The one object each symbol is, indexed by `Symbol::index` (§5.1.6:
     /// equal symbols are one object; `docs/design/object-model.md`,
     /// "Values and objects"). Filled lazily by `Mutator::new_symbol`, the one
     /// way to make a symbol, and by the image decoder. Per heap, because a
-    /// handle means nothing against another heap. The system's one weak
-    /// structure: not a root for marking, pruned by
+    /// handle means nothing against another heap. Weak, as
+    /// `mixin_objects` is: not a root for marking, pruned by
     /// `prune_canonical_symbols` between marking and compaction, and
     /// forwarded by `compact` like everything else that survives
     /// (`docs/design/memory.md`, "Weak references").
@@ -1463,6 +1469,7 @@ impl<'gc> Heap<'gc> {
             self.tables
                 .applications
                 .get(application.index().index())
+                .and_then(Option::as_ref)
                 .is_some_and(|entry| Rc::ptr_eq(entry, &application)),
             "internal: a class object's application is registered (`Heap::register_application`)"
         );
@@ -3298,42 +3305,155 @@ impl<'gc> Heap<'gc> {
 
     /// The id of `mixin`, any version of it, minted on first sight. A
     /// mixin's row names the row of the mixin it is declared in, so the
-    /// enclosing mixins not registered yet are registered first, outermost
-    /// first; walked, not recursed, because an image chooses how deep its
-    /// declarations nest.
+    /// outermost enclosing mixin not registered yet is registered, and with
+    /// it its whole declared tree, `mixin` included; walked, not recursed,
+    /// because an image chooses how deep its declarations nest.
     pub(crate) fn mixin_id(&mut self, mixin: &Rc<Mixin>) -> MixinId {
         if let Some(id) = self.known_mixin_id(mixin) {
             return id;
         }
         let mut unregistered = vec![mixin.clone()];
-        let mut enclosing = None;
         while let Some(parent) = unregistered
             .last()
             .and_then(|innermost| innermost.enclosing_mixin())
         {
-            if let Some(id) = self.known_mixin_id(&parent) {
-                enclosing = Some(id);
+            if self.known_mixin_id(&parent).is_some() {
                 break;
             }
             unregistered.push(parent);
         }
         for each in unregistered.into_iter().rev() {
-            enclosing = Some(self.register_mixin(&each, enclosing));
+            if self.known_mixin_id(&each).is_none() {
+                let enclosing = each
+                    .enclosing_mixin()
+                    .and_then(|parent| self.known_mixin_id(&parent));
+                self.register_mixin(&each, enclosing);
+            }
         }
-        enclosing.expect("internal: `mixin` itself was registered last")
+        self.known_mixin_id(mixin)
+            .expect("internal: registering its outermost unregistered ancestor registered it")
     }
 
     /// Mints the next id for `mixin`, declared in the mixin `enclosing`
-    /// names.
+    /// names, and one for every declaration nested in it, each declared in
+    /// its parent's (`register_nested`).
     fn register_mixin(&mut self, mixin: &Rc<Mixin>, enclosing: Option<MixinId>) -> MixinId {
-        let id = MixinId::from_index(self.tables.mixins.len())
-            .expect("more than u32::MAX mixins in one heap");
-        self.tables.mixins.push(mixin.clone());
-        self.tables.enclosing.push(enclosing);
+        let id = self.push_mixin_row(mixin, enclosing);
+        self.register_nested(id, mixin.take_declared_nested());
+        id
+    }
+
+    /// Gives the mixin `id` the ids of `children`, its nested declarations
+    /// in declaration order, and registers every one this heap does not
+    /// name yet with its own subtree, declared in its parent's.
+    /// Registration takes each child's children out of the tree, so no
+    /// registered mixin keeps an unregistered child. The one child the heap
+    /// may already name is one an install paired with an earlier version,
+    /// registered under the id it keeps with this same `id` as its
+    /// enclosing mixin; a child registered under another parent is refused.
+    fn register_nested(&mut self, id: MixinId, children: Vec<Rc<Mixin>>) {
+        // Walked, not recursed: an image chooses how deep its declarations nest.
+        let mut pending = vec![(id, children)];
+        while let Some((parent, children)) = pending.pop() {
+            let mut ids = Vec::with_capacity(children.len());
+            for child in children {
+                let child_id = match self.known_mixin_id(&child) {
+                    Some(child_id) => {
+                        // Rows form trees, which a collection frees whole:
+                        // a child named under a second parent would keep
+                        // a row of another tree, freed without it.
+                        debug_assert_eq!(
+                            self.enclosing_mixin_id(child_id),
+                            Some(parent),
+                            "internal: a known child is declared in the mixin it is nested in"
+                        );
+                        child_id
+                    }
+                    None => {
+                        let child_id = self.push_mixin_row(&child, Some(parent));
+                        pending.push((child_id, child.take_declared_nested()));
+                        child_id
+                    }
+                };
+                ids.push(child_id);
+            }
+            self.mixin_row_mut(parent).nested = ids;
+        }
+    }
+
+    /// One row for `mixin`, declared in `enclosing`'s, with no nested ids
+    /// yet: the smallest free row, else a new one.
+    fn push_mixin_row(&mut self, mixin: &Rc<Mixin>, enclosing: Option<MixinId>) -> MixinId {
+        let row = match self.tables.free_mixins.take_smallest() {
+            Some(free) => free as usize,
+            None => {
+                self.tables.mixins.push(None);
+                self.tables.mixins.len() - 1
+            }
+        };
+        let id = MixinId::from_index(row).expect("more than u32::MAX mixins in one heap");
+        self.tables.mixins[row] = Some(MixinRow {
+            current: Rc::clone(mixin),
+            enclosing,
+            nested: Vec::new(),
+        });
         self.tables
             .mixin_ids
             .insert(crate::mixin::mixin_key(mixin), id);
         id
+    }
+
+    /// The ids of the declarations nested directly in the mixin `id`, in
+    /// declaration order, the same for every version of it: what every
+    /// reader of a registered mixin's nested declarations reads, through
+    /// `mixin` for each one's current version. Empty for an id past the
+    /// table or freed.
+    pub fn nested_of(&self, id: MixinId) -> &[MixinId] {
+        self.mixin_row(id).map_or(&[], |row| row.nested.as_slice())
+    }
+
+    /// The row of the mixin `id`; `None` for an id past the table or freed.
+    fn mixin_row(&self, id: MixinId) -> Option<&MixinRow> {
+        self.tables.mixins.get(id.index())?.as_ref()
+    }
+
+    /// The row of a registered mixin. A compiler-invariant violation
+    /// panics: an id with no row, which nothing registered or a
+    /// collection freed while something still named it.
+    fn mixin_row_mut(&mut self, id: MixinId) -> &mut MixinRow {
+        self.tables
+            .mixins
+            .get_mut(id.index())
+            .and_then(Option::as_mut)
+            .expect("internal: a registered mixin's id names a row")
+    }
+
+    /// The current versions of the declarations nested directly in
+    /// `mixin`, in declaration order: through its id (`nested_of`) once
+    /// this heap registered it, whatever version `mixin` is, and its
+    /// declared tree (`Mixin::declared_nested`) while nothing has.
+    pub fn nested_mixins(&self, mixin: &Rc<Mixin>) -> Vec<Rc<Mixin>> {
+        match self.known_mixin_id(mixin) {
+            Some(id) => self
+                .nested_of(id)
+                .iter()
+                // A collection frees a module's tree whole, so a mixin
+                // with a row never names a freed child.
+                .map(|nested_id| {
+                    self.mixin(*nested_id)
+                        .expect("internal: a nested id has a row")
+                })
+                .collect(),
+            None => mixin.declared_nested().to_vec(),
+        }
+    }
+
+    /// Gives the mixin `id`'s current version its nested row: each child
+    /// the install replaced keeps the id it was paired with, and a child
+    /// with no counterpart is registered fresh, with its subtree, declared
+    /// in `id`.
+    pub(crate) fn adopt_nested(&mut self, id: MixinId, children: Vec<Rc<Mixin>>) {
+        self.register_nested(id, children);
     }
 
     /// Whether `candidate` is `mixin` or another version of the mixin `id`
@@ -3361,46 +3481,40 @@ impl<'gc> Heap<'gc> {
             .copied()
     }
 
-    /// The current version of the mixin `id` names.
+    /// The current version of the mixin `id` names; `None` for an id
+    /// past the table or freed.
     pub fn mixin(&self, id: MixinId) -> Option<Rc<Mixin>> {
-        self.tables.mixins.get(id.index()).cloned()
+        self.mixin_row(id).map(|row| row.current.clone())
     }
 
     /// The id of the mixin the mixin `id` is declared in: a nested
     /// declaration's enclosing declaration, a class side's instance side.
     /// `None` for a module's root, a builtin's mixin, and an id past the
-    /// table.
+    /// table or freed.
     pub(crate) fn enclosing_mixin_id(&self, id: MixinId) -> Option<MixinId> {
-        *self.tables.enclosing.get(id.index())?
+        self.mixin_row(id)?.enclosing
     }
 
     /// `mixin`'s text with every hole filled by the assembled text of the
-    /// current version of the nested declaration it stands for, found
-    /// through the nested mixin's id; a nested mixin nothing has
-    /// registered is its own current version. For a module's root, the
-    /// module's current text, every edit of a declaration in it included.
-    /// `None` where a declaration of the tree has no text. A class side
-    /// shares its instance side's text but declares no nested mixin, so
-    /// for one it answers that text only when the instance side has no
-    /// nested declaration, and `None` otherwise: a reader of a class
-    /// side's declaration asks for its instance side's (the mirrors'
-    /// `source` goes through `instance_side_id`).
+    /// current version of the nested declaration it stands for
+    /// (`nested_mixins`). For a module's root, the module's current text,
+    /// every edit of a declaration in it included. `None` where a
+    /// declaration of the tree has no text. A class side shares its
+    /// instance side's text but declares no nested mixin, so for one it
+    /// answers that text only when the instance side has no nested
+    /// declaration, and `None` otherwise: a reader of a class side's
+    /// declaration asks for its instance side's (the mirrors' `source` goes
+    /// through `instance_side_id`).
     ///
     /// Recursive along the declarations' nesting, which the parser bounds
     /// for a module read from source and `image::mixins::MAX_MIXIN_DEPTH`
     /// for one decoded from an image.
     pub(crate) fn assembled_text(&self, mixin: &Rc<Mixin>) -> Option<String> {
         let text = mixin.text.as_ref()?;
-        let nested = mixin
-            .nested
+        let nested = self
+            .nested_mixins(mixin)
             .iter()
-            .map(|nested| {
-                let current = self
-                    .known_mixin_id(nested)
-                    .and_then(|id| self.mixin(id))
-                    .unwrap_or_else(|| Rc::clone(nested));
-                self.assembled_text(&current)
-            })
+            .map(|nested| self.assembled_text(nested))
             .collect::<Option<Vec<String>>>()?;
         text.assemble(&nested)
     }
@@ -3441,16 +3555,18 @@ impl<'gc> Heap<'gc> {
     /// version, which is the binary's code and which the VM mirror's locks
     /// rest on; and a class side replacing an instance side or the other
     /// way round.
-    pub(crate) fn replace_mixin(&mut self, id: MixinId, replacement: Rc<Mixin>) {
+    ///
+    /// Answers the replacement's declared nested declarations, in order,
+    /// taken out of it: the id's nested row is the earlier version's until
+    /// `adopt_nested` gives it the replacement's, once every replacement of
+    /// an install is in place, so that a child paired with an old one
+    /// keeps its id.
+    pub(crate) fn replace_mixin(&mut self, id: MixinId, replacement: Rc<Mixin>) -> Vec<Rc<Mixin>> {
         assert!(
             self.known_mixin_id(&replacement).is_none(),
             "internal: a replacement mixin is registered under no id yet"
         );
-        let current = self
-            .tables
-            .mixins
-            .get(id.index())
-            .expect("internal: a replaced mixin's id names a row");
+        let current = &self.mixin_row_mut(id).current;
         assert!(
             !current.shipped,
             "internal: the shipped mixin {} is never replaced",
@@ -3465,8 +3581,10 @@ impl<'gc> Heap<'gc> {
         self.tables
             .mixin_ids
             .insert(crate::mixin::mixin_key(&replacement), id);
-        let superseded = std::mem::replace(&mut self.tables.mixins[id.index()], replacement);
+        let children = replacement.take_declared_nested();
+        let superseded = std::mem::replace(&mut self.mixin_row_mut(id).current, replacement);
         self.tables.superseded.push(superseded);
+        children
     }
 
     /// Enters `application` into the table, stamped with its index, and
@@ -3475,11 +3593,18 @@ impl<'gc> Heap<'gc> {
         &mut self,
         mut application: MixinApplication,
     ) -> Rc<MixinApplication> {
-        let index = ApplicationIndex::from_index(self.tables.applications.len())
-            .expect("more than u32::MAX applications in one heap");
+        let row = match self.tables.free_applications.take_smallest() {
+            Some(free) => free as usize,
+            None => {
+                self.tables.applications.push(None);
+                self.tables.applications.len() - 1
+            }
+        };
+        let index =
+            ApplicationIndex::from_index(row).expect("more than u32::MAX applications in one heap");
         application.index = index;
         let application = Rc::new(application);
-        self.tables.applications.push(application.clone());
+        self.tables.applications[row] = Some(application.clone());
         application
     }
 
@@ -3502,7 +3627,7 @@ impl<'gc> Heap<'gc> {
     }
 
     pub fn application(&self, index: ApplicationIndex) -> Option<Rc<MixinApplication>> {
-        self.tables.applications.get(index.index()).cloned()
+        self.tables.applications.get(index.index())?.clone()
     }
 
     /// Every version of a mixin an install superseded, oldest first: the
@@ -3527,15 +3652,23 @@ impl<'gc> Heap<'gc> {
     ) -> CodeId {
         let key = Rc::as_ptr(code) as usize;
         if let Some(id) = self.tables.code_ids.get(&key).copied() {
-            let entry = &mut self.tables.codes[id.index()];
+            let entry = self.tables.codes[id.index()]
+                .as_mut()
+                .expect("internal: a body's id names a row while the map names the body");
             if entry.method.is_none() {
                 entry.method = method.cloned();
             }
             return id;
         }
-        let id = CodeId::from_index(self.tables.codes.len())
-            .expect("more than u32::MAX compiled bodies in one heap");
-        self.tables.codes.push(CodeEntry {
+        let row = match self.tables.free_codes.take_smallest() {
+            Some(free) => free as usize,
+            None => {
+                self.tables.codes.push(None);
+                self.tables.codes.len() - 1
+            }
+        };
+        let id = CodeId::from_index(row).expect("more than u32::MAX compiled bodies in one heap");
+        self.tables.codes[row] = Some(CodeEntry {
             code: code.clone(),
             method: method.cloned(),
         });
@@ -3543,17 +3676,22 @@ impl<'gc> Heap<'gc> {
         id
     }
 
+    /// The body `id` names; `None` for an id past the table or freed.
     pub fn code(&self, id: CodeId) -> Option<Rc<CompiledCode>> {
         self.tables
             .codes
-            .get(id.index())
+            .get(id.index())?
+            .as_ref()
             .map(|entry| entry.code.clone())
     }
 
+    /// The method whose body `id` names; `None` for a block's body, and an
+    /// id past the table or freed.
     pub fn code_method(&self, id: CodeId) -> Option<Rc<MixinMethod>> {
         self.tables
             .codes
-            .get(id.index())
+            .get(id.index())?
+            .as_ref()
             .and_then(|entry| entry.method.clone())
     }
 
@@ -3601,7 +3739,10 @@ impl<'gc> Heap<'gc> {
         let index = self
             .class_field(class, class_field::APPLICATION)?
             .as_small_integer()?;
-        self.tables.applications.get(usize::try_from(index).ok()?)
+        self.tables
+            .applications
+            .get(usize::try_from(index).ok()?)?
+            .as_ref()
     }
 
     /// Runs `read` over the application of the first level of `class`'s
@@ -3646,7 +3787,7 @@ impl<'gc> Heap<'gc> {
             .class_field(class, class_field::APPLIED_CLAUSE)?
             .as_small_integer()?;
         let (mixin, index, named_builtin) = crate::mixin::AppliedClause::unpack(packed)?;
-        let declaration = self.tables.mixins.get(mixin.index())?;
+        let declaration = &self.mixin_row(mixin)?.current;
         Some((declaration, index, named_builtin))
     }
 
@@ -4093,6 +4234,7 @@ impl<'gc> Heap<'gc> {
             self.tables
                 .applications
                 .get(application.index().index())
+                .and_then(Option::as_ref)
                 .is_some_and(|entry| Rc::ptr_eq(entry, &application)),
             "internal: a class object's application is registered (`Heap::register_application`)"
         );
@@ -4972,6 +5114,7 @@ impl<'gc> Heap<'gc> {
                     .entered_level
                     .index(),
             )
+            .and_then(Option::as_ref)
             .map_or(0, |application| application.own_slot_base)
     }
 
@@ -5869,6 +6012,9 @@ impl<'gc> Heap<'gc> {
         if let Some(class) = &mut self.activation_class {
             forwarder.object(class);
         }
+        // Weak against a full collection, which prunes it before compacting,
+        // as it does the symbols below; a move collects nothing. Either
+        // way, every entry left names a live object.
         for object in self.mixin_objects.iter_mut().flatten() {
             forwarder.object(object);
         }
@@ -6047,11 +6193,12 @@ impl<'gc> Heap<'gc> {
     /// the step state's roots (`World::mark_everything_reachable`) before
     /// the traversal runs.
     ///
-    /// The canonical symbol table is deliberately not among these roots: it
-    /// is the runtime's own weak structure, beside the `WeakArray`s,
-    /// `Ephemeron`s and `WeakMap`s of a program (`docs/design/memory.md`,
-    /// "Weak references"), pruned against the finished marking by
-    /// `prune_canonical_symbols` rather than kept alive by it. The space
+    /// The canonical symbol table and the reified mixins are deliberately
+    /// not among these roots: they are the runtime's own weak structures,
+    /// beside the `WeakArray`s, `Ephemeron`s and `WeakMap`s of a program
+    /// (`docs/design/memory.md`, "Weak references"), pruned against the
+    /// finished marking by `prune_canonical_symbols` and
+    /// `prune_mixin_objects` rather than kept alive by it. The space
     /// itself is never a root, only what the roots reach.
     pub(crate) fn begin_marking(&mut self) -> mark::Marker {
         use crate::trace::{Trace, Tracer};
@@ -6072,12 +6219,13 @@ impl<'gc> Heap<'gc> {
                 }
             }
         }
-        let mut marker = mark::Marker::new();
+        let mut marker = mark::Marker::new(reclaim::GatheredIds::new(
+            self.tables.applications.len(),
+            self.tables.mixins.len(),
+            self.tables.codes.len(),
+        ));
         if let Some(class) = &mut self.activation_class {
             marker.object(class);
-        }
-        for object in self.mixin_objects.iter_mut().flatten() {
-            marker.object(object);
         }
         for entry in &mut self.stack.entries {
             entry.trace(&mut marker);
@@ -6193,6 +6341,30 @@ impl<'gc> Heap<'gc> {
             }
             let block = block_range(words, index);
             let format = header.format();
+            // The ids an object names as numbers, which no pointer range
+            // reaches: what keeps an application, a mixin, a body and a
+            // feedback range from being reclaimed. A field past a short
+            // block reads as nil, as `pointer_ranges` clamps it.
+            let field = |field: usize| {
+                let position = block.start + FIELDS + field;
+                if position < block.end {
+                    words[position]
+                } else {
+                    Word::NIL.bits()
+                }
+            };
+            match format {
+                Format::Class => marker.gathered.class_words(
+                    field(class_field::APPLICATION),
+                    field(class_field::APPLIED_CLAUSE),
+                ),
+                Format::Closure => marker.gathered.closure_words(
+                    field(closure_field::CODE_ID),
+                    field(closure_field::FEEDBACK_BASE),
+                ),
+                Format::Frame => marker.gathered.frame_word(field(frame_field::CODE_ID)),
+                _ => {}
+            }
             let ranges = match format {
                 Format::WeakPointers | Format::Ephemeron => {
                     let mut key_died = false;
@@ -6419,8 +6591,8 @@ impl<'gc> Heap<'gc> {
     }
 
     /// Marks from the heap's own roots and `roots`, finishes the marking's
-    /// weak objects and ephemerons, prunes the canonical symbol table,
-    /// compacts, and forwards `roots`, for the heap's own
+    /// weak objects and ephemerons, prunes the canonical symbol table and
+    /// the reified mixins, compacts, and forwards `roots`, for the heap's own
     /// tests. A real collection goes through
     /// `World`.
     #[cfg(test)]
@@ -6433,6 +6605,7 @@ impl<'gc> Heap<'gc> {
         self.drain_marking(&mut marker);
         self.finish_marking(&mut marker);
         self.prune_canonical_symbols();
+        self.prune_mixin_objects();
         let mut forwarder = self.compact();
         for root in roots.iter_mut() {
             forwarder.value(root);
@@ -6818,11 +6991,13 @@ mod tests {
         (mixin, id)
     }
 
-    /// The table of reified mixins is strong and a root: with nothing else
-    /// naming it, a reified mixin survives a scavenge, a full collection and
-    /// a move, and stays the one object the table answers for its id.
+    /// The table of reified mixins is weak against a full collection
+    /// alone: with nothing else naming it, a reified mixin survives a
+    /// scavenge and a move, and stays the one object the table answers for
+    /// its id; a full collection keeps it, as that one object, while a root
+    /// reaches it, and clears its entry once nothing does.
     #[test]
-    fn a_reified_mixin_survives_every_collection_and_move() {
+    fn a_reified_mixin_survives_every_scavenge_and_move_and_lives_while_reached() {
         let mut heap = Heap::new();
         let class = builtin_named_class(&mut heap, "Mixin", Some(BuiltinClass::Mixin));
         let (_mixin, id) = recorded_mixin_object(&mut heap, class, "Reified");
@@ -6835,13 +7010,21 @@ mod tests {
         still_reified(&heap);
         scavenge_bare(&mut heap, true, &mut []);
         still_reified(&heap);
-        heap.collect_for_test(&mut []);
-        still_reified(&heap);
         #[cfg(debug_assertions)]
         {
             move_bare_heap(&mut heap);
             still_reified(&heap);
         }
+        let mut reached = Value::object(heap.mixin_object(id).expect("the table holds it"));
+        heap.collect_for_test(&mut [&mut reached]);
+        still_reified(&heap);
+        assert_eq!(
+            heap.mixin_object(id).map(|object| object.offset),
+            reached.as_object().map(|object| object.offset),
+            "the root and the table name one object"
+        );
+        heap.collect_for_test(&mut []);
+        assert!(heap.mixin_object(id).is_none());
     }
 
     /// Only the canonical object of a mixin is read as one: neither a
