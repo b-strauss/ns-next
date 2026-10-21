@@ -60,7 +60,7 @@ use space::{
     REGION_SLACK,
 };
 pub use tables::{ApplicationIndex, CodeId, MixinId};
-pub(crate) use tables::{CodeEntry, MixinRow, Tables};
+pub(crate) use tables::{CodeEntry, CodeIdCache, MixinRow, Tables};
 pub(crate) use value::is_small_float_bits;
 use value::{at_rest, branded};
 pub use value::{
@@ -106,6 +106,14 @@ pub(crate) mod record_size {
 fn next_heap_id() -> u32 {
     use std::sync::atomic::{AtomicU32, Ordering};
     static NEXT: AtomicU32 = AtomicU32::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Hands every heap's code table a distinct epoch, and every full
+/// collection that frees a code row a fresh one (`CodeIdCache`).
+fn next_code_table_epoch() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
@@ -693,6 +701,9 @@ pub struct Heap<'gc> {
     /// The mixins, applications and compiled bodies objects of this heap
     /// name by index (`tables.rs`).
     tables: Tables,
+    /// What a body's `CodeIdCache` must carry for its id to name a row of
+    /// `tables` (`next_code_table_epoch`).
+    code_table_epoch: u64,
     /// This heap's distinct id, stamped onto every handle it mints. Debug
     /// builds only; see `next_heap_id`. No accessor exists for it: nothing
     /// outside a `cfg`-guarded position may name a field that does not
@@ -1069,6 +1080,7 @@ impl<'gc> Heap<'gc> {
             longest_pause: std::time::Duration::ZERO,
             immediate_dispatch_ids: [DispatchId::NONE; 5],
             tables: Tables::default(),
+            code_table_epoch: next_code_table_epoch(),
             #[cfg(debug_assertions)]
             heap_id: next_heap_id(),
             #[cfg(debug_assertions)]
@@ -3694,6 +3706,18 @@ impl<'gc> Heap<'gc> {
         code: &Rc<CompiledCode>,
         method: Option<&Rc<MixinMethod>>,
     ) -> CodeId {
+        if let Some((epoch, id)) = code.code_id_cache.get() {
+            if epoch == self.code_table_epoch {
+                if let Some(method) = method {
+                    if let Some(entry) = self.tables.codes[id.index()].as_mut() {
+                        if entry.method.is_none() {
+                            entry.method = Some(method.clone());
+                        }
+                    }
+                }
+                return id;
+            }
+        }
         let key = Rc::as_ptr(code) as usize;
         if let Some(id) = self.tables.code_ids.get(&key).copied() {
             let entry = self.tables.codes[id.index()]
@@ -3702,6 +3726,7 @@ impl<'gc> Heap<'gc> {
             if entry.method.is_none() {
                 entry.method = method.cloned();
             }
+            code.code_id_cache.set(self.code_table_epoch, id);
             return id;
         }
         let row = match self.tables.free_codes.take_smallest() {
@@ -3717,6 +3742,7 @@ impl<'gc> Heap<'gc> {
             method: method.cloned(),
         });
         self.tables.code_ids.insert(key, id);
+        code.code_id_cache.set(self.code_table_epoch, id);
         id
     }
 
@@ -11845,5 +11871,80 @@ mod tests {
                 Some(true)
             );
         }
+    }
+
+    #[test]
+    fn a_body_answers_its_id_from_the_cache_after_the_first_lookup() {
+        let mut heap = Heap::new();
+        let code = shaped_code(0, 1);
+        let id = heap.code_id(&code);
+        assert_eq!(code.code_id_cache.get(), Some((heap.code_table_epoch, id)));
+        heap.tables.code_ids.clear();
+        assert_eq!(heap.code_id(&code), id, "a hit never reaches the map");
+    }
+
+    #[test]
+    fn two_heaps_holding_one_body_each_get_their_own_id() {
+        let mut first = Heap::new();
+        let mut second = Heap::new();
+        let filler = shaped_code(0, 1);
+        let code = shaped_code(0, 2);
+        second.code_id(&filler);
+        let in_first = first.code_id(&code);
+        let in_second = second.code_id(&code);
+        assert_ne!(in_first, in_second);
+        assert_eq!(first.code_id(&code), in_first);
+        assert_eq!(second.code_id(&code), in_second);
+    }
+
+    #[test]
+    fn a_freed_row_is_never_answered_from_the_cache() {
+        let mut heap = Heap::new();
+        let code = shaped_code(0, 1);
+        let other = shaped_code(0, 2);
+        let id = heap.code_id(&code);
+        heap.free_unnamed_codes(&reclaim::BitSet::default());
+        let reused = heap.code_id(&other);
+        assert_eq!(reused, id, "the smallest free row is minted first");
+        let again = heap.code_id(&code);
+        assert_ne!(again, reused, "the cache's id was freed and reused");
+        assert!(Rc::ptr_eq(&heap.code(again).expect("a row"), &code));
+    }
+
+    #[test]
+    fn a_cloned_body_starts_with_an_empty_cache() {
+        let mut heap = Heap::new();
+        let code = shaped_code(0, 1);
+        heap.code_id(&code);
+        let copy = Rc::new((*code).clone());
+        assert_eq!(copy.code_id_cache.get(), None);
+    }
+
+    #[test]
+    fn a_cached_body_still_records_the_method_a_frame_registers_it_with() {
+        let mut interpreter = crate::Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let object = mutator.builtin_class(crate::BuiltinClass::Object);
+            let application = mutator.heap().class_application(object).expect("a class");
+            let method = application
+                .mixin
+                .compiled_methods()
+                .next()
+                .expect("Object has a method")
+                .clone();
+            // A body no frame has registered yet: a fresh copy, so the
+            // bootstrap's own registration does not answer for it.
+            let copy = std::rc::Rc::new(crate::mixin::MixinMethod {
+                code: std::rc::Rc::new((*method.code).clone()),
+                ..(*method).clone()
+            });
+            let id = mutator.heap_mut().code_id(&copy.code);
+            assert!(mutator.heap().code_method(id).is_none());
+            assert_eq!(mutator.heap_mut().code_id_of_method(&copy), id);
+            assert!(std::rc::Rc::ptr_eq(
+                &mutator.heap().code_method(id).expect("the method recorded"),
+                &copy
+            ));
+        });
     }
 }

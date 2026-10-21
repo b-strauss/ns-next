@@ -466,10 +466,14 @@ pub struct CompiledCode {
     /// it, so a kernel body decoded from there carries its marker.
     pub unwind_marker: Option<UnwindMarker>,
     pub source: Span,
+    /// This body's id in the heap that last asked (`Heap::code_id`), so a
+    /// closure or frame made of it finds its id without the heap's map.
+    /// Never on any wire; a copy starts empty.
+    pub(crate) code_id_cache: crate::heap::CodeIdCache,
 }
 
 /// Every field of a `CompiledCode`, borrowed (`CompiledCode::fields`).
-/// The three a writer may leave out -- its one, the shipped code's encoder,
+/// The ones a writer may leave out -- its one, the shipped code's encoder,
 /// does -- are here all the same, so that leaving one out is a decision
 /// written where it is made.
 pub(crate) struct CompiledCodeFields<'code> {
@@ -488,6 +492,8 @@ pub(crate) struct CompiledCodeFields<'code> {
     pub(crate) addresses_own_slots: &'code bool,
     pub(crate) unwind_marker: &'code Option<UnwindMarker>,
     pub(crate) source: &'code Span,
+    #[expect(dead_code, reason = "named so that a writer decides to leave it out")]
+    pub(crate) code_id_cache: &'code crate::heap::CodeIdCache,
 }
 
 impl CompiledCode {
@@ -546,6 +552,7 @@ impl CompiledCode {
             statement_program_counter,
             unwind_marker: None,
             source,
+            code_id_cache: crate::heap::CodeIdCache::default(),
         }
     }
 
@@ -566,6 +573,7 @@ impl CompiledCode {
             addresses_own_slots,
             unwind_marker,
             source,
+            code_id_cache,
         } = self;
         CompiledCodeFields {
             kind,
@@ -579,6 +587,7 @@ impl CompiledCode {
             addresses_own_slots,
             unwind_marker,
             source,
+            code_id_cache,
         }
     }
 
@@ -676,6 +685,7 @@ impl PartialEq for CompiledCode {
             addresses_own_slots,
             unwind_marker,
             source,
+            code_id_cache: _,
         } = self;
         *kind == other.kind
             && *argument_count == other.argument_count

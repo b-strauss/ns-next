@@ -512,6 +512,7 @@ impl Heap<'_> {
     /// its row and lives on with whoever else holds it; a frame reified
     /// later registers it again.
     pub(crate) fn free_unnamed_codes(&mut self, codes: &BitSet) {
+        let mut freed = false;
         for row in 0..self.tables.codes.len() {
             let number = u32::try_from(row).expect("a code row fits a u32");
             if codes.contains(number) {
@@ -522,9 +523,14 @@ impl Heap<'_> {
                     .code_ids
                     .remove(&(Rc::as_ptr(&entry.code) as usize));
                 self.tables.free_codes.free(number);
+                freed = true;
             }
         }
         super::ids::truncate_trailing(&mut self.tables.codes, &mut self.tables.free_codes);
+        if freed {
+            // Every body's cached id may name a freed row now.
+            self.code_table_epoch = super::next_code_table_epoch();
+        }
     }
 }
 

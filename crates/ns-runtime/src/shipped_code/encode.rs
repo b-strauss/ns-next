@@ -385,6 +385,9 @@ impl Out {
             addresses_own_slots: _,
             unwind_marker,
             source,
+            // A heap's answer, valid only in that heap; the decoded body
+            // starts with none.
+            code_id_cache: _,
         } = code.fields();
         self.u8(match kind {
             CodeKind::Method => 0,
