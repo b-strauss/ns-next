@@ -14,6 +14,7 @@
 //! Adding an instruction is expected to add a line here with the next free
 //! number. Changing a line that already exists is the thing being prevented.
 
+use ns_runtime::bytecode::CodeKind;
 use ns_runtime::image::opcodes::*;
 
 #[test]
@@ -403,6 +404,20 @@ fn retired_class_and_hashed_tags_are_never_reused() {
             !LIVE_FRAME_KINDS.contains(&retired),
             "frame kind {retired} is retired"
         );
+    }
+    for retired in RETIRED_CODE_KIND_TAGS {
+        for kind in [
+            CodeKind::Method,
+            CodeKind::Block,
+            CodeKind::Initializer,
+            CodeKind::SuperclassClause,
+        ] {
+            assert_ne!(
+                ns_runtime::image::encode::code_kind_tag(kind),
+                retired,
+                "code kind tag {retired} is retired"
+            );
+        }
     }
     for retired in RETIRED_HASHED_TAGS {
         assert!(

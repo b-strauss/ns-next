@@ -5558,9 +5558,8 @@ impl<'gc> Heap<'gc> {
         self.stack.entries[activation.index as usize].kind.clone()
     }
 
-    /// Whether `activation` runs a method, a superclass clause, a superclass
-    /// clause's message or a `<:` clause's message -- not a block, an
-    /// initializer or a top-level activation. Answered without cloning the
+    /// Whether `activation` runs a method or a superclass clause -- not a
+    /// block, an initializer, a factory or a top-level activation. Answered without cloning the
     /// kind, which holds an `Rc` for a method.
     pub(crate) fn activation_runs_method_or_clause(&self, activation: ActivationReference) -> bool {
         self.check_activation(activation);

@@ -1176,6 +1176,27 @@ fn an_invalid_code_kind_tag_is_a_decode_error_not_a_panic() {
     );
 }
 
+/// A code table naming the retired clause-message kind meets the refusal of
+/// a tag never assigned.
+#[test]
+fn a_retired_code_kind_tag_is_refused() {
+    assert_eq!(RETIRED_CODE_KIND_TAGS, [4]);
+    for tag in RETIRED_CODE_KIND_TAGS {
+        let mut writer = encode::Writer::new();
+        writer.write_u32(1);
+        writer.write_u8(tag);
+        let bytes = writer.into_bytes();
+        let mut reader = decode::Reader::new(&bytes);
+        assert_eq!(
+            decode::decode_code_table(&mut reader, &symbols::Table::empty()),
+            Err(decode::DecodeError::InvalidTag {
+                what: "code kind",
+                tag
+            })
+        );
+    }
+}
+
 #[test]
 fn an_invalid_instruction_tag_is_a_decode_error_not_a_panic() {
     let mut writer = encode::Writer::new();
@@ -9379,7 +9400,7 @@ const NESTED_SUPERCLASS_ARGUMENTS: &str = indoc! {"
 /// every instantiation, so a reloaded image is the only place its compiled
 /// body can come from -- exactly the reason the clause's *receiver* already
 /// travels in a mixin-table row. A round trip that still hands `Base` its `7`
-/// proves the message body made it across.
+/// proves the arguments made it across.
 #[test]
 fn a_reloaded_superclass_clause_message_still_passes_its_arguments() {
     let (mut interpreter, class) = load(NESTED_SUPERCLASS_ARGUMENTS);
@@ -10744,7 +10765,7 @@ fn a_body_the_code_table_does_not_hold_has_no_id() {
 }
 
 /// The factory selector must come from the table, not from
-/// `Mixin::declaration`: `instantiate::clause_message_body` checks the selector
+/// `Mixin::declaration`: `instantiate` checks the selector
 /// a clause names against the superclass's primary factory selector. Read off a
 /// declaration, a decoded mixin (which has none) would fall back to `new`, and
 /// every class whose superclass has a keyword factory would raise a spurious

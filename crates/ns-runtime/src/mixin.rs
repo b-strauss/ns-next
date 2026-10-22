@@ -505,9 +505,9 @@ pub struct ClauseMessage {
     /// The factory selector the message names; `new` when it is omitted
     /// (§6.1: "if the message is omitted, it defaults to `new`").
     pub selector: Symbol,
-    /// Whether the message carries argument expressions, and therefore a
-    /// compiled body. The overwhelmingly common `= Object new` shape has none
-    /// and runs no code.
+    /// Whether the message carries argument expressions, which the
+    /// initializers lower inline. The overwhelmingly common `= Object new`
+    /// shape has none and runs no code.
     pub has_arguments: bool,
 }
 

@@ -442,6 +442,10 @@ pub const FRAME_FACTORY: u8 = 9;
 /// body; a closure frame is never written so, its closure's code being in
 /// the table. Every other body is `FRAME_BODY_CODE`, followed by its `u32`
 /// code id. Next free number: 3.
+/// Code kind tag 4 was the body of a clause message's arguments
+/// (`CodeKind::SuperclassMessage`), retired when those arguments were lowered
+/// into the initializers. The live tags are `encode::code_kind_tag`'s.
+pub const RETIRED_CODE_KIND_TAGS: [u8; 1] = [4];
 pub const FRAME_BODY_NONE: u8 = 0;
 pub const FRAME_BODY_CODE: u8 = 1;
 pub const FRAME_BODY_DECLARED: u8 = 2;

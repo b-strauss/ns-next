@@ -197,8 +197,7 @@ fn extra_bodies(
 }
 
 /// Every body `mixin` carries -- its methods, its three initializer bodies,
-/// its superclass clause -- and the
-/// blocks nested in them, by address.
+/// its superclass clause -- and the blocks nested in them, by address.
 pub(crate) fn version_bodies(mixin: &Mixin, out: &mut HashSet<usize>) {
     let mut pending: Vec<Rc<CompiledCode>> = mixin
         .compiled_methods()
