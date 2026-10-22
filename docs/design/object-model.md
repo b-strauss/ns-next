@@ -319,7 +319,8 @@ struct MixinApplication {         // (mixin, super application) -> behaviour
 }
 
 a class object                    // one per enclosing instance, per level;
-                                  // an object of the class format, eight fields:
+                                  // an object of the class format, eight fields,
+                                  // nine for a level a `<:` clause added:
     0 enclosing                   // object or nil
     1 declaring class             // the declaration chain `outer` walks
     2 superclass                  // parallel to the application chain
@@ -328,6 +329,7 @@ a class object                    // one per enclosing instance, per level;
     5 value-class refusal         // nil, or an Array of the offender and the level's Symbol
     6 applied clause              // the `<:` clause that added this level, packed, or nil
     7 application                 // SmallInteger ApplicationIndex
+    8 named class                 // a level a `<:` clause added only: the class it named
 ```
 
 The layout and its reasons are "The object layout" below; `heap/object.rs`'s
@@ -1181,8 +1183,8 @@ class Tagged = Object new <: Marker withTag: 'x'.
 Each `<:` clause is §6.1's `inheritanceClause`, the production the superclass
 clause itself is — a receiver naming a class, with an optional message
 defaulting to `new` — and `<:` is one lexer token. With at least one clause the
-whole body may be replaced by a `.`, which declares nothing: the applied mixins
-supply everything. `ClassDeclaration::mixin_applications` carries the clauses
+whole body may be replaced by a `.`: such a declaration is the mixin
+application itself (decision 8 of `new` as compiled code, below). `ClassDeclaration::mixin_applications` carries the clauses
 in written order, and the declaration's `Mixin::mixin_applications` one
 `MixinApplicationClause` each — its message (a `ClauseMessage`, the
 selector and whether it has arguments, the same record `Mixin::superclass`
@@ -1213,7 +1215,32 @@ superclass**, lowest first, so the last clause's mixin is the nearest to `C`.
   run-time error, raised when `C` is instantiated
   (`goldens/language/class/mixin/mixin_clause_naming_the_wrong_factory_fails.ns`). A clause
   whose receiver does not evaluate to a class object is §6.1's other run-time
-  error, raised where the levels are built.
+  error, raised where the levels are built. The level's metaclass applies
+  the named class's class side, so its factory and its name are the named
+  class's (`Heap::class_factory`, `Heap::class_name`), and the level keeps
+  the named class itself in one field more than a class object has
+  (`class_field::NAMED_CLASS`), which the clause's check reads and the image
+  rebuilds the metaclass from. Its own part runs with the clause's
+  arguments, their count checked against the factory of the mixin it
+  applies, whose registers it is laid out for.
+
+**A declaration without a body is the mixin application it writes** (§6:
+"the mixin can be specified along with the superclass via a mixin
+application"; decision 8 of `new` as compiled code). For `class M3 x: x =
+Base new <: M1 tag: x + 1.`, `Mixin::has_body` is false, and `M3`'s class
+object is the level its last clause adds -- `M1`'s mixin over the levels
+below, with `M1`'s enclosing object and declaring class -- with no level of
+its own over it. Its metaclass applies `M3`'s own, synthesized, class side,
+so its factory is `x:` and its name `M3`. `M3 x: 1` runs `M3`'s full
+initializer at that level, which counts the levels from 0: its clauses'
+checks, the superclass, and each level's own part, the last one `M1`'s at
+`M3`'s own level; it has an empty own part and no standalone body. `class U
+= Base new <: M3 x: 5 (…)` checks `x:` against `M3`'s factory, and its level
+runs `M1`'s own part with `5`, its arity checked against `M1`'s factory;
+`M3`'s own clauses never run there
+(`goldens/language/class/mixin/spec_6_a_body_less_declaration_is_the_mixin_application.ns`).
+A passed level (`Mutator::passes`) counts a body-less declaration's levels
+the same way. The image never applies a body-less row's mixin.
 
 **The levels are built in one place, `interpreter/nested.rs`'s
 `build_applied_levels`**, called by `Mutator::load_root_class` for a module's

@@ -205,6 +205,18 @@ pub(crate) struct MethodThen<'gc> {
     pub(crate) then: Continuation<'gc>,
 }
 
+/// The parts of a level a `<:` clause adds that every class object has
+/// (`Mutator::new_applied_level`): the application of the named class's
+/// mixin to the level below, the named class's enclosing object and
+/// declaring class (§6.2: "the enclosing object of I is the enclosing
+/// object of C"), and the level below.
+pub(crate) struct AppliedLevel<'gc> {
+    pub(crate) application: Rc<crate::mixin::MixinApplication>,
+    pub(crate) enclosing: Option<ObjectReference<'gc>>,
+    pub(crate) declaring_class: Option<ClassReference<'gc>>,
+    pub(crate) superclass: Option<ClassReference<'gc>>,
+}
+
 /// Where an activation's arguments come from.
 pub(crate) enum StepArguments<'gc> {
     /// The send's own arguments.
@@ -1885,27 +1897,43 @@ impl<'gc> Mutator<'gc> {
 
     /// A level a mixin application adds (`newspeak-spec.pdf` §6.2): a class
     /// object like any other -- `new_class_object`'s invariant holds for it
-    /// too -- that also carries the `<:` clause it was built for.
+    /// too -- that also carries the `<:` clause it was built for and the
+    /// class object `named` that clause named. Its metaclass applies
+    /// `class_side`, the class side whose factory and name the level has:
+    /// the named class's for a level like any other (§6.2: "a primary
+    /// factory method with the same selector as m"), and a body-less
+    /// declaration's own for its class object, the level its last clause
+    /// adds (decision 8 of `new` as compiled code).
     pub(crate) fn new_applied_level(
         &mut self,
-        application: Rc<crate::mixin::MixinApplication>,
-        enclosing: Option<ObjectReference<'gc>>,
-        declaring_class: Option<ClassReference<'gc>>,
-        superclass: Option<ClassReference<'gc>>,
+        level: AppliedLevel<'gc>,
         clause: crate::mixin::AppliedClause,
+        named: ClassReference<'gc>,
+        class_side: Rc<crate::mixin::Mixin>,
     ) -> ClassReference<'gc> {
-        let class = self.allocate_class_object(crate::heap::NewClass {
+        let AppliedLevel {
             application,
             enclosing,
             declaring_class,
             superclass,
-            builtin: None,
-        });
+        } = level;
+        let object = self.builtin_class(BuiltinClass::Object);
+        let class = self.heap.allocate_applied_level(
+            object,
+            crate::heap::NewClass {
+                application,
+                enclosing,
+                declaring_class,
+                superclass,
+                builtin: None,
+            },
+            named,
+        );
         if !self.heap.class_set_applied_clause(class, clause) {
             unreachable!("internal: a level is a class object");
         }
         if self.metaclasses_ready {
-            self.attach_metaclass(class);
+            self.attach_metaclass_of(class, class_side);
         }
         class
     }

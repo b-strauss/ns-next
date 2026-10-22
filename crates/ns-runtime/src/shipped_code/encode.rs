@@ -99,6 +99,7 @@ fn write_mixin(out: &mut Out, mixin: &Mixin) {
         superclass,
         superclass_receiver,
         mixin_applications,
+        has_body,
         has_initializer_expressions,
         // Read only by the compiler, which has run.
         initializer_expressions: _,
@@ -169,6 +170,7 @@ fn write_mixin(out: &mut Out, mixin: &Mixin) {
         out.clause_message(*message);
         out.option(receiver.as_ref(), |out, receiver| out.symbol(*receiver));
     }
+    out.boolean(*has_body);
     out.boolean(*has_initializer_expressions);
     let nested = mixin.declared_nested();
     out.length(nested.len());

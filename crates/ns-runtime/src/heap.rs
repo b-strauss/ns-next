@@ -93,6 +93,9 @@ impl InstanceHeader {
 /// class word included.
 pub(crate) mod record_size {
     pub(crate) const CLASS_FIELDS: usize = super::class_field::COUNT;
+    /// A level a `<:` clause added: a class object's fields and the class
+    /// its clause named (`Heap::allocate_applied_level`).
+    pub(crate) const APPLIED_LEVEL_FIELDS: usize = super::class_field::APPLIED_LEVEL_COUNT;
     /// The id of the mixin it stands for (`Heap::allocate_mixin_object`).
     pub(crate) const MIXIN_FIELDS: usize = 1;
     pub(crate) const CLOSURE_FIXED_FIELDS: usize = super::closure_field::COUNT;
@@ -1661,6 +1664,31 @@ impl<'gc> Heap<'gc> {
         object
     }
 
+    /// A level a `<:` clause added (`newspeak-spec.pdf` §6.2): a class object
+    /// as `allocate_class` makes one, and one field more, the class object
+    /// `named` its clause named (`class_field::NAMED_CLASS`). The clause
+    /// itself is set after, as every class object's later fields are.
+    pub(crate) fn allocate_applied_level(
+        &mut self,
+        metaclass: ClassReference<'gc>,
+        class: NewClass<'gc>,
+        named: ClassReference<'gc>,
+    ) -> ClassReference<'gc> {
+        let fixed = self.class_fixed_words(class);
+        let named = self.store(Value::object(named));
+        let (object, fields) = self.allocate_object(
+            metaclass,
+            Format::Class,
+            0,
+            false,
+            class_field::APPLIED_LEVEL_COUNT,
+        );
+        let words = &mut self.space.words_mut()[fields];
+        write_words(&mut words[..class_field::COUNT], fixed);
+        words[class_field::NAMED_CLASS] = named.bits();
+        object
+    }
+
     /// A class object's fields from its record, stored: the one place they
     /// are laid out, for a new class object and for a placeholder filled in
     /// place (`fill_placeholder_class`). Every field set after creation
@@ -1782,23 +1810,35 @@ impl<'gc> Heap<'gc> {
     /// The object carries `NONE` in its header until `stamp_dispatch_ids`
     /// runs -- `class` may itself be a still-placeholder record with no
     /// application yet -- and must not be dispatched on before then.
+    ///
+    /// `named` is a level's named class (`allocate_applied_level`), and the
+    /// placeholder has that field exactly when it is given.
     pub(crate) fn fill_placeholder_class(
         &mut self,
         object: ObjectReference<'gc>,
         class: ClassReference<'gc>,
         identity_hash: u32,
         record: NewClass<'gc>,
+        named: Option<ClassReference<'gc>>,
     ) -> bool {
         self.check_object_origin(object);
         let fields = self.class_fixed_words(record);
-        for word in fields {
-            self.debug_assert_tenured(word);
+        let named = named.map(|named| self.store(Value::object(named)));
+        for word in fields.iter().chain(named.iter()) {
+            self.debug_assert_tenured(*word);
         }
+        let expected = match named {
+            Some(_) => class_field::APPLIED_LEVEL_COUNT,
+            None => class_field::COUNT,
+        };
         let placeholder = self.fields_mut(object);
-        if placeholder.len() != class_field::COUNT {
+        if placeholder.len() != expected {
             return false;
         }
-        write_words(placeholder, fields);
+        write_words(&mut placeholder[..class_field::COUNT], fields);
+        if let Some(named) = named {
+            placeholder[class_field::NAMED_CLASS] = named.bits();
+        }
         self.rewrite_placeholder_header(object, class, identity_hash, Format::Class, 0);
         true
     }
@@ -3478,10 +3518,10 @@ impl<'gc> Heap<'gc> {
                     Format::Closure => "a Closure".to_string(),
                     Format::Class => format!("the class {}", self.class_display_name(object)),
                     _ => {
-                        match self.class_application_entry(self.object_class(object)) {
-                            Some(application) => {
-                                format!("an instance of {}", application.mixin.name)
-                            }
+                        // Named as its class is (`class_name`): an instance
+                        // of a body-less declaration's class is one of it.
+                        match self.class_name(self.object_class(object)) {
+                            Some(name) => format!("an instance of {name}"),
                             // `ClassReference`'s doc: every class word
                             // names a class object by convention rather than by
                             // the type system. This arm exists only so the
@@ -4252,18 +4292,113 @@ impl<'gc> Heap<'gc> {
         self.class_object_field(class, class_field::THIS_CLASS)
     }
 
-    /// The name a class object is shown by: its mixin's for a class, and
-    /// its class's followed by ` class` for a metaclass, as
+    /// The name a class object is shown by: its own (`class_name`) for a
+    /// class, and its class's followed by ` class` for a metaclass, as
     /// `Metaclass>>name` answers it (`Kernel.ns`). For the refusal texts
     /// that name what could not be instantiated.
     pub fn class_display_name(&self, class: ClassReference<'gc>) -> String {
         match self.class_this_class(class) {
             Some(this_class) => format!("{} class", self.class_display_name(this_class)),
-            None => self.class_application_entry(class).map_or_else(
-                || "a class".to_string(),
-                |application| application.mixin.name.to_string(),
-            ),
+            None => self
+                .class_name(class)
+                .map_or_else(|| "a class".to_string(), |name| name.to_string()),
         }
+    }
+
+    /// For a level a `<:` clause added, the class object the clause named
+    /// (`class_field::NAMED_CLASS`); `None` for every other class object and
+    /// for a handle that is no class object.
+    pub fn class_named(&self, class: ClassReference<'gc>) -> Option<ClassReference<'gc>> {
+        self.class_object_field(class, class_field::NAMED_CLASS)
+    }
+
+    /// The mixin of `class`'s metaclass: its class side together with its
+    /// primary factory (§6.3), which says which factory and which name the
+    /// class object has. `None` for a class object without a metaclass --
+    /// one of the kernel phase before the bootstrap gave it one, a
+    /// metaclass -- and for a handle that is no class object.
+    fn class_side_entry(
+        &self,
+        class: ClassReference<'gc>,
+    ) -> Option<&Rc<crate::mixin::MixinApplication>> {
+        self.class_application_entry(self.class_metaclass(class)?)
+    }
+
+    /// `class`'s primary factory, as `newspeak-spec.pdf` §6.3 makes it: the
+    /// factory entry of its metaclass's class-side mixin, its selector and
+    /// arity. That is the declaration's own for a class with a body and for
+    /// a body-less declaration's class object (decision 8 of `new` as
+    /// compiled code), and the named class's for a level a `<:` clause
+    /// added, which §6.2 gives "a primary factory method with the same
+    /// selector as m". `new` with no arguments for a builtin. A class object
+    /// with no metaclass yet has its mixin's; `None` for a metaclass and
+    /// for a handle that is no class object.
+    pub fn class_factory(&self, class: ClassReference<'gc>) -> Option<crate::mixin::Factory> {
+        if self.class_this_class(class).is_some() || !self.is_class(class) {
+            return None;
+        }
+        match self.class_side_entry(class) {
+            Some(class_side) => class_side.level_facts.metaclass_factory,
+            None => self.class_application_entry(class).map(|application| {
+                application.mixin.factory.unwrap_or(crate::mixin::Factory {
+                    selector: Symbol::NEW,
+                    argument_count: 0,
+                })
+            }),
+        }
+    }
+
+    /// `class`'s name as its declaration writes it, read through its
+    /// metaclass as its factory is (`class_factory`): the instance side
+    /// the class side stands for. A level a `<:` clause added is named
+    /// for the class its clause named, and a body-less declaration's class
+    /// object for the declaration. A class object with no metaclass yet is
+    /// named for its mixin; `None` for a metaclass and for a handle that is
+    /// no class object.
+    pub fn class_name(&self, class: ClassReference<'gc>) -> Option<Symbol> {
+        if self.class_this_class(class).is_some() || !self.is_class(class) {
+            return None;
+        }
+        let instance_side = self
+            .class_side_entry(class)
+            .and_then(|class_side| self.known_mixin_id(&class_side.mixin))
+            .and_then(|id| self.enclosing_mixin_id(id))
+            .and_then(|id| self.mixin_row(id));
+        match instance_side {
+            Some(row) => Some(row.current.name),
+            None => self
+                .class_application_entry(class)
+                .map(|application| application.mixin.name),
+        }
+    }
+
+    /// The mixin that carries the initializer `body` an activation entered
+    /// at `level` runs: the body-less declaration's, for the full body of
+    /// its class object (`class_body_less_declaration`), whose mixin is the
+    /// one its last clause applies; `level`'s own mixin otherwise. `None`
+    /// for a handle that is no class object.
+    pub(crate) fn initializer_mixin(
+        &self,
+        level: ClassReference<'gc>,
+        body: InitializerBody,
+    ) -> Option<Rc<Mixin>> {
+        if body == InitializerBody::Full {
+            if let Some(declaration) = self.class_body_less_declaration(level) {
+                return Some(declaration.clone());
+            }
+        }
+        self.class_application(level)
+            .map(|application| application.mixin.clone())
+    }
+
+    /// The body-less declaration (`Mixin::has_body`) `class` is the class
+    /// object of: the declaration whose last `<:` clause added `class`.
+    /// `None` for every other class object, a level a body-less
+    /// declaration's earlier clause added included.
+    pub fn class_body_less_declaration(&self, class: ClassReference<'gc>) -> Option<&Rc<Mixin>> {
+        let (declaration, index, _) = self.class_applied_parts(class)?;
+        (!declaration.has_body && index + 1 == declaration.mixin_applications.len())
+            .then_some(declaration)
     }
 
     /// The id `dispatch_id` answers for an object of `class`: its class's
@@ -4722,7 +4857,9 @@ impl<'gc> Heap<'gc> {
         };
         match kind {
             FrameKind::Method(method) => Some(method.code.clone()),
-            FrameKind::Initializer(class, body) => body.code_of(mixin(*class)?.as_ref()),
+            FrameKind::Initializer(class, body) => {
+                body.code_of(self.initializer_mixin(*class, *body)?.as_ref())
+            }
             FrameKind::Factory(class) => {
                 crate::interpreter::instantiate::factory_code(self, *class)
             }
@@ -8732,6 +8869,7 @@ mod tests {
                 superclass: None,
                 builtin: None,
             },
+            None,
         );
         assert!(!filled);
         assert!(!heap.is_class(placeholder));

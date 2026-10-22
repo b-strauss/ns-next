@@ -610,19 +610,31 @@ repeated there: the superclass clause's body evaluates the superclass and every
 `<:` receiver together and answers them as one array
 (`interpreter::nested::superclass_clause_expression`), so the row's clause
 count is also how many named classes that body answers beside the superclass.
+After the clauses, one boolean says whether the declaration writes a body
+(`Mixin::has_body`): a declaration that ends in a dot is the mixin
+application itself, and its row has clauses and no member, no class side
+and no standalone body (`BodyLessWithoutClauses`, `BodyLessWithMembers`).
 
 **Class objects are ordinary objects in the graph** (object body tag 7),
 encoded as `{MIXIN_ROW, row id, superclass, enclosing object, declaring
-class, applied clause?}`. The declaring class has to be there because `outer`
+class, applied clause and named class?}`. No class record applies a body-less
+row's mixin (`BodyLessMixinApplied`): such a declaration's class object is
+the level its last clause adds. The declaring class has to be there because `outer`
 walks the declaration chain rather than the receiver's dynamic one, so an image
 that dropped it would come back resolving `outer` from the wrong chain. The
 applied clause is present exactly for a level a `<:` clause added, as the
 applying declaration's row id and the clause's position in that row, so the
 selector and message a level is initialized with are the ones its row carries
-and `verify_mixins` reconciled with that row's factory. A level a program's
+and `verify_mixins` reconciled with that row's factory; it is followed by the
+class tag of the class the clause named (`Heap::class_named`), which the
+clause's §6.1 check reads and whose class side the level's metaclass is
+rebuilt from (`class_sides`), since a body-less named class's is no class
+side of the mixin the level applies. A body-less declaration's class object
+takes its declaration's own class side instead. Named classes that name
+each other through levels are refused (`NamedClassCycle`). A level a program's
 clause added over a shipped class (`<: Value`, or a `List` the program holds,
 `<: listClass new: 4`) is recorded as `{MIXIN_SHIPPED, shipped-name index,
-superclass, applied clause}`: its mixin is the shipped class's, which no row
+superclass, applied clause, named class}`: its mixin is the shipped class's, which no row
 describes, and its enclosing object and declaring class are the shipped
 class's own — for `Value`, the core library's `Kernel`, which holds the VM
 mirror — so the record carries neither, and the decoder takes both from the
@@ -931,7 +943,7 @@ a header and class word rewritten, each value stored as it is read, a string
 packed straight from the buffer, a byte array's bytes copied to the data
 words at its placeholder's 32-byte alignment, the header's format becoming
 `AlignedBytes`, a weak array's or an ephemeron's header taking its format,
-`WeakPointers` or `Ephemeron`, a class record's eight fields copied in
+`WeakPointers` or `Ephemeron`, a class record's eight fields (a level's nine) copied in
 (`Heap::shape_placeholder` and the `fill_placeholder_*` and `fill_frame_*`
 accessors), so no record is ever built beside its placeholder. A frame
 record's body is filled last, from its remembered position, once the
@@ -1122,7 +1134,7 @@ each frame to the body it names. Between them,
 wherever the declaration needs one: each of the three initializer bodies
 takes the factory's arity, the full body is always present, the own part
 whenever the class has slots or `initExpr`s, and the standalone body exactly
-when the row writes `<:` clauses
+when the row writes `<:` clauses and a body
 (`an_initializer_whose_arity_disagrees_with_the_factory_is_refused`,
 `a_mixin_with_clauses_but_no_standalone_initializer_is_refused`). `load` reads the text table, when the
 image carries source (`texts::decode`, each text checked against itself),

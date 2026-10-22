@@ -765,15 +765,29 @@ pub(in crate::heap) mod class_field {
     /// A `SmallInteger`, the `ApplicationIndex` of the class's behaviour:
     /// code, layout and the superclass chain.
     pub(in crate::heap) const APPLICATION: usize = 7;
-    /// How many fields there are.
+    /// How many fields every class object has.
     pub(in crate::heap) const COUNT: usize = 8;
+    /// For a level a `<:` clause added, and only there, one field past
+    /// `COUNT`: the class object the clause named. §6.1 checks the clause
+    /// against that class's primary factory, which is not always the
+    /// level's own -- a body-less declaration's class object is the level
+    /// its last clause adds and has its declaration's factory -- and the
+    /// image rebuilds the level's metaclass from it
+    /// (`Heap::class_named`). Only a level pays the word, so a metaclass,
+    /// the smallest class record an image writes, keeps its size.
+    pub(in crate::heap) const NAMED_CLASS: usize = COUNT;
+    /// How many fields a level a `<:` clause added has.
+    pub(in crate::heap) const APPLIED_LEVEL_COUNT: usize = COUNT + 1;
     /// The fields that hold an object or nil; the others are numbers.
-    pub(in crate::heap) const POINTERS: [usize; 5] = [
+    /// `NAMED_CLASS` lies past an ordinary class object's fields, where
+    /// `pointer_ranges` clamps its range to nothing.
+    pub(in crate::heap) const POINTERS: [usize; 6] = [
         ENCLOSING,
         DECLARING_CLASS,
         SUPERCLASS,
         THIS_CLASS,
         VALUE_CLASS_REFUSAL,
+        NAMED_CLASS,
     ];
 }
 
@@ -809,10 +823,20 @@ mod tests {
                 FIELDS + closure_field::COUNT
             ]
         );
+        // An ordinary class object has no named class; a level has it.
         let class = block(Format::Class, class_field::COUNT);
         let mut expected = vec![CLASS];
-        expected.extend(class_field::POINTERS.iter().map(|field| FIELDS + field));
+        expected.extend(
+            class_field::POINTERS
+                .iter()
+                .filter(|field| **field < class_field::COUNT)
+                .map(|field| FIELDS + field),
+        );
         assert_eq!(covered(&class), expected);
+        let level = block(Format::Class, class_field::APPLIED_LEVEL_COUNT);
+        let mut expected = vec![CLASS];
+        expected.extend(class_field::POINTERS.iter().map(|field| FIELDS + field));
+        assert_eq!(covered(&level), expected);
         // A frame's registers count only once it is no longer married.
         let mut frame = block(Format::Frame, frame_field::COUNT + 2);
         assert_eq!(covered(&frame).len(), 1 + frame_field::COUNT + 2);

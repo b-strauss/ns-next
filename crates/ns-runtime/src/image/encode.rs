@@ -753,7 +753,8 @@ fn encode_literal(
 // ---------------------------------------------------------------------------
 
 /// A class object's graph references, in the order its record writes them:
-/// the superclass, the enclosing object, the declaring class. Traversal and
+/// the superclass, the enclosing object, the declaring class, and for a
+/// level a `<:` clause added the class its clause named. Traversal and
 /// encoding share one definition so the two cannot drift into a reference
 /// that is written but never given an id.
 ///
@@ -778,6 +779,7 @@ fn class_references<'gc>(
         .into_iter()
         .chain(enclosing)
         .chain(declaring_class)
+        .chain(heap.class_named(class))
 }
 
 /// Whether `class` is a level a program's `<:` clause added over a shipped
@@ -1573,6 +1575,9 @@ fn encode_closure_record<'gc>(
 /// enclosing object and declaring class are the shipped class's too, so
 /// they are not written at all (`class_references`). What is left is the
 /// name, the superclass and the clause, which is never absent.
+///
+/// Either shape of a level ends with the class its clause named
+/// (`encode_named_class`).
 fn encode_class_record<'gc>(
     writer: &mut Writer,
     class: ClassReference<'gc>,
@@ -1627,7 +1632,7 @@ fn encode_class_record<'gc>(
         )?;
         writer.write_u32(applied_row(applied)?);
         writer.write_u32(u32_field("mixin application clause index", applied.index));
-        return Ok(());
+        return encode_named_class(writer, class, context);
     }
     let id = heap
         .known_mixin_id(mixin)
@@ -1673,10 +1678,29 @@ fn encode_class_record<'gc>(
             writer.write_boolean(true);
             writer.write_u32(applied_row(applied)?);
             writer.write_u32(u32_field("mixin application clause index", applied.index));
+            encode_named_class(writer, class, context)
         }
-        None => writer.write_boolean(false),
+        None => {
+            writer.write_boolean(false);
+            Ok(())
+        }
     }
-    Ok(())
+}
+
+/// The class the `<:` clause that added the level `class` named
+/// (`Heap::class_named`), after the clause: the decoder holds the level's
+/// §6.1 check to its primary factory and rebuilds the level's metaclass
+/// from its class side, since a body-less named class's is no class side
+/// of the mixin the level applies (decision 8 of `new` as compiled code).
+fn encode_named_class<'gc>(
+    writer: &mut Writer,
+    class: ClassReference<'gc>,
+    context: &EncodeContext<'_, 'gc>,
+) -> Result<(), String> {
+    let Some(named) = context.heap.class_named(class) else {
+        unreachable!("internal: every level a `<:` clause added records the class it named")
+    };
+    encode_class_tag(writer, named, NamePosition::Superclass, context)
 }
 
 fn encode_object<'gc>(

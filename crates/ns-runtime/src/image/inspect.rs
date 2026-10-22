@@ -290,7 +290,8 @@ fn read_class_record(
     let applied_by = |reader: &mut decode::Reader| -> Result<String, decode::DecodeError> {
         let row = reader.read_u32()?;
         let index = reader.read_u32()?;
-        Ok(format!("clause {index} of row {row}"))
+        let named = read_class_tag(reader, targets)?;
+        Ok(format!("clause {index} of row {row}, naming {named}"))
     };
     Ok(match reader.read_u8()? {
         opcodes::MIXIN_ROW => {

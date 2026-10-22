@@ -456,6 +456,7 @@ fn write_mixin_row_with_method_shapes(
     writer.write_boolean(false); // no initExprs
     writer.write_boolean(false); // no superclass clause
     writer.write_u32(0); // no mixin applications
+    writer.write_boolean(true); // a body
     writer.write_u32(methods.len() as u32);
     for method in methods {
         writer.write_u32(method.selector);
@@ -7934,7 +7935,7 @@ fn a_mixin_with_clauses_but_no_standalone_initializer_is_refused() {
         assert_eq!(error, decode::DecodeError::UnexpectedStandaloneInitializer);
         assert_eq!(
             error.to_string(),
-            "a class in the image applies no mixin, yet the image carries a standalone instance initializer for it"
+            "a class in the image applies no mixin or has no body, yet the image carries a standalone instance initializer for it"
         );
     });
 }
@@ -13519,13 +13520,32 @@ fn row_named(fixture: &GraphFixture, name: &str) -> u32 {
 
 /// One class record describing a level a `<:` clause added: it applies row
 /// `mixin_row`'s mixin over the object-table record `superclass` (or no
-/// superclass), and was added by clause `clause` of row `applying_row`. Its
-/// metaclass is the record `metaclass_id`.
+/// superclass), and was added by clause `clause` of row `applying_row`,
+/// which named the shipped `Object`. Its metaclass is the record
+/// `metaclass_id`.
 fn applied_level_record(
     writer: &mut encode::Writer,
     (metaclass_id, mixin_row): (u32, u32),
     superclass: Option<u32>,
     (applying_row, clause): (u32, u32),
+) {
+    applied_level_record_naming(
+        writer,
+        (metaclass_id, mixin_row),
+        superclass,
+        (applying_row, clause),
+        |writer| writer.write_shipped(OBJECT_NAME),
+    );
+}
+
+/// `applied_level_record` whose clause named the class `named` writes the
+/// tag of.
+fn applied_level_record_naming(
+    writer: &mut encode::Writer,
+    (metaclass_id, mixin_row): (u32, u32),
+    superclass: Option<u32>,
+    (applying_row, clause): (u32, u32),
+    named: impl FnOnce(&mut encode::Writer),
 ) {
     writer.write_u8(CLASS_RECORD); // class tag: its metaclass record
     writer.write_u32(metaclass_id);
@@ -13546,6 +13566,7 @@ fn applied_level_record(
     writer.write_boolean(true); // an applied level
     writer.write_u32(applying_row);
     writer.write_u32(clause);
+    named(writer);
 }
 
 /// A graph section of exactly `records`, written by `write`, and no roots.
@@ -13674,6 +13695,60 @@ fn applied_levels_inheriting_from_each_other_in_a_cycle_are_refused() {
     }
 }
 
+/// Each level's metaclass is rebuilt from the class its clause named, so
+/// levels that name each other name no class side at all: the rebuild
+/// refuses them rather than walking the cycle forever.
+#[test]
+fn applied_levels_naming_each_other_in_a_cycle_are_refused() {
+    let mut fixture = GraphFixture::with_source(APPLYING_MODULE);
+    let marker = row_named(&fixture, "Marker");
+    let applied = row_named(&fixture, "Applied");
+    let record = |id: u32| {
+        move |writer: &mut encode::Writer| {
+            writer.write_u8(CLASS_RECORD);
+            writer.write_u32(id);
+        }
+    };
+    let through_another = class_records(4, |writer| {
+        applied_level_record_naming(writer, (2, marker), None, (applied, 0), record(1));
+        applied_level_record_naming(writer, (3, marker), None, (applied, 0), record(0));
+        metaclass_record(writer, 0);
+        metaclass_record(writer, 1);
+    });
+    let directly = class_records(2, |writer| {
+        applied_level_record_naming(writer, (1, marker), None, (applied, 0), record(0));
+        metaclass_record(writer, 0);
+    });
+    for bytes in [through_another, directly] {
+        assert_eq!(
+            fixture.decode_error(&bytes),
+            decode::DecodeError::NamedClassCycle
+        );
+    }
+}
+
+/// A body-less declaration's class object applies its last clause's mixin
+/// (decision 8 of `new` as compiled code), so a class record applying a
+/// body-less row's own mixin describes a class no live world has.
+#[test]
+fn a_class_record_applying_a_body_less_rows_mixin_is_refused() {
+    let mut fixture = GraphFixture::with_source(indoc! {"
+        class Host = Object new () (
+            class Marker = Object new () ()
+            class Applied = Object new <: Marker.
+        ) : ()
+    "});
+    let applied = row_named(&fixture, "Applied");
+    let bytes = class_records(2, |writer| {
+        applied_level_record(writer, (1, applied), None, (applied, 0));
+        metaclass_record(writer, 0);
+    });
+    assert_eq!(
+        fixture.decode_error(&bytes),
+        decode::DecodeError::BodyLessMixinApplied
+    );
+}
+
 /// One past the last mixin reference, and every retired one: a stale
 /// image's builtin level names no mixin rather than whatever took the number.
 #[test]
@@ -13713,6 +13788,7 @@ fn shipped_mixin_record(name: u32, (row, index): (u32, u32)) -> Vec<u8> {
         writer.write_boolean(false); // no superclass
         writer.write_u32(row);
         writer.write_u32(index);
+        writer.write_shipped(VALUE_NAME); // the class the clause named
         metaclass_record(writer, 0);
     })
 }
@@ -16444,5 +16520,110 @@ fn building_the_shipped_names_of_a_built_world_builds_nothing() {
         if let Err(error) = shipped_names::resolve_in(mutator, &names, false) {
             panic!("{error}");
         }
+    });
+}
+
+/// Decision 8 of `new` as compiled code survives a snapshot: a body-less
+/// declaration's class object is still the level its last clause adds,
+/// with the declaration's factory and name, and a level a `<:` clause
+/// naming it added still has its factory -- both read through metaclasses
+/// the loader rebuilt from the records alone.
+#[test]
+fn a_body_less_declaration_survives_build_and_load() {
+    let source = indoc! {"
+        class Holder = Object new () (
+          class Base = Object new () ()
+          class M1 tag: t = Object new (| public a = t. |) ()
+          class M3 x: x = Base new <: M1 tag: x + 1.
+          class UsesM3 = Base new <: M3 x: 5 () ()
+          class Wrong = Base new <: M3 tag: 5 () ()
+          public m3 = ( ^M3 )
+          public usesM3 = ( ^UsesM3 )
+          public wrong = ( ^Wrong )
+          public madeA = ( ^(M3 x: 1) a printString )
+          public usesA = ( ^UsesM3 new a printString )
+          public name = ( ^M3 name )
+          public refused = ( ^[Wrong new] on: Error do: [:error | error messageText] )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    for selector in ["m3", "usesM3", "wrong"] {
+        expect_ok(
+            interpreter.send(&instance, Symbol::intern(selector), &[]),
+            selector,
+        );
+    }
+    let bytes = interpreter.enter(|mutator| {
+        let instance = mutator.fetch(&instance);
+        let class = class_reference(mutator, &class);
+        snapshot_one(
+            mutator,
+            true,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
+    let mut loaded = image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
+    for (selector, expected) in [
+        ("madeA", "2"),
+        ("usesA", "5"),
+        ("name", "M3"),
+        (
+            "refused",
+            "a mixin application clause of class Wrong sends #tag:, but the primary factory \
+             of class M3 is #x:",
+        ),
+    ] {
+        let answer = expect_ok(
+            loaded
+                .interpreter
+                .send(&loaded.roots[0], Symbol::intern(selector), &[]),
+            selector,
+        );
+        loaded.interpreter.enter(|mutator| {
+            assert_eq!(
+                text_or_class_name(mutator, mutator.fetch(&answer)),
+                expected,
+                "{selector}"
+            );
+        });
+    }
+    let declared = expect_ok(
+        loaded
+            .interpreter
+            .send(&loaded.roots[0], Symbol::intern("m3"), &[]),
+        "m3",
+    );
+    let uses_m3 = expect_ok(
+        loaded
+            .interpreter
+            .send(&loaded.roots[0], Symbol::intern("usesM3"), &[]),
+        "usesM3",
+    );
+    loaded.interpreter.enter(|mutator| {
+        let heap = mutator.heap();
+        let declared = class_reference(mutator, &declared);
+        let level = heap
+            .class_superclass(class_reference(mutator, &uses_m3))
+            .expect("UsesM3 has the level its clause added below it");
+        let x_factory = Some(ns_runtime::mixin::Factory {
+            selector: Symbol::intern("x:"),
+            argument_count: 1,
+        });
+        assert_eq!(
+            heap.class_application(declared)
+                .expect("a class object")
+                .mixin
+                .name
+                .as_str(),
+            "M1"
+        );
+        assert_eq!(heap.class_name(declared), Some(Symbol::intern("M3")));
+        assert_eq!(heap.class_factory(declared), x_factory);
+        assert_eq!(heap.class_name(level), Some(Symbol::intern("M3")));
+        assert_eq!(heap.class_factory(level), x_factory);
     });
 }

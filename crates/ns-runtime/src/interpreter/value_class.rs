@@ -38,7 +38,8 @@ pub(crate) fn check_value_class<'gc>(
     // inherited method reaches its own level's through `outer`. The walk
     // stops at a class that inherits `Value` and was created as a class of
     // its own -- by `after_clause`, as a builtin or as a module root, never
-    // a level a `<:` clause added -- because that class was checked the
+    // a level a `<:` clause added but a body-less declaration's class
+    // object, which is its declaration's class -- because that class was checked the
     // same way and everything above it holds by induction. Since the
     // redesign records a refusal rather than raising it, a class the walk
     // would stop at can itself carry one (a value class whose own
@@ -48,7 +49,9 @@ pub(crate) fn check_value_class<'gc>(
     let heap = mutator.heap();
     let mut level = Some(superclass);
     while let Some(class) = level {
-        if heap.class_inherits_value(class) && !heap.class_is_applied_level(class) {
+        let own_class = !heap.class_is_applied_level(class)
+            || heap.class_body_less_declaration(class).is_some();
+        if heap.class_inherits_value(class) && own_class {
             return match heap.class_value_refusal(class) {
                 None => None,
                 Some(ValueClassRefusal::NonValueEnclosingObject {
@@ -59,9 +62,7 @@ pub(crate) fn check_value_class<'gc>(
                     // own enclosing object, so it names the stop class; one
                     // that already names a level inherited its fault from
                     // further up, and that level is still the one at fault.
-                    let level_name = heap
-                        .class_application(class)
-                        .map(|application| application.mixin.name);
+                    let level_name = heap.class_name(class);
                     Some(ValueClassRefusal::NonValueEnclosingObject {
                         level: refused_level.or(level_name),
                         offender,
@@ -71,9 +72,7 @@ pub(crate) fn check_value_class<'gc>(
         }
         if let Some(level_enclosing) = heap.class_enclosing(class) {
             if !super::instantiate::is_a_value(mutator, level_enclosing) {
-                let level_name = heap
-                    .class_application(class)
-                    .map(|application| application.mixin.name);
+                let level_name = heap.class_name(class);
                 return Some(ValueClassRefusal::NonValueEnclosingObject {
                     level: level_name,
                     offender: level_enclosing,

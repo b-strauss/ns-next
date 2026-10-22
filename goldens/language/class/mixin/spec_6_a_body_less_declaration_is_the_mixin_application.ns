@@ -1,0 +1,65 @@
+/// newspeak-spec.pdf 6: "the mixin can be specified along with the
+/// superclass via a mixin application, and in that case, the formal
+/// parameters named in the primary factory signature are in scope
+/// throughout the mixin application." A declaration that ends in a dot
+/// instead of a class body is that mixin application, which 6.2 makes "a
+/// class I with mixin M and superclass S": named by the declaration, with
+/// the declaration's primary factory, and no level of its own.
+///
+/// M3 is the level M1's mixin adds to Base. M3 x: 1 runs M1's initializer
+/// with x + 1, so its a is 2; its name is M3, and its primary factory is
+/// x:, so M3 new is not understood. UsesM3 applies M3's mixin, which is
+/// M1's, and 6.2 runs it "with the arguments of mu_m": a is 5, and M3's own
+/// clause message, x + 1, does not run there. 6.1 checks a clause against
+/// the primary factory of the class it names, so Wrong, sending tag: to M3,
+/// is refused; the arguments are checked against the factory of M1, whose
+/// initializer takes them, so UsesTwo's two arguments are refused for M1's
+/// one. Plain writes no signature, so its primary factory is new (6).
+class Spec6ABodyLessDeclarationIsTheMixinApplication = Object new () (
+  class Base = Object new () ()
+
+  class M1 tag: t = Object new (
+    |
+      public a = t.
+    |
+  ) ()
+
+  class M3 x: x = Base new <: M1 tag: x + 1.
+
+  class UsesM3 = Base new <: M3 x: 5 () ()
+
+  class Wrong = Base new <: M3 tag: 5 () ()
+
+  class Plain = Base new <: M1 tag: 7.
+
+  class Two a: a b: b = Object new <: M1 tag: a.
+
+  class UsesTwo = Base new <: Two a: 1 b: 2 () ()
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+    |
+    t
+        show: (M3 x: 1) a printString;
+        newLine.
+    t
+        show: M3 name;
+        newLine.
+    t
+        show: UsesM3 new a printString;
+        newLine.
+    t
+        show: ([M3 new] on: Error do: [:error | error messageText]);
+        newLine.
+    t
+        show: ([Wrong new] on: Error do: [:error | error messageText]);
+        newLine.
+    t
+        show: Plain new a printString;
+        newLine.
+    t
+        show: ([UsesTwo new] on: Error do: [:error | error messageText]);
+        newLine.
+  )
+)

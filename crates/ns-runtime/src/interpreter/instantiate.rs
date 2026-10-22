@@ -291,6 +291,13 @@ impl<'gc> Mutator<'gc> {
         // `apply_mixin` offsets this class's own slots past every inherited
         // one (`own_slot_base`), so a class object never computes -- or can
         // disagree about -- an instance's shape.
+        // A body-less root is the level its `<:` clause added (decision 8
+        // of `new` as compiled code), named for it and with its factory.
+        if let (false, Some((top, _))) = (mixin.has_body, &top) {
+            if !applied.is_empty() {
+                return *top;
+            }
+        }
         let (superclass, super_application) = top.unzip();
         let application = self.apply_mixin(mixin, super_application.as_ref());
         // `enclosing`/`declaring_class` are both `None` -- the module's root
@@ -448,6 +455,10 @@ impl<'gc> Mutator<'gc> {
                 .iter()
                 .map(mixin_application_clause_of)
                 .collect(),
+            // §6's grammar: a `mixinAppSuffix` ends in a dot or a class
+            // body, and only the dot leaves the members undelimited.
+            has_body: declaration.mixin_applications.is_empty()
+                || declaration.instance_side.members_delimiters.is_some(),
             has_initializer_expressions: !declaration
                 .instance_side
                 .initializer_expressions
@@ -708,7 +719,7 @@ impl<'gc> Mutator<'gc> {
                 return Err(Signal::Error(instantiation_refusal_error(
                     class,
                     &display_name,
-                    application,
+                    Instantiated::of(&self.heap, class, application),
                     refusal,
                 )));
             }
@@ -811,7 +822,10 @@ impl<'gc> Mutator<'gc> {
                 &self.heap,
                 ClauseKind::Superclass,
                 applying,
-                target,
+                Clause {
+                    receiver: target,
+                    named: target,
+                },
                 selector,
                 expected,
             ));
@@ -834,13 +848,31 @@ impl<'gc> Mutator<'gc> {
     ) -> Result<(), Signal<'gc>> {
         let (receiver, applying) = self.heap.activation_receiver_and_current_class(activation);
         let (applying, level) = self.applied_level(receiver, applying, steps)?;
-        let expected = primary_factory_selector(&self.heap, level);
+        self.check_clause_names_the_factory(applying, level, selector)
+    }
+
+    /// §6.1's check of the `<:` clause that added `level`, written in the
+    /// declaration of `applying` with `selector`: against the primary
+    /// factory of the class the clause named (`Heap::class_named`), which
+    /// is the level's own except at a body-less declaration's class object,
+    /// whose factory is its declaration's.
+    fn check_clause_names_the_factory(
+        &self,
+        applying: ClassReference<'gc>,
+        level: ClassReference<'gc>,
+        selector: Symbol,
+    ) -> Result<(), Signal<'gc>> {
+        let named = self.heap.class_named(level).unwrap_or(level);
+        let expected = primary_factory_selector(&self.heap, named);
         if Some(selector) != expected {
             return Err(not_the_primary_factory_error(
                 &self.heap,
                 ClauseKind::MixinApplication,
                 applying,
-                level,
+                Clause {
+                    receiver: level,
+                    named,
+                },
                 selector,
                 expected,
             ));
@@ -863,7 +895,14 @@ impl<'gc> Mutator<'gc> {
     ) -> Result<Step<'gc>, Signal<'gc>> {
         let (instance, applying) = self.heap.activation_receiver_and_current_class(activation);
         let (_, level) = self.applied_level(instance, applying, steps)?;
-        self.check_factory_arity(level, arguments)?;
+        // Against the factory of the mixin whose own part runs, not the
+        // named class's: the body's registers are laid out for it, and the
+        // two differ for a body-less named class (decision 8).
+        let own_part_arity = self
+            .heap
+            .class_level_facts(level)
+            .and_then(|facts| facts.factory_arity);
+        check_arity(level, own_part_arity, arguments)?;
         let body = InitializerBody::OwnPart;
         let runs_code = self
             .heap
@@ -930,17 +969,18 @@ impl<'gc> Mutator<'gc> {
     /// neither nests nor escapes the depth limit's count
     /// (`docs/design/execution.md`, "The depth limit").
     ///
-    /// A level is passed when no `<:` clause added it, its mixin needs no
-    /// initializer code, none of its clauses passes arguments, and every
-    /// level its own `<:` clauses added is one whose mixin has no own code
-    /// and whose factory takes no arguments: then its full body only checks
-    /// -- each `<:` clause against its level, nearest first, then the
-    /// superclass clause against the class above them -- and this makes
-    /// the same checks in the same order with the same texts, and carries
-    /// on at that class, past the declaration's own applied levels, with no
-    /// arguments. A level a `<:` clause added and reached here -- from
-    /// outside its declaration (decision 4 of `new` as compiled code) -- is
-    /// always entered. The chain's top answers the instance.
+    /// A level is passed when it is its declaration's own class (`Pass`),
+    /// its declaration needs no initializer code, none of its clauses
+    /// passes arguments, and every level its own `<:` clauses added is one
+    /// whose mixin has no own code and whose factory takes no arguments:
+    /// then its full body only checks -- each `<:` clause against the class
+    /// it named, nearest level first, then the superclass clause against
+    /// the class above them -- and this makes the same checks in the same
+    /// order with the same texts, and carries on at that class, past the
+    /// declaration's own applied levels, with no arguments. A level a `<:`
+    /// clause added and reached here -- from outside its declaration
+    /// (decision 4 of `new` as compiled code) -- is always entered. The
+    /// chain's top answers the instance.
     fn enter_or_pass(
         &mut self,
         mut level: ClassReference<'gc>,
@@ -948,16 +988,7 @@ impl<'gc> Mutator<'gc> {
     ) -> Result<Step<'gc>, Signal<'gc>> {
         let mut arguments = StepArguments::Send;
         loop {
-            let facts = self.heap.class_level_facts(level);
-            let applied_count = facts.map_or(0, |facts| facts.applied_clause_count);
-            let passes = !self.heap.class_is_applied_level(level)
-                && facts.is_none_or(|facts| {
-                    !facts.needs_initializer_code
-                        && !facts.clause_has_arguments
-                        && !facts.applied_clauses_pass_arguments
-                })
-                && self.applied_levels_run_nothing(level, applied_count);
-            if !passes {
+            let Some(pass) = self.passes(level) else {
                 return Ok(match self.level_initializer(level) {
                     Some((_, body)) => Step::Initializer {
                         receiver: instance,
@@ -970,27 +1001,25 @@ impl<'gc> Mutator<'gc> {
                     // one (`image::decode::verify_mixins`).
                     None => Step::Value(instance),
                 });
-            }
-            self.check_applied_clauses(level, applied_count)?;
+            };
+            self.check_applied_clauses(level, pass)?;
             // `applied_levels_run_nothing` has held the count below the
             // steps' ceiling.
-            let steps = u16::try_from(applied_count + 1).unwrap_or(u16::MAX);
+            let steps = u16::try_from(pass.applied_count + pass.own_level).unwrap_or(u16::MAX);
             let Some(superclass) = self.level_above(level, steps) else {
                 return Ok(Step::Value(instance));
             };
-            // §6.1: "if the message is omitted, it defaults to `new`" --
-            // already resolved into the level's facts when the mixin was
-            // built, and read from there rather than from the declaration: a
-            // mixin decoded from an image has none.
-            let selector = facts.map_or(Symbol::NEW, |facts| facts.clause_selector);
             let expected = primary_factory_selector(&self.heap, superclass);
-            if Some(selector) != expected {
+            if Some(pass.clause_selector) != expected {
                 return Err(not_the_primary_factory_error(
                     &self.heap,
                     ClauseKind::Superclass,
                     level,
-                    superclass,
-                    selector,
+                    Clause {
+                        receiver: superclass,
+                        named: superclass,
+                    },
+                    pass.clause_selector,
                     expected,
                 ));
             }
@@ -1000,83 +1029,129 @@ impl<'gc> Mutator<'gc> {
         }
     }
 
+    /// Whether `level`'s full body would only check, and so is passed
+    /// (`enter_or_pass`), with what the pass checks; `None` when it is
+    /// entered. `level` is its declaration's own class: a level no `<:`
+    /// clause added, whose declaration is its mixin's and whose clauses'
+    /// levels start one above it, or a body-less declaration's class
+    /// object, the level its last clause added, from which its clauses'
+    /// levels are counted (decision 8 of `new` as compiled code). Any other
+    /// level a clause added is entered.
+    fn passes(&self, level: ClassReference<'gc>) -> Option<Pass> {
+        let (facts, own_level) = match self.heap.class_body_less_declaration(level) {
+            Some(declaration) => (Some(crate::mixin::LevelFacts::of(declaration)), 0),
+            None if self.heap.class_is_applied_level(level) => return None,
+            None => (self.heap.class_level_facts(level), 1),
+        };
+        let applied_count = facts.map_or(0, |facts| facts.applied_clause_count);
+        let runs_nothing = facts.is_none_or(|facts| {
+            !facts.needs_initializer_code
+                && !facts.clause_has_arguments
+                && !facts.applied_clauses_pass_arguments
+        }) && self.applied_levels_run_nothing(level, applied_count, own_level);
+        runs_nothing.then_some(Pass {
+            applied_count,
+            own_level,
+            // §6.1: "if the message is omitted, it defaults to `new`" --
+            // already resolved into the facts when the mixin was built,
+            // and read from there rather than from the declaration: a
+            // mixin decoded from an image has none.
+            clause_selector: facts.map_or(Symbol::NEW, |facts| facts.clause_selector),
+        })
+    }
+
     /// Whether the `count` levels the `<:` clauses of `level`'s declaration
-    /// added, directly above it, would each run nothing when its full body
-    /// initializes them: each is a level a clause added, its mixin needs no
-    /// own code and its factory takes the no arguments its clause passes.
-    /// A count past what an initializer's steps address is never passed:
-    /// its body is the too-large one, which raises when it runs.
-    fn applied_levels_run_nothing(&self, level: ClassReference<'gc>, count: usize) -> bool {
+    /// added, from `own_level` steps above `level` up, would each run
+    /// nothing when its full body initializes them: each is a level a
+    /// clause added, its mixin needs no own code and its factory takes the
+    /// no arguments its clause passes. A count past what an initializer's
+    /// steps address is never passed: its body is the too-large one, which
+    /// raises when it runs.
+    fn applied_levels_run_nothing(
+        &self,
+        level: ClassReference<'gc>,
+        count: usize,
+        own_level: usize,
+    ) -> bool {
         if count >= usize::from(u16::MAX) {
             return false;
         }
-        let mut current = level;
+        let mut current = Some(level);
+        for _ in 0..own_level {
+            current = current.and_then(|class| self.heap.class_superclass(class));
+        }
         for _ in 0..count {
-            let Some(above) = self.heap.class_superclass(current) else {
+            let Some(applied) = current else {
                 return false;
             };
-            let runs_nothing = self.heap.class_is_applied_level(above)
-                && self.heap.class_level_facts(above).is_some_and(|facts| {
+            let runs_nothing = self.heap.class_is_applied_level(applied)
+                && self.heap.class_level_facts(applied).is_some_and(|facts| {
                     !facts.needs_initializer_code
                         && facts.factory_arity.is_none_or(|arity| arity == 0)
                 });
             if !runs_nothing {
                 return false;
             }
-            current = above;
+            current = self.heap.class_superclass(applied);
         }
         true
     }
 
     /// The checks a passed level's full body opens with
-    /// (`CheckAppliedClause`): each of the `count` `<:` clauses of `level`'s
-    /// declaration against the primary factory of the level it added,
+    /// (`CheckAppliedClause`): each of the `<:` clauses of `level`'s
+    /// declaration against the primary factory of the class it named,
     /// nearest level first, with `check_applied_clause`'s text.
     fn check_applied_clauses(
         &self,
         level: ClassReference<'gc>,
-        count: usize,
+        pass: Pass,
     ) -> Result<(), Signal<'gc>> {
-        if count == 0 {
+        if pass.applied_count == 0 {
             return Ok(());
         }
-        let Some(application) = self.heap.class_application(level) else {
+        let declaration = match pass.own_level {
+            0 => self.heap.class_body_less_declaration(level).cloned(),
+            _ => self
+                .heap
+                .class_application(level)
+                .map(|application| application.mixin.clone()),
+        };
+        let Some(declaration) = declaration else {
             return Ok(());
         };
-        let mut applied = level;
-        for clause in application.mixin.mixin_applications.iter().rev() {
-            let Some(above) = self.heap.class_superclass(applied) else {
+        let mut current = Some(level);
+        for _ in 0..pass.own_level {
+            current = current.and_then(|class| self.heap.class_superclass(class));
+        }
+        for clause in declaration.mixin_applications.iter().rev() {
+            let Some(applied) = current else {
                 return Ok(());
             };
-            applied = above;
-            let expected = primary_factory_selector(&self.heap, applied);
-            if Some(clause.message.selector) != expected {
-                return Err(not_the_primary_factory_error(
-                    &self.heap,
-                    ClauseKind::MixinApplication,
-                    level,
-                    applied,
-                    clause.message.selector,
-                    expected,
-                ));
-            }
+            self.check_clause_names_the_factory(level, applied, clause.message.selector)?;
+            current = self.heap.class_superclass(applied);
         }
         Ok(())
     }
 
     /// The body `level`'s initializer runs and which of its mixin's three it
     /// is: the full one for a level no `<:` clause added, which is its
-    /// declaration's own; for a level one added, reached from outside the
-    /// declaration that applied it (decision 4 of `new` as compiled code),
-    /// the standalone one -- its mixin's own superclass clause, then its
-    /// own part, never the mixin's own `<:` clauses, whose levels are not
-    /// above it -- or the full one when the mixin writes no `<:` clause,
-    /// which is then the same. `None` for a class object with no
-    /// application and for a mixin that carries no such body.
+    /// declaration's own, and for a body-less declaration's class object
+    /// the declaration's full one (decision 8 of `new` as compiled code);
+    /// for any other level one added, reached from outside the declaration
+    /// that applied it (decision 4), the standalone one -- its mixin's own
+    /// superclass clause, then its own part, never the mixin's own `<:`
+    /// clauses, whose levels are not above it -- or the full one when the
+    /// mixin writes no `<:` clause, which is then the same. `None` for a
+    /// class object with no application and for a mixin that carries no
+    /// such body.
     pub(crate) fn level_initializer(
         &self,
         level: ClassReference<'gc>,
     ) -> Option<(Rc<crate::bytecode::CompiledCode>, InitializerBody)> {
+        if let Some(declaration) = self.heap.class_body_less_declaration(level) {
+            let body = InitializerBody::Full;
+            return body.code_of(declaration).map(|code| (code, body));
+        }
         let application = self.heap.class_application(level)?;
         let mixin = &application.mixin;
         let body = if self.heap.class_is_applied_level(level)
@@ -1090,60 +1165,91 @@ impl<'gc> Mutator<'gc> {
     }
 
     /// The compiled body an initializer activation of `level` running
-    /// `body` runs. `InitializeSlot`'s `own_index` is relative to the
-    /// mixin's own slots, not an absolute field index, because the compiled
-    /// body is shared by every application of the mixin. The activation is
-    /// entered at `level`, whose own `MixinApplication.own_slot_base` turns
-    /// it into an absolute index at run time (`Heap::activation_slot_base`).
+    /// `body` runs (`Heap::initializer_mixin` says whose). `InitializeSlot`'s
+    /// `own_index` is relative to the mixin's own slots, not an absolute
+    /// field index, because the compiled body is shared by every application
+    /// of the mixin. The activation is entered at `level`, whose own
+    /// `MixinApplication.own_slot_base` turns it into an absolute index at
+    /// run time (`Heap::activation_slot_base`).
     pub(super) fn initializer_code(
         &self,
         level: ClassReference<'gc>,
         body: InitializerBody,
     ) -> Option<Rc<crate::bytecode::CompiledCode>> {
         self.heap
-            .class_application(level)
-            .and_then(|application| body.code_of(&application.mixin))
+            .initializer_mixin(level, body)
+            .and_then(|mixin| body.code_of(&mixin))
     }
 
     /// Rejects a factory-arity mismatch as a NewspeakError before this
-    /// level's activation is pushed or any slot initializer / initExpr runs.
+    /// level's activation is pushed or any slot initializer / initExpr runs:
+    /// against the factory of the declaration whose full or standalone body
+    /// `class` runs -- the body-less declaration's for its class object, the
+    /// mixin's otherwise -- since that body's registers are laid out for it.
     #[inline(always)]
     fn check_factory_arity(
         &self,
         class: ClassReference<'gc>,
         factory_arguments: &[Value<'gc>],
     ) -> Result<(), Signal<'gc>> {
-        // A slot initializer or
-        // initExpr may reference a factory parameter as `Binding::Local(i)`,
-        // resolved against this class's *declared* factory pattern -- but
-        // the activation an initializer runs in lays its registers out from
-        // the arguments actually supplied, so a wrong count would shift
-        // every temporary, and too few would leave `locals.rs`'s
-        // `read_local`/`write_local` indexing past the end of its register
-        // window.
-        //
-        // Checked at *every* level, not just the outermost. A level's
-        // arguments come from its subclass's clause message, whose
-        // selector §6.1's check has already matched against this class's
-        // primary factory selector -- which pins the arity too, since a
-        // selector's keyword count is its parameter count. This guard is
-        // what keeps that reasoning from being the only thing between a
-        // decoded image's body and an out-of-bounds index.
-        let declared_arity = self
-            .heap
-            .class_level_facts(class)
-            .and_then(|facts| facts.factory_arity);
-        if let Some(declared_arity) = declared_arity {
-            if factory_arguments.len() != declared_arity {
-                return Err(factory_arity_error(
-                    class,
-                    declared_arity,
-                    factory_arguments.len(),
-                ));
-            }
-        }
-        Ok(())
+        let declared_arity = match self.heap.class_body_less_declaration(class) {
+            Some(declaration) => declaration.factory.map(|factory| factory.argument_count),
+            None => self
+                .heap
+                .class_level_facts(class)
+                .and_then(|facts| facts.factory_arity),
+        };
+        check_arity(class, declared_arity, factory_arguments)
     }
+}
+
+/// What a passed level checks (`Mutator::passes`): how many `<:` clauses its
+/// declaration writes, how many steps above it the first of their levels
+/// is -- one for a declaration with a body, none for a body-less one's
+/// class object, which is its last clause's level -- and its superclass
+/// clause's selector.
+#[derive(Clone, Copy)]
+struct Pass {
+    applied_count: usize,
+    own_level: usize,
+    clause_selector: Symbol,
+}
+
+/// `factory_arguments` held to `declared_arity`, the arity of the factory a
+/// body's registers are laid out for; `None` checks nothing.
+///
+/// A slot initializer or initExpr may reference a factory parameter as
+/// `Binding::Local(i)`, resolved against the declared factory pattern --
+/// but the activation an initializer runs in lays its registers out from
+/// the arguments actually supplied, so a wrong count would shift every
+/// temporary, and too few would leave `locals.rs`'s `read_local` /
+/// `write_local` indexing past the end of its register window.
+///
+/// Checked at *every* level, not just the outermost. A level's arguments
+/// come from its subclass's clause message, whose selector §6.1's check has
+/// already matched against the named class's primary factory selector --
+/// which pins the arity too for a class with a body, since a selector's
+/// keyword count is its parameter count, but not for a body-less named
+/// class, whose factory is its declaration's while the own part its level
+/// runs is its last clause's mixin's. This guard is what keeps that
+/// reasoning from being the only thing between a decoded image's body and
+/// an out-of-bounds index.
+#[inline(always)]
+fn check_arity<'gc>(
+    class: ClassReference<'gc>,
+    declared_arity: Option<usize>,
+    factory_arguments: &[Value<'gc>],
+) -> Result<(), Signal<'gc>> {
+    if let Some(declared_arity) = declared_arity {
+        if factory_arguments.len() != declared_arity {
+            return Err(factory_arity_error(
+                class,
+                declared_arity,
+                factory_arguments.len(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Which of a declaration's clauses a message was written in, for the error
@@ -1245,9 +1351,10 @@ pub(crate) fn factory_arity_error<'gc>(
     ))
 }
 
-/// The selector of `class`'s primary factory message: the selector its mixin
-/// declares a factory pattern for, or `new` for a builtin, which declares
-/// none. `None` for a non-class object.
+/// The selector of `class`'s primary factory message (`Heap::class_factory`,
+/// read through its metaclass): its declaration's, `new` for a builtin, and
+/// for a level a `<:` clause added the named class's. `None` for a
+/// non-class object and a metaclass.
 ///
 /// Read by §6.1's checks, which decide whether a clause names it. The
 /// other side of that question -- whether an
@@ -1258,13 +1365,22 @@ pub(crate) fn primary_factory_selector<'gc>(
     heap: &Heap<'gc>,
     class: ClassReference<'gc>,
 ) -> Option<Symbol> {
-    heap.class_level_facts(class)
-        .map(|facts| facts.factory_selector)
+    heap.class_factory(class).map(|factory| factory.selector)
 }
 
+/// `class`'s name for an error's text (`Heap::class_name`).
 fn class_name<'gc>(heap: &Heap<'gc>, class: ClassReference<'gc>) -> Symbol {
-    heap.class_application(class)
-        .map_or(Symbol::AN_OBJECT, |application| application.mixin.name)
+    heap.class_name(class).unwrap_or(Symbol::AN_OBJECT)
+}
+
+/// The class a clause's message is checked against, for its error: the
+/// class object the error is raised on, and the class whose primary factory
+/// it names. The two differ only at a body-less declaration's class object,
+/// whose `<:` clause named another class than itself.
+#[derive(Clone, Copy)]
+struct Clause<'gc> {
+    receiver: ClassReference<'gc>,
+    named: ClassReference<'gc>,
 }
 
 /// `newspeak-spec.pdf` §6.1: "It is a run time error if the message
@@ -1272,33 +1388,58 @@ fn class_name<'gc>(heap: &Heap<'gc>, class: ClassReference<'gc>) -> Symbol {
 /// primary factory of the class *C*."
 fn not_the_primary_factory_error<'gc>(
     heap: &Heap<'gc>,
-    clause: ClauseKind,
+    clause_kind: ClauseKind,
     class: ClassReference<'gc>,
-    superclass: ClassReference<'gc>,
+    clause: Clause<'gc>,
     selector: Symbol,
     expected: Option<Symbol>,
 ) -> Signal<'gc> {
     let subclass_name = class_name(heap, class);
-    let clause = match clause {
+    let kind = match clause_kind {
         ClauseKind::Superclass => "the superclass clause",
         ClauseKind::MixinApplication => "a mixin application clause",
     };
-    let superclass_name = class_name(heap, superclass);
+    let superclass_name = class_name(heap, clause.named);
     let expected = match expected {
         Some(expected) => format!("#{expected}"),
-        // `superclass` is not a class object at all -- an internally
+        // The class is not a class object at all -- an internally
         // inconsistent chain rather than a program error, reported here
         // rather than swallowed.
         None => "no factory (it is not a class)".to_string(),
     };
     Signal::Error(NewspeakError::error(
         selector,
-        Value::object(superclass),
+        Value::object(clause.receiver),
         format!(
-            "{clause} of class {subclass_name} sends #{selector}, \
+            "{kind} of class {subclass_name} sends #{selector}, \
              but the primary factory of class {superclass_name} is {expected}"
         ),
     ))
+}
+
+/// The class an instantiation refusal names: its name and the primary
+/// factory the program sent it, both read through its metaclass
+/// (`Heap::class_name`, `Heap::class_factory`), and its mixin's when it has
+/// none yet.
+#[derive(Clone, Copy)]
+struct Instantiated {
+    name: Symbol,
+    selector: Symbol,
+}
+
+impl Instantiated {
+    fn of<'gc>(
+        heap: &Heap<'gc>,
+        class: ClassReference<'gc>,
+        application: &crate::mixin::MixinApplication,
+    ) -> Instantiated {
+        Instantiated {
+            name: heap.class_name(class).unwrap_or(application.mixin.name),
+            selector: heap
+                .class_factory(class)
+                .map_or_else(|| factory_selector(application), |factory| factory.selector),
+        }
+    }
 }
 
 /// The refusal `allocate_for_factory` raises, named under the class's own
@@ -1309,12 +1450,12 @@ fn not_the_primary_factory_error<'gc>(
 fn instantiation_refusal_error<'gc>(
     class: ClassReference<'gc>,
     display_name: &str,
-    application: &crate::mixin::MixinApplication,
+    instantiated: Instantiated,
     refusal: &crate::mixin::InstantiationRefusal,
 ) -> NewspeakError<'gc> {
     match refusal {
         crate::mixin::InstantiationRefusal::MutableValueSlot(violation) => {
-            mutable_value_slot_error(class, application, *violation)
+            mutable_value_slot_error(class, instantiated, *violation)
         }
         // The resolver refuses a root that breaks the root rule, so no source
         // module reaches this; it stays because a `ResolvedModule` is a
@@ -1323,21 +1464,21 @@ fn instantiation_refusal_error<'gc>(
         // is untrusted input (`image-format.md`, "Verification").
         crate::mixin::InstantiationRefusal::RootClause(defect) => {
             NewspeakError::cannot_instantiate(
-                factory_selector(application),
+                instantiated.selector,
                 Value::object(class),
                 Value::object(class),
                 format!(
                     "cannot instantiate {}: {}",
-                    application.mixin.name,
+                    instantiated.name,
                     defect.describe()
                 ),
             )
         }
         crate::mixin::InstantiationRefusal::IdentityMethod { declaring } => {
-            identity_method_error(class, application, *declaring)
+            identity_method_error(class, instantiated, *declaring)
         }
         crate::mixin::InstantiationRefusal::ClassObject => NewspeakError::cannot_instantiate(
-            factory_selector(application),
+            instantiated.selector,
             Value::object(class),
             Value::object(class),
             format!(
@@ -1361,17 +1502,20 @@ fn instantiation_refusal_error<'gc>(
 /// it for both.
 fn mutable_value_slot_error<'gc>(
     class: ClassReference<'gc>,
-    application: &crate::mixin::MixinApplication,
+    instantiated: Instantiated,
     violation: crate::mixin::MutableValueSlot,
 ) -> NewspeakError<'gc> {
-    let instantiated = application.mixin.name;
+    let Instantiated {
+        name: instantiated,
+        selector,
+    } = instantiated;
     let declares = if instantiated == violation.class {
         "it declares".to_string()
     } else {
         format!("{} declares", violation.class)
     };
     NewspeakError::cannot_instantiate(
-        factory_selector(application),
+        selector,
         Value::object(class),
         Value::object(class),
         format!(
@@ -1394,16 +1538,16 @@ fn mutable_value_slot_error<'gc>(
 #[inline(never)]
 fn identity_method_error<'gc>(
     class: ClassReference<'gc>,
-    application: &crate::mixin::MixinApplication,
+    instantiated: Instantiated,
     declaring: Symbol,
 ) -> NewspeakError<'gc> {
     NewspeakError::cannot_instantiate(
-        factory_selector(application),
+        instantiated.selector,
         Value::object(class),
         Value::object(class),
         format!(
             "cannot instantiate {}: a value class may not define ==, and {declaring} defines it",
-            application.mixin.name
+            instantiated.name
         ),
     )
 }
@@ -1423,7 +1567,10 @@ fn value_class_refusal_error<'gc>(
     class: ClassReference<'gc>,
     application: &crate::mixin::MixinApplication,
 ) -> NewspeakError<'gc> {
-    let instantiated = application.mixin.name;
+    let Instantiated {
+        name: instantiated,
+        selector,
+    } = Instantiated::of(heap, class, application);
     let Some(refusal) = heap.class_value_refusal(class) else {
         unreachable!("internal: value_class_refusal_error called for a class with no refusal");
     };
@@ -1440,7 +1587,7 @@ fn value_class_refusal_error<'gc>(
         ),
     };
     NewspeakError::cannot_instantiate(
-        factory_selector(application),
+        selector,
         Value::object(class),
         Value::object(class),
         message,
@@ -1583,9 +1730,8 @@ fn non_value_slot_error<'gc>(
         FrameKind::Method(method) => method.selector,
         _ => mutator
             .heap()
-            .class_application(instantiated)
-            .as_ref()
-            .map_or(Symbol::NEW, |application| factory_selector(application)),
+            .class_factory(instantiated)
+            .map_or(Symbol::NEW, |factory| factory.selector),
     };
     NewspeakError::error(
         selector,

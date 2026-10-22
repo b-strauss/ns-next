@@ -55,6 +55,25 @@ impl<'gc> Mutator<'gc> {
     /// instances id from here on, and a send to it searches its class side,
     /// then `Class`, `Behavior` and `Object`, by the ordinary lookup.
     pub(crate) fn attach_metaclass(&mut self, class: ClassReference<'gc>) -> ClassReference<'gc> {
+        let application = self
+            .heap
+            .class_application(class)
+            .expect("internal: attach_metaclass is handed a class object");
+        let class_side_mixin = self.metaclass_mixin(&application.mixin);
+        self.attach_metaclass_of(class, class_side_mixin)
+    }
+
+    /// `attach_metaclass` with the class side the metaclass applies given,
+    /// rather than read off `class`'s own mixin: a level a `<:` clause
+    /// added takes the class side of the class its clause named, and a
+    /// body-less declaration's class object its declaration's
+    /// (`Mutator::new_applied_level`), so that each has the factory and
+    /// the name §6.2 and decision 8 of `new` as compiled code give it.
+    pub(crate) fn attach_metaclass_of(
+        &mut self,
+        class: ClassReference<'gc>,
+        class_side_mixin: Rc<crate::mixin::Mixin>,
+    ) -> ClassReference<'gc> {
         // A metaclass's class is `Metaclass`, never a metaclass of its own:
         // `object_set_class(class, metaclass)` below on a metaclass would
         // overwrite its `Metaclass` header, breaking §3.2's "every
@@ -64,11 +83,6 @@ impl<'gc> Mutator<'gc> {
             self.heap.class_this_class(class).is_none(),
             "internal: a metaclass never gets a metaclass of its own"
         );
-        let application = self
-            .heap
-            .class_application(class)
-            .expect("internal: attach_metaclass is handed a class object");
-        let class_side_mixin = self.metaclass_mixin(&application.mixin);
         let class_class = self.builtin_class(BuiltinClass::Class);
         let class_application = self.heap.class_application(class_class);
         let metaclass_application = self.apply_mixin(&class_side_mixin, class_application.as_ref());
@@ -121,6 +135,25 @@ impl<'gc> Mutator<'gc> {
         let synthesized = synthesized_class_side(mixin);
         self.metaclass_mixins.insert(key, synthesized.clone());
         synthesized
+    }
+
+    /// The class side `class`'s metaclass applies -- the one that gives it
+    /// its factory and its name -- or, for a class object without a
+    /// metaclass yet, the one `metaclass_mixin` gives `mixin`, its own
+    /// mixin.
+    pub(crate) fn class_side_of(
+        &mut self,
+        class: ClassReference<'gc>,
+        mixin: &Rc<crate::mixin::Mixin>,
+    ) -> Rc<crate::mixin::Mixin> {
+        match self
+            .heap
+            .class_metaclass(class)
+            .and_then(|metaclass| self.heap.class_application(metaclass))
+        {
+            Some(class_side) => class_side.mixin.clone(),
+            None => self.metaclass_mixin(mixin),
+        }
     }
 
     /// The end of the kernel phase: every class object built before

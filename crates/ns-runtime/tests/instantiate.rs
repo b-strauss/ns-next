@@ -1125,3 +1125,138 @@ fn a_misnamed_applied_clause_on_a_passed_level_raises_its_error() {
              class Marker is #make"; 2]
     );
 }
+
+/// The declarations of `goldens/language/class/mixin/spec_6_a_body_less_declaration_is_the_mixin_application.ns`
+/// that the two tests below read the class objects of.
+const BODY_LESS_SOURCE: &str = indoc! {"
+    class Holder = Object new () (
+      public class Base = Object new () ()
+      public class M1 tag: t = Object new (| public a = t. |) ()
+      public class M3 x: x = Base new <: M1 tag: x + 1.
+      public class UsesM1 = Base new <: M1 tag: 5 () ()
+      public class UsesM3 = Base new <: M3 x: 5 () ()
+    ) : ()
+"};
+
+/// The class object `name` answers on a fresh instance of `BODY_LESS_SOURCE`'s
+/// `Holder`, with the interpreter it lives in.
+fn body_less_class(names: &[&str]) -> (Interpreter, Vec<Root>) {
+    let (mut interpreter, class) = load(BODY_LESS_SOURCE);
+    let holder = expect_ok(interpreter.instantiate(&class, &[]), "instantiate Holder");
+    let classes = names
+        .iter()
+        .map(|name| expect_ok(interpreter.send(&holder, Symbol::intern(name), &[]), name))
+        .collect();
+    (interpreter, classes)
+}
+
+/// §6, decision 8 of `new` as compiled code: a declaration without a body
+/// is the mixin application it writes, so `M3`'s class object is the level
+/// `M1`'s mixin adds to `Base` -- `M1`'s application, `Base`'s class object
+/// above it -- named `M3`, with `M3`'s factory, and with no level of its own.
+#[test]
+fn a_body_less_declaration_builds_no_level_of_its_own() {
+    let (mut interpreter, classes) = body_less_class(&["M3", "Base"]);
+    interpreter.enter(|mutator| {
+        let heap = mutator.heap();
+        let declared = object(mutator, &classes[0]);
+        let base = object(mutator, &classes[1]);
+        let mixin_name = |class| {
+            heap.class_application(class)
+                .expect("a class object")
+                .mixin
+                .name
+                .to_string()
+        };
+        assert_eq!(mixin_name(declared), "M1");
+        let above = heap
+            .class_superclass(declared)
+            .expect("M3 has a superclass");
+        assert!(above.same(base), "M3's superclass is Base itself");
+        assert_eq!(heap.class_name(declared), Some(Symbol::intern("M3")));
+        assert_eq!(
+            heap.class_factory(declared),
+            Some(ns_runtime::mixin::Factory {
+                selector: Symbol::intern("x:"),
+                argument_count: 1,
+            })
+        );
+    });
+}
+
+/// §6.1 checks a `<:` clause against the primary factory of the class it
+/// names, and §6.2 gives the level it adds "a primary factory method with
+/// the same selector": a level has the factory, and the name, of the class
+/// its clause named -- `M1`'s for `<: M1`, and `M3`'s own, not its mixin's,
+/// for `<: M3`.
+#[test]
+fn an_applied_level_has_the_factory_of_the_class_it_named() {
+    let (mut interpreter, classes) = body_less_class(&["UsesM1", "UsesM3"]);
+    interpreter.enter(|mutator| {
+        let heap = mutator.heap();
+        let level = |root| {
+            heap.class_superclass(object(mutator, root))
+                .expect("a class applying a mixin has a level below it")
+        };
+        let (m1_level, m3_level) = (level(&classes[0]), level(&classes[1]));
+        assert_eq!(
+            heap.class_factory(m1_level),
+            Some(ns_runtime::mixin::Factory {
+                selector: Symbol::intern("tag:"),
+                argument_count: 1,
+            })
+        );
+        assert_eq!(heap.class_name(m1_level), Some(Symbol::intern("M1")));
+        assert_eq!(
+            heap.class_factory(m3_level),
+            Some(ns_runtime::mixin::Factory {
+                selector: Symbol::intern("x:"),
+                argument_count: 1,
+            })
+        );
+        assert_eq!(heap.class_name(m3_level), Some(Symbol::intern("M3")));
+        let applied = heap
+            .class_application(m3_level)
+            .expect("a level is a class object");
+        assert_eq!(applied.mixin.name.as_str(), "M1");
+    });
+}
+
+/// A body-less declaration whose levels run nothing is passed without an
+/// activation, and still makes its full body's checks: its own clause,
+/// checked at its own class object, raises the compiled check's error word
+/// for word.
+#[test]
+fn a_body_less_declaration_on_a_passed_path_checks_its_clause() {
+    let source = indoc! {"
+        class Holder = Object new () (
+          class Marker make = Object new () ()
+          public class Passed = Object new <: Marker new.
+          public class Entered = Object new <: Marker new (| slot = 1. |) ()
+          public class Right = Object new <: Marker make.
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let holder = expect_ok(interpreter.instantiate(&class, &[]), "instantiate Holder");
+    let mut messages = Vec::new();
+    for name in ["Passed", "Entered"] {
+        let class = expect_ok(interpreter.send(&holder, Symbol::intern(name), &[]), name);
+        let error = expect_error(interpreter.instantiate(&class, &[]), name);
+        messages.push(error.message.replace(name, "C"));
+    }
+    assert_eq!(
+        messages,
+        ["a mixin application clause of class C sends #new, but the primary factory of \
+             class Marker is #make"; 2]
+    );
+    let right = expect_ok(
+        interpreter.send(&holder, Symbol::intern("Right"), &[]),
+        "Right",
+    );
+    let instance = expect_ok(interpreter.instantiate(&right, &[]), "Right new");
+    interpreter.enter(|mutator| {
+        let heap = mutator.heap();
+        let made = object(mutator, &instance);
+        assert!(heap.object_class(made).same(object(mutator, &right)));
+    });
+}

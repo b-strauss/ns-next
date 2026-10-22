@@ -171,6 +171,11 @@ pub fn factory_body(argument_count: u16) -> CompiledCode {
 pub(super) struct Prologue<'a> {
     pub(super) superclass: Option<&'a ast::SuperclassClause>,
     pub(super) applied: &'a [ast::SuperclassClause],
+    /// Whether the declaration adds a level of its own, which the body runs
+    /// at: then its clauses' levels start one above it. A body-less
+    /// declaration's body runs at its class object, the level its last
+    /// clause adds, so they are counted from 0 (`Mixin::has_body`).
+    pub(super) has_body: bool,
 }
 
 impl<'a> Prologue<'a> {
@@ -186,6 +191,7 @@ impl<'a> Prologue<'a> {
             } else {
                 &[]
             },
+            has_body: mixin.has_body,
         })
     }
 
@@ -274,7 +280,7 @@ pub fn compile_method(
 
 /// Compiles `mixin`'s per-mixin bodies onto it: the full instance
 /// initializer and its own part always, the standalone initializer when the
-/// declaration writes `<:` clauses, the superclass clause and its message's
+/// declaration writes `<:` clauses and a body, the superclass clause and its message's
 /// arguments when the declaration has them, and each `<:` clause's message
 /// arguments. Called while the mixin is still a value, before it is wrapped
 /// in the `Rc` every application shares -- the one moment it can be
@@ -293,7 +299,9 @@ pub(crate) fn compile_mixin_bodies(
         compile_mixin_full_initializer(mixin, bindings, true)
             .map_or_else(|| Rc::clone(&own), Rc::new),
     );
-    mixin.standalone_initializer_code = if mixin.mixin_applications.is_empty() {
+    // A body-less declaration's class object is never reached outside it,
+    // so it has no standalone body (`Mixin::standalone_initializer_code`).
+    mixin.standalone_initializer_code = if mixin.mixin_applications.is_empty() || !mixin.has_body {
         None
     } else {
         compile_mixin_full_initializer(mixin, bindings, false).map(Rc::new)
@@ -397,8 +405,11 @@ fn compile_initializer_body(
     );
     let mut source: Option<Span> = None;
     if let Some(prologue) = prologue {
-        // Counted from the level the declaration's own body adds.
-        lowerer.lower_instance_initialization_prologue(prologue.superclass, prologue.applied, true);
+        lowerer.lower_instance_initialization_prologue(
+            prologue.superclass,
+            prologue.applied,
+            prologue.has_body,
+        );
         source = prologue.merge_spans(source);
     }
     for (own_index, slot) in mixin.slots.iter().enumerate() {

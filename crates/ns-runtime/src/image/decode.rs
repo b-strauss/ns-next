@@ -297,6 +297,25 @@ pub enum DecodeError {
     /// (`interpreter::nested::superclass_clause_expression`), so such a row
     /// describes a declaration no source has and whose levels nothing builds.
     MixinApplicationWithoutSuperclass,
+    /// A mixin-table row says it has no body (`Mixin::has_body`) but
+    /// declares no `<:` clause: only a mixin application may end in a dot
+    /// (§6's `mixinAppSuffix`), and its class object is the level its last
+    /// clause adds, which such a row has none of.
+    BodyLessWithoutClauses,
+    /// A mixin-table row says it has no body yet declares members of one:
+    /// slots, `initExpr`s, methods or a class side. Nothing could run them,
+    /// since no class applies a body-less declaration's mixin.
+    BodyLessWithMembers,
+    /// A class record applies a body-less row's mixin. A body-less
+    /// declaration's class object applies its last clause's mixin (decision
+    /// 8 of `new` as compiled code), so no live class has one, and its full
+    /// body counts its levels from a class object of another mixin.
+    BodyLessMixinApplied,
+    /// The classes the `<:` clauses of levels named form a cycle: each
+    /// level's metaclass is rebuilt from the class its clause named, so a
+    /// cycle names no class side at all. A live clause names a class that
+    /// existed before its level did.
+    NamedClassCycle,
     /// A module has no tree in the image's mixin table, or the image carries
     /// a class it has no application for, so there is no declaration to
     /// build a class on.
@@ -337,8 +356,8 @@ pub enum DecodeError {
     /// instance initializer, which a level of its mixin reached from
     /// outside runs.
     MissingStandaloneInitializer,
-    /// A mixin-table row writes no `<:` clause yet carries a standalone
-    /// instance initializer, which no source compiles for such a
+    /// A mixin-table row writes no `<:` clause, or no body, yet carries a
+    /// standalone instance initializer, which no source compiles for such a
     /// declaration.
     UnexpectedStandaloneInitializer,
     /// A mixin-table row declares a superclass clause the image carries no
@@ -781,11 +800,27 @@ impl std::fmt::Display for DecodeError {
             ),
             DecodeError::UnexpectedStandaloneInitializer => write!(
                 f,
-                "a class in the image applies no mixin, yet the image carries a standalone instance initializer for it"
+                "a class in the image applies no mixin or has no body, yet the image carries a standalone instance initializer for it"
             ),
             DecodeError::MissingSuperclassClause => write!(
                 f,
                 "the image declares a superclass clause it has no compiled code for"
+            ),
+            DecodeError::BodyLessWithoutClauses => write!(
+                f,
+                "a class in the image has no body and applies no mixin"
+            ),
+            DecodeError::BodyLessWithMembers => write!(
+                f,
+                "a class in the image has no body, yet the image gives it members"
+            ),
+            DecodeError::BodyLessMixinApplied => write!(
+                f,
+                "a class object in the image applies the mixin of a class without a body"
+            ),
+            DecodeError::NamedClassCycle => write!(
+                f,
+                "the classes the mixin application clauses in the image name form a cycle"
             ),
             DecodeError::WrongCodeKind { expected } => {
                 write!(f, "image code is not a {expected} body")
@@ -1381,14 +1416,30 @@ pub fn verify_mixins(mixins: &mixins::Decoded) -> Result<(), DecodeError> {
         {
             return Err(DecodeError::MissingInitializer);
         }
-        // A level of a mixin with `<:` clauses reached from outside runs the
-        // standalone body, which only such a mixin has.
+        // A body-less declaration is the mixin application its clauses
+        // write (decision 8 of `new` as compiled code): it has clauses and
+        // nothing a body declares.
+        if !mixin.has_body {
+            if mixin.mixin_applications.is_empty() {
+                return Err(DecodeError::BodyLessWithoutClauses);
+            }
+            if !mixin.slots.is_empty()
+                || mixin.has_initializer_expressions
+                || !mixin.methods.is_empty()
+                || mixin.class_side.is_some()
+            {
+                return Err(DecodeError::BodyLessWithMembers);
+            }
+        }
+        // A level of a mixin with `<:` clauses and a body reached from
+        // outside runs the standalone body, which only such a mixin has: a
+        // body-less declaration's class object is never reached outside it.
         match (
             &mixin.standalone_initializer_code,
-            mixin.mixin_applications.is_empty(),
+            !mixin.mixin_applications.is_empty() && mixin.has_body,
         ) {
-            (None, false) => return Err(DecodeError::MissingStandaloneInitializer),
-            (Some(_), true) => return Err(DecodeError::UnexpectedStandaloneInitializer),
+            (None, true) => return Err(DecodeError::MissingStandaloneInitializer),
+            (Some(_), false) => return Err(DecodeError::UnexpectedStandaloneInitializer),
             _ => {}
         }
         match &mixin.superclass_clause_code {
@@ -2667,7 +2718,11 @@ fn read_shipped_module<'gc>(
 ///   record is the smallest record there is, 9 bytes (a two-byte builtin
 ///   header, the hash's 4, the body tag, a two-byte builtin class tag),
 ///   and becomes a class object of 10 words, 80 bytes, 8.9x. A class
-///   record is at least 19 bytes for the same 80, 4.2x; a frame record at
+///   record is at least 19 bytes for the same 80, 4.2x, and one of a level
+///   a `<:` clause added at least 23 (a `MIXIN_SHIPPED` one: the two-byte
+///   header, the hash, the body tag, the mixin reference's 5, the
+///   superclass's flag, the clause's 8 and the named class's two-byte tag)
+///   for the 11 words, 88 bytes, of a level, 3.8x; a frame record at
 ///   least 21 (the two-byte header, the hash, the body tag, a `TopLevel`
 ///   kind, the program counter's 4, four one-byte flags and fields and the
 ///   register count's 4) for 12 words, 96 bytes, 4.6x; an instance, array,
@@ -2686,7 +2741,8 @@ fn read_shipped_module<'gc>(
 ///   records then holds 80 + 8 + 8 = 96 bytes for 9, **10.7x** in a
 ///   release build, and 80 + 16 + 8 = 104, **11.6x** in a debug one; every
 ///   other record stays below (a class record 104 or 112 for 19, 5.5x or
-///   5.9x; a frame record 120 or 136 for 21, 5.7x or 6.5x).
+///   5.9x; a level's 112 or 120 for 23, 4.9x or 5.2x; a frame record 120 or
+///   136 for 21, 5.7x or 6.5x).
 /// - Per value, the word it occupies against the bytes that encode it: a
 ///   one-byte `VALUE_NIL` field, element, copied value or register becomes
 ///   an 8-byte word, 8x, which a record of many values approaches from
@@ -3421,8 +3477,8 @@ fn rebuild_applications<'gc>(
     // created carrying one (or one built of decoded pieces would carry,
     // `Counter`-over-`Holder`-style), so it is recomputed here, exactly as
     // `after_clause` decides it for a class created from source -- never for
-    // a metaclass or an applied level, neither of which `after_clause`
-    // checks either, and only when the application inherits `Value`,
+    // a metaclass or an applied level other than a body-less declaration's
+    // class object, which `after_clause` does not check either, and only when the application inherits `Value`,
     // matching its own guard. A class with no lexical enclosing -- a module
     // root, a builtin -- never reaches `after_clause` and is skipped the
     // same way here. The identity-method condition needs no recompute of
@@ -3441,7 +3497,10 @@ fn rebuild_applications<'gc>(
             .heap
             .class_application(object)
             .expect("every pending class was installed above");
-        if !application.inherits_value || context.mutator.heap.class_is_applied_level(object) {
+        let heap = &context.mutator.heap;
+        let own_class = !heap.class_is_applied_level(object)
+            || heap.class_body_less_declaration(object).is_some();
+        if !application.inherits_value || !own_class {
             continue;
         }
         let (Some(enclosing), Some(superclass_class)) = (
@@ -3481,6 +3540,7 @@ fn rebuild_metaclasses<'gc>(
     position: &HashMap<usize, usize>,
     pending_metaclasses: &[usize],
 ) -> Result<(), DecodeError> {
+    let class_sides = class_sides(context, objects, pending, position)?;
     let class_class = context.mutator.builtin_class(BuiltinClass::Class);
     let class_application = context.mutator.heap.class_application(class_class);
     for &index in pending_metaclasses {
@@ -3503,9 +3563,7 @@ fn rebuild_metaclasses<'gc>(
         if context.mutator.heap.class_this_class(this_class).is_some() {
             return Err(DecodeError::MetaclassPairing);
         }
-        let class_side_mixin = context
-            .mutator
-            .metaclass_mixin(&pending[this_position].mixin);
+        let class_side_mixin = class_sides[this_position].clone();
         let application = context
             .mutator
             .apply_mixin(&class_side_mixin, class_application.as_ref());
@@ -3519,6 +3577,74 @@ fn rebuild_metaclasses<'gc>(
         }
     }
     Ok(())
+}
+
+/// The class side each pending class record's metaclass applies, chosen as
+/// a live class's is (`nested::build_applied_levels`): a body-less
+/// declaration's own for its class object, the class side of the class its
+/// clause named for any other level a `<:` clause added -- read off that
+/// class's metaclass when the loading world has it, and chosen the same way
+/// when it is another record -- and `Mutator::metaclass_mixin`'s of the
+/// record's own row otherwise.
+///
+/// Linear in the records: each one's answer is computed once and kept for
+/// every level whose chain of named classes reaches it. A chain that closes
+/// on itself is `NamedClassCycle`, never a loop that does not end.
+fn class_sides<'gc>(
+    context: &mut DecodeContext<'_, 'gc>,
+    objects: &[ObjectReference<'gc>],
+    pending: &[PendingClass],
+    position: &HashMap<usize, usize>,
+) -> Result<Vec<Rc<crate::mixin::Mixin>>, DecodeError> {
+    let mut resolved: Vec<Option<Rc<crate::mixin::Mixin>>> = vec![None; pending.len()];
+    let mut on_chain = vec![false; pending.len()];
+    let mut chain: Vec<usize> = Vec::new();
+    for start in 0..pending.len() {
+        let mut current = start;
+        let answer = loop {
+            if let Some(found) = &resolved[current] {
+                break found.clone();
+            }
+            if on_chain[current] {
+                return Err(DecodeError::NamedClassCycle);
+            }
+            on_chain[current] = true;
+            chain.push(current);
+            let object = objects[pending[current].object];
+            let heap = &context.mutator.heap;
+            if let Some(declaration) = heap.class_body_less_declaration(object).cloned() {
+                break context.mutator.metaclass_mixin(&declaration);
+            }
+            let named = heap
+                .class_named(object)
+                .filter(|_| heap.class_is_applied_level(object));
+            let Some(named) = named else {
+                break context.mutator.metaclass_mixin(&pending[current].mixin);
+            };
+            if let Some(&next) = position.get(&heap.object_identity_key(named)) {
+                current = next;
+                continue;
+            }
+            // A class the loading world has before the graph: its
+            // metaclass exists already.
+            let built = heap
+                .class_metaclass(named)
+                .and_then(|metaclass| heap.class_application(metaclass))
+                .map(|class_side| class_side.mixin.clone());
+            break match built {
+                Some(class_side) => class_side,
+                None => context.mutator.metaclass_mixin(&pending[current].mixin),
+            };
+        };
+        for index in chain.drain(..) {
+            on_chain[index] = false;
+            resolved[index] = Some(answer.clone());
+        }
+    }
+    Ok(resolved
+        .into_iter()
+        .map(|class_side| class_side.expect("every pending class was resolved above"))
+        .collect())
 }
 
 /// Holds every class record and its metaclass record to each other, both
@@ -3580,8 +3706,8 @@ fn metaclass_rows(mixins: &[Rc<crate::mixin::Mixin>]) -> HashSet<usize> {
 /// A tag-2 class tag names an object-table id, and nothing in the byte
 /// stream forces that record to have been a class record -- which is only
 /// knowable once every record has been read, so it is checked here rather
-/// than where each tag is decoded. These five positions are the complete
-/// set: a class tag appears nowhere else in the graph section, and a plain
+/// than where each tag is decoded. These positions, a level's named class
+/// (`Heap::class_named`) among them, are the complete set: a class tag appears nowhere else in the graph section, and a plain
 /// object value pointing at a class object is legitimate (that is what a
 /// cached nested class in a slot *is*).
 ///
@@ -3642,7 +3768,12 @@ fn check_class_references<'gc>(
             }
             let superclass = heap.class_superclass(*object);
             let declaring_class = heap.class_declaring(*object);
-            for class in superclass.iter().chain(declaring_class.iter()) {
+            let named = heap.class_named(*object);
+            for class in superclass
+                .iter()
+                .chain(declaring_class.iter())
+                .chain(named.iter())
+            {
                 if !heap.is_class(*class) {
                     return Err(DecodeError::NotAClassReference);
                 }
@@ -3796,8 +3927,9 @@ impl Sizing<'_, '_, '_> {
         Ok(())
     }
 
-    /// `decode_class_record`'s reading.
-    fn class_record(&self, reader: &mut Reader) -> Result<(), DecodeError> {
+    /// `decode_class_record`'s reading; answers the record's field count, a
+    /// level's one more than a class object's (`Heap::allocate_applied_level`).
+    fn class_record(&self, reader: &mut Reader) -> Result<usize, DecodeError> {
         match reader.read_u8()? {
             MIXIN_ROW => {
                 let id = reader.read_u32()?;
@@ -3811,14 +3943,18 @@ impl Sizing<'_, '_, '_> {
                 self.optional_class(reader, NamePosition::FrameClass)?;
                 if reader.read_boolean()? {
                     decode_applied_clause(reader, self.context, None)?;
+                    self.class_tag(reader, NamePosition::Superclass)?;
+                    return Ok(record_size::APPLIED_LEVEL_FIELDS);
                 }
-                Ok(())
+                Ok(record_size::CLASS_FIELDS)
             }
             MIXIN_SHIPPED => {
                 let named = read_shipped_mixin(reader, self.context.shipped)?;
                 self.optional_class(reader, NamePosition::Superclass)?;
                 let builtin = self.context.mutator.heap.class_builtin(named);
-                decode_applied_clause(reader, self.context, builtin).map(drop)
+                decode_applied_clause(reader, self.context, builtin)?;
+                self.class_tag(reader, NamePosition::Superclass)?;
+                Ok(record_size::APPLIED_LEVEL_FIELDS)
             }
             tag => Err(DecodeError::InvalidTag {
                 what: "mixin reference",
@@ -4011,10 +4147,7 @@ impl Sizing<'_, '_, '_> {
                 }
                 (record_size::CLOSURE_FIXED_FIELDS + count, false)
             }
-            OBJECT_CLASS => {
-                self.class_record(reader)?;
-                (record_size::CLASS_FIELDS, false)
-            }
+            OBJECT_CLASS => (self.class_record(reader)?, false),
             OBJECT_METACLASS => {
                 self.class_tag(reader, NamePosition::Header)?;
                 (record_size::CLASS_FIELDS, false)
@@ -4570,11 +4703,12 @@ pub fn decode_graph_section<'gc>(
             // A placeholder the first pass sized for some other record is
             // refused, as a string's of the wrong size is: the space cannot
             // resize it.
-            if !heap.fill_placeholder_class(*object, class, identity_hash, record) {
+            let named = applied_clause.as_ref().map(|(_, named)| *named);
+            if !heap.fill_placeholder_class(*object, class, identity_hash, record, named) {
                 return Err(DecodeError::UnexpectedEndOfFile);
             }
         }
-        if let Some(applied) = applied_clause {
+        if let Some((applied, _)) = applied_clause {
             if !heap.class_set_applied_clause(*object, applied) {
                 unreachable!("internal: a class record fills a class object");
             }
@@ -4717,7 +4851,7 @@ pub fn decode_tag_named_hashes<'gc>(
 /// (`Heap::class_set_applied_clause`), and the mixin-table row it applies.
 type DecodedClassRecord<'gc> = (
     NewClass<'gc>,
-    Option<crate::mixin::AppliedClause>,
+    Option<(crate::mixin::AppliedClause, ClassReference<'gc>)>,
     Rc<crate::mixin::Mixin>,
 );
 
@@ -4757,10 +4891,18 @@ fn decode_class_record<'gc>(
     };
     let declaring_class = decode_optional_class(reader, context, tables, NamePosition::FrameClass)?;
     let applied_clause = if reader.read_boolean()? {
-        Some(decode_applied_clause(reader, context, None)?)
+        let clause = decode_applied_clause(reader, context, None)?;
+        let named = decode_class_tag(reader, context, tables, NamePosition::Superclass)?;
+        Some((clause, named))
     } else {
         None
     };
+    // A body-less declaration is applied by no class: its class object is
+    // the level its last clause adds, which applies that clause's mixin
+    // (decision 8 of `new` as compiled code).
+    if !mixin.has_body {
+        return Err(DecodeError::BodyLessMixinApplied);
+    }
     // A record only ever describes a program's class: a shipped class is a
     // shipped name, resolved against the loading world, and never an
     // object-table entry. Its metaclass is its header, which
@@ -4808,6 +4950,7 @@ fn decode_shipped_level<'gc>(
         .ok_or(DecodeError::NotAClass)?;
     let superclass = decode_optional_class(reader, context, tables, NamePosition::Superclass)?;
     let applied_clause = decode_applied_clause(reader, context, heap.class_builtin(named))?;
+    let named_class = decode_class_tag(reader, context, tables, NamePosition::Superclass)?;
     let class = NewClass {
         application: placeholder_application.clone(),
         enclosing: heap.class_enclosing(named),
@@ -4815,7 +4958,7 @@ fn decode_shipped_level<'gc>(
         superclass,
         builtin: None,
     };
-    Ok((class, Some(applied_clause), mixin))
+    Ok((class, Some((applied_clause, named_class)), mixin))
 }
 
 /// The clause that added a level: the applying declaration's row id and the

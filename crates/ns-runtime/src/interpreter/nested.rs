@@ -287,6 +287,15 @@ pub(crate) fn after_clause<'gc>(
             declaring_class,
         ));
     };
+    // A declaration without a body is the mixin application it writes
+    // (§6; decision 8 of `new` as compiled code): its class object is the
+    // top level `superclass_with_applied_levels` built, with no level of
+    // its own over it.
+    if !nested.has_body {
+        return Ok(Step::Value(Value::object(body_less_class(
+            mutator, enclosing, &nested, index, superclass,
+        ))));
+    }
     // Step 3: the application cache decides whether this behaviour already
     // exists. Two enclosing instances whose clauses land on the same
     // superclass application share one application, and therefore one
@@ -339,6 +348,48 @@ pub(crate) fn after_clause<'gc>(
     Ok(Step::Value(Value::object(class)))
 }
 
+/// Steps 4 and 5 for a body-less declaration (`Mixin::has_body`), whose
+/// class object `class` is the level its last `<:` clause added, already
+/// built: §3.1.1's enclosing-object condition decided on it, as on a
+/// declaration's own class -- with the level's own enclosing object, the
+/// named class's (§6.2) -- then the class cached in `enclosing`'s hidden
+/// slot `index` and, for a shipped module's, named.
+#[cold]
+#[inline(never)]
+fn body_less_class<'gc>(
+    mutator: &mut Mutator<'gc>,
+    enclosing: ObjectReference<'gc>,
+    nested: &Rc<Mixin>,
+    index: usize,
+    class: ClassReference<'gc>,
+) -> ClassReference<'gc> {
+    let value_class_refusal = match (
+        mutator.heap.class_inherits_value(class),
+        mutator.heap.class_enclosing(class),
+        mutator.heap.class_superclass(class),
+    ) {
+        (true, Some(own_enclosing), Some(superclass)) => {
+            crate::interpreter::value_class::check_value_class(mutator, own_enclosing, superclass)
+        }
+        _ => None,
+    };
+    if let Some(refusal) = value_class_refusal {
+        if !mutator.record_value_class_refusal(class, refusal) {
+            unreachable!("internal: a nested class is a class object");
+        }
+    }
+    crate::interpreter::locals::store_instance_field(
+        &mut mutator.heap,
+        Value::object(enclosing),
+        index,
+        Value::object(class),
+    );
+    if nested.shipped {
+        name_a_shipped_class(mutator, enclosing, nested, class);
+    }
+    class
+}
+
 /// Records `class`, which the declaration `nested` just evaluated to with
 /// `enclosing` as its enclosing object, under its shipped names when
 /// `enclosing` is a recorded shipped module's instance and `nested` one of
@@ -378,7 +429,9 @@ fn name_a_shipped_class<'gc>(
 /// The class a declaration that applies mixins builds its own class on, and
 /// that class's application: §6.2's levels, one per `<:` clause, stacked on
 /// the superclass `value` names, the declaration's own class going on top of
-/// the last. `value` is the superclass clause activation's answer.
+/// the last -- or, for a declaration without a body, the last itself, which
+/// is its class (`Mixin::has_body`). `value` is the superclass clause
+/// activation's answer.
 #[cold]
 #[inline(never)]
 fn superclass_with_applied_levels<'gc>(
@@ -436,8 +489,8 @@ fn unpack_clause_value<'gc>(
 /// built from `applied`: each `<:` clause's index into
 /// `declaration.mixin_applications` with the class its receiver evaluated to,
 /// in clause order. Answers the top level -- the superclass the
-/// declaration's own class is built on -- which is `superclass` itself when
-/// `applied` is empty. Each class travels with its application, so that
+/// declaration's own class is built on, or for a body-less declaration its
+/// class itself -- which is `superclass` itself when `applied` is empty. Each class travels with its application, so that
 /// neither the caller nor the next level looks up one already in hand.
 ///
 /// The one place a level is built, for a module's root class
@@ -490,12 +543,26 @@ pub(crate) fn build_applied_levels<'gc>(
             index,
             named_builtin: mutator.heap.class_builtin(named_class),
         };
+        // A body-less declaration's last clause adds its own class object
+        // (decision 8 of `new` as compiled code), which has the
+        // declaration's factory and name; every other level the named
+        // class's.
+        let class_side =
+            if !declaration.has_body && index + 1 == declaration.mixin_applications.len() {
+                mutator.metaclass_mixin(declaration)
+            } else {
+                mutator.class_side_of(named_class, &named_application.mixin)
+            };
         let level = mutator.new_applied_level(
-            application.clone(),
-            enclosing,
-            declaring_class,
-            below_class,
+            super::AppliedLevel {
+                application: application.clone(),
+                enclosing,
+                declaring_class,
+                superclass: below_class,
+            },
             clause,
+            named_class,
+            class_side,
         );
         below = Some((level, application));
     }

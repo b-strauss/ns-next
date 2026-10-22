@@ -637,6 +637,16 @@ pub struct Mixin {
     /// for a builtin's mixin and a class side. A decoded mixin carries its
     /// row's clauses (`image::mixins`).
     pub mixin_applications: Vec<MixinApplicationClause>,
+    /// Whether the declaration writes a class body. `false` exactly for a
+    /// declaration that ends in a dot after its `<:` clauses (§6: "the
+    /// mixin can be specified along with the superclass via a mixin
+    /// application"): such a declaration is the mixin application itself,
+    /// so its class object is the level its last clause adds, named for it
+    /// and with its factory, and no level of its own is ever built over
+    /// it (decision 8 of `new` as compiled code; `docs/design/object-model.md`,
+    /// "Mixin application"). `true` for every other mixin, a builtin's and a
+    /// class side included. A decoded mixin carries its row's.
+    pub has_body: bool,
     /// Whether the declaration wrote any `initExpr`s. Stored because
     /// `instantiate::mixin_needs_initializer_code` asks the question of a
     /// decoded mixin too, where `initializer_expressions` below is empty by
@@ -664,7 +674,10 @@ pub struct Mixin {
     /// evaluated and the superclass's initializer run with it, each `<:`
     /// clause's message evaluated and its level's own part run with it,
     /// then this mixin's own part (`own_initializer_code`), then `self`
-    /// (`docs/design/object-model.md`, "Instantiation"). Every mixin built
+    /// (`docs/design/object-model.md`, "Instantiation"). A body-less
+    /// declaration's (`has_body`) runs at its class object, the level its
+    /// last clause adds, so its levels are counted from 0, and its own part
+    /// is empty. Every mixin built
     /// from source has one, a class side included, whose full body is its
     /// own part. `None` for a builtin's mixin, which runs no code;
     /// `image::decode::verify_mixins` refuses a decoded row without one.
@@ -681,8 +694,9 @@ pub struct Mixin {
     /// from outside: the superclass clause's message and the superclass's
     /// initializer, then the own part, without this declaration's own `<:`
     /// clauses, which do not apply to such a level. `Some` exactly when the
-    /// declaration writes `<:` clauses: without them it would be the full
-    /// body.
+    /// declaration writes `<:` clauses and a body: without clauses it would
+    /// be the full body, and a body-less declaration's class object is
+    /// never reached outside its declaration (`has_body`).
     pub standalone_initializer_code: Option<Rc<CompiledCode>>,
     /// The superclass clause's receiver expression (§6.1's `ec`), which the
     /// nested-class accessor runs once per enclosing object -- together with
@@ -1067,6 +1081,7 @@ impl Mixin {
             superclass: None,
             superclass_receiver: None,
             mixin_applications: Vec::new(),
+            has_body: true,
             has_initializer_expressions: false,
             initializer_expressions: Vec::new(),
             nested_declarations: NestedDeclarations::default(),
@@ -1396,12 +1411,17 @@ pub struct MixinApplication {
 /// application cloned: whether the level needs initializer code, its
 /// superclass clause's selector and whether that clause passes arguments,
 /// how many `<:` clauses its declaration writes and whether any of them
-/// passes arguments, and its primary factory's
-/// selector and arity. Nothing here depends on the superclass: §6.1's check
-/// compares a level's clause selector with its superclass's factory
-/// selector from both levels' facts, and a level whose initializer would do
-/// nothing but that check is passed over without an activation
-/// (`Mutator::enter_or_pass`).
+/// passes arguments, the arity of its mixin's own factory, which its
+/// initializer bodies are laid out for, and -- for a metaclass mixin -- the
+/// factory entry its method table holds. Nothing here depends on the
+/// superclass, and a level whose initializer would do nothing but §6.1's
+/// checks is passed over without an activation (`Mutator::enter_or_pass`).
+///
+/// Which factory a *class object* has is not an application fact: it is
+/// read through the class object's metaclass (`Heap::class_factory`), whose
+/// class side may be another declaration's than the mixin it applies -- a
+/// level a `<:` clause added has the factory of the class the clause named,
+/// and a body-less declaration's class object its declaration's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LevelFacts {
     pub needs_initializer_code: bool,
@@ -1409,8 +1429,8 @@ pub struct LevelFacts {
     pub clause_has_arguments: bool,
     pub applied_clause_count: usize,
     pub applied_clauses_pass_arguments: bool,
-    pub factory_selector: Symbol,
     pub factory_arity: Option<usize>,
+    pub metaclass_factory: Option<Factory>,
 }
 
 impl LevelFacts {
@@ -1428,10 +1448,14 @@ impl LevelFacts {
                 .mixin_applications
                 .iter()
                 .any(|clause| clause.message.has_arguments),
-            factory_selector: mixin
-                .factory
-                .map_or(Symbol::NEW, |factory| factory.selector),
             factory_arity: mixin.factory.map(|factory| factory.argument_count),
+            metaclass_factory: mixin.methods.values().find_map(|entry| match entry {
+                MethodEntry::Factory(factory) => Some(Factory {
+                    selector: factory.selector,
+                    argument_count: factory.argument_count,
+                }),
+                _ => None,
+            }),
         }
     }
 }

@@ -318,6 +318,9 @@ pub fn encode(
         for clause in &mixin.mixin_applications {
             write_clause_message(writer, clause.message, symbols);
         }
+        // Whether the declaration writes a body, or is the mixin
+        // application its clauses write (`Mixin::has_body`).
+        writer.write_boolean(mixin.has_body);
         writer.write_u32(u32_field("mixin's method count", row.methods.len()));
         for method in &row.methods {
             writer.write_u32(symbols.intern(method.selector.as_str()));
@@ -454,6 +457,7 @@ struct RawRow {
     has_initializer_expressions: bool,
     superclass: Option<ClauseMessage>,
     mixin_applications: Vec<ClauseMessage>,
+    has_body: bool,
     methods: Vec<(Symbol, AccessModifier, usize, u32)>,
     nested: Vec<u32>,
     class_side: Option<u32>,
@@ -567,6 +571,7 @@ fn read_row(
     for _ in 0..clause_count {
         mixin_applications.push(read_clause_message(reader, symbols)?);
     }
+    let has_body = reader.read_boolean()?;
     let method_count = reader.read_u32()? as usize;
     let mut methods: Vec<(Symbol, AccessModifier, usize, u32)> = reserve_for(method_count, reader);
     for _ in 0..method_count {
@@ -604,6 +609,7 @@ fn read_row(
         has_initializer_expressions,
         superclass,
         mixin_applications,
+        has_body,
         methods,
         nested,
         class_side,
@@ -1064,6 +1070,7 @@ pub fn build(
                     receiver: None,
                 })
                 .collect(),
+            has_body: row.has_body,
             has_initializer_expressions: row.has_initializer_expressions,
             initializer_expressions: Vec::new(),
             nested_declarations: crate::mixin::NestedDeclarations::new(nested),

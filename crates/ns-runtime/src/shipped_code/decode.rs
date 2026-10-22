@@ -150,6 +150,7 @@ impl Decoder<'_> {
                 MixinApplicationClause { message, receiver }
             })
             .collect();
+        mixin.has_body = self.reader.boolean();
         mixin.has_initializer_expressions = self.reader.boolean();
         let nested = (0..self.reader.length()).map(|_| self.mixin()).collect();
         mixin = mixin.with_declared_nested(nested);

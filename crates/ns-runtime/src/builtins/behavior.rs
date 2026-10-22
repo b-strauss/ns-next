@@ -27,12 +27,10 @@ pub(crate) fn execute<'gc>(
             if mutator.heap().class_this_class(object).is_some() {
                 return None;
             }
-            let name = mutator
-                .heap()
-                .class_application(object)?
-                .mixin
-                .name
-                .to_string();
+            // Read through the metaclass (`Heap::class_name`): a body-less
+            // declaration's class object applies its last clause's mixin
+            // and is named for the declaration.
+            let name = mutator.heap().class_name(object)?.to_string();
             Some(Ok(Value::object(mutator.new_string(name))))
         }
         BehaviorPrimitive::ThisClass => mutator

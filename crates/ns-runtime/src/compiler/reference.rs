@@ -43,7 +43,7 @@ pub(crate) fn compile_mixin_bodies(mixin: &mut Mixin, bindings: &Bindings) {
         Some(prologue) => Rc::new(initializer(mixin, bindings, Some(prologue))),
         None => Rc::clone(&own),
     });
-    mixin.standalone_initializer_code = if mixin.mixin_applications.is_empty() {
+    mixin.standalone_initializer_code = if mixin.mixin_applications.is_empty() || !mixin.has_body {
         None
     } else {
         super::Prologue::of(mixin, false)
@@ -74,7 +74,7 @@ fn initializer(
     );
     let mut source_span: Option<Span> = None;
     if let Some(prologue) = prologue {
-        body.prologue(prologue.superclass, prologue.applied);
+        body.prologue(prologue.superclass, prologue.applied, prologue.has_body);
         source_span = prologue.merge_spans(source_span);
     }
     for (own_index, slot) in mixin.slots.iter().enumerate() {
@@ -269,26 +269,31 @@ impl<'a> Body<'a> {
     /// clause's arguments and its initialization; each `<:` clause's
     /// arguments and its level's initialization, from the lowest level up.
     /// The declaration's own level is the one the body runs at, so `<:`
-    /// clause `k` of `n` names the level `n - k + 1` steps up and the
-    /// superclass clause the class `n + 1` steps up; past what a `u16`
-    /// counts, the body is too large.
+    /// clause `k` (from 1) of `n` names the level `n - k + 1` steps up and
+    /// the superclass clause the class `n + 1` steps up -- one step fewer
+    /// each for a body-less declaration (`has_body` false), whose body runs
+    /// at the level its last clause adds; past what a `u16` counts, the
+    /// body is too large.
     fn prologue(
         &mut self,
         superclass: Option<&ast::SuperclassClause>,
         applied: &[ast::SuperclassClause],
+        has_body: bool,
     ) {
         let count = applied.len();
-        let Ok(superclass_steps) = u16::try_from(count + 1) else {
+        let own_level = usize::from(has_body);
+        let Ok(superclass_steps) = u16::try_from(count + own_level) else {
             self.too_large = true;
             return;
         };
+        // The level clause `index` (from 0) adds: below the superclass
+        // clause's class, whose steps fit a `u16`.
+        let steps_of = |index: usize| (count + own_level - 1 - index) as u16;
         if count > 0 {
             let start = self.code.len();
-            // Every clause's level is below the superclass clause's, whose
-            // steps fit a `u16`.
             for (index, clause) in applied.iter().enumerate().rev() {
                 self.emit(Instruction::CheckAppliedClause {
-                    steps: (count - index) as u16,
+                    steps: steps_of(index),
                     selector: super::clause_selector(Some(clause)),
                 });
             }
@@ -309,7 +314,7 @@ impl<'a> Body<'a> {
             let argument_registers = self.values(super::clause_arguments(Some(clause)));
             let destination = self.fresh();
             self.emit(Instruction::InitializeAppliedLevel {
-                steps: (count - index) as u16,
+                steps: steps_of(index),
                 argument_registers,
                 destination,
             });
