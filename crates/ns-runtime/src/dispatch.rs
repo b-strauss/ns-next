@@ -40,8 +40,9 @@ pub enum Lookup<'gc> {
     /// instantiates the *receiver* of the factory message, not the level;
     /// the level is what lets the resolution honour the entry only when it
     /// was found on the receiver's own class, its metaclass
-    /// (`interpreter::resolve`'s `resolved_for`).
-    Factory(ClassReference<'gc>),
+    /// (`interpreter::resolve`'s `resolved_for`). The body is the entry's,
+    /// which the factory send activates.
+    Factory(ClassReference<'gc>, Rc<crate::bytecode::CompiledCode>),
     NotFound,
 }
 
@@ -376,7 +377,7 @@ fn found_entry<'gc>(
             application.index,
         ),
         MethodEntry::Primitive(method) => Lookup::Primitive(method.primitive, level_class),
-        MethodEntry::Factory(_) => Lookup::Factory(level_class),
+        MethodEntry::Factory(factory) => Lookup::Factory(level_class, factory.code.clone()),
     }
 }
 

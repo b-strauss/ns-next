@@ -90,8 +90,11 @@ pub(crate) enum Target {
     /// §6.3's primary factory. It carries no level, unlike every other
     /// target: §6.3 instantiates the *receiver*, a class object, and the
     /// guard -- its metaclass's instances id -- already names the one
-    /// application whose own method table held the entry.
+    /// application whose own method table held the entry -- and so the
+    /// entry's body, `code`, which the fill records as `Method` records its
+    /// method.
     Factory {
+        code: Rc<crate::bytecode::CompiledCode>,
         chain: Chain,
     },
     /// The site's entries are `block` in the pool. `private` is the site's
@@ -116,7 +119,7 @@ impl Target {
             | Target::Slot { chain, .. }
             | Target::NestedClass { chain, .. }
             | Target::Primitive { chain, .. }
-            | Target::Factory { chain } => Some(*chain == Chain::Private),
+            | Target::Factory { chain, .. } => Some(*chain == Chain::Private),
         }
     }
 }
@@ -910,7 +913,10 @@ fn record<'gc>(
             level: levels_between(&mutator.heap, start?, *level)?,
             chain,
         },
-        Resolved::Factory { .. } => Target::Factory { chain },
+        Resolved::Factory { code, .. } => Target::Factory {
+            code: code.clone(),
+            chain,
+        },
         Resolved::Unhandled => return None,
     })
 }
@@ -1019,10 +1025,11 @@ fn materialize<'gc>(
         // receiver with that id is a class object of that metaclass's
         // declaration, so a hit reaches what a miss would -- the entry's
         // body too, which `act` reads off the receiver's metaclass for both.
-        Target::Factory { chain } => match key.receiver.as_object() {
+        Target::Factory { code, chain } => match key.receiver.as_object() {
             Some(class_object) => (
                 Resolved::Factory {
                     level: class_object,
+                    code,
                     chain,
                 },
                 FeedbackBase::NOT_ASSIGNED,
@@ -1541,7 +1548,7 @@ fn sent_selector(instruction: &Instruction) -> Option<Symbol> {
 fn cached_target(target: &Target) -> Option<CachedTarget> {
     let (kind, chain) = match target {
         Target::Vacant | Target::Polymorphic { .. } | Target::Megamorphic { .. } => return None,
-        Target::Factory { chain } => (CachedTargetKind::Factory, *chain),
+        Target::Factory { chain, .. } => (CachedTargetKind::Factory, *chain),
         Target::Method { method, chain, .. } => (CachedTargetKind::Method(method.selector), *chain),
         Target::Slot { field, chain, .. } => (CachedTargetKind::Slot { field: *field }, *chain),
         Target::NestedClass { mixin, chain, .. } => {
@@ -1567,6 +1574,15 @@ mod tests {
     use super::*;
     use crate::bytecode::{CodeKind, CompiledCode, Instruction};
     use ns_syntax::Span;
+
+    /// A factory target on `chain`, for the tests of the caches themselves,
+    /// which read only its chain.
+    fn factory_target(chain: Chain) -> Target {
+        Target::Factory {
+            code: Rc::new(crate::compiler::factory_body(0)),
+            chain,
+        }
+    }
 
     #[test]
     fn free_ranges_coalesce_and_fit_first() {
@@ -1687,7 +1703,7 @@ mod tests {
         let chain_of = |global: &mut GlobalCache, guard: DispatchId, rule: CacheRule| match global
             .get(guard, selector, rule)
         {
-            Some(Target::Factory { chain }) => Some(*chain),
+            Some(Target::Factory { chain, .. }) => Some(*chain),
             _ => None,
         };
         let chains = [Chain::Public, Chain::Super, Chain::SuperDoesNotUnderstand];
@@ -1695,13 +1711,13 @@ mod tests {
             guards[0],
             selector,
             CacheRule::Public,
-            Target::Factory { chain: chains[0] },
+            factory_target(chains[0]),
         );
         global.insert(
             guards[1],
             selector,
             CacheRule::Public,
-            Target::Factory { chain: chains[1] },
+            factory_target(chains[1]),
         );
         assert_eq!(
             chain_of(&mut global, guards[0], CacheRule::Public),
@@ -1720,7 +1736,7 @@ mod tests {
             guards[2],
             selector,
             CacheRule::Public,
-            Target::Factory { chain: chains[2] },
+            factory_target(chains[2]),
         );
         assert_eq!(
             chain_of(&mut global, guards[0], CacheRule::Public),
@@ -1757,14 +1773,13 @@ mod tests {
             guard,
             selector,
             CacheRule::Lexical(first_lexical),
-            Target::Factory {
-                chain: Chain::Protected,
-            },
+            factory_target(Chain::Protected),
         );
         assert!(matches!(
             global.get(guard, selector, CacheRule::Lexical(first_lexical)),
             Some(Target::Factory {
-                chain: Chain::Protected
+                chain: Chain::Protected,
+                ..
             })
         ));
         assert!(
@@ -1795,7 +1810,7 @@ mod tests {
             DispatchId::from_counter(4),
             DispatchId::from_counter(5),
         );
-        let target_for = |chain| Target::Factory { chain };
+        let target_for = factory_target;
         cache.insert(
             first,
             selector,
@@ -1993,5 +2008,56 @@ mod tests {
         // second payload to any rule and this catches it silently doubling
         // the cache's footprint instead of a passing test hiding it.
         assert_eq!(std::mem::size_of::<GlobalEntry>(), 32);
+    }
+
+    /// A factory entry records the body the lookup found, and a hit hands
+    /// that very body to the factory's activation: the guard -- the
+    /// metaclass's instances id -- fixes the entry, so the hit reads nothing
+    /// of the method table again.
+    #[test]
+    fn a_factory_hit_pushes_the_body_the_fill_recorded() {
+        let source = "class Plain = Object new () () : ()\n";
+        let module = ns_syntax::parse(source).expect("parse");
+        let resolved = crate::resolve(
+            module,
+            Rc::from(source),
+            crate::types::SourceOrigin::File(std::path::PathBuf::from("t.ns")),
+        )
+        .expect("resolve");
+        let mut interpreter = crate::Interpreter::bootstrap();
+        let class = interpreter.load_module(&resolved);
+        interpreter.enter(|mutator| {
+            let receiver = mutator.fetch(&class);
+            let found = mutator.resolve_public(receiver, Symbol::NEW);
+            let Resolved::Factory {
+                code: found_code, ..
+            } = &found
+            else {
+                panic!("`new` resolves to the factory entry");
+            };
+            let found_code = found_code.clone();
+            let key = SendKey {
+                guard: mutator.heap.dispatch_id(receiver),
+                rule: CacheRule::Public,
+                receiver: &receiver,
+                lexical_class: None,
+                superclass: None,
+            };
+            let target = record(mutator, &found, key).expect("a factory is recorded");
+            let Target::Factory { code: recorded, .. } = &target else {
+                panic!("a factory is recorded as one");
+            };
+            assert!(Rc::ptr_eq(recorded, &found_code));
+            let (hit, _) = materialize(mutator, target, key).expect("a hit");
+            match mutator.act(hit, receiver, Symbol::NEW, &[]) {
+                Ok(crate::interpreter::Step::Factory { code, .. }) => {
+                    assert!(
+                        Rc::ptr_eq(&code, &found_code),
+                        "the hit pushes the recorded body"
+                    );
+                }
+                _ => panic!("a factory hit decides the factory's activation"),
+            }
+        });
     }
 }

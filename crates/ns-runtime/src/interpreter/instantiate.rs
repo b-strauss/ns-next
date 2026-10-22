@@ -525,19 +525,19 @@ impl<'gc> Mutator<'gc> {
     /// (`allocate_for_factory`), runs `class`'s instance initializer on it
     /// (`decide_instance_initializer`; `newspeak-spec.pdf` §6.3: "the
     /// instance initializer is invoked on an instance *o* of the class")
-    /// and answers it. `None` when the receiver's metaclass holds no
-    /// factory under `selector`, which the lookup that found one rules out.
+    /// and answers it. `code` is the body the lookup found in the entry, or
+    /// a cache hit recorded from it.
     ///
     /// No re-check of what the lookup decided: the entry was found on the
     /// receiver's own metaclass (`resolve::resolved_for` refuses one found
     /// anywhere else), whose instances id is the guard a cache entry is
     /// keyed by, so a hit and a miss reach the same class and the same
     /// entry (§3.2 makes a metaclass flat, so there is no inherited class
-    /// side an entry could have come from). `class` is the receiver itself,
-    /// read per send rather than carried in an entry, and the entry's body
-    /// is read off the receiver's metaclass per send as well; the class's
-    /// builtin, which decides how the instance is allocated, is read by the
-    /// body's allocation, also per send.
+    /// side an entry could have come from) -- which is why a cache entry may
+    /// record the body. `class` is the receiver itself, read per send rather
+    /// than carried in an entry; the class's builtin, which decides how the
+    /// instance is allocated, is read by the body's allocation, also per
+    /// send.
     ///
     /// No double-dispatch risk against the superclass clause's own factory
     /// message (`Object new` in `class Foo = Object new (...)`). That
@@ -548,16 +548,14 @@ impl<'gc> Mutator<'gc> {
     /// never reaches here, which would allocate a second, discarded
     /// instance per level.
     pub(super) fn decide_factory(
-        &self,
         class: ClassReference<'gc>,
-        selector: Symbol,
-    ) -> Option<Step<'gc>> {
-        let code = factory_code(&self.heap, class, Some(selector))?;
-        Some(Step::Factory {
+        code: Rc<crate::bytecode::CompiledCode>,
+    ) -> Step<'gc> {
+        Step::Factory {
             class,
             code,
             arguments: StepArguments::Send,
-        })
+        }
     }
 
     /// The factory activation a host's `instantiate` runs on `class` with
@@ -929,18 +927,23 @@ impl<'gc> Mutator<'gc> {
     }
 
     /// `level`'s initializer on `instance` with the arguments of the send
-    /// that decided it -- whose arity the caller has checked -- or, while `level` has nothing to run, the
-    /// levels above it, in a loop rather than by recursing, so that a chain
-    /// of levels without code neither nests nor escapes the depth limit's
-    /// count (`docs/design/execution.md`, "The depth limit"): a level no
-    /// `<:` clause added whose mixin needs no initializer code, passes its
-    /// superclass no arguments and writes no `<:` clause. Its full body
-    /// would do nothing but check its own superclass clause against its
-    /// superclass, which this does in its place, with the body's text, and
-    /// then carries on above. A level a `<:` clause added and reached here
-    /// -- from outside its declaration (decision 4 of `new` as compiled
-    /// code) -- is always entered. A level above the first is reached with
-    /// no arguments. The chain's top answers the instance.
+    /// that decided it -- whose arity the caller has checked -- or, while
+    /// `level`'s full body would run nothing, the levels above it, in a loop
+    /// rather than by recursing, so that a chain of levels without code
+    /// neither nests nor escapes the depth limit's count
+    /// (`docs/design/execution.md`, "The depth limit").
+    ///
+    /// A level is passed when no `<:` clause added it, its mixin needs no
+    /// initializer code, none of its clauses passes arguments, and every
+    /// level its own `<:` clauses added is one whose mixin has no own code
+    /// and whose factory takes no arguments: then its full body only checks
+    /// -- each `<:` clause against its level, nearest first, then the
+    /// superclass clause against the class above them -- and this makes
+    /// the same checks in the same order with the same texts, and carries
+    /// on at that class, past the declaration's own applied levels, with no
+    /// arguments. A level a `<:` clause added and reached here -- from
+    /// outside its declaration (decision 4 of `new` as compiled code) -- is
+    /// always entered. The chain's top answers the instance.
     fn enter_or_pass(
         &mut self,
         mut level: ClassReference<'gc>,
@@ -949,12 +952,14 @@ impl<'gc> Mutator<'gc> {
         let mut arguments = StepArguments::Send;
         loop {
             let facts = self.heap.class_level_facts(level);
+            let applied_count = facts.map_or(0, |facts| facts.applied_clause_count);
             let passes = !self.heap.class_is_applied_level(level)
                 && facts.is_none_or(|facts| {
                     !facts.needs_initializer_code
                         && !facts.clause_has_arguments
-                        && !facts.has_applied_clauses
-                });
+                        && !facts.applied_clauses_pass_arguments
+                })
+                && self.applied_levels_run_nothing(level, applied_count);
             if !passes {
                 return Ok(match self.level_initializer(level) {
                     Some((_, body)) => Step::Initializer {
@@ -969,7 +974,11 @@ impl<'gc> Mutator<'gc> {
                     None => Step::Value(instance),
                 });
             }
-            let Some(superclass) = self.heap.class_superclass(level) else {
+            self.check_applied_clauses(level, applied_count)?;
+            // `applied_levels_run_nothing` has held the count below the
+            // steps' ceiling.
+            let steps = u16::try_from(applied_count + 1).unwrap_or(u16::MAX);
+            let Some(superclass) = self.level_above(level, steps) else {
                 return Ok(Step::Value(instance));
             };
             // §6.1: "if the message is omitted, it defaults to `new`" --
@@ -992,6 +1001,70 @@ impl<'gc> Mutator<'gc> {
             level = superclass;
             arguments = StepArguments::Owned(Vec::new());
         }
+    }
+
+    /// Whether the `count` levels the `<:` clauses of `level`'s declaration
+    /// added, directly above it, would each run nothing when its full body
+    /// initializes them: each is a level a clause added, its mixin needs no
+    /// own code and its factory takes the no arguments its clause passes.
+    /// A count past what an initializer's steps address is never passed:
+    /// its body is the too-large one, which raises when it runs.
+    fn applied_levels_run_nothing(&self, level: ClassReference<'gc>, count: usize) -> bool {
+        if count >= usize::from(u16::MAX) {
+            return false;
+        }
+        let mut current = level;
+        for _ in 0..count {
+            let Some(above) = self.heap.class_superclass(current) else {
+                return false;
+            };
+            let runs_nothing = self.heap.class_is_applied_level(above)
+                && self.heap.class_level_facts(above).is_some_and(|facts| {
+                    !facts.needs_initializer_code
+                        && facts.factory_arity.is_none_or(|arity| arity == 0)
+                });
+            if !runs_nothing {
+                return false;
+            }
+            current = above;
+        }
+        true
+    }
+
+    /// The checks a passed level's full body opens with
+    /// (`CheckAppliedClause`): each of the `count` `<:` clauses of `level`'s
+    /// declaration against the primary factory of the level it added,
+    /// nearest level first, with `check_applied_clause`'s text.
+    fn check_applied_clauses(
+        &self,
+        level: ClassReference<'gc>,
+        count: usize,
+    ) -> Result<(), Signal<'gc>> {
+        if count == 0 {
+            return Ok(());
+        }
+        let Some(application) = self.heap.class_application(level) else {
+            return Ok(());
+        };
+        let mut applied = level;
+        for clause in application.mixin.mixin_applications.iter().rev() {
+            let Some(above) = self.heap.class_superclass(applied) else {
+                return Ok(());
+            };
+            applied = above;
+            let expected = primary_factory_selector(&self.heap, applied);
+            if Some(clause.message.selector) != expected {
+                return Err(not_the_primary_factory_error(
+                    &self.heap,
+                    ClauseKind::MixinApplication,
+                    level,
+                    applied,
+                    clause.message.selector,
+                    expected,
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// The body `level`'s initializer runs and which of its mixin's three it
@@ -1141,24 +1214,23 @@ impl InitializerBody {
     }
 }
 
-/// The body of the factory entry the metaclass of `class` holds: under
-/// `selector` when it is known, a send's, and otherwise the one entry of a
-/// factory the metaclass mixin holds. `None` for a class object whose class
-/// holds none -- one a host built by hand -- and for anything else.
+/// The body of the one factory entry the metaclass of `class` holds, for
+/// a frame of a factory activation, whose body is derived rather than
+/// carried. `None` for a class object whose class holds none -- one a host
+/// built by hand -- and for anything else.
 pub(crate) fn factory_code<'gc>(
     heap: &Heap<'gc>,
     class: ClassReference<'gc>,
-    selector: Option<Symbol>,
 ) -> Option<Rc<crate::bytecode::CompiledCode>> {
     let metaclass = heap.class_application(heap.object_class(class))?;
-    let factory = |entry: &MethodEntry| match entry {
-        MethodEntry::Factory(factory) => Some(factory.code.clone()),
-        _ => None,
-    };
-    match selector {
-        Some(selector) => metaclass.mixin.methods.get(&selector).and_then(factory),
-        None => metaclass.mixin.methods.values().find_map(factory),
-    }
+    metaclass
+        .mixin
+        .methods
+        .values()
+        .find_map(|entry| match entry {
+            MethodEntry::Factory(factory) => Some(factory.code.clone()),
+            _ => None,
+        })
 }
 
 /// A factory given another number of arguments than it declares: refused

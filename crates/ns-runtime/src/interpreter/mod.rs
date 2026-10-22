@@ -1383,6 +1383,13 @@ impl<'gc> Mutator<'gc> {
         let Some(code) = self.initializer_code(level, body) else {
             unreachable!("internal: an initializer step is decided only for a body its level has")
         };
+        // The decision checked the arguments against the level's factory,
+        // whose arity `image::decode::verify_mixins` holds every body to.
+        debug_assert!(
+            arguments.len() == usize::from(code.argument_count)
+                || code.stands_for_too_many_arguments(arguments.len()),
+            "internal: an initializer is pushed with its own number of arguments"
+        );
         let feedback_base = self.caches.base_for(&code);
         let temporaries = (code.register_count - code.argument_count) as usize;
         self.push(

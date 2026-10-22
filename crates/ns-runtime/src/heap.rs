@@ -4729,7 +4729,7 @@ impl<'gc> Heap<'gc> {
             FrameKind::Method(method) => Some(method.code.clone()),
             FrameKind::Initializer(class, body) => body.code_of(mixin(*class)?.as_ref()),
             FrameKind::Factory(class) => {
-                crate::interpreter::instantiate::factory_code(self, *class, None)
+                crate::interpreter::instantiate::factory_code(self, *class)
             }
             FrameKind::SuperclassClause(class) => mixin(*class)?.superclass_clause_code.clone(),
             FrameKind::SuperclassMessage(class) => mixin(*class)?.superclass_message_code.clone(),

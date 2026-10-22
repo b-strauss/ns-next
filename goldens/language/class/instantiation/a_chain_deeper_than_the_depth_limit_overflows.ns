@@ -7,7 +7,10 @@
 ///
 /// Each Level is a class of its own, built by a Builder whose slot names
 /// the class below it, which the Level's superclass clause reads; each
-/// Level's initializer expression is its initializer code.
+/// Level's initializer expression is its initializer code. An expression
+/// rather than a slot: an application lists the declared slots of its
+/// whole chain, so a chain of slots this deep costs memory quadratic in
+/// its length (recorded in docs/OPEN-WORK.md for later).
 class AChainDeeperThanTheDepthLimitOverflows = Object new (
   |
     count ::= 0.

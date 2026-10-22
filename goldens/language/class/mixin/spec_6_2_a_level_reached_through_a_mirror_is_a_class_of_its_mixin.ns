@@ -66,6 +66,20 @@ class Spec62ALevelReachedThroughAMirrorIsAClassOfItsMixin = Object new (
     |
   ) ()
 
+  /// Writes a <: clause of its own. The level UsesComposite's clause adds
+  /// over Object is a class with Composite's mixin and superclass Object:
+  /// reached from outside, it runs Composite's own superclass clause
+  /// against Object and Composite's own slots, and never Extra's, whose
+  /// level is not above it.
+  class Composite = Object new <: Extra new (
+    |
+      composite = outer
+          Spec62ALevelReachedThroughAMirrorIsAClassOfItsMixin note: 'Composite initializer'.
+    |
+  ) ()
+
+  class UsesComposite = Object new <: Composite () ()
+
   public note: text = (
     t
         show: text;
@@ -98,5 +112,13 @@ class Spec62ALevelReachedThroughAMirrorIsAClassOfItsMixin = Object new (
         show: 'the level Last adds, new:';
         newLine.
     (ClassMirror reflecting: Stacked) superclass reflectee new.
+    t
+        show: 'Composite new:';
+        newLine.
+    Composite new.
+    t
+        show: 'the level Composite adds, new:';
+        newLine.
+    (ClassMirror reflecting: UsesComposite) superclass reflectee new.
   )
 )

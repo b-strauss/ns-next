@@ -75,9 +75,11 @@ pub(crate) enum Resolved<'gc> {
     /// is `Public` or `Protected`: a factory entry lives on a metaclass,
     /// which only a class object's own public or protected lookup starts
     /// from, and metaclasses are flat (§3.2), so no other chain reaches
-    /// one (`resolved_for`).
+    /// one (`resolved_for`). `code` is the entry's body, which the send
+    /// activates on `level`.
     Factory {
         level: ClassReference<'gc>,
+        code: Rc<crate::bytecode::CompiledCode>,
         chain: Chain,
     },
     /// Nothing handles it, not even `doesNotUnderstand:`. Never recorded.
@@ -282,7 +284,7 @@ fn resolved<'gc>(lookup: Lookup<'gc>, chain: Chain) -> Resolved<'gc> {
         // image can arrange (`image::mixins::build` derives one for a
         // class-side row alone): refused, rather than instantiating whatever
         // object happened to receive the send.
-        Lookup::Factory(_) => Resolved::Unhandled,
+        Lookup::Factory(..) => Resolved::Unhandled,
         Lookup::NotFound => unreachable!("internal: the caller resolves what nothing found"),
     }
 }
@@ -305,15 +307,16 @@ fn resolved_for<'gc>(
     chain: Chain,
 ) -> Resolved<'gc> {
     match (lookup, receiver.as_object()) {
-        (Lookup::Factory(level), Some(class_object))
+        (Lookup::Factory(level, code), Some(class_object))
             if heap.is_class(class_object) && heap.object_class(class_object).same(level) =>
         {
             Resolved::Factory {
                 level: class_object,
+                code,
                 chain,
             }
         }
-        (Lookup::Factory(_), _) => Resolved::Unhandled,
+        (Lookup::Factory(..), _) => Resolved::Unhandled,
         (found, _) => resolved(found, chain),
     }
 }
@@ -535,11 +538,10 @@ impl<'gc> Mutator<'gc> {
             // no re-check: the lookup found it on the receiver's own
             // metaclass, and the class-side dispatch id a cache entry is
             // guarded by determines that metaclass, so a hit reaches the
-            // class and the entry a miss would. The send's arguments are the
-            // factory activation's (`StepArguments::Send`).
-            Resolved::Factory { level, .. } => self
-                .decide_factory(level, selector)
-                .ok_or_else(|| unhandled_error(receiver, selector)),
+            // class and the entry a miss would, and carries the body the
+            // lookup found. The send's arguments are the factory
+            // activation's (`StepArguments::Send`).
+            Resolved::Factory { level, code, .. } => Ok(Self::decide_factory(level, code)),
             Resolved::Unhandled => Err(unhandled_error(receiver, selector)),
         }
     }

@@ -1406,7 +1406,8 @@ pub struct MixinApplication {
 /// when its application is built, so that it is copied out instead of the
 /// application cloned: whether the level needs initializer code, its
 /// superclass clause's selector and whether that clause passes arguments,
-/// whether its declaration writes `<:` clauses, and its primary factory's
+/// how many `<:` clauses its declaration writes and whether any of them
+/// passes arguments, and its primary factory's
 /// selector and arity. Nothing here depends on the superclass: §6.1's check
 /// compares a level's clause selector with its superclass's factory
 /// selector from both levels' facts, and a level whose initializer would do
@@ -1417,7 +1418,8 @@ pub struct LevelFacts {
     pub needs_initializer_code: bool,
     pub clause_selector: Symbol,
     pub clause_has_arguments: bool,
-    pub has_applied_clauses: bool,
+    pub applied_clause_count: usize,
+    pub applied_clauses_pass_arguments: bool,
     pub factory_selector: Symbol,
     pub factory_arity: Option<usize>,
 }
@@ -1432,7 +1434,11 @@ impl LevelFacts {
                 .superclass
                 .map_or(Symbol::NEW, |clause| clause.selector),
             clause_has_arguments: mixin.superclass.is_some_and(|clause| clause.has_arguments),
-            has_applied_clauses: !mixin.mixin_applications.is_empty(),
+            applied_clause_count: mixin.mixin_applications.len(),
+            applied_clauses_pass_arguments: mixin
+                .mixin_applications
+                .iter()
+                .any(|clause| clause.message.has_arguments),
             factory_selector: mixin
                 .factory
                 .map_or(Symbol::NEW, |factory| factory.selector),

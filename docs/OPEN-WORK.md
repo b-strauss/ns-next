@@ -547,6 +547,16 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   measurement shows an image meets such chains. Noted 2026-10-16.
   [core-library.md](design/core-library.md), "The heap and the
   collectors".
+- **An application lists the declared slots of its whole chain.**
+  `MixinApplication::declared_slots` (`mixin::declared_slots_of`) copies
+  the superclass's list and extends it, so a chain of *n* levels with a
+  slot each holds about *n*²/2 entries in all: about 5 x 10⁹ for the
+  101,001 levels
+  `goldens/language/class/instantiation/a_chain_deeper_than_the_depth_limit_overflows.ns`
+  builds, which is why that golden's levels use initializer expressions
+  instead. A list shared with the superclass's (a persistent list, or the
+  level's own slots and a link) would keep it linear. Noted 2026-10-22.
+  [object-model.md](design/object-model.md), "Instantiation".
 
 ## Planned: language and library
 

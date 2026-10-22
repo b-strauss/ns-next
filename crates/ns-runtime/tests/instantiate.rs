@@ -1044,3 +1044,84 @@ fn levels_without_code_are_passed_without_an_activation() {
     let difference = expect_ok(interpreter.send(&chain, Symbol::intern("run"), &[]), "run");
     assert_eq!(integer(&mut interpreter, &difference, "run"), 2);
 }
+
+/// Decision 3 of `new` as compiled code: a class whose initializers would
+/// run nothing pays its factory's activation alone. `Array`'s declaration
+/// writes a `<:` clause whose level has no code, as `Marked`'s does, so the
+/// full bodies of both would only check their clauses; each `new` fits one
+/// level short of the depth `probe:` measured, where a second activation
+/// would overflow.
+#[test]
+fn a_class_whose_levels_run_nothing_pushes_only_its_factory() {
+    let source = formatdoc! {"
+        class Deep = Object new (
+          | deepest ::= 0. |
+        ) (
+          class Marker = Object new () ()
+          class Marked = Object new <: Marker new () ()
+        {PROBE}
+          descend: n to: bottom with: class = (
+            n = bottom ifTrue: [^class new].
+            ^self descend: n + 1 to: bottom with: class.
+          )
+
+          public newAt: bottom of: class = (
+            ^[(self descend: 1 to: bottom with: class) isNil ifTrue: ['nil'] ifFalse: ['an instance']]
+                on: Error
+                do: [:error | error messageText].
+          )
+
+          public run = (
+            | marked = Marked. depth = self measure. |
+            ^{{self newAt: depth - 1 of: Array. self newAt: depth - 1 of: marked}}.
+          )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(&source);
+    let deep = expect_ok(interpreter.instantiate(&class, &[]), "instantiate Deep");
+    let answers = expect_ok(interpreter.send(&deep, Symbol::intern("run"), &[]), "run");
+    interpreter.enter(|mutator| {
+        let elements = mutator
+            .heap()
+            .array_elements(object(mutator, &answers))
+            .expect("run answers an Array");
+        let texts: Vec<String> = elements
+            .iter()
+            .map(|element| {
+                element
+                    .as_object()
+                    .and_then(|text| mutator.heap().str_value(text))
+                    .expect("a String")
+            })
+            .collect();
+        assert_eq!(texts, ["an instance", "an instance"]);
+    });
+}
+
+/// A level passed without an activation still makes its full body's
+/// checks: a `<:` clause naming another selector than its level's primary
+/// factory raises the error the compiled check raises for a class with
+/// code, word for word.
+#[test]
+fn a_misnamed_applied_clause_on_a_passed_level_raises_its_error() {
+    let source = indoc! {"
+        class Holder = Object new () (
+          class Marker make = Object new () ()
+          public class Passed = Object new <: Marker new () ()
+          public class Entered = Object new <: Marker new (| slot = 1. |) ()
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let holder = expect_ok(interpreter.instantiate(&class, &[]), "instantiate Holder");
+    let mut messages = Vec::new();
+    for name in ["Passed", "Entered"] {
+        let class = expect_ok(interpreter.send(&holder, Symbol::intern(name), &[]), name);
+        let error = expect_error(interpreter.instantiate(&class, &[]), name);
+        messages.push(error.message.replace(name, "C"));
+    }
+    assert_eq!(
+        messages,
+        ["a mixin application clause of class C sends #new, but the primary factory of \
+             class Marker is #make"; 2]
+    );
+}

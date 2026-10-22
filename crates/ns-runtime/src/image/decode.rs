@@ -3143,20 +3143,15 @@ pub(crate) fn declared_body<'gc>(
     heap: &Heap<'gc>,
     declared: &DeclaredKind<'gc>,
 ) -> Result<Rc<CompiledCode>, DecodeError> {
-    if let DeclaredKind::Factory(class) = declared {
-        return instantiate::factory_code(heap, *class, None).ok_or(DecodeError::FrameCodeMismatch);
-    }
-    if !declared.is_shipped(heap) {
-        return Err(DecodeError::DeclaredBodyNotShipped);
-    }
     let found = match declared {
+        DeclaredKind::Factory(class) => instantiate::factory_code(heap, *class),
+        _ if !declared.is_shipped(heap) => return Err(DecodeError::DeclaredBodyNotShipped),
         DeclaredKind::Method(class, selector) => {
             return declared_method(heap, *class, *selector).map(|method| method.code.clone())
         }
         DeclaredKind::Initializer(_, body) => declared
             .declaration(heap)
             .and_then(|mixin| body.code_of(&mixin)),
-        DeclaredKind::Factory(_) => unreachable!("internal: a factory's body is derived above"),
         DeclaredKind::SuperclassClause(_) => declared
             .declaration(heap)
             .and_then(|mixin| mixin.superclass_clause_code.clone()),
