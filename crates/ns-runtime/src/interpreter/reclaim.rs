@@ -215,6 +215,8 @@ fn application_index(row: usize) -> ApplicationIndex {
 
 #[cfg(test)]
 mod tests {
+    #![cfg_attr(not(debug_assertions), allow(dead_code))]
+
     use crate::heap::MixinId;
     use crate::interpreter::edit::{Edit, MemberEdit};
     use crate::interpreter::{HostResult, HostSignal, Interpreter, Mutator};
@@ -326,6 +328,7 @@ mod tests {
     /// class, built and dropped twice: the second chain takes the rows and
     /// the guards the collection after the first freed, so neither count
     /// grows.
+    #[cfg(debug_assertions)]
     #[test]
     fn dead_applications_are_reclaimed_and_their_guards_minted_again() {
         let (mut interpreter, churn) = load(CHURN);
@@ -547,6 +550,7 @@ mod tests {
     /// A module nothing names any more gives back every row of its tree --
     /// the root, the nested class and the class sides their metaclasses
     /// registered: every row of the tree is free after the collection.
+    #[cfg(debug_assertions)]
     #[test]
     fn a_dead_module_tree_is_reclaimed() {
         let (mut interpreter, outer) = load(OUTER);
@@ -583,6 +587,7 @@ mod tests {
     /// A host's `Rc` of a module's mixin keeps the whole tree's ids: the
     /// mixin answers its id after a collection nothing else survives, and
     /// its nested declaration the same one as before.
+    #[cfg(debug_assertions)]
     #[test]
     fn a_host_held_mixin_keeps_its_id() {
         let (mut interpreter, outer) = load(OUTER);
@@ -608,6 +613,7 @@ mod tests {
     /// Three edits of `Outer` leave three superseded versions of it, and of
     /// `Inner`, which the install replaced with it; once no activation,
     /// closure or class object holds one, a collection drops them all.
+    #[cfg(debug_assertions)]
     #[test]
     fn superseded_versions_nothing_holds_are_dropped() {
         let (mut interpreter, outer) = load(OUTER);
@@ -632,6 +638,7 @@ mod tests {
     /// A closure made by a version three edits superseded still runs after
     /// a collection: its body lives on with the closure, though no
     /// superseded version is kept for it.
+    #[cfg(debug_assertions)]
     #[test]
     fn a_closure_of_a_superseded_version_runs_after_a_collection() {
         let (mut interpreter, outer) = load(OUTER);
@@ -660,6 +667,7 @@ mod tests {
     /// edited every round -- and each dropped: the collection frees the
     /// code ids nothing names, so the code table ends no larger than after
     /// the first round.
+    #[cfg(debug_assertions)]
     #[test]
     fn codes_nothing_names_are_freed() {
         let (mut interpreter, outer) = load(OUTER);
@@ -740,6 +748,7 @@ mod tests {
     /// round's having had no predecessor; and the first round's
     /// applications fill holes the boot's collection left, which the
     /// second round's give back from the table's end.
+    #[cfg(debug_assertions)]
     #[test]
     fn a_hundred_edits_grow_no_table_past_its_second_round_size() {
         let (mut interpreter, outer) = load(OUTER);
@@ -794,6 +803,7 @@ mod tests {
         /// guards the superseded-but-running path;
         /// `a_family_nothing_runs_gives_its_range_back` is what guards
         /// `live_bases`.
+        #[cfg(debug_assertions)]
         fn a_closure_keeps_its_feedback_range_across_a_collection(lowering) {
             let (mut interpreter, keeper) = load_with(lowering, KEEPER);
             let instance = expect_ok(interpreter.instantiate(&keeper, &[]), "a Keeper");
@@ -824,6 +834,7 @@ mod tests {
         /// monomorphic site, the polymorphic block and the global cache
         /// behind the megamorphic site all send the new class's `value`.
         /// The reference lowering, which caches nothing, is the oracle.
+        #[cfg(debug_assertions)]
         fn a_reused_guard_misses_every_cache_entry_of_its_old_application(lowering) {
             let (mut interpreter, class) = load_with(lowering, GUARDS);
             let instance = expect_ok(interpreter.instantiate(&class, &[]), "a Guards");

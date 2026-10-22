@@ -15,6 +15,7 @@ use std::ops::Range;
 use ns_memory::{MemoryError, Reservation};
 
 use crate::heap::header::{Header, WORD_COUNT_OVERFLOW};
+use crate::heap::object::{CLASS, FIELDS, HEADER};
 
 /// The byte offset of the first object's allocation: past two words that
 /// no object uses, so that an all-zero word -- a missed initialization --
@@ -137,10 +138,21 @@ pub(in crate::heap) struct Space {
     /// scavenge's survivors, the other is empty outside a scavenge.
     survivors: [Region; 2],
     past: usize,
-    eden: Region,
+    /// Where eden's objects begin: `EDEN_START`, except after the move
+    /// stress mode shifted them up. Eden's top is the reservation's bump
+    /// cursor, never a second copy of it.
+    eden_start: usize,
+    /// Eden's occupied bytes at which an allocation asks for a scavenge,
+    /// or `None` while the image decoder allocates old, which no fast bump
+    /// may serve.
+    young_threshold: Option<usize>,
     old: Region,
     /// The end of the committed range, which starts at the base.
     committed: usize,
+    /// How many fast bumps succeeded, so a test tells a fast allocation
+    /// from a cold one: both bump eden and write the same words.
+    #[cfg(test)]
+    fast_bumps: usize,
 }
 
 impl Space {
@@ -154,24 +166,38 @@ impl Space {
             .min(reservation.size());
         reservation.commit(0..committed)?;
         let old = Region::empty(NURSERY_END, reservation.size());
-        Ok(Space {
+        let mut space = Space {
             reservation,
             survivors: [
                 Region::empty(FIRST_OBJECT, SURVIVOR_BYTES),
                 Region::empty(SURVIVOR_BYTES, EDEN_START),
             ],
             past: 0,
-            eden: Region::empty(EDEN_START, NURSERY_END),
+            eden_start: EDEN_START,
+            young_threshold: None,
             old,
             committed,
-        })
+            #[cfg(test)]
+            fast_bumps: 0,
+        };
+        space.place_eden_top(EDEN_START);
+        Ok(space)
     }
 
     pub(in crate::heap) fn region(&self, name: RegionName) -> Region {
         match name {
             RegionName::PastSurvivor => self.survivors[self.past],
-            RegionName::Eden => self.eden,
+            RegionName::Eden => self.eden(),
             RegionName::Old => self.old,
+        }
+    }
+
+    fn eden(&self) -> Region {
+        Region {
+            base: EDEN_START,
+            start: self.eden_start,
+            top: self.reservation.bump_top(),
+            end: NURSERY_END,
         }
     }
 
@@ -186,7 +212,7 @@ impl Space {
         let past = self.survivors[self.past];
         [
             past.start..past.top,
-            self.eden.start..self.eden.top,
+            self.eden_start..self.reservation.bump_top(),
             self.old.start..self.old.top,
         ]
     }
@@ -220,8 +246,84 @@ impl Space {
 
     #[inline]
     pub(in crate::heap) fn allocate_young(&mut self, words: usize) -> Option<usize> {
-        let limit = self.eden.end - REGION_SLACK;
-        self.eden.bump(words, limit)
+        self.reservation
+            .bump_up_to(words, NURSERY_END - REGION_SLACK)
+    }
+
+    /// Sets eden's scavenge threshold, or `None` while nothing may be
+    /// allocated young by the fast bump, and places the limit to match.
+    pub(in crate::heap) fn set_young_threshold(&mut self, threshold: Option<usize>) {
+        self.young_threshold = threshold;
+        self.place_eden_top(self.reservation.bump_top());
+    }
+
+    /// Puts eden's top at `top` and the fast bump's limit 8 bytes below
+    /// the threshold, so that an allocation reaching the threshold always
+    /// takes the cold path, which asks for the scavenge
+    /// (`Heap::allocate_block`) -- never past `REGION_SLACK` short of
+    /// eden's end, which the move stress mode needs. With no threshold,
+    /// the limit is eden's start, which no bump fits under.
+    fn place_eden_top(&mut self, top: usize) {
+        let limit = match self.young_threshold {
+            Some(threshold) => self
+                .eden_start
+                .saturating_add(threshold)
+                .saturating_sub(8)
+                .min(NURSERY_END - REGION_SLACK),
+            None => self.eden_start,
+        };
+        if self.reservation.set_bump(top, limit).is_err() {
+            unreachable!("internal: eden lies inside the committed prefix");
+        }
+    }
+
+    /// The fast bump of a young object that `header`'s count fits, at most
+    /// 254 words after the header: writes `header` and the class word
+    /// `class`, and answers the header's offset and the object's fields,
+    /// which hold whatever eden held; the caller writes every one before
+    /// anything reads the object. `None` past the fast limit.
+    #[inline(always)]
+    pub(in crate::heap) fn bump_object(
+        &mut self,
+        header: Header,
+        class: u64,
+    ) -> Option<(NonZeroU64, &mut [u64])> {
+        let word_count = header.word_count();
+        debug_assert!(word_count < WORD_COUNT_OVERFLOW);
+        let (start, block) = self.reservation.bump(word_count as u8 + 1)?;
+        #[cfg(test)]
+        {
+            self.fast_bumps += 1;
+        }
+        block[HEADER] = header.0;
+        block[CLASS] = class;
+        Some((young_offset(start), &mut block[FIELDS..]))
+    }
+
+    /// `bump_object` for an object of exactly `BLOCK_WORDS` words, its
+    /// header included, which `header`'s count must say, lent whole as an
+    /// array: the caller writes its fields from `FIELDS` on.
+    #[inline(always)]
+    pub(in crate::heap) fn bump_object_array<const BLOCK_WORDS: usize>(
+        &mut self,
+        header: Header,
+        class: u64,
+    ) -> Option<(NonZeroU64, &mut [u64; BLOCK_WORDS])> {
+        debug_assert_eq!(header.word_count() + 1, BLOCK_WORDS);
+        let (start, block) = self.reservation.bump_array::<BLOCK_WORDS>()?;
+        #[cfg(test)]
+        {
+            self.fast_bumps += 1;
+        }
+        block[HEADER] = header.0;
+        block[CLASS] = class;
+        Some((young_offset(start), block))
+    }
+
+    /// How many fast bumps have succeeded (`fast_bumps`).
+    #[cfg(test)]
+    pub(in crate::heap) fn fast_bumps(&self) -> usize {
+        self.fast_bumps
     }
 
     pub(in crate::heap) fn allocate_survivor(&mut self, words: usize) -> Option<usize> {
@@ -272,9 +374,15 @@ impl Space {
         start: usize,
         top: usize,
     ) {
+        if name == RegionName::Eden {
+            debug_assert!(EDEN_START <= start && start <= top && top <= NURSERY_END);
+            self.eden_start = start;
+            self.place_eden_top(top);
+            return;
+        }
         let region = match name {
             RegionName::PastSurvivor => &mut self.survivors[self.past],
-            RegionName::Eden => &mut self.eden,
+            RegionName::Eden => unreachable!("internal: eden was placed above"),
             RegionName::Old => &mut self.old,
         };
         debug_assert!(region.base <= start && start <= top && top <= region.end);
@@ -289,7 +397,8 @@ impl Space {
         let past = self.past;
         self.survivors[past] = Region::empty(self.survivors[past].base, self.survivors[past].end);
         self.past = 1 - past;
-        self.eden = Region::empty(self.eden.base, self.eden.end);
+        self.eden_start = EDEN_START;
+        self.place_eden_top(EDEN_START);
     }
 
     /// After a full collection, which compacted the nursery's survivors into
@@ -298,7 +407,8 @@ impl Space {
         for survivor in &mut self.survivors {
             *survivor = Region::empty(survivor.base, survivor.end);
         }
-        self.eden = Region::empty(self.eden.base, self.eden.end);
+        self.eden_start = EDEN_START;
+        self.place_eden_top(EDEN_START);
     }
 
     /// Gives back the committed memory above `keep`, rounded up to a page
@@ -314,6 +424,16 @@ impl Space {
             let _ = self.reservation.decommit(keep..self.committed);
             self.committed = keep;
         }
+    }
+}
+
+/// The offset of a bumped object: eden lies past the survivor spaces, so
+/// never 0.
+#[inline(always)]
+fn young_offset(start: usize) -> NonZeroU64 {
+    match NonZeroU64::new(start as u64) {
+        Some(offset) => offset,
+        None => unreachable!("internal: eden lies past the survivor spaces"),
     }
 }
 
@@ -467,6 +587,34 @@ mod tests {
         let survivor_words = (SURVIVOR_BYTES - REGION_SLACK) / 8;
         assert_eq!(space.allocate_survivor(survivor_words + 1), None);
         assert!(space.allocate_survivor(survivor_words).is_some());
+    }
+
+    #[test]
+    fn a_shifted_eden_keeps_its_fast_limit_below_the_threshold() {
+        let mut space = Space::new(SMALL).expect("reserve");
+        let threshold = EDEN_BYTES / 2;
+        space.set_young_threshold(Some(threshold));
+        space.set_region_extent(RegionName::Eden, EDEN_START + 64, EDEN_START + 64);
+        let limit = space.reservation.bump_limit();
+        assert_eq!(limit, EDEN_START + 64 + threshold - 8);
+        space.set_young_threshold(Some(EDEN_BYTES));
+        assert_eq!(space.reservation.bump_limit(), NURSERY_END - REGION_SLACK);
+        space.set_young_threshold(None);
+        assert!(space.reservation.bump_limit() <= space.region(RegionName::Eden).top);
+    }
+
+    #[test]
+    fn a_flip_and_an_emptied_nursery_put_eden_back_at_its_base() {
+        let mut space = Space::new(SMALL).expect("reserve");
+        space.set_young_threshold(Some(EDEN_BYTES / 2));
+        space.set_region_extent(RegionName::Eden, EDEN_START + 64, EDEN_START + 640);
+        space.flip_survivors();
+        let eden = space.region(RegionName::Eden);
+        assert_eq!((eden.start, eden.top), (EDEN_START, EDEN_START));
+        space.set_region_extent(RegionName::Eden, EDEN_START, EDEN_START + 640);
+        space.empty_nursery();
+        let eden = space.region(RegionName::Eden);
+        assert_eq!((eden.start, eden.top), (EDEN_START, EDEN_START));
     }
 
     #[test]

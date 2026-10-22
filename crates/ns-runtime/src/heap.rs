@@ -60,7 +60,7 @@ use space::{
     REGION_SLACK,
 };
 pub use tables::{ApplicationIndex, CodeId, MixinId};
-pub(crate) use tables::{CodeEntry, MixinRow, Tables};
+pub(crate) use tables::{CodeEntry, CodeIdCache, MixinRow, Tables};
 pub(crate) use value::is_small_float_bits;
 use value::{at_rest, branded};
 pub use value::{
@@ -68,6 +68,32 @@ pub use value::{
     SMALL_INTEGER_MIN,
 };
 pub(crate) use world::{forward_identity, World};
+
+/// The header an ordinary instance of an application is born with --
+/// its guard, `FixedPointers`, its word count -- computed once when the
+/// application is registered, so that `new` writes it without looking
+/// anything up. Only for an instance whose header holds its count.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InstanceHeader(u64);
+
+impl InstanceHeader {
+    pub(crate) fn for_slots(guard: DispatchId, slot_count: usize) -> Option<InstanceHeader> {
+        let word_count = slot_count.saturating_add(1);
+        (word_count < WORD_COUNT_OVERFLOW)
+            .then(|| InstanceHeader(Header::new(guard, Format::FixedPointers, 0, word_count).0))
+    }
+}
+
+/// What `new` reads of a class's application, copied out in one lookup.
+#[derive(Clone, Copy)]
+pub(crate) struct InstantiationFacts {
+    pub(crate) refused: bool,
+    pub(crate) inherits_value: bool,
+    pub(crate) slot_count: usize,
+    pub(crate) header: Option<InstanceHeader>,
+    pub(crate) without_code: bool,
+    pub(crate) factory_arity: Option<usize>,
+}
 
 /// The sizes `image::decode::decode_graph_section`'s first pass gives each
 /// record before it allocates anything, stated beside the payloads they
@@ -106,6 +132,14 @@ pub(crate) mod record_size {
 fn next_heap_id() -> u32 {
     use std::sync::atomic::{AtomicU32, Ordering};
     static NEXT: AtomicU32 = AtomicU32::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Hands every heap's code table a distinct epoch, and every full
+/// collection that frees a code row a fresh one (`CodeIdCache`).
+fn next_code_table_epoch() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
@@ -319,6 +353,31 @@ impl std::fmt::Debug for ActivationReference {
     }
 }
 
+/// The dispatch ids a closure's and a frame object's headers carry: the
+/// instance ids of the `Closure` and `Activation` classes, which every
+/// closure and every frame is an instance of. Kept on the heap so that
+/// their allocation writes a header it never has to look up
+/// (`Heap::set_builtin_guards`).
+#[derive(Clone, Copy)]
+pub(crate) struct BuiltinGuards {
+    pub(crate) closure: DispatchId,
+    pub(crate) frame: DispatchId,
+}
+
+impl BuiltinGuards {
+    /// The guards before the bootstrap records the builtin classes' ids,
+    /// and a bare heap's.
+    const NONE: Self = Self {
+        closure: DispatchId::NONE,
+        frame: DispatchId::NONE,
+    };
+}
+
+/// The index of `Float`'s instance id in `Heap::immediate_dispatch_ids`,
+/// `Value::immediate_index`'s for a `SmallFloat`: a boxed float carries the
+/// guard an immediate one dispatches on, both instances of `Float`.
+const FLOAT_DISPATCH_INDEX: usize = 4;
+
 /// Where a running activation's registers start in the activation stack's
 /// register file: Cog's `localFP`, held by the run loop so that a register
 /// access is one index (`docs/design/execution.md`, "The loop over locals").
@@ -481,8 +540,7 @@ const REMEMBERED_SET_LIMIT: usize = 8 << 10;
 /// What eden keeps free past the point where it asks for a scavenge: what
 /// a stretch of the run loop allocates before its safepoint serves the
 /// request. An allocation past it goes old instead
-/// (`docs/design/memory.md`, "Planned: inline allocation", which road step
-/// 6 builds on).
+/// (`docs/design/memory.md`, "Inline allocation").
 const EDEN_RESERVE: usize = 512 << 10;
 
 /// What makes an object a resolved future, read from the space's words by
@@ -690,9 +748,14 @@ pub struct Heap<'gc> {
     /// `Value::immediate_index`: an immediate has no class field to read one from.
     /// Set once by the bootstrap; `NONE` before it.
     immediate_dispatch_ids: [DispatchId; 5],
+    /// The guards of a closure's and a frame's headers (`set_builtin_guards`).
+    builtin_guards: BuiltinGuards,
     /// The mixins, applications and compiled bodies objects of this heap
     /// name by index (`tables.rs`).
     tables: Tables,
+    /// What a body's `CodeIdCache` must carry for its id to name a row of
+    /// `tables` (`next_code_table_epoch`).
+    code_table_epoch: u64,
     /// This heap's distinct id, stamped onto every handle it mints. Debug
     /// builds only; see `next_heap_id`. No accessor exists for it: nothing
     /// outside a `cfg`-guarded position may name a field that does not
@@ -995,6 +1058,18 @@ fn write_words(slots: &mut [u64], words: impl IntoIterator<Item = Word>) {
     }
 }
 
+/// Asserts that a fast bump's object holds no word a scavenge poisoned:
+/// every field of an object filled explicitly, rather than with nil, must
+/// have been written. Asked only of pointer fields, whose valid words never
+/// carry the poison's tag.
+#[cfg(debug_assertions)]
+fn assert_no_poison(words: &[u64]) {
+    assert!(
+        !words.contains(&header::POISON),
+        "internal: a fresh object kept a word the scavenge poisoned"
+    );
+}
+
 /// `count_word`'s value, for a field written through `set_pointer_word`.
 fn count_value<'gc>(count: usize) -> Value<'gc> {
     let count = i64::try_from(count).unwrap_or(SMALL_INTEGER_MAX);
@@ -1020,7 +1095,7 @@ impl<'gc> Heap<'gc> {
     /// Private to the heap module: `World` builds the one heap an interpreter
     /// has, and only this module's own tests build a bare one.
     fn new() -> Heap<'gc> {
-        Heap {
+        let mut heap = Heap {
             next_identity_hash: 1,
             stack: ActivationStack::default(),
             space: Space::new(space::DEFAULT_RESERVATION)
@@ -1052,12 +1127,17 @@ impl<'gc> Heap<'gc> {
             total_pause: std::time::Duration::ZERO,
             longest_pause: std::time::Duration::ZERO,
             immediate_dispatch_ids: [DispatchId::NONE; 5],
+            builtin_guards: BuiltinGuards::NONE,
             tables: Tables::default(),
+            code_table_epoch: next_code_table_epoch(),
             #[cfg(debug_assertions)]
             heap_id: next_heap_id(),
             #[cfg(debug_assertions)]
             epoch: 0,
-        }
+        };
+        heap.space
+            .set_young_threshold(Some(heap.scavenge_threshold));
+        heap
     }
 
     /// Draws the next number from the counter, which wraps from the widest
@@ -1121,6 +1201,16 @@ impl<'gc> Heap<'gc> {
     ) -> (ObjectReference<'gc>, Range<usize>) {
         let guard = self.header_dispatch_id(class);
         let class_word = self.store(Value::object(class));
+        let word_count = field_count.saturating_add(1);
+        if word_count < WORD_COUNT_OVERFLOW {
+            let header = Header::new(guard, format, unused, word_count).with_negative(negative);
+            if let Some((offset, fields)) = self.space.bump_object(header, class_word.bits()) {
+                fields.fill(Word::NIL.bits());
+                self.count_young_allocation();
+                let first = offset.get() as usize / 8 + FIELDS;
+                return (self.object_handle(offset), first..first + field_count);
+            }
+        }
         self.allocate_block(class_word, guard, format, unused, negative, field_count)
     }
 
@@ -1132,6 +1222,26 @@ impl<'gc> Heap<'gc> {
     ) -> ObjectReference<'gc> {
         self.allocate_object(class, Format::FixedPointers, 0, false, field_count)
             .0
+    }
+
+    /// An instance of `class` with `slot_count` nil fields under `header`,
+    /// which `class`'s application computed.
+    pub(crate) fn allocate_instance_with(
+        &mut self,
+        class: ClassReference<'gc>,
+        header: InstanceHeader,
+        slot_count: usize,
+    ) -> ObjectReference<'gc> {
+        let header = Header(header.0);
+        debug_assert_eq!(header.guard(), self.header_dispatch_id(class));
+        debug_assert_eq!(header.word_count(), slot_count + 1);
+        let class_word = self.store(Value::object(class));
+        if let Some((offset, fields)) = self.space.bump_object(header, class_word.bits()) {
+            fields.fill(Word::NIL.bits());
+            self.count_young_allocation();
+            return self.object_handle(offset);
+        }
+        self.allocate_instance(class, slot_count)
     }
 
     /// An `Array`-shaped object of `class` holding `elements`, in order.
@@ -1153,6 +1263,55 @@ impl<'gc> Heap<'gc> {
             elements.iter().map(|element| element.word()),
         );
         object
+    }
+
+    /// An `Array`-shaped object of `class` of `length` nils: `Array new:`'s
+    /// and `MakeVector`'s, with no list of elements in between.
+    pub(crate) fn allocate_nil_array(
+        &mut self,
+        class: ClassReference<'gc>,
+        length: usize,
+    ) -> ObjectReference<'gc> {
+        self.allocate_object(class, Format::IndexablePointers, 0, false, length)
+            .0
+    }
+
+    /// An `Array`-shaped object of `class` holding the registers
+    /// `registers` names in the window at `register_base`, in order:
+    /// `MakeArray`'s, with each value going from its register straight
+    /// into its element.
+    pub(crate) fn allocate_array_from_registers(
+        &mut self,
+        class: ClassReference<'gc>,
+        register_base: RegisterBase,
+        registers: &[u16],
+    ) -> ObjectReference<'gc> {
+        // `register`'s window check and `store`'s origin check, made apart
+        // from the copy, which reads the registers' words directly.
+        #[cfg(debug_assertions)]
+        for register in registers {
+            self.store(self.register(register_base, *register));
+        }
+        let (object, fields) =
+            self.allocate_object(class, Format::IndexablePointers, 0, false, registers.len());
+        let base = register_base.index as usize;
+        let Heap { space, stack, .. } = self;
+        for (slot, register) in space.words_mut()[fields].iter_mut().zip(registers) {
+            *slot = stack.values[base + usize::from(*register)].bits();
+        }
+        object
+    }
+
+    /// Whether an `Array` of `length` elements can be allocated, asked
+    /// before a length the program chose is. One below the large-object
+    /// threshold is allocated young, where eden is committed, and needs no
+    /// probe; a larger one is asked of `fields_fit`, as `byte_array_fits`
+    /// asks for a `ByteArray`.
+    pub(crate) fn array_fits(&self, length: usize) -> bool {
+        let small = record_size::block_words(length)
+            .checked_mul(8)
+            .is_some_and(|bytes| bytes < LARGE_OBJECT_BYTES);
+        small || self.fields_fit(length)
     }
 
     /// A `WeakArray` of `class` of `size` slots, every one nil.
@@ -1215,9 +1374,9 @@ impl<'gc> Heap<'gc> {
     /// The block, its reserve and overflow word included, must fit the old
     /// space of the reservation, which no commit can enlarge. And the
     /// operating system must grant memory of the object's size, probed as
-    /// `Array new:` probes it, with `try_reserve_exact` of its field words
-    /// dropped at once: a size inside the reservation can still be one a
-    /// host that does not overcommit refuses to commit.
+    /// `Array new:` probes a large array, with `try_reserve_exact` of its
+    /// field words dropped at once: a size inside the reservation can still
+    /// be one a host that does not overcommit refuses to commit.
     pub(crate) fn byte_array_fits(&self, size: usize) -> bool {
         self.fields_fit(object::byte_array_field_count(size))
     }
@@ -1342,6 +1501,20 @@ impl<'gc> Heap<'gc> {
         class: ClassReference<'gc>,
         value: f64,
     ) -> ObjectReference<'gc> {
+        let class_word = self.store(Value::object(class));
+        let header = Header::new(
+            self.immediate_dispatch_ids[FLOAT_DISPATCH_INDEX],
+            Format::SixtyFourBit,
+            0,
+            2,
+        );
+        debug_assert_eq!(header.guard(), self.header_dispatch_id(class));
+        if let Some((offset, block)) = self.space.bump_object_array::<3>(header, class_word.bits())
+        {
+            block[FIELDS] = value.to_bits();
+            self.count_young_allocation();
+            return self.object_handle(offset);
+        }
         let (object, fields) = self.allocate_object(class, Format::SixtyFourBit, 0, false, 1);
         self.space.words_mut()[fields].fill(value.to_bits());
         object
@@ -1363,6 +1536,29 @@ impl<'gc> Heap<'gc> {
         #[cfg(debug_assertions)]
         for value in &copied {
             self.store(*value);
+        }
+        let field_count = closure_field::COUNT.saturating_add(copied.len());
+        let class_word = self.store(Value::object(class));
+        if field_count.saturating_add(1) < WORD_COUNT_OVERFLOW {
+            let header = Header::new(
+                self.builtin_guards.closure,
+                Format::Closure,
+                0,
+                field_count + 1,
+            );
+            debug_assert_eq!(header.guard(), self.header_dispatch_id(class));
+            if let Some((offset, fields)) = self.space.bump_object(header, class_word.bits()) {
+                write_words(
+                    fields,
+                    fixed
+                        .into_iter()
+                        .chain(copied.iter().map(|value| value.word())),
+                );
+                #[cfg(debug_assertions)]
+                assert_no_poison(fields);
+                self.count_young_allocation();
+                return self.object_handle(offset);
+            }
         }
         let (object, fields) = self.allocate_object(
             class,
@@ -1400,6 +1596,30 @@ impl<'gc> Heap<'gc> {
         #[cfg(debug_assertions)]
         for register in copied {
             self.store(self.register(register_base, *register));
+        }
+        let field_count = closure_field::COUNT.saturating_add(copied.len());
+        let class_word = self.store(Value::object(class));
+        if field_count.saturating_add(1) < WORD_COUNT_OVERFLOW {
+            let header = Header::new(
+                self.builtin_guards.closure,
+                Format::Closure,
+                0,
+                field_count + 1,
+            );
+            debug_assert_eq!(header.guard(), self.header_dispatch_id(class));
+            let Heap { space, stack, .. } = self;
+            if let Some((offset, fields)) = space.bump_object(header, class_word.bits()) {
+                let (fixed_slots, copied_slots) = fields.split_at_mut(closure_field::COUNT);
+                write_words(fixed_slots, fixed);
+                let base = register_base.index as usize;
+                for (slot, register) in copied_slots.iter_mut().zip(copied) {
+                    *slot = stack.values[base + usize::from(*register)].bits();
+                }
+                #[cfg(debug_assertions)]
+                assert_no_poison(fields);
+                self.count_young_allocation();
+                return self.object_handle(offset);
+            }
         }
         let (object, fields) = self.allocate_object(
             class,
@@ -1751,6 +1971,14 @@ impl<'gc> Heap<'gc> {
     /// what it holds; nothing moves before it has. A 64-bit handle has no
     /// ceiling the space could reach, so none is checked; a reservation used
     /// up is running out of memory.
+    ///
+    /// The cold path of every allocation: a fast bump (`Space::bump_object`)
+    /// takes every young object whose header holds its count while eden is
+    /// below its threshold, so this is reached for an object that crosses
+    /// the threshold, one eden cannot hold, a large one, one with an
+    /// overflow word, and everything the image decoder allocates.
+    #[cold]
+    #[inline(never)]
     fn allocate_block(
         &mut self,
         class: Word,
@@ -1816,6 +2044,13 @@ impl<'gc> Heap<'gc> {
             self.remember(offset);
         }
         (self.object_handle(offset), fields)
+    }
+
+    /// Counts a fast bump's object, as `allocate_block` counts its own.
+    #[inline(always)]
+    fn count_young_allocation(&mut self) {
+        self.young_objects += 1;
+        self.object_count += 1;
     }
 
     /// The one place an `ObjectReference` is built, so the `cfg` on `origin`
@@ -1901,6 +2136,23 @@ impl<'gc> Heap<'gc> {
         #[cfg(debug_assertions)]
         for register in registers {
             self.store(*register);
+        }
+        let field_count = frame_field::COUNT.saturating_add(register_count);
+        let class_word = self.store(Value::object(class));
+        if field_count.saturating_add(1) < WORD_COUNT_OVERFLOW {
+            let header = Header::new(self.builtin_guards.frame, Format::Frame, 0, field_count + 1);
+            debug_assert_eq!(header.guard(), self.header_dispatch_id(class));
+            if let Some((offset, fields)) = self.space.bump_object(header, class_word.bits()) {
+                let (fixed_slots, register_slots) = fields.split_at_mut(frame_field::COUNT);
+                write_words(fixed_slots, fixed);
+                let (given, rest) = register_slots.split_at_mut(registers.len());
+                write_words(given, registers.iter().map(|register| register.word()));
+                rest.fill(Word::NIL.bits());
+                #[cfg(debug_assertions)]
+                assert_no_poison(fields);
+                self.count_young_allocation();
+                return self.frame_handle(offset);
+            }
         }
         let (object, words) = self.allocate_object(
             class,
@@ -3603,6 +3855,18 @@ impl<'gc> Heap<'gc> {
         let index =
             ApplicationIndex::from_index(row).expect("more than u32::MAX applications in one heap");
         application.index = index;
+        application.instance_header =
+            InstanceHeader::for_slots(application.dispatch_ids.instances, application.slot_count);
+        // The facts come from the literal alone, which every caller computes
+        // from the same mixin; a debug build refuses one that does not, so
+        // `apply_mixin`'s `instantiates_without_code`, derived from them
+        // before this call, can never rest on facts the table then replaces.
+        debug_assert_eq!(
+            application.level_facts,
+            crate::mixin::LevelFacts::of(&application.mixin),
+            "the level facts of {} disagree with its mixin",
+            application.mixin.name
+        );
         let application = Rc::new(application);
         self.tables.applications[row] = Some(application.clone());
         application
@@ -3650,6 +3914,28 @@ impl<'gc> Heap<'gc> {
         code: &Rc<CompiledCode>,
         method: Option<&Rc<MixinMethod>>,
     ) -> CodeId {
+        if let Some((epoch, id)) = code.code_id_cache.get() {
+            if epoch == self.code_table_epoch {
+                // An epoch is renewed whenever rows are freed, so a cached
+                // id of the current epoch still names its own body.
+                debug_assert!(
+                    self.tables
+                        .codes
+                        .get(id.index())
+                        .and_then(Option::as_ref)
+                        .is_some_and(|entry| Rc::ptr_eq(&entry.code, code)),
+                    "internal: a body's cached id names another row: rows were freed without renewing the epoch"
+                );
+                if let Some(method) = method {
+                    if let Some(entry) = self.tables.codes[id.index()].as_mut() {
+                        if entry.method.is_none() {
+                            entry.method = Some(method.clone());
+                        }
+                    }
+                }
+                return id;
+            }
+        }
         let key = Rc::as_ptr(code) as usize;
         if let Some(id) = self.tables.code_ids.get(&key).copied() {
             let entry = self.tables.codes[id.index()]
@@ -3658,6 +3944,7 @@ impl<'gc> Heap<'gc> {
             if entry.method.is_none() {
                 entry.method = method.cloned();
             }
+            code.code_id_cache.set(self.code_table_epoch, id);
             return id;
         }
         let row = match self.tables.free_codes.take_smallest() {
@@ -3673,6 +3960,7 @@ impl<'gc> Heap<'gc> {
             method: method.cloned(),
         });
         self.tables.code_ids.insert(key, id);
+        code.code_id_cache.set(self.code_table_epoch, id);
         id
     }
 
@@ -3799,6 +4087,49 @@ impl<'gc> Heap<'gc> {
         class: ClassReference<'gc>,
     ) -> Option<std::rc::Rc<crate::mixin::MixinApplication>> {
         self.class_application_entry(class).cloned()
+    }
+
+    /// What `new` needs of `class`'s application, read once and copied
+    /// out; `None` for a class object with no application.
+    pub(crate) fn class_instantiation_facts(
+        &self,
+        class: ClassReference<'gc>,
+    ) -> Option<InstantiationFacts> {
+        let application = self.class_application_entry(class)?;
+        Some(InstantiationFacts {
+            refused: application.instantiation_refusal.is_some(),
+            inherits_value: application.inherits_value,
+            slot_count: application.slot_count,
+            header: application.instance_header,
+            without_code: application.instantiates_without_code,
+            factory_arity: application.level_facts.factory_arity,
+        })
+    }
+
+    /// The instantiation walk's facts of `class`'s level, copied out of its
+    /// application without cloning it; `None` for a class object with no
+    /// application.
+    pub(crate) fn class_level_facts(
+        &self,
+        class: ClassReference<'gc>,
+    ) -> Option<crate::mixin::LevelFacts> {
+        self.class_application_entry(class)
+            .map(|application| application.level_facts)
+    }
+
+    /// Whether any class object of `class`'s superclass chain, `class`
+    /// included, is a level a `<:` clause added: a fact of the class
+    /// objects, not of their applications, since a class object may name
+    /// another declaration's applied level as its superclass.
+    pub(crate) fn chain_has_applied_level(&self, class: ClassReference<'gc>) -> bool {
+        let mut level = Some(class);
+        while let Some(current) = level {
+            if self.class_is_applied_level(current) {
+                return true;
+            }
+            level = self.class_superclass(current);
+        }
+        false
     }
 
     /// The index of `class`'s application in the table: the identity of
@@ -4043,6 +4374,15 @@ impl<'gc> Heap<'gc> {
 
     pub(crate) fn set_immediate_dispatch_ids(&mut self, ids: [DispatchId; 5]) {
         self.immediate_dispatch_ids = ids;
+    }
+
+    /// The guards a closure's and a frame's headers carry, read off the
+    /// `Closure` and `Activation` classes, so a fast bump writes them
+    /// without looking them up (`Mutator::refresh_immediate_dispatch_ids`,
+    /// once when the builtin classes are built and again when the kernel
+    /// gives them their applications).
+    pub(crate) fn set_builtin_guards(&mut self, guards: BuiltinGuards) {
+        self.builtin_guards = guards;
     }
 
     /// Makes `class` `object`'s class and restamps `object`'s dispatch id
@@ -5409,6 +5749,8 @@ impl<'gc> Heap<'gc> {
     /// tenured before it began (`image::load`).
     pub(crate) fn set_allocating_old(&mut self, allocating_old: bool) {
         self.allocating_old = allocating_old;
+        let threshold = (!allocating_old).then_some(self.scavenge_threshold);
+        self.space.set_young_threshold(threshold);
     }
 
     /// Whether an allocation past eden's threshold, a spent eden or the
@@ -5490,6 +5832,9 @@ impl<'gc> Heap<'gc> {
     #[cfg(debug_assertions)]
     pub(crate) fn set_scavenge_threshold(&mut self, bytes: usize) {
         self.scavenge_threshold = bytes;
+        if !self.allocating_old {
+            self.space.set_young_threshold(Some(bytes));
+        }
     }
 
     /// The bytes the old space holds.
@@ -6954,9 +7299,11 @@ mod tests {
         name: &str,
         builtin: Option<BuiltinClass>,
     ) -> ClassReference<'gc> {
+        let mixin = std::rc::Rc::new(crate::mixin::Mixin::empty(Symbol::intern(name)));
+        let level_facts = crate::mixin::LevelFacts::of(&mixin);
         let application = heap.register_application(crate::mixin::MixinApplication {
             index: crate::heap::ApplicationIndex::UNREGISTERED,
-            mixin: std::rc::Rc::new(crate::mixin::Mixin::empty(Symbol::intern(name))),
+            mixin,
             superclass: None,
             inherits_value: false,
             first_mutable_slot: None,
@@ -6966,6 +7313,9 @@ mod tests {
             slot_count: 0,
             own_slot_base: 0,
             dispatch_ids: crate::mixin::DispatchIds::NONE,
+            instance_header: None,
+            instantiates_without_code: false,
+            level_facts,
         });
         heap.allocate_self_referential_class(NewClass {
             application,
@@ -9690,6 +10040,249 @@ mod tests {
     }
 
     #[test]
+    fn a_fast_bump_up_to_the_threshold_asks_for_nothing_and_the_next_asks_for_a_scavenge() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential(0);
+        // 32 words a block: the header, the class word and 30 fields.
+        let fields = 30;
+        let block_bytes = 8 * (fields + 2);
+        let eden = heap.space.region(RegionName::Eden);
+        while heap.space.region(RegionName::Eden).top + block_bytes
+            < eden.start + heap.scavenge_threshold
+        {
+            heap.allocate_instance(class, fields);
+            assert!(!heap.scavenge_requested);
+        }
+        heap.allocate_instance(class, fields);
+        assert!(
+            heap.scavenge_requested,
+            "the allocation that reached the threshold asks"
+        );
+    }
+
+    #[test]
+    fn while_allocating_old_no_fast_bump_succeeds() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential(0);
+        heap.set_allocating_old(true);
+        let decoded = heap.allocate_instance(class, 2);
+        heap.set_allocating_old(false);
+        assert!(!space::is_young(decoded.offset));
+        assert!(!heap.header(decoded).remembered());
+        assert!(space::is_young(heap.allocate_instance(class, 2).offset));
+    }
+
+    /// What `allocate` answers and how many fast bumps it made: the cold
+    /// path bumps eden too and writes the same words, so only the count
+    /// tells which of the two ran.
+    fn counting_fast_bumps<'gc, T>(
+        heap: &mut Heap<'gc>,
+        allocate: impl FnOnce(&mut Heap<'gc>) -> T,
+    ) -> (T, usize) {
+        let before = heap.space.fast_bumps();
+        let answer = allocate(heap);
+        (answer, heap.space.fast_bumps() - before)
+    }
+
+    /// `counting_fast_bumps` with eden refusing every fast bump, as it does
+    /// past the threshold: the cold path's object.
+    fn counting_fast_bumps_refused<'gc, T>(
+        heap: &mut Heap<'gc>,
+        allocate: impl FnOnce(&mut Heap<'gc>) -> T,
+    ) -> (T, usize) {
+        heap.space.set_young_threshold(Some(0));
+        let counted = counting_fast_bumps(heap, allocate);
+        heap.space
+            .set_young_threshold(Some(heap.scavenge_threshold));
+        counted
+    }
+
+    #[test]
+    fn a_fast_and_a_cold_allocation_write_the_same_words() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential(0);
+        let (fast, fast_bumps) =
+            counting_fast_bumps(&mut heap, |heap| heap.allocate_instance(class, 3));
+        assert_eq!(fast_bumps, 1);
+        assert!(space::is_young(fast.offset));
+        // The same object made by the cold path: eden refused.
+        let (cold, cold_bumps) =
+            counting_fast_bumps_refused(&mut heap, |heap| heap.allocate_instance(class, 3));
+        assert_eq!(cold_bumps, 0);
+        assert!(
+            space::is_young(cold.offset),
+            "the cold path still bumps eden"
+        );
+        assert_eq!(heap.block(fast), heap.block(cold));
+    }
+
+    /// The guards a bare heap's `Closure` and `Activation` classes answer,
+    /// recorded as `Mutator::refresh_immediate_dispatch_ids` records the
+    /// real ones'.
+    fn set_guards_from<'gc>(
+        heap: &mut Heap<'gc>,
+        closure: ClassReference<'gc>,
+        frame: ClassReference<'gc>,
+    ) {
+        let guards = BuiltinGuards {
+            closure: heap.header_dispatch_id(closure),
+            frame: heap.header_dispatch_id(frame),
+        };
+        heap.set_builtin_guards(guards);
+    }
+
+    #[test]
+    fn a_fast_float_is_the_cold_float() {
+        let mut heap = frame_heap();
+        let class = builtin_named_class(&mut heap, "Float", Some(BuiltinClass::Float));
+        let activation = heap.activation_class.expect("frame_heap records one");
+        set_guards_from(&mut heap, class, activation);
+        let (fast, fast_bumps) =
+            counting_fast_bumps(&mut heap, |heap| heap.allocate_float(class, 1e300));
+        let (cold, cold_bumps) =
+            counting_fast_bumps_refused(&mut heap, |heap| heap.allocate_float(class, 1e300));
+        assert_eq!((fast_bumps, cold_bumps), (1, 0));
+        assert!(space::is_young(fast.offset) && space::is_young(cold.offset));
+        assert_eq!(heap.block(fast), heap.block(cold));
+        assert_eq!(heap.float_value(Value::object(fast)), Some(1e300));
+    }
+
+    #[test]
+    fn a_fast_closure_is_the_cold_closure() {
+        let mut heap = frame_heap();
+        let class = named_class(&mut heap, "Closure");
+        let activation_class = heap.activation_class.expect("frame_heap records one");
+        set_guards_from(&mut heap, class, activation_class);
+        let captured_frame = top_level_frame(&mut heap, 0);
+        let code = trivial_code();
+        let activation = heap.push_activation(
+            header(),
+            &[Value::small_integer(7), Value::object(class)],
+            2,
+        );
+        let base = heap.activation_register_base(activation);
+        let (fast, fast_bumps) = counting_fast_bumps(&mut heap, |heap| {
+            heap.allocate_closure_from_registers(
+                class,
+                &code,
+                captured_frame,
+                FeedbackBase::NOT_ASSIGNED,
+                base,
+                &[1, 0],
+            )
+        });
+        let (cold, cold_bumps) = counting_fast_bumps_refused(&mut heap, |heap| {
+            heap.allocate_closure_from_registers(
+                class,
+                &code,
+                captured_frame,
+                FeedbackBase::NOT_ASSIGNED,
+                base,
+                &[1, 0],
+            )
+        });
+        assert_eq!((fast_bumps, cold_bumps), (1, 0));
+        assert_eq!(heap.block(fast), heap.block(cold));
+        let new_closure = || NewClosure {
+            code: code.clone(),
+            captured_frame,
+            copied: vec![Value::object(class), Value::small_integer(7)],
+            feedback_base: FeedbackBase::NOT_ASSIGNED,
+        };
+        let (fast_listed, fast_bumps) = counting_fast_bumps(&mut heap, |heap| {
+            heap.allocate_closure(class, new_closure())
+        });
+        let (cold_listed, cold_bumps) = counting_fast_bumps_refused(&mut heap, |heap| {
+            heap.allocate_closure(class, new_closure())
+        });
+        assert_eq!((fast_bumps, cold_bumps), (1, 0));
+        assert_eq!(heap.block(fast_listed), heap.block(cold_listed));
+        assert_eq!(heap.block(fast), heap.block(fast_listed));
+        for closure in [fast, cold, fast_listed, cold_listed] {
+            assert!(space::is_young(closure.offset));
+            let (body, captured, _) = heap.closure_activation(closure).expect("a closure");
+            assert!(std::rc::Rc::ptr_eq(&body, &code));
+            assert!(captured.same(captured_frame));
+        }
+        heap.pop_activation(activation);
+    }
+
+    #[test]
+    fn a_fast_frame_is_the_cold_frame() {
+        let mut heap = frame_heap();
+        let activation_class = heap.activation_class.expect("frame_heap records one");
+        let closure_class = named_class(&mut heap, "Closure");
+        set_guards_from(&mut heap, closure_class, activation_class);
+        let arguments = [Value::small_integer(1), Value::object(closure_class)];
+        let first = heap.push_activation(header(), &arguments, 3);
+        let second = heap.push_activation(header(), &arguments, 3);
+        let (fast, fast_bumps) = counting_fast_bumps(&mut heap, |heap| heap.reify(first));
+        let (cold, cold_bumps) = counting_fast_bumps_refused(&mut heap, |heap| heap.reify(second));
+        assert_eq!((fast_bumps, cold_bumps), (1, 0));
+        let fast_object = heap.frame_object(fast);
+        let cold_object = heap.frame_object(cold);
+        assert!(space::is_young(fast_object.offset) && space::is_young(cold_object.offset));
+        let married = FIELDS + frame_field::MARRIED;
+        let without_married = |block: &[u64]| {
+            let mut words = block.to_vec();
+            words[married] = 0;
+            words
+        };
+        assert_eq!(
+            without_married(heap.block(fast_object)),
+            without_married(heap.block(cold_object))
+        );
+        heap.pop_activation(second);
+        heap.pop_activation(first);
+    }
+
+    #[test]
+    fn a_closure_a_frame_and_a_float_allocated_while_allocating_old_go_old() {
+        let mut heap = frame_heap();
+        let float_class = builtin_named_class(&mut heap, "Float", Some(BuiltinClass::Float));
+        let closure_class = named_class(&mut heap, "Closure");
+        let activation_class = heap.activation_class.expect("frame_heap records one");
+        set_guards_from(&mut heap, closure_class, activation_class);
+        let captured_frame = top_level_frame(&mut heap, 0);
+        heap.set_allocating_old(true);
+        let bumps = heap.space.fast_bumps();
+        let float = heap.allocate_float(float_class, 1e300);
+        let closure = heap.allocate_closure(
+            closure_class,
+            NewClosure {
+                code: trivial_code(),
+                captured_frame,
+                copied: vec![Value::small_integer(5)],
+                feedback_base: FeedbackBase::NOT_ASSIGNED,
+            },
+        );
+        let frame = heap.allocate_placeholder_frame(2);
+        let frame = heap.frame_object(frame);
+        assert_eq!(heap.space.fast_bumps(), bumps, "no fast bump ran");
+        heap.set_allocating_old(false);
+        for object in [float, closure, frame] {
+            assert!(!space::is_young(object.offset));
+            assert!(!heap.header(object).remembered());
+        }
+    }
+
+    #[test]
+    fn an_object_of_254_words_takes_the_fast_path_and_one_of_255_takes_an_overflow_word() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential(0);
+        let top = heap.space.region(RegionName::Eden).top;
+        let largest = heap.allocate_instance(class, 253);
+        assert_eq!(largest.offset.get() as usize, top, "no overflow word");
+        let top = heap.space.region(RegionName::Eden).top;
+        let overflowing = heap.allocate_instance(class, 254);
+        assert_eq!(
+            overflowing.offset.get() as usize,
+            top + 8,
+            "an overflow word first"
+        );
+    }
+
+    #[test]
     fn an_allocation_that_finds_eden_spent_goes_old_born_remembered_and_asks_for_a_scavenge() {
         let mut heap = Heap::new();
         let class = heap.allocate_self_referential(0);
@@ -11729,5 +12322,141 @@ mod tests {
                 Some(true)
             );
         }
+    }
+
+    #[test]
+    fn a_body_answers_its_id_from_the_cache_after_the_first_lookup() {
+        let mut heap = Heap::new();
+        let code = shaped_code(0, 1);
+        let id = heap.code_id(&code);
+        assert_eq!(code.code_id_cache.get(), Some((heap.code_table_epoch, id)));
+        heap.tables.code_ids.clear();
+        assert_eq!(heap.code_id(&code), id, "a hit never reaches the map");
+    }
+
+    #[test]
+    fn two_heaps_holding_one_body_each_get_their_own_id() {
+        let mut first = Heap::new();
+        let mut second = Heap::new();
+        let filler = shaped_code(0, 1);
+        let code = shaped_code(0, 2);
+        second.code_id(&filler);
+        let in_first = first.code_id(&code);
+        let in_second = second.code_id(&code);
+        assert_ne!(in_first, in_second);
+        assert_eq!(first.code_id(&code), in_first);
+        assert_eq!(second.code_id(&code), in_second);
+    }
+
+    #[test]
+    fn a_freed_row_is_never_answered_from_the_cache() {
+        let mut heap = Heap::new();
+        let code = shaped_code(0, 1);
+        let other = shaped_code(0, 2);
+        let id = heap.code_id(&code);
+        heap.free_unnamed_codes(&reclaim::BitSet::default());
+        let reused = heap.code_id(&other);
+        assert_eq!(reused, id, "the smallest free row is minted first");
+        let again = heap.code_id(&code);
+        assert_ne!(again, reused, "the cache's id was freed and reused");
+        assert!(Rc::ptr_eq(&heap.code(again).expect("a row"), &code));
+    }
+
+    #[test]
+    fn a_cloned_body_starts_with_an_empty_cache() {
+        let mut heap = Heap::new();
+        let code = shaped_code(0, 1);
+        heap.code_id(&code);
+        let copy = Rc::new((*code).clone());
+        assert_eq!(copy.code_id_cache.get(), None);
+    }
+
+    #[test]
+    fn a_cached_body_still_records_the_method_a_frame_registers_it_with() {
+        let mut interpreter = crate::Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let object = mutator.builtin_class(crate::BuiltinClass::Object);
+            let application = mutator.heap().class_application(object).expect("a class");
+            let method = application
+                .mixin
+                .compiled_methods()
+                .next()
+                .expect("Object has a method")
+                .clone();
+            // A body no frame has registered yet: a fresh copy, so the
+            // bootstrap's own registration does not answer for it.
+            let copy = std::rc::Rc::new(crate::mixin::MixinMethod {
+                code: std::rc::Rc::new((*method.code).clone()),
+                ..(*method).clone()
+            });
+            let id = mutator.heap_mut().code_id(&copy.code);
+            assert!(mutator.heap().code_method(id).is_none());
+            assert_eq!(mutator.heap_mut().code_id_of_method(&copy), id);
+            assert!(std::rc::Rc::ptr_eq(
+                &mutator.heap().code_method(id).expect("the method recorded"),
+                &copy
+            ));
+        });
+    }
+
+    #[test]
+    fn a_nil_array_is_the_array_of_nils() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential(0);
+        let made = heap.allocate_nil_array(class, 5);
+        let listed = heap.allocate_array(class, &[Value::nil(); 5]);
+        assert_eq!(heap.block(made).to_vec(), heap.block(listed).to_vec());
+    }
+
+    #[test]
+    fn arrays_either_side_of_the_fast_edge_are_alike() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential(0);
+        for (length, fast) in [(252, 1), (253, 1), (254, 0), (255, 0)] {
+            let (array, fast_bumps) =
+                counting_fast_bumps(&mut heap, |heap| heap.allocate_nil_array(class, length));
+            assert_eq!(fast_bumps, fast, "length {length}");
+            assert!(space::is_young(array.offset));
+            assert_eq!(heap.array_element_count(array), Some(length));
+            assert!(heap
+                .array_element(array, length - 1)
+                .is_some_and(|value| value.is_nil()));
+        }
+    }
+
+    #[test]
+    fn an_instance_with_a_template_is_the_instance_without() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential(0);
+        let guard = heap.header_dispatch_id(class);
+        let header = InstanceHeader::for_slots(guard, 3).expect("small");
+        let (templated, fast_bumps) = counting_fast_bumps(&mut heap, |heap| {
+            heap.allocate_instance_with(class, header, 3)
+        });
+        assert_eq!(fast_bumps, 1);
+        let plain = heap.allocate_instance(class, 3);
+        assert_eq!(heap.block(templated).to_vec(), heap.block(plain).to_vec());
+    }
+
+    #[test]
+    fn no_template_past_254_words() {
+        assert!(InstanceHeader::for_slots(DispatchId::NONE, 253).is_some());
+        assert!(InstanceHeader::for_slots(DispatchId::NONE, 254).is_none());
+    }
+
+    #[test]
+    fn a_large_array_goes_old() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential(0);
+        let array = heap.allocate_nil_array(class, LARGE_OBJECT_BYTES / 8);
+        assert!(!space::is_young(array.offset));
+        assert!(heap.header(array).remembered());
+    }
+
+    #[test]
+    fn a_length_past_the_old_space_does_not_fit() {
+        let heap = Heap::new();
+        assert!(heap.array_fits(10));
+        assert!(!heap.array_fits(usize::MAX / 8));
     }
 }

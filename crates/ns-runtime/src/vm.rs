@@ -1574,11 +1574,7 @@ fn make_array_into(
     destination: u16,
     element_registers: &[u16],
 ) {
-    let values = element_registers
-        .iter()
-        .map(|register| mutator.heap.register(register_base, *register))
-        .collect();
-    let value = Value::object(mutator.new_array(values));
+    let value = Value::object(mutator.new_array_from_registers(register_base, element_registers));
     mutator.heap.set_register(register_base, destination, value);
 }
 
@@ -1589,7 +1585,7 @@ fn make_vector_into(
     destination: u16,
     size: u16,
 ) {
-    let value = Value::object(mutator.new_array(vec![Value::nil(); usize::from(size)]));
+    let value = Value::object(mutator.new_nil_array(usize::from(size)));
     mutator.heap.set_register(register_base, destination, value);
 }
 

@@ -39,14 +39,18 @@
 > applications, guard ids, mixin trees, compiled bodies, cache ranges --
 > gathered while marking ("Marking"; [object-model.md](object-model.md),
 > "An application has two ids").
-> **Planned:** allocation by a bump in eden inlined into the instructions
-> that allocate ("Planned: inline allocation").
+> Allocation is inline (road step 6, "Inline allocation"): a young object
+> whose header holds its word count is one comparison against a limit
+> below eden's scavenge threshold, a bump of the cursor `ns-memory`'s
+> reservation holds, and its header and class word written; every other
+> allocation takes the cold path, `Heap::allocate_block`.
 > **Code:** `crates/ns-runtime/src/heap.rs` (the activation stack, the
 > handle types and their brand, every accessor and allocation, the write
 > barrier and the remembered set, the host root table, the move, the
 > triggers, the scavenge, marking, compaction and forwarding),
 > `heap/space.rs` (the object space: the reservation, its four regions,
-> the bumps, the overflow word and the walk), `heap/scavenge.rs` (the
+> eden's fast limit and fast bump, the cold bumps, the overflow word and
+> the walk), `heap/scavenge.rs` (the
 > scavenger and the tenuring threshold), `heap/compaction.rs` (the
 > live-word bitmap a collection forwards through, and the move's shift),
 > `heap/object.rs` (the block of words an object is, `pointer_ranges`,
@@ -55,7 +59,7 @@
 > `realign`, which moves a `ByteArray`'s data to its block's alignment),
 > `heap/header.rs` (the header word),
 > `heap/records.rs` (the seam's value types), `heap/tables.rs` (the per-heap
-> tables of mixins, applications and code),
+> tables of mixins, applications and code, and a body's `CodeIdCache`),
 > `heap/mark.rs` (the marker's work list), `heap/world.rs` (the step
 > state at rest, the entry that lends it out, `StepRoots`, `World::collect`
 > and `World::scavenge`),
@@ -69,7 +73,8 @@
 > `vm.rs` (one entry per stretch between two safepoints, and the poll),
 > `heap/value.rs` (`Value`, and `Word`, what a heap object stores),
 > `mixin.rs` (layout, and the one remaining iterative
-> `Drop`), and the memory layer's `crates/ns-memory/src/lib.rs`,
+> `Drop`), and the memory layer's `crates/ns-memory/src/lib.rs`
+> (`Reservation`, and the bump cursor it holds, `Reservation::bump`),
 > `page_map.rs` and `platform/{mod,windows,posix}.rs`.
 
 ## What exists
@@ -476,8 +481,9 @@ safepoint does. The safepoint serves a request -- a full collection if one
 is pending, which empties the nursery too, and otherwise a pending scavenge
 -- and clears the flag, except under a stress mode below, which keeps it
 set. The collector's triggers set it in a release build too:
-`allocate_block`, through which `reify` allocates its frame object as every
-allocation does, compares eden's occupied bytes against the scavenge
+`allocate_block`, which every allocation reaching eden's scavenge
+threshold takes, since the fast bump's limit lies below it ("Inline
+allocation"), compares eden's occupied bytes against the scavenge
 threshold, and the old space's against the collection limit when an
 allocation goes old, a comparison and not a counter, and requests a
 scavenge or a collection when one is reached ("The trigger and the growth
@@ -1492,8 +1498,10 @@ loop, as decided on 2026-09-13, or between entries. An allocation sets the
 request at most; it never collects.
 
 The tests are comparisons, not counters, in `allocate_block`, through which
-every allocation enters the space, `reify`'s frame object included, and
-which holds the region's new top already. A young allocation compares
+every allocation that can reach a trigger enters the space -- the fast
+bump stops 8 bytes short of eden's threshold and never allocates old
+("Inline allocation") -- and which holds the region's new top already.
+The fast bump itself tests nothing but its limit. A young allocation compares
 eden's occupied bytes against the scavenge threshold, 7.5 MiB -- eden's
 8 MiB less its 512 KiB reserve (`EDEN_RESERVE`) -- and requests a scavenge
 once it is reached. An allocation that goes old compares the old space's
@@ -1895,7 +1903,7 @@ owning it makes possible:
   Strongtalk does it in generated stubs its compiled code calls
   (`test_for_scavenge`, `prior-art/strongtalk/vm/prims/generatedPrimitives.cpp:52-69`).
   A `malloc` call cannot be inlined; a bump of the space's top can, which
-  road step 6 does ("Planned: inline allocation").
+  road step 6 does in the interpreter ("Inline allocation").
 - **A moving collector owns the space it moves objects in.** Built: the
   collector slides the objects within the space it owns.
 
@@ -1957,7 +1965,8 @@ lent only over memory that is committed and accessible -- so everything above
 it keeps the compiler-checked guarantee. This is step 1 of the road in
 [OPEN-WORK.md](../OPEN-WORK.md), "The road to a high-performance VM". The
 heap is its user: each `Heap`'s object space is one `Reservation` ("The
-object space" below). `Reservation` is not `Send` or `Sync`, since it holds
+object space" below), and eden's top is the reservation's bump cursor
+("Inline allocation"). `Reservation` is not `Send` or `Sync`, since it holds
 a `NonNull`, and nothing needs it to be: the space belongs to one `Heap`,
 and an interpreter, which holds `Rc`s throughout, is not `Send` either.
 
@@ -2002,6 +2011,21 @@ and an interpreter, which holds `Rc`s throughout, is not `Send` either.
   top finds no word: that slice is the bounds check the accessors rely on.
   The old space lies above the nursery, so the one slice covers all four
   regions and the heap needs no other; `split_words_mut` is unused by it.
+- **A bump cursor**: the reservation holds one cursor, a top and a limit
+  in byte offsets (`BumpCursor`), and eden's young allocations take their
+  memory from it ("Inline allocation"). `set_bump` places it and refuses
+  an unaligned offset, a top outside the reservation or a limit past the
+  committed read-write prefix; a limit below the top is allowed and
+  refuses every bump. `bump` is one comparison of the words asked for
+  against what lies between the top and the limit, and lends exactly
+  those words, committed and initialized, as a `&mut [u64]`;
+  `bump_array::<COUNT>` does the same for a fixed count and lends a
+  `&mut [u64; COUNT]`, so a caller's stores carry no index check;
+  `bump_up_to` is the cold bump of any size up to a ceiling inside the
+  prefix, and lends nothing. Every change of the page map clamps the
+  limit to the prefix (`record`), so no `decommit` or `protect` leaves a
+  bump able to lend memory that is no longer committed. The `unsafe` the
+  lending takes stays here, beside `words_mut` and `prefix_mut`.
 - **Two implementations behind one interface**: Windows (`VirtualAlloc`,
   `VirtualFree`, `VirtualProtect`, through `windows-sys`) and POSIX (`mmap`
   with `PROT_NONE` to reserve, `mprotect` to commit and protect, a re-mapping
@@ -2113,8 +2137,10 @@ objects lie end to end from the region's start up to its top.
   policy"). Each constant is one line to change.
 - **Allocation is a bump of a region's top** -- eden's for a young object,
   the old space's for a large one, one the image decoder makes, or one that
-  found eden spent (`Space::allocate_young`, `allocate_old`, through
-  `Heap::allocate_block`; "Generations") -- as Soup's `Heap::Allocate`
+  found eden spent -- eden's top being the bump cursor of the reservation
+  (`Space::bump_object` on the fast path, "Inline allocation";
+  `Space::allocate_young` and `allocate_old` through `Heap::allocate_block`
+  on the cold one; "Generations") -- as Soup's `Heap::Allocate`
   (`prior-art/primordialsoup/vm/heap.h:373-387`), and every allocation
   writes its object's header, class word and fields in place, so no object
   is built beside the space and copied in. Objects are 8-byte aligned and at
@@ -2309,7 +2335,9 @@ generations moved".
 
 ### Allocation: eden, its reserve, and what goes old
 
-- **A young allocation bumps eden** (`Space::allocate_young`). Eden asks
+- **A young allocation bumps eden** (`Space::bump_object` while eden is
+  below its threshold, `Space::allocate_young` past it; "Inline
+  allocation"). Eden asks
   for a scavenge once it holds 7.5 MiB, its 8 MiB less a 512 KiB reserve
   (`EDEN_RESERVE`, chosen by the plan): the reserve takes what a stretch
   of the run loop allocates before its safepoint serves the request, as
@@ -2640,37 +2668,168 @@ nursery, a scavenge that leaves resolved futures alone, and the
 remembered-set verification under the stress mode only
 ([OPEN-WORK.md](../OPEN-WORK.md)).
 
-## Planned: inline allocation
+## Inline allocation
 
-Would change: the instructions that allocate take their memory by a bump in
-eden instead of a call into the collector's allocation path
-(`Heap::allocate_block`). Road step 6, and
-the groundwork the JIT tiers take over, as Cogit's `genPrimitiveNew` and
-`genCreateFullClosure:…` do in machine code (`cogitX64SysV.c:16464`,
-`:19026`).
+Road step 6 (decided with the user on 2026-10-22): a young object is
+allocated by one comparison and a bump, its header precomputed, and only
+what that cannot serve takes the general path, `Heap::allocate_block`,
+which is `#[cold]` and `#[inline(never)]`. Every system of the prior art
+has this fast path -- one compare of the new top against a limit, the
+header precomputed, the identity hash left 0 until first requested:
+Cog's interpreter compares `freeStart + numBytes` against
+`scavengeThreshold`
+(`prior-art/opensmalltalk-vm/src/spur64.cog/gcc3x-cointerp.c:51349-51358`)
+and its `ee` allocators for closures, floats and contexts leave the body
+to the caller's stores (`:48869-48918`); Strongtalk bumps eden with one
+compare (`prior-art/strongtalk/vm/memory/space.hpp:143-152`); Primordial
+Soup checks the size and the top
+(`prior-art/primordialsoup/vm/heap.h:373-387`). Strongtalk and Soup
+collect inside the allocator when the bump fails, which ns-next does not
+("Where a collection can happen: only at a safepoint in the run loop");
+Cog's shape, in which an allocation only requests a collection, is the
+one followed here. It is also the shape the JIT tiers take over, as
+Cogit's `genPrimitiveNew` and `genCreateFullClosure:…` do in machine code
+(`cogitX64SysV.c:16464`, `:19026`).
 
-- **What bumps**: `new` of a class whose instances fall below the
-  large-object threshold, `MakeClosure`, a boxed
-  `Float`, and `Array new:` below the large-object threshold; a larger
-  `Array new:` allocates old, as every large object does ("Generations").
-- **What it builds on is built** ("Generations", "Allocation: eden, its
-  reserve, and what goes old"): eden keeps a 512 KiB reserve past its
-  scavenge threshold, so an allocation that crosses the threshold still
-  succeeds and only requests a safepoint, as Spur schedules a scavenge
-  rather than failing (`ceScheduleScavengeTrampoline`), and a collection
-  therefore still happens only at a safepoint of the run loop ("Where a
-  collection can happen: only at a safepoint in the run loop"); an
-  allocation that finds eden spent goes old, born remembered, and requests
-  the scavenge, as Strongtalk's `allocate_tenured` does when a scavenge
-  cannot run (`prior-art/strongtalk/vm/memory/universe_more.cpp:55-64`).
-  Between two safepoints the allocations are bounded by a stretch's
-  straight-line instructions times the large-object threshold, but no
-  fixed reserve fits every body, which is why the spent case goes old
-  rather than fails. The inlined bump keeps both rules, and generated code
-  will allocate the same way.
-- **The bump path lives in `heap.rs`**; an instruction arm calls it and does
-  nothing else with it, since one more calling arm measures about 3% on the
-  send-heavy sources ([execution.md](execution.md), "Where the 3% goes").
+### The fast path
+
+- **Eden's top is the reservation's bump cursor** ("The memory layer"),
+  not a second copy of it: the space keeps eden's start and its threshold
+  (`Space`'s `eden_start` and `young_threshold`) and reads the top from
+  the cursor.
+- **The fast limit lies 8 bytes below the scavenge threshold**:
+  `min(eden_start + threshold - 8, NURSERY_END - REGION_SLACK)`, placed by
+  `Space::place_eden_top`. An allocation that reaches the threshold
+  therefore always takes the cold path, which requests the scavenge, and
+  the fast path requests nothing; and the limit never lies within
+  `REGION_SLACK` of eden's end, which the move stress mode needs ("The
+  layout and its constants"). While the image decoder allocates old
+  (`Heap::set_allocating_old`) there is no threshold and the limit is
+  `eden_start`, so every fast bump fails and the decoder allocates old
+  and not remembered ("An image load tenures once"). The limit is placed
+  again by everything that changes eden's start, its top or the
+  threshold: `Space::set_young_threshold` (from `set_allocating_old`, and
+  from the threshold a debug-build test sets), every placement of eden's
+  extent (`Space::set_region_extent`, which the move stress mode's shift
+  uses), the survivors' flip after a scavenge and the nursery emptied by a
+  full collection.
+- **What takes the fast path**: every young object whose header holds its
+  word count -- at most 254 words after the header, so no overflow word --
+  while the bump stays within the limit. `Space::bump_object` bumps the
+  cursor, writes the header word and the class word, and lends the fields
+  to the caller; `bump_object_array::<BLOCK_WORDS>` does the same for a
+  fixed size and lends the block as an array. Every typed allocator tries
+  it first -- `allocate_object`, behind which every kind without a fast
+  path of its own lies, `allocate_instance_with`, a closure, a frame and a
+  float -- and calls `allocate_block` when it answers `None`.
+- **The cold path is `allocate_block`, which decides everything else**:
+  bumping into eden's reserve past the threshold and requesting a
+  scavenge, eden spent going old born remembered and requesting the
+  scavenge, a large object going old, an overflow word, the old space's
+  collection trigger ("Allocation: eden, its reserve, and what goes
+  old"). It bumps the same cursor up to a ceiling `REGION_SLACK` short of
+  eden's end (`Reservation::bump_up_to`).
+- **Why the limit lies below the threshold**: a fast path that bumped
+  into the reserve would need a second comparison and the request inline,
+  and inlining `allocate_block` itself would keep its branches and could
+  not precompute the header.
+
+### The headers precomputed
+
+- **An ordinary instance's header is on its `MixinApplication`**
+  (`instance_header`, an `InstanceHeader`): its guard, `FixedPointers`
+  and its word count, computed by `Heap::register_application` from the
+  row's `dispatch_ids` and `slot_count`, which never change after it (an
+  edit makes a new row); `None` when the count does not fit the header.
+  The class word comes from the class object at every allocation, since a
+  class object is per enclosing instance. `new` reads the header with the
+  rest of what it needs in one lookup of the application
+  (`Heap::class_instantiation_facts`) and allocates through
+  `Heap::allocate_instance_with` ([object-model.md](object-model.md),
+  "Instantiation").
+- **A closure's and a frame's guard are on the heap** (`BuiltinGuards`,
+  set by `Heap::set_builtin_guards` where
+  `Mutator::refresh_immediate_dispatch_ids` runs: once when the builtin
+  classes are built and again when the kernel gives them their
+  applications). **A boxed `Float`'s** is the guard an immediate float
+  dispatches on (`FLOAT_DISPATCH_INDEX` of the immediate dispatch ids),
+  since both are instances of `Float`. Their word counts come from the
+  object: a closure's fixed fields and its copied values, a frame's fixed
+  fields and its body's register count, a float's two words. A debug
+  build asserts that each precomputed guard is the one
+  `Heap::header_dispatch_id` would have looked up.
+- **What the fast path writes**: the header word and the class word,
+  always. An instance, an `Array` and every object made through
+  `allocate_object` are nil-filled. A closure, a frame and a float store
+  every field explicitly and are not filled first, as Cog's `ee`
+  allocators do; a debug build then asserts that no word of the new
+  object is still `header::POISON`, which a scavenge leaves in the
+  nursery it vacated. No safepoint and no read lies between the bump and
+  the last store. The identity hash stays 0 until something asks for it.
+  The `heap` module stays the one writer of a header: `allocate_block` on
+  the cold path, `Space::bump_object` and `bump_object_array` on the fast
+  one.
+
+### A closure's code id without the map
+
+A closure and a frame object store their body's code id, which
+`Heap::register_code` finds in a map keyed by the body's `Rc` pointer. A
+body carries a one-entry cache in front of the map (`CompiledCode`'s
+`code_id_cache`, a `CodeIdCache`): the id it was last answered and the
+code-table epoch of the heap that answered it. Every heap's epoch is
+unique in the process (a process-wide `AtomicU64`,
+`next_code_table_epoch`), and a heap renews its own whenever a full
+collection frees a code row (`Heap::free_unnamed_codes`). A hit of the
+current epoch skips the map; a miss runs it and refills the cache. An id
+from another heap, or one since freed, is therefore never answered -- the
+rule that a handle means nothing against a heap that did not mint it
+("A handle is space-relative"), applied to ids -- and a debug build
+asserts that a hit names the body's own row. A copy of a body is another
+key to the map, so a cloned `CompiledCode` starts with an empty cache,
+and the cache is on no wire. It holds an id, never a handle, so a reader
+of compiled code still holds no handle ([compiler.md](compiler.md),
+"Readers of compiled code take the mixin").
+
+### Arrays without a `Vec`
+
+`Array new:`'s leaf allocates its array nil-filled
+(`Heap::allocate_nil_array`), with nothing built beside it; `MakeVector`
+does the same, and `MakeArray` copies its registers straight into the
+fresh array's elements (`Heap::allocate_array_from_registers`). A length
+the program chose is asked of `Heap::array_fits` first: one below the
+large-object threshold is allocated young, where eden is committed, and
+needs no probe; a larger one is asked of `Heap::fields_fit`, as a
+`ByteArray`'s and a `WeakArray`'s size are, and refused with the same
+error ("… cannot allocate an Array of … elements"). That probe cannot
+tell whether an overcommitting system will later grant the pages, and it
+compares the object against the old space's size rather than its free
+room ([OPEN-WORK.md](../OPEN-WORK.md)).
+
+### What the path keeps
+
+- **Born remembered**: only `allocate_block` allocates old, so every old
+  allocation outside the decoder is still remembered; the fast path makes
+  young objects only, whose initializing stores need no barrier ("The
+  write barrier").
+- **Collection only at a safepoint**: the fast path requests nothing and
+  never collects; the request is the cold path's.
+- **Poison**: the header and the class word are written before anything
+  reads the object, and the debug check above covers the explicit fills.
+- **The origin guard and the move epoch**: a handle is still minted only
+  by `object_handle` and `frame_handle`.
+- **The move stress mode**: the limit is placed again at every move of
+  eden, and `REGION_SLACK` stays free past it ("The move stress mode").
+- **An image is untrusted input**: the decoder's graph pass allocates
+  only through `allocate_block`, since no fast bump succeeds while it
+  allocates old, so the amplification bound stands as derived ("The
+  amplification bound of a rejected load").
+- **`vm.rs` holds no allocation logic**: its arms call `Mutator`
+  functions; `make_array_into` and `make_vector_into` call
+  `Mutator::new_array_from_registers` and `new_nil_array`, which build no
+  list first.
+
+What it moved is [execution.md](execution.md), "What inline allocation
+moved".
 
 ## Decisions
 

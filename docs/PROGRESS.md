@@ -47,7 +47,7 @@ first.
 | Road step 5b2a — MirrorBuilder and atomic installation: a `ClassDeclarationBuilder` over source, run-time compilation from the module's current text, an atomic install that migrates instances by their fields' level and name | Complete | 2026-10-18 | [mirror-builder-and-atomic-install](superpowers/plans/2026-10-18-2138-mirror-builder-and-atomic-install.md) |
 | Road step 5b2b — edited programs in images: every declaration's own text, an edited program written to an image through the ids with the code an older version runs, source in every image unless stripped, a loaded program editable | Complete | 2026-10-19 | [edited-programs-in-images](superpowers/plans/2026-10-19-1702-edited-programs-in-images.md) |
 | Road step 5b2c — reclaiming ids: the weak application cache and the ids' reuse rules, enforced by a full collection; nested declarations by id; a serial per nested-class creation | Complete | 2026-10-20 | [reclaiming-ids](superpowers/plans/2026-10-20-1318-reclaiming-ids.md) |
-| Road step 6 — inline allocation in the interpreter | Not started | — | — |
+| Road step 6 — inline allocation in the interpreter: a bump cursor in the reservation, one comparison before the cold `allocate_block`, precomputed headers, a code-id cache per body, arrays without a `Vec`, and `new` of a class that runs no code as a bump | Complete | 2026-10-22 | [inline-allocation](superpowers/plans/2026-10-22-0008-inline-allocation.md) |
 | Road step 7 — an execution model for compiled code | Not started | — | — |
 | Between road steps 7 and 8 — real Newspeak bodies for `whileTrue:`, `whileFalse:` and `do:` | Not started | — | — |
 | Road step 8 (M5) — a baseline JIT | Not started | — | — |
@@ -5754,3 +5754,61 @@ reclamation costs a full collection, unmeasured in a release build; the
 feedback range of a decoded closure, which no family holds and nothing
 frees; and the name a superseded class side answers once its instance
 side is dropped.
+
+## Inline allocation, road step 6 (2026-10-22)
+
+Plan: [inline-allocation](superpowers/plans/2026-10-22-0008-inline-allocation.md);
+[memory.md](design/memory.md), "The memory layer", "Inline allocation";
+[object-model.md](design/object-model.md), "Instantiation";
+[execution.md](design/execution.md), "What inline allocation moved".
+
+Decided with the user on 2026-10-22. A young object whose header holds
+its word count is allocated by one comparison: the reservation of
+`ns-memory` holds a bump cursor, eden's top is that cursor, and its limit
+lies 8 bytes below eden's scavenge threshold, so the fast bump never
+requests a scavenge and an allocation reaching the threshold takes the
+cold path, `Heap::allocate_block`, `#[cold]` and unchanged in what it
+decides; while the image decoder allocates old, no fast bump succeeds.
+An ordinary instance's header is precomputed on its application, and the
+guards of a closure, a frame and a boxed `Float` are kept on the heap, so
+those allocations look nothing up; a closure, a frame and a float store
+every field explicitly, checked in a debug build against the scavenge's
+poison. A body caches its code id with its heap's code-table epoch,
+unique per heap and renewed whenever a full collection frees a code row,
+so `MakeClosure` and a frame's first reify skip the map. `Array new:`,
+`MakeArray` and `MakeVector` build no `Vec`, and `Array new:` asks
+`Heap::array_fits`, which probes only a large array. `new` of a class
+whose application runs no code -- no initializer code at any level, every
+clause naming its superclass's factory with no arguments, no `<:` level
+among the class objects of its chain -- is one lookup of the application,
+a bump and a nil fill, with no walk, checked against the walk in a debug
+build; the walk reads per-level facts copied out of each application
+instead of cloning it. `vm.rs` changes only in the two helpers behind
+`MakeArray` and `MakeVector`. Every source of the 24 measured is faster
+than at `master`, by 2.2% to 12.8%; small residual slowdowns of the last
+two parts on NBody, Richards, DeltaBlue and Havlak stay inside the
+ranges, and all five parts were kept.
+
+No golden's outcome changed. New tests in `ns-memory` (the cursor),
+`heap/space.rs`, `heap.rs` (a fast and a cold allocation write the same
+words, for every kind; the bump's edges; the code-id cache),
+`interpreter/instantiate.rs` (the fast `new` and its conditions) and
+`tests/array_leaves.rs`; the tests that collect by hand run in debug
+builds only, so the release suite compiles.
+
+- `29a1476c`, `9bcecd04`, `722556a8` -- the design and the plan.
+- `a13d92dc` -- the bump cursor in the reservation.
+- `af894802` -- the fast bump before the cold `allocate_block`.
+- `cfadf647` -- the code-id cache.
+- `3def96e7`, `8555b814` -- closures, frames and boxed floats with a
+  precomputed header, and the tests that prove the fast bump ran.
+- `df7d55c9` -- arrays without a `Vec`.
+- `fee106bb` -- `new` of a class with no initializer code.
+- `120a2054` -- the hand-collecting tests gated to debug builds.
+- This commit -- the documents.
+
+What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): `new` as
+compiled code, next; the residual slowdowns, measured again after it;
+clean blocks; the array probe against the old space's size rather than
+its free room; and the two sites that still build a `Vec` before they
+allocate.

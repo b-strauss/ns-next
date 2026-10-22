@@ -859,7 +859,9 @@ impl<'gc> Mutator<'gc> {
     /// An immediate has no class field to read a dispatch id from, so the
     /// ids `dispatch_id` answers for one are read off the builtin class
     /// objects and kept in a table of their own
-    /// (`Heap::set_immediate_dispatch_ids`) -- once when the placeholders
+    /// (`Heap::set_immediate_dispatch_ids`), and the guards a closure's and
+    /// a frame's headers carry beside them (`Heap::set_builtin_guards`), so
+    /// that their allocation looks none up -- once when the placeholders
     /// are built, and again when the kernel phase gives them their
     /// applications (`interpreter::kernel`).
     pub(crate) fn refresh_immediate_dispatch_ids(&mut self) {
@@ -877,6 +879,11 @@ impl<'gc> Mutator<'gc> {
             instances(self, BuiltinClass::Float),
         ];
         self.heap.set_immediate_dispatch_ids(ids);
+        let guards = crate::heap::BuiltinGuards {
+            closure: instances(self, BuiltinClass::Closure),
+            frame: instances(self, BuiltinClass::Activation),
+        };
+        self.heap.set_builtin_guards(guards);
     }
 
     /// The smallest freed dispatch id, else the next never minted, or
@@ -1598,6 +1605,23 @@ impl<'gc> Mutator<'gc> {
         self.heap.allocate_array(class, &elements)
     }
 
+    /// An `Array` of `length` nils.
+    pub(crate) fn new_nil_array(&mut self, length: usize) -> ObjectReference<'gc> {
+        let class = self.builtin_class(BuiltinClass::Array);
+        self.heap.allocate_nil_array(class, length)
+    }
+
+    /// An `Array` of the registers `registers` names: `MakeArray`'s.
+    pub(crate) fn new_array_from_registers(
+        &mut self,
+        register_base: crate::heap::RegisterBase,
+        registers: &[u16],
+    ) -> ObjectReference<'gc> {
+        let class = self.builtin_class(BuiltinClass::Array);
+        self.heap
+            .allocate_array_from_registers(class, register_base, registers)
+    }
+
     /// A `ByteArray` of the kernel's class holding `bytes`, in order.
     pub fn new_byte_array(&mut self, bytes: &[u8]) -> ObjectReference<'gc> {
         let class = self.builtin_class(BuiltinClass::ByteArray);
@@ -2042,6 +2066,12 @@ impl<'gc> Mutator<'gc> {
         // -- so a value's state is not a prefix of its fields.
         let declared_slots = crate::mixin::declared_slots_of(superclass, inherited, &mixin.slots);
         let dispatch_ids = self.mint_dispatch_ids();
+        // Whether `new` can skip the walk: decided once here, from this
+        // level's facts and the superclass application's verdict, so that
+        // every instantiation asks one flag (`decide_instantiation_from`).
+        let level_facts = crate::mixin::LevelFacts::of(mixin);
+        let instantiates_without_code =
+            crate::mixin::instantiates_without_code(&level_facts, superclass);
         let application = self
             .heap
             .register_application(crate::mixin::MixinApplication {
@@ -2056,6 +2086,9 @@ impl<'gc> Mutator<'gc> {
                 declared_slots,
                 own_slot_base: inherited,
                 dispatch_ids,
+                instance_header: None,
+                instantiates_without_code,
+                level_facts,
             });
         self.applications.insert(key, application.clone());
         application

@@ -90,7 +90,7 @@ Rust 1.98.0, edition 2021, six crates:
   of its own so the analyzer's server dependencies never reach `ns-next`; it depends
   on `ns-syntax` and `ns-runtime` only.
 - `crates/ns-memory` — the memory layer (page-range reservation on Windows and
-  POSIX). The only crate with `unsafe`; `ns-runtime`, `ns-tooling` and `ns-analyzer` forbid it.
+  POSIX) and the bump cursor eden's young allocations take their memory from. The only crate with `unsafe`; `ns-runtime`, `ns-tooling` and `ns-analyzer` forbid it.
   The heap's object space is its user (`docs/design/memory.md`, "The memory
   layer", "The object space").
 

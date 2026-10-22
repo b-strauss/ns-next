@@ -1287,7 +1287,7 @@ and `-1 << 63` is exactly `-2^63`, beyond 61 bits and so a `LargeInteger`
 count raises an error that says the count must be non-negative. A result
 whose digits cannot be reserved raises "cannot allocate" rather than
 aborting: `ArbitraryInteger::shift_left` reserves with `try_reserve_exact`,
-as `Array new:` does, because the count is the program's ([OPEN-WORK.md](../OPEN-WORK.md)
+the probe a large `Array new:` makes too, because the count is the program's ([OPEN-WORK.md](../OPEN-WORK.md)
 says what that does not yet cover). `0 << n` answers `0` without
 allocating. The selector and its meaning are Primordial Soup's
 (`prior-art/primordialsoup/newspeak/KernelForPrimordialSoup.ns:1599`).
@@ -1763,8 +1763,8 @@ one of 32 KiB or more is allocated old, as every object is. A size the
 program chose is asked first whether it can be allocated
 (`Heap::byte_array_fits`): the block, its reserve and overflow word
 included, must fit the old space of the reservation, and the operating
-system must grant its words, probed with `try_reserve_exact` as `Array
-new:` probes it, since a failed allocation aborts the process where an
+system must grant its words, probed with `try_reserve_exact` as a large
+`Array new:` is (`Heap::fields_fit`), since a failed allocation aborts the process where an
 `ArgumentError` can be caught -- "new: cannot allocate a ByteArray of …
 bytes", as for `,`, `withAll:`, `asUtf8` and a typed array's `new:`.
 
@@ -4159,10 +4159,14 @@ needs a name for.
   negative size or a non-`Integer` size is an ordinary `Error`
   ("`new:` requires a size of at least 0, got …" / "… requires an Integer
   size, got …"), and a size that cannot be allocated is one too ("…
-  cannot allocate an Array of … elements") — found with
-  `Vec::try_reserve_exact` before anything is filled, never a Rust
-  allocation abort, since the size is the program's and an abort is not
-  catchable. A `List` over a fixed array needs a sized array; this is what
+  cannot allocate an Array of … elements") — found by `Heap::array_fits`
+  before anything is allocated, rather than ending in an abort, since the
+  size is the program's and an abort is not catchable: a length below the
+  large-object threshold is allocated young, where eden is committed, and
+  a larger one is probed by `Heap::fields_fit`, as a `ByteArray`'s size
+  is ([OPEN-WORK.md](../OPEN-WORK.md) says what that probe does not yet
+  cover). The array is allocated nil-filled with nothing built beside it
+  ([memory.md](memory.md), "Arrays without a `Vec`"). A `List` over a fixed array needs a sized array; this is what
   it grows into.
 - **`CollectionsFactory.ns`, built**, in the factory pattern ("The
   platform" above): `class CollectionsFactory usingKernel: kernel = Value`,

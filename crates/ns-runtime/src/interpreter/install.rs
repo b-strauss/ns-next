@@ -727,6 +727,7 @@ mod tests {
     /// superseded version whose code the closure runs is what admits that
     /// code into the image, so the collection keeps it while a closure
     /// runs its code, though nothing else holds it.
+    #[cfg(debug_assertions)]
     #[test]
     fn a_closure_of_a_removed_method_reaches_an_image_after_a_collection() {
         let (mut interpreter, outer, _, inner, inner_id) = module_and_inner(OUTER);

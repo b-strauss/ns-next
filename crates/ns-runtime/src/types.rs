@@ -722,9 +722,11 @@ mod tests {
         heap: &mut crate::Heap<'_>,
         name: &str,
     ) -> Rc<crate::mixin::MixinApplication> {
+        let mixin = Rc::new(crate::mixin::Mixin::empty(Symbol::intern(name)));
+        let level_facts = crate::mixin::LevelFacts::of(&mixin);
         heap.register_application(crate::mixin::MixinApplication {
             index: crate::heap::ApplicationIndex::UNREGISTERED,
-            mixin: Rc::new(crate::mixin::Mixin::empty(Symbol::intern(name))),
+            mixin,
             superclass: None,
             inherits_value: false,
             first_mutable_slot: None,
@@ -734,6 +736,9 @@ mod tests {
             slot_count: 0,
             own_slot_base: 0,
             dispatch_ids: crate::mixin::DispatchIds::NONE,
+            instance_header: None,
+            instantiates_without_code: false,
+            level_facts,
         })
     }
 
