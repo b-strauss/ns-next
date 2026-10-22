@@ -59,6 +59,9 @@ public final class AreWeFastYet {
 
   static {
     BENCHMARKS.put("Bounce", Bounce::new);
+    BENCHMARKS.put("CD", CD::new);
+    BENCHMARKS.put("DeltaBlue", DeltaBlue::new);
+    BENCHMARKS.put("Havlak", Havlak::new);
     BENCHMARKS.put("Json", Json::new);
     BENCHMARKS.put("List", List::new);
     BENCHMARKS.put("Mandelbrot", Mandelbrot::new);
