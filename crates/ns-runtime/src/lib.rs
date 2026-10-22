@@ -49,6 +49,7 @@ macro_rules! for_each_lowering {
         fn $name:ident($lowering:ident) $body:block
     ) => {
         mod $name {
+            #[allow(unused_imports)]
             use super::*;
 
             $(#[$attribute])*
