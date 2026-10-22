@@ -727,6 +727,47 @@ impl Out {
                 self.u16(*right);
                 self.u32(*target);
             }
+            Instruction::AllocateInstance { destination } => {
+                self.u8(32);
+                self.u16(*destination);
+            }
+            Instruction::InitializeInstance {
+                instance,
+                argument_registers,
+                destination,
+            } => {
+                self.u8(33);
+                self.u16(*instance);
+                self.registers(argument_registers);
+                self.u16(*destination);
+            }
+            Instruction::CheckAppliedClause { steps, selector } => {
+                self.u8(34);
+                self.u16(*steps);
+                self.symbol(*selector);
+            }
+            Instruction::InitializeSuperclass {
+                steps,
+                selector,
+                argument_registers,
+                destination,
+            } => {
+                self.u8(35);
+                self.u16(*steps);
+                self.symbol(*selector);
+                self.registers(argument_registers);
+                self.u16(*destination);
+            }
+            Instruction::InitializeAppliedLevel {
+                steps,
+                argument_registers,
+                destination,
+            } => {
+                self.u8(36);
+                self.u16(*steps);
+                self.registers(argument_registers);
+                self.u16(*destination);
+            }
         }
     }
 

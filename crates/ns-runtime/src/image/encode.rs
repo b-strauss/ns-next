@@ -634,6 +634,47 @@ fn encode_instruction(
             writer.write_u16(*right);
             writer.write_u32(*target);
         }
+        Instruction::AllocateInstance { destination } => {
+            writer.write_u8(OPCODE_ALLOCATE_INSTANCE);
+            writer.write_u16(*destination);
+        }
+        Instruction::InitializeInstance {
+            instance,
+            argument_registers,
+            destination,
+        } => {
+            writer.write_u8(OPCODE_INITIALIZE_INSTANCE);
+            writer.write_u16(*instance);
+            encode_registers(writer, argument_registers)?;
+            writer.write_u16(*destination);
+        }
+        Instruction::CheckAppliedClause { steps, selector } => {
+            writer.write_u8(OPCODE_CHECK_APPLIED_CLAUSE);
+            writer.write_u16(*steps);
+            writer.write_u32(symbols.intern(selector.as_str()));
+        }
+        Instruction::InitializeSuperclass {
+            steps,
+            selector,
+            argument_registers,
+            destination,
+        } => {
+            writer.write_u8(OPCODE_INITIALIZE_SUPERCLASS);
+            writer.write_u16(*steps);
+            writer.write_u32(symbols.intern(selector.as_str()));
+            encode_registers(writer, argument_registers)?;
+            writer.write_u16(*destination);
+        }
+        Instruction::InitializeAppliedLevel {
+            steps,
+            argument_registers,
+            destination,
+        } => {
+            writer.write_u8(OPCODE_INITIALIZE_APPLIED_LEVEL);
+            writer.write_u16(*steps);
+            encode_registers(writer, argument_registers)?;
+            writer.write_u16(*destination);
+        }
     }
     Ok(())
 }

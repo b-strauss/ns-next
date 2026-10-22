@@ -638,6 +638,46 @@ impl Decoder<'_> {
                     target,
                 }
             }
+            32 => Instruction::AllocateInstance {
+                destination: self.reader.u16(),
+            },
+            33 => {
+                let instance = self.reader.u16();
+                let argument_registers = self.registers();
+                let destination = self.reader.u16();
+                Instruction::InitializeInstance {
+                    instance,
+                    argument_registers,
+                    destination,
+                }
+            }
+            34 => {
+                let steps = self.reader.u16();
+                let selector = self.symbol();
+                Instruction::CheckAppliedClause { steps, selector }
+            }
+            35 => {
+                let steps = self.reader.u16();
+                let selector = self.symbol();
+                let argument_registers = self.registers();
+                let destination = self.reader.u16();
+                Instruction::InitializeSuperclass {
+                    steps,
+                    selector,
+                    argument_registers,
+                    destination,
+                }
+            }
+            36 => {
+                let steps = self.reader.u16();
+                let argument_registers = self.registers();
+                let destination = self.reader.u16();
+                Instruction::InitializeAppliedLevel {
+                    steps,
+                    argument_registers,
+                    destination,
+                }
+            }
             tag => panic!("internal: the embedded shipped code has instruction tag {tag}"),
         }
     }

@@ -379,6 +379,9 @@ pub enum DecodeError {
     /// through: the VM fetches the instruction at `program_counter` after
     /// every fall-through, so either runs off the end of the body.
     UnterminatedBody,
+    /// An instruction of a compiled `new`, which nothing runs yet: no
+    /// lowering emits one, so a body that carries one is not this binary's.
+    InstantiationInstruction,
     /// A register operand outside its own body's register file.
     RegisterOutOfRange {
         register: u16,
@@ -808,6 +811,10 @@ impl std::fmt::Display for DecodeError {
             DecodeError::UnterminatedBody => write!(
                 f,
                 "image code body does not end in a return or a jump, so it would run past its last instruction"
+            ),
+            DecodeError::InstantiationInstruction => write!(
+                f,
+                "image code body carries an instantiation instruction, which no compiled body holds"
             ),
             DecodeError::RegisterOutOfRange {
                 register,
@@ -1703,6 +1710,17 @@ fn verify_body(code: &CompiledCode, instructions: &[Instruction]) -> Result<(), 
         _ => return Err(DecodeError::UnterminatedBody),
     }
     for instruction in instructions {
+        // Nothing runs these yet (`vm.rs`), so no image may carry one.
+        if matches!(
+            instruction,
+            Instruction::AllocateInstance { .. }
+                | Instruction::InitializeInstance { .. }
+                | Instruction::CheckAppliedClause { .. }
+                | Instruction::InitializeSuperclass { .. }
+                | Instruction::InitializeAppliedLevel { .. }
+        ) {
+            return Err(DecodeError::InstantiationInstruction);
+        }
         for register in own_registers(instruction) {
             if register >= code.register_count {
                 return Err(DecodeError::RegisterOutOfRange {
@@ -1843,6 +1861,32 @@ fn own_registers(instruction: &Instruction) -> Vec<u16> {
             right,
             ..
         } => vec![*destination, *left, *right],
+        Instruction::AllocateInstance { destination } => vec![*destination],
+        Instruction::InitializeInstance {
+            instance,
+            argument_registers,
+            destination,
+        } => {
+            let mut registers = argument_registers.clone();
+            registers.push(*instance);
+            registers.push(*destination);
+            registers
+        }
+        Instruction::CheckAppliedClause { .. } => vec![],
+        Instruction::InitializeSuperclass {
+            argument_registers,
+            destination,
+            ..
+        }
+        | Instruction::InitializeAppliedLevel {
+            argument_registers,
+            destination,
+            ..
+        } => {
+            let mut registers = argument_registers.clone();
+            registers.push(*destination);
+            registers
+        }
     }
 }
 
@@ -1883,7 +1927,12 @@ fn jump_target(instruction: &Instruction) -> Option<u32> {
         | Instruction::Return { .. }
         | Instruction::ImplicitReturn { .. }
         | Instruction::NonLocalReturn { .. }
-        | Instruction::SignalNonBoolean { .. } => None,
+        | Instruction::SignalNonBoolean { .. }
+        | Instruction::AllocateInstance { .. }
+        | Instruction::InitializeInstance { .. }
+        | Instruction::CheckAppliedClause { .. }
+        | Instruction::InitializeSuperclass { .. }
+        | Instruction::InitializeAppliedLevel { .. } => None,
     }
 }
 
@@ -2292,6 +2341,45 @@ fn decode_instruction(
                 left,
                 right,
                 target: reader.read_u32()?,
+            }
+        }
+        OPCODE_ALLOCATE_INSTANCE => Instruction::AllocateInstance {
+            destination: reader.read_u16()?,
+        },
+        OPCODE_INITIALIZE_INSTANCE => {
+            let instance = reader.read_u16()?;
+            let argument_registers = decode_registers(reader)?;
+            Instruction::InitializeInstance {
+                instance,
+                argument_registers,
+                destination: reader.read_u16()?,
+            }
+        }
+        OPCODE_CHECK_APPLIED_CLAUSE => {
+            let steps = reader.read_u16()?;
+            Instruction::CheckAppliedClause {
+                steps,
+                selector: decode_symbol(reader, symbols)?,
+            }
+        }
+        OPCODE_INITIALIZE_SUPERCLASS => {
+            let steps = reader.read_u16()?;
+            let selector = decode_symbol(reader, symbols)?;
+            let argument_registers = decode_registers(reader)?;
+            Instruction::InitializeSuperclass {
+                steps,
+                selector,
+                argument_registers,
+                destination: reader.read_u16()?,
+            }
+        }
+        OPCODE_INITIALIZE_APPLIED_LEVEL => {
+            let steps = reader.read_u16()?;
+            let argument_registers = decode_registers(reader)?;
+            Instruction::InitializeAppliedLevel {
+                steps,
+                argument_registers,
+                destination: reader.read_u16()?,
             }
         }
         tag => {

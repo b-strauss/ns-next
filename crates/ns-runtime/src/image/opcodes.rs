@@ -27,7 +27,7 @@
 // retired at 11 and reassigned to 29 for the same reason: closure
 // conversion gave it a list of copied registers, so its old bytes describe
 // a different instruction.
-// Next free number: 41.
+// Next free number: 46.
 
 /// Loads a literal into a register; a string, symbol or array
 /// literal allocates a fresh object every time it runs.
@@ -115,6 +115,21 @@ pub const OPCODE_INITIALIZE_SLOT_PROVISIONALLY: u8 = 39;
 /// An inlined loop's guard failure: signals `NonBooleanReceiver` for the
 /// condition's answer and ends its path (`Instruction::SignalNonBoolean`).
 pub const OPCODE_SIGNAL_NON_BOOLEAN: u8 = 40;
+/// A factory body's allocation of an instance of the class object the
+/// factory was sent to (`Instruction::AllocateInstance`).
+pub const OPCODE_ALLOCATE_INSTANCE: u8 = 41;
+/// A factory body's run of its class object's initializer on the new
+/// instance (`Instruction::InitializeInstance`).
+pub const OPCODE_INITIALIZE_INSTANCE: u8 = 42;
+/// §6.1's check of a `<:` clause's selector against the primary factory of
+/// the level it adds (`Instruction::CheckAppliedClause`).
+pub const OPCODE_CHECK_APPLIED_CLAUSE: u8 = 43;
+/// An initializer's run of its superclass's initializer, after §6.1's check
+/// (`Instruction::InitializeSuperclass`).
+pub const OPCODE_INITIALIZE_SUPERCLASS: u8 = 44;
+/// An initializer's run of the own part of a level a `<:` clause adds
+/// (`Instruction::InitializeAppliedLevel`).
+pub const OPCODE_INITIALIZE_APPLIED_LEVEL: u8 = 45;
 
 /// Instruction tags that no longer name anything and are never reused:
 /// 7–10 were the four sends while their call site was a `u16` instruction

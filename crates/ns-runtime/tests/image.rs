@@ -868,6 +868,73 @@ fn every_instruction_variant_round_trips() {
     });
 }
 
+/// The instructions of a compiled `new` in an initializer body: one of each
+/// for none, one, two and three hundred argument registers, and for `steps`
+/// 0, 1 and the most a `u16` holds.
+fn every_instantiation_instruction() -> CompiledCode {
+    let mut instructions = vec![Instruction::AllocateInstance { destination: 0 }];
+    for count in [0_u16, 1, 2, 300] {
+        let arguments: Vec<u16> = (0..count).map(|index| index * 2 + 1).collect();
+        instructions.push(Instruction::InitializeInstance {
+            instance: 0,
+            argument_registers: arguments.clone(),
+            destination: 600,
+        });
+        for steps in [0, 1, u16::MAX] {
+            instructions.push(Instruction::CheckAppliedClause {
+                steps,
+                selector: Symbol::intern("with:and:"),
+            });
+            instructions.push(Instruction::InitializeSuperclass {
+                steps,
+                selector: Symbol::intern("new"),
+                argument_registers: arguments.clone(),
+                destination: 2,
+            });
+            instructions.push(Instruction::InitializeAppliedLevel {
+                steps,
+                argument_registers: arguments.clone(),
+                destination: 300,
+            });
+        }
+    }
+    instructions.push(Instruction::Return { register: 0 });
+    let count = instructions.len();
+    CompiledCode::new(
+        CodeKind::Initializer,
+        instructions,
+        2,
+        601,
+        0,
+        vec![(0, 0..count)],
+        Span::new(10, 20),
+    )
+}
+
+#[test]
+fn each_instantiation_instruction_survives_an_image_round_trip() {
+    let source = indoc! {"
+        class X = Object new (
+        ) (
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let synthetic = Rc::new(every_instantiation_instruction());
+        let doctored = Mixin {
+            initializer_code: Some(synthetic.clone()),
+            ..mixin_of(mutator.heap(), class)
+        };
+        install_mixin(mutator, class, doctored);
+        let (table, decoded_mixins, _) = round_trip_code_table(mutator.heap(), class);
+        let root = &decoded_mixins.code[0];
+        let decoded = &table.codes[root.initializer.expect("initializer id") as usize];
+        assert_eq!(**decoded, *synthetic);
+        assert_eq!(decoded.outer_reach, 0);
+    });
+}
+
 /// `Instruction::call_site` and `call_site_mut` share one macro-defined
 /// variant list (`bytecode.rs`), but the macro only proves the two *cannot*
 /// enumerate the four send variants with different tokens -- it does not by
@@ -1122,14 +1189,14 @@ fn an_invalid_instruction_tag_is_a_decode_error_not_a_panic() {
     writer.write_u32(0);
     writer.write_boolean(false); // not compiled uncached
     writer.write_u32(1); // one instruction ...
-    writer.write_u8(41); // ... one past the last real tag
+    writer.write_u8(46); // ... one past the last real tag
     let bytes = writer.into_bytes();
     let mut reader = decode::Reader::new(&bytes);
     assert_eq!(
         decode::decode_code_table(&mut reader, &symbols::Table::empty()),
         Err(decode::DecodeError::InvalidTag {
             what: "instruction",
-            tag: 41
+            tag: 46
         })
     );
 }
@@ -7053,6 +7120,29 @@ fn a_body_that_runs_past_its_last_instruction_is_refused() {
         assert_eq!(
             decode::verify_code_table(&table),
             Err(decode::DecodeError::UnterminatedBody)
+        );
+    }
+}
+
+/// Nothing runs an instruction of a compiled `new` yet, so a loaded body
+/// that carries one would reach a run loop with no arm for it.
+#[test]
+fn a_body_with_an_instantiation_instruction_is_refused() {
+    let instructions = every_instantiation_instruction().instructions();
+    for instruction in instructions
+        .iter()
+        .filter(|instruction| !matches!(instruction, Instruction::Return { .. }))
+    {
+        let table = table_of(vec![code_with(
+            CodeKind::Initializer,
+            0,
+            601,
+            vec![instruction.clone(), Instruction::Return { register: 0 }],
+        )]);
+        assert_eq!(
+            decode::verify_code_table(&table),
+            Err(decode::DecodeError::InstantiationInstruction),
+            "{instruction:?}"
         );
     }
 }

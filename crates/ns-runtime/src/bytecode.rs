@@ -16,7 +16,7 @@ mod compact;
 pub(crate) use compact::CreatedBlock;
 pub use compact::{
     BlockSite, CodeBuilder, CompactInstruction, Emitted, EncodedBody, MirrorSite, SendSite,
-    WideSend,
+    SuperclassSite, WideSend,
 };
 
 /// A compiled instruction-set literal -- a lowered form of `ast::Literal` that
@@ -362,6 +362,60 @@ pub enum Instruction {
         left: u16,
         right: u16,
         target: u32,
+    },
+    /// A factory body's allocation: a new instance of `self`, the class
+    /// object the factory was sent to, into `destination`, after every
+    /// check that refuses such an instance.
+    ///
+    /// Reads and writes only registers of the activation executing it, so
+    /// its `outer_reach_of` reach is 0.
+    AllocateInstance {
+        destination: u16,
+    },
+    /// A factory body's initialization: runs the initializer of `self`'s
+    /// level, the class object the factory was sent to, on the instance in
+    /// `instance`, with the factory's arguments in `argument_registers`;
+    /// `destination` takes what it answers.
+    ///
+    /// Reads and writes only registers of the activation executing it, so
+    /// its `outer_reach_of` reach is 0.
+    InitializeInstance {
+        instance: u16,
+        argument_registers: Vec<u16>,
+        destination: u16,
+    },
+    /// §6.1's check for a `<:` clause: the level the clause adds, `steps`
+    /// above the activation's class, has a primary factory of `selector`.
+    /// Writes no register.
+    CheckAppliedClause {
+        steps: u16,
+        selector: Symbol,
+    },
+    /// An initializer's superclass initialization (§6.3): §6.1's check that
+    /// the class `steps` above the activation's class has a primary
+    /// factory of `selector`, then that class's initializer on `self`, with
+    /// the clause's arguments in `argument_registers`; `destination` takes
+    /// what it answers.
+    ///
+    /// Reads and writes only registers of the activation executing it, so
+    /// its `outer_reach_of` reach is 0.
+    InitializeSuperclass {
+        steps: u16,
+        selector: Symbol,
+        argument_registers: Vec<u16>,
+        destination: u16,
+    },
+    /// An initializer's initialization of a level a `<:` clause adds
+    /// (§6.2): the own part of the level `steps` above the activation's
+    /// class, on `self`, with the arguments in `argument_registers`;
+    /// `destination` takes what it answers.
+    ///
+    /// Reads and writes only registers of the activation executing it, so
+    /// its `outer_reach_of` reach is 0.
+    InitializeAppliedLevel {
+        steps: u16,
+        argument_registers: Vec<u16>,
+        destination: u16,
     },
 }
 
@@ -912,7 +966,12 @@ pub(crate) fn outer_reach_of(instructions: &[Instruction]) -> u16 {
             | Instruction::JumpIfNotBoolean { .. }
             | Instruction::BranchIfFalse { .. }
             | Instruction::BranchIfTrue { .. }
-            | Instruction::IntegerBinary { .. } => 0,
+            | Instruction::IntegerBinary { .. }
+            | Instruction::AllocateInstance { .. }
+            | Instruction::InitializeInstance { .. }
+            | Instruction::CheckAppliedClause { .. }
+            | Instruction::InitializeSuperclass { .. }
+            | Instruction::InitializeAppliedLevel { .. } => 0,
         })
         .max()
         .unwrap_or(0)
@@ -963,7 +1022,12 @@ pub(crate) fn addresses_own_slots_of(instructions: &[Instruction]) -> bool {
         | Instruction::JumpIfNotBoolean { .. }
         | Instruction::BranchIfFalse { .. }
         | Instruction::BranchIfTrue { .. }
-        | Instruction::IntegerBinary { .. } => false,
+        | Instruction::IntegerBinary { .. }
+        | Instruction::AllocateInstance { .. }
+        | Instruction::InitializeInstance { .. }
+        | Instruction::CheckAppliedClause { .. }
+        | Instruction::InitializeSuperclass { .. }
+        | Instruction::InitializeAppliedLevel { .. } => false,
     })
 }
 
@@ -1206,6 +1270,37 @@ fn format_instruction(instruction: &Instruction) -> String {
         } => format!(
             "IntegerBinary {operation:?} r{destination} <- r{left}, r{right} else -> {target}"
         ),
+        Instruction::AllocateInstance { destination } => {
+            format!("AllocateInstance r{destination}")
+        }
+        Instruction::InitializeInstance {
+            instance,
+            argument_registers,
+            destination,
+        } => format!(
+            "InitializeInstance r{destination} <- r{instance} ({})",
+            registers(argument_registers)
+        ),
+        Instruction::CheckAppliedClause { steps, selector } => {
+            format!("CheckAppliedClause steps {steps} #{selector}")
+        }
+        Instruction::InitializeSuperclass {
+            steps,
+            selector,
+            argument_registers,
+            destination,
+        } => format!(
+            "InitializeSuperclass r{destination} <- steps {steps} #{selector} ({})",
+            registers(argument_registers)
+        ),
+        Instruction::InitializeAppliedLevel {
+            steps,
+            argument_registers,
+            destination,
+        } => format!(
+            "InitializeAppliedLevel r{destination} <- steps {steps} ({})",
+            registers(argument_registers)
+        ),
     }
 }
 
@@ -1415,6 +1510,54 @@ mod tests {
         );
         assert_eq!(instruction.call_site(), None);
         assert_eq!(outer_reach_of(&[instruction]), 0);
+    }
+
+    /// The instructions of a compiled `new` disassemble as their names and
+    /// operands, and carry no call site.
+    #[test]
+    fn the_instantiation_instructions_disassemble_with_their_operands() {
+        let cases = [
+            (
+                Instruction::AllocateInstance { destination: 2 },
+                "AllocateInstance r2",
+            ),
+            (
+                Instruction::InitializeInstance {
+                    instance: 2,
+                    argument_registers: vec![0, 1],
+                    destination: 3,
+                },
+                "InitializeInstance r3 <- r2 (r0, r1)",
+            ),
+            (
+                Instruction::CheckAppliedClause {
+                    steps: 1,
+                    selector: Symbol::intern("x:"),
+                },
+                "CheckAppliedClause steps 1 #x:",
+            ),
+            (
+                Instruction::InitializeSuperclass {
+                    steps: 2,
+                    selector: Symbol::intern("with:"),
+                    argument_registers: vec![4],
+                    destination: 5,
+                },
+                "InitializeSuperclass r5 <- steps 2 #with: (r4)",
+            ),
+            (
+                Instruction::InitializeAppliedLevel {
+                    steps: 3,
+                    argument_registers: vec![],
+                    destination: 6,
+                },
+                "InitializeAppliedLevel r6 <- steps 3 ()",
+            ),
+        ];
+        for (instruction, text) in cases {
+            assert_eq!(format_instruction(&instruction), text);
+            assert_eq!(instruction.call_site(), None);
+        }
     }
 
     #[test]

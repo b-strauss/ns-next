@@ -274,6 +274,27 @@ pub enum CompactInstruction {
         right: u8,
         target: u32,
     },
+    AllocateInstance {
+        destination: u8,
+    },
+    InitializeInstance {
+        destination: u8,
+        instance: u8,
+        arguments: u16,
+    },
+    CheckAppliedClause {
+        steps: u16,
+        selector: Symbol,
+    },
+    InitializeSuperclass {
+        destination: u8,
+        site: u16,
+    },
+    InitializeAppliedLevel {
+        destination: u8,
+        steps: u16,
+        arguments: u16,
+    },
     Wide {
         index: u32,
     },
@@ -398,6 +419,35 @@ impl MirrorSite {
     }
 }
 
+/// A narrow `InitializeSuperclass`'s operands but its destination: the
+/// selector does not fit the slot beside the steps.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SuperclassSite {
+    steps: u16,
+    selector: Symbol,
+    arguments: Box<[u16]>,
+}
+
+impl SuperclassSite {
+    /// How many levels above the activation's class the superclass is.
+    #[inline(always)]
+    pub fn steps(&self) -> u16 {
+        self.steps
+    }
+
+    /// The selector §6.1 checks the superclass's primary factory
+    /// against.
+    #[inline(always)]
+    pub fn selector(&self) -> Symbol {
+        self.selector
+    }
+
+    #[inline(always)]
+    pub fn arguments(&self) -> &[u16] {
+        &self.arguments
+    }
+}
+
 /// A compiled body as it is stored: the slots and their tables. It has no
 /// `PartialEq`: two encodings of one body differ (one built by
 /// `CodeBuilder::always_wide`, say), and `CompiledCode` compares what a body
@@ -410,6 +460,7 @@ pub struct EncodedBody {
     send_sites: Box<[SendSite]>,
     blocks: Box<[BlockSite]>,
     mirror_sites: Box<[MirrorSite]>,
+    superclass_sites: Box<[SuperclassSite]>,
     register_lists: Box<[Box<[u16]>]>,
     wide: Box<[Instruction]>,
 }
@@ -430,6 +481,7 @@ pub struct CodeBuilder {
     send_sites: Vec<SendSite>,
     blocks: Vec<BlockSite>,
     mirror_sites: Vec<MirrorSite>,
+    superclass_sites: Vec<SuperclassSite>,
     register_lists: Vec<Box<[u16]>>,
     wide: Vec<Instruction>,
     always_wide: bool,
@@ -523,6 +575,7 @@ impl CodeBuilder {
             send_sites: Vec::new(),
             blocks: Vec::new(),
             mirror_sites: Vec::new(),
+            superclass_sites: Vec::new(),
             register_lists: Vec::new(),
             wide: Vec::new(),
             always_wide,
@@ -640,9 +693,20 @@ impl CodeBuilder {
             Instruction::MakeClosure { destination, .. } => {
                 self.blocks.len() < TABLE_LIMIT && fits(*destination)
             }
-            Instruction::MakeArray { destination, .. } => {
+            Instruction::MakeArray { destination, .. }
+            | Instruction::InitializeAppliedLevel { destination, .. } => {
                 self.register_lists.len() < TABLE_LIMIT && fits(*destination)
             }
+            Instruction::InitializeInstance {
+                instance,
+                destination,
+                ..
+            } => self.register_lists.len() < TABLE_LIMIT && fits(*instance) && fits(*destination),
+            Instruction::InitializeSuperclass { destination, .. } => {
+                self.superclass_sites.len() < TABLE_LIMIT && fits(*destination)
+            }
+            Instruction::AllocateInstance { destination } => fits(*destination),
+            Instruction::CheckAppliedClause { .. } => true,
             Instruction::LoadVector {
                 destination: register,
                 vector,
@@ -973,15 +1037,10 @@ impl CodeBuilder {
             Instruction::MakeArray {
                 destination,
                 element_registers,
-            } => {
-                let elements = self.register_lists.len() as u16;
-                self.register_lists
-                    .push(element_registers.into_boxed_slice());
-                CompactInstruction::MakeArray {
-                    destination: destination as u8,
-                    elements,
-                }
-            }
+            } => CompactInstruction::MakeArray {
+                destination: destination as u8,
+                elements: self.push_register_list(element_registers),
+            },
             Instruction::MakeVector { destination, size } => CompactInstruction::MakeVector {
                 destination: destination as u8,
                 size,
@@ -1134,6 +1193,47 @@ impl CodeBuilder {
                     },
                 }
             }
+            Instruction::AllocateInstance { destination } => CompactInstruction::AllocateInstance {
+                destination: destination as u8,
+            },
+            Instruction::InitializeInstance {
+                instance,
+                argument_registers,
+                destination,
+            } => CompactInstruction::InitializeInstance {
+                destination: destination as u8,
+                instance: instance as u8,
+                arguments: self.push_register_list(argument_registers),
+            },
+            Instruction::CheckAppliedClause { steps, selector } => {
+                CompactInstruction::CheckAppliedClause { steps, selector }
+            }
+            Instruction::InitializeSuperclass {
+                steps,
+                selector,
+                argument_registers,
+                destination,
+            } => {
+                let site = self.superclass_sites.len() as u16;
+                self.superclass_sites.push(SuperclassSite {
+                    steps,
+                    selector,
+                    arguments: argument_registers.into_boxed_slice(),
+                });
+                CompactInstruction::InitializeSuperclass {
+                    destination: destination as u8,
+                    site,
+                }
+            }
+            Instruction::InitializeAppliedLevel {
+                steps,
+                argument_registers,
+                destination,
+            } => CompactInstruction::InitializeAppliedLevel {
+                destination: destination as u8,
+                steps,
+                arguments: self.push_register_list(argument_registers),
+            },
             Instruction::SendPublic { .. }
             | Instruction::SendInlinable { .. }
             | Instruction::SendLexical { .. }
@@ -1141,6 +1241,14 @@ impl CodeBuilder {
                 unreachable!("internal: a send is encoded by encode_send")
             }
         }
+    }
+
+    /// Appends `registers` to `register_lists` and answers its index, which
+    /// `fits_narrow` has bounded to sixteen bits.
+    fn push_register_list(&mut self, registers: Vec<u16>) -> u16 {
+        let index = self.register_lists.len() as u16;
+        self.register_lists.push(registers.into_boxed_slice());
+        index
     }
 
     /// Sets the target of a jump, of an inlined integer operation's
@@ -1243,6 +1351,7 @@ impl CodeBuilder {
             send_sites: &self.send_sites,
             blocks: &self.blocks,
             mirror_sites: &self.mirror_sites,
+            superclass_sites: &self.superclass_sites,
             register_lists: &self.register_lists,
             wide: &self.wide,
         }
@@ -1256,6 +1365,7 @@ impl CodeBuilder {
             send_sites: self.send_sites.into_boxed_slice(),
             blocks: self.blocks.into_boxed_slice(),
             mirror_sites: self.mirror_sites.into_boxed_slice(),
+            superclass_sites: self.superclass_sites.into_boxed_slice(),
             register_lists: self.register_lists.into_boxed_slice(),
             wide: self.wide.into_boxed_slice(),
         }
@@ -1305,7 +1415,15 @@ impl EncodedBody {
         &self.mirror_sites[index]
     }
 
-    /// The element registers a narrow `MakeArray` names.
+    /// The site a narrow `InitializeSuperclass` names.
+    #[inline(always)]
+    pub fn superclass_site(&self, index: usize) -> &SuperclassSite {
+        &self.superclass_sites[index]
+    }
+
+    /// The registers a narrow `MakeArray`, `InitializeInstance` or
+    /// `InitializeAppliedLevel` names: an array's elements, an
+    /// initializer's arguments.
     #[inline(always)]
     pub fn register_list(&self, index: usize) -> &[u16] {
         &self.register_lists[index]
@@ -1402,6 +1520,7 @@ impl EncodedBody {
             send_sites: &self.send_sites,
             blocks: &self.blocks,
             mirror_sites: &self.mirror_sites,
+            superclass_sites: &self.superclass_sites,
             register_lists: &self.register_lists,
             wide: &self.wide,
         }
@@ -1486,7 +1605,12 @@ fn emitted_entry(slot: CompactInstruction) -> EmittedEntry {
         | CompactInstruction::IntegerGreater { .. }
         | CompactInstruction::IntegerLessOrEqual { .. }
         | CompactInstruction::IntegerGreaterOrEqual { .. }
-        | CompactInstruction::IntegerEqual { .. } => EmittedEntry::Nothing,
+        | CompactInstruction::IntegerEqual { .. }
+        | CompactInstruction::AllocateInstance { .. }
+        | CompactInstruction::InitializeInstance { .. }
+        | CompactInstruction::CheckAppliedClause { .. }
+        | CompactInstruction::InitializeSuperclass { .. }
+        | CompactInstruction::InitializeAppliedLevel { .. } => EmittedEntry::Nothing,
     }
 }
 
@@ -1556,6 +1680,11 @@ fn narrow_outer_reach(slot: CompactInstruction) -> u16 {
         | CompactInstruction::IntegerLessOrEqual { .. }
         | CompactInstruction::IntegerGreaterOrEqual { .. }
         | CompactInstruction::IntegerEqual { .. }
+        | CompactInstruction::AllocateInstance { .. }
+        | CompactInstruction::InitializeInstance { .. }
+        | CompactInstruction::CheckAppliedClause { .. }
+        | CompactInstruction::InitializeSuperclass { .. }
+        | CompactInstruction::InitializeAppliedLevel { .. }
         | CompactInstruction::Wide { .. } => 0,
     }
 }
@@ -1625,6 +1754,11 @@ fn narrow_addresses_own_slots(slot: CompactInstruction) -> bool {
         | CompactInstruction::IntegerLessOrEqual { .. }
         | CompactInstruction::IntegerGreaterOrEqual { .. }
         | CompactInstruction::IntegerEqual { .. }
+        | CompactInstruction::AllocateInstance { .. }
+        | CompactInstruction::InitializeInstance { .. }
+        | CompactInstruction::CheckAppliedClause { .. }
+        | CompactInstruction::InitializeSuperclass { .. }
+        | CompactInstruction::InitializeAppliedLevel { .. }
         | CompactInstruction::Wide { .. } => false,
     }
 }
@@ -1637,6 +1771,7 @@ struct Tables<'a> {
     send_sites: &'a [SendSite],
     blocks: &'a [BlockSite],
     mirror_sites: &'a [MirrorSite],
+    superclass_sites: &'a [SuperclassSite],
     register_lists: &'a [Box<[u16]>],
     wide: &'a [Instruction],
 }
@@ -2040,6 +2175,39 @@ impl Tables<'_> {
                 right,
                 target,
             } => integer(IntegerOperation::Equal, destination, left, right, target),
+            CompactInstruction::AllocateInstance { destination } => Instruction::AllocateInstance {
+                destination: register(destination),
+            },
+            CompactInstruction::InitializeInstance {
+                destination,
+                instance,
+                arguments,
+            } => Instruction::InitializeInstance {
+                instance: register(instance),
+                argument_registers: self.register_lists[usize::from(arguments)].to_vec(),
+                destination: register(destination),
+            },
+            CompactInstruction::CheckAppliedClause { steps, selector } => {
+                Instruction::CheckAppliedClause { steps, selector }
+            }
+            CompactInstruction::InitializeSuperclass { destination, site } => {
+                let site = &self.superclass_sites[usize::from(site)];
+                Instruction::InitializeSuperclass {
+                    steps: site.steps,
+                    selector: site.selector,
+                    argument_registers: site.arguments.to_vec(),
+                    destination: register(destination),
+                }
+            }
+            CompactInstruction::InitializeAppliedLevel {
+                destination,
+                steps,
+                arguments,
+            } => Instruction::InitializeAppliedLevel {
+                steps,
+                argument_registers: self.register_lists[usize::from(arguments)].to_vec(),
+                destination: register(destination),
+            },
             CompactInstruction::Wide { index } => self.wide[index as usize].clone(),
         }
     }
@@ -2558,6 +2726,94 @@ mod tests {
         round_trip(instructions);
     }
 
+    /// One of each instantiation instruction for every argument count and
+    /// every `steps` worth telling apart: none, one, two and three hundred
+    /// argument registers; no step, one, and the most a `u16` holds; and a
+    /// destination that fits a slot's byte and one that does not.
+    fn instantiation_instructions() -> Vec<Instruction> {
+        let mut instructions = Vec::new();
+        for destination in [7, 300] {
+            instructions.push(Instruction::AllocateInstance { destination });
+            for count in [0_u16, 1, 2, 300] {
+                let arguments: Vec<u16> = (0..count).map(|index| index * 2 + 1).collect();
+                instructions.push(Instruction::InitializeInstance {
+                    instance: 4,
+                    argument_registers: arguments.clone(),
+                    destination,
+                });
+                for steps in [0, 1, u16::MAX] {
+                    instructions.push(Instruction::CheckAppliedClause {
+                        steps,
+                        selector: Symbol::intern("with:and:"),
+                    });
+                    instructions.push(Instruction::InitializeSuperclass {
+                        steps,
+                        selector: Symbol::intern("new"),
+                        argument_registers: arguments.clone(),
+                        destination,
+                    });
+                    instructions.push(Instruction::InitializeAppliedLevel {
+                        steps,
+                        argument_registers: arguments.clone(),
+                        destination,
+                    });
+                }
+            }
+        }
+        instructions.push(Instruction::InitializeInstance {
+            instance: 256,
+            argument_registers: vec![1],
+            destination: 2,
+        });
+        instructions
+    }
+
+    /// The instructions of a compiled `new` read back exactly from their
+    /// eight-byte forms and their wide ones, take an eight-byte form
+    /// wherever their registers fit a byte, and reach no other frame's
+    /// registers.
+    #[test]
+    fn each_instantiation_instruction_round_trips_through_its_compact_form() {
+        let instructions = instantiation_instructions();
+        round_trip(instructions.clone());
+        for instruction in &instructions {
+            assert_eq!(
+                crate::bytecode::outer_reach_of(std::slice::from_ref(instruction)),
+                0,
+                "{instruction:?} reaches only its own frame"
+            );
+            assert!(
+                !crate::bytecode::addresses_own_slots_of(std::slice::from_ref(instruction)),
+                "{instruction:?} addresses no own slot"
+            );
+        }
+        let mut builder = CodeBuilder::never_wide_by_stress();
+        for instruction in &instructions {
+            builder.emit(instruction.clone());
+        }
+        assert_eq!(builder.outer_reach(), 0);
+        let body = builder.finish();
+        for (index, instruction) in instructions.iter().enumerate() {
+            let fits_a_byte = match instruction {
+                Instruction::AllocateInstance { destination }
+                | Instruction::InitializeSuperclass { destination, .. }
+                | Instruction::InitializeAppliedLevel { destination, .. } => *destination <= 255,
+                Instruction::InitializeInstance {
+                    instance,
+                    destination,
+                    ..
+                } => *instance <= 255 && *destination <= 255,
+                Instruction::CheckAppliedClause { .. } => true,
+                other => unreachable!("not an instantiation instruction: {other:?}"),
+            };
+            assert_eq!(
+                !matches!(body.slot(index), CompactInstruction::Wide { .. }),
+                fits_a_byte,
+                "{instruction:?} takes an eight-byte form exactly when its registers fit"
+            );
+        }
+    }
+
     /// Every instruction a lowering emits before it knows its target, each
     /// patched in the form it took: in its slot, in a mirror site's
     /// `failure`, or in the wide table. `never_wide_by_stress` keeps the
@@ -2675,8 +2931,8 @@ mod tests {
         ));
     }
 
-    /// The block, mirror-site and register-list tables each have their own
-    /// limit check in `fits_narrow`; the entry after the last narrow one must
+    /// The block, mirror-site, superclass-site and register-list tables each
+    /// have their own limit check in `fits_narrow`; the entry after the last narrow one must
     /// take `Wide` and read back exactly. `never_wide_by_stress` keeps
     /// `NS_NEXT_STRESS_WIDE` from making every entry wide and so hiding the
     /// boundary.
@@ -2713,6 +2969,22 @@ mod tests {
             Instruction::MakeArray {
                 destination: 1,
                 element_registers: vec![2, 3],
+            },
+            Instruction::InitializeInstance {
+                instance: 1,
+                argument_registers: vec![2, 3],
+                destination: 4,
+            },
+            Instruction::InitializeSuperclass {
+                steps: 1,
+                selector: Symbol::intern("with:and:"),
+                argument_registers: vec![2, 3],
+                destination: 4,
+            },
+            Instruction::InitializeAppliedLevel {
+                steps: 2,
+                argument_registers: vec![2, 3],
+                destination: 4,
             },
         ];
         for instruction in instructions {

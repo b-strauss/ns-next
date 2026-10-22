@@ -382,8 +382,25 @@ Instructions:
 - 40 `SignalNonBoolean`: an inlined loop's guard failure, `register` a `u16`:
   signals `NonBooleanReceiver` for the condition's answer in it. Like a
   return, it may end a body.
+- 41 `AllocateInstance`: a factory body's allocation of an instance of the
+  class object the factory was sent to, `destination` a `u16`.
+- 42 `InitializeInstance`: a factory body's run of that class object's
+  initializer on the instance, `instance` a `u16`, the argument registers as
+  a send writes them, and `destination` a `u16`.
+- 43 `CheckAppliedClause`: §6.1's check of a `<:` clause, `steps` a `u16`
+  and the selector as a send writes it.
+- 44 `InitializeSuperclass`: §6.1's check, then the initializer of the class
+  `steps` above, `steps` a `u16`, the selector and the argument registers as
+  a send writes them, and `destination` a `u16`.
+- 45 `InitializeAppliedLevel`: the own part of the level a `<:` clause adds
+  `steps` above, `steps` a `u16`, the argument registers as a send writes
+  them, and `destination` a `u16`.
 
-The next free instruction number is 41. A send's `CallSite` -- its number
+The loader refuses a body that carries any of 41 to 45
+(`DecodeError::InstantiationInstruction`): no lowering emits them yet, and
+the run loop has no arm that runs them.
+
+The next free instruction number is 46. A send's `CallSite` -- its number
 within its code family, a `u32`, or `u32::MAX` (`CallSite::UNCACHED`) for
 every send the reference lowering emits ([compiler.md](compiler.md),
 "Safepoints and call-site identity") -- is not among its operands at all: see

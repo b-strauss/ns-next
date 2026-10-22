@@ -778,6 +778,19 @@ fn operands(instruction: &Instruction) -> Vec<u16> {
         Instruction::MakeArray {
             element_registers, ..
         } => element_registers.clone(),
+        Instruction::InitializeInstance {
+            instance,
+            argument_registers,
+            ..
+        } => std::iter::once(*instance)
+            .chain(argument_registers.iter().copied())
+            .collect(),
+        Instruction::InitializeSuperclass {
+            argument_registers, ..
+        }
+        | Instruction::InitializeAppliedLevel {
+            argument_registers, ..
+        } => argument_registers.clone(),
         // Unreachable in reference-lowered code: closure conversion, which
         // is what emits these, does not run under the reference lowering.
         // Named here anyway, so a real fifth-instruction addition still has
@@ -814,7 +827,9 @@ fn operands(instruction: &Instruction) -> Vec<u16> {
         | Instruction::MakeVector { .. }
         | Instruction::ReturnSlotIfFilled { .. }
         | Instruction::LoadOwnSlot { .. }
-        | Instruction::Jump { .. } => vec![],
+        | Instruction::Jump { .. }
+        | Instruction::AllocateInstance { .. }
+        | Instruction::CheckAppliedClause { .. } => vec![],
     }
 }
 
@@ -839,8 +854,13 @@ fn destination(instruction: &Instruction) -> Option<u16> {
         | Instruction::SendMirror { destination, .. }
         | Instruction::MakeFuture { destination, .. }
         | Instruction::ResolveFuture { destination, .. }
-        | Instruction::LoadOwnSlot { destination, .. } => Some(*destination),
-        Instruction::StoreLocal { .. }
+        | Instruction::LoadOwnSlot { destination, .. }
+        | Instruction::AllocateInstance { destination }
+        | Instruction::InitializeInstance { destination, .. }
+        | Instruction::InitializeSuperclass { destination, .. }
+        | Instruction::InitializeAppliedLevel { destination, .. } => Some(*destination),
+        Instruction::CheckAppliedClause { .. }
+        | Instruction::StoreLocal { .. }
         | Instruction::StoreOuterLocal { .. }
         | Instruction::StoreVector { .. }
         | Instruction::InitializeSlot { .. }

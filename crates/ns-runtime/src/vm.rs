@@ -823,6 +823,16 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                         &mut handoff,
                                     )
                                 }
+                                // No lowering emits these yet, and the image
+                                // loader refuses a body that carries one
+                                // (`image::decode::verify_body`).
+                                CompactInstruction::AllocateInstance { .. }
+                                | CompactInstruction::InitializeInstance { .. }
+                                | CompactInstruction::CheckAppliedClause { .. }
+                                | CompactInstruction::InitializeSuperclass { .. }
+                                | CompactInstruction::InitializeAppliedLevel { .. } => {
+                                    unreachable!("{NOT_YET_RUN}")
+                                }
                                 CompactInstruction::Return { register }
                                 | CompactInstruction::ImplicitReturn { register } => {
                                     break 'decided return_from(
@@ -1390,9 +1400,20 @@ fn run_wide<'gc>(
                 WideOutcome::Jump(*target)
             };
         }
+        Instruction::AllocateInstance { .. }
+        | Instruction::InitializeInstance { .. }
+        | Instruction::CheckAppliedClause { .. }
+        | Instruction::InitializeSuperclass { .. }
+        | Instruction::InitializeAppliedLevel { .. } => unreachable!("{NOT_YET_RUN}"),
     };
     WideOutcome::Transfer(transfer)
 }
+
+/// Why the run loop never meets an instruction of a compiled `new`: no
+/// lowering emits one yet, and `image::decode::verify_body` refuses a body
+/// that carries one.
+const NOT_YET_RUN: &str =
+    "internal: no lowering emits an instantiation instruction, and no image may carry one";
 
 // The effect of each instruction, written once over `u16` operands: the
 // narrow arm widens its bytes and calls it, and `run_wide` calls it with the

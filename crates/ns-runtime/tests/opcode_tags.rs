@@ -62,6 +62,32 @@ fn the_non_boolean_signal_keeps_its_number() {
     assert_eq!(OPCODE_SIGNAL_NON_BOOLEAN, 40);
 }
 
+/// A compiled `new`: the factory's allocation, the initializer it runs, and
+/// the three instructions by which an initializer reaches the levels above
+/// its own.
+#[test]
+fn the_instantiation_instructions_keep_their_numbers() {
+    assert_eq!(OPCODE_ALLOCATE_INSTANCE, 41);
+    assert_eq!(OPCODE_INITIALIZE_INSTANCE, 42);
+    assert_eq!(OPCODE_CHECK_APPLIED_CLAUSE, 43);
+    assert_eq!(OPCODE_INITIALIZE_SUPERCLASS, 44);
+    assert_eq!(OPCODE_INITIALIZE_APPLIED_LEVEL, 45);
+}
+
+/// The instruction section's "next free number" comment is where the next
+/// instruction takes its tag from, so it moves with every new one.
+#[test]
+fn the_next_free_instruction_tag_is_forty_six() {
+    let source = include_str!("../src/image/opcodes.rs");
+    assert!(
+        source.contains(
+            "// Next free number: 46.
+"
+        ),
+        "image/opcodes.rs names 46 as the next free instruction tag"
+    );
+}
+
 #[test]
 fn the_integer_binary_opcode_keeps_its_tag() {
     // A tag is assigned once and never renumbered: a stale artifact must hit
@@ -121,6 +147,11 @@ fn no_two_tags_share_a_number() {
         OPCODE_LOAD_OWN_SLOT,
         OPCODE_INITIALIZE_SLOT_PROVISIONALLY,
         OPCODE_SIGNAL_NON_BOOLEAN,
+        OPCODE_ALLOCATE_INSTANCE,
+        OPCODE_INITIALIZE_INSTANCE,
+        OPCODE_CHECK_APPLIED_CLAUSE,
+        OPCODE_INITIALIZE_SUPERCLASS,
+        OPCODE_INITIALIZE_APPLIED_LEVEL,
     ];
     let mut sorted = opcodes;
     sorted.sort_unstable();
@@ -194,6 +225,11 @@ fn retired_instruction_tags_are_never_reused() {
         OPCODE_LOAD_OWN_SLOT,
         OPCODE_INITIALIZE_SLOT_PROVISIONALLY,
         OPCODE_SIGNAL_NON_BOOLEAN,
+        OPCODE_ALLOCATE_INSTANCE,
+        OPCODE_INITIALIZE_INSTANCE,
+        OPCODE_CHECK_APPLIED_CLAUSE,
+        OPCODE_INITIALIZE_SUPERCLASS,
+        OPCODE_INITIALIZE_APPLIED_LEVEL,
     ];
     for retired in RETIRED_OPCODES {
         assert!(!live.contains(&retired), "tag {retired} is retired");

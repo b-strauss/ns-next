@@ -7145,7 +7145,7 @@ only `for_each_emitted_mut` rewrites an entry afterwards (a call site or a
 block), so no other code can leave a slot naming an entry of the wrong
 shape. The loop reads them through `#[inline(always)]` accessors
 (`constant`, `literal`, `send_site`, `block`, `mirror_site`,
-`register_list`, `wide`), which left `vm::run`'s size and frame
+`superclass_site`, `register_list`, `wide`), which left `vm::run`'s size and frame
 unchanged:
 
 - `constants`, the `Immediate` words `LoadConstant` reads -- a
@@ -7162,7 +7162,12 @@ unchanged:
   parameters and its copied registers;
 - `mirror_sites`, one per `SendMirror`: its argument registers and its
   failure target;
-- `register_lists`, the element registers of a `MakeArray`;
+- `superclass_sites`, one per `InitializeSuperclass`: its steps, its
+  selector and its argument registers, since the selector does not fit
+  the slot beside the steps;
+- `register_lists`, the element registers of a `MakeArray`, and the
+  argument registers of an `InitializeInstance` or an
+  `InitializeAppliedLevel`, whose slots hold the rest;
 - `wide`, the full `Instruction` of every instruction other than a send
   that has no eight-byte form here.
 
