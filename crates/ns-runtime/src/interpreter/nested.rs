@@ -119,6 +119,10 @@ pub(crate) fn superclass_clause_message_arguments_expression(
     Some(ast::Expression::bare(arguments, message.span))
 }
 
+/// The `cached_field` of a send that brings no hidden slot's index: the
+/// lookup's, and a hit whose guard does not fix the receiver's application.
+pub(crate) const NO_CACHED_FIELD: u32 = u32::MAX;
+
 /// The implicit accessor for `nested` on `receiver`. `receiver` is the
 /// enclosing object `r`; `nested` is the declaration `dispatch` found on
 /// `r`'s class chain; `declaring_class` is the class object of the level
@@ -136,12 +140,29 @@ pub(crate) fn superclass_clause_message_arguments_expression(
 /// must start its lookup at the declaring class's superclass, not at the
 /// receiver's dynamic class's superclass -- which for an inherited
 /// declaration is one or more levels too deep.
+///
+/// `cached_field` is the hidden slot's absolute index a cache hit brings,
+/// `NO_CACHED_FIELD` for every other send: the hit's guard fixed the
+/// receiver's application, and so the index, so a filled slot answers with
+/// one load and no hash lookup. An empty slot, or one whose creation is
+/// underway, takes the steps below as if nothing had been cached.
 pub(crate) fn nested_class<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
     nested: &Rc<Mixin>,
     declaring_class: ClassReference<'gc>,
+    cached_field: u32,
 ) -> Result<Step<'gc>, Signal<'gc>> {
+    if cached_field != NO_CACHED_FIELD {
+        if let Some(cached) = receiver
+            .as_object()
+            .and_then(|object| mutator.heap.instance_field(object, cached_field as usize))
+        {
+            if !cached.is_nil() && !is_creation_in_progress(cached) {
+                return Ok(Step::Value(cached));
+            }
+        }
+    }
     let Some((receiver_object, index, cached)) = cache_slot(mutator, receiver, nested) else {
         return Err(no_cache_slot_error(receiver, nested.name));
     };
@@ -503,14 +524,7 @@ fn cache_slot<'gc>(
     receiver: Value<'gc>,
     nested: &Rc<Mixin>,
 ) -> Option<(ObjectReference<'gc>, usize, Value<'gc>)> {
-    let class = mutator.class_of(receiver);
-    let id = mutator.heap.known_mixin_id(nested)?;
-    let index = mutator
-        .heap
-        .class_application(class)?
-        .nested_slot
-        .get(&id)
-        .copied()?;
+    let index = hidden_slot_index(mutator, mutator.class_of(receiver), nested)?;
     match receiver.as_object() {
         Some(object) => mutator
             .heap
@@ -518,6 +532,24 @@ fn cache_slot<'gc>(
             .map(|cached| (object, index, cached)),
         _ => None,
     }
+}
+
+/// The absolute index of `nested`'s hidden slot in the layout of `class`'s
+/// application, or `None` when that application reserves none for it: the
+/// one place the index is decided, for the accessor's lookup and for the
+/// cache entry that records it (`inline_cache::record`).
+pub(crate) fn hidden_slot_index<'gc>(
+    mutator: &Mutator<'gc>,
+    class: ClassReference<'gc>,
+    nested: &Rc<Mixin>,
+) -> Option<usize> {
+    let id = mutator.heap.known_mixin_id(nested)?;
+    mutator
+        .heap
+        .class_application(class)?
+        .nested_slot
+        .get(&id)
+        .copied()
 }
 
 /// The absolute index of `nested`'s cache slot in `enclosing`'s current

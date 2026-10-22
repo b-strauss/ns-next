@@ -2429,6 +2429,14 @@ run in:
 
 `<class>` is the declaring level's mixin's name and `<name>` the
 declaration's; the error's selector is the declaration's name.
+A cache hit reads the slot at the index its entry recorded, without the
+two hash lookups, only when the receiver's own application is the one the
+entry's guard names -- always on a public or protected site, and on a
+private or `super` one after a compare of the receiver's id with the
+guard -- since that application decides the index
+([dispatch.md](dispatch.md), "An entry"); a forwarded enclosing object of
+another shape misses the guard or fails the compare, and takes the
+accessor's lookup.
 `end_creation` resets the marker to `nil` only while the slot it was
 written to is still the slot the current layout has (`current_cache`) and
 still holds its own serial: a replacement's own field at that index is

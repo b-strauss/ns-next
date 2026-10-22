@@ -64,6 +64,10 @@ pub(crate) enum Resolved<'gc> {
         /// whichever chain found it -- but a cache entry records it
         /// (`inline_cache::Target::NestedClass`), to count `level` from.
         chain: Chain,
+        /// The receiver's hidden slot for `mixin`, as a cache hit whose
+        /// guard fixed the receiver's application brings it;
+        /// `nested::NO_CACHED_FIELD` for every resolution the lookup makes.
+        field: u32,
     },
     Primitive {
         primitive: Primitive,
@@ -270,6 +274,7 @@ fn resolved<'gc>(lookup: Lookup<'gc>, chain: Chain) -> Resolved<'gc> {
             mixin,
             declaring_class,
             chain,
+            field: nested::NO_CACHED_FIELD,
         },
         Lookup::Primitive(primitive, level) => Resolved::Primitive {
             primitive,
@@ -514,8 +519,9 @@ impl<'gc> Mutator<'gc> {
             Resolved::NestedClass {
                 mixin,
                 declaring_class,
+                field,
                 ..
-            } => nested::nested_class(self, receiver, &mixin, declaring_class),
+            } => nested::nested_class(self, receiver, &mixin, declaring_class, field),
             // A primitive entry is a mirror row, and a mirror row's failure
             // path is its block: `builtins::execute` answers `Some` for every
             // one, so no primitive passes its level over any more. The

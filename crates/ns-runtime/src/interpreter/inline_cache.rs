@@ -79,6 +79,11 @@ pub(crate) enum Target {
     },
     NestedClass {
         mixin: Rc<Mixin>,
+        /// The absolute index of the hidden slot `mixin`'s class is cached
+        /// in, in the layout of the application the entry's guard names
+        /// (`record`); `nested::NO_CACHED_FIELD` where that application
+        /// reserves none or the index passes `u32`.
+        field: u32,
         level: u16,
         chain: Chain,
     },
@@ -903,6 +908,7 @@ fn record<'gc>(
             ..
         } => Target::NestedClass {
             mixin: mixin.clone(),
+            field: nested_field(mutator, chain, key, mixin),
             level: levels_between(&mutator.heap, start?, *declaring_class)?,
             chain,
         },
@@ -919,6 +925,29 @@ fn record<'gc>(
         },
         Resolved::Unhandled => return None,
     })
+}
+
+/// The hidden slot a nested-class entry records: its index in the layout
+/// of the application the entry's guard names, which is the one a hit can
+/// rely on. A public or protected guard is the receiver's own dispatch id,
+/// a private one N's application, and a `super` one `current_class`'s,
+/// which the key does not carry: there the index is the receiver's when
+/// its own dispatch id is the guard, and none otherwise.
+fn nested_field<'gc>(
+    mutator: &Mutator<'gc>,
+    chain: Chain,
+    key: SendKey<'_, 'gc>,
+    mixin: &Rc<Mixin>,
+) -> u32 {
+    let class = match chain {
+        Chain::Private => key.lexical_class,
+        Chain::Super if mutator.heap.dispatch_id(*key.receiver) != key.guard => None,
+        _ => Some(mutator.class_of(*key.receiver)),
+    };
+    class
+        .and_then(|class| super::nested::hidden_slot_index(mutator, class, mixin))
+        .and_then(|index| u32::try_from(index).ok())
+        .unwrap_or(super::nested::NO_CACHED_FIELD)
 }
 
 /// The guard a slot entry records: the receiver's own, for a private or
@@ -987,16 +1016,30 @@ fn materialize<'gc>(
         ),
         Target::NestedClass {
             mixin,
+            field,
             level,
             chain,
         } => {
             let start = chain_start(mutator, chain, key)?;
             let declaring_class = level_above(&mutator.heap, start, level)?;
+            // The field is the guard's application's, which is the
+            // receiver's on a public or protected site; on a private or
+            // `super` one only a receiver of exactly that application may
+            // take it, and any other takes the accessor's lookup.
+            let field = match chain {
+                Chain::Private | Chain::Super
+                    if mutator.heap.dispatch_id(*key.receiver) != key.guard =>
+                {
+                    super::nested::NO_CACHED_FIELD
+                }
+                _ => field,
+            };
             (
                 Resolved::NestedClass {
                     mixin,
                     declaring_class,
                     chain,
+                    field,
                 },
                 FeedbackBase::NOT_ASSIGNED,
             )
@@ -1455,8 +1498,12 @@ pub enum CachedTargetKind {
     Slot {
         field: u32,
     },
-    /// The nested class's name.
-    NestedClass(Symbol),
+    /// The nested class's name, and the absolute index of the hidden slot
+    /// a hit reads, `None` where a hit takes the accessor's lookup.
+    NestedClass {
+        name: Symbol,
+        field: Option<u32>,
+    },
     Primitive,
     Factory,
     /// A `doesNotUnderstand:` handler, whatever it is.
@@ -1551,9 +1598,18 @@ fn cached_target(target: &Target) -> Option<CachedTarget> {
         Target::Factory { chain, .. } => (CachedTargetKind::Factory, *chain),
         Target::Method { method, chain, .. } => (CachedTargetKind::Method(method.selector), *chain),
         Target::Slot { field, chain, .. } => (CachedTargetKind::Slot { field: *field }, *chain),
-        Target::NestedClass { mixin, chain, .. } => {
-            (CachedTargetKind::NestedClass(mixin.name), *chain)
-        }
+        Target::NestedClass {
+            mixin,
+            field,
+            chain,
+            ..
+        } => (
+            CachedTargetKind::NestedClass {
+                name: mixin.name,
+                field: (*field != super::nested::NO_CACHED_FIELD).then_some(*field),
+            },
+            *chain,
+        ),
         Target::Primitive { chain, .. } => (CachedTargetKind::Primitive, *chain),
     };
     let kind = match (kind, chain) {
@@ -2059,5 +2115,98 @@ mod tests {
                 _ => panic!("a factory hit decides the factory's activation"),
             }
         });
+    }
+
+    fn expect_ok(result: crate::HostResult, what: &str) -> crate::Root {
+        match result {
+            Ok(root) => root,
+            Err(crate::HostSignal::Return) => panic!("{what}: a non-local return escaped"),
+            Err(crate::HostSignal::Error(error)) => {
+                panic!("{what}: unexpected Newspeak error: {}", error.message)
+            }
+        }
+    }
+
+    /// The one site `narrow Inner` fills for `Narrow`, whose hidden slot is
+    /// field 0; a forward then replaces the enclosing object with a `Wide`,
+    /// whose hidden slot is field 3. The next sends miss `Narrow`'s guard
+    /// and answer the `Wide`'s own class -- never what field 0 of the `Wide`
+    /// holds -- and the entry they leave records field 3.
+    #[test]
+    fn a_nested_class_hit_after_the_enclosing_object_was_reshaped_takes_the_slow_path() {
+        let source = indoc::indoc! {"
+            class Subject = Object new () (
+              class Narrow = Object new () (
+                public class Inner = Object new () ()
+              )
+              class Wide = Object new (
+                | first ::= 1. second ::= 2. third ::= 3. |
+              ) (
+                public class Inner = Object new () ()
+              )
+              public run: mirror = (
+                | narrow wide classes |
+                narrow:: Narrow new.
+                wide:: Wide new.
+                classes:: Array new: 3.
+                1 to: 3 do: [:index |
+                  classes at: index put: narrow Inner.
+                  index = 1 ifTrue: [
+                    mirror elementsOf: {narrow} forwardIdentityToElementsOf: {wide} ifFail: [^4].
+                  ].
+                ].
+                (classes at: 1) == (classes at: 2) ifTrue: [^1].
+                (classes at: 2) == (classes at: 3) ifFalse: [^2].
+                (classes at: 3) == wide Inner ifFalse: [^3].
+                ^0
+              )
+            ) : ()
+        "};
+        let module = ns_syntax::parse(source).expect("parse");
+        let resolved = crate::resolve(
+            module,
+            Rc::from(source),
+            crate::types::SourceOrigin::File(std::path::PathBuf::from("t.ns")),
+        )
+        .expect("resolve");
+        let mut interpreter = crate::Interpreter::bootstrap();
+        #[cfg(debug_assertions)]
+        interpreter.set_stress_caches(false);
+        let class = interpreter.load_module(&resolved);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let mirror = interpreter.enter(|mutator| {
+            let mirror = mutator.vm_mirror();
+            mutator.stash(mirror)
+        });
+        let answer = expect_ok(
+            interpreter.send(&instance, Symbol::intern("run:"), &[mirror]),
+            "run:",
+        );
+        let answer = interpreter.enter(|mutator| mutator.fetch(&answer).as_small_integer());
+        assert_eq!(answer, Some(0));
+        assert_eq!(
+            interpreter.call_site_states(
+                &class,
+                MethodSide::Instance,
+                Symbol::intern("run:"),
+                Symbol::intern("Inner"),
+            ),
+            vec![
+                CallSiteState::Monomorphic(CachedTarget {
+                    kind: CachedTargetKind::NestedClass {
+                        name: Symbol::intern("Inner"),
+                        field: Some(3),
+                    },
+                    private: false,
+                }),
+                CallSiteState::Monomorphic(CachedTarget {
+                    kind: CachedTargetKind::NestedClass {
+                        name: Symbol::intern("Inner"),
+                        field: Some(3),
+                    },
+                    private: false,
+                }),
+            ]
+        );
     }
 }

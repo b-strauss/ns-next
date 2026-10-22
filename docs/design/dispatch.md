@@ -1003,7 +1003,8 @@ chain says which class object the defining class is counted from. A
   on the method ("Primitive methods" above);
 - `Slot` — an accessor's kind and absolute field, fixed by the application
   the lookup walked;
-- `NestedClass` — the mixin and its declaring class;
+- `NestedClass` — the mixin and its declaring class, and the hidden slot's
+  absolute index when a cache hit brings one;
 - `Primitive` — the primitive and its level: a mirror row, found only on the
   mirror's class;
 - `Factory` — §6.3's primary factory, an entry of the receiver's metaclass
@@ -1028,7 +1029,7 @@ too: a lexical send whose `lookupProtected` finds nothing falls to
 `resolve_public`, class side and `doesNotUnderstand:` included, and what it
 ends in is what is recorded. That is what makes the uncached reference
 lowering a valid oracle for the cached one ("Verification" below). A release
-`Resolved` is 16 bytes, pinned. `act` is `#[inline(always)]` into its
+`Resolved` is 24 bytes, pinned. `act` is `#[inline(always)]` into its
 callers, and its handler arms are out of line and `#[cold]`, so only the hot
 half is duplicated into the sends.
 
@@ -1040,7 +1041,12 @@ records with every handle taken out:
 - `Method` — the method, its family's `feedback_base`, its level and its
   chain;
 - `Slot` — the absolute field index, the accessor's kind and its chain;
-- `NestedClass` — the mixin, its level and its chain;
+- `NestedClass` — the mixin, its level, its chain and the absolute index of
+  the hidden slot its class is cached in, in the layout of the application
+  the entry's guard names (`nested_field`): the receiver's for a public or
+  protected site, N's for a private one, and for a `super` one the
+  receiver's when the receiver's own id is the guard -- the key does not
+  carry `current_class` -- and none otherwise;
 - `Primitive` — the primitive, its level and its chain;
 - `Factory` — its chain, and nothing else: §6.3 instantiates the receiver,
   which the guard already names, so there is no level to count;
@@ -1240,8 +1246,15 @@ first, read off the method ("Primitive methods" above), and otherwise answers
 `Step::Method` with the target's `feedback_base`; `push_step` still checks
 the arity. `Slot`
 reads or writes the field without an activation (`decide_slot_accessor`).
-`NestedClass` calls `nested::nested_class` with the declaring class; creating
-one still runs its clause as a step. `Primitive` calls `builtins::execute`,
+`NestedClass` calls `nested::nested_class` with the declaring class and the
+entry's index, which a hit brings only when the guard fixes the receiver's
+application -- always on a public or protected site, and on a private or
+`super` one only for a receiver whose own id is the guard, which
+`materialize` compares. A filled slot at that index is the answer, one load
+without the accessor's two hash lookups (`Heap::known_mixin_id`,
+`MixinApplication::nested_slot`); an empty one, one whose creation is
+underway, or a send without an index takes the accessor's own path, which
+finds the index afresh. Creating a class still runs its clause as a step. `Primitive` calls `builtins::execute`,
 which for a mirror row never answers `None` — a declining leaf runs the send's
 failure block ("A primitive can fail" above). An entry whose primitive
 method's leaf declined stays, as Cog keeps a method whose primitive
@@ -1268,6 +1281,11 @@ primitive method is not such a read: it is a property of the method the entry
 records, and `act` reads it off that method on every send. A class object's factory
 selector is no longer among them: §6.3 makes it the selector the entry is
 filed under in the metaclass's method table, which the guard covers.
+
+A nested-class entry's hidden-slot index is no such read either: it is a
+function of the application the guard names, and a private or `super` hit
+whose receiver has another application compares that before it uses it.
+What the slot holds is read afresh on every send.
 
 A class object's own `class` field is not such a read: it is the metaclass
 the lookup starts from, and the guard is that metaclass's instances id, so

@@ -633,7 +633,13 @@ impl Interpreter {
                 Some(object) => mutator.heap().object_class(object),
                 None => unreachable!("internal: a shipped module instance is an object"),
             };
-            let decided = nested::nested_class(mutator, receiver, nested, declaring_class);
+            let decided = nested::nested_class(
+                mutator,
+                receiver,
+                nested,
+                declaring_class,
+                nested::NO_CACHED_FIELD,
+            );
             mutator.start(decided, &[])
         });
         self.run_from_host(start, depth)
