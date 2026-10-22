@@ -905,10 +905,10 @@ from `PATH` otherwise, an empty `JAVA_HOME` counting as unset. The trials
 run every `java` and `javac` without the environment's JVM option
 variables, `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS` and `_JAVA_OPTIONS`:
 the JVM announces each on stderr, which the trials compare exactly, and
-the options would change what Java measures. A missing JDK fails the trials and says the gate
-needs one, never skips them, since a gate that passes without running is
-no gate. The sources compile with `javac --release 21 -encoding UTF-8`
-once per content: into
+the options would change what Java measures. A missing JDK fails the
+trials and says the gate needs one, never skips them, since a gate that
+passes without running is no gate. The sources compile with
+`javac --release 21 -encoding UTF-8` once per content: into
 `<CARGO_TARGET_TMPDIR>/are-we-fast-yet-java/<key>`, the key a hash of the
 sorted relative paths and contents of every `.java`, compiled into a
 temporary sibling and renamed into place, since nextest runs each trial
@@ -917,11 +917,16 @@ uses it, one that loses the rename uses the winner's, and a changed,
 renamed or deleted source gives a new key, so no stale class runs. Once
 `<key>` is in place, every entry of `are-we-fast-yet-java/` that belongs
 to another key, an older key's classes or a leftover temporary directory,
-is removed, errors ignored: a process with another key would compile
-another state of the sources, which one run never sees. The key's own
-temporary siblings stay, since other trials may still be compiling into
-them. A compilation error fails every Java trial with `javac`'s output. The
-trials:
+is removed, errors ignored: while the sources stay unchanged during a
+run, no process uses another key; editing them mid-run, or two runs at
+different states of the sources sharing one target directory, lets a
+later process remove an older key's directory that a live process uses,
+and can fail the trials of the older state. The key's own temporary
+siblings stay, since other trials may still be compiling into them,
+unless they are over an hour old: a compilation takes seconds, so such a
+sibling is a killed process's, and the age decides without inspecting
+processes. A compilation error fails every Java trial with `javac`'s
+output. The trials:
 
 - **`java::<Name>`**, for each benchmark: the Java harness run by name,
   held to that benchmark's line of `benchmarks/are-we-fast-yet.toml`

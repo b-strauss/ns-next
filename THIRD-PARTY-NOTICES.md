@@ -118,6 +118,37 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
+`CD.ns` carries, besides this one, the BSD-3 notice of Purdue University's
+CDx, the benchmark it ports. The Java `CD.java` and `cd/*.java` carry the
+same notice (see Are We Fast Yet below):
+
+```
+Copyright (c) 2001-2010, Purdue University. All rights reserved.
+Copyright (C) 2015 Apple Inc. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+ * Redistributions of source code must retain the above copyright
+   notice, this list of conditions and the following disclaimer.
+ * Redistributions in binary form must reproduce the above copyright
+   notice, this list of conditions and the following disclaimer in the
+   documentation and/or other materials provided with the distribution.
+ * Neither the name of the Purdue University nor the
+   names of its contributors may be used to endorse or promote products
+   derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY
+DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
 ## Primordial Soup
 
 Upstream: https://github.com/rmacnak/primordialsoup, commit
@@ -542,7 +573,8 @@ whose BSD-3 notice (Copyright (c) 2001-2010, Purdue University; Copyright
 (C) 2015 Apple Inc.) upstream's `benchmarks/JavaScript/cd.js` and
 `benchmarks/Smalltalk/CD/*.som` carry. Here `CD.java` and every file of
 `cd/` carry that notice in their headers, copied from the header of
-`benchmarks/are-we-fast-yet/CD.ns`, as `CD.ns` does.
+`benchmarks/are-we-fast-yet/CD.ns`, as `CD.ns` does; its text is given in
+full under SOMns above.
 
 `RichardsTon80.java`, `DeltaBlueTon80.java` and the files of
 `richardston80/` and `deltablueton80/` are not from Are We Fast Yet: they

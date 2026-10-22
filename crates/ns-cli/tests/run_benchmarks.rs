@@ -350,10 +350,15 @@ fn java_classes() -> Result<&'static Path, String> {
 /// changed, renamed or deleted source gives a new key, so no stale class
 /// ever runs. Once `<key>` is in place, every sibling of another key is
 /// removed, an older key's directory and a leftover temporary one alike,
-/// ignoring errors: a process using another key compiles another state of
-/// the sources, which cannot happen within one run. This key's temporary
-/// siblings stay, since other processes of the run may still be compiling
-/// into them; each removes its own.
+/// ignoring errors: while the sources stay unchanged during a run, no
+/// process uses another key. Editing them mid-run, or two runs at different
+/// states of the sources sharing one target directory, lets a later process
+/// remove an older key's directory that a live process uses, and can fail
+/// the trials of the older state. This key's temporary siblings stay, since
+/// other processes of the run may still be compiling into them; each
+/// removes its own. Only those older than an hour are removed: a process
+/// that was killed leaves its sibling behind, and no live process takes
+/// that long to compile, so the age decides without inspecting processes.
 fn compile_java() -> Result<PathBuf, String> {
     let root = common::repository_root().join("benchmarks/are-we-fast-yet/java");
     let mut sources = Vec::new();
@@ -410,17 +415,31 @@ fn compile_java() -> Result<PathBuf, String> {
 }
 
 /// Removes every entry of `compilations` but `key` and its temporary
-/// siblings `<key>.<process>.tmp`, ignoring errors.
+/// siblings `<key>.<process>.tmp`, ignoring errors; of those, the ones last
+/// modified over an hour ago are removed too, being a killed process's.
 fn remove_siblings(compilations: &Path, key: &str) {
     let Ok(entries) = std::fs::read_dir(compilations) else {
         return;
     };
     let temporary_prefix = format!("{key}.");
+    let hour = std::time::Duration::from_secs(3600);
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name == key || name.starts_with(&temporary_prefix) {
+        if name == key {
             continue;
+        }
+        if name.starts_with(&temporary_prefix) {
+            let abandoned = name.ends_with(".tmp")
+                && entry
+                    .metadata()
+                    .and_then(|metadata| metadata.modified())
+                    .ok()
+                    .and_then(|modified| modified.elapsed().ok())
+                    .is_some_and(|age| age > hour);
+            if !abandoned {
+                continue;
+            }
         }
         let path = entry.path();
         if path.is_dir() {
