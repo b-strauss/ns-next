@@ -1,4 +1,4 @@
-# `new` and the nested-class accessor as compiled code — design
+# `new` as compiled code — design
 
 Temporary: the batch that builds this moves its content into the living
 documents (`object-model.md`, `dispatch.md`, `compiler.md`,
@@ -11,12 +11,7 @@ runs as a Rust state machine instead of code the compiler emits: the
 instantiation walk in `interpreter/instantiate.rs` (`Instantiation`,
 `InstantiationPhase`, `DeferredMessage`, `Continuation::Instantiate`,
 `Step::Initializer`/`InitializerThen`/`ClauseMessage`), with road step 6's
-fast `new` beside it. Its twin, the accessor of a nested class (the `Foo`
-in `Foo new`), is a lookup kind of its own (`Lookup::NestedClass`,
-`Target::NestedClass`) that Rust acts on, with the class's creation as a
-continuation (`Step::SuperclassClause`, `Continuation::NestedClass`).
-
-Both become compiled code, as in the references (Squeak-Newspeak
+fast `new` beside it. The factory and the initializers become compiled code, as in the references (Squeak-Newspeak
 `Newspeak2SqueakCompilation.ns:1991-2025`, `:1899-1921`; SOMns
 `MixinBuilder.assemblePrimaryFactoryMethod`, `MixinBuilder.java:547-600`;
 Primordial Soup `Newspeak2PrimordialSoupCompilation.ns:1907-1961`).
@@ -39,8 +34,7 @@ Why, decided with the user on 2026-10-22, in this order of priority:
 - Each level's instance initialization is one compiled body on its mixin
   that does all of §6.3 for that level, superclass first, with no Rust
   walk between levels.
-- The nested-class accessor is a compiled body whose hit path is code: the
-  hidden cache slot read and returned.
+- The nested-class accessor's cache hit is a guard and one field load.
 - Every observable behaviour stays as it is, every golden unchanged, with
   the exceptions decided below: a `<:` level reached from outside
   (decision 4), a chain deeper than the depth limit (decision 6), and the
@@ -54,6 +48,16 @@ Why, decided with the user on 2026-10-22, in this order of priority:
   are; their real bodies are planned between steps 7 and 8.
 - The futures of simultaneous slots (`Continuation::Future`) stay in Rust;
   the batch adds an `OPEN-WORK.md` item for them (decided with the user).
+- No scalarization of value objects; the batch adds an `OPEN-WORK.md`
+  item at road step 9 (decided with the user): scalar replacement of
+  values in the optimizing JIT -- permitted because a value's `==` is its
+  `=` and its `identityHash` its `hash` (`Kernel.ns`, §3.1.1), and made
+  possible by this batch, which turns allocation and initialization into
+  code the JIT can inline -- with its open questions: a value's lazy slot
+  (each copy would compute it), `self` escaping a value's initializer
+  before its slots are filled, whether the bulk forward may take a value,
+  and flattening values into other objects and arrays, which without
+  static slot types needs speculative layouts.
 - Slot accessors stay bodiless entries (Cog's quick methods); primitives
   stay VM leaves; the unwinder stays as it is.
 
@@ -179,16 +183,26 @@ most:
    `doesNotUnderstand:` (or silently run a higher initializer); SOMns
    flattens the levels into one class, so none is reachable; Primordial
    Soup has no `<:`. A golden pins the new behaviour of both cases.
-5. **The nested-class accessor becomes compiled code in this batch.** Its
-   hit path is the hidden cache slot read, mixin-relative and guarded like
-   a lazy slot's getter (`ReturnSlotIfFilled`). Its miss path -- the
-   in-progress marker and the cyclic-definition error, the superclass
-   clause, building the class (`nested::after_clause`: applying the mixin,
-   `build_applied_levels`, the value-class verdict, looking the cache slot
-   up again after the clause ran, the bulk-forward cases) -- may stay Rust
-   behind an instruction, since it runs once per enclosing object; it is
-   no longer a continuation of the run loop. Building a class stays a
-   runtime operation, as the kernel's `apply:` is in Squeak-Newspeak.
+5. **The nested-class accessor stays bodiless, and its cache entry
+   holds the absolute index of the hidden slot.** Revised with the user
+   the same day: a filled accessor answers today without an activation,
+   like a slot getter -- a quick method in Cog's sense, which both JITs
+   must special-case anyway for the slot accessors, which stay bodiless.
+   A compiled body would cost the interpreter an activation per `Foo` and
+   make no JIT tier faster (the optimizing JIT inlines either form to the
+   same code; the baseline JIT emits the guarded load at the site). What
+   changes is the hit path's cost: `Target::NestedClass` records the
+   absolute field index of the receiver application's hidden slot
+   (`MixinApplication::nested_slot`), as `Target::Slot` records a slot's,
+   so a hit is the guard and one field load, without today's
+   `known_mixin_id` and `nested_slot` hash lookups (`nested::cache_slot`).
+   The guard -- the receiver's application -- decides the index, so the
+   entry records what the lookup decided. A filled slot answers the
+   class; an empty one, or one marked in progress, takes today's path
+   (`nested::nested_class`: the marker, the cyclic-definition error, the
+   superclass clause's activation and `Continuation::NestedClass`,
+   `after_clause`), which runs once per enclosing object. The reference
+   lowering runs it uncached, as every send.
 6. **A level's initializer invokes its superclass's from inside its own
    activation, so a chain nests one counted activation per level with
    code.** A chain of more such levels than the depth limit (100,000 plus
@@ -287,14 +301,12 @@ check.
 - The instructions: their number, names, operands and encodings (an
   allocation, an initializer invocation of the receiver's own level, of
   the superclass level, of an applied level's own part, the `<:` selector
-  check, the accessor's miss path), their `outer_reach_of` and
+  check), their `outer_reach_of` and
   `narrow_outer_reach` arms, and how the reference lowering emits the same
   shapes uncached.
 - Where the factory body lives (a `MethodEntry::Factory` that now carries
-  code, or `Compiled` with a flag the mirrors filter) and how the
-  nested-class accessor is entered in the tables (a new entry kind, or the
-  existing lookup answering a body); both must stay invisible to the
-  mirrors' `methods`.
+  code, or `Compiled` with a flag the mirrors filter); it must stay
+  invisible to the mirrors' `methods`.
 - The frame kinds of the new activations, and what an error raised in
   them names as its selector (today an initializer frame names the
   instantiated class's factory selector; keep the texts).
@@ -318,4 +330,4 @@ check.
   `compiler.md`, `execution.md` ("Deciding, then running"),
   `image-format.md`, `core-library.md` (lock 5's wording), `CLAUDE.md`'s
   invariants that name the walk, `OPEN-WORK.md` (remove "Next", add the
-  futures item), `PROGRESS.md`; and this file deleted.
+  futures item and the scalarization item), `PROGRESS.md`; and this file deleted.
