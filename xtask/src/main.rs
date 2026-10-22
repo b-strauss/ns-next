@@ -344,7 +344,10 @@ fn command_of(step: &Step, root: &Path) -> Command {
             } else {
                 "gradlew"
             };
-            Command::new(root.join("editors/jetbrains").join(wrapper))
+            let mut command = Command::new(root.join("editors/jetbrains").join(wrapper));
+            // No daemon outlives a gate run.
+            command.arg("--no-daemon");
+            command
         }
     };
     command.args(&step.arguments).current_dir(root);

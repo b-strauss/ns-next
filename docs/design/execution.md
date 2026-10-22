@@ -750,15 +750,25 @@ There are two ways to measure, and they report different things:
   interpreter keeps between sends: the inline caches and the platform's
   lazy members. The untimed run does the same work every time, which is
   what lets `benchmarks/are-we-fast-yet.toml` pin its output and `bench` time it.
-- **`ns-next run benchmarks/are-we-fast-yet -- --timed [<Name>]`**
+- **`ns-next run benchmarks/are-we-fast-yet -- --timed [--warm-up <milliseconds>] [--measure <milliseconds>] [<Name>]`**
   lets the
   harness measure itself, as Primordial Soup's does: for each benchmark, or
-  the one named, it runs `bench` repeatedly for at least 3 ms to warm up,
-  then for at least 20 ms, reading `platform time Stopwatch`, and prints
+  the one named, it runs `bench` repeatedly for at least the warm-up window,
+  3 ms unless `--warm-up` says otherwise, then for at least the measurement
+  window, 20 ms unless `--measure` says otherwise, reading
+  `platform time Stopwatch`, and prints
   `<Name>: <runs per second>` with one fraction digit (`asStringFixed: 1`).
   That score is a throughput after warm-up, comparable with Primordial
   Soup's own; it varies from run to run, so only its shape is checked
-  (`crates/ns-cli/tests/run_benchmarks.rs`, `timed::<Name>`).
+  (`crates/ns-cli/tests/run_benchmarks.rs`, `timed::<Name>`). The two flags
+  are accepted only after `--timed`, in either order, each at most once;
+  a value is a non-negative decimal integer, read with `Integer parse:`,
+  whose `ArgumentError` the harness reaches as `platform kernel
+  ArgumentError`. A flag without `--timed`, a repeated flag, a flag without
+  its value or any other value signals the usage error, whose text names
+  the flags. Every `--timed` score in this section was taken with the
+  default windows. The Java counterparts (below) take the same flags with
+  the same defaults (decided with the user on 2026-10-22).
 
 Either way the protocol of the `measuring-performance` skill applies, as it
 does to every figure in this section: release builds only, and every binary
@@ -778,6 +788,178 @@ fraction digit, and it added about eighteen minutes. `--timed` is for a
 comparison with Primordial Soup or another VM, whose scores it matches in
 form, and for a short program whose per-application setup might hide a
 change in its workload.
+
+**The Java counterparts.** `benchmarks/are-we-fast-yet/java/` holds a Java
+counterpart of each of the sixteen programs and of the harness, so that
+ns-next's scores can be put beside a JVM's under one protocol. Decided with
+the user on 2026-10-22:
+
+- **Same work, not idiomatic Java.** The Java programs keep Are We Fast
+  Yet's rules: the algorithm of the Newspeak version, and the `som`
+  collections (`Vector`, `Dictionary`, `Set`, ...) in place of
+  `java.util`, which only the harness uses. A comparison measures two VMs
+  on one program, not two programs.
+- **Upstream's Java, adapted.** The fourteen benchmarks and the harness
+  are Are We Fast Yet's own Java versions
+  (`prior-art/are-we-fast-yet/benchmarks/Java/src/`, commit
+  `74306fec151070fd07157cefeacf19e7e0bcdc89`), adapted, not translated
+  afresh. Only `RichardsTon80` and `DeltaBlueTon80`, which have no Java
+  version there, are translated from our `.ns` ports, class by class and
+  method by method, keeping their sizes (100 and 100) and their checks:
+  each module's slots are a `Constants` class and its nested classes files
+  of their own under `richardston80/` and `deltablueton80/`, the ports'
+  `List` is `som.Vector`, and a value is a `long` wherever the `.ns` value
+  can exceed 2^31, since Java's `int` overflows silently where Newspeak's
+  integers do not.
+- **No microbenchmarks.** `benchmarks/micro/` gets no Java counterpart: it
+  times the interpreter's internals in loops a JIT removes, so a Java score
+  for it says nothing.
+- **Plain `javac --release 21`**, no build tool, no JMH, no dependency.
+
+The layout is upstream's package structure: in the default package the
+harness, `AreWeFastYet.java` (upstream's `Harness.java` and `Run.java`
+folded into one), `Benchmark.java` and one file per benchmark; beside them
+the packages `som/`, `cd/`, `deltablue/`, `havlak/`, `json/`, `nbody/`,
+`richards/`, `richardston80/` and `deltablueton80/`. Upstream's
+`build.xml`, `build.sh` and checkstyle configuration are not taken. What
+changed from upstream is what the `.ns` ports changed, and no more.
+`Benchmark` has one method, `void bench()`, into which upstream's
+`benchmark()`, `verifyResult(Object)` and `innerBenchmarkLoop(int)` are
+folded: it runs the workload once at the `.ns` port's size and throws an
+`IllegalStateException` whose message is the port's `Error` text
+(`Sieve: expected 669, got …`) when the result is wrong. The sizes and
+results are the ports' (above: Mandelbrot 750, NBody 250000 steps,
+DeltaBlue 12000, Havlak 1500, CD 250, Json parsing its input once), every
+departure a port's header names is named in its Java file's header too,
+and the checks for upstream's other sizes are dropped. Names are written
+out in every identifier the adaptation touches, as in the ports. The one
+addition to the `som` collections is `Vector.removeLast()`, for
+`deltablueton80`, whose port takes its work lists from the end: upstream's
+`Vector` has no removal from the end and keeps its storage private, and
+taking from the front would change the order in which the planner visits
+the constraints. Any other departure from upstream's algorithm is a
+defect. Each file starts with a comment naming its upstream file and
+commit and what was changed, then upstream's notice verbatim; a file that
+has no notice upstream keeps upstream's comment as it is, and the CD files
+add the notice of CDx, from which they derive (below).
+
+Upstream is under several licences, which its `LICENSE.md` describes, and
+each adapted file keeps the notice it carries upstream;
+`THIRD-PARTY-NOTICES.md`, "Are We Fast Yet", carries the texts:
+
+| Files | Notice |
+|---|---|
+| `AreWeFastYet`, `Benchmark`, `som/*` but `IdentityDictionary`, `Bounce`, `List`, `Permute`, `Queens`, `Sieve`, `Storage`, `Towers` | MIT, the SOM class library's authors |
+| `CD`, `Havlak` | the same MIT text, `Copyright (c) 2001-2016 Stefan Marr`; `CD` adds the BSD-3 notice of `cd/*` |
+| `Json`, `json/JsonPureStringParser` | MIT, Stefan Marr |
+| the rest of `json/` | MIT, EclipseSource (minimal-json) |
+| `havlak/*` but `UnionFindNode` | Apache License 2.0, Google; `UnionFindNode` carries no notice |
+| `Mandelbrot` | Revised BSD, Brent Fulgham (the Computer Language Benchmarks Game) |
+| `NBody`, `nbody/*` | none of their own: their comment names the Benchmarks Game, whose Revised BSD text upstream's `LICENSE.md` carries |
+| `Richards`, `richards/*`, `DeltaBlue`, `deltablue/*` | none of their own: derived from Mario Wolczko's versions, they point to his licence page, as `LICENSE.md` does |
+| `cd/*` | BSD-3, Purdue University 2001-2010 and Apple 2015, copied from `CD.ns`'s header: upstream's Java files omit it, but derive from Purdue's CDx under it, as do upstream's JavaScript and SOM versions of CD, which carry it |
+| `som/IdentityDictionary` | none: upstream's file carries no notice, and `LICENSE.md` names none for it |
+| `RichardsTon80`, `DeltaBlueTon80`, `richardston80/*`, `deltablueton80/*` | Apache License 2.0, the Newspeak project authors: the header of the `.ns` port each is translated from |
+
+The files with no notice at all are `som/IdentityDictionary` and
+`havlak/UnionFindNode`, beside `NBody` and `nbody/*`, whose comment names
+the Benchmarks Game without a licence text. The CD files are the one place
+a notice is added: upstream's Java `cd/*` carry none and `CD.java` only
+the MIT text, but CD is a port of Purdue's CDx, whose BSD-3 notice
+`CD.ns` (from SOMns) and upstream's `cd.js` and `CD/*.som` carry, so
+each of them carries it too, after its adaptation comment (and, in
+`CD.java`, after the MIT notice), and its header says why.
+
+`AreWeFastYet.java` takes the `.ns` harness's command line and prints its
+lines:
+
+```
+java -cp <classes> AreWeFastYet [--timed [--warm-up <milliseconds>] [--measure <milliseconds>]] [<Name>]
+```
+
+It registers the benchmarks in `AreWeFastYet.ns`'s order. Without
+`--timed` it runs each, or the one named, once and prints `<Name>: ok`,
+the line written only after `bench()` returns, so a benchmark that throws
+leaves none; with `--timed` it measures each for the warm-up window, then
+for the measurement window, and prints `<Name>: <runs per second>` with
+one fraction digit, formatted in `Locale.ROOT` so that a German Windows
+writes a point, not a comma. Its measuring loop is the `.ns` harness's:
+run, count, read `System.nanoTime()`, repeat while the elapsed time is
+under the window, answer runs × 10⁹ / elapsed. The flags, their defaults
+of 3 and 20 ms and their usage error are the `.ns` harness's; a value
+also reads only an optional `-` and ASCII digits, as `Integer parse:`
+does, and one whose nanoseconds a `long` cannot hold is refused. An
+unknown name throws `Unknown benchmark: <name>`, a malformed command line
+the usage text, adjusted to `java AreWeFastYet`; either way the JVM exits
+non-zero with the message on stderr. The system property
+`-DareWeFastYet.failFirstCheck=true` replaces the first selected benchmark
+with one whose check always fails; it is the harness's only test hook.
+
+The `benchmarks` gate runs the Java side in
+`crates/ns-cli/tests/run_benchmarks.rs`, beside the ns-next trials, so
+the profile `benchmarks-verify` needs a JDK; the default profile runs none
+of it, so an ordinary commit does not. `javac` and `java` come from
+`$JAVA_HOME/bin` when `JAVA_HOME` is set -- a `JAVA_HOME` without
+`bin/javac` fails, naming the path, and never falls back to `PATH` -- and
+from `PATH` otherwise, an empty `JAVA_HOME` counting as unset. The trials
+run every `java` and `javac` without the environment's JVM option
+variables, `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS` and `_JAVA_OPTIONS`:
+the JVM announces each on stderr, which the trials compare exactly, and
+the options would change what Java measures. A missing JDK fails the
+trials and says the gate needs one, never skips them, since a gate that
+passes without running is no gate. The sources compile with
+`javac --release 21 -encoding UTF-8` once per content: into
+`<CARGO_TARGET_TMPDIR>/are-we-fast-yet-java/<key>`, the key a hash of the
+sorted relative paths and contents of every `.java`, compiled into a
+temporary sibling and renamed into place, since nextest runs each trial
+as a process of its own, in parallel; a process that finds the directory
+uses it, one that loses the rename uses the winner's, and a changed,
+renamed or deleted source gives a new key, so no stale class runs. Once
+`<key>` is in place, every entry of `are-we-fast-yet-java/` that belongs
+to another key, an older key's classes or a leftover temporary directory,
+is removed, errors ignored: while the sources stay unchanged during a
+run, no process uses another key; editing them mid-run, or two runs at
+different states of the sources sharing one target directory, lets a
+later process remove an older key's directory that a live process uses,
+and can fail the trials of the older state. The key's own temporary
+siblings stay, since other trials may still be compiling into them,
+unless they are over an hour old: a compilation takes seconds, so such a
+sibling is a killed process's, and the age decides without inspecting
+processes. A compilation error fails every Java trial with `javac`'s
+output. The trials:
+
+- **`java::<Name>`**, for each benchmark: the Java harness run by name,
+  held to that benchmark's line of `benchmarks/are-we-fast-yet.toml`
+  (`<Name>: ok`), so the `.ns` and Java programs share one record of what
+  each must answer.
+- **`java-timed::<Name>`**: `--timed <Name>`, its score's shape checked as
+  `timed::<Name>` checks ns-next's.
+- **`java::unknown-benchmark`**, **`java::a-failing-check-prints-no-ok`**
+  (through the test hook) and **`java::missing-jdk-is-named`** (a
+  `JAVA_HOME` that holds no JDK is named in the failure, and an empty one
+  answers the tool's bare name, for `PATH`).
+- **`flags::ns-next::*` and `flags::java::*`**, on both harnesses:
+  `windows-print-a-score` and `either-order` run `--timed --warm-up 0
+  --measure 1 Sieve` and the flags swapped, and print a score of the right
+  shape; `rejected` holds `--warm-up 5` without `--timed`, `--measure x`,
+  `--measure -1`, a repeated `--warm-up` and `--measure` without a value
+  to a non-zero exit, nothing on stdout and the usage on stderr.
+
+The default windows suit an interpreter; a JIT is still compiling after
+3 ms. A peak comparison gives both sides the same longer windows, for
+example ten seconds of warm-up, from the repository root, the ns-next side
+a release build pinned as the `measuring-performance` skill says:
+
+```bash
+javac --release 21 -encoding UTF-8 -d .temp/are-we-fast-yet-java $(find benchmarks/are-we-fast-yet/java -name '*.java')
+java -cp .temp/are-we-fast-yet-java AreWeFastYet --timed --warm-up 10000 Richards
+ns-next run benchmarks/are-we-fast-yet -- --timed --warm-up 10000 Richards
+```
+
+Measure one benchmark per JVM or ns-next invocation, as the example does.
+A timed run of all sixteen in one process slows the later ones: they share
+the `som` collections' call sites, which the earlier benchmarks have made
+megamorphic for the JIT (and, less so, for ns-next's inline caches).
 
 **The baseline**, measured on 2026-10-02 at `1792df5` on one Windows 11
 machine (Intel Core Ultra 9 285K): three pinned release builds of the tree,
@@ -7145,7 +7327,8 @@ Each step gets its own design when it comes up.
   forward to the VM mirror -- and deoptimizing when a speculation fails. Its
   target is measured against Java with the Are We Fast Yet benchmarks, whose
   Newspeak versions SOMns carries (`prior-art/somns/core-lib/Benchmarks`)
-  and whose Java versions are in that suite's own repository, and with
+  and whose Java counterparts are under `benchmarks/are-we-fast-yet/java/`
+  ("The Are We Fast Yet benchmarks"), and with
   `prior-art/newspeak-benchmarks`, a separate suite -- DeltaBlue, Richards,
   Splay, parser combinators and micro-benchmarks -- with Java versions of five of its programs.
 

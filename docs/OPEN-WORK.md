@@ -65,8 +65,9 @@ with the compact instruction encoding after road step 2 and real Newspeak bodies
 for the control-flow loops between steps 7 and 8. Steps 1 to 6 give a very good
 interpreter on a modern object representation; road step 8 reaches Cog's class,
 road step 9 Strongtalk's and HotSpot's, measured against Java with the Are We
-Fast Yet benchmarks (Newspeak versions in `prior-art/somns/core-lib/Benchmarks`)
-and `prior-art/newspeak-benchmarks`.
+Fast Yet benchmarks (Newspeak versions in `prior-art/somns/core-lib/Benchmarks`,
+Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
+`prior-art/newspeak-benchmarks`.
 
 - **Step 1, the memory layer -- built** (`crates/ns-memory`;
   [memory.md](design/memory.md), "The memory layer").
@@ -1679,6 +1680,18 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
 ## Code quality follow-ups
 
 Small, deliberately left, none affecting an outcome.
+
+- Leftovers of the Java benchmarks' reviews (noted 2026-10-22): a lone
+  `--warm-up` or `--measure` without `--timed` is read as a benchmark
+  name and answers `Unknown benchmark: --warm-up` rather than the usage,
+  the same in both harnesses; `flags::<side>::rejected` does not cover
+  `+5`, an empty value or one past the Java harness's range; the
+  adapted DeltaBlue, Havlak and CD files keep upstream's comments, which
+  name identifiers the adaptation wrote out (`benchmarks/are-we-fast-yet/java/`);
+  and the trials' source key is `DefaultHasher`'s, stable per toolchain
+  only, so a toolchain change recompiles the classes once
+  (`crates/ns-cli/tests/run_benchmarks.rs`; `execution.md`, "The Are We
+  Fast Yet benchmarks").
 
 - **The gates chosen from what a change touched** (noted 2026-10-14, with
   the user): `cargo xtask gates <group>` runs the groups `CLAUDE.md`'s table

@@ -1,6 +1,6 @@
 # Third-party notices
 
-`ns-next` adapts code from four third-party projects, and each file that holds
+`ns-next` adapts code from five third-party projects, and each file that holds
 any names the upstream file it comes from in a header:
 
 - Rust code from num-bigint and num-integer, in
@@ -12,6 +12,13 @@ any names the upstream file it comes from in a header:
   License 2.0 and BSD-3); and the harness, `RichardsTon80.ns` and
   `DeltaBlueTon80.ns` from Primordial Soup, licensed under the Apache
   License 2.0.
+- Java code in `benchmarks/are-we-fast-yet/java/`: the Java versions of the
+  benchmarks and their harness from Are We Fast Yet, whose files carry
+  several licences (below); each adapted file keeps its upstream notice in
+  its header, and a file with none upstream has none here, except that the
+  CD files add the BSD-3 notice of CDx, which `CD.ns` carries (below). The Java
+  translations of `RichardsTon80.ns` and `DeltaBlueTon80.ns` beside them
+  carry those files' Apache License 2.0 header.
 
 Each of these licences requires its notice below to accompany every copy.
 
@@ -109,6 +116,37 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+```
+
+`CD.ns` carries, besides this one, the BSD-3 notice of Purdue University's
+CDx, the benchmark it ports. The Java `CD.java` and `cd/*.java` carry the
+same notice (see Are We Fast Yet below):
+
+```
+Copyright (c) 2001-2010, Purdue University. All rights reserved.
+Copyright (C) 2015 Apple Inc. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+ * Redistributions of source code must retain the above copyright
+   notice, this list of conditions and the following disclaimer.
+ * Redistributions in binary form must reproduce the above copyright
+   notice, this list of conditions and the following disclaimer in the
+   documentation and/or other materials provided with the distribution.
+ * Neither the name of the Purdue University nor the
+   names of its contributors may be used to endorse or promote products
+   derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY
+DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
 ## Primordial Soup
@@ -317,3 +355,228 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 
 END OF TERMS AND CONDITIONS
 ```
+
+## Are We Fast Yet
+
+Upstream: https://github.com/smarr/are-we-fast-yet, commit
+`74306fec151070fd07157cefeacf19e7e0bcdc89`. Its files are under several
+licences, which its `LICENSE.md` describes:
+
+````
+# Overview
+
+The benchmarks in this repository are from different sources and have different
+licenses.
+
+## Richards and DeltaBlue
+
+These benchmark are derived from the Smalltalk sources provided by Mario Wolczko.
+
+License details are available at:
+  http://web.archive.org/web/20050825101121/http://www.sunlabs.com/people/mario/java_benchmarking/index.html
+
+Further information:
+  http://www.wolczko.com/java_benchmarking.html
+
+## Computer Language Benchmarks Game
+
+$Id: LICENSE,v 1.1 2012-12-29 19:28:50 igouy-guest Exp $
+
+Revised BSD license
+
+This is a specific instance of the Open Source Initiative (OSI) BSD license template
+http://www.opensource.org/licenses/bsd-license.php
+
+
+Copyright 2008-2012 Isaac Gouy
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+   Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+
+   Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+
+   Neither the name of "The Computer Language Benchmarks Game" nor the name of "The Computer Language Shootout Benchmarks" nor the name "bencher" nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+````
+
+The harness, the SOM class library (`som/`, but `IdentityDictionary.java`,
+which carries no notice) and the benchmarks Bounce, List,
+Permute, Queens, Sieve, Storage and Towers carry this notice (MIT); CD and
+Havlak carry the same text with its first two lines replaced by the
+copyright line `Copyright (c) 2001-2016 Stefan Marr`:
+
+```
+This code is based on the SOM class library.
+
+Copyright (c) 2001-2016 see AUTHORS.md file
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the 'Software'), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
+The `AUTHORS.md` it names is `AUTORS.md` in the upstream tree:
+
+````
+# Authors of the SOM Class Library
+
+Some of the benchmarks in this repository use the SOM class library, which was
+contributed to by the people listed below.
+
+SOM was originally implemented at the University of Aarhus (Denmark) in
+2001/2002. The implementation of SOM was done by Jakob Roland Andersen, Kasper
+Verdich Lund, Lars Bak, Mads Torgersen, and Ulrik Pagh Schultz. They also
+wrote the original versions of the SOM Smalltalk libraries, test suites, and
+benchmarks, that are (in extended versions) bundled with SOM.
+
+SOM was used by Michael Haupt in courses on virtual machines at Lancaster
+University and Technische Universitaet Darmstadt (Germany) in VM courses in
+2006. During that time, some changes were applied to SOM by Michael Haupt and
+Sebastian Kanthak.
+
+SOM was later used for various research projects by Stefan Marr.
+````
+
+Json and `json/JsonPureStringParser` carry this notice (MIT):
+
+```
+Copyright (c) 2015 Stefan Marr
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+The rest of `json/`, from minimal-json, carries this notice (MIT;
+`json/ParseException` reads `Copyright (c) 2013, 2014 EclipseSource.`):
+
+```
+Copyright (c) 2013, 2015 EclipseSource.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+The files of `havlak/` but `UnionFindNode.java`, which carries no notice,
+carry this notice (`Havlak.java` itself carries the MIT notice above); the
+Apache License 2.0 it names is given in full under Primordial Soup above:
+
+```
+Copyright 2011 Google Inc.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+```
+
+Mandelbrot carries this notice (Revised BSD, the Computer Language
+Benchmarks Game). NBody names the Benchmarks Game without a licence text,
+so the Revised BSD text in `LICENSE.md` above applies to it:
+
+```
+This benchmark has been modified based on the SOM benchmark.
+
+Copyright (C) 2004-2013 Brent Fulgham
+
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+  * Redistributions of source code must retain the above copyright notice,
+    this list of conditions and the following disclaimer.
+
+  * Redistributions in binary form must reproduce the above copyright notice,
+    this list of conditions and the following disclaimer in the documentation
+    and/or other materials provided with the distribution.
+
+  * Neither the name of "The Computer Language Benchmarks Game" nor the name
+    of "The Computer Language Shootout Benchmarks" nor the names of its
+    contributors may be used to endorse or promote products derived from this
+    software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+Richards and DeltaBlue are derived from Mario Wolczko's versions; their
+files point to his licence page, as `LICENSE.md` above does, and carry no
+licence text of their own.
+
+`som/IdentityDictionary.java` carries no notice at all, and `LICENSE.md`
+names no licence for it. Neither do the files of `cd/` upstream, and
+`CD.java` carries only the MIT notice above; but Java CD, like every
+version of CD in Are We Fast Yet, is a port of Purdue University's CDx,
+whose BSD-3 notice (Copyright (c) 2001-2010, Purdue University; Copyright
+(C) 2015 Apple Inc.) upstream's `benchmarks/JavaScript/cd.js` and
+`benchmarks/Smalltalk/CD/*.som` carry. Here `CD.java` and every file of
+`cd/` carry that notice in their headers, copied from the header of
+`benchmarks/are-we-fast-yet/CD.ns`, as `CD.ns` does; its text is given in
+full under SOMns above.
+
+`RichardsTon80.java`, `DeltaBlueTon80.java` and the files of
+`richardston80/` and `deltablueton80/` are not from Are We Fast Yet: they
+are translated from `RichardsTon80.ns` and `DeltaBlueTon80.ns` and carry
+those files' Apache License 2.0 header, under Primordial Soup above.
