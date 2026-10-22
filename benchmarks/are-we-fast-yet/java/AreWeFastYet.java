@@ -13,9 +13,10 @@
  * runs per second with one fraction digit. An unknown name or a malformed
  * command line throws, so the JVM exits non-zero with the message on stderr.
  *
- * The system property areWeFastYet.failFirstCheck=true throws in place of
- * the first bench, so a test can see that a failing benchmark prints no
- * line; it is the harness's only test hook.
+ * The system property areWeFastYet.failFirstCheck=true replaces the first
+ * selected benchmark by one whose bench always throws, so a test can see
+ * that a failing benchmark prints no line; it is the harness's only test
+ * hook.
  */
 /* This code is based on the SOM class library.
  *
@@ -80,10 +81,13 @@ public final class AreWeFastYet {
 
   private static void run(final String name, final boolean timed) {
     boolean found = false;
+    boolean failNext = Boolean.getBoolean("areWeFastYet.failFirstCheck");
     for (Map.Entry<String, Supplier<Benchmark>> entry : BENCHMARKS.entrySet()) {
       if (name == null || entry.getKey().equals(name)) {
         found = true;
-        report(entry.getKey(), entry.getValue().get(), timed);
+        Benchmark benchmark = failNext ? new FailingBenchmark() : entry.getValue().get();
+        failNext = false;
+        report(entry.getKey(), benchmark, timed);
       }
     }
     if (!found) {
@@ -97,9 +101,6 @@ public final class AreWeFastYet {
    */
   private static void report(final String name, final Benchmark benchmark,
       final boolean timed) {
-    if (Boolean.getBoolean("areWeFastYet.failFirstCheck")) {
-      throw new IllegalStateException("forced failure");
-    }
     String result;
     if (timed) {
       measure(benchmark, WARM_UP_NANOSECONDS);
@@ -126,5 +127,16 @@ public final class AreWeFastYet {
       elapsed = System.nanoTime() - start;
     } while (elapsed < nanoseconds);
     return (runs * 1_000_000_000.0) / elapsed;
+  }
+
+  /**
+   * Stands in for the first selected benchmark under
+   * areWeFastYet.failFirstCheck: a benchmark whose check always fails.
+   */
+  private static final class FailingBenchmark extends Benchmark {
+    @Override
+    public void bench() {
+      throw new IllegalStateException("forced failure");
+    }
   }
 }

@@ -78,11 +78,7 @@ fn main() {
         "java::missing-jdk-is-named",
         java_names_a_missing_jdk,
     ));
-    let conclusion = libtest_mimic::run(&arguments, trials);
-    // Best effort: a directory left behind is emptied by the next process
-    // that compiles into it.
-    let _ = std::fs::remove_dir_all(java_classes_directory());
-    conclusion.exit();
+    libtest_mimic::run(&arguments, trials).exit();
 }
 
 /// The run's exit status, stdout and stderr match its recorded outcome
@@ -228,10 +224,9 @@ fn java_harness(arguments: &[&str]) -> Result<std::process::Output, String> {
         .map_err(|error| format!("run java: {error}"))
 }
 
-/// The directory of the Java counterparts' classes, compiled on first use
-/// and once per process: every Java trial of the process shares the one
-/// compilation, and a compilation error fails each of them with `javac`'s
-/// output.
+/// The directory of the Java counterparts' classes, found or compiled on
+/// first use and once per process: every Java trial of the process shares
+/// it, and a compilation error fails each of them with `javac`'s output.
 fn java_classes() -> Result<&'static Path, String> {
     static CLASSES: OnceLock<Result<PathBuf, String>> = OnceLock::new();
     CLASSES
@@ -241,40 +236,38 @@ fn java_classes() -> Result<&'static Path, String> {
         .map_err(Clone::clone)
 }
 
-/// Where this process compiles the Java counterparts:
-/// `<CARGO_TARGET_TMPDIR>/are-we-fast-yet-java/<process id>`. nextest runs
-/// each trial in a process of its own, and the processes run side by side;
-/// one shared directory would be emptied by one of them while another runs
-/// its classes.
-fn java_classes_directory() -> PathBuf {
-    Path::new(env!("CARGO_TARGET_TMPDIR"))
-        .join("are-we-fast-yet-java")
-        .join(std::process::id().to_string())
-}
-
-/// Compiles every `.java` under `benchmarks/are-we-fast-yet/java/` into the
-/// emptied `java_classes_directory`. Emptying it first means a renamed or
-/// deleted source leaves no class behind that still runs, even in a
-/// directory an earlier run with the same process id left.
+/// The classes of the sources under `benchmarks/are-we-fast-yet/java/` as
+/// they are now, in `<CARGO_TARGET_TMPDIR>/are-we-fast-yet-java/<key>`, the
+/// key a hash of every source's path and contents. nextest runs each trial
+/// in a process of its own, side by side, so there is one compilation per
+/// content rather than per process: a process that finds the directory uses
+/// it; otherwise it compiles into a sibling of its own and renames that into
+/// place, and when another process won that race it uses the winner's. A
+/// changed, renamed or deleted source gives a new key, so no stale class
+/// ever runs.
 fn compile_java() -> Result<PathBuf, String> {
-    let classes = java_classes_directory();
-    match std::fs::remove_dir_all(&classes) {
+    let root = common::repository_root().join("benchmarks/are-we-fast-yet/java");
+    let mut sources = Vec::new();
+    collect_java_sources(&root, &mut sources)?;
+    sources.sort();
+    let key = sources_key(&root, &sources)?;
+    let compilations = Path::new(env!("CARGO_TARGET_TMPDIR")).join("are-we-fast-yet-java");
+    let classes = compilations.join(&key);
+    if classes.is_dir() {
+        return Ok(classes);
+    }
+    let scratch = compilations.join(format!("{key}.{}.tmp", std::process::id()));
+    match std::fs::remove_dir_all(&scratch) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(format!("empty {}: {error}", classes.display())),
+        Err(error) => return Err(format!("empty {}: {error}", scratch.display())),
     }
-    std::fs::create_dir_all(&classes)
-        .map_err(|error| format!("create {}: {error}", classes.display()))?;
-    let mut sources = Vec::new();
-    collect_java_sources(
-        &common::repository_root().join("benchmarks/are-we-fast-yet/java"),
-        &mut sources,
-    )?;
-    sources.sort();
+    std::fs::create_dir_all(&scratch)
+        .map_err(|error| format!("create {}: {error}", scratch.display()))?;
     let javac = java_tool("javac")?;
     let output = Command::new(&javac)
         .args(["--release", "21", "-encoding", "UTF-8", "-d"])
-        .arg(&classes)
+        .arg(&scratch)
         .args(&sources)
         .output()
         .map_err(|error| {
@@ -284,13 +277,48 @@ fn compile_java() -> Result<PathBuf, String> {
             )
         })?;
     if !output.status.success() {
+        let _ = std::fs::remove_dir_all(&scratch);
         return Err(format!(
-            "javac failed:\n{}{}",
+            "javac failed:
+{}{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         ));
     }
+    if let Err(error) = std::fs::rename(&scratch, &classes) {
+        let _ = std::fs::remove_dir_all(&scratch);
+        if !classes.is_dir() {
+            return Err(format!(
+                "rename {} to {}: {error}",
+                scratch.display(),
+                classes.display()
+            ));
+        }
+    }
     Ok(classes)
+}
+
+/// A hash of every source's path below `root` and its contents, in the
+/// sorted order of `sources`, as sixteen hexadecimal digits.
+fn sources_key(root: &Path, sources: &[PathBuf]) -> Result<String, String> {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    for source in sources {
+        let relative = source.strip_prefix(root).map_err(|error| {
+            format!(
+                "{} is not below {}: {error}",
+                source.display(),
+                root.display()
+            )
+        })?;
+        for component in relative.components() {
+            component.as_os_str().to_string_lossy().hash(&mut hasher);
+        }
+        std::fs::read(source)
+            .map_err(|error| format!("read {}: {error}", source.display()))?
+            .hash(&mut hasher);
+    }
+    Ok(format!("{:016x}", hasher.finish()))
 }
 
 /// Every `.java` file below `directory`, recursively.

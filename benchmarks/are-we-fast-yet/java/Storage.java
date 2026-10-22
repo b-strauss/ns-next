@@ -3,9 +3,7 @@
  * 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Java/src/Storage.java).
  * Changed for ns-next: benchmark and verifyResult are bench, which runs once
  * and checks its own result, with the message of
- * benchmarks/are-we-fast-yet/Storage.ns; the subtrees are built by a loop in
- * index order, as in that port, so the generator is drawn from in that order
- * (in place of java.util.Arrays.setAll); names are written out.
+ * benchmarks/are-we-fast-yet/Storage.ns; names are written out.
  */
 /* This code is based on the SOM class library.
  *
@@ -29,6 +27,8 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+import java.util.Arrays;
+
 import som.Random;
 
 
@@ -52,9 +52,7 @@ public final class Storage extends Benchmark {
       return new Object[random.next() % 10 + 1];
     } else {
       Object[] array = new Object[4];
-      for (int index = 0; index < array.length; index++) {
-        array[index] = buildTreeDepth(depth - 1, random);
-      }
+      Arrays.setAll(array, index -> buildTreeDepth(depth - 1, random));
       return array;
     }
   }

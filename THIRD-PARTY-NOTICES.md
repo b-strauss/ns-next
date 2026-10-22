@@ -468,8 +468,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-`havlak/` carries this notice; the Apache License 2.0 it names is given in
-full under Primordial Soup above:
+The files of `havlak/` but `UnionFindNode.java`, which carries no notice,
+carry this notice (`Havlak.java` itself carries the MIT notice above); the
+Apache License 2.0 it names is given in full under Primordial Soup above:
 
 ```
 Copyright 2011 Google Inc.

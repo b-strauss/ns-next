@@ -111,12 +111,11 @@ code. `ns-next`'s own license is at `LICENSE`.
   SOM's authors, and EclipseSource for minimal-json), the Apache License 2.0
   (Google, for Havlak), the Revised BSD licence of the Computer Language
   Benchmarks Game (Mandelbrot, NBody), and Mario Wolczko's terms (Richards,
-  DeltaBlue); see `prior-art/are-we-fast-yet/LICENSE.md`, and the table in
-  `docs/superpowers/specs/2026-10-22-java-benchmarks-design.md`,
-  "Provenance and licences", for which file carries which. Code is adapted
-  from it: the Java sources in `benchmarks/are-we-fast-yet/java/`, from
-  `benchmarks/Java/src/`, with every notice and licence text in
-  `THIRD-PARTY-NOTICES.md`.
+  DeltaBlue); see `prior-art/are-we-fast-yet/LICENSE.md`, and the section
+  "Are We Fast Yet" of `THIRD-PARTY-NOTICES.md` for which file carries
+  which. Code is adapted from it: the Java sources in
+  `benchmarks/are-we-fast-yet/java/`, from `benchmarks/Java/src/`, with every
+  notice and licence text in `THIRD-PARTY-NOTICES.md`.
 - `newspeak-benchmarks` — no license file in the tree. Treat it as
   read-only reference material and do not copy code out of it without
   resolving that first.
@@ -150,11 +149,12 @@ submodule.
 Worth knowing before running `git submodule update --init` without an argument:
 `opensmalltalk-vm` is about **255 MB** checked out, several times larger than
 everything else here combined (`strongtalk` 38 MB, `newspeak` 17 MB, `nova`
-8 MB, `somns` 5.7 MB, `are-we-fast-yet` 3.3 MB, `primordialsoup` 2.8 MB, `num-bigint` 777 KB,
-`newspeak-benchmarks` 389 KB, `num-rational` 192 KB, `num-integer` 163 KB).
-It is mostly generated C sources and platform build trees, none of which is the
-interesting part — the Cog and Spur design lives in the Smalltalk-side sources and the
-comments. Initialize it by name when you want it rather than pulling everything.
+8 MB, `somns` 5.7 MB, `are-we-fast-yet` 3.3 MB, `primordialsoup` 2.8 MB,
+`num-bigint` 777 KB, `newspeak-benchmarks` 389 KB, `num-rational` 192 KB,
+`num-integer` 163 KB). It is mostly generated C sources and platform build
+trees, none of which is the interesting part — the Cog and Spur design lives in
+the Smalltalk-side sources and the comments. Initialize it by name when you
+want it rather than pulling everything.
 
 ## Nested submodules
 

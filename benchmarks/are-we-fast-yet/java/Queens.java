@@ -3,9 +3,8 @@
  * 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Java/src/Queens.java).
  * Changed for ns-next: benchmark and verifyResult are bench, which runs once
  * and checks its own result, with the message of
- * benchmarks/are-we-fast-yet/Queens.ns; the arrays are filled by a loop, as
- * in that port, in place of java.util.Arrays.fill; the class is final; names
- * are written out.
+ * benchmarks/are-we-fast-yet/Queens.ns; the class is final; names are
+ * written out.
  */
 /* This code is based on the SOM class library.
  *
@@ -29,6 +28,9 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+import java.util.Arrays;
+
+
 public final class Queens extends Benchmark {
 
   private boolean[] freeMaxs;
@@ -48,23 +50,12 @@ public final class Queens extends Benchmark {
   }
 
   private boolean queens() {
-    freeRows  = newArray( 8, true);
-    freeMaxs  = newArray(16, true);
-    freeMins  = newArray(16, true);
-    queenRows = new int[8];
-    for (int index = 0; index < queenRows.length; index++) {
-      queenRows[index] = -1;
-    }
+    freeRows  = new boolean[ 8]; Arrays.fill(freeRows, true);
+    freeMaxs  = new boolean[16]; Arrays.fill(freeMaxs, true);
+    freeMins  = new boolean[16]; Arrays.fill(freeMins, true);
+    queenRows = new     int[ 8]; Arrays.fill(queenRows, -1);
 
     return placeQueen(0);
-  }
-
-  private static boolean[] newArray(final int size, final boolean element) {
-    boolean[] array = new boolean[size];
-    for (int index = 0; index < size; index++) {
-      array[index] = element;
-    }
-    return array;
   }
 
   private boolean placeQueen(final int column) {

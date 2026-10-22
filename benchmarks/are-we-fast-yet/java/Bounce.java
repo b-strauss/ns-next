@@ -3,9 +3,9 @@
  * 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Java/src/Bounce.java).
  * Changed for ns-next: benchmark and verifyResult are bench, which runs once
  * and checks its own result, with the message of
- * benchmarks/are-we-fast-yet/Bounce.ns; the balls are made by a loop in index
- * order, as in that port, so the generator is drawn from in that order (in
- * place of java.util.Arrays.setAll); names are written out.
+ * benchmarks/are-we-fast-yet/Bounce.ns; names are written out, and the four
+ * if statements of bounce, too long for one line each with those names, are
+ * spread over several.
  */
 /* This code is based on the SOM class library.
  *
@@ -29,6 +29,8 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+import java.util.Arrays;
+
 import som.Random;
 
 
@@ -86,9 +88,7 @@ public final class Bounce extends Benchmark {
     int bounces   = 0;
     Ball[] balls  = new Ball[ballCount];
 
-    for (int index = 0; index < ballCount; index++) {
-      balls[index] = new Ball(random);
-    }
+    Arrays.setAll(balls, index -> new Ball(random));
 
     for (int index = 0; index < 50; index++) {
       for (Ball ball : balls) {
