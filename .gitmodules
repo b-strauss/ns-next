@@ -29,3 +29,6 @@
 [submodule "prior-art/num-rational"]
 	path = prior-art/num-rational
 	url = https://github.com/rust-num/num-rational.git
+[submodule "prior-art/are-we-fast-yet"]
+	path = prior-art/are-we-fast-yet
+	url = https://github.com/smarr/are-we-fast-yet.git
