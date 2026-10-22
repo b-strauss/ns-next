@@ -2066,6 +2066,12 @@ impl<'gc> Mutator<'gc> {
         // -- so a value's state is not a prefix of its fields.
         let declared_slots = crate::mixin::declared_slots_of(superclass, inherited, &mixin.slots);
         let dispatch_ids = self.mint_dispatch_ids();
+        // Whether `new` can skip the walk: decided once here, from this
+        // level's facts and the superclass application's verdict, so that
+        // every instantiation asks one flag (`decide_instantiation_from`).
+        let level_facts = crate::mixin::LevelFacts::of(mixin);
+        let instantiates_without_code =
+            crate::mixin::instantiates_without_code(&level_facts, superclass);
         let application = self
             .heap
             .register_application(crate::mixin::MixinApplication {
@@ -2080,6 +2086,9 @@ impl<'gc> Mutator<'gc> {
                 declared_slots,
                 own_slot_base: inherited,
                 dispatch_ids,
+                instance_header: None,
+                instantiates_without_code,
+                level_facts,
             });
         self.applications.insert(key, application.clone());
         application

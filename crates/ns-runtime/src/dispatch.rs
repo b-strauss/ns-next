@@ -433,9 +433,11 @@ mod tests {
     /// application is the simplest to build. The construction itself lives
     /// in `Heap::allocate_self_referential_class`.
     fn dummy_class<'gc>(heap: &mut Heap<'gc>) -> ClassReference<'gc> {
+        let mixin = Rc::new(crate::mixin::Mixin::empty(Symbol::intern("Dummy")));
+        let level_facts = crate::mixin::LevelFacts::of(&mixin);
         let application = heap.register_application(MixinApplication {
             index: crate::heap::ApplicationIndex::UNREGISTERED,
-            mixin: Rc::new(crate::mixin::Mixin::empty(Symbol::intern("Dummy"))),
+            mixin,
             superclass: None,
             inherits_value: false,
             first_mutable_slot: None,
@@ -445,6 +447,9 @@ mod tests {
             slot_count: 0,
             own_slot_base: 0,
             dispatch_ids: crate::mixin::DispatchIds::NONE,
+            instance_header: None,
+            instantiates_without_code: false,
+            level_facts,
         });
         heap.allocate_self_referential_class(crate::heap::NewClass {
             application,
@@ -499,12 +504,14 @@ mod tests {
         let super_application = superclass
             .as_ref()
             .and_then(|superclass_class| heap.class_application(*superclass_class));
+        let mixin = Rc::new(crate::mixin::Mixin {
+            methods,
+            ..crate::mixin::Mixin::empty(Symbol::intern(name))
+        });
+        let level_facts = crate::mixin::LevelFacts::of(&mixin);
         let application = heap.register_application(MixinApplication {
             index: crate::heap::ApplicationIndex::UNREGISTERED,
-            mixin: Rc::new(crate::mixin::Mixin {
-                methods,
-                ..crate::mixin::Mixin::empty(Symbol::intern(name))
-            }),
+            mixin,
             superclass: super_application,
             inherits_value: false,
             first_mutable_slot: None,
@@ -514,6 +521,9 @@ mod tests {
             slot_count: 0,
             own_slot_base: 0,
             dispatch_ids: crate::mixin::DispatchIds::NONE,
+            instance_header: None,
+            instantiates_without_code: false,
+            level_facts,
         });
         let class_of_class = dummy_class(heap);
         heap.allocate_class(

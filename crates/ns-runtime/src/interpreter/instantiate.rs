@@ -608,7 +608,7 @@ impl<'gc> Mutator<'gc> {
             Some(BuiltinClass::Ephemeron) => {
                 self.instantiate_allocating(class, arguments.to_vec(), Heap::allocate_ephemeron)
             }
-            _ => self.decide_instantiation(class, arguments.to_vec()),
+            _ => self.decide_instantiation_from(class, arguments),
         }
     }
 
@@ -631,7 +631,70 @@ impl<'gc> Mutator<'gc> {
         class: ClassReference<'gc>,
         factory_arguments: Vec<Value<'gc>>,
     ) -> Result<Step<'gc>, Signal<'gc>> {
-        self.instantiate_allocating(class, factory_arguments, Heap::allocate_instance)
+        self.decide_instantiation_from(class, &factory_arguments)
+    }
+
+    /// `decide_instantiation` for arguments the caller lends. A class
+    /// whose application runs no code, called with its factory's arity
+    /// and with no `<:` level in its chain, is allocated and answered at
+    /// once; every other walks the chain (`instantiate_allocating`), which
+    /// is also what raises every refusal and the arity error, so those
+    /// stay exactly as the walk words them.
+    fn decide_instantiation_from(
+        &mut self,
+        class: ClassReference<'gc>,
+        arguments: &[Value<'gc>],
+    ) -> Result<Step<'gc>, Signal<'gc>> {
+        if let Some(facts) = self.heap.class_instantiation_facts(class) {
+            let arity_matches = facts
+                .factory_arity
+                .is_none_or(|arity| arity == arguments.len());
+            let value_refused = facts.inherits_value && self.heap.class_has_value_refusal(class);
+            // A `<:` level runs its clause's message with the applying
+            // class's arguments however little code the applications hold,
+            // and whether the chain has one is a fact of the class objects:
+            // asked last, since it walks them.
+            if facts.without_code
+                && !facts.refused
+                && !value_refused
+                && arity_matches
+                && !self.heap.chain_has_applied_level(class)
+            {
+                let instance = match facts.header {
+                    Some(header) => {
+                        self.heap
+                            .allocate_instance_with(class, header, facts.slot_count)
+                    }
+                    None => self.heap.allocate_instance(class, facts.slot_count),
+                };
+                #[cfg(debug_assertions)]
+                self.assert_the_walk_agrees(class, instance, arguments);
+                return Ok(Step::Value(Value::object(instance)));
+            }
+        }
+        self.instantiate_allocating(class, arguments.to_vec(), Heap::allocate_instance)
+    }
+
+    /// The fast path's oracle in a debug build: the full walk over the
+    /// instance the fast path made must answer that same instance, with no
+    /// code to run.
+    #[cfg(debug_assertions)]
+    fn assert_the_walk_agrees(
+        &mut self,
+        class: ClassReference<'gc>,
+        instance: ObjectReference<'gc>,
+        arguments: &[Value<'gc>],
+    ) {
+        let state = self.walk_state(Value::object(instance));
+        match self.climb_levels(state, class, arguments.to_vec()) {
+            Ok(Step::Value(value)) => assert!(
+                value
+                    .as_object()
+                    .is_some_and(|object| object.same(instance)),
+                "internal: the walk answered another instance than the fast path"
+            ),
+            _ => panic!("internal: the fast instantiation skipped code the walk runs"),
+        }
     }
 
     /// `decide_instantiation`, with the instance's fields made by
@@ -1121,12 +1184,10 @@ impl<'gc> Mutator<'gc> {
         // since a selector's keyword count is its parameter count. This
         // guard is what keeps that reasoning from being the only thing
         // between a decoded image's message body and an out-of-bounds index.
-        let declared_arity = self.heap.class_application(class).and_then(|application| {
-            application
-                .mixin
-                .factory
-                .map(|factory| factory.argument_count)
-        });
+        let declared_arity = self
+            .heap
+            .class_level_facts(class)
+            .and_then(|facts| facts.factory_arity);
         if let Some(declared_arity) = declared_arity {
             if factory_arguments.len() != declared_arity {
                 return Err(Signal::Error(NewspeakError::error(
@@ -1170,13 +1231,10 @@ impl<'gc> Mutator<'gc> {
         applying: ClassReference<'gc>,
         superclass: ClassReference<'gc>,
     ) -> Result<Option<Rc<crate::bytecode::CompiledCode>>, Signal<'gc>> {
-        // One lookup of the application for both questions below: the clause
-        // this class was declared with, and the mixin its compiled message
-        // body lives on.
-        let application = self.heap.class_application(applying);
-        let clause = application
-            .as_ref()
-            .and_then(|application| application.mixin.superclass);
+        // The clause this class was declared with, copied out of its level's
+        // facts; the application itself is cloned only below, for the
+        // compiled message body of a clause that passes arguments.
+        let facts = self.heap.class_level_facts(applying);
         // §6.1: "if the message is omitted, it defaults to `new`" -- already
         // resolved into `ClauseMessage::selector` when the mixin was
         // built, and read from there rather than from the declaration: a
@@ -1185,7 +1243,7 @@ impl<'gc> Mutator<'gc> {
         // class whose superclass has a keyword factory would raise a
         // spurious "not the primary factory message" error on the first
         // instantiation after a load.
-        let selector = clause.map_or(Symbol::NEW, |clause| clause.selector);
+        let selector = facts.map_or(Symbol::NEW, |facts| facts.clause_selector);
         let expected = primary_factory_selector(&self.heap, superclass);
         if Some(selector) != expected {
             return Err(not_the_primary_factory_error(
@@ -1197,11 +1255,12 @@ impl<'gc> Mutator<'gc> {
                 expected,
             ));
         }
-        if !clause.is_some_and(|clause| clause.has_arguments) {
+        if !facts.is_some_and(|facts| facts.clause_has_arguments) {
             return Ok(None);
         }
-        let code = application
-            .as_ref()
+        let code = self
+            .heap
+            .class_application(applying)
             .and_then(|application| application.mixin.superclass_message_code.clone())
             .unwrap_or_else(|| {
                 panic!("internal: mixin whose superclass clause message takes arguments carries no compiled form for it (a mixin built from source always does; verify_mixins refuses a decoded one)")
@@ -1300,11 +1359,8 @@ pub(crate) fn primary_factory_selector<'gc>(
     heap: &Heap<'gc>,
     class: ClassReference<'gc>,
 ) -> Option<Symbol> {
-    heap.class_application(class)
-        .map(|application| match &application.mixin.factory {
-            Some(factory) => factory.selector,
-            None => Symbol::NEW,
-        })
+    heap.class_level_facts(class)
+        .map(|facts| facts.factory_selector)
 }
 
 fn class_name<'gc>(heap: &Heap<'gc>, class: ClassReference<'gc>) -> Symbol {
@@ -1728,15 +1784,15 @@ pub(crate) fn pattern_parameter_count(pattern: &ast::MessagePattern) -> usize {
 }
 
 /// Whether `class` declares any slot or `initExpr` at all -- `false` for
-/// every `BuiltinClass` and for a non-class object. Delegates to
-/// `mixin_needs_initializer_code`, the one definition of "needs initializer
-/// code" a class-level and a mixin-level caller both share.
+/// every `BuiltinClass` and for a non-class object. Read off the level's
+/// facts, which `mixin_needs_initializer_code` -- the one definition of
+/// "needs initializer code" -- filled when the application was registered.
 pub(crate) fn class_has_initializer_code<'gc>(
     heap: &Heap<'gc>,
     class: ClassReference<'gc>,
 ) -> bool {
-    heap.class_application(class)
-        .is_some_and(|application| mixin_needs_initializer_code(&application.mixin))
+    heap.class_level_facts(class)
+        .is_some_and(|facts| facts.needs_initializer_code)
 }
 
 /// The kind of the activation a `Step::ClauseMessage` for `level` pushes,
@@ -1790,9 +1846,232 @@ mod tests {
 
     use indoc::indoc;
 
-    use crate::mixin::Mixin;
+    use crate::mixin::{LevelFacts, Mixin};
     use crate::types::{BuiltinClass, ErrorClass, SourceOrigin};
-    use crate::Interpreter;
+    use crate::{HostResult, HostSignal, Interpreter, Root, Symbol};
+
+    fn load(source: &str) -> (Interpreter, Root) {
+        let module = ns_syntax::parse(source).expect("parse");
+        let resolved = crate::resolve(
+            module,
+            Rc::from(source),
+            SourceOrigin::File(PathBuf::from("t.ns")),
+        )
+        .expect("resolve");
+        let mut interpreter = Interpreter::bootstrap();
+        let class = interpreter.load_module(&resolved);
+        (interpreter, class)
+    }
+
+    fn expect_ok(result: HostResult, what: &str) -> Root {
+        match result {
+            Ok(root) => root,
+            Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
+            Err(HostSignal::Error(error)) => {
+                panic!("{what}: unexpected Newspeak error: {}", error.message)
+            }
+        }
+    }
+
+    /// The root class of `source` instantiated, and what each of `selectors`
+    /// answers when sent to the instance, in order.
+    fn send_to_root(source: &str, selectors: &[&str]) -> (Interpreter, Vec<Root>) {
+        let (mut interpreter, class) = load(source);
+        let root = expect_ok(interpreter.instantiate(&class, &[]), "instantiate the root");
+        let answers = selectors
+            .iter()
+            .map(|selector| {
+                expect_ok(
+                    interpreter.send(&root, Symbol::intern(selector), &[]),
+                    selector,
+                )
+            })
+            .collect();
+        (interpreter, answers)
+    }
+
+    /// Whether the application of the class `class` holds instantiates
+    /// without running code.
+    fn instantiates_without_code(interpreter: &mut Interpreter, class: &Root) -> bool {
+        interpreter.enter(|mutator| {
+            let class = mutator.fetch(class).as_object().expect("a class object");
+            mutator
+                .heap()
+                .class_application(class)
+                .expect("a class object has an application")
+                .instantiates_without_code
+        })
+    }
+
+    /// How `answer` is described in Newspeak-facing text.
+    fn described(interpreter: &mut Interpreter, answer: &Root) -> String {
+        interpreter.enter(|mutator| mutator.heap().describe(mutator.fetch(answer)))
+    }
+
+    /// A class that declares no slot, no initializer expression and no
+    /// superclass message with arguments is instantiated without a walk:
+    /// `new` answers its instance with no activation.
+    #[test]
+    fn a_class_with_no_initializer_code_answers_its_instance_without_an_activation() {
+        let source = indoc! {"
+            class Root = () (
+              public class Empty = () ()
+              public make = (
+                ^Empty new.
+              )
+            )
+        "};
+        let (mut interpreter, answers) = send_to_root(source, &["Empty", "make"]);
+        assert!(instantiates_without_code(&mut interpreter, &answers[0]));
+        interpreter.enter(|mutator| {
+            let class = mutator.fetch(&answers[0]).as_object().expect("a class");
+            let made = mutator.fetch(&answers[1]).as_object().expect("an instance");
+            assert!(mutator.heap().object_class(made).same(class));
+        });
+    }
+
+    #[test]
+    fn a_class_with_a_slot_takes_the_walk() {
+        let source = indoc! {"
+            class Root = () (
+              public class Holder = (| public x = 3. |) ()
+              public make = (
+                ^Holder new x.
+              )
+            )
+        "};
+        let (mut interpreter, answers) = send_to_root(source, &["Holder", "make"]);
+        assert!(!instantiates_without_code(&mut interpreter, &answers[0]));
+        assert_eq!(described(&mut interpreter, &answers[1]), "3");
+    }
+
+    #[test]
+    fn a_superclass_clause_with_arguments_takes_the_walk() {
+        let source = indoc! {"
+            class Root = () (
+              class Base value: v = (| public value = v. |) ()
+              public class Derived = Base value: 4 () ()
+              public make = (
+                ^Derived new value.
+              )
+            )
+        "};
+        let (mut interpreter, answers) = send_to_root(source, &["Derived", "make"]);
+        assert!(!instantiates_without_code(&mut interpreter, &answers[0]));
+        assert_eq!(described(&mut interpreter, &answers[1]), "4");
+    }
+
+    /// The classes of `goldens/language/class/mixin/mixin_body_less_application.ns`,
+    /// its `main:` turned into one method per line it shows: a chain with a
+    /// `<:` level walks, whatever its applications say, and answers what
+    /// the golden records.
+    #[test]
+    fn a_class_with_an_applied_level_takes_the_walk() {
+        let source = indoc! {"
+            class MixinBodyLessApplication = Object new () (
+              class Base = Object new () (
+                public fromBase = (
+                  ^'Base answers fromBase'.
+                )
+              )
+
+              class Marker = Object new () (
+                public mark = (
+                  ^'Marker answers mark'.
+                )
+              )
+
+              public class Applied = Object <: Marker.
+
+              public class Tagged = Base new <: Marker.
+
+              public appliedMark = (
+                ^Applied new mark.
+              )
+
+              public taggedMark = (
+                ^Tagged new mark.
+              )
+
+              public taggedFromBase = (
+                ^Tagged new fromBase.
+              )
+            )
+        "};
+        let (mut interpreter, answers) = send_to_root(
+            source,
+            &[
+                "Applied",
+                "Tagged",
+                "appliedMark",
+                "taggedMark",
+                "taggedFromBase",
+            ],
+        );
+        let descriptions: Vec<String> = answers[2..]
+            .iter()
+            .map(|answer| described(&mut interpreter, answer))
+            .collect();
+        assert_eq!(
+            descriptions,
+            [
+                "the String \"Marker answers mark\"",
+                "the String \"Marker answers mark\"",
+                "the String \"Base answers fromBase\""
+            ]
+        );
+        for class in &answers[..2] {
+            interpreter.enter(|mutator| {
+                let class = mutator.fetch(class).as_object().expect("a class");
+                assert!(mutator.heap().chain_has_applied_level(class));
+            });
+        }
+    }
+
+    /// The fast path checks the factory's arity before it allocates, and
+    /// leaves a mismatch to the walk, which raises today's error.
+    #[test]
+    fn a_wrong_argument_count_still_raises_the_arity_error() {
+        let (mut interpreter, class) = load("class Empty = () ()\n");
+        let argument = interpreter.stash(crate::Value::small_integer(1));
+        match interpreter.instantiate(&class, &[argument]) {
+            Err(HostSignal::Error(error)) => assert_eq!(
+                error.message,
+                "wrong number of factory arguments: factory takes 0, got 1"
+            ),
+            Err(HostSignal::Return) => panic!("a non-local return escaped"),
+            Ok(_) => panic!("expected the arity error"),
+        }
+    }
+
+    /// Every application's level facts are what its own mixin says, at
+    /// every level of a chain.
+    #[test]
+    fn level_facts_agree_with_the_mixin() {
+        let source = indoc! {"
+            class Root = () (
+              class Base value: v = (| public value = v. |) ()
+              public class Derived = Base value: 4 (| other = 5. |) ()
+            )
+        "};
+        let (mut interpreter, answers) = send_to_root(source, &["Derived"]);
+        interpreter.enter(|mutator| {
+            let class = mutator.fetch(&answers[0]).as_object().expect("a class");
+            let mut level = mutator.heap().class_application(class);
+            let mut levels = 0;
+            while let Some(application) = level {
+                assert_eq!(
+                    application.level_facts,
+                    LevelFacts::of(&application.mixin),
+                    "{}",
+                    application.mixin.name
+                );
+                levels += 1;
+                level = application.superclass.clone();
+            }
+            assert!(levels >= 3, "Derived, Base and Object at least");
+        });
+    }
 
     /// The nested mixin of `mixin` named `name`.
     fn nested_named(heap: &crate::heap::Heap<'_>, mixin: &Rc<Mixin>, name: &str) -> Rc<Mixin> {

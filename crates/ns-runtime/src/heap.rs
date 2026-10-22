@@ -69,6 +69,32 @@ pub use value::{
 };
 pub(crate) use world::{forward_identity, World};
 
+/// The header an ordinary instance of an application is born with --
+/// its guard, `FixedPointers`, its word count -- computed once when the
+/// application is registered, so that `new` writes it without looking
+/// anything up. Only for an instance whose header holds its count.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InstanceHeader(u64);
+
+impl InstanceHeader {
+    pub(crate) fn for_slots(guard: DispatchId, slot_count: usize) -> Option<InstanceHeader> {
+        let word_count = slot_count.saturating_add(1);
+        (word_count < WORD_COUNT_OVERFLOW)
+            .then(|| InstanceHeader(Header::new(guard, Format::FixedPointers, 0, word_count).0))
+    }
+}
+
+/// What `new` reads of a class's application, copied out in one lookup.
+#[derive(Clone, Copy)]
+pub(crate) struct InstantiationFacts {
+    pub(crate) refused: bool,
+    pub(crate) inherits_value: bool,
+    pub(crate) slot_count: usize,
+    pub(crate) header: Option<InstanceHeader>,
+    pub(crate) without_code: bool,
+    pub(crate) factory_arity: Option<usize>,
+}
+
 /// The sizes `image::decode::decode_graph_section`'s first pass gives each
 /// record before it allocates anything, stated beside the payloads they
 /// must agree with: a class object's fields, a closure's and a frame's
@@ -1197,6 +1223,26 @@ impl<'gc> Heap<'gc> {
     ) -> ObjectReference<'gc> {
         self.allocate_object(class, Format::FixedPointers, 0, false, field_count)
             .0
+    }
+
+    /// An instance of `class` with `slot_count` nil fields under `header`,
+    /// which `class`'s application computed.
+    pub(crate) fn allocate_instance_with(
+        &mut self,
+        class: ClassReference<'gc>,
+        header: InstanceHeader,
+        slot_count: usize,
+    ) -> ObjectReference<'gc> {
+        let header = Header(header.0);
+        debug_assert_eq!(header.guard(), self.header_dispatch_id(class));
+        debug_assert_eq!(header.word_count(), slot_count + 1);
+        let class_word = self.store(Value::object(class));
+        if let Some((offset, fields)) = self.space.bump_object(header, class_word.bits()) {
+            fields.fill(Word::NIL.bits());
+            self.count_young_allocation();
+            return self.object_handle(offset);
+        }
+        self.allocate_instance(class, slot_count)
     }
 
     /// An `Array`-shaped object of `class` holding `elements`, in order.
@@ -3810,6 +3856,9 @@ impl<'gc> Heap<'gc> {
         let index =
             ApplicationIndex::from_index(row).expect("more than u32::MAX applications in one heap");
         application.index = index;
+        application.instance_header =
+            InstanceHeader::for_slots(application.dispatch_ids.instances, application.slot_count);
+        application.level_facts = crate::mixin::LevelFacts::of(&application.mixin);
         let application = Rc::new(application);
         self.tables.applications[row] = Some(application.clone());
         application
@@ -4030,6 +4079,49 @@ impl<'gc> Heap<'gc> {
         class: ClassReference<'gc>,
     ) -> Option<std::rc::Rc<crate::mixin::MixinApplication>> {
         self.class_application_entry(class).cloned()
+    }
+
+    /// What `new` needs of `class`'s application, read once and copied
+    /// out; `None` for a class object with no application.
+    pub(crate) fn class_instantiation_facts(
+        &self,
+        class: ClassReference<'gc>,
+    ) -> Option<InstantiationFacts> {
+        let application = self.class_application_entry(class)?;
+        Some(InstantiationFacts {
+            refused: application.instantiation_refusal.is_some(),
+            inherits_value: application.inherits_value,
+            slot_count: application.slot_count,
+            header: application.instance_header,
+            without_code: application.instantiates_without_code,
+            factory_arity: application.level_facts.factory_arity,
+        })
+    }
+
+    /// The instantiation walk's facts of `class`'s level, copied out of its
+    /// application without cloning it; `None` for a class object with no
+    /// application.
+    pub(crate) fn class_level_facts(
+        &self,
+        class: ClassReference<'gc>,
+    ) -> Option<crate::mixin::LevelFacts> {
+        self.class_application_entry(class)
+            .map(|application| application.level_facts)
+    }
+
+    /// Whether any class object of `class`'s superclass chain, `class`
+    /// included, is a level a `<:` clause added: a fact of the class
+    /// objects, not of their applications, since a class object may name
+    /// another declaration's applied level as its superclass.
+    pub(crate) fn chain_has_applied_level(&self, class: ClassReference<'gc>) -> bool {
+        let mut level = Some(class);
+        while let Some(current) = level {
+            if self.class_is_applied_level(current) {
+                return true;
+            }
+            level = self.class_superclass(current);
+        }
+        false
     }
 
     /// The index of `class`'s application in the table: the identity of
@@ -7199,9 +7291,11 @@ mod tests {
         name: &str,
         builtin: Option<BuiltinClass>,
     ) -> ClassReference<'gc> {
+        let mixin = std::rc::Rc::new(crate::mixin::Mixin::empty(Symbol::intern(name)));
+        let level_facts = crate::mixin::LevelFacts::of(&mixin);
         let application = heap.register_application(crate::mixin::MixinApplication {
             index: crate::heap::ApplicationIndex::UNREGISTERED,
-            mixin: std::rc::Rc::new(crate::mixin::Mixin::empty(Symbol::intern(name))),
+            mixin,
             superclass: None,
             inherits_value: false,
             first_mutable_slot: None,
@@ -7211,6 +7305,9 @@ mod tests {
             slot_count: 0,
             own_slot_base: 0,
             dispatch_ids: crate::mixin::DispatchIds::NONE,
+            instance_header: None,
+            instantiates_without_code: false,
+            level_facts,
         });
         heap.allocate_self_referential_class(NewClass {
             application,
@@ -12307,14 +12404,36 @@ mod tests {
     fn arrays_either_side_of_the_fast_edge_are_alike() {
         let mut heap = Heap::new();
         let class = heap.allocate_self_referential(0);
-        for length in [252, 253, 254, 255] {
-            let array = heap.allocate_nil_array(class, length);
+        for (length, fast) in [(252, 1), (253, 1), (254, 0), (255, 0)] {
+            let (array, fast_bumps) =
+                counting_fast_bumps(&mut heap, |heap| heap.allocate_nil_array(class, length));
+            assert_eq!(fast_bumps, fast, "length {length}");
             assert!(space::is_young(array.offset));
             assert_eq!(heap.array_element_count(array), Some(length));
             assert!(heap
                 .array_element(array, length - 1)
                 .is_some_and(|value| value.is_nil()));
         }
+    }
+
+    #[test]
+    fn an_instance_with_a_template_is_the_instance_without() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential(0);
+        let guard = heap.header_dispatch_id(class);
+        let header = InstanceHeader::for_slots(guard, 3).expect("small");
+        let (templated, fast_bumps) = counting_fast_bumps(&mut heap, |heap| {
+            heap.allocate_instance_with(class, header, 3)
+        });
+        assert_eq!(fast_bumps, 1);
+        let plain = heap.allocate_instance(class, 3);
+        assert_eq!(heap.block(templated).to_vec(), heap.block(plain).to_vec());
+    }
+
+    #[test]
+    fn no_template_past_254_words() {
+        assert!(InstanceHeader::for_slots(DispatchId::NONE, 253).is_some());
+        assert!(InstanceHeader::for_slots(DispatchId::NONE, 254).is_none());
     }
 
     #[test]
