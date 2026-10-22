@@ -15,10 +15,14 @@
 /// obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
 /// and in THIRD-PARTY-NOTICES.md at the repository root.
 ///
-/// ns-next run benchmarks/are-we-fast-yet -- [--timed] [Benchmark]: without
-/// --timed, runs each benchmark (or the one named) once and prints
-/// '<Name>: ok'; with it, measures each for at least 20 ms after 3 ms of
-/// warm-up and prints its runs per second, as Primordial Soup does.
+/// ns-next run benchmarks/are-we-fast-yet --
+///     [--timed [--warm-up <milliseconds>] [--measure <milliseconds>]] [Benchmark]:
+/// without --timed, runs each benchmark (or the one named) once and prints
+/// '<Name>: ok'; with it, measures each for at least --measure
+/// milliseconds (20 by default) after --warm-up milliseconds (3 by
+/// default) of warm-up and prints its runs per second, as Primordial Soup
+/// does. A value is a non-negative decimal integer; a malformed command
+/// line signals the usage.
 class AreWeFastYet packageUsing: manifest = (
   |
     private benchmarks = {
@@ -44,6 +48,7 @@ class AreWeFastYet packageUsing: manifest = (
   class Benchmarking usingPlatform: platform = (
     |
       private Stopwatch = platform time Stopwatch.
+      private ArgumentError = platform kernel ArgumentError.
       private transcript = platform transcript.
       private benchmarkPlatform = platform.
     |
@@ -69,15 +74,15 @@ class AreWeFastYet packageUsing: manifest = (
 
     /// The line is written only once the benchmark has run, so a
     /// benchmark that raises leaves no half-written line on stdout.
-    report: benchmark timed: timed = (
+    report: benchmark timed: timed warmUp: warmUpNanoseconds measure: measureNanoseconds = (
       |
         instance
         result
       |
       instance:: benchmark usingPlatform: benchmarkPlatform.
       timed ifTrue: [
-        measure: [instance bench] forAtLeast: 3000000.
-        result:: (measure: [instance bench] forAtLeast: 20000000) asStringFixed: 1.
+        measure: [instance bench] forAtLeast: warmUpNanoseconds.
+        result:: (measure: [instance bench] forAtLeast: measureNanoseconds) asStringFixed: 1.
       ] ifFalse: [
         instance bench.
         result:: 'ok'.
@@ -87,7 +92,7 @@ class AreWeFastYet packageUsing: manifest = (
           newLine.
     )
 
-    public run: name timed: timed = (
+    public run: name timed: timed warmUp: warmUpNanoseconds measure: measureNanoseconds = (
       |
         found
       |
@@ -95,27 +100,66 @@ class AreWeFastYet packageUsing: manifest = (
       benchmarks do: [:benchmark |
         (name isNil or: [benchmark name = name]) ifTrue: [
           found:: true.
-          report: benchmark timed: timed.
+          report: benchmark timed: timed warmUp: warmUpNanoseconds measure: measureNanoseconds.
         ].
       ].
       found ifFalse: [Error signal: 'Unknown benchmark: ' , name].
     )
 
+    /// Answers the Integer a flag's value `text` writes, a non-negative
+    /// decimal integer; any other text signals the usage.
+    public milliseconds: text = (
+      |
+        milliseconds
+      |
+      milliseconds:: [Integer parse: text] on: ArgumentError do: [:error | ^usage].
+      milliseconds < 0 ifTrue: [^usage].
+      ^milliseconds.
+    )
+
     public usage = (
-      Error signal: 'usage: ns-next run benchmarks/are-we-fast-yet -- [--timed] [Benchmark]'.
+      Error signal: 'usage: ns-next run benchmarks/are-we-fast-yet -- [--timed [--warm-up <milliseconds>] [--measure <milliseconds>]] [Benchmark]'.
     )
   )
 
+  /// Reads `[--timed [--warm-up <milliseconds>] [--measure
+  /// <milliseconds>]] [Benchmark]`: the flags come only after --timed, in
+  /// either order, each at most once.
   public main: platform args: arguments = (
     |
       benchmarking = Benchmarking usingPlatform: platform.
       timed
-      first
+      index
+      flag
+      milliseconds
+      warmUpMilliseconds
+      measureMilliseconds
     |
     timed:: arguments size >= 1 and: [(arguments at: 1) = '--timed'].
-    first:: timed ifTrue: [2] ifFalse: [1].
-    arguments size > first ifTrue: [^benchmarking usage].
-    benchmarking run: (arguments size = first ifTrue: [arguments at: first] ifFalse: [nil])
-        timed: timed.
+    index:: timed ifTrue: [2] ifFalse: [1].
+    [
+      timed and: [
+        index <= arguments size and: [
+          flag:: arguments at: index.
+          flag = '--warm-up' or: [flag = '--measure'].
+        ].
+      ].
+    ] whileTrue: [
+      index < arguments size ifFalse: [^benchmarking usage].
+      milliseconds:: benchmarking milliseconds: (arguments at: index + 1).
+      flag = '--warm-up' ifTrue: [
+        warmUpMilliseconds isNil ifFalse: [^benchmarking usage].
+        warmUpMilliseconds:: milliseconds.
+      ] ifFalse: [
+        measureMilliseconds isNil ifFalse: [^benchmarking usage].
+        measureMilliseconds:: milliseconds.
+      ].
+      index:: index + 2.
+    ].
+    arguments size > index ifTrue: [^benchmarking usage].
+    benchmarking run: (arguments size = index ifTrue: [arguments at: index] ifFalse: [nil])
+        timed: timed
+        warmUp: (warmUpMilliseconds isNil ifTrue: [3] ifFalse: [warmUpMilliseconds]) * 1000000
+        measure: (measureMilliseconds isNil ifTrue: [20] ifFalse: [measureMilliseconds]) * 1000000.
   )
 )

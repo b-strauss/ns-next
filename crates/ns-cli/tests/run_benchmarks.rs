@@ -19,6 +19,11 @@
 //! the JDK's `javac` from `JAVA_HOME`, or from `PATH` when `JAVA_HOME` is not
 //! set. Without a JDK they fail and say so: a gate that passes without
 //! running is no gate.
+//!
+//! Both harnesses take `--warm-up <milliseconds>` and `--measure
+//! <milliseconds>` after `--timed`: `flags::<side>::*` runs each harness
+//! with short windows, in either order, and with malformed flags, which
+//! end the run with the usage.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -78,6 +83,20 @@ fn main() {
         "java::missing-jdk-is-named",
         java_names_a_missing_jdk,
     ));
+    for side in Side::ALL {
+        trials.push(Trial::test(
+            format!("flags::{}::windows-print-a-score", side.name()),
+            move || windows_print_a_score(side, &["--timed", "--warm-up", "0", "--measure", "1"]),
+        ));
+        trials.push(Trial::test(
+            format!("flags::{}::either-order", side.name()),
+            move || windows_print_a_score(side, &["--timed", "--measure", "1", "--warm-up", "0"]),
+        ));
+        trials.push(Trial::test(
+            format!("flags::{}::rejected", side.name()),
+            move || malformed_flags_are_refused(side),
+        ));
+    }
     libtest_mimic::run(&arguments, trials).exit();
 }
 
@@ -103,18 +122,98 @@ fn matches_under_one_lowering(run: &common::BenchmarkRun, lowering: &str) -> Res
 /// `--timed <name>` prints `<name>: <runs per second>` with one fraction
 /// digit; the number differs between runs, so only its shape is checked.
 fn prints_a_score(harness: &Path, name: &str) -> Result<(), Failed> {
-    let output = Command::new(env!("CARGO_BIN_EXE_ns-next"))
-        .arg("run")
-        .arg(harness)
-        .args(["--", "--timed", name])
-        .output()
-        .map_err(|error| format!("run ns-next: {error}"))?;
+    let output = ns_next_harness(harness, &["--timed", name])?;
     if !output.status.success() {
         return Err(format!("stderr: {}", String::from_utf8_lossy(&output.stderr)).into());
     }
     let stdout = common::normalize_newlines(&String::from_utf8_lossy(&output.stdout));
     if !score_is_shaped(&stdout, name) {
         return Err(format!("expected `{name}: <digits>.<digit>`, got:\n{stdout}").into());
+    }
+    Ok(())
+}
+
+/// The ns-next harness at `harness` run with `arguments`.
+fn ns_next_harness(harness: &Path, arguments: &[&str]) -> Result<std::process::Output, String> {
+    Command::new(env!("CARGO_BIN_EXE_ns-next"))
+        .arg("run")
+        .arg(harness)
+        .arg("--")
+        .args(arguments)
+        .output()
+        .map_err(|error| format!("run ns-next: {error}"))
+}
+
+/// One of the two harnesses that take the same command line.
+#[derive(Clone, Copy)]
+enum Side {
+    NsNext,
+    Java,
+}
+
+impl Side {
+    const ALL: [Side; 2] = [Side::NsNext, Side::Java];
+
+    /// The side's name in a trial's name.
+    fn name(self) -> &'static str {
+        match self {
+            Side::NsNext => "ns-next",
+            Side::Java => "java",
+        }
+    }
+
+    /// The side's harness run with `arguments`.
+    fn run(self, arguments: &[&str]) -> Result<std::process::Output, String> {
+        match self {
+            Side::NsNext => ns_next_harness(
+                &common::repository_root().join("benchmarks/are-we-fast-yet"),
+                arguments,
+            ),
+            Side::Java => java_harness(arguments),
+        }
+    }
+}
+
+/// `flags` followed by `Sieve` succeeds and prints a score of the shape
+/// `timed::Sieve` checks: the measuring windows can be set from the command
+/// line, in either order.
+fn windows_print_a_score(side: Side, flags: &[&str]) -> Result<(), Failed> {
+    let mut arguments = flags.to_vec();
+    arguments.push("Sieve");
+    let output = side.run(&arguments)?;
+    if !output.status.success() {
+        return Err(format!("stderr: {}", String::from_utf8_lossy(&output.stderr)).into());
+    }
+    let stdout = common::normalize_newlines(&String::from_utf8_lossy(&output.stdout));
+    if !score_is_shaped(&stdout, "Sieve") {
+        return Err(format!("expected `Sieve: <digits>.<digit>`, got:\n{stdout}").into());
+    }
+    Ok(())
+}
+
+/// A window flag without `--timed`, a value that is no non-negative
+/// integer, a repeated flag and a flag without its value each end the run
+/// non-zero, with nothing on stdout and the usage on stderr.
+fn malformed_flags_are_refused(side: Side) -> Result<(), Failed> {
+    let malformed: [&[&str]; 5] = [
+        &["--warm-up", "5"],
+        &["--timed", "--measure", "x"],
+        &["--timed", "--measure", "-1"],
+        &["--timed", "--warm-up", "1", "--warm-up", "1"],
+        &["--timed", "--measure"],
+    ];
+    for arguments in malformed {
+        let output = side.run(arguments)?;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if output.status.success() || !output.stdout.is_empty() || !stderr.contains("usage:") {
+            return Err(format!(
+                "{arguments:?}: expected a non-zero exit, no stdout and `usage:` on stderr, \
+                 got {:?}\nstdout:\n{}\nstderr:\n{stderr}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stdout)
+            )
+            .into());
+        }
     }
     Ok(())
 }

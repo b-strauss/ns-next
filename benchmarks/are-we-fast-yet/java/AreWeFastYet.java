@@ -7,11 +7,14 @@
  * harnesses run one protocol; the benchmarks are registered in that
  * harness's order; names are written out.
  *
- * java -cp <classes> AreWeFastYet [--timed] [Benchmark]: without --timed,
- * runs each benchmark (or the one named) once and prints '<Name>: ok'; with
- * it, measures each for at least 20 ms after 3 ms of warm-up and prints its
- * runs per second with one fraction digit. An unknown name or a malformed
- * command line throws, so the JVM exits non-zero with the message on stderr.
+ * java -cp <classes> AreWeFastYet
+ *     [--timed [--warm-up <milliseconds>] [--measure <milliseconds>]] [Benchmark]:
+ * without --timed, runs each benchmark (or the one named) once and prints
+ * '<Name>: ok'; with it, measures each for at least --measure milliseconds
+ * (20 by default) after --warm-up milliseconds (3 by default) of warm-up and
+ * prints its runs per second with one fraction digit. An unknown name or a
+ * malformed command line throws, so the JVM exits non-zero with the message
+ * on stderr.
  *
  * The system property areWeFastYet.failFirstCheck=true replaces the first
  * selected benchmark by one whose bench always throws, so a test can see
@@ -48,10 +51,10 @@ import java.util.function.Supplier;
 public final class AreWeFastYet {
 
   private static final String USAGE =
-      "usage: java AreWeFastYet [--timed] [Benchmark]";
+      "usage: java AreWeFastYet [--timed [--warm-up <milliseconds>] [--measure <milliseconds>]] [Benchmark]";
 
-  private static final long WARM_UP_NANOSECONDS = 3_000_000L;
-  private static final long MEASURE_NANOSECONDS = 20_000_000L;
+  private static final long DEFAULT_WARM_UP_MILLISECONDS = 3;
+  private static final long DEFAULT_MEASURE_MILLISECONDS = 20;
 
   /** Every benchmark, in AreWeFastYet.ns's order. */
   private static final Map<String, Supplier<Benchmark>> BENCHMARKS =
@@ -80,15 +83,63 @@ public final class AreWeFastYet {
 
   public static void main(final String[] arguments) {
     boolean timed = arguments.length >= 1 && arguments[0].equals("--timed");
-    int first = timed ? 1 : 0;
-    if (arguments.length > first + 1) {
+    long warmUpMilliseconds = -1;
+    long measureMilliseconds = -1;
+    int index = timed ? 1 : 0;
+    while (timed && index < arguments.length
+        && (arguments[index].equals("--warm-up") || arguments[index].equals("--measure"))) {
+      if (index + 1 >= arguments.length) {
+        throw new IllegalArgumentException(USAGE);
+      }
+      long milliseconds = milliseconds(arguments[index + 1]);
+      if (arguments[index].equals("--warm-up")) {
+        if (warmUpMilliseconds >= 0) {
+          throw new IllegalArgumentException(USAGE);
+        }
+        warmUpMilliseconds = milliseconds;
+      } else {
+        if (measureMilliseconds >= 0) {
+          throw new IllegalArgumentException(USAGE);
+        }
+        measureMilliseconds = milliseconds;
+      }
+      index += 2;
+    }
+    if (arguments.length > index + 1) {
       throw new IllegalArgumentException(USAGE);
     }
-    String name = arguments.length == first + 1 ? arguments[first] : null;
-    run(name, timed);
+    String name = arguments.length == index + 1 ? arguments[index] : null;
+    run(name, timed,
+        (warmUpMilliseconds >= 0 ? warmUpMilliseconds : DEFAULT_WARM_UP_MILLISECONDS) * 1_000_000L,
+        (measureMilliseconds >= 0 ? measureMilliseconds : DEFAULT_MEASURE_MILLISECONDS) * 1_000_000L);
   }
 
-  private static void run(final String name, final boolean timed) {
+  /**
+   * A flag's value: a non-negative decimal integer, or the usage. The
+   * text is what Newspeak's Integer parse: reads, an optional '-' and ASCII
+   * digits, so a '+' or another script's digits, which Long.parseLong would
+   * take, are refused on both sides. A value whose nanoseconds a long cannot
+   * hold, some 292 years, is refused too, where Newspeak's unbounded
+   * integers would take it.
+   */
+  private static long milliseconds(final String value) {
+    if (!value.matches("-?[0-9]+")) {
+      throw new IllegalArgumentException(USAGE);
+    }
+    long milliseconds;
+    try {
+      milliseconds = Long.parseLong(value);
+    } catch (NumberFormatException exception) {
+      throw new IllegalArgumentException(USAGE, exception);
+    }
+    if (milliseconds < 0 || milliseconds > Long.MAX_VALUE / 1_000_000L) {
+      throw new IllegalArgumentException(USAGE);
+    }
+    return milliseconds;
+  }
+
+  private static void run(final String name, final boolean timed,
+      final long warmUpNanoseconds, final long measureNanoseconds) {
     boolean found = false;
     boolean failNext = Boolean.getBoolean("areWeFastYet.failFirstCheck");
     for (Map.Entry<String, Supplier<Benchmark>> entry : BENCHMARKS.entrySet()) {
@@ -96,7 +147,7 @@ public final class AreWeFastYet {
         found = true;
         Benchmark benchmark = failNext ? new FailingBenchmark() : entry.getValue().get();
         failNext = false;
-        report(entry.getKey(), benchmark, timed);
+        report(entry.getKey(), benchmark, timed, warmUpNanoseconds, measureNanoseconds);
       }
     }
     if (!found) {
@@ -109,11 +160,11 @@ public final class AreWeFastYet {
    * that throws leaves no line on stdout.
    */
   private static void report(final String name, final Benchmark benchmark,
-      final boolean timed) {
+      final boolean timed, final long warmUpNanoseconds, final long measureNanoseconds) {
     String result;
     if (timed) {
-      measure(benchmark, WARM_UP_NANOSECONDS);
-      double score = measure(benchmark, MEASURE_NANOSECONDS);
+      measure(benchmark, warmUpNanoseconds);
+      double score = measure(benchmark, measureNanoseconds);
       result = String.format(Locale.ROOT, "%.1f", score);
     } else {
       benchmark.bench();
