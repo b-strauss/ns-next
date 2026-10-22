@@ -14633,8 +14633,7 @@ fn inspect_prints_the_mixin_applications_an_image_describes() {
     let bytes = snapshot_world(&mut interpreter, &class, &[host]);
     let report = image::inspect::render_full(&image::inspect::inspect(&bytes).expect("inspect"));
     for expected in [
-        "mixin application 1  withMark:
-",
+        "mixin application 1  withMark:\n",
         "mixin application 2  new\n",
         "applied by clause 0 of row ",
         "applied by clause 1 of row ",

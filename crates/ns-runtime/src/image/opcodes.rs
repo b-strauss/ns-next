@@ -435,20 +435,20 @@ pub const FRAME_FACTORY: u8 = 9;
 /// frame is written so. A body of a shipped declaration is
 /// `FRAME_BODY_DECLARED`: found through the frame's kind in the declaration
 /// of the class it resolves through -- a method by selector in the current
-/// class's mixin, the initializer and the superclass clause and message in
-/// the kind's class's mixin, a `<:` clause's message in the clause that
-/// added the kind's level -- since the code table carries no shipped code,
+/// class's mixin, the initializer and the superclass clause in the
+/// kind's class's mixin -- since the code table carries no shipped code,
 /// and a shipped mixin is never edited, so the lookup finds that very
 /// body; a closure frame is never written so, its closure's code being in
 /// the table. Every other body is `FRAME_BODY_CODE`, followed by its `u32`
 /// code id. Next free number: 3.
-/// Code kind tag 4 was the body of a clause message's arguments
-/// (`CodeKind::SuperclassMessage`), retired when those arguments were lowered
-/// into the initializers. The live tags are `encode::code_kind_tag`'s.
-pub const RETIRED_CODE_KIND_TAGS: [u8; 1] = [4];
 pub const FRAME_BODY_NONE: u8 = 0;
 pub const FRAME_BODY_CODE: u8 = 1;
 pub const FRAME_BODY_DECLARED: u8 = 2;
+
+/// Code kind tag 4 was the body of a clause message's arguments, retired when
+/// those arguments were lowered into the initializers. The live code kind tags
+/// are written by `encode::code_kind_tag` and read by `decode`, not named here.
+pub const RETIRED_CODE_KIND_TAGS: [u8; 1] = [4];
 
 /// Which tag-named object an entry of the graph section's closing hash table
 /// names: an object of the shipped-name section, which is no record, so
