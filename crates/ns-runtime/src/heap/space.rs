@@ -277,17 +277,6 @@ impl Space {
         }
     }
 
-    /// The offset a fast bump's object would begin at: eden's top, past
-    /// every survivor space and so never 0.
-    #[expect(
-        dead_code,
-        reason = "the compiled allocations of road step 6 call it next"
-    )]
-    #[inline(always)]
-    pub(in crate::heap) fn young_top(&self) -> NonZeroU64 {
-        young_offset(self.reservation.bump_top())
-    }
-
     /// The fast bump of a young object that `header`'s count fits, at most
     /// 254 words after the header: writes `header` and the class word
     /// `class`, and answers the header's offset and the object's fields,

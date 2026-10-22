@@ -644,8 +644,10 @@ asserts that it answers that same instance with no code to run
 (`assert_the_walk_agrees`).
 
 **The walk reads per-level facts.** Each application carries the facts
-the walk asks of its level (`LevelFacts`, computed from the level's own
-mixin when `Heap::register_application` registers the row):
+the walk asks of its level (`LevelFacts::of` the level's own mixin,
+computed once where the application is built, before
+`Mutator::apply_mixin` derives `instantiates_without_code` from it; a
+debug build's `Heap::register_application` checks it against the mixin):
 `needs_initializer_code`, the superclass clause's `clause_selector` and
 `clause_has_arguments`, and the primary factory's `factory_selector` and
 `factory_arity`. The walk copies them out (`Heap::class_level_facts`)

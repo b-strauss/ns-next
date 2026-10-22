@@ -330,8 +330,10 @@ impl Reservation {
             return None;
         }
         self.bump.top = start + bytes;
-        // SAFETY: `start + bytes <= limit <= accessible_prefix`, so every
-        // byte lent is committed read-write and initialized; `start` is a
+        // SAFETY: `bytes <= limit - start` with `limit <= accessible_prefix`,
+        // or `bytes == 0`, which lends an empty slice at an aligned address
+        // inside the reservation; so every byte lent is committed read-write
+        // and initialized; `start` is a
         // multiple of 8 above a page-aligned base, so the words are
         // aligned; the cursor moved past them, so no later bump lends them
         // again, and `&mut self` keeps every other slice away while this

@@ -1356,13 +1356,14 @@ pub struct MixinApplication {
     /// without the walk; computed by `Mutator::apply_mixin`
     /// (`instantiates_without_code`).
     pub instantiates_without_code: bool,
-    /// What the instantiation walk asks of this level's own mixin; set by
-    /// `Heap::register_application` from `mixin`.
+    /// What the instantiation walk asks of this level's own mixin
+    /// (`LevelFacts::of`), computed where the application is built; a debug
+    /// build's `Heap::register_application` checks it against `mixin`.
     pub level_facts: LevelFacts,
 }
 
 /// What the instantiation walk asks of one level, read off the level's own
-/// mixin when its application is registered, so the walk copies it out
+/// mixin when its application is built, so the walk copies it out
 /// instead of cloning the application: whether the level needs initializer
 /// code, its superclass clause's selector and whether that clause passes
 /// arguments, and its primary factory's selector and arity. Nothing here

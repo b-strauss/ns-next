@@ -540,8 +540,7 @@ const REMEMBERED_SET_LIMIT: usize = 8 << 10;
 /// What eden keeps free past the point where it asks for a scavenge: what
 /// a stretch of the run loop allocates before its safepoint serves the
 /// request. An allocation past it goes old instead
-/// (`docs/design/memory.md`, "Planned: inline allocation", which road step
-/// 6 builds on).
+/// (`docs/design/memory.md`, "Inline allocation").
 const EDEN_RESERVE: usize = 512 << 10;
 
 /// What makes an object a resolved future, read from the space's words by
@@ -1375,9 +1374,9 @@ impl<'gc> Heap<'gc> {
     /// The block, its reserve and overflow word included, must fit the old
     /// space of the reservation, which no commit can enlarge. And the
     /// operating system must grant memory of the object's size, probed as
-    /// `Array new:` probes a large array, with `try_reserve_exact` of its field words
-    /// dropped at once: a size inside the reservation can still be one a
-    /// host that does not overcommit refuses to commit.
+    /// `Array new:` probes a large array, with `try_reserve_exact` of its
+    /// field words dropped at once: a size inside the reservation can still
+    /// be one a host that does not overcommit refuses to commit.
     pub(crate) fn byte_array_fits(&self, size: usize) -> bool {
         self.fields_fit(object::byte_array_field_count(size))
     }
@@ -3858,7 +3857,16 @@ impl<'gc> Heap<'gc> {
         application.index = index;
         application.instance_header =
             InstanceHeader::for_slots(application.dispatch_ids.instances, application.slot_count);
-        application.level_facts = crate::mixin::LevelFacts::of(&application.mixin);
+        // The facts come from the literal alone, which every caller computes
+        // from the same mixin; a debug build refuses one that does not, so
+        // `apply_mixin`'s `instantiates_without_code`, derived from them
+        // before this call, can never rest on facts the table then replaces.
+        debug_assert_eq!(
+            application.level_facts,
+            crate::mixin::LevelFacts::of(&application.mixin),
+            "the level facts of {} disagree with its mixin",
+            application.mixin.name
+        );
         let application = Rc::new(application);
         self.tables.applications[row] = Some(application.clone());
         application

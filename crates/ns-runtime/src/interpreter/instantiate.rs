@@ -1909,10 +1909,12 @@ mod tests {
     }
 
     /// A class that declares no slot, no initializer expression and no
-    /// superclass message with arguments is instantiated without a walk:
-    /// `new` answers its instance with no activation.
+    /// superclass message with arguments is marked as instantiating without
+    /// code, and `new` answers an instance of it. That the fast path's
+    /// instance is the walk's is the debug oracle's to prove.
     #[test]
-    fn a_class_with_no_initializer_code_answers_its_instance_without_an_activation() {
+    fn a_class_with_no_initializer_code_is_marked_as_instantiating_without_code_and_answers_its_instance(
+    ) {
         let source = indoc! {"
             class Root = () (
               public class Empty = () ()

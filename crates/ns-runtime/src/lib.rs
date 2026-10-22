@@ -49,7 +49,9 @@ macro_rules! for_each_lowering {
         fn $name:ident($lowering:ident) $body:block
     ) => {
         mod $name {
-            #[allow(unused_imports)]
+            // A test gated to debug builds can leave the import unused in
+            // a release build; a debug build still reports one.
+            #[cfg_attr(not(debug_assertions), allow(unused_imports))]
             use super::*;
 
             $(#[$attribute])*
