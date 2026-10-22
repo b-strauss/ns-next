@@ -2184,8 +2184,7 @@ impl<'gc> Heap<'gc> {
             None => Word::NIL,
         };
         use crate::image::opcodes::{
-            FRAME_CLOSURE, FRAME_FACTORY, FRAME_METHOD, FRAME_MIXIN_APPLICATION_MESSAGE,
-            FRAME_SUPERCLASS_CLAUSE, FRAME_SUPERCLASS_MESSAGE, FRAME_TOP_LEVEL,
+            FRAME_CLOSURE, FRAME_FACTORY, FRAME_METHOD, FRAME_SUPERCLASS_CLAUSE, FRAME_TOP_LEVEL,
         };
         let (tag, operand) = match kind {
             // The method is the code id's (`code_method`).
@@ -2195,10 +2194,6 @@ impl<'gc> Heap<'gc> {
             FrameKind::Initializer(class, body) => (body.frame_tag(), Some(class)),
             FrameKind::Factory(class) => (FRAME_FACTORY, Some(class)),
             FrameKind::SuperclassClause(class) => (FRAME_SUPERCLASS_CLAUSE, Some(class)),
-            FrameKind::SuperclassMessage(class) => (FRAME_SUPERCLASS_MESSAGE, Some(class)),
-            FrameKind::MixinApplicationMessage(class) => {
-                (FRAME_MIXIN_APPLICATION_MESSAGE, Some(class))
-            }
         };
         let mut words = [Word::NIL; frame_field::COUNT];
         words[frame_field::SENDER] = frame_word(sender);
@@ -4732,10 +4727,6 @@ impl<'gc> Heap<'gc> {
                 crate::interpreter::instantiate::factory_code(self, *class)
             }
             FrameKind::SuperclassClause(class) => mixin(*class)?.superclass_clause_code.clone(),
-            FrameKind::SuperclassMessage(class) => mixin(*class)?.superclass_message_code.clone(),
-            FrameKind::MixinApplicationMessage(level) => self
-                .class_applied_clause(*level)
-                .and_then(|clause| clause.message_code),
             FrameKind::Closure(closure) => self.closure_code(*closure),
             FrameKind::TopLevel => None,
         }
@@ -4838,8 +4829,7 @@ impl<'gc> Heap<'gc> {
     /// (`check_class_references`).
     pub fn frame_kind(&self, frame: FrameReference<'gc>) -> FrameKind<'gc> {
         use crate::image::opcodes::{
-            FRAME_CLOSURE, FRAME_FACTORY, FRAME_METHOD, FRAME_MIXIN_APPLICATION_MESSAGE,
-            FRAME_SUPERCLASS_CLAUSE, FRAME_SUPERCLASS_MESSAGE,
+            FRAME_CLOSURE, FRAME_FACTORY, FRAME_METHOD, FRAME_SUPERCLASS_CLAUSE,
         };
         let operand = self
             .frame_field(frame, frame_field::KIND_OPERAND)
@@ -4859,10 +4849,6 @@ impl<'gc> Heap<'gc> {
                 .zip(InitializerBody::of_frame_tag(tag))
                 .map(|(class, body)| FrameKind::Initializer(class, body)),
             Some(FRAME_SUPERCLASS_CLAUSE) => operand.map(FrameKind::SuperclassClause),
-            Some(FRAME_SUPERCLASS_MESSAGE) => operand.map(FrameKind::SuperclassMessage),
-            Some(FRAME_MIXIN_APPLICATION_MESSAGE) => {
-                operand.map(FrameKind::MixinApplicationMessage)
-            }
             _ => None,
         };
         // Every frame this heap built records what its kind needs: a method
@@ -5580,10 +5566,7 @@ impl<'gc> Heap<'gc> {
         self.check_activation(activation);
         matches!(
             self.stack.entries[activation.index as usize].kind,
-            FrameKind::Method(_)
-                | FrameKind::SuperclassClause(_)
-                | FrameKind::SuperclassMessage(_)
-                | FrameKind::MixinApplicationMessage(_)
+            FrameKind::Method(_) | FrameKind::SuperclassClause(_)
         )
     }
 

@@ -623,23 +623,9 @@ ns_runtime::for_each_lowering! {
             let upper_clause = heap.class_applied_clause(upper).expect("an applied level");
             assert_eq!(upper_clause.message.selector, Symbol::intern("withValue:"));
             assert!(upper_clause.message.has_arguments);
-            let code = upper_clause
-                .message_code
-                .expect("a message with arguments is compiled");
-            assert_eq!(
-                code.argument_count, 1,
-                "compiled with Applied's own factory parameters"
-            );
-            let listing = ns_runtime::bytecode::disassemble(&code, "withValue:");
-            assert!(
-                !listing.contains("unresolved-ident"),
-                "`count` resolves to Applied's factory parameter:\n{listing}"
-            );
-
             let lower_clause = heap.class_applied_clause(lower).expect("an applied level");
             assert_eq!(lower_clause.message.selector, Symbol::NEW);
             assert!(!lower_clause.message.has_arguments);
-            assert!(lower_clause.message_code.is_none());
         });
     }
 }

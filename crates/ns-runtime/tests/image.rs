@@ -472,7 +472,6 @@ fn write_mixin_row_with_method_shapes(
     writer.write_boolean(false); // no own part of the initializer
     writer.write_boolean(false); // no standalone initializer
     writer.write_boolean(false); // no superclass clause body
-    writer.write_boolean(false); // no superclass message body
 }
 
 /// A hand-crafted mixin table of exactly one leaf row.
@@ -6244,6 +6243,27 @@ fn an_unknown_frame_kind_tag_is_refused() {
     );
 }
 
+/// A frame kind retired with the clause-message bodies (5 and 6) meets the
+/// same refusal as one never assigned, so a stale image cannot be read as
+/// whichever kind took its number.
+#[test]
+fn a_retired_frame_kind_is_refused() {
+    assert_eq!(RETIRED_FRAME_KINDS, [5, 6]);
+    for tag in RETIRED_FRAME_KINDS {
+        let mut writer = one_frame_prefix();
+        writer.write_u8(tag);
+        frame_tail(&mut writer, 0, 0);
+        writer.write_u32(0); // no roots
+        assert_eq!(
+            GraphFixture::new().decode_error(&writer.into_bytes()),
+            decode::DecodeError::InvalidTag {
+                what: "frame kind",
+                tag
+            }
+        );
+    }
+}
+
 /// `inspect` walks the graph with its own reader, so it has to refuse an
 /// unknown frame kind itself: an artifact `load` refuses must not inspect as
 /// if it were well-formed. The describing sections come from a real snapshot and
@@ -9414,40 +9434,6 @@ fn a_reloaded_superclass_clause_message_still_passes_its_arguments() {
         });
 }
 
-/// The other direction, the same shape as the initializer's and the
-/// clause's: a mixin-table row whose clause passes arguments, in an image
-/// carrying no body for them, would panic on the first instantiation.
-/// `verify_mixins` is the only place that sees both halves, so it refuses.
-#[test]
-fn an_image_with_no_superclass_clause_message_for_a_clause_that_needs_one_is_refused() {
-    let (mut interpreter, class) = load(NESTED_SUPERCLASS_ARGUMENTS);
-    interpreter.enter(|mutator| {
-        let class = class_reference(mutator, &class);
-        let derived = mutator
-            .heap()
-            .nested_mixins(&root_mixin_of(mutator.heap(), class))
-            .into_iter()
-            .find(|nested| nested.name.as_str() == "Derived")
-            .expect("Args declares Derived");
-        assert!(
-            derived.superclass_message_code.is_some(),
-            "Derived's clause really does compile a message body"
-        );
-        let doctored = with_nested(mutator.heap(), class, "Derived", |nested| Mixin {
-            superclass_message_code: None,
-            ..nested
-        });
-        install_mixin(mutator, class, doctored);
-        let (_table, decoded_mixins, _ids) = round_trip_code_table(mutator.heap(), class);
-        let error = decode::verify_mixins(&decoded_mixins).expect_err("no message body");
-        assert_eq!(error, decode::DecodeError::MissingSuperclassMessage);
-        assert_eq!(
-            error.to_string(),
-            "the image's superclass clause passes factory arguments it has no compiled code for"
-        );
-    });
-}
-
 /// The clause's *receiver* side of the same shape: a mixin-table row that
 /// declares a superclass clause, in an image carrying no compiled code for
 /// it, would panic when the first nested-class access pushes the clause's
@@ -9483,45 +9469,35 @@ fn an_image_with_no_superclass_clause_for_a_clause_that_needs_one_is_refused() {
     });
 }
 
-/// The two clause frame kinds share `Initializer`'s shape on the wire (a class
-/// tag) but not its tag, which is what lets `image::decode`'s `frame_body`
-/// resolve each against the code table its own body actually lives in. Nothing
-/// leaves such a frame reachable from an image's roots --
-/// a clause body contains no `MakeClosure`, so nothing can capture one -- so
-/// only a hand-written section reaches the decoder's tag-4 and tag-5 branches.
+/// The superclass clause frame kind shares `Initializer`'s shape on the wire
+/// (a class tag) but not its tag, which is what lets `image::decode`'s
+/// `frame_body` resolve it against the code table its own body actually lives
+/// in. Nothing leaves such a frame reachable from an image's roots -- a clause
+/// body contains no `MakeClosure`, so nothing can capture one -- so only a
+/// hand-written section reaches the decoder's tag-4 branch.
 #[test]
-fn the_superclass_clause_frame_kinds_decode() {
-    for (tag, expect_clause) in [(4u8, true), (5u8, false)] {
-        let mut writer = one_frame_prefix();
-        writer.write_u8(tag);
-        writer.write_shipped(OBJECT_NAME);
-        runs_body(&mut writer, 0);
-        frame_tail(&mut writer, 0, 0);
-        writer.write_u32(0); // no roots
-        let bytes = writer.into_bytes();
-        let mut fixture = GraphFixture::new();
-        let kind = if expect_clause {
-            CodeKind::SuperclassClause
-        } else {
-            CodeKind::SuperclassMessage
-        };
-        fixture.codes = vec![code_with(
-            kind,
-            0,
-            1,
-            vec![Instruction::Return { register: 0 }],
-        )];
-        fixture.decoded(&bytes, "a superclass clause frame", |heap, decoded| {
-            let frame = decoded.frames.first().expect("the one frame");
-            let kind = heap.frame_kind(*frame);
-            let matched = match &kind {
-                FrameKind::SuperclassClause(_) => expect_clause,
-                FrameKind::SuperclassMessage(_) => !expect_clause,
-                _ => false,
-            };
-            assert!(matched, "frame kind tag {tag} decoded to the wrong kind");
-        });
-    }
+fn the_superclass_clause_frame_kind_decodes() {
+    let mut writer = one_frame_prefix();
+    writer.write_u8(FRAME_SUPERCLASS_CLAUSE);
+    writer.write_shipped(OBJECT_NAME);
+    runs_body(&mut writer, 0);
+    frame_tail(&mut writer, 0, 0);
+    writer.write_u32(0); // no roots
+    let bytes = writer.into_bytes();
+    let mut fixture = GraphFixture::new();
+    fixture.codes = vec![code_with(
+        CodeKind::SuperclassClause,
+        0,
+        1,
+        vec![Instruction::Return { register: 0 }],
+    )];
+    fixture.decoded(&bytes, "a superclass clause frame", |heap, decoded| {
+        let frame = decoded.frames.first().expect("the one frame");
+        assert!(matches!(
+            heap.frame_kind(*frame),
+            FrameKind::SuperclassClause(_)
+        ));
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -14467,37 +14443,6 @@ fn the_retired_class_record_tag_is_refused() {
     );
 }
 
-/// The frame kind of a `<:` clause message names the level the clause added
-/// -- its body is that level's clause's -- and decodes back to that kind.
-#[test]
-fn the_mixin_application_message_frame_kind_decodes() {
-    let mut writer = one_frame_prefix();
-    writer.write_u8(FRAME_MIXIN_APPLICATION_MESSAGE);
-    writer.write_shipped(OBJECT_NAME);
-    runs_body(&mut writer, 0);
-    frame_tail(&mut writer, 0, 0);
-    writer.write_u32(0); // no roots
-    let bytes = writer.into_bytes();
-    let mut fixture = GraphFixture::new();
-    fixture.codes = vec![code_with(
-        CodeKind::SuperclassMessage,
-        0,
-        1,
-        vec![Instruction::Return { register: 0 }],
-    )];
-    fixture.decoded(
-        &bytes,
-        "a mixin application message frame",
-        |heap, graph| {
-            let frame = graph.frames.first().expect("the one frame");
-            assert!(matches!(
-                heap.frame_kind(*frame),
-                FrameKind::MixinApplicationMessage(_)
-            ));
-        },
-    );
-}
-
 /// The root rule (`docs/design/object-model.md`, "The root rule"), held to
 /// a root class's superclass chain as the encoder and the loader both hold
 /// it (`modules::root_record_defect`): `Object <: Value` passes, and every
@@ -14639,96 +14584,6 @@ fn verify_doctored_applied(edit: impl FnOnce(Mixin) -> Mixin) -> Result<(), deco
     })
 }
 
-/// §6.2 evaluates a `<:` clause's message with the applying declaration's
-/// factory arguments, so its body must take exactly that many. The walk
-/// re-checks it at run time as a Newspeak error; the load refuses an image
-/// that breaks it outright, before anything runs.
-#[test]
-fn a_clause_message_whose_arity_disagrees_with_the_factory_is_refused_at_load() {
-    let error = verify_doctored_applied(|applied| {
-        let mut clauses = applied.mixin_applications.clone();
-        let message = clauses[0].message_code.clone().expect("withMark: x * 10");
-        let mut doctored = (*message).clone();
-        doctored.argument_count = message.argument_count + 1;
-        doctored.register_count = message.register_count + 1;
-        clauses[0].message_code = Some(Rc::new(doctored));
-        Mixin {
-            mixin_applications: clauses,
-            ..applied
-        }
-    })
-    .expect_err("the message takes one argument too many");
-    assert_eq!(
-        error,
-        decode::DecodeError::CodeArityMismatch {
-            what: "mixin application clause 1 message".to_string(),
-            parameters: 1,
-            argument_count: 2,
-        }
-    );
-
-    let wrong_kind = verify_doctored_applied(|applied| {
-        let mut clauses = applied.mixin_applications.clone();
-        clauses[0].message_code = applied.initializer_code.clone();
-        Mixin {
-            mixin_applications: clauses,
-            ..applied
-        }
-    });
-    assert_eq!(
-        wrong_kind,
-        Err(decode::DecodeError::WrongCodeKind {
-            expected: "superclass clause message"
-        })
-    );
-}
-
-/// A clause whose message passes arguments in an image with no body for
-/// them would panic on the first instantiation; the load refuses it.
-#[test]
-fn a_clause_message_with_arguments_and_no_body_is_refused_at_load() {
-    let error = verify_doctored_applied(|applied| {
-        let mut clauses = applied.mixin_applications.clone();
-        clauses[0].message_code = None;
-        Mixin {
-            mixin_applications: clauses,
-            ..applied
-        }
-    })
-    .expect_err("no message body");
-    assert_eq!(error, decode::DecodeError::MissingMixinApplicationMessage);
-    assert_eq!(
-        error.to_string(),
-        "the image's mixin application clause passes factory arguments it has no compiled code for"
-    );
-}
-
-/// A clause whose message passes no arguments has no body to run, so one
-/// that names a body anyway -- here the other clause's, of the right kind
-/// and arity, so nothing but the mismatch is wrong -- is refused rather than
-/// carried as code the row says nothing runs.
-#[test]
-fn a_clause_message_without_arguments_that_carries_a_body_is_refused_at_load() {
-    let error = verify_doctored_applied(|applied| {
-        let mut clauses = applied.mixin_applications.clone();
-        assert!(!clauses[1].message.has_arguments, "<: Stamp sends new");
-        clauses[1].message_code = clauses[0].message_code.clone();
-        Mixin {
-            mixin_applications: clauses,
-            ..applied
-        }
-    })
-    .expect_err("a body for a message without arguments");
-    assert_eq!(
-        error,
-        decode::DecodeError::UnexpectedMixinApplicationMessage
-    );
-    assert_eq!(
-        error.to_string(),
-        "the image's mixin application clause passes no factory arguments but carries compiled code for them"
-    );
-}
-
 /// `<:` follows a superclass clause in the grammar, and it is the superclass
 /// clause's body that evaluates every `<:` receiver; a row with clauses but
 /// no superclass clause describes a declaration no source has.
@@ -14737,39 +14592,12 @@ fn a_row_applying_mixins_without_a_superclass_clause_is_refused_at_load() {
     let error = verify_doctored_applied(|applied| Mixin {
         superclass: None,
         superclass_clause_code: None,
-        superclass_message_code: None,
         ..applied
     })
     .expect_err("clauses with no superclass clause");
     assert_eq!(
         error,
         decode::DecodeError::MixinApplicationWithoutSuperclass
-    );
-}
-
-/// A row's clause names its message body by code id, checked against the
-/// code table like every other id the row names.
-#[test]
-fn a_clause_message_code_id_out_of_range_is_a_decode_error_not_a_panic() {
-    let mut writer = encode::Writer::new();
-    writer.write_u32(1); // one row
-    writer.write_u32(0); // name
-    writer.write_u8(mixins::access_tag(AccessModifier::Protected));
-    writer.write_u32(0); // span.start
-    writer.write_u32(0); // span.end
-    writer.write_u32(0); // no slots
-    writer.write_boolean(false); // no factory
-    writer.write_boolean(false); // no initExprs
-    writer.write_boolean(false); // no superclass clause
-    writer.write_u32(1); // one mixin application
-    writer.write_u32(0); // its selector
-    writer.write_boolean(true); // its message takes arguments
-    writer.write_boolean(true); // ... compiled as
-    writer.write_u32(5); // ... code 5, of an empty code table
-    let table = table_with(&["X"]);
-    assert_eq!(
-        mixins::decode(&mut decode::Reader::new(&writer.into_bytes()), &table, &[]).map(|_| ()),
-        Err(decode::DecodeError::BadCodeId(5))
     );
 }
 
@@ -14784,9 +14612,9 @@ fn inspect_prints_the_mixin_applications_an_image_describes() {
     let bytes = snapshot_world(&mut interpreter, &class, &[host]);
     let report = image::inspect::render_full(&image::inspect::inspect(&bytes).expect("inspect"));
     for expected in [
-        "mixin application 1  withMark: -> code ",
+        "mixin application 1  withMark:
+",
         "mixin application 2  new\n",
-        "Applied  mixin application clause 1 message",
         "applied by clause 0 of row ",
         "applied by clause 1 of row ",
     ] {

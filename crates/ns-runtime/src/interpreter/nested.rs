@@ -100,14 +100,11 @@ pub(crate) fn superclass_clause_message(
 }
 
 /// The clause message's argument list as one expression: `{a. b. c}`, whose
-/// value is an array of the evaluated arguments.
+/// value is an array of the evaluated arguments. `None` for a message with no
+/// arguments (`Object new`, and every clause in the corpus but a handful).
 ///
-/// One expression rather than one per argument so that a mixin has exactly
-/// one compiled message body -- `image::decode::frame_body` must be able to
-/// name the single body a frame's kind runs, and a per-argument body would
-/// leave it choosing between several. `None` for a message with no arguments
-/// (`Object new`, and every clause in the corpus but a handful): nothing is
-/// compiled, no activation is built, and nothing is allocated.
+/// Only `ClauseMessage::has_arguments` is read off it: the initializers lower
+/// the arguments inline, one by one.
 pub(crate) fn superclass_clause_message_arguments_expression(
     clause: &ast::SuperclassClause,
 ) -> Option<ast::Expression> {

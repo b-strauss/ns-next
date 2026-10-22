@@ -197,7 +197,7 @@ fn extra_bodies(
 }
 
 /// Every body `mixin` carries -- its methods, its three initializer bodies,
-/// its superclass clause and message, its `<:` clauses' messages -- and the
+/// its superclass clause -- and the
 /// blocks nested in them, by address.
 pub(crate) fn version_bodies(mixin: &Mixin, out: &mut HashSet<usize>) {
     let mut pending: Vec<Rc<CompiledCode>> = mixin
@@ -209,15 +209,8 @@ pub(crate) fn version_bodies(mixin: &Mixin, out: &mut HashSet<usize>) {
                 &mixin.own_initializer_code,
                 &mixin.standalone_initializer_code,
                 &mixin.superclass_clause_code,
-                &mixin.superclass_message_code,
             ]
             .into_iter()
-            .chain(
-                mixin
-                    .mixin_applications
-                    .iter()
-                    .map(|clause| &clause.message_code),
-            )
             .flatten()
             .cloned(),
         )

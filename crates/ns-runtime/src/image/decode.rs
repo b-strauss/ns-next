@@ -291,18 +291,6 @@ pub enum DecodeError {
         row: u32,
         index: u32,
     },
-    /// A mixin-table row's `<:` clause passes factory arguments the image has
-    /// no compiled body for. `instantiate::clause_message_body` panics on the
-    /// invariant when the clause carries none -- the same refusal, for the
-    /// same reason, as `MissingSuperclassMessage`.
-    MissingMixinApplicationMessage,
-    /// A mixin-table row's `<:` clause passes no factory arguments, yet names
-    /// a compiled message body. The compiler fills a clause's body only when
-    /// its message has arguments, so such a body is code the row says
-    /// nothing runs -- while a frame of kind
-    /// `MixinApplicationMessage` could still name it. Refused so a row and the
-    /// frames running its clauses cannot disagree about what a clause runs.
-    UnexpectedMixinApplicationMessage,
     /// A mixin-table row declares `<:` clauses but no superclass clause. The
     /// grammar admits `<:` only after a superclass clause, and it is the
     /// superclass clause's body that evaluates every clause's receiver
@@ -359,12 +347,6 @@ pub enum DecodeError {
     /// the mixin carries none -- the same reason `MissingInitializer` is a
     /// refusal rather than a deferred crash.
     MissingSuperclassClause,
-    /// A mixin-table row's superclass clause carries a factory message with
-    /// arguments the image has no compiled body for. `instantiate`
-    /// evaluates that body on every instantiation of the class, and panics
-    /// on the invariant when the mixin carries none -- the same refusal, for
-    /// the same reason, as `MissingSuperclassClause`.
-    MissingSuperclassMessage,
     /// A compiled body attached where a body of another kind belongs, or
     /// named as a closure's body when it is not a block body. The kinds are
     /// not interchangeable: a block body runs in a `FrameKind::Closure`
@@ -764,14 +746,6 @@ impl std::fmt::Display for DecodeError {
                 "mixin application clause index {index} of row {row} is past the 2^23 \
                  clauses a class object can name"
             ),
-            DecodeError::MissingMixinApplicationMessage => write!(
-                f,
-                "the image's mixin application clause passes factory arguments it has no compiled code for"
-            ),
-            DecodeError::UnexpectedMixinApplicationMessage => write!(
-                f,
-                "the image's mixin application clause passes no factory arguments but carries compiled code for them"
-            ),
             DecodeError::MixinApplicationWithoutSuperclass => write!(
                 f,
                 "a mixin-table row applies mixins but declares no superclass clause to apply them to"
@@ -812,10 +786,6 @@ impl std::fmt::Display for DecodeError {
             DecodeError::MissingSuperclassClause => write!(
                 f,
                 "the image declares a superclass clause it has no compiled code for"
-            ),
-            DecodeError::MissingSuperclassMessage => write!(
-                f,
-                "the image's superclass clause passes factory arguments it has no compiled code for"
             ),
             DecodeError::WrongCodeKind { expected } => {
                 write!(f, "image code is not a {expected} body")
@@ -1438,65 +1408,11 @@ pub fn verify_mixins(mixins: &mixins::Decoded) -> Result<(), DecodeError> {
             None if mixin.superclass.is_some() => return Err(DecodeError::MissingSuperclassClause),
             None => {}
         }
-        match &mixin.superclass_message_code {
-            // Unlike the clause's receiver, the clause's *message* arguments
-            // run in an activation carrying this mixin's own factory
-            // arguments (`newspeak-spec.pdf` §6.2), so their body's arity is
-            // the factory pattern's -- the same reconciliation the instance
-            // initializer above gets, for the same reason.
-            Some(code) => check_code_arity(
-                code,
-                CodeKind::SuperclassMessage,
-                "superclass clause message".to_string(),
-                mixin.factory.map_or(0, |factory| factory.argument_count),
-            )?,
-            // A mixin whose clause message carries arguments evaluates them
-            // on every instantiation, and
-            // `instantiate::clause_message_body` panics when the mixin
-            // carries no body for them.
-            None if mixin_needs_superclass_message_code(mixin) => {
-                return Err(DecodeError::MissingSuperclassMessage)
-            }
-            None => {}
-        }
         if !mixin.mixin_applications.is_empty() && mixin.superclass.is_none() {
             return Err(DecodeError::MixinApplicationWithoutSuperclass);
         }
-        for (index, clause) in mixin.mixin_applications.iter().enumerate() {
-            match &clause.message_code {
-                Some(_) if !clause.message.has_arguments => {
-                    return Err(DecodeError::UnexpectedMixinApplicationMessage)
-                }
-                // §6.2 evaluates a `<:` clause's message in the applying
-                // declaration's instance initializer, as it does the superclass
-                // clause's, so its body takes this mixin's factory arguments --
-                // which is the precondition `instantiate`'s arity guard only
-                // re-checks at run time, as a Newspeak error rather than a panic.
-                Some(code) => check_code_arity(
-                    code,
-                    CodeKind::SuperclassMessage,
-                    format!("mixin application clause {} message", index + 1),
-                    mixin.factory.map_or(0, |factory| factory.argument_count),
-                )?,
-                None if clause.message.has_arguments => {
-                    return Err(DecodeError::MissingMixinApplicationMessage)
-                }
-                None => {}
-            }
-        }
     }
     Ok(())
-}
-
-/// Whether `mixin`'s superclass clause carries a message with arguments, and
-/// therefore needs a compiled body for them. Mirrors
-/// `instantiate::mixin_needs_initializer_code`: the one question
-/// `verify_mixins` asks of a decoded declaration, answered off the same
-/// field `instantiate::clause_message_body` decides by at run time.
-fn mixin_needs_superclass_message_code(mixin: &Rc<crate::mixin::Mixin>) -> bool {
-    mixin
-        .superclass
-        .is_some_and(|message| message.has_arguments)
 }
 
 /// One decoded body against the declaration it is attached to:
@@ -1514,7 +1430,6 @@ fn check_code_arity(
                 CodeKind::Block => "block",
                 CodeKind::Initializer => "initializer",
                 CodeKind::SuperclassClause => "superclass clause",
-                CodeKind::SuperclassMessage => "superclass clause message",
             },
         });
     }
@@ -2025,7 +1940,6 @@ fn decode_code(
         1 => CodeKind::Block,
         2 => CodeKind::Initializer,
         3 => CodeKind::SuperclassClause,
-        4 => CodeKind::SuperclassMessage,
         tag => {
             return Err(DecodeError::InvalidTag {
                 what: "code kind",
@@ -3063,9 +2977,6 @@ pub(crate) enum DeclaredKind<'gc> {
     /// declared it.
     Factory(ClassReference<'gc>),
     SuperclassClause(ClassReference<'gc>),
-    SuperclassMessage(ClassReference<'gc>),
-    /// The message of the `<:` clause that added this level.
-    MixinApplicationMessage(ClassReference<'gc>),
 }
 
 impl<'gc> DeclaredKind<'gc> {
@@ -3081,30 +2992,19 @@ impl<'gc> DeclaredKind<'gc> {
             FrameKind::Initializer(class, body) => DeclaredKind::Initializer(*class, *body),
             FrameKind::Factory(class) => DeclaredKind::Factory(*class),
             FrameKind::SuperclassClause(class) => DeclaredKind::SuperclassClause(*class),
-            FrameKind::SuperclassMessage(class) => DeclaredKind::SuperclassMessage(*class),
-            FrameKind::MixinApplicationMessage(level) => {
-                DeclaredKind::MixinApplicationMessage(*level)
-            }
             FrameKind::Closure(_) | FrameKind::TopLevel => return None,
         })
     }
 
     /// The declaration that carries the body: the mixin of the class it
-    /// resolves through, or for a `<:` clause's message the declaration
-    /// whose clause added the level.
+    /// resolves through.
     fn declaration(&self, heap: &Heap<'gc>) -> Option<Rc<crate::mixin::Mixin>> {
-        match self {
-            DeclaredKind::Method(class, _)
-            | DeclaredKind::Initializer(class, _)
-            | DeclaredKind::Factory(class)
-            | DeclaredKind::SuperclassClause(class)
-            | DeclaredKind::SuperclassMessage(class) => heap
-                .class_application(*class)
-                .map(|application| application.mixin.clone()),
-            DeclaredKind::MixinApplicationMessage(level) => heap
-                .class_applied_origin(*level)
-                .map(|origin| origin.declaration),
-        }
+        let (DeclaredKind::Method(class, _)
+        | DeclaredKind::Initializer(class, _)
+        | DeclaredKind::Factory(class)
+        | DeclaredKind::SuperclassClause(class)) = self;
+        heap.class_application(*class)
+            .map(|application| application.mixin.clone())
     }
 
     /// Whether the body is a shipped declaration's: exactly when a frame
@@ -3155,12 +3055,6 @@ pub(crate) fn declared_body<'gc>(
         DeclaredKind::SuperclassClause(_) => declared
             .declaration(heap)
             .and_then(|mixin| mixin.superclass_clause_code.clone()),
-        DeclaredKind::SuperclassMessage(_) => declared
-            .declaration(heap)
-            .and_then(|mixin| mixin.superclass_message_code.clone()),
-        DeclaredKind::MixinApplicationMessage(level) => heap
-            .class_applied_clause(*level)
-            .and_then(|clause| clause.message_code),
     };
     found.ok_or(DecodeError::FrameCodeMismatch)
 }
@@ -3243,15 +3137,6 @@ fn decode_frame<'gc>(
             tables,
             NamePosition::FrameClass,
         )?)),
-        FRAME_SUPERCLASS_MESSAGE => Ok(FrameKind::SuperclassMessage(decode_class_tag(
-            reader,
-            context,
-            tables,
-            NamePosition::FrameClass,
-        )?)),
-        FRAME_MIXIN_APPLICATION_MESSAGE => Ok(FrameKind::MixinApplicationMessage(
-            decode_class_tag(reader, context, tables, NamePosition::FrameClass)?,
-        )),
         FRAME_CLOSURE => Ok(FrameKind::Closure(decode_object_id(reader, tables)?)),
         tag => match instantiate::InitializerBody::of_frame_tag(tag) {
             Some(body) => Ok(FrameKind::Initializer(
@@ -3775,9 +3660,7 @@ fn check_class_references<'gc>(
         let kind_class = match &kind {
             FrameKind::Initializer(class, _)
             | FrameKind::Factory(class)
-            | FrameKind::SuperclassClause(class)
-            | FrameKind::SuperclassMessage(class)
-            | FrameKind::MixinApplicationMessage(class) => Some(class),
+            | FrameKind::SuperclassClause(class) => Some(class),
             FrameKind::Method(_) | FrameKind::Closure(_) | FrameKind::TopLevel => None,
         };
         for class in current_class.iter().chain(kind_class) {
@@ -3956,11 +3839,7 @@ impl Sizing<'_, '_, '_> {
             | FRAME_OWN_INITIALIZER
             | FRAME_STANDALONE_INITIALIZER
             | FRAME_FACTORY
-            | FRAME_SUPERCLASS_CLAUSE
-            | FRAME_SUPERCLASS_MESSAGE
-            | FRAME_MIXIN_APPLICATION_MESSAGE => {
-                self.class_tag(reader, NamePosition::FrameClass)?
-            }
+            | FRAME_SUPERCLASS_CLAUSE => self.class_tag(reader, NamePosition::FrameClass)?,
             FRAME_CLOSURE => self.object_id(reader)?,
             tag => {
                 return Err(DecodeError::InvalidTag {
@@ -4821,7 +4700,7 @@ pub fn decode_tag_named_hashes<'gc>(
 /// The mixin id is range-checked here, against the decoded mixin table,
 /// before it is used to index anything, and so are a level's applying row
 /// and clause position: the clause is read off that row, so a level can only
-/// ever run a clause message `verify_mixins` reconciled with its row's
+/// ever run a clause `verify_mixins` reconciled with its row's
 /// factory.
 ///
 /// A level whose clause named a shipped class (`MIXIN_SHIPPED`) is its own
@@ -5077,8 +4956,7 @@ pub fn verify_graph<'gc>(
 /// Whether `code` is a body a frame of `kind` runs: a method frame a method
 /// body of its method's argument count, a closure frame its closure's own
 /// code, an initializer frame an initializer, a superclass clause frame a
-/// superclass clause, and a superclass message's or a `<:` clause's
-/// message frame a clause message, which both compile to. Nothing ties a
+/// superclass clause. Nothing ties a
 /// decoded frame's body to its kind but this, since the image names the
 /// body by code id.
 fn runs_its_kind<'gc>(heap: &Heap<'gc>, kind: &FrameKind<'gc>, code: &Rc<CompiledCode>) -> bool {
@@ -5094,9 +4972,6 @@ fn runs_its_kind<'gc>(heap: &Heap<'gc>, kind: &FrameKind<'gc>, code: &Rc<Compile
         FrameKind::Initializer(..) => code.kind == CodeKind::Initializer,
         FrameKind::Factory(_) => code.kind == CodeKind::Method,
         FrameKind::SuperclassClause(_) => code.kind == CodeKind::SuperclassClause,
-        FrameKind::SuperclassMessage(_) | FrameKind::MixinApplicationMessage(_) => {
-            code.kind == CodeKind::SuperclassMessage
-        }
         FrameKind::TopLevel => false,
     }
 }

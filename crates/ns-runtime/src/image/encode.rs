@@ -246,14 +246,12 @@ pub fn code_kind_tag(kind: CodeKind) -> u8 {
         CodeKind::Block => 1,
         CodeKind::Initializer => 2,
         CodeKind::SuperclassClause => 3,
-        CodeKind::SuperclassMessage => 4,
     }
 }
 
 /// The code table: every `CompiledCode` reachable from `rows`
 /// (`mixins::plan`) -- every mixin's methods, every mixin's initializer,
-/// every superclass clause and clause-message body, every `<:` clause's
-/// message body, and every nested block body -- then every body of
+/// every superclass clause body, and every nested block body -- then every body of
 /// `extra`, the code of an older version the graph still runs, and the
 /// blocks nested in it, with nested block code *before* the code that
 /// creates it. Flat and unnamed: *which* body belongs to
@@ -279,15 +277,8 @@ pub fn encode_code_table(
             &row.mixin.own_initializer_code,
             &row.mixin.standalone_initializer_code,
             &row.mixin.superclass_clause_code,
-            &row.mixin.superclass_message_code,
         ]
         .into_iter()
-        .chain(
-            row.mixin
-                .mixin_applications
-                .iter()
-                .map(|clause| &clause.message_code),
-        )
         .flatten()
         {
             collect_code(code, &mut order, &mut ids);
@@ -1276,9 +1267,7 @@ fn frame_references<'gc>(
         // does, so the class needs an id the same way.
         FrameKind::Initializer(class, _)
         | FrameKind::Factory(class)
-        | FrameKind::SuperclassClause(class)
-        | FrameKind::SuperclassMessage(class)
-        | FrameKind::MixinApplicationMessage(class) => Some(*class),
+        | FrameKind::SuperclassClause(class) => Some(*class),
         FrameKind::Method(_) | FrameKind::TopLevel => None,
     };
     let frame_objects = [snapshot.sender, snapshot.home]
@@ -1963,14 +1952,6 @@ fn encode_frame<'gc>(
         FrameKind::SuperclassClause(class) => {
             writer.write_u8(FRAME_SUPERCLASS_CLAUSE);
             encode_class_tag(writer, *class, frame_class, context)?;
-        }
-        FrameKind::SuperclassMessage(class) => {
-            writer.write_u8(FRAME_SUPERCLASS_MESSAGE);
-            encode_class_tag(writer, *class, frame_class, context)?;
-        }
-        FrameKind::MixinApplicationMessage(level) => {
-            writer.write_u8(FRAME_MIXIN_APPLICATION_MESSAGE);
-            encode_class_tag(writer, *level, frame_class, context)?;
         }
     }
     encode_frame_body(writer, frame, &snapshot, context)?;

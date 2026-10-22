@@ -139,18 +139,6 @@ fn attribute_code(decoded: &mixins::Decoded, codes: &[Rc<CompiledCode>]) -> Vec<
         if let Some(id) = code.superclass_clause {
             claim(id, &owner, "superclass clause");
         }
-        if let Some(id) = code.superclass_message {
-            claim(id, &owner, "superclass message");
-        }
-        for (index, id) in code.mixin_applications.iter().enumerate() {
-            if let Some(id) = id {
-                claim(
-                    *id,
-                    &owner,
-                    &format!("mixin application clause {} message", index + 1),
-                );
-            }
-        }
     }
     for (label, body) in labels.iter_mut().zip(codes.iter()) {
         if label.0.is_empty() && label.1.is_empty() {
@@ -198,21 +186,15 @@ fn expand_mixin(mixin: &Rc<crate::mixin::Mixin>, code: &mixins::MixinCode) -> St
         ("initializer own part", code.own_initializer),
         ("standalone initializer", code.standalone_initializer),
         ("superclass clause", code.superclass_clause),
-        ("superclass message", code.superclass_message),
     ] {
         if let Some(id) = id {
             let _ = writeln!(out, "      {what} -> code {id}");
         }
     }
     for (index, clause) in mixin.mixin_applications.iter().enumerate() {
-        let message = match code.mixin_applications.get(index).copied().flatten() {
-            Some(id) => format!(" -> code {id}"),
-            None if clause.message.has_arguments => " -> (no code)".to_string(),
-            None => String::new(),
-        };
         let _ = writeln!(
             out,
-            "      mixin application {}  {}{message}",
+            "      mixin application {}  {}",
             index + 1,
             clause.message.selector
         );
@@ -426,13 +408,6 @@ fn read_frame_record(
         opcodes::FRAME_SUPERCLASS_CLAUSE => {
             format!("superclass clause of {}", read_class_tag(reader, targets)?)
         }
-        opcodes::FRAME_SUPERCLASS_MESSAGE => {
-            format!("superclass message of {}", read_class_tag(reader, targets)?)
-        }
-        opcodes::FRAME_MIXIN_APPLICATION_MESSAGE => format!(
-            "mixin application message of {}",
-            read_class_tag(reader, targets)?
-        ),
         opcodes::FRAME_CLOSURE => format!("closure object {}", reader.read_u32()?),
         tag => {
             return Err(decode::DecodeError::InvalidTag {

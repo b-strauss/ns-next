@@ -493,11 +493,10 @@ pub struct Factory {
 /// §6.1's `inheritanceClause`, so the two carry the same message and read
 /// it the same way.
 ///
-/// The message's *arguments* are Newspeak code, compiled per mixin into
-/// `Mixin::superclass_message_code` or `MixinApplicationClause::message_code`;
-/// what is left here is the part the orchestration around those bodies needs,
-/// which it consults before any body runs. Storing it is what keeps
-/// `instantiate::clause_message_body` from having to read `Mixin::declaration`:
+/// The message's *arguments* are Newspeak code, lowered inline into the
+/// mixin's initializer bodies; what is kept here is the part the orchestration
+/// around those bodies needs, which it consults before any body runs. Storing
+/// it is what keeps `instantiate` from having to read `Mixin::declaration`:
 /// without it, a mixin decoded from an image would fall back to `new` and every
 /// class whose superclass has a keyword factory would raise a spurious "not the
 /// primary factory message" error.
@@ -528,12 +527,6 @@ pub struct MixinApplicationClause {
     /// which reads the class a kernel class applies without running the
     /// clause. `None` for a clause decoded from an image.
     pub receiver: Option<Symbol>,
-    /// The message's arguments as one body, compiled exactly as
-    /// `Mixin::superclass_message_code` is -- with the applying declaration's
-    /// own factory parameters in scope, since §6.2 evaluates the message in
-    /// the same instance initializer as the superclass clause's. Filled by
-    /// the compiler; `None` when the message takes no arguments.
-    pub message_code: Option<Rc<CompiledCode>>,
 }
 
 /// Which `<:` clause added a level (`Heap::class_applied_origin`): the
@@ -697,9 +690,6 @@ pub struct Mixin {
     /// one array (`interpreter::nested::superclass_clause_expression`).
     /// `None` when the declaration has no clause.
     pub superclass_clause_code: Option<Rc<CompiledCode>>,
-    /// The arguments of the clause's factory message, run on every
-    /// instantiation (§6.2). `None` when the message takes none.
-    pub superclass_message_code: Option<Rc<CompiledCode>>,
     /// Why this mixin, as a module's root, can never be instantiated (the
     /// root rule, `resolver::root_clause_defect`). Only a module's root
     /// mixin built from a `ResolvedModule` a host assembled past `resolve`,
@@ -1087,7 +1077,6 @@ impl Mixin {
             own_initializer_code: None,
             standalone_initializer_code: None,
             superclass_clause_code: None,
-            superclass_message_code: None,
             root_clause_defect: None,
             root_shape: None,
             shipped: false,

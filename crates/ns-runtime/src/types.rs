@@ -350,21 +350,6 @@ pub enum FrameKind<'gc> {
     /// class's instance initializer would reconcile a frame against a body
     /// that never ran in it.
     SuperclassClause(ClassReference<'gc>),
-    /// The arguments of a superclass clause's deferred factory message,
-    /// evaluated on the instance being initialized and with `class`'s own
-    /// factory arguments (§6.2). Its body comes from
-    /// `Mixin::superclass_message_code`; see `SuperclassClause` above
-    /// for why that makes it a kind of its own.
-    SuperclassMessage(ClassReference<'gc>),
-    /// The arguments of a `<:` clause's factory message (§6.2), evaluated
-    /// like `SuperclassMessage`'s, on the instance being initialized and with
-    /// the applying class's factory arguments. It names the *level* the
-    /// clause added, not the applying class: the applying class's mixin has
-    /// one body per clause, and the level's applied clause
-    /// (`Heap::class_applied_clause`) says
-    /// which of them ran here -- a frame kind is how
-    /// `image::decode::frame_body` finds an activation's body.
-    MixinApplicationMessage(ClassReference<'gc>),
     /// A factory activation (§6.3's primary factory) on the class object
     /// `class`: allocate an instance, run `class`'s initializer on it,
     /// answer it. Its body is the factory entry's

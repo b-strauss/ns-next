@@ -112,7 +112,6 @@ fn write_mixin(out: &mut Out, mixin: &Mixin) {
         own_initializer_code,
         standalone_initializer_code,
         superclass_clause_code,
-        superclass_message_code,
         root_clause_defect,
         root_shape,
         shipped,
@@ -166,14 +165,9 @@ fn write_mixin(out: &mut Out, mixin: &Mixin) {
     });
     out.length(mixin_applications.len());
     for clause in mixin_applications {
-        let MixinApplicationClause {
-            message,
-            receiver,
-            message_code,
-        } = clause;
+        let MixinApplicationClause { message, receiver } = clause;
         out.clause_message(*message);
         out.option(receiver.as_ref(), |out, receiver| out.symbol(*receiver));
-        out.option(message_code.as_ref(), |out, code| out.code(code));
     }
     out.boolean(*has_initializer_expressions);
     let nested = mixin.declared_nested();
@@ -191,7 +185,6 @@ fn write_mixin(out: &mut Out, mixin: &Mixin) {
         out.code(code);
     });
     out.option(superclass_clause_code.as_ref(), |out, code| out.code(code));
-    out.option(superclass_message_code.as_ref(), |out, code| out.code(code));
     out.option(root_shape.as_ref(), |out, shape| {
         let RootShape {
             over_value,
@@ -402,7 +395,6 @@ impl Out {
             CodeKind::Block => 1,
             CodeKind::Initializer => 2,
             CodeKind::SuperclassClause => 3,
-            CodeKind::SuperclassMessage => 4,
         });
         self.u16(*argument_count);
         self.u16(*register_count);

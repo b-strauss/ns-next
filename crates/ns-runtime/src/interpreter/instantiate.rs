@@ -118,13 +118,11 @@ fn clause_message_of(clause: &ast::SuperclassClause) -> ClauseMessage {
     }
 }
 
-/// One `<:` clause's run-time half. Its message body is the compiler's to
-/// fill.
+/// One `<:` clause's run-time half.
 fn mixin_application_clause_of(clause: &ast::SuperclassClause) -> MixinApplicationClause {
     MixinApplicationClause {
         message: clause_message_of(clause),
         receiver: Some(Symbol::intern(&clause.receiver.name)),
-        message_code: None,
     }
 }
 
@@ -466,7 +464,6 @@ impl<'gc> Mutator<'gc> {
             own_initializer_code: None,
             standalone_initializer_code: None,
             superclass_clause_code: None,
-            superclass_message_code: None,
             root_clause_defect: None,
             root_shape: None,
             shipped: kernel,

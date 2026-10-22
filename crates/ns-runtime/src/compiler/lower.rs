@@ -534,7 +534,8 @@ impl<'a> Lowerer<'a> {
     /// "Instantiation"), each run on `self` at the level the initializer was
     /// entered at, as the levels between it and the superclass clause's
     /// class stand above it: first §6.1's check of every `<:` clause against
-    /// the class it names, the topmost first, before anything runs; then
+    /// the class it names, the nearest level first (the last clause, one
+    /// step up) and the topmost last, before anything runs; then
     /// the superclass clause's message's arguments and the superclass's
     /// initializer with them (§6.3); then, from the lowest level up, each
     /// `<:` clause's message's arguments and its level's own part with them
@@ -849,16 +850,16 @@ impl<'a> Lowerer<'a> {
             (CodeKind::Initializer, true) => {
                 Some(|register| Instruction::NonLocalReturn { register })
             }
-            // Either clause body is a single synthetic `^expression` (the
-            // receiver, or the message's argument list), so its top-level
-            // `^` is what hands that value back; a `^` written inside a
-            // block of the clause's message returns from the message's own
-            // activation, which catches it (`Mutator::catches_return`),
-            // exactly as a method's activation would.
-            (CodeKind::SuperclassClause | CodeKind::SuperclassMessage, false) => {
+            // The clause body is a single synthetic `^expression` (the
+            // receiver), so its top-level `^` is what hands that value
+            // back; a `^` written inside a block of the receiver returns
+            // from the clause's own activation, which catches it
+            // (`Mutator::catches_return`), exactly as a method's activation
+            // would.
+            (CodeKind::SuperclassClause, false) => {
                 Some(|register| Instruction::Return { register })
             }
-            (CodeKind::SuperclassClause | CodeKind::SuperclassMessage, true) => {
+            (CodeKind::SuperclassClause, true) => {
                 Some(|register| Instruction::NonLocalReturn { register })
             }
         }
@@ -871,7 +872,7 @@ impl<'a> Lowerer<'a> {
     /// read, so the two cannot disagree.
     fn answers_last_value(&self) -> bool {
         match self.kind {
-            CodeKind::Block | CodeKind::SuperclassClause | CodeKind::SuperclassMessage => true,
+            CodeKind::Block | CodeKind::SuperclassClause => true,
             CodeKind::Method | CodeKind::Initializer => false,
         }
     }

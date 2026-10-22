@@ -317,14 +317,6 @@ pub fn encode(
         ));
         for clause in &mixin.mixin_applications {
             write_clause_message(writer, clause.message, symbols);
-            write_optional_id(
-                writer,
-                clause
-                    .message_code
-                    .as_ref()
-                    .map(|code| codes.id_of(code))
-                    .transpose()?,
-            );
         }
         writer.write_u32(u32_field("mixin's method count", row.methods.len()));
         for method in &row.methods {
@@ -354,14 +346,6 @@ pub fn encode(
             writer,
             mixin
                 .superclass_clause_code
-                .as_ref()
-                .map(|code| codes.id_of(code))
-                .transpose()?,
-        );
-        write_optional_id(
-            writer,
-            mixin
-                .superclass_message_code
                 .as_ref()
                 .map(|code| codes.id_of(code))
                 .transpose()?,
@@ -418,9 +402,6 @@ pub struct MixinCode {
     /// The standalone instance initializer.
     pub standalone_initializer: Option<u32>,
     pub superclass_clause: Option<u32>,
-    pub superclass_message: Option<u32>,
-    /// Each `<:` clause's message body, in clause order.
-    pub mixin_applications: Vec<Option<u32>>,
     /// The text the row names, when the image carries source.
     pub text: Option<RowText>,
 }
@@ -472,7 +453,7 @@ struct RawRow {
     factory: Option<Factory>,
     has_initializer_expressions: bool,
     superclass: Option<ClauseMessage>,
-    mixin_applications: Vec<RawClause>,
+    mixin_applications: Vec<ClauseMessage>,
     methods: Vec<(Symbol, AccessModifier, usize, u32)>,
     nested: Vec<u32>,
     class_side: Option<u32>,
@@ -480,15 +461,7 @@ struct RawRow {
     own_initializer: Option<u32>,
     standalone_initializer: Option<u32>,
     superclass_clause: Option<u32>,
-    superclass_message: Option<u32>,
     text: Option<RowText>,
-}
-
-/// A `<:` clause as read: its selector, whether its message takes arguments,
-/// and the code id of their body.
-struct RawClause {
-    message: ClauseMessage,
-    message_code: Option<u32>,
 }
 
 /// A slot as read: its name, kind and accessibility.
@@ -590,12 +563,9 @@ fn read_row(
         None
     };
     let clause_count = reader.read_u32()? as usize;
-    let mut mixin_applications: Vec<RawClause> = reserve_for(clause_count, reader);
+    let mut mixin_applications: Vec<ClauseMessage> = reserve_for(clause_count, reader);
     for _ in 0..clause_count {
-        mixin_applications.push(RawClause {
-            message: read_clause_message(reader, symbols)?,
-            message_code: read_optional(reader, |reader| read_code_id(reader, codes))?,
-        });
+        mixin_applications.push(read_clause_message(reader, symbols)?);
     }
     let method_count = reader.read_u32()? as usize;
     let mut methods: Vec<(Symbol, AccessModifier, usize, u32)> = reserve_for(method_count, reader);
@@ -616,7 +586,6 @@ fn read_row(
     let own_initializer = read_optional(reader, |reader| read_code_id(reader, codes))?;
     let standalone_initializer = read_optional(reader, |reader| read_code_id(reader, codes))?;
     let superclass_clause = read_optional(reader, |reader| read_code_id(reader, codes))?;
-    let superclass_message = read_optional(reader, |reader| read_code_id(reader, codes))?;
     let text = if has_source {
         let offset = reader.position();
         Some(RowText {
@@ -642,7 +611,6 @@ fn read_row(
         own_initializer,
         standalone_initializer,
         superclass_clause,
-        superclass_message,
         text,
     })
 }
@@ -1064,12 +1032,6 @@ pub fn build(
             own_initializer: row.own_initializer,
             standalone_initializer: row.standalone_initializer,
             superclass_clause: row.superclass_clause,
-            superclass_message: row.superclass_message,
-            mixin_applications: row
-                .mixin_applications
-                .iter()
-                .map(|clause| clause.message_code)
-                .collect(),
             text: row.text,
         });
         let nested = row
@@ -1097,10 +1059,9 @@ pub fn build(
             mixin_applications: row
                 .mixin_applications
                 .iter()
-                .map(|clause| MixinApplicationClause {
-                    message: clause.message,
+                .map(|&message| MixinApplicationClause {
+                    message,
                     receiver: None,
-                    message_code: clause.message_code.map(code_at),
                 })
                 .collect(),
             has_initializer_expressions: row.has_initializer_expressions,
@@ -1113,7 +1074,6 @@ pub fn build(
             own_initializer_code: row.own_initializer.map(code_at),
             standalone_initializer_code: row.standalone_initializer.map(code_at),
             superclass_clause_code: row.superclass_clause.map(code_at),
-            superclass_message_code: row.superclass_message.map(code_at),
             // The loader refuses a root class record the root rule forbids
             // (`modules::root_record_defect`), so no decoded mixin has one.
             root_clause_defect: None,

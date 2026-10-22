@@ -35,7 +35,7 @@ pub(crate) use encode::encode;
 use bytes::ByteReader;
 
 pub(crate) const MAGIC: [u8; 4] = *b"NSSC";
-pub(crate) const FORMAT_VERSION: u16 = 3;
+pub(crate) const FORMAT_VERSION: u16 = 4;
 
 // `SHIPPED_CODE_FINGERPRINT` is the fingerprint of the sources and the
 // compiler the artifact was generated from, which the boot compares against
@@ -280,13 +280,6 @@ mod tests {
             .chain(&mixin.own_initializer_code)
             .chain(&mixin.standalone_initializer_code)
             .chain(&mixin.superclass_clause_code)
-            .chain(&mixin.superclass_message_code)
-            .chain(
-                mixin
-                    .mixin_applications
-                    .iter()
-                    .filter_map(|clause| clause.message_code.as_ref()),
-            )
             .map(|code| count_addressing_own_slots(code))
             .chain(
                 mixin

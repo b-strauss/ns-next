@@ -1024,7 +1024,7 @@ fn materialize<'gc>(
         // (`resolve::resolved_for` records nothing found anywhere else). A
         // receiver with that id is a class object of that metaclass's
         // declaration, so a hit reaches what a miss would -- the entry's
-        // body too, which `act` reads off the receiver's metaclass for both.
+        // body too, which comes from the entry, for a hit and a miss alike.
         Target::Factory { code, chain } => match key.receiver.as_object() {
             Some(class_object) => (
                 Resolved::Factory {

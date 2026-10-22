@@ -47,9 +47,7 @@ impl Trace for FrameKind<'_> {
             FrameKind::Closure(closure) => tracer.object(closure),
             FrameKind::Initializer(class, _)
             | FrameKind::Factory(class)
-            | FrameKind::SuperclassClause(class)
-            | FrameKind::SuperclassMessage(class)
-            | FrameKind::MixinApplicationMessage(class) => tracer.object(class),
+            | FrameKind::SuperclassClause(class) => tracer.object(class),
         }
     }
 }

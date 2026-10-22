@@ -51,10 +51,6 @@ pub(crate) fn compile_mixin_bodies(mixin: &mut Mixin, bindings: &Bindings) {
     };
     mixin.own_initializer_code = Some(own);
     mixin.superclass_clause_code = superclass_clause(mixin, bindings).map(Rc::new);
-    mixin.superclass_message_code = superclass_message(mixin, bindings).map(Rc::new);
-    super::fill_mixin_application_messages(mixin, |mixin, clause| {
-        clause_message(mixin, clause, bindings)
-    });
 }
 
 /// `prologue`'s clauses when there is one -- the full or the standalone
@@ -186,32 +182,6 @@ fn superclass_clause(mixin: &Mixin, bindings: &Bindings) -> Option<CompiledCode>
     )];
     let mut body = Body::new(CodeKind::SuperclassClause, 0, 0, bindings);
     body.statements_and_end(&statements);
-    Some(body.finish(clause.span))
-}
-
-/// The clause's message arguments as a single `^{argument. argument}`, run with
-/// the declaring class's own factory arguments.
-fn superclass_message(mixin: &Mixin, bindings: &Bindings) -> Option<CompiledCode> {
-    let clause = mixin.declaration.as_ref()?.superclass.as_ref()?;
-    clause_message(mixin, clause, bindings)
-}
-
-/// Any inheritance clause's message arguments -- the superclass clause's or
-/// a `<:` clause's -- the same way.
-fn clause_message(
-    mixin: &Mixin,
-    clause: &ast::SuperclassClause,
-    bindings: &Bindings,
-) -> Option<CompiledCode> {
-    let arguments =
-        crate::interpreter::nested::superclass_clause_message_arguments_expression(clause)?;
-    let mut body = Body::new(
-        CodeKind::SuperclassMessage,
-        super::factory_argument_count(mixin),
-        0,
-        bindings,
-    );
-    body.statements_and_end(&[Statement::of_return(arguments)]);
     Some(body.finish(clause.span))
 }
 
@@ -442,7 +412,7 @@ impl<'a> Body<'a> {
             StatementKind::Return(expression) => {
                 let register = self.value(expression);
                 match self.kind {
-                    CodeKind::Method | CodeKind::SuperclassClause | CodeKind::SuperclassMessage => {
+                    CodeKind::Method | CodeKind::SuperclassClause => {
                         self.emit(Instruction::Return { register });
                         None
                     }
@@ -468,19 +438,14 @@ impl<'a> Body<'a> {
         match self.kind {
             CodeKind::Initializer => self.return_self(),
             CodeKind::Method if !ends_in_return => self.return_self(),
-            CodeKind::Block | CodeKind::SuperclassClause | CodeKind::SuperclassMessage
-                if !ends_in_return =>
-            {
+            CodeKind::Block | CodeKind::SuperclassClause if !ends_in_return => {
                 let register = match last_value {
                     Some(register) => register,
                     None => self.literal(BytecodeLiteral::Nil),
                 };
                 self.emit(Instruction::ImplicitReturn { register });
             }
-            CodeKind::Method
-            | CodeKind::Block
-            | CodeKind::SuperclassClause
-            | CodeKind::SuperclassMessage => {}
+            CodeKind::Method | CodeKind::Block | CodeKind::SuperclassClause => {}
         }
     }
 

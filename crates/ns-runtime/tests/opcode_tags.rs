@@ -321,8 +321,7 @@ fn graph_section_tags_are_fixed() {
     assert_eq!(FRAME_TOP_LEVEL, 2);
     assert_eq!(FRAME_INITIALIZER, 3);
     assert_eq!(FRAME_SUPERCLASS_CLAUSE, 4);
-    assert_eq!(FRAME_SUPERCLASS_MESSAGE, 5);
-    assert_eq!(FRAME_MIXIN_APPLICATION_MESSAGE, 6);
+    assert_eq!(RETIRED_FRAME_KINDS, [5, 6]);
     assert_eq!(FRAME_OWN_INITIALIZER, 7);
     assert_eq!(FRAME_STANDALONE_INITIALIZER, 8);
     assert_eq!(FRAME_FACTORY, 9);
@@ -355,10 +354,24 @@ const LIVE_MIXIN_TAGS: [u8; 2] = [MIXIN_ROW, MIXIN_SHIPPED];
 /// The live class tags, which no retired one may rejoin.
 const LIVE_CLASS_TAGS: [u8; 2] = [CLASS_RECORD, CLASS_SHIPPED];
 
+/// The live frame kinds, which no retired one may rejoin.
+const LIVE_FRAME_KINDS: [u8; 8] = [
+    FRAME_METHOD,
+    FRAME_CLOSURE,
+    FRAME_TOP_LEVEL,
+    FRAME_INITIALIZER,
+    FRAME_SUPERCLASS_CLAUSE,
+    FRAME_OWN_INITIALIZER,
+    FRAME_STANDALONE_INITIALIZER,
+    FRAME_FACTORY,
+];
+
 /// The live tag-named hash tags, which no retired one may rejoin.
 const LIVE_HASHED_TAGS: [u8; 1] = [HASHED_SHIPPED];
 
-/// A retired value, mixin, class or hash tag stays retired: 1 and 3 named
+/// A retired value, mixin, class, frame kind or hash tag stays retired: 5 and 6
+/// named the clause-message frames before their bodies were lowered into
+/// the initializers, 1 and 3 named
 /// the one root class and its levels before an image carried several
 /// modules, the module, module level and metaclass tags named a module's
 /// root class, its levels and their metaclasses before those became
@@ -383,6 +396,12 @@ fn retired_class_and_hashed_tags_are_never_reused() {
         assert!(
             !LIVE_CLASS_TAGS.contains(&retired),
             "class tag {retired} is retired"
+        );
+    }
+    for retired in RETIRED_FRAME_KINDS {
+        assert!(
+            !LIVE_FRAME_KINDS.contains(&retired),
+            "frame kind {retired} is retired"
         );
     }
     for retired in RETIRED_HASHED_TAGS {
@@ -421,8 +440,6 @@ fn no_two_graph_tags_in_a_family_share_a_number() {
             FRAME_TOP_LEVEL,
             FRAME_INITIALIZER,
             FRAME_SUPERCLASS_CLAUSE,
-            FRAME_SUPERCLASS_MESSAGE,
-            FRAME_MIXIN_APPLICATION_MESSAGE,
             FRAME_OWN_INITIALIZER,
             FRAME_STANDALONE_INITIALIZER,
             FRAME_FACTORY,

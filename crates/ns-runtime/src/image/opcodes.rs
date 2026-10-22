@@ -415,10 +415,10 @@ pub const FRAME_TOP_LEVEL: u8 = 2;
 /// name the other two bodies the same way.
 pub const FRAME_INITIALIZER: u8 = 3;
 pub const FRAME_SUPERCLASS_CLAUSE: u8 = 4;
-pub const FRAME_SUPERCLASS_MESSAGE: u8 = 5;
-/// A `<:` clause's message activation, followed by the class tag of the level
-/// the clause added -- whose clause names the body that ran.
-pub const FRAME_MIXIN_APPLICATION_MESSAGE: u8 = 6;
+/// Frame kinds 5 and 6 were the activations of a superclass clause's message
+/// and of a `<:` clause's message, retired when those arguments were lowered
+/// into the initializers. A stale image naming one meets an unknown tag.
+pub const RETIRED_FRAME_KINDS: [u8; 2] = [5, 6];
 /// An initializer activation running its level's own part
 /// (`InitializerBody::OwnPart`), followed by the level's class tag.
 pub const FRAME_OWN_INITIALIZER: u8 = 7;

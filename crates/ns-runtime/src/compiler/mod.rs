@@ -300,32 +300,6 @@ pub(crate) fn compile_mixin_bodies(
     };
     mixin.own_initializer_code = Some(own);
     mixin.superclass_clause_code = compile_superclass_clause(mixin, bindings).map(Rc::new);
-    mixin.superclass_message_code = compile_superclass_message(mixin, bindings).map(Rc::new);
-    fill_mixin_application_messages(mixin, |mixin, clause| {
-        compile_clause_message(mixin, clause, bindings)
-    });
-}
-
-/// Fills each `<:` clause's `message_code` from the declaration it was read
-/// off, with `compile` -- one lowering's clause-message compiler. Shared by
-/// both lowerings because it only pairs a clause with its body; the bodies
-/// themselves are each lowering's own.
-pub(super) fn fill_mixin_application_messages(
-    mixin: &mut Mixin,
-    compile: impl Fn(&Mixin, &ast::SuperclassClause) -> Option<CompiledCode>,
-) {
-    let Some(declaration) = mixin.declaration.clone() else {
-        return;
-    };
-    debug_assert_eq!(
-        declaration.mixin_applications.len(),
-        mixin.mixin_applications.len(),
-        "internal: build_mixin reads one clause per `<:`"
-    );
-    for (index, clause) in declaration.mixin_applications.iter().enumerate() {
-        let code = compile(mixin, clause).map(Rc::new);
-        mixin.mixin_applications[index].message_code = code;
-    }
 }
 
 /// A mixin's full instance initializer, or with `with_applied_clauses`
@@ -534,67 +508,6 @@ fn compile_superclass_clause(
         CodeKind::SuperclassClause,
         BodyKey::Root,
         0,
-        &[],
-        bindings,
-        captures,
-        false,
-        Enclosing::default(),
-        0,
-    );
-    lowerer.lower_body(&statements);
-    Some(lowerer.finish(clause.span))
-}
-
-/// A mixin's superclass-clause *message arguments* as executable code: the
-/// arguments of `newspeak-spec.pdf` §6.1's deferred `message`, lowered as a
-/// single synthetic `^{argument. argument}` so the body ends in the `Return`
-/// that hands the whole argument list back at once.
-///
-/// `argument_count` is this mixin's own factory parameter count, not zero as in
-/// `compile_superclass_clause`: §6.2 evaluates the message in the
-/// instantiation's own initializer context, where the resolver scoped these
-/// expressions with exactly those parameters as `Binding::Local` (the
-/// `class M usingPlatform: p = Super usingPlatform: p (...)` idiom).
-///
-/// The expression comes from `interpreter::nested`'s
-/// `superclass_clause_message_arguments_expression`, the one definition of what
-/// the clause's arguments are -- `ClauseMessage::has_arguments` is read off
-/// it too. `None` when the clause has no message, or a message with no
-/// arguments: then there is nothing to evaluate.
-fn compile_superclass_message(
-    mixin: &Mixin,
-    bindings: &Rc<HashMap<Span, Binding>>,
-) -> Option<CompiledCode> {
-    let clause = mixin.declaration.as_ref()?.superclass.as_ref()?;
-    compile_clause_message(mixin, clause, bindings)
-}
-
-/// One inheritance clause's message arguments, compiled for `mixin`'s
-/// declaration: its superclass clause's, or one of its `<:` clauses', which
-/// §6.2 evaluates in the same instance initializer and the resolver
-/// therefore scopes the same way.
-fn compile_clause_message(
-    mixin: &Mixin,
-    clause: &ast::SuperclassClause,
-    bindings: &Rc<HashMap<Span, Binding>>,
-) -> Option<CompiledCode> {
-    let arguments =
-        crate::interpreter::nested::superclass_clause_message_arguments_expression(clause)?;
-    let argument_count = factory_argument_count(mixin);
-    let statements = vec![Statement::of_return(arguments)];
-    let captures = Rc::new(capture::analyze(
-        RootBody {
-            argument_count,
-            temporaries: &[],
-            slot_initializers: Vec::new(),
-            statements: &statements,
-        },
-        bindings,
-    ));
-    let mut lowerer = Lowerer::new(
-        CodeKind::SuperclassMessage,
-        BodyKey::Root,
-        argument_count,
         &[],
         bindings,
         captures,

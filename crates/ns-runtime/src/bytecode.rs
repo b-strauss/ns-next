@@ -434,18 +434,6 @@ pub enum CodeKind {
     /// body against what it is attached to by kind, so the two must not be
     /// confusable there.
     SuperclassClause,
-    /// The arguments of a class declaration's superclass clause's deferred
-    /// factory message (`7` in `= Base withValue: 7`), compiled as a body
-    /// whose `argument_count` is the *declaring* class's own factory parameter
-    /// count and whose value is the argument list as a dynamic array.
-    /// `newspeak-spec.pdf` §6.2 evaluates that message fresh on every
-    /// instantiation, in that instantiation's own initializer context, so
-    /// -- unlike `SuperclassClause`, which runs once per enclosing object
-    /// and on the enclosing object -- this body sees the subclass's own
-    /// factory arguments. A kind of its own for the same reason
-    /// `SuperclassClause` is one: `image::decode` tells a decoded body's
-    /// purpose by its kind, so the two must not be confusable there.
-    SuperclassMessage,
 }
 
 #[derive(Debug, Clone)]
@@ -1048,7 +1036,6 @@ fn write_code(out: &mut String, code: &CompiledCode, name: &str, indent: usize) 
         CodeKind::Block => "block",
         CodeKind::Initializer => "initializer",
         CodeKind::SuperclassClause => "superclass clause",
-        CodeKind::SuperclassMessage => "superclass clause message",
     };
     writeln!(
         out,
