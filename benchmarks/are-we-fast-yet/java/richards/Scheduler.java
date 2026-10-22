@@ -6,7 +6,10 @@
  * left out, as benchmarks/are-we-fast-yet/Richards.ns leaves it out;
  * getQueuePacketCount and getHoldCount are added, so that Richards can name
  * both counts in the port's message when start answers false; names are
- * written out (RBObject is RichardsObject, as in that port).
+ * written out (RBObject is RichardsObject, as in that port). The parameter
+ * workPaket of createHandler and createWorker keeps upstream's spelling on
+ * purpose: in createHandler the correctly spelt workPacket would collide
+ * with the local variable of that name in the lambda it passes.
  */
 /*
  * This benchmark is derived from Mario Wolczko's Java and Smalltalk version of

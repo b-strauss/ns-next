@@ -5,8 +5,8 @@
  * Changed for ns-next: benchmark and verifyResult are bench, which parses
  * the input once and checks what upstream's verifyResult checks, with the
  * messages of benchmarks/are-we-fast-yet/Json.ns, one for each check; names
- * are written out. That port's other departures answer Primordial Soup's
- * protocol and have no counterpart here.
+ * are written out. That port's other departures concern the Newspeak sources
+ * it adapts and Primordial Soup's protocol; none is needed here.
  */
 /*******************************************************************************
  * Copyright (c) 2015 Stefan Marr

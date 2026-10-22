@@ -5,6 +5,9 @@
  * som.Vector, whose remove takes out the constraint as the port's
  * `remove:ifAbsent:` does (a constraint is on a variable's list at most
  * once). A mark is a long, as Planner's currentMark is.
+ * The one known difference in work: som.Vector's remove, upstream's
+ * implementation, copies the remaining constraints into a new array on each
+ * removal, where the port's List remove:ifAbsent: shifts them in place.
  */
 /* Copyright 2008, the Newspeak project authors.
  *

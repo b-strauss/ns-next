@@ -840,7 +840,8 @@ taking from the front would change the order in which the planner visits
 the constraints. Any other departure from upstream's algorithm is a
 defect. Each file starts with a comment naming its upstream file and
 commit and what was changed, then upstream's notice verbatim; a file that
-has no notice upstream keeps upstream's comment as it is.
+has no notice upstream keeps upstream's comment as it is, and the CD files
+add the notice of CDx, from which they derive (below).
 
 Upstream is under several licences, which its `LICENSE.md` describes, and
 each adapted file keeps the notice it carries upstream;
@@ -849,21 +850,25 @@ each adapted file keeps the notice it carries upstream;
 | Files | Notice |
 |---|---|
 | `AreWeFastYet`, `Benchmark`, `som/*` but `IdentityDictionary`, `Bounce`, `List`, `Permute`, `Queens`, `Sieve`, `Storage`, `Towers` | MIT, the SOM class library's authors |
-| `CD`, `Havlak` | the same MIT text, `Copyright (c) 2001-2016 Stefan Marr` |
+| `CD`, `Havlak` | the same MIT text, `Copyright (c) 2001-2016 Stefan Marr`; `CD` adds the BSD-3 notice of `cd/*` |
 | `Json`, `json/JsonPureStringParser` | MIT, Stefan Marr |
 | the rest of `json/` | MIT, EclipseSource (minimal-json) |
 | `havlak/*` but `UnionFindNode` | Apache License 2.0, Google; `UnionFindNode` carries no notice |
 | `Mandelbrot` | Revised BSD, Brent Fulgham (the Computer Language Benchmarks Game) |
 | `NBody`, `nbody/*` | none of their own: their comment names the Benchmarks Game, whose Revised BSD text upstream's `LICENSE.md` carries |
 | `Richards`, `richards/*`, `DeltaBlue`, `deltablue/*` | none of their own: derived from Mario Wolczko's versions, they point to his licence page, as `LICENSE.md` does |
-| `cd/*`, `som/IdentityDictionary` | none: upstream's files carry no notice, and `LICENSE.md` names none for them |
+| `cd/*` | BSD-3, Purdue University 2001-2010 and Apple 2015, copied from `CD.ns`'s header: upstream's Java files omit it, but derive from Purdue's CDx under it, as do upstream's JavaScript and SOM versions of CD, which carry it |
+| `som/IdentityDictionary` | none: upstream's file carries no notice, and `LICENSE.md` names none for it |
 | `RichardsTon80`, `DeltaBlueTon80`, `richardston80/*`, `deltablueton80/*` | Apache License 2.0, the Newspeak project authors: the header of the `.ns` port each is translated from |
 
-The files with no notice at all are `cd/*`, `som/IdentityDictionary`
-and `havlak/UnionFindNode`, beside `NBody` and `nbody/*`, whose comment
-names the Benchmarks Game without a licence text. `CD.ns`, from SOMns,
-carries Purdue's and Apple's BSD-3 text for the same program, which the
-Java files of `cd/` upstream do not.
+The files with no notice at all are `som/IdentityDictionary` and
+`havlak/UnionFindNode`, beside `NBody` and `nbody/*`, whose comment names
+the Benchmarks Game without a licence text. The CD files are the one place
+a notice is added: upstream's Java `cd/*` carry none and `CD.java` only
+the MIT text, but CD is a port of Purdue's CDx, whose BSD-3 notice
+`CD.ns` (from SOMns) and upstream's `cd.js` and `CD/*.som` carry, so
+each of them carries it too, after its adaptation comment (and, in
+`CD.java`, after the MIT notice), and its header says why.
 
 `AreWeFastYet.java` takes the `.ns` harness's command line and prints its
 lines:
@@ -896,7 +901,11 @@ the profile `benchmarks-verify` needs a JDK; the default profile runs none
 of it, so an ordinary commit does not. `javac` and `java` come from
 `$JAVA_HOME/bin` when `JAVA_HOME` is set -- a `JAVA_HOME` without
 `bin/javac` fails, naming the path, and never falls back to `PATH` -- and
-from `PATH` otherwise; a missing JDK fails the trials and says the gate
+from `PATH` otherwise, an empty `JAVA_HOME` counting as unset. The trials
+run every `java` and `javac` without the environment's JVM option
+variables, `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS` and `_JAVA_OPTIONS`:
+the JVM announces each on stderr, which the trials compare exactly, and
+the options would change what Java measures. A missing JDK fails the trials and says the gate
 needs one, never skips them, since a gate that passes without running is
 no gate. The sources compile with `javac --release 21 -encoding UTF-8`
 once per content: into
@@ -905,8 +914,13 @@ sorted relative paths and contents of every `.java`, compiled into a
 temporary sibling and renamed into place, since nextest runs each trial
 as a process of its own, in parallel; a process that finds the directory
 uses it, one that loses the rename uses the winner's, and a changed,
-renamed or deleted source gives a new key, so no stale class runs. A
-compilation error fails every Java trial with `javac`'s output. The
+renamed or deleted source gives a new key, so no stale class runs. Once
+`<key>` is in place, every entry of `are-we-fast-yet-java/` that belongs
+to another key, an older key's classes or a leftover temporary directory,
+is removed, errors ignored: a process with another key would compile
+another state of the sources, which one run never sees. The key's own
+temporary siblings stay, since other trials may still be compiling into
+them. A compilation error fails every Java trial with `javac`'s output. The
 trials:
 
 - **`java::<Name>`**, for each benchmark: the Java harness run by name,
@@ -917,7 +931,8 @@ trials:
   `timed::<Name>` checks ns-next's.
 - **`java::unknown-benchmark`**, **`java::a-failing-check-prints-no-ok`**
   (through the test hook) and **`java::missing-jdk-is-named`** (a
-  `JAVA_HOME` that holds no JDK is named in the failure).
+  `JAVA_HOME` that holds no JDK is named in the failure, and an empty one
+  answers the tool's bare name, for `PATH`).
 - **`flags::ns-next::*` and `flags::java::*`**, on both harnesses:
   `windows-print-a-score` and `either-order` run `--timed --warm-up 0
   --measure 1 Sieve` and the flags swapped, and print a score of the right
@@ -935,6 +950,11 @@ javac --release 21 -encoding UTF-8 -d .temp/are-we-fast-yet-java $(find benchmar
 java -cp .temp/are-we-fast-yet-java AreWeFastYet --timed --warm-up 10000 Richards
 ns-next run benchmarks/are-we-fast-yet -- --timed --warm-up 10000 Richards
 ```
+
+Measure one benchmark per JVM or ns-next invocation, as the example does.
+A timed run of all sixteen in one process slows the later ones: they share
+the `som` collections' call sites, which the earlier benchmarks have made
+megamorphic for the JIT (and, less so, for ns-next's inline caches).
 
 **The baseline**, measured on 2026-10-02 at `1792df5` on one Windows 11
 machine (Intel Core Ultra 9 285K): three pinned release builds of the tree,

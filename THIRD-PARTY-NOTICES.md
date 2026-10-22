@@ -15,7 +15,8 @@ any names the upstream file it comes from in a header:
 - Java code in `benchmarks/are-we-fast-yet/java/`: the Java versions of the
   benchmarks and their harness from Are We Fast Yet, whose files carry
   several licences (below); each adapted file keeps its upstream notice in
-  its header, and a file with none upstream has none here. The Java
+  its header, and a file with none upstream has none here, except that the
+  CD files add the BSD-3 notice of CDx, which `CD.ns` carries (below). The Java
   translations of `RichardsTon80.ns` and `DeltaBlueTon80.ns` beside them
   carry those files' Apache License 2.0 header.
 
@@ -533,9 +534,15 @@ Richards and DeltaBlue are derived from Mario Wolczko's versions; their
 files point to his licence page, as `LICENSE.md` above does, and carry no
 licence text of their own.
 
-The files of `cd/` and `som/IdentityDictionary.java` carry no notice at
-all, and `LICENSE.md` names no licence for them; `CD.java` carries the MIT
-notice above.
+`som/IdentityDictionary.java` carries no notice at all, and `LICENSE.md`
+names no licence for it. Neither do the files of `cd/` upstream, and
+`CD.java` carries only the MIT notice above; but Java CD, like every
+version of CD in Are We Fast Yet, is a port of Purdue University's CDx,
+whose BSD-3 notice (Copyright (c) 2001-2010, Purdue University; Copyright
+(C) 2015 Apple Inc.) upstream's `benchmarks/JavaScript/cd.js` and
+`benchmarks/Smalltalk/CD/*.som` carry. Here `CD.java` and every file of
+`cd/` carry that notice in their headers, copied from the header of
+`benchmarks/are-we-fast-yet/CD.ns`, as `CD.ns` does.
 
 `RichardsTon80.java`, `DeltaBlueTon80.java` and the files of
 `richardston80/` and `deltablueton80/` are not from Are We Fast Yet: they

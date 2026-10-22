@@ -111,9 +111,13 @@ code. `ns-next`'s own license is at `LICENSE`.
   SOM's authors, and EclipseSource for minimal-json), the Apache License 2.0
   (Google, for Havlak), the Revised BSD licence of the Computer Language
   Benchmarks Game (Mandelbrot, NBody), and Mario Wolczko's terms (Richards,
-  DeltaBlue), and `cd/*`, `som/IdentityDictionary.java`,
+  DeltaBlue), and `som/IdentityDictionary.java`,
   `havlak/UnionFindNode.java`, `NBody.java` and `nbody/*` carry no licence
-  notice at all (NBody's comment names the Benchmarks Game); see `prior-art/are-we-fast-yet/LICENSE.md`, and the section
+  notice at all (NBody's comment names the Benchmarks Game); the Java files
+  of `cd/` carry none either, but CD in every language is a port of
+  Purdue University's CDx, under the BSD-3 notice (Purdue 2001-2010, Apple
+  2015) that the JavaScript and SOM versions carry, so the adapted
+  `CD.java` and `cd/*` carry it too; see `prior-art/are-we-fast-yet/LICENSE.md`, and the section
   "Are We Fast Yet" of `THIRD-PARTY-NOTICES.md` for which file carries
   which. Code is adapted from it: the Java sources in
   `benchmarks/are-we-fast-yet/java/`, from `benchmarks/Java/src/`, with every

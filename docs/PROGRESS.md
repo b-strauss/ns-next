@@ -5852,4 +5852,8 @@ No golden's outcome changed.
 - `e04d0de2` -- DeltaBlue, Havlak and CD.
 - `5c00b5cc` -- the Ton80 translations.
 - `a136f4f3` -- `--warm-up` and `--measure` in both harnesses.
-- This commit -- the documents.
+- `85769f07`, `a0dc90b3` -- the documents.
+- This commit -- the final review's fixes: the trials run `java` and
+  `javac` without the JVM option variables, an empty `JAVA_HOME` counts as
+  unset, older compilations are removed, the three score trials are one
+  function, and the CD files carry CDx's BSD-3 notice.

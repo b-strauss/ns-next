@@ -17,8 +17,14 @@
 //! expects the harness's `<Name>: ok` line, and `java-timed::<Name>` checks
 //! a timed run's score as `timed::<Name>` does. They are compiled once, with
 //! the JDK's `javac` from `JAVA_HOME`, or from `PATH` when `JAVA_HOME` is not
-//! set. Without a JDK they fail and say so: a gate that passes without
-//! running is no gate.
+//! set or empty. Without a JDK they fail and say so: a gate that passes
+//! without running is no gate. Every `java` and `javac` runs without the
+//! environment's JVM option variables (`JAVA_TOOL_OPTIONS`,
+//! `JDK_JAVA_OPTIONS`, `_JAVA_OPTIONS`): the JVM announces them on stderr,
+//! which the trials compare exactly, and they would change what Java
+//! measures. Once a compilation's directory is in place, every entry
+//! beside it that belongs to another key, an older compilation or a
+//! leftover temporary one, is removed.
 //!
 //! Both harnesses take `--warm-up <milliseconds>` and `--measure
 //! <milliseconds>` after `--timed`: `flags::<side>::*` runs each harness
@@ -49,13 +55,13 @@ fn main() {
         }
     }
     let harness = common::repository_root().join("benchmarks/are-we-fast-yet");
-    for name in common::benchmark_names(&common::expectation_of(&harness)) {
-        let harness = harness.clone();
+    let names = common::benchmark_names(&common::expectation_of(&harness));
+    for name in names.clone() {
         trials.push(Trial::test(format!("timed::{name}"), move || {
-            prints_a_score(&harness, &name)
+            prints_a_score(Side::NsNext, &["--timed"], &name)
         }));
     }
-    for name in common::benchmark_names(&common::expectation_of(&harness)) {
+    for name in names {
         let expectation = common::Expectation {
             status: 0,
             stdout: format!("{name}: ok\n"),
@@ -68,7 +74,7 @@ fn main() {
             java_answers_ok(&checked, &expectation)
         }));
         trials.push(Trial::test(format!("java-timed::{name}"), move || {
-            java_prints_a_score(&name)
+            prints_a_score(Side::Java, &["--timed"], &name)
         }));
     }
     trials.push(Trial::test(
@@ -86,11 +92,23 @@ fn main() {
     for side in Side::ALL {
         trials.push(Trial::test(
             format!("flags::{}::windows-print-a-score", side.name()),
-            move || windows_print_a_score(side, &["--timed", "--warm-up", "0", "--measure", "1"]),
+            move || {
+                prints_a_score(
+                    side,
+                    &["--timed", "--warm-up", "0", "--measure", "1"],
+                    "Sieve",
+                )
+            },
         ));
         trials.push(Trial::test(
             format!("flags::{}::either-order", side.name()),
-            move || windows_print_a_score(side, &["--timed", "--measure", "1", "--warm-up", "0"]),
+            move || {
+                prints_a_score(
+                    side,
+                    &["--timed", "--measure", "1", "--warm-up", "0"],
+                    "Sieve",
+                )
+            },
         ));
         trials.push(Trial::test(
             format!("flags::{}::rejected", side.name()),
@@ -117,20 +135,6 @@ fn matches_under_one_lowering(run: &common::BenchmarkRun, lowering: &str) -> Res
         &format!("under the {lowering} lowering"),
     )
     .map_err(Failed::from)
-}
-
-/// `--timed <name>` prints `<name>: <runs per second>` with one fraction
-/// digit; the number differs between runs, so only its shape is checked.
-fn prints_a_score(harness: &Path, name: &str) -> Result<(), Failed> {
-    let output = ns_next_harness(harness, &["--timed", name])?;
-    if !output.status.success() {
-        return Err(format!("stderr: {}", String::from_utf8_lossy(&output.stderr)).into());
-    }
-    let stdout = common::normalize_newlines(&String::from_utf8_lossy(&output.stdout));
-    if !score_is_shaped(&stdout, name) {
-        return Err(format!("expected `{name}: <digits>.<digit>`, got:\n{stdout}").into());
-    }
-    Ok(())
 }
 
 /// The ns-next harness at `harness` run with `arguments`.
@@ -174,19 +178,22 @@ impl Side {
     }
 }
 
-/// `flags` followed by `Sieve` succeeds and prints a score of the shape
-/// `timed::Sieve` checks: the measuring windows can be set from the command
-/// line, in either order.
-fn windows_print_a_score(side: Side, flags: &[&str]) -> Result<(), Failed> {
-    let mut arguments = flags.to_vec();
-    arguments.push("Sieve");
+/// `side`'s harness run with `arguments`, which start with `--timed`,
+/// followed by `name` succeeds and prints `<name>: <runs per second>` with
+/// one fraction digit; the number differs between runs, so only its shape
+/// is checked. `timed::<name>` and `java-timed::<name>` pass `--timed`
+/// alone; `flags::<side>::*` set the measuring windows as well, in either
+/// order.
+fn prints_a_score(side: Side, arguments: &[&str], name: &str) -> Result<(), Failed> {
+    let mut arguments = arguments.to_vec();
+    arguments.push(name);
     let output = side.run(&arguments)?;
     if !output.status.success() {
         return Err(format!("stderr: {}", String::from_utf8_lossy(&output.stderr)).into());
     }
     let stdout = common::normalize_newlines(&String::from_utf8_lossy(&output.stdout));
-    if !score_is_shaped(&stdout, "Sieve") {
-        return Err(format!("expected `Sieve: <digits>.<digit>`, got:\n{stdout}").into());
+    if !score_is_shaped(&stdout, name) {
+        return Err(format!("expected `{name}: <digits>.<digit>`, got:\n{stdout}").into());
     }
     Ok(())
 }
@@ -241,20 +248,6 @@ fn java_answers_ok(name: &str, expectation: &common::Expectation) -> Result<(), 
     common::compare(&output, expectation, "under the Java harness").map_err(Failed::from)
 }
 
-/// The Java harness's `--timed <name>` prints a score of the shape
-/// `timed::<name>` holds ns-next's to.
-fn java_prints_a_score(name: &str) -> Result<(), Failed> {
-    let output = java_harness(&["--timed", name])?;
-    if !output.status.success() {
-        return Err(format!("stderr: {}", String::from_utf8_lossy(&output.stderr)).into());
-    }
-    let stdout = common::normalize_newlines(&String::from_utf8_lossy(&output.stdout));
-    if !score_is_shaped(&stdout, name) {
-        return Err(format!("expected `{name}: <digits>.<digit>`, got:\n{stdout}").into());
-    }
-    Ok(())
-}
-
 /// A name the Java harness does not know ends the run non-zero, with
 /// nothing on stdout and the name on stderr.
 fn java_refuses_an_unknown_benchmark() -> Result<(), Failed> {
@@ -280,7 +273,7 @@ fn java_refuses_an_unknown_benchmark() -> Result<(), Failed> {
 /// place of the first `bench()`; the run ends non-zero with nothing on
 /// stdout.
 fn java_prints_no_ok_for_a_failing_check() -> Result<(), Failed> {
-    let output = Command::new(java_tool("java")?)
+    let output = java_command("java")?
         .arg("-DareWeFastYet.failFirstCheck=true")
         .arg("-cp")
         .arg(java_classes()?)
@@ -300,21 +293,33 @@ fn java_prints_no_ok_for_a_failing_check() -> Result<(), Failed> {
 }
 
 /// A `JAVA_HOME` that holds no JDK is named in the failure, not passed
-/// over for whatever `PATH` holds.
+/// over for whatever `PATH` holds; an empty `JAVA_HOME` counts as unset and
+/// answers the bare name, for `PATH`.
 fn java_names_a_missing_jdk() -> Result<(), Failed> {
     match java_tool_in(Some(Path::new("D:/no/such/jdk")), "javac") {
-        Ok(found) => Err(format!("expected an error, found {}", found.display()).into()),
-        Err(error) if error.contains("D:/no/such/jdk") && error.contains("JAVA_HOME") => Ok(()),
-        Err(error) => {
-            Err(format!("the error names neither the path nor JAVA_HOME: {error}").into())
+        Ok(found) => {
+            return Err(format!("expected an error, found {}", found.display()).into());
         }
+        Err(error) if error.contains("D:/no/such/jdk") && error.contains("JAVA_HOME") => {}
+        Err(error) => {
+            return Err(format!("the error names neither the path nor JAVA_HOME: {error}").into());
+        }
+    }
+    match java_tool_in(Some(Path::new("")), "javac") {
+        Ok(found) if found == Path::new("javac") => Ok(()),
+        Ok(found) => Err(format!(
+            "an empty JAVA_HOME should answer `javac`, for PATH; found {}",
+            found.display()
+        )
+        .into()),
+        Err(error) => Err(format!("an empty JAVA_HOME should count as unset: {error}").into()),
     }
 }
 
 /// The Java harness run with `arguments`, from the classes `java_classes`
 /// compiled.
 fn java_harness(arguments: &[&str]) -> Result<std::process::Output, String> {
-    Command::new(java_tool("java")?)
+    java_command("java")?
         .arg("-cp")
         .arg(java_classes()?)
         .arg("AreWeFastYet")
@@ -343,7 +348,12 @@ fn java_classes() -> Result<&'static Path, String> {
 /// it; otherwise it compiles into a sibling of its own and renames that into
 /// place, and when another process won that race it uses the winner's. A
 /// changed, renamed or deleted source gives a new key, so no stale class
-/// ever runs.
+/// ever runs. Once `<key>` is in place, every sibling of another key is
+/// removed, an older key's directory and a leftover temporary one alike,
+/// ignoring errors: a process using another key compiles another state of
+/// the sources, which cannot happen within one run. This key's temporary
+/// siblings stay, since other processes of the run may still be compiling
+/// into them; each removes its own.
 fn compile_java() -> Result<PathBuf, String> {
     let root = common::repository_root().join("benchmarks/are-we-fast-yet/java");
     let mut sources = Vec::new();
@@ -353,6 +363,7 @@ fn compile_java() -> Result<PathBuf, String> {
     let compilations = Path::new(env!("CARGO_TARGET_TMPDIR")).join("are-we-fast-yet-java");
     let classes = compilations.join(&key);
     if classes.is_dir() {
+        remove_siblings(&compilations, &key);
         return Ok(classes);
     }
     let scratch = compilations.join(format!("{key}.{}.tmp", std::process::id()));
@@ -364,7 +375,7 @@ fn compile_java() -> Result<PathBuf, String> {
     std::fs::create_dir_all(&scratch)
         .map_err(|error| format!("create {}: {error}", scratch.display()))?;
     let javac = java_tool("javac")?;
-    let output = Command::new(&javac)
+    let output = without_java_options(Command::new(&javac))
         .args(["--release", "21", "-encoding", "UTF-8", "-d"])
         .arg(&scratch)
         .args(&sources)
@@ -394,7 +405,30 @@ fn compile_java() -> Result<PathBuf, String> {
             ));
         }
     }
+    remove_siblings(&compilations, &key);
     Ok(classes)
+}
+
+/// Removes every entry of `compilations` but `key` and its temporary
+/// siblings `<key>.<process>.tmp`, ignoring errors.
+fn remove_siblings(compilations: &Path, key: &str) {
+    let Ok(entries) = std::fs::read_dir(compilations) else {
+        return;
+    };
+    let temporary_prefix = format!("{key}.");
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name == key || name.starts_with(&temporary_prefix) {
+            continue;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            let _ = std::fs::remove_dir_all(&path);
+        } else {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }
 
 /// A hash of every source's path below `root` and its contents, in the
@@ -440,8 +474,24 @@ fn collect_java_sources(directory: &Path, sources: &mut Vec<PathBuf>) -> Result<
     Ok(())
 }
 
-/// The JDK tool `name`, from `JAVA_HOME` when it is set and from `PATH`
-/// otherwise.
+/// A command running the JDK tool `name` (`java_tool`) without the JVM
+/// option variables.
+fn java_command(name: &str) -> Result<Command, String> {
+    Ok(without_java_options(Command::new(java_tool(name)?)))
+}
+
+/// `command` without the environment variables through which a JVM picks
+/// up options: the JVM announces each on stderr, which the trials compare
+/// exactly, and the options would change what is measured.
+fn without_java_options(mut command: Command) -> Command {
+    for variable in ["JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS"] {
+        command.env_remove(variable);
+    }
+    command
+}
+
+/// The JDK tool `name`, from `JAVA_HOME` when it is set and not empty and
+/// from `PATH` otherwise.
 fn java_tool(name: &str) -> Result<PathBuf, String> {
     java_tool_in(
         std::env::var_os("JAVA_HOME").map(PathBuf::from).as_deref(),
@@ -451,10 +501,10 @@ fn java_tool(name: &str) -> Result<PathBuf, String> {
 
 /// The JDK tool `name`. With a home, `<java_home>/bin/<name>`, or an error
 /// naming that home when it holds no such tool, so that a stale `JAVA_HOME`
-/// is reported rather than passed over; without one, `name` itself, for the
-/// system to find on `PATH`.
+/// is reported rather than passed over; without one, or with an empty one,
+/// which counts as unset, `name` itself, for the system to find on `PATH`.
 fn java_tool_in(java_home: Option<&Path>, name: &str) -> Result<PathBuf, String> {
-    let Some(home) = java_home else {
+    let Some(home) = java_home.filter(|home| !home.as_os_str().is_empty()) else {
         return Ok(PathBuf::from(name));
     };
     let tool = home
