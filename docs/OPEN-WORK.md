@@ -15,24 +15,34 @@ when they were written.
 
 ## Next
 
-**Road step 6, inline allocation in the interpreter** ("The road to a
-high-performance VM" below; [memory.md](design/memory.md), "Planned:
-inline allocation"), a plan of its own, not yet designed: the instructions
-that allocate -- `new` of a class whose instances fall below the
-large-object threshold, `MakeClosure`, a boxed `Float` and `Array new:`
-below that threshold -- take their memory by a bump in eden instead of a
-call into `Heap::allocate_block`, the bump path living in `heap.rs`. It
-builds on road step 4's eden, whose reserve past the scavenge threshold
-lets an allocation that crosses it succeed and only request a safepoint,
-and whose spent case goes old ([memory.md](design/memory.md),
-"Allocation: eden, its reserve, and what goes old").
+**`new` as compiled code** (decided with the user on 2026-10-22, before
+road step 7; "The road to a high-performance VM" below). The primary
+factory runs as code the compiler emits, as both references do, instead of
+the instantiation walk in Rust ([object-model.md](design/object-model.md),
+"Instantiation"):
+
+- Squeak-Newspeak compiles it as `basicNew` followed by an ordinary send to
+  the initializer (`prior-art/newspeak/Newspeak2SqueakCompilation.ns:1991-2020`);
+  SOMns does the same in `MixinBuilder.assemblePrimaryFactoryMethod`.
+- Then `new` takes the inline caches, and road steps 8 and 9 can inline it.
+  It replaces road step 6's fast `new` of a class that runs no code, which
+  only skips the walk.
+- Why the walk exists: Milestone 1 built it in Rust, and Milestone 4's step
+  2a made it a state machine with its semantics unchanged. Its step 3b took the
+  factory's place in the method table from the references but kept it
+  bodiless, and the `<:` clauses were built into the walk. No document
+  weighed compiled code against it.
+- What the compiled form must keep: §6.1's superclass-selector check at run
+  time, the per-level arity check an untrusted image relies on, and the
+  deferred `<:` messages, each run just before its level's initializer.
+- Road step 7 follows it.
 
 **What 5b1 cost.** Measured in release, three pinned builds a side, against
 master (`733c15bd`) and task by task: every program within noise, but
 `bench_megamorphic.ns`, +1.3-2.1% after the private and super accessor
 check, at the edge of build noise and not diagnosed ("Planned: performance
-and representation" below). Everything before road step 6 on the road
-is built, road step 5b2c last; each step has its entry in
+and representation" below). Everything up to road step 6 on the road
+is built, road step 6 last; each step has its entry in
 [PROGRESS.md](PROGRESS.md), and the whole road is below.
 
 **Measuring.** The protocol is [execution.md](design/execution.md)'s "What
@@ -219,10 +229,18 @@ and `prior-art/newspeak-benchmarks`.
   "An application has two ids";
   [image-format.md](design/image-format.md), "Edited programs in the
   image"; [memory.md](design/memory.md), "Weak references".
-- **Step 6, inline allocation in the interpreter**: a bump in eden for `new`,
-  closures, boxed floats and `Array new:`, with headroom past the scavenge
-  threshold so that collection stays at safepoints.
-  [memory.md](design/memory.md), "Planned: inline allocation".
+- **Step 6, inline allocation in the interpreter -- built** (2026-10-22,
+  [its plan](superpowers/plans/2026-10-22-0008-inline-allocation.md)): a
+  bump cursor in the reservation, eden's top, and one comparison against
+  a limit below the scavenge threshold before the cold `allocate_block`;
+  the headers of instances, closures, frames and boxed floats
+  precomputed; a code-id cache per body, checked against its heap's
+  epoch; `Array new:`, `MakeArray` and `MakeVector` with no `Vec`; and
+  `new` of a class whose application runs no code as a bump and a nil
+  fill, with no walk. [memory.md](design/memory.md), "Inline allocation";
+  [object-model.md](design/object-model.md), "Instantiation";
+  [execution.md](design/execution.md), "What inline allocation moved".
+- **After step 6, `new` as compiled code** ("Next" above).
 - **Step 7, an execution model for compiled code**: frames interpreted and
   compiled code share, a calling convention, GC maps for compiled frames, and
   deoptimization metadata, which the debugger needs as much as the optimizer.
@@ -406,8 +424,34 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   permitted and not done. [compiler.md](design/compiler.md).
 - **A `Factory` entry carrying the bases of its instantiation bodies**, to
   drop the family-map probe per initializer push (`inline_cache.rs`'s
-  `base_for`); its cost was never isolated. [dispatch.md](design/dispatch.md),
-  "Code families".
+  `base_for`); its cost was never isolated. Road step 6's fast `new` runs
+  no initializer, so it leaves the probe of every other instantiation
+  where it was. [dispatch.md](design/dispatch.md), "Code families".
+- **Clean blocks** (noted 2026-10-22): a block that needs neither `self`,
+  outer registers, an implicit receiver nor `^` needs no frame and could
+  be one closure made once, as Cog's clean blocks are, instead of a
+  closure, and a frame reified, at every `MakeClosure`. A lowering change
+  still to be weighed. [compiler.md](design/compiler.md),
+  [execution.md](design/execution.md), "Closure conversion".
+- **Two sites still build a `Vec` before they allocate** (noted
+  2026-10-22): `Array`'s copy leaf (`builtins/collections.rs`, the
+  `copyFrom:to:` leaf, about line 192) collects the elements into a `Vec`
+  and hands it to `Mutator::new_array`, and `handler_message`
+  (`interpreter/resolve.rs`, about line 613) copies a `doesNotUnderstand:`
+  message's arguments with `to_vec`, as `Array new:`, `MakeArray` and
+  `MakeVector` did before road step 6. [memory.md](design/memory.md),
+  "Arrays without a `Vec`".
+- **Road step 6's residual slowdowns** (2026-10-22): no part of the step is
+  slower than the tree before it with the 18-value ranges separated, but
+  with the per-build medians separated and in both sittings the arrays
+  part is +1.7% on NBody, and the fast `new` +1.1% on Richards, +0.8% on
+  DeltaBlue and +0.5% on NBody and Havlak, about level on the
+  microbenchmark sources. Neither obviously touches those programs' hot
+  paths, so code or data layout is a likelier cause than the work; it is
+  undecided. All five parts were kept (decided with the user on
+  2026-10-22). Measure again after `new` as compiled code lands ("Next"),
+  which replaces the fast `new` path. [execution.md](design/execution.md),
+  "What inline allocation moved".
 - **Guarding a private lexical site on N's mixin** rather than its
   application — kept open until a program has such a site (a mixin under
   several superclasses) to measure; the per-mixin id it wants, `MixinId`,
@@ -1160,7 +1204,7 @@ classes and a class from source with no predecessor are not edited
 ## Known defects and gaps
 
 None of these changes a correct program's output; each is wrong but safe, or
-reachable only from a crafted artifact, except the first three, which a
+reachable only from a crafted artifact, except the first four, which a
 program can reach and which end the process, and five a program meets as a
 gap: `ns-next run`'s panic on a closed pipe, `Object>>printString`'s one
 text, `to:by:do:`'s zero step, `String withAll:`'s nil for an argument
@@ -1174,7 +1218,9 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
   OOM-killed while the zeros are written, where a program-chosen size is
   meant never to abort the process. No such leaf can tell an affordable size
   from one the system will accept and then kill for.
-  `crates/ns-runtime/src/builtins/collections.rs`, `allocate`;
+  `crates/ns-runtime/src/builtins/collections.rs`, `allocate`, through
+  `Heap::array_fits`, which probes an `Array` at or above the large-object
+  threshold;
   `heap.rs`, `Heap::byte_array_fits`, behind every leaf that makes a
   `ByteArray` of a size the program chose, and `Heap::weak_array_fits`,
   behind `WeakArray new:`; and
@@ -1183,6 +1229,15 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
   (`crates/ns-runtime/src/arbitrary_integer/mod.rs`), where the digits are
   reserved;
   [core-library.md](design/core-library.md), "Large integers".
+- **A large `Array`, `ByteArray` or `WeakArray` that fits the old space
+  but not its free room still aborts** (noted 2026-10-22; the probe is
+  older than road step 6). `Heap::fields_fit`, behind `array_fits`,
+  `byte_array_fits` and `weak_array_fits`, compares the object's bytes against the old space's
+  size -- its end less its base -- not against what is left of it above
+  its top, so a length the probe passes can still find no room, and
+  `allocate_block` then aborts as running out of memory where the leaf
+  meant to answer its `ArgumentError`. `heap.rs`, `Heap::fields_fit`;
+  [memory.md](design/memory.md), "Arrays without a `Vec`".
 - **Running out of memory aborts the process; there is no Newspeak-level
   out-of-memory error.** A commit the operating system refuses, or the
   object space's reservation used up (64 GiB on a 64-bit target), ends in

@@ -11,9 +11,11 @@
 > the per-heap ids -- every application, guard id, module tree of mixin
 > ids, superseded version and code id nothing names any more, freed in a
 > full collection and minted again smallest first, the application cache
-> pruned by them (road step 5b2c, "An application has two ids"); the rest
-> of the road to a high-performance VM -- inline allocation and the JIT
-> tiers -- is planned ("Planned: the road to a high-performance VM").
+> pruned by them (road step 5b2c, "An application has two ids"), and
+> `new` of a class that runs no code as one bump and a nil fill (road
+> step 6, "Instantiation"); the rest of the road to a high-performance
+> VM -- the JIT tiers -- is planned ("Planned: the road to a
+> high-performance VM").
 > **Code:** `crates/ns-runtime/src/heap.rs` (the handle types and every read
 > and write of one), `heap/value.rs` (`Value`, `ValueKind`, `Word`, the
 > `SmallInteger` bounds and the arithmetic on tagged words),
@@ -602,6 +604,61 @@ except through slots explicitly extracted in the initializer: only `i` sees them
 walked the superclass chain upward and ran every level's slots and initializer
 expressions in the *subclass's* activation with the subclass's factory arguments,
 which §6.2 does not permit.
+
+**`new` of a class that runs no code is a bump and a nil fill** (road
+step 6, decided with the user on 2026-10-22). Steps 2 to 5 then do
+nothing a program can see, so `decide_instantiation` answers the instance
+at once -- `Step::Value`, no activation, no copy of the arguments, no walk
+-- when all of these hold:
+
+- **The application runs no code** (`MixinApplication`'s
+  `instantiates_without_code`, computed once by `Mutator::apply_mixin`
+  and never changed; `mixin::instantiates_without_code`): no level of the
+  application chain needs initializer code, every level's superclass
+  clause names its superclass's primary factory selector and passes it no
+  arguments, and every level above the first takes no factory arguments.
+- **Nothing refuses the instance**: the application's
+  `instantiation_refusal`, and, for a class that inherits from `Value`,
+  the class object's own `class_has_value_refusal` ("A value object's four
+  conditions").
+- **The arguments match the factory's arity.**
+- **No class object of the chain is a level a `<:` clause added**
+  (`Heap::chain_has_applied_level`): such a level runs its clause's
+  message with the applying class's arguments however little code the
+  applications hold. It is asked of the class objects at every
+  instantiation, two field reads a level, because it is a fact of the
+  class objects and not of the application: a class object can name
+  another declaration's applied level as its superclass, and the
+  application key does not record it. It is asked last, since it walks.
+
+What it reads of the application it reads in one lookup, copied out
+(`Heap::class_instantiation_facts`): the refusal, whether it inherits
+from `Value`, its slot count, its precomputed instance header, the fact
+above and the factory's arity, with no `Rc` cloned. It then allocates
+through `Heap::allocate_instance_with` with the header the application
+carries ([memory.md](memory.md), "Inline allocation"). Every other
+instantiation walks the chain as described above, and the walk is also
+what raises every refusal and the arity error, worded as always. A debug
+build runs the full walk over every instance the fast path made and
+asserts that it answers that same instance with no code to run
+(`assert_the_walk_agrees`).
+
+**The walk reads per-level facts.** Each application carries the facts
+the walk asks of its level (`LevelFacts`, computed from the level's own
+mixin when `Heap::register_application` registers the row):
+`needs_initializer_code`, the superclass clause's `clause_selector` and
+`clause_has_arguments`, and the primary factory's `factory_selector` and
+`factory_arity`. The walk copies them out (`Heap::class_level_facts`)
+instead of cloning the application several times a level; only a clause
+that passes arguments clones it, for its compiled message body. Nothing
+in them depends on the superclass: the walk compares a level's clause
+selector with its superclass's factory selector itself. The walk's
+shape, order and errors are the ones above, and a `<:` clause's message
+runs with the applying class's factory arguments just before the
+initializer of the level it adds.
+
+Running `new` as code the compiler emits, as both references do, is the
+next piece of work ([OPEN-WORK.md](../OPEN-WORK.md), "Next").
 
 ### A value object's four conditions
 
@@ -1696,9 +1753,9 @@ with a JIT share -- Cog's Spur, Strongtalk and HotSpot, with Primordial Soup
 beside them -- adapted where Newspeak's nesting requires it, and the JIT tiers
 follow on it. Decided with the user on 2026-09-29; the canonical order is
 [OPEN-WORK.md](../OPEN-WORK.md), "The road to a high-performance VM". The
-`Planned` sections below and three in [memory.md](memory.md) describe its
-representation steps still to come. The road, each step landing green on its
-own:
+representation steps are built; the steps still to come are planned in
+[execution.md](execution.md) and [core-library.md](core-library.md). The
+road, each step landing green on its own:
 
 1. **The memory layer** -- a crate of its own that reserves one contiguous
    address range and commits it on demand ([memory.md](memory.md),
@@ -1723,8 +1780,11 @@ own:
    guards -- built; 5b2a, the MirrorBuilder and the atomic install,
    built; 5b2b, declaration texts and edited programs in images, built;
    5b2c, the reclaiming of ids, built.
-6. **Inline allocation in the interpreter** ([memory.md](memory.md),
-   "Planned: inline allocation").
+6. **Inline allocation in the interpreter** -- built ([memory.md](memory.md),
+   "Inline allocation"; "Instantiation" above).
+   - **After road step 6, `new` as compiled code** -- the primary factory
+     run as code the compiler emits, as both references do
+     ([OPEN-WORK.md](../OPEN-WORK.md), "Next").
 7. **The execution model for compiled code** ([execution.md](execution.md),
    "Planned: JIT tiers").
    - **Between road steps 7 and 8, real Newspeak bodies for `whileTrue:`,
@@ -1757,8 +1817,10 @@ from the space's base plus the handle.
 
 The block's layout is decided in `heap/object.rs` (the fixed fields of a
 class object, a closure and a frame, the string packing, and
-`pointer_ranges`); `Heap::allocate_block` is the one place a new object's
-header is written, in place in the space; `heap/header.rs` holds `Header`
+`pointer_ranges`); a new object's header is written in place in the
+space in one of two places, `Heap::allocate_block` on the cold path and
+`Space::bump_object` (and its fixed-size form) on the fast one
+([memory.md](memory.md), "Inline allocation"); `heap/header.rs` holds `Header`
 and `Format`.
 
 **The header word**, after Spur's (`headerForSlots:format:classIndex:`) and
@@ -1919,7 +1981,10 @@ one nothing reaches is dropped, since nothing can compare it any more.
    version is what admits that code into an image of its module
    (`image::extra_bodies`).
 4. **Codes.** Every code id no marked closure or frame names is freed with
-   its `code_ids` entry (`Heap::free_unnamed_codes`). An activation holds
+   its `code_ids` entry (`Heap::free_unnamed_codes`), and the heap's
+   code-table epoch is renewed, so no body's cached id names a freed row
+   ([memory.md](memory.md), "A closure's code id without the map"). An
+   activation holds
    its body itself, never by id, so the marked objects are every holder of
    one; the body lives on with whoever else holds it, and a frame reified
    later registers it again.

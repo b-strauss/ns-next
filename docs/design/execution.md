@@ -1399,6 +1399,126 @@ the first's three build orders rather than continuing the rotation; and
 nothing measured argues for or against eden's 512 KiB reserve or the 32 KiB
 large-object limit.
 
+### What inline allocation moved
+
+Measured on 2026-10-22 on the same machine (Windows 11 Pro 22631, Intel
+Core Ultra 9 285K, 24 cores, rustc 1.98.0) by the protocol of "What
+removing the re-entries moved": `master` at `dc7ae2f6`, the tree road
+step 6 started from, against each of its five parts in order -- bump
+(`af894802`, the fast bump before the cold `allocate_block`), codeid
+(`cfadf647`, the code-id cache), templates (`8555b814`, closures, frames
+and boxed floats with a precomputed header, and the tests that prove the
+fast bump ran), arrays (`df7d55c9`, `Array new:`, `MakeArray` and
+`MakeVector` with no `Vec`) and new (`fee106bb`, `new` of a class with no
+initializer code; [memory.md](memory.md), "Inline allocation";
+[object-model.md](object-model.md), "Instantiation"). Three pinned
+release builds of each tree (`-C metadata=alpha`, `beta`, `gamma`, with
+`-C target-feature=+crt-static -C llvm-args=-align-all-functions=6`),
+`cargo xtask shipped-code` before each, in throwaway worktrees; all 18
+binaries distinct, none importing `VCRUNTIME140.dll`. Every program timed
+with `bench` alone: `--iterations 3` for CD, Havlak, Mandelbrot, NBody
+and DeltaBlue, `--iterations 10` for the other eleven and the eight
+microbenchmark sources, the four not in the tree written out verbatim
+from "What spec-conformant lookup moved". `master` and new ran all 24
+sources; the four trees between them the eight microbenchmark sources and
+CD, Havlak, DeltaBlue, Richards and NBody. Two sittings of three rounds,
+the 18 binaries interleaved by build in the first sitting and in the
+reverse order in the second, rotated by one from round to round; each
+figure is the median of a tree's 18 values (three builds, three rounds,
+two sittings), with their range. Every one of the 1,800 runs printed its
+expected output. The machine was not idle (an IDE and background tools,
+as before).
+
+`master` against the whole step; "separated" says whether the 18-value
+ranges, and the three per-build medians, of the two trees do not overlap:
+
+| Source | `master`, ms | Range | Step 6, ms | Range | Change | Separated: 18 values / build medians |
+|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 2.624 | 2.533–2.670 | 2.352 | 2.337–2.451 | **−10.4%** | yes / yes |
+| `bench_send.ns` | 3.956 | 3.855–4.484 | 3.746 | 3.664–3.850 | **−5.3%** | yes / yes |
+| `bench_block.ns` | 8.756 | 8.613–9.366 | 7.638 | 7.500–8.095 | **−12.8%** | yes / yes |
+| `bench_megamorphic.ns` | 5.425 | 5.333–5.608 | 5.199 | 5.148–5.397 | −4.2% | no / yes |
+| `bench_new.ns` | 3.150 | 3.089–3.259 | 3.042 | 2.972–3.122 | −3.4% | no / yes |
+| `bench_new2.ns` | 4.199 | 4.063–4.836 | 4.028 | 3.912–4.149 | −4.1% | no / yes |
+| `bench_newarg.ns` | 5.144 | 5.074–5.447 | 4.905 | 4.822–5.123 | −4.6% | no / yes |
+| `bench_do.ns` | 2.982 | 2.912–3.079 | 2.802 | 2.730–2.918 | −6.0% | no / yes |
+| Bounce | 1.003 | 0.977–1.038 | 0.961 | 0.940–1.009 | −4.2% | no / yes |
+| CD | 3,858 | 3,843–3,876 | 3,687 | 3,656–3,909 | −4.5% | no / yes |
+| DeltaBlue | 699.4 | 693.7–709.0 | 673.3 | 665.0–691.1 | **−3.7%** | yes / yes |
+| DeltaBlueTon80 | 7.592 | 7.513–8.352 | 7.423 | 7.320–7.739 | −2.2% | no / no |
+| Havlak | 3,593 | 3,566–3,630 | 3,476 | 3,450–3,541 | **−3.3%** | yes / yes |
+| Json | 11.25 | 11.13–13.69 | 10.94 | 10.82–11.76 | −2.8% | no / yes |
+| List | 1.071 | 1.030–1.097 | 1.001 | 0.989–1.060 | −6.5% | no / yes |
+| Mandelbrot | 3,109 | 3,094–3,129 | 3,034 | 3,005–3,081 | **−2.4%** | yes / yes |
+| NBody | 2,342 | 2,327–2,367 | 2,286 | 2,270–2,314 | **−2.4%** | yes / yes |
+| Permute | 2.588 | 2.544–2.701 | 2.487 | 2.466–2.657 | −3.9% | no / yes |
+| Queens | 2.149 | 2.115–2.234 | 2.097 | 2.056–2.237 | −2.4% | no / yes |
+| Richards | 72.89 | 71.37–74.21 | 70.53 | 69.63–72.91 | −3.2% | no / yes |
+| RichardsTon80 | 4.922 | 4.854–5.076 | 4.726 | 4.636–4.903 | −4.0% | no / yes |
+| Sieve | 1.411 | 1.391–1.795 | 1.335 | 1.296–1.409 | −5.4% | no / yes |
+| Storage | 1.578 | 1.529–1.819 | 1.481 | 1.443–1.576 | −6.2% | no / yes |
+| Towers | 3.574 | 3.457–3.836 | 3.428 | 3.264–3.587 | −4.1% | no / yes |
+
+**Every one of the 24 sources is faster**, by 2.2% (DeltaBlueTon80) to
+12.8% (`bench_block.ns`); seven with the 18-value ranges separated, in
+bold, and 23 of the 24 with the per-build medians separated -- all but
+DeltaBlueTon80, whose beta build at 7.615 ms lies above `master`'s
+fastest build. CD's 18 values lie below `master`'s lowest but one, at
+3,909 ms.
+
+Each part's own share, the change of the pooled median against the tree
+before it; bold where the 18-value ranges are separated:
+
+| Source | bump | codeid | templates | arrays | new | `master` to new |
+|---|---|---|---|---|---|---|
+| `bench_loop.ns` | **−9.0%** | −1.6% | +0.8% | +0.1% | −0.8% | −10.4% |
+| `bench_send.ns` | −5.7% | −0.9% | +0.7% | +0.4% | +0.2% | −5.3% |
+| `bench_block.ns` | **−3.9%** | −2.0% | −4.4% | −2.3% | −0.9% | −12.8% |
+| `bench_megamorphic.ns` | −4.2% | +0.2% | +0.2% | −0.2% | −0.1% | −4.2% |
+| `bench_new.ns` | −3.0% | +0.5% | +0.1% | −0.6% | −0.5% | −3.4% |
+| `bench_new2.ns` | −2.6% | −0.7% | +1.2% | −0.9% | −1.1% | −4.1% |
+| `bench_newarg.ns` | −1.5% | +0.9% | +0.9% | −4.3% | −0.8% | −4.6% |
+| `bench_do.ns` | −3.3% | −0.7% | +1.9% | −4.0% | −0.0% | −6.0% |
+| CD | **−2.3%** | −0.5% | −1.0% | −0.7% | −0.1% | −4.5% |
+| Havlak | −2.2% | +0.0% | −0.9% | −0.8% | +0.5% | −3.3% |
+| DeltaBlue | −2.9% | −0.7% | −0.1% | −0.8% | +0.8% | −3.7% |
+| Richards | −3.1% | −0.1% | −0.0% | −1.1% | +1.1% | −3.2% |
+| NBody | **−3.3%** | +0.0% | −1.3% | +1.7% | +0.5% | −2.4% |
+
+**The bump pays most**, 1.5% to 9.0% on every source on its own, the
+per-build medians separated on all thirteen. The code-id cache moves
+`bench_loop.ns`, `bench_block.ns` and DeltaBlue by 0.7% to 2.0%, the
+precomputed headers `bench_block.ns` by 4.4% and CD, Havlak and NBody by
+about 1%, the arrays `bench_newarg.ns`, `bench_do.ns` and `bench_block.ns`
+by 2.3% to 4.3%, each with the per-build medians separated.
+
+**No part is slower than the tree before it with the 18-value ranges
+separated.** Slower with the per-build medians separated, and in both
+sittings: templates on `bench_send.ns` (+0.7%) and `bench_new2.ns`
+(+1.2%), codeid on `bench_newarg.ns` (+0.9%), **arrays on NBody (+1.7%)**,
+the largest, which gives back half of the bump's NBody gain, and **new on
+Richards (+1.1%), DeltaBlue (+0.8%), NBody (+0.5%) and Havlak (+0.5%)**.
+On the microbenchmark sources new is about level (−1.1% to +0.2%): the
+classes of `bench_new.ns`, `bench_new2.ns` and `bench_newarg.ns` all
+declare slots with initializers, so their `new` still walks. Each of these lies
+inside the 18-value ranges and at or below the 1–3% that pinned builds
+of one tree still differ by on other sources, and neither the arrays nor
+the fast `new` obviously touches NBody's, Richards' or DeltaBlue's hot
+paths, so code or data layout is a likelier cause than the work; this
+measurement cannot decide it. All five parts were kept (decided with the
+user on 2026-10-22); the residuals are measured again once `new` runs as
+compiled code, which replaces the fast `new` path
+([OPEN-WORK.md](../OPEN-WORK.md)).
+
+What the measurement does not cover: one machine and one operating
+system, not idle; data layout (symbol ids, object offsets, dispatch ids),
+which `-C metadata` does not vary, so a difference that follows from it
+survives the pool; the eleven Are We Fast Yet programs measured only at
+`master` and at the end, whose changes are not known part by part;
+`--timed` and the collector statistics; and the `dumpbin /disasm` check
+of `vm::run` and `run_stretch`, not made, since no part changes the send
+path's code on purpose.
+
 ### What a send costs, and where it goes
 
 Milestone 4's design rests on a decomposition rather than on the aggregate. The
