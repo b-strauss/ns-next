@@ -467,6 +467,8 @@ impl<'gc> Mutator<'gc> {
             span: declaration.span,
             declaration: Some(Rc::new(declaration.clone())),
             initializer_code: None,
+            own_initializer_code: None,
+            standalone_initializer_code: None,
             superclass_clause_code: None,
             superclass_message_code: None,
             root_clause_defect: None,
@@ -1149,7 +1151,9 @@ impl<'gc> Mutator<'gc> {
             .heap
             .class_application(level)
             .expect("internal: class_has_initializer_code confirmed this is a class object");
-        let code = application.mixin.initializer_code.clone().unwrap_or_else(|| {
+        // The walk runs each level's own part: it evaluates the clauses
+        // itself, so the full body's prologue would run them twice.
+        let code = application.mixin.own_initializer_code.clone().unwrap_or_else(|| {
             panic!("internal: class needs an instance initializer and its mixin carries none (a mixin built from source always does; verify_mixins refuses a decoded one)")
         });
         // `InitializeSlot`'s `own_index` is relative to the mixin's own slots,
@@ -1588,6 +1592,23 @@ fn value_class_refusal_error<'gc>(
         Value::object(class),
         message,
     )
+}
+
+/// What an instruction of a compiled `new` raises while instantiation is
+/// still the walk's (`advance_instantiation`), which runs each level's own
+/// part and never the full body or a factory's: an ordinary error rather
+/// than a panic, because an image may carry the bodies that hold these
+/// instructions and a crafted one could reach one. Named for the factory's
+/// selector the walk's errors take, on the activation's receiver.
+pub(crate) fn compiled_instantiation_not_running<'gc>(
+    heap: &Heap<'gc>,
+    activation: crate::heap::ActivationReference,
+) -> Signal<'gc> {
+    Signal::Error(NewspeakError::error(
+        Symbol::NEW,
+        heap.activation_receiver(activation),
+        "internal: compiled instantiation is not running yet",
+    ))
 }
 
 /// §3.1.1's second condition, asked of every slot an initializer writes on

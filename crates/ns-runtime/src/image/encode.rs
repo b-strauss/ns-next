@@ -276,6 +276,8 @@ pub fn encode_code_table(
         }
         for code in [
             &row.mixin.initializer_code,
+            &row.mixin.own_initializer_code,
+            &row.mixin.standalone_initializer_code,
             &row.mixin.superclass_clause_code,
             &row.mixin.superclass_message_code,
         ]

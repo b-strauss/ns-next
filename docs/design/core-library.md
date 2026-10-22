@@ -3132,10 +3132,12 @@ first and the `SHIPPED_MODULES` in order, its name, its section's byte
 length and the section: a symbol table in order of first use and the root
 mixin with every nested one, each mixin with everything the run time reads
 -- name, access, slots, the factory, the superclass clause and every `<:`
-clause with their receiver names and code, the initializer code, the root
-shape, `shipped`, the class side, the nested mixins, the span -- and its
-methods, sorted by selector name so the bytes do not depend on a
-`HashMap`'s order. A method is compiled, a slot accessor or a factory; a
+clause with their receiver names and code, the three initializer bodies,
+the root shape, `shipped`, the class side, the nested mixins, the span --
+and its methods, sorted by selector name so the bytes do not depend on a
+`HashMap`'s order. A method is compiled, a slot accessor or a factory, the
+last its selector and arity alone: the decoder rebuilds it through
+`mixin::factory_entry`, which gives it its synthesized body; a
 primitive method occurs only on the mirror's class, which Rust builds, and
 the encoder panics on one. A body carries its kind, its counts, its
 statement position, its unwind marker, its span and every instruction

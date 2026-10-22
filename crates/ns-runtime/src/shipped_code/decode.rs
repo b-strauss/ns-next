@@ -13,9 +13,9 @@ use crate::bytecode::{
     UnwindMarker,
 };
 use crate::mixin::{
-    AccessorKind, ClassAccessor, ClauseMessage, DeclarationText, Factory, FactoryMethod,
-    MethodEntry, MethodFastPath, Mixin, MixinApplicationClause, MixinMethod, MixinSlot,
-    QuickConstant, SlotAccessor,
+    AccessorKind, ClassAccessor, ClauseMessage, DeclarationText, Factory, MethodEntry,
+    MethodFastPath, Mixin, MixinApplicationClause, MixinMethod, MixinSlot, QuickConstant,
+    SlotAccessor,
 };
 use crate::resolver::RootShape;
 use crate::types::BuiltinClass;
@@ -161,6 +161,8 @@ impl Decoder<'_> {
         let class_side = self.option(|decoder| decoder.mixin_fields(Position::ClassSide));
         mixin.span = self.span();
         mixin.initializer_code = self.option(Decoder::code);
+        mixin.own_initializer_code = self.option(Decoder::code);
+        mixin.standalone_initializer_code = self.option(Decoder::code);
         mixin.superclass_clause_code = self.option(Decoder::code);
         mixin.superclass_message_code = self.option(Decoder::code);
         mixin.root_shape = self.option(|decoder| {
@@ -250,12 +252,11 @@ impl Decoder<'_> {
             2 => {
                 let selector = self.symbol();
                 let argument_count = self.reader.length();
-                let access = self.access();
-                MethodEntry::Factory(FactoryMethod {
+                crate::mixin::factory_entry(Some(Factory {
                     selector,
                     argument_count,
-                    access,
-                })
+                }))
+                .1
             }
             tag => panic!("internal: the embedded shipped code has method entry tag {tag}"),
         }

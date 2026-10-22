@@ -659,8 +659,15 @@ shape, order and errors are the ones above, and a `<:` clause's message
 runs with the applying class's factory arguments just before the
 initializer of the level it adds.
 
-Running `new` as code the compiler emits, as both references do, is the
-next piece of work ([OPEN-WORK.md](../OPEN-WORK.md), "Next").
+The walk runs each level's own part (`Mixin::own_initializer_code`): it
+evaluates the clauses itself. Each mixin also carries the bodies a
+compiled `new` will run -- the full initializer, which evaluates its
+clauses and initializes the levels above it before its own part, and the
+standalone one for a level reached from outside -- and each factory entry
+the factory's body ([compiler.md](compiler.md), "The three initializer
+bodies"); nothing runs them yet. Running `new` as that code, as both
+references do, is the next piece of work ([OPEN-WORK.md](../OPEN-WORK.md),
+"Next").
 
 ### A value object's four conditions
 
@@ -1463,9 +1470,10 @@ under the declared factory's selector (`new` for a declaration that writes
 none, §6's unnumbered introduction, before §6.1 begins), found by the
 ordinary lookups like any other member — as both references build it
 (Primordial Soup's `astForPrimaryFactory:`, SOMns's
-`MixinBuilder.assemblePrimaryFactoryMethod`). It carries no body: what it
-does is instantiate the class object the message was sent to, which
-`interpreter::resolve::act` runs through `instantiate::decide_factory`. A
+`MixinBuilder.assemblePrimaryFactoryMethod`). What it does is instantiate
+the class object the message was sent to, which `interpreter::resolve::act`
+runs through `instantiate::decide_factory`; the body it carries,
+`compiler::factory_body` of its arity, is not run yet ("Instantiation"). A
 flat metaclass puts a factory entry on the receiver's own metaclass and
 nowhere else, and `resolve::resolved_for` honours a factory only when the
 lookup found it on the receiver's own class, so no special case sits ahead of

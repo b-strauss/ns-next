@@ -1,8 +1,19 @@
 ---
 source: crates/ns-analyzer/tests/disasm_snapshots.rs
-expression: "disasm(\"language/arithmetic\", &[\"--initializer\"])"
+expression: "disasm(\"library/number/integer/arithmetic\", &[\"--initializer\"])"
 ---
 initializer Arithmetic (args 0, registers 4)
+   0   stmt 0  InitializeSuperclass r0 <- steps 1 #new ()
+   1   stmt 1  LoadLiteral r0, 6
+   2   stmt 1  LoadLiteral r1, 7
+   3   stmt 1  IntegerBinary Multiply r2 <- r0, r1 else -> 5
+   4   stmt 1  Jump -> 6
+   5   stmt 1  SendPublic r2 <- r0 #* (r1) @0
+   6   stmt 1  InitSlot own 0 <- r2
+   7        -  LoadSelf r3
+   8        -  ImplicitReturn r3
+
+initializer Arithmetic own part (args 0, registers 4)
    0   stmt 0  LoadLiteral r0, 6
    1   stmt 0  LoadLiteral r1, 7
    2   stmt 0  IntegerBinary Multiply r2 <- r0, r1 else -> 4
@@ -11,3 +22,8 @@ initializer Arithmetic (args 0, registers 4)
    5   stmt 0  InitSlot own 0 <- r2
    6        -  LoadSelf r3
    7        -  ImplicitReturn r3
+
+method Arithmetic factory new (args 0, registers 2)
+   0   stmt 0  AllocateInstance r0
+   1   stmt 0  InitializeInstance r1 <- r0 ()
+   2   stmt 0  Return r0

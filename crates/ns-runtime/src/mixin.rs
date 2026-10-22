@@ -18,7 +18,7 @@
 //! `Mixin::initializer_expressions`, `Mixin::declaration`) are read only by the
 //! compiler, which runs while a mixin is built from source; a decoded mixin
 //! leaves them empty rather than inventing nodes for them. The compiled bodies
-//! themselves live on the mixin (`Mixin::initializer_code` and the two
+//! themselves live on the mixin (its three initializer bodies and the two
 //! superclass-clause bodies) and on its methods (`MixinMethod::code`), for a
 //! built mixin and a decoded one alike.
 
@@ -335,10 +335,9 @@ pub struct PrimitiveMethod {
 
 /// The primary factory as a member of the metaclass mixin
 /// (`newspeak-spec.pdf` §6.3: "The class side, together with the primary
-/// factory method, defines the mixin for the metaclass"). It carries no
-/// body: what it does is instantiate the class object the send was addressed
-/// to, which `interpreter::resolve::act` runs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// factory method, defines the mixin for the metaclass"). Built only by
+/// `factory_entry`, which gives it its body.
+#[derive(Debug, Clone)]
 pub struct FactoryMethod {
     pub selector: Symbol,
     /// The primary factory signature's parameter count (§6's unnumbered
@@ -347,6 +346,12 @@ pub struct FactoryMethod {
     /// back to the declaration -- a decoded mixin has none.
     pub argument_count: usize,
     pub access: ast::AccessModifier,
+    /// The factory's body, `compiler::factory_body` of `argument_count`:
+    /// allocate an instance of the class object the send was addressed to,
+    /// run its initializer on it with the factory's arguments, answer it.
+    /// Synthesized, never lowered and never read off an image, so that no
+    /// image can carry a factory body of its own.
+    pub code: Rc<CompiledCode>,
 }
 
 /// One entry of a mixin's method table (§3.5): a compiled method, one of the
@@ -401,14 +406,25 @@ impl MethodEntry {
 /// protected: a factory that could not be sent from outside would leave no
 /// class instantiable, and the specification's own examples send one across
 /// module boundaries.
+///
+/// The entry's body is `compiler::factory_body` of the factory's arity, so
+/// every factory of one arity runs the same instructions, whoever built
+/// the entry -- a declaration from source, the embedded shipped code or
+/// the image decoder, which never reads a factory body off the wire. An
+/// arity past what a `u16` counts saturates, and the body it gets raises
+/// the too-large error (`compiler::factory_body`).
 pub fn factory_entry(factory: Option<Factory>) -> (Symbol, MethodEntry) {
     let selector = factory.map_or(Symbol::NEW, |factory| factory.selector);
+    let argument_count = factory.map_or(0, |factory| factory.argument_count);
     (
         selector,
         MethodEntry::Factory(FactoryMethod {
             selector,
-            argument_count: factory.map_or(0, |factory| factory.argument_count),
+            argument_count,
             access: ast::AccessModifier::Public,
+            code: Rc::new(crate::compiler::factory_body(
+                u16::try_from(argument_count).unwrap_or(u16::MAX),
+            )),
         }),
     )
 }
@@ -642,12 +658,32 @@ pub struct Mixin {
     /// `ClassBody` is not an `ast::ClassDeclaration`), and for a mixin decoded
     /// from an image.
     pub declaration: Option<Rc<ast::ClassDeclaration>>,
-    /// The instance initializer: this mixin's own slot initializers, then its
-    /// own `initExpr`s. Every mixin built from source has one, a class side
-    /// included. `None` for a builtin's mixin, which runs no code, and for a
-    /// decoded row that names none -- `image::decode::verify_mixins` refuses
-    /// that when the mixin needs one.
+    /// The full instance initializer, run on an instance of the level its
+    /// declaration's class object is: each `<:` clause's selector checked
+    /// against the class it names, the superclass clause's message
+    /// evaluated and the superclass's initializer run with it, each `<:`
+    /// clause's message evaluated and its level's own part run with it,
+    /// then this mixin's own part (`own_initializer_code`), then `self`
+    /// (`docs/design/object-model.md`, "Instantiation"). Every mixin built
+    /// from source has one, a class side included, whose full body is its
+    /// own part. `None` for a builtin's mixin, which runs no code;
+    /// `image::decode::verify_mixins` refuses a decoded row without one.
     pub initializer_code: Option<Rc<CompiledCode>>,
+    /// The own part: this mixin's own slot initializers, then its own
+    /// `initExpr`s, then `self`, and nothing of its clauses -- what a level
+    /// a `<:` clause added runs for the mixin it applies. Every mixin built
+    /// from source has one. `None` for a builtin's mixin, and for a decoded
+    /// row that names none -- `image::decode::verify_mixins` refuses that
+    /// when the mixin needs one (`instantiate::mixin_needs_initializer_code`).
+    pub own_initializer_code: Option<Rc<CompiledCode>>,
+    /// The standalone initializer, for a class object of this mixin that
+    /// no declaration applies it in -- a level a `<:` clause added, reached
+    /// from outside: the superclass clause's message and the superclass's
+    /// initializer, then the own part, without this declaration's own `<:`
+    /// clauses, which do not apply to such a level. `Some` exactly when the
+    /// declaration writes `<:` clauses: without them it would be the full
+    /// body.
+    pub standalone_initializer_code: Option<Rc<CompiledCode>>,
     /// The superclass clause's receiver expression (§6.1's `ec`), which the
     /// nested-class accessor runs once per enclosing object -- together with
     /// every `<:` clause's receiver when the declaration applies mixins, as
@@ -1041,6 +1077,8 @@ impl Mixin {
             span: Span::new(0, 0),
             declaration: None,
             initializer_code: None,
+            own_initializer_code: None,
+            standalone_initializer_code: None,
             superclass_clause_code: None,
             superclass_message_code: None,
             root_clause_defect: None,

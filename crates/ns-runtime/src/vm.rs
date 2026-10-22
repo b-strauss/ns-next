@@ -20,7 +20,7 @@ use crate::interpreter::future::{
     not_a_closure, resolve_for_instruction, value_for_a_value_slot, FutureOutcome, Resolution,
 };
 use crate::interpreter::inline_cache::{send_lexical, send_public, send_super};
-use crate::interpreter::instantiate::check_value_slot;
+use crate::interpreter::instantiate::{check_value_slot, compiled_instantiation_not_running};
 use crate::interpreter::literals::{body_too_large_error, unresolved_identifier_error};
 use crate::interpreter::locals::{
     check_own_slots, filled_own_slot, load_own_slot, load_vector, read_local, read_outer_local,
@@ -823,15 +823,19 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                         &mut handoff,
                                     )
                                 }
-                                // No lowering emits these yet, and the image
-                                // loader refuses a body that carries one
-                                // (`image::decode::verify_body`).
+                                // The instructions of a compiled `new`, which
+                                // nothing runs yet: an ordinary error, since an
+                                // image may carry them.
                                 CompactInstruction::AllocateInstance { .. }
                                 | CompactInstruction::InitializeInstance { .. }
                                 | CompactInstruction::CheckAppliedClause { .. }
                                 | CompactInstruction::InitializeSuperclass { .. }
                                 | CompactInstruction::InitializeAppliedLevel { .. } => {
-                                    unreachable!("{NOT_YET_RUN}")
+                                    let signal = compiled_instantiation_not_running(
+                                        &mutator.heap,
+                                        activation,
+                                    );
+                                    break 'decided unwind(mutator, signal, floor, &mut handoff);
                                 }
                                 CompactInstruction::Return { register }
                                 | CompactInstruction::ImplicitReturn { register } => {
@@ -1404,16 +1408,13 @@ fn run_wide<'gc>(
         | Instruction::InitializeInstance { .. }
         | Instruction::CheckAppliedClause { .. }
         | Instruction::InitializeSuperclass { .. }
-        | Instruction::InitializeAppliedLevel { .. } => unreachable!("{NOT_YET_RUN}"),
+        | Instruction::InitializeAppliedLevel { .. } => {
+            let signal = compiled_instantiation_not_running(&mutator.heap, activation);
+            unwind(mutator, signal, floor, handoff)
+        }
     };
     WideOutcome::Transfer(transfer)
 }
-
-/// Why the run loop never meets an instruction of a compiled `new`: no
-/// lowering emits one yet, and `image::decode::verify_body` refuses a body
-/// that carries one.
-const NOT_YET_RUN: &str =
-    "internal: no lowering emits an instantiation instruction, and no image may carry one";
 
 // The effect of each instruction, written once over `u16` operands: the
 // narrow arm widens its bytes and calls it, and `run_wide` calls it with the

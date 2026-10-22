@@ -109,6 +109,8 @@ fn write_mixin(out: &mut Out, mixin: &Mixin) {
         // Read only by the compiler and the source path's checks.
         declaration: _,
         initializer_code,
+        own_initializer_code,
+        standalone_initializer_code,
         superclass_clause_code,
         superclass_message_code,
         root_clause_defect,
@@ -184,6 +186,10 @@ fn write_mixin(out: &mut Out, mixin: &Mixin) {
     });
     out.span(*span);
     out.option(initializer_code.as_ref(), |out, code| out.code(code));
+    out.option(own_initializer_code.as_ref(), |out, code| out.code(code));
+    out.option(standalone_initializer_code.as_ref(), |out, code| {
+        out.code(code);
+    });
     out.option(superclass_clause_code.as_ref(), |out, code| out.code(code));
     out.option(superclass_message_code.as_ref(), |out, code| out.code(code));
     out.option(root_shape.as_ref(), |out, shape| {
@@ -310,12 +316,14 @@ impl Out {
             MethodEntry::Factory(FactoryMethod {
                 selector,
                 argument_count,
-                access,
+                // Always public, and the body is `compiler::factory_body`
+                // of the arity: `mixin::factory_entry` gives both back.
+                access: _,
+                code: _,
             }) => {
                 self.u8(2);
                 self.symbol(*selector);
                 self.length(*argument_count);
-                self.access(*access);
             }
             MethodEntry::Primitive(_) => {
                 panic!("internal: only the mirror's class holds a primitive, and Rust builds it")

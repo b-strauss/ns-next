@@ -396,9 +396,12 @@ Instructions:
   `steps` above, `steps` a `u16`, the argument registers as a send writes
   them, and `destination` a `u16`.
 
-The loader refuses a body that carries any of 41 to 45
-(`DecodeError::InstantiationInstruction`): no lowering emits them yet, and
-the run loop has no arm that runs them.
+Every initializer body carries 43 to 45 and every factory body 41 and 42,
+so the loader accepts them in any body. Instantiation still runs the walk,
+which runs each level's own part and never a full body or a factory's, so
+the run loop meets one only in a crafted image, and raises an ordinary
+error for it (`interpreter::instantiate::compiled_instantiation_not_running`,
+`an_instantiation_instruction_a_crafted_image_runs_raises_an_error`).
 
 The next free instruction number is 46. A send's `CallSite` -- its number
 within its code family, a `u32`, or `u32::MAX` (`CallSite::UNCACHED`) for
@@ -561,10 +564,18 @@ boxed float allocate, and count toward a failed load's peak
 **Mixin table.** One row per declaration: the name, its own slots, the primary
 factory selector and arity, the compiled methods as selector → code id, the ids
 of its nested declarations with their accessor names and accessibility, the
-class-side mixin id, the initializer code id, the provenance span, and, in an
-image with source, the index of its declaration's text in the text table
-("Source" below). This is what replaced the embedded source text and the
-re-parse on load.
+class-side mixin id, the code ids of its three initializer bodies -- the full
+one, its own part and the standalone one ([compiler.md](compiler.md), "One
+body per mixin") -- the superclass clause's and its message's, the
+provenance span, and, in an image with source, the index of its
+declaration's text in the text table ("Source" below). This is what replaced
+the embedded source text and the re-parse on load.
+
+A factory's body is not on the wire. A metaclass row's factory entry is
+derived from its instance side's factory selector and arity
+(`mixins::metaclass_factory_entries`, `mixin::factory_entry`), and gets
+`compiler::factory_body` of the arity, as every factory built from source
+does, so an image cannot carry a factory body of its own.
 
 The table is a **forest**: one tree per module, each in `mixin::preorder`
 order, the trees in module order (`image/mixins.rs`). A tree's first row is
@@ -1107,7 +1118,12 @@ Two structural passes run before anything the image describes can execute:
 each frame to the body it names. Between them,
 `verify_mixins` reconciles every decoded mixin with the bodies its row attached
 — each body's kind and arity against the declaration's, and a body present
-wherever the declaration needs one. `load` reads the text table, when the
+wherever the declaration needs one: each of the three initializer bodies
+takes the factory's arity, the full body is always present, the own part
+whenever the class has slots or `initExpr`s, and the standalone body exactly
+when the row writes `<:` clauses
+(`an_initializer_whose_arity_disagrees_with_the_factory_is_refused`,
+`a_mixin_with_clauses_but_no_standalone_initializer_is_refused`). `load` reads the text table, when the
 image carries source (`texts::decode`, each text checked against itself),
 then the mixin table (`mixins::read`, which checks the rows and finds the
 trees), then the module section (`modules::decode_modules`), then builds

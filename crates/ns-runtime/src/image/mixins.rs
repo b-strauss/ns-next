@@ -338,14 +338,18 @@ pub fn encode(
             writer.write_u32(*id);
         }
         write_optional_id(writer, row.class_side);
-        write_optional_id(
-            writer,
-            mixin
-                .initializer_code
-                .as_ref()
-                .map(|code| codes.id_of(code))
-                .transpose()?,
-        );
+        // The three initializer bodies: the full one, its own part and the
+        // standalone one.
+        for code in [
+            &mixin.initializer_code,
+            &mixin.own_initializer_code,
+            &mixin.standalone_initializer_code,
+        ] {
+            write_optional_id(
+                writer,
+                code.as_ref().map(|code| codes.id_of(code)).transpose()?,
+            );
+        }
         write_optional_id(
             writer,
             mixin
@@ -407,7 +411,12 @@ fn write_optional_id(writer: &mut Writer, id: Option<u32>) {
 pub struct MixinCode {
     /// `(selector, code id)`, sorted by selector exactly as encoded.
     pub methods: Vec<(Symbol, u32)>,
+    /// The full instance initializer.
     pub initializer: Option<u32>,
+    /// The own part of the instance initializer.
+    pub own_initializer: Option<u32>,
+    /// The standalone instance initializer.
+    pub standalone_initializer: Option<u32>,
     pub superclass_clause: Option<u32>,
     pub superclass_message: Option<u32>,
     /// Each `<:` clause's message body, in clause order.
@@ -468,6 +477,8 @@ struct RawRow {
     nested: Vec<u32>,
     class_side: Option<u32>,
     initializer: Option<u32>,
+    own_initializer: Option<u32>,
+    standalone_initializer: Option<u32>,
     superclass_clause: Option<u32>,
     superclass_message: Option<u32>,
     text: Option<RowText>,
@@ -602,6 +613,8 @@ fn read_row(
     }
     let class_side = read_optional(reader, |reader| reader.read_u32())?;
     let initializer = read_optional(reader, |reader| read_code_id(reader, codes))?;
+    let own_initializer = read_optional(reader, |reader| read_code_id(reader, codes))?;
+    let standalone_initializer = read_optional(reader, |reader| read_code_id(reader, codes))?;
     let superclass_clause = read_optional(reader, |reader| read_code_id(reader, codes))?;
     let superclass_message = read_optional(reader, |reader| read_code_id(reader, codes))?;
     let text = if has_source {
@@ -626,6 +639,8 @@ fn read_row(
         nested,
         class_side,
         initializer,
+        own_initializer,
+        standalone_initializer,
         superclass_clause,
         superclass_message,
         text,
@@ -1032,6 +1047,8 @@ pub fn build(
                 .map(|&(selector, _, _, id)| (selector, id))
                 .collect(),
             initializer: row.initializer,
+            own_initializer: row.own_initializer,
+            standalone_initializer: row.standalone_initializer,
             superclass_clause: row.superclass_clause,
             superclass_message: row.superclass_message,
             mixin_applications: row
@@ -1079,6 +1096,8 @@ pub fn build(
             span: row.span,
             declaration: None,
             initializer_code: row.initializer.map(code_at),
+            own_initializer_code: row.own_initializer.map(code_at),
+            standalone_initializer_code: row.standalone_initializer.map(code_at),
             superclass_clause_code: row.superclass_clause.map(code_at),
             superclass_message_code: row.superclass_message.map(code_at),
             // The loader refuses a root class record the root rule forbids

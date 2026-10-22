@@ -1477,7 +1477,7 @@ mod tests {
             let old = mutator.heap().class_application(class).expect("a class");
             let code = old
                 .mixin
-                .initializer_code
+                .own_initializer_code
                 .clone()
                 .expect("Sub's slots need an initializer");
             assert!(code.addresses_own_slots);

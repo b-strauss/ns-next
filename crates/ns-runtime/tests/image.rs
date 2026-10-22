@@ -468,7 +468,9 @@ fn write_mixin_row_with_method_shapes(
         writer.write_u32(*id);
     }
     writer.write_boolean(false); // no class side
-    writer.write_boolean(false); // no initializer
+    writer.write_boolean(false); // no full initializer
+    writer.write_boolean(false); // no own part of the initializer
+    writer.write_boolean(false); // no standalone initializer
     writer.write_boolean(false); // no superclass clause body
     writer.write_boolean(false); // no superclass message body
 }
@@ -1482,6 +1484,91 @@ fn a_body_past_the_register_ceiling_round_trips_and_still_raises() {
         "answer",
     );
     assert_eq!(integer_of(&mut loaded.interpreter, &answer), 7);
+}
+
+/// An image may carry the instructions of a compiled `new`, and until they
+/// run a crafted one can put one where it runs: in an ordinary method. Each
+/// raises an ordinary error there, in its eight-byte form and in its wide
+/// one, rather than panicking.
+#[test]
+fn an_instantiation_instruction_a_crafted_image_runs_raises_an_error() {
+    let source = indoc! {"
+        class X = Object new (
+        ) (
+          public run = ( ^1 )
+        ) : ()
+    "};
+    // A destination past what the eight-byte form addresses makes the wide
+    // form.
+    for destination in [0_u16, 600] {
+        let doctored_body = |instruction: Instruction| {
+            Rc::new(CompiledCode::new(
+                CodeKind::Method,
+                vec![instruction, Instruction::Return { register: 0 }],
+                0,
+                destination + 1,
+                0,
+                vec![(0, 0..2)],
+                Span::new(0, 0),
+            ))
+        };
+        let instructions = [
+            Instruction::AllocateInstance { destination },
+            Instruction::InitializeInstance {
+                instance: 0,
+                argument_registers: vec![],
+                destination,
+            },
+            Instruction::CheckAppliedClause {
+                steps: 1,
+                selector: Symbol::NEW,
+            },
+            Instruction::InitializeSuperclass {
+                steps: 1,
+                selector: Symbol::NEW,
+                argument_registers: vec![],
+                destination,
+            },
+            Instruction::InitializeAppliedLevel {
+                steps: 1,
+                argument_registers: vec![],
+                destination,
+            },
+        ];
+        for instruction in instructions {
+            let (mut interpreter, class) = load(source);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let bytes = interpreter.enter(|mutator| {
+                let class = class_reference(mutator, &class);
+                let doctored = with_method_code(
+                    mixin_of(mutator.heap(), class),
+                    "run",
+                    doctored_body(instruction.clone()),
+                );
+                install_mixin(mutator, class, doctored);
+                let instance = mutator.fetch(&instance);
+                snapshot_one(
+                    mutator,
+                    false,
+                    &Origin::File(PathBuf::from("t.ns")),
+                    class,
+                    &[instance],
+                )
+                .expect("snapshot")
+            });
+            let mut loaded = image::load(&bytes).expect("load");
+            assert_eq!(
+                expect_error(
+                    loaded
+                        .interpreter
+                        .send(&loaded.roots[0], Symbol::intern("run"), &[]),
+                    "run",
+                ),
+                "internal: compiled instantiation is not running yet",
+                "{instruction:?}"
+            );
+        }
+    }
 }
 
 /// The image's error for `source`'s module: a snapshot of its class alone,
@@ -7124,10 +7211,10 @@ fn a_body_that_runs_past_its_last_instruction_is_refused() {
     }
 }
 
-/// Nothing runs an instruction of a compiled `new` yet, so a loaded body
-/// that carries one would reach a run loop with no arm for it.
+/// An initializer body carries the instructions of a compiled `new`, so a
+/// loaded body may hold each of them.
 #[test]
-fn a_body_with_an_instantiation_instruction_is_refused() {
+fn a_body_with_an_instantiation_instruction_is_accepted() {
     let instructions = every_instantiation_instruction().instructions();
     for instruction in instructions
         .iter()
@@ -7139,11 +7226,7 @@ fn a_body_with_an_instantiation_instruction_is_refused() {
             601,
             vec![instruction.clone(), Instruction::Return { register: 0 }],
         )]);
-        assert_eq!(
-            decode::verify_code_table(&table),
-            Err(decode::DecodeError::InstantiationInstruction),
-            "{instruction:?}"
-        );
+        assert_eq!(decode::verify_code_table(&table), Ok(()), "{instruction:?}");
     }
 }
 
@@ -7612,6 +7695,209 @@ fn a_method_root_naming_a_block_body_is_refused_on_load() {
     });
 }
 
+/// A declaration with two `<:` clauses, the second passing an argument,
+/// so that `C` compiles all three initializer bodies.
+const TWO_APPLIED_CLAUSES: &str = indoc! {"
+    class Outer = Object new () (
+      class S = Object new () ()
+      class M1 = Object new () ()
+      class M2 tag: value = Object new () ()
+      class C = S new <: M1 new <: M2 tag: 1 (| c = 3. |) ()
+    ) : ()
+"};
+
+/// The decoded mixin of the row named `name`.
+fn decoded_mixin<'decoded>(decoded: &'decoded mixins::Decoded, name: &str) -> &'decoded Mixin {
+    decoded
+        .mixins
+        .iter()
+        .find(|mixin| mixin.name.as_str() == name)
+        .unwrap_or_else(|| panic!("a row named {name}"))
+}
+
+#[test]
+fn all_three_initializer_bodies_survive_a_round_trip() {
+    let (mut interpreter, class) = load(TWO_APPLIED_CLAUSES);
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let applying = mutator
+            .heap()
+            .nested_mixins(&root_mixin_of(mutator.heap(), class))
+            .into_iter()
+            .find(|nested| nested.name.as_str() == "C")
+            .expect("Outer declares C");
+        let (_table, decoded_mixins, _ids) = round_trip_code_table(mutator.heap(), class);
+        let decoded = decoded_mixin(&decoded_mixins, "C");
+        for (what, original, decoded) in [
+            (
+                "full",
+                &applying.initializer_code,
+                &decoded.initializer_code,
+            ),
+            (
+                "own",
+                &applying.own_initializer_code,
+                &decoded.own_initializer_code,
+            ),
+            (
+                "standalone",
+                &applying.standalone_initializer_code,
+                &decoded.standalone_initializer_code,
+            ),
+        ] {
+            let original = original.as_ref().expect("C compiles every body");
+            let decoded = decoded.as_ref().expect("the row names every body");
+            assert_eq!(**decoded, **original, "{what}");
+        }
+        assert_eq!(decode::verify_mixins(&decoded_mixins), Ok(()));
+    });
+}
+
+/// An image never carries a factory body: the decoder gives each factory
+/// entry the one `compiler::factory_body` synthesizes for its arity.
+#[test]
+fn a_decoded_factory_entry_carries_the_synthesized_body() {
+    let source = indoc! {"
+        class Pair x: first y: second = Object new () (
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let (_table, decoded_mixins, _ids) = round_trip_code_table(mutator.heap(), class);
+        let class_side = decoded_mixins
+            .mixins
+            .iter()
+            .find(|mixin| mixin.is_class_side())
+            .expect("Pair's class side has a row");
+        match class_side.methods.get(&Symbol::intern("x:y:")) {
+            Some(ns_runtime::mixin::MethodEntry::Factory(factory)) => {
+                assert_eq!(factory.argument_count, 2);
+                assert_eq!(*factory.code, ns_runtime::compiler::factory_body(2));
+            }
+            _ => panic!("the class side carries the factory entry"),
+        }
+    });
+}
+
+/// Each initializer body runs with the factory's arguments as its own, so
+/// a body of another arity would lay its registers out from the wrong
+/// count.
+#[test]
+fn an_initializer_whose_arity_disagrees_with_the_factory_is_refused() {
+    type Body = fn(&Mixin) -> Option<Rc<CompiledCode>>;
+    type Doctor = fn(Mixin, Rc<CompiledCode>) -> Mixin;
+    let bodies: [(&str, Body, Doctor); 3] = [
+        (
+            "instance initializer",
+            |mixin| mixin.initializer_code.clone(),
+            |mixin, code| Mixin {
+                initializer_code: Some(code),
+                ..mixin
+            },
+        ),
+        (
+            "own part of the instance initializer",
+            |mixin| mixin.own_initializer_code.clone(),
+            |mixin, code| Mixin {
+                own_initializer_code: Some(code),
+                ..mixin
+            },
+        ),
+        (
+            "standalone instance initializer",
+            |mixin| mixin.standalone_initializer_code.clone(),
+            |mixin, code| Mixin {
+                standalone_initializer_code: Some(code),
+                ..mixin
+            },
+        ),
+    ];
+    for (what, body, doctor) in bodies {
+        let (mut interpreter, class) = load(TWO_APPLIED_CLAUSES);
+        interpreter.enter(|mutator| {
+            let class = class_reference(mutator, &class);
+            let doctored = with_nested(mutator.heap(), class, "C", |nested| {
+                let mut code = (*body(&nested).expect("C compiles every body")).clone();
+                code.argument_count = 1;
+                doctor(nested, Rc::new(code))
+            });
+            install_mixin(mutator, class, doctored);
+            let (_table, decoded_mixins, _ids) = round_trip_code_table(mutator.heap(), class);
+            assert_eq!(
+                decode::verify_mixins(&decoded_mixins),
+                Err(decode::DecodeError::CodeArityMismatch {
+                    what: what.to_string(),
+                    parameters: 0,
+                    argument_count: 1
+                }),
+                "{what}"
+            );
+        });
+    }
+}
+
+/// A row's `<:` clauses and its standalone initializer go together: a level
+/// of the mixin reached from outside runs the standalone body, which only a
+/// declaration with clauses has.
+#[test]
+fn a_mixin_with_clauses_but_no_standalone_initializer_is_refused() {
+    let (mut interpreter, class) = load(TWO_APPLIED_CLAUSES);
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let doctored = with_nested(mutator.heap(), class, "C", |nested| Mixin {
+            standalone_initializer_code: None,
+            ..nested
+        });
+        install_mixin(mutator, class, doctored);
+        let (_table, decoded_mixins, _ids) = round_trip_code_table(mutator.heap(), class);
+        let error = decode::verify_mixins(&decoded_mixins).expect_err("no standalone body");
+        assert_eq!(error, decode::DecodeError::MissingStandaloneInitializer);
+        assert_eq!(
+            error.to_string(),
+            "a class in the image applies mixins, and the image has no compiled code for its standalone instance initializer"
+        );
+    });
+    let (mut interpreter, class) = load(TWO_APPLIED_CLAUSES);
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let doctored = with_nested(mutator.heap(), class, "S", |nested| Mixin {
+            standalone_initializer_code: nested.initializer_code.clone(),
+            ..nested
+        });
+        install_mixin(mutator, class, doctored);
+        let (_table, decoded_mixins, _ids) = round_trip_code_table(mutator.heap(), class);
+        let error = decode::verify_mixins(&decoded_mixins).expect_err("a stray standalone body");
+        assert_eq!(error, decode::DecodeError::UnexpectedStandaloneInitializer);
+        assert_eq!(
+            error.to_string(),
+            "a class in the image applies no mixin, yet the image carries a standalone instance initializer for it"
+        );
+    });
+}
+
+/// Every row's class runs its full initializer when it is instantiated, so
+/// a row naming none is refused whatever its slots.
+#[test]
+fn a_mixin_without_a_full_initializer_is_refused() {
+    let (mut interpreter, class) = load(TWO_APPLIED_CLAUSES);
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let doctored = with_nested(mutator.heap(), class, "S", |nested| Mixin {
+            initializer_code: None,
+            ..nested
+        });
+        install_mixin(mutator, class, doctored);
+        let (_table, decoded_mixins, _ids) = round_trip_code_table(mutator.heap(), class);
+        let error = decode::verify_mixins(&decoded_mixins).expect_err("no full body");
+        assert_eq!(error, decode::DecodeError::MissingFullInitializer);
+        assert_eq!(
+            error.to_string(),
+            "a class in the image has no compiled code for its instance initializer"
+        );
+    });
+}
+
 // ---------------------------------------------------------------------------
 // `verify_graph` -- reconciling decoded frames and closures with
 // the code that runs in them.
@@ -7989,18 +8275,18 @@ fn an_image_with_no_initializer_for_a_class_that_needs_one_is_refused_on_load() 
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
         assert!(
-            mixin_of(mutator.heap(), class).initializer_code.is_some(),
+            mixin_of(mutator.heap(), class).own_initializer_code.is_some(),
             "the fixture's class really does compile an initializer"
         );
         let doctored = Mixin {
-            initializer_code: None,
+            own_initializer_code: None,
             ..mixin_of(mutator.heap(), class)
         };
         install_mixin(mutator, class, doctored);
         let (_table, decoded_mixins, _ids) = round_trip_code_table(mutator.heap(), class);
         assert!(
-            decoded_mixins.code[0].initializer.is_none(),
-            "the doctored row names no initializer"
+            decoded_mixins.code[0].own_initializer.is_none(),
+            "the doctored row names no own part"
         );
         let error = decode::verify_mixins(&decoded_mixins).expect_err("no initializer");
         assert_eq!(error, decode::DecodeError::MissingInitializer);
@@ -8026,10 +8312,11 @@ fn a_whole_image_missing_its_initializer_is_refused_by_load() {
     // Read out after the last run, for the encoder, which runs nothing.
     let bytes = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        // Only the initializer is dropped, so the refusal this asserts
-        // cannot be the superclass clause's.
+        // Only the initializer's own part, which the walk runs, is
+        // dropped, so the refusal this asserts cannot be the superclass
+        // clause's.
         let doctored = Mixin {
-            initializer_code: None,
+            own_initializer_code: None,
             ..mixin_of(mutator.heap(), class)
         };
         install_mixin(mutator, class, doctored);

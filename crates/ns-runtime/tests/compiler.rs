@@ -61,7 +61,7 @@ fn loading_compiles_every_method_and_the_initializer_onto_the_mixin() {
         ));
     }
     let initializer = mixin
-        .initializer_code
+        .own_initializer_code
         .as_ref()
         .expect("root initializer compiled");
     assert_eq!(initializer.kind, CodeKind::Initializer);
@@ -108,7 +108,7 @@ fn the_initializer_lowers_slots_then_initializer_expressions_with_own_slot_indic
     "};
     let (mut interpreter, class) = load(source);
     let initializer = root_mixin(&mut interpreter, &class)
-        .initializer_code
+        .own_initializer_code
         .clone()
         .expect("an initializer");
     assert_eq!(initializer.kind, CodeKind::Initializer);
@@ -171,7 +171,7 @@ fn an_uninitialized_slot_emits_nothing() {
     "};
     let (mut interpreter, class) = load(source);
     let initializer = root_mixin(&mut interpreter, &class)
-        .initializer_code
+        .own_initializer_code
         .clone()
         .expect("an initializer");
     let initialize_slots: Vec<u32> = initializer
@@ -278,4 +278,261 @@ ns_runtime::for_each_lowering! {
             "the test runs once, first"
         );
     }
+}
+
+/// The mixin of the class `name` that the module whose root `class` is
+/// declares directly.
+fn nested_mixin(interpreter: &mut Interpreter, class: &Root, name: &str) -> Rc<Mixin> {
+    let root = root_mixin(interpreter, class);
+    interpreter
+        .enter(|mutator| mutator.heap().nested_mixins(&root))
+        .into_iter()
+        .find(|nested| nested.name.as_str() == name)
+        .unwrap_or_else(|| panic!("the module declares {name}"))
+}
+
+/// A declaration whose superclass clause passes an argument computed from
+/// its own factory parameter.
+const SUPERCLASS_WITH_ARGUMENT: &str = indoc! {"
+    class Outer = Object new () (
+      class A y: value = Object new () ()
+      class B x: x = A y: x + 1 (| s = x. |) ()
+    ) : ()
+"};
+
+/// A declaration with two `<:` clauses, the second passing an argument.
+const TWO_APPLIED_CLAUSES: &str = indoc! {"
+    class Outer = Object new () (
+      class S = Object new () ()
+      class M1 = Object new () ()
+      class M2 tag: value = Object new () ()
+      class C = S new <: M1 new <: M2 tag: 1 () ()
+    ) : ()
+"};
+
+/// §6.3: the superclass clause's message is evaluated in the factory's
+/// scope and the superclass's initializer runs with it before any of the
+/// class's own slot initializers.
+#[test]
+fn a_full_initializer_initializes_its_superclass_before_its_own_slots() {
+    let (mut interpreter, class) = load(SUPERCLASS_WITH_ARGUMENT);
+    let full = nested_mixin(&mut interpreter, &class, "B")
+        .initializer_code
+        .clone()
+        .expect("a full initializer");
+    assert_eq!(full.kind, CodeKind::Initializer);
+    assert_eq!(full.argument_count, 1);
+    let instructions = full.instructions();
+    let sum = instructions
+        .iter()
+        .position(|instruction| matches!(instruction, Instruction::IntegerBinary { .. }))
+        .expect("the `+` of `x + 1`");
+    let Instruction::IntegerBinary {
+        destination: sum_register,
+        left: 0,
+        ..
+    } = instructions[sum]
+    else {
+        panic!("`x + 1` adds to the parameter `x`")
+    };
+    let superclass = instructions
+        .iter()
+        .position(|instruction| matches!(instruction, Instruction::InitializeSuperclass { .. }))
+        .expect("the superclass's initialization");
+    assert!(sum < superclass);
+    assert!(matches!(
+        &instructions[superclass],
+        Instruction::InitializeSuperclass { steps: 1, selector, argument_registers, .. }
+            if *selector == Symbol::intern("y:") && *argument_registers == vec![sum_register]
+    ));
+    let slot = instructions
+        .iter()
+        .position(|instruction| matches!(instruction, Instruction::InitializeSlot { .. }))
+        .expect("the slot `s`");
+    assert!(superclass < slot);
+    assert_eq!(
+        instructions[slot],
+        Instruction::InitializeSlot {
+            source: 0,
+            own_index: 0
+        }
+    );
+    let [.., load_self, implicit_return] = &instructions[..] else {
+        panic!("the body has at least two instructions")
+    };
+    let Instruction::LoadSelf { destination } = *load_self else {
+        panic!("the body answers self")
+    };
+    assert_eq!(
+        *implicit_return,
+        Instruction::ImplicitReturn {
+            register: destination
+        }
+    );
+}
+
+/// §6.1's check of each `<:` clause precedes everything that runs, the top
+/// clause's first, as the walk checked them on its way up; then the
+/// superclass, then each applied level from the lowest, its message's
+/// arguments evaluated just before it (§6.2).
+#[test]
+fn a_full_initializer_checks_every_applied_clause_before_the_superclass_message() {
+    let (mut interpreter, class) = load(TWO_APPLIED_CLAUSES);
+    let full = nested_mixin(&mut interpreter, &class, "C")
+        .initializer_code
+        .clone()
+        .expect("a full initializer");
+    let instructions = full.instructions();
+    assert_eq!(instructions.len(), 8);
+    assert_eq!(
+        instructions[..2],
+        [
+            Instruction::CheckAppliedClause {
+                steps: 1,
+                selector: Symbol::intern("tag:")
+            },
+            Instruction::CheckAppliedClause {
+                steps: 2,
+                selector: Symbol::NEW
+            },
+        ]
+    );
+    assert!(matches!(
+        &instructions[2],
+        Instruction::InitializeSuperclass { steps: 3, selector, argument_registers, .. }
+            if *selector == Symbol::NEW && argument_registers.is_empty()
+    ));
+    assert!(matches!(
+        &instructions[3],
+        Instruction::InitializeAppliedLevel { steps: 2, argument_registers, .. }
+            if argument_registers.is_empty()
+    ));
+    let Instruction::LoadLiteral {
+        destination: tag,
+        literal: Literal::SmallInteger(1),
+    } = instructions[4]
+    else {
+        panic!("the literal 1 of `M2 tag: 1`")
+    };
+    assert!(matches!(
+        &instructions[5],
+        Instruction::InitializeAppliedLevel { steps: 1, argument_registers, .. }
+            if *argument_registers == vec![tag]
+    ));
+    assert!(matches!(instructions[6], Instruction::LoadSelf { .. }));
+    assert!(matches!(
+        instructions[7],
+        Instruction::ImplicitReturn { .. }
+    ));
+}
+
+/// The own part is exactly the body every mixin compiled before the
+/// initializers took in their clauses. The expectations were read off
+/// `disasm --initializer` of `vm_initializer.rs`'s three-level chain before
+/// the change, not derived from the compiler that now emits them.
+#[test]
+fn the_own_part_is_the_body_of_today() {
+    let source = indoc! {"
+        class Levels = Object new () (
+            public class Base withBase: b = Object new (| b1 ::= b. b2 ::= 10. |) (
+            )
+            public class Middle withMiddle: m = Base withBase: m + 1 (| m1 ::= m. m2 ::= 20. |) (
+            )
+            public class Leaf = Middle withMiddle: 2 (| l1 ::= 3. l2 ::= 30. |) (
+            )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let literal = |destination: u16, value: i64| Instruction::LoadLiteral {
+        destination,
+        literal: Literal::SmallInteger(value),
+    };
+    let slot = |source: u16, own_index: u32| Instruction::InitializeSlot { source, own_index };
+    let answer = |register: u16| {
+        [
+            Instruction::LoadSelf {
+                destination: register,
+            },
+            Instruction::ImplicitReturn { register },
+        ]
+    };
+    let parameter_then = |second: i64| {
+        let mut instructions = vec![slot(0, 0), literal(1, second), slot(1, 1)];
+        instructions.extend(answer(2));
+        instructions
+    };
+    let mut leaf = vec![literal(0, 3), slot(0, 0), literal(0, 30), slot(0, 1)];
+    leaf.extend(answer(1));
+    let expected = [
+        ("Base", parameter_then(10), 3, vec![(0, 0..1), (1, 1..3)]),
+        ("Middle", parameter_then(20), 3, vec![(0, 0..1), (1, 1..3)]),
+        ("Leaf", leaf, 2, vec![(0, 0..2), (1, 2..4)]),
+    ];
+    for (name, instructions, register_count, statements) in expected {
+        let own = nested_mixin(&mut interpreter, &class, name)
+            .own_initializer_code
+            .clone()
+            .expect("an own part");
+        assert_eq!(own.kind, CodeKind::Initializer, "{name}");
+        assert_eq!(own.instructions(), instructions, "{name}");
+        assert_eq!(own.register_count, register_count, "{name}");
+        assert_eq!(own.statement_program_counter, statements, "{name}");
+    }
+}
+
+/// A level a `<:` clause added and reached from outside runs its mixin's
+/// superclass clause and own part, never the declaration's `<:` clauses;
+/// a mixin without clauses has nothing to leave out, so it has no such
+/// body.
+#[test]
+fn a_standalone_initializer_exists_only_for_a_declaration_with_clauses() {
+    let (mut interpreter, class) = load(TWO_APPLIED_CLAUSES);
+    let applying = nested_mixin(&mut interpreter, &class, "C");
+    let standalone = applying
+        .standalone_initializer_code
+        .clone()
+        .expect("C writes `<:` clauses");
+    assert_eq!(standalone.kind, CodeKind::Initializer);
+    let instructions = standalone.instructions();
+    assert!(instructions.iter().all(|instruction| !matches!(
+        instruction,
+        Instruction::CheckAppliedClause { .. } | Instruction::InitializeAppliedLevel { .. }
+    )));
+    assert!(matches!(
+        &instructions[0],
+        Instruction::InitializeSuperclass { steps: 1, selector, argument_registers, .. }
+            if *selector == Symbol::NEW && argument_registers.is_empty()
+    ));
+    for name in ["S", "M1", "M2"] {
+        let mixin = nested_mixin(&mut interpreter, &class, name);
+        assert!(mixin.standalone_initializer_code.is_none(), "{name}");
+        assert!(mixin.initializer_code.is_some(), "{name}");
+    }
+    let root = root_mixin(&mut interpreter, &class);
+    assert!(root.standalone_initializer_code.is_none());
+    let class_side = root.class_side.as_ref().expect("Outer has a class side");
+    assert!(class_side.standalone_initializer_code.is_none());
+}
+
+/// A factory allocates an instance of the class it was sent to, runs that
+/// class's initializer on it with the factory's arguments, and answers the
+/// instance, whatever the initializer answers.
+#[test]
+fn the_factory_body_allocates_initializes_and_returns_the_instance() {
+    let body = ns_runtime::compiler::factory_body(2);
+    assert_eq!(body.kind, CodeKind::Method);
+    assert_eq!(body.argument_count, 2);
+    assert_eq!(body.register_count, 4);
+    assert_eq!(
+        body.instructions(),
+        vec![
+            Instruction::AllocateInstance { destination: 2 },
+            Instruction::InitializeInstance {
+                instance: 2,
+                argument_registers: vec![0, 1],
+                destination: 3,
+            },
+            Instruction::Return { register: 2 },
+        ]
+    );
 }

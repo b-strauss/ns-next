@@ -4769,7 +4769,7 @@ impl<'gc> Heap<'gc> {
         };
         match kind {
             FrameKind::Method(method) => Some(method.code.clone()),
-            FrameKind::Initializer(class) => mixin(*class)?.initializer_code.clone(),
+            FrameKind::Initializer(class) => mixin(*class)?.own_initializer_code.clone(),
             FrameKind::SuperclassClause(class) => mixin(*class)?.superclass_clause_code.clone(),
             FrameKind::SuperclassMessage(class) => mixin(*class)?.superclass_message_code.clone(),
             FrameKind::MixinApplicationMessage(level) => self

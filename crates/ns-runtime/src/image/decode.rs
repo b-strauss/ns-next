@@ -337,11 +337,23 @@ pub enum DecodeError {
     /// dictionary lacks.
     UnknownSelector(String),
     /// A mixin-table row declares slots or `initExpr`s but carries no
-    /// compiled initializer. Instantiating such a class runs initializer
-    /// code on every `X new`, and `Mutator::initializer_body` panics on that
-    /// invariant rather than failing -- so only refusing here keeps a
+    /// compiled own part of its initializer. Instantiating such a class runs
+    /// that code on every `X new`, and `Mutator::initializer_body` panics on
+    /// that invariant rather than failing -- so only refusing here keeps a
     /// crafted image from aborting the process at the first `X new`.
     MissingInitializer,
+    /// A mixin-table row carries no full instance initializer, which every
+    /// declaration compiles: its class's factory runs it on every
+    /// instantiation.
+    MissingFullInitializer,
+    /// A mixin-table row writes `<:` clauses but carries no standalone
+    /// instance initializer, which a level of its mixin reached from
+    /// outside runs.
+    MissingStandaloneInitializer,
+    /// A mixin-table row writes no `<:` clause yet carries a standalone
+    /// instance initializer, which no source compiles for such a
+    /// declaration.
+    UnexpectedStandaloneInitializer,
     /// A mixin-table row declares a superclass clause the image carries no
     /// compiled clause for. The nested-class accessor runs that code on the
     /// first access to the declaration, and panics on the invariant when
@@ -379,9 +391,6 @@ pub enum DecodeError {
     /// through: the VM fetches the instruction at `program_counter` after
     /// every fall-through, so either runs off the end of the body.
     UnterminatedBody,
-    /// An instruction of a compiled `new`, which nothing runs yet: no
-    /// lowering emits one, so a body that carries one is not this binary's.
-    InstantiationInstruction,
     /// A register operand outside its own body's register file.
     RegisterOutOfRange {
         register: u16,
@@ -789,6 +798,18 @@ impl std::fmt::Display for DecodeError {
                 f,
                 "a class in the image needs an instance initializer, which the image has no compiled code for"
             ),
+            DecodeError::MissingFullInitializer => write!(
+                f,
+                "a class in the image has no compiled code for its instance initializer"
+            ),
+            DecodeError::MissingStandaloneInitializer => write!(
+                f,
+                "a class in the image applies mixins, and the image has no compiled code for its standalone instance initializer"
+            ),
+            DecodeError::UnexpectedStandaloneInitializer => write!(
+                f,
+                "a class in the image applies no mixin, yet the image carries a standalone instance initializer for it"
+            ),
             DecodeError::MissingSuperclassClause => write!(
                 f,
                 "the image declares a superclass clause it has no compiled code for"
@@ -811,10 +832,6 @@ impl std::fmt::Display for DecodeError {
             DecodeError::UnterminatedBody => write!(
                 f,
                 "image code body does not end in a return or a jump, so it would run past its last instruction"
-            ),
-            DecodeError::InstantiationInstruction => write!(
-                f,
-                "image code body carries an instantiation instruction, which no compiled body holds"
             ),
             DecodeError::RegisterOutOfRange {
                 register,
@@ -1338,8 +1355,9 @@ fn check_code_id(id: u32, codes: &[Rc<CompiledCode>]) -> Result<(), DecodeError>
 ///   from the *declaration* -- `arguments` from the send or the factory --
 ///   while its temporaries are sized from the *body*;
 /// - the presence of a body wherever a declaration makes one mandatory (the
-///   three `Missing*` errors), because the run-time paths that reach for
-///   those bodies panic on the invariant rather than failing.
+///   `Missing*` errors), because the run-time paths that reach for those
+///   bodies panic on the invariant rather than failing, and the absence of
+///   a standalone initializer where no source compiles one.
 ///
 /// Methods are checked in selector order, the order the encoder writes a row
 /// in, so for any artifact the encoder produced the reported error is the
@@ -1361,26 +1379,49 @@ pub fn verify_mixins(mixins: &mixins::Decoded) -> Result<(), DecodeError> {
                 method.argument_count,
             )?;
         }
-        match &mixin.initializer_code {
-            // The same reconciliation for the initializer, whose
-            // `argument_count` is the mixin's factory parameter count and whose
-            // activation's `arguments` are the factory arguments `instantiate`
-            // checked against that same pattern.
-            Some(code) => check_code_arity(
-                code,
-                CodeKind::Initializer,
-                "instance initializer".to_string(),
-                mixin.factory.map_or(0, |factory| factory.argument_count),
-            )?,
-            // A class with slots or `initExpr`s runs compiled initializer
-            // code on every `X new`, and `Mutator::initializer_body` *panics*
-            // when the mixin carries none. The row's declaration half says
-            // the mixin needs one and its code half says whether the image
-            // carries it -- two fields only this function compares.
-            None if instantiate::mixin_needs_initializer_code(mixin) => {
-                return Err(DecodeError::MissingInitializer)
+        // The same reconciliation for the three initializer bodies, each of
+        // whose `argument_count` is the mixin's factory parameter count and
+        // whose activation's `arguments` are the factory arguments
+        // `instantiate` checked against that same pattern.
+        let factory_arity = mixin.factory.map_or(0, |factory| factory.argument_count);
+        for (code, what) in [
+            (&mixin.initializer_code, "instance initializer"),
+            (
+                &mixin.own_initializer_code,
+                "own part of the instance initializer",
+            ),
+            (
+                &mixin.standalone_initializer_code,
+                "standalone instance initializer",
+            ),
+        ] {
+            if let Some(code) = code {
+                check_code_arity(code, CodeKind::Initializer, what.to_string(), factory_arity)?;
             }
-            None => {}
+        }
+        // Every declaration compiles a full body, which its class's factory
+        // runs on every instantiation.
+        if mixin.initializer_code.is_none() {
+            return Err(DecodeError::MissingFullInitializer);
+        }
+        // A class with slots or `initExpr`s runs its own part on every
+        // `X new`, and `Mutator::initializer_body` *panics* when the mixin
+        // carries none. The row's declaration half says the mixin needs one
+        // and its code half says whether the image carries it -- two fields
+        // only this function compares.
+        if mixin.own_initializer_code.is_none() && instantiate::mixin_needs_initializer_code(mixin)
+        {
+            return Err(DecodeError::MissingInitializer);
+        }
+        // A level of a mixin with `<:` clauses reached from outside runs the
+        // standalone body, which only such a mixin has.
+        match (
+            &mixin.standalone_initializer_code,
+            mixin.mixin_applications.is_empty(),
+        ) {
+            (None, false) => return Err(DecodeError::MissingStandaloneInitializer),
+            (Some(_), true) => return Err(DecodeError::UnexpectedStandaloneInitializer),
+            _ => {}
         }
         match &mixin.superclass_clause_code {
             // A clause body takes no arguments: it is evaluated in an
@@ -1710,17 +1751,6 @@ fn verify_body(code: &CompiledCode, instructions: &[Instruction]) -> Result<(), 
         _ => return Err(DecodeError::UnterminatedBody),
     }
     for instruction in instructions {
-        // Nothing runs these yet (`vm.rs`), so no image may carry one.
-        if matches!(
-            instruction,
-            Instruction::AllocateInstance { .. }
-                | Instruction::InitializeInstance { .. }
-                | Instruction::CheckAppliedClause { .. }
-                | Instruction::InitializeSuperclass { .. }
-                | Instruction::InitializeAppliedLevel { .. }
-        ) {
-            return Err(DecodeError::InstantiationInstruction);
-        }
         for register in own_registers(instruction) {
             if register >= code.register_count {
                 return Err(DecodeError::RegisterOutOfRange {
@@ -3123,7 +3153,7 @@ pub(crate) fn declared_body<'gc>(
         }
         DeclaredKind::Initializer(_) => declared
             .declaration(heap)
-            .and_then(|mixin| mixin.initializer_code.clone()),
+            .and_then(|mixin| mixin.own_initializer_code.clone()),
         DeclaredKind::SuperclassClause(_) => declared
             .declaration(heap)
             .and_then(|mixin| mixin.superclass_clause_code.clone()),

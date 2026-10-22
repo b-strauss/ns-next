@@ -101,8 +101,10 @@ pub struct Report {
 
 /// Attributes each code id to the declaration that owns it.
 ///
-/// A mixin row names its methods, its initializer and its two superclass-clause
-/// bodies by id, so those attribute directly. A block body is named by no row
+/// A mixin row names its methods, its three initializer bodies and its two
+/// superclass-clause bodies by id, so those attribute directly; a class
+/// side's full initializer is its own part, one id claimed as the
+/// initializer. A block body is named by no row
 /// at all -- it is reachable only from the `MakeClosure` instruction that
 /// creates it -- so it is labelled by its kind instead. Anything left over
 /// would be a code id no declaration claims and no body's kind explains, which
@@ -124,6 +126,12 @@ fn attribute_code(decoded: &mixins::Decoded, codes: &[Rc<CompiledCode>]) -> Vec<
         let owner = mixin.name.to_string();
         for (selector, id) in &code.methods {
             claim(*id, &owner, &selector.to_string());
+        }
+        if let Some(id) = code.own_initializer {
+            claim(id, &owner, "initializer own part");
+        }
+        if let Some(id) = code.standalone_initializer {
+            claim(id, &owner, "standalone initializer");
         }
         if let Some(id) = code.initializer {
             claim(id, &owner, "initializer");
@@ -187,6 +195,8 @@ fn expand_mixin(mixin: &Rc<crate::mixin::Mixin>, code: &mixins::MixinCode) -> St
     }
     for (what, id) in [
         ("initializer", code.initializer),
+        ("initializer own part", code.own_initializer),
+        ("standalone initializer", code.standalone_initializer),
         ("superclass clause", code.superclass_clause),
         ("superclass message", code.superclass_message),
     ] {

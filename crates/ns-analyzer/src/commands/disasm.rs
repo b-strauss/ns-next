@@ -148,15 +148,16 @@ pub(crate) fn execute(
     };
     let (code, name) = match (selector, initializer) {
         (None, true) => {
-            // Not an invariant: a decoded mixin with no slots and no
-            // `initExpr`s legitimately carries no initializer (`verify_mixins`
-            // accepts that row), and an artifact is untrusted input, so this
-            // is a refusal rather than a panic.
+            // A loaded artifact's mixin always carries its full body
+            // (`verify_mixins`), but `disasm` holds nothing to that: an
+            // artifact is untrusted input, so this is a refusal rather than
+            // a panic.
             let Some(code) = mixin.initializer_code.clone() else {
                 eprintln!("error: `{}` has no instance initializer", mixin.name);
                 return ExitCode::FAILURE;
             };
-            (code, mixin.name.to_string())
+            print!("{}", initializer_listing(&mixin, &code));
+            return ExitCode::SUCCESS;
         }
         (Some(selector), false) => {
             // A slot accessor runs no code, so there is none to disassemble.
@@ -179,4 +180,47 @@ pub(crate) fn execute(
         ns_runtime::bytecode::disassemble(code.as_ref(), &name)
     );
     ExitCode::SUCCESS
+}
+
+/// `--initializer`'s listing: `mixin`'s full instance initializer `full`,
+/// its own part, its standalone initializer when it has one, and the body
+/// of its factory, one after another, a blank line between two. The own
+/// part is left out when a decoded mixin carries none, which
+/// `verify_mixins` accepts of a class without slots and `initExpr`s; the
+/// factory when the mixin has none, as a class side has not.
+fn initializer_listing(
+    mixin: &ns_runtime::Mixin,
+    full: &ns_runtime::bytecode::CompiledCode,
+) -> String {
+    let name = mixin.name.to_string();
+    let mut listings = vec![ns_runtime::bytecode::disassemble(full, &name)];
+    if let Some(own) = &mixin.own_initializer_code {
+        listings.push(ns_runtime::bytecode::disassemble(
+            own,
+            &format!("{name} own part"),
+        ));
+    }
+    if let Some(standalone) = &mixin.standalone_initializer_code {
+        listings.push(ns_runtime::bytecode::disassemble(
+            standalone,
+            &format!("{name} standalone"),
+        ));
+    }
+    if let Some(factory) = mixin.factory {
+        // The entry the class side carries, which is the one a send runs;
+        // a class side a declaration does not write is synthesized when its
+        // metaclass is, from the same function.
+        let entry = mixin
+            .class_side
+            .as_ref()
+            .and_then(|class_side| class_side.methods.get(&factory.selector).cloned())
+            .unwrap_or_else(|| ns_runtime::mixin::factory_entry(Some(factory)).1);
+        if let ns_runtime::mixin::MethodEntry::Factory(entry) = entry {
+            listings.push(ns_runtime::bytecode::disassemble(
+                &entry.code,
+                &format!("{name} factory {}", entry.selector),
+            ));
+        }
+    }
+    listings.join("\n")
 }

@@ -38,7 +38,18 @@ pub(crate) fn compile_method(method: &ast::MethodDeclaration, bindings: &Binding
 }
 
 pub(crate) fn compile_mixin_bodies(mixin: &mut Mixin, bindings: &Bindings) {
-    mixin.initializer_code = Some(Rc::new(initializer(mixin, bindings)));
+    let own = Rc::new(initializer(mixin, bindings, None));
+    mixin.initializer_code = Some(match super::Prologue::of(mixin, true) {
+        Some(prologue) => Rc::new(initializer(mixin, bindings, Some(prologue))),
+        None => Rc::clone(&own),
+    });
+    mixin.standalone_initializer_code = if mixin.mixin_applications.is_empty() {
+        None
+    } else {
+        super::Prologue::of(mixin, false)
+            .map(|prologue| Rc::new(initializer(mixin, bindings, Some(prologue))))
+    };
+    mixin.own_initializer_code = Some(own);
     mixin.superclass_clause_code = superclass_clause(mixin, bindings).map(Rc::new);
     mixin.superclass_message_code = superclass_message(mixin, bindings).map(Rc::new);
     super::fill_mixin_application_messages(mixin, |mixin, clause| {
@@ -46,14 +57,19 @@ pub(crate) fn compile_mixin_bodies(mixin: &mut Mixin, bindings: &Bindings) {
     });
 }
 
-/// Each own slot's initializer followed by `InitializeSlot`, one statement
-/// apiece, then the `initExprs`, then `self`. `InitializeSlot`'s index is the
-/// slot's position among the mixin's own slots, never an absolute field index
-/// (`docs/design/compiler.md`, "One body per mixin"). A simultaneous slot
-/// (§6.3.2) stores its initializer's future provisionally instead, and the
-/// clause's end reads each such slot back and stores it resolved, in
-/// declaration order.
-fn initializer(mixin: &Mixin, bindings: &Bindings) -> CompiledCode {
+/// `prologue`'s clauses when there is one -- the full or the standalone
+/// body -- then each own slot's initializer followed by `InitializeSlot`,
+/// one statement apiece, then the `initExprs`, then `self`.
+/// `InitializeSlot`'s index is the slot's position among the mixin's own
+/// slots, never an absolute field index (`docs/design/compiler.md`, "One
+/// body per mixin"). A simultaneous slot (§6.3.2) stores its initializer's
+/// future provisionally instead, and the clause's end reads each such slot
+/// back and stores it resolved, in declaration order.
+fn initializer(
+    mixin: &Mixin,
+    bindings: &Bindings,
+    prologue: Option<super::Prologue<'_>>,
+) -> CompiledCode {
     let mut body = Body::new(
         CodeKind::Initializer,
         super::factory_argument_count(mixin),
@@ -61,6 +77,10 @@ fn initializer(mixin: &Mixin, bindings: &Bindings) -> CompiledCode {
         bindings,
     );
     let mut source_span: Option<Span> = None;
+    if let Some(prologue) = prologue {
+        body.prologue(prologue.superclass, prologue.applied);
+        source_span = prologue.merge_spans(source_span);
+    }
     for (own_index, slot) in mixin.slots.iter().enumerate() {
         // A lazy slot's initializer is its getter's (`compile_lazy_slot_getter`).
         if slot.lazy {
@@ -271,6 +291,60 @@ impl<'a> Body<'a> {
         let index = self.statement_program_counter.len();
         self.statement_program_counter
             .push((index, start..self.code.len()));
+    }
+
+    /// An initializer's clauses, in `lower.rs`'s order
+    /// (`Lowerer::lower_instance_initialization_prologue`): each `<:`
+    /// clause's check, the topmost first, as one statement; the superclass
+    /// clause's arguments and its initialization; each `<:` clause's
+    /// arguments and its level's initialization, from the lowest level up.
+    /// The declaration's own level is the one the body runs at, so `<:`
+    /// clause `k` of `n` names the level `n - k + 1` steps up and the
+    /// superclass clause the class `n + 1` steps up; past what a `u16`
+    /// counts, the body is too large.
+    fn prologue(
+        &mut self,
+        superclass: Option<&ast::SuperclassClause>,
+        applied: &[ast::SuperclassClause],
+    ) {
+        let count = applied.len();
+        let Ok(superclass_steps) = u16::try_from(count + 1) else {
+            self.too_large = true;
+            return;
+        };
+        if count > 0 {
+            let start = self.code.len();
+            // Every clause's level is below the superclass clause's, whose
+            // steps fit a `u16`.
+            for (index, clause) in applied.iter().enumerate().rev() {
+                self.emit(Instruction::CheckAppliedClause {
+                    steps: (count - index) as u16,
+                    selector: super::clause_selector(Some(clause)),
+                });
+            }
+            self.record_statement(start);
+        }
+        let start = self.code.len();
+        let argument_registers = self.values(super::clause_arguments(superclass));
+        let destination = self.fresh();
+        self.emit(Instruction::InitializeSuperclass {
+            steps: superclass_steps,
+            selector: super::clause_selector(superclass),
+            argument_registers,
+            destination,
+        });
+        self.record_statement(start);
+        for (index, clause) in applied.iter().enumerate() {
+            let start = self.code.len();
+            let argument_registers = self.values(super::clause_arguments(Some(clause)));
+            let destination = self.fresh();
+            self.emit(Instruction::InitializeAppliedLevel {
+                steps: (count - index) as u16,
+                argument_registers,
+                destination,
+            });
+            self.record_statement(start);
+        }
     }
 
     /// Each local slot with an initializer, in declaration order, as one

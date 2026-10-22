@@ -236,16 +236,11 @@ fn disasm_of_an_image_matches_disasm_of_its_source() {
     );
 }
 
-/// An artifact whose root row names no instance initializer is legal when the
-/// class declares no slots and no `initExpr`s -- `verify_mixins` accepts it --
-/// so `disasm --initializer` on one must refuse with a message, not panic: an
-/// artifact is untrusted input. No source compiles to such a row (every mixin
-/// built from source gets an initializer), so the artifact is written through
-/// the runtime with the root's initializer removed, the way a crafted file
-/// would present it.
-#[test]
-fn disasm_refuses_an_initializer_an_artifact_does_not_carry() {
-    use ns_runtime::{Interpreter, Mixin, SourceOrigin};
+/// `Bare`'s artifact, its root mixin rewritten by `edit` the way a crafted
+/// file would present it: no source compiles to a row missing a body, so the
+/// artifact is written through the runtime.
+fn bare_artifact(edit: fn(ns_runtime::Mixin) -> ns_runtime::Mixin) -> Vec<u8> {
+    use ns_runtime::{Interpreter, SourceOrigin};
     use std::rc::Rc;
 
     let source = indoc! {"
@@ -266,7 +261,7 @@ fn disasm_refuses_an_initializer_an_artifact_does_not_carry() {
         panic!("`Bare new` raises nothing")
     };
     // Nothing runs from here on, so the whole rewrite happens in one entry.
-    let bytes = interpreter.enter(|mutator| {
+    interpreter.enter(|mutator| {
         let Some(class) = mutator.fetch(&class).as_object() else {
             panic!("load_module answers a class object")
         };
@@ -274,10 +269,7 @@ fn disasm_refuses_an_initializer_an_artifact_does_not_carry() {
             .heap()
             .class_application(class)
             .expect("a class object");
-        let bare = Mixin {
-            initializer_code: None,
-            ..(*application.mixin).clone()
-        };
+        let bare = edit((*application.mixin).clone());
         let rewired = mutator.apply_mixin(&Rc::new(bare), application.superclass.as_ref());
         assert!(mutator.heap_mut().class_set_application(class, rewired));
         let origin = SourceOrigin::File("bare.ns".into());
@@ -287,9 +279,19 @@ fn disasm_refuses_an_initializer_an_artifact_does_not_carry() {
             with_source: false,
         }];
         ns_runtime::image::package(mutator, &modules, mutator.fetch(&instance)).expect("package")
-    });
+    })
+}
 
-    let directory = ScratchDirectory::new("disasm-no-init");
+/// An artifact whose root row names no own part of its initializer is legal
+/// when the class declares no slots and no `initExpr`s -- `verify_mixins`
+/// accepts it -- so `disasm --initializer` lists the bodies it does carry.
+#[test]
+fn disasm_leaves_out_an_own_part_an_artifact_does_not_carry() {
+    let bytes = bare_artifact(|mixin| ns_runtime::Mixin {
+        own_initializer_code: None,
+        ..mixin
+    });
+    let directory = ScratchDirectory::new("disasm-no-own-part");
     let image = directory.join("bare.nsi");
     std::fs::write(&image, bytes).expect("write artifact");
 
@@ -299,27 +301,46 @@ fn disasm_refuses_an_initializer_an_artifact_does_not_carry() {
         .arg("--initializer")
         .output()
         .expect("run ns-next-analyzer disasm");
-    let error = String::from_utf8_lossy(&out.stderr);
-    assert!(!error.contains("panicked"), "disasm panicked: {error}");
-    assert_eq!(out.status.code(), Some(1), "stderr: {error}");
+    let listing = String::from_utf8_lossy(&out.stdout);
     assert!(
-        error.contains("error: `Bare` has no instance initializer"),
-        "unexpected stderr: {error}"
-    );
-
-    // The same artifact still disassembles a method: only the missing body
-    // is refused.
-    let method = Command::new(env!("CARGO_BIN_EXE_ns-next-analyzer"))
-        .arg("disasm")
-        .arg(&image)
-        .arg("main:args:")
-        .output()
-        .expect("run ns-next-analyzer disasm");
-    assert!(
-        method.status.success(),
+        out.status.success(),
         "{}",
-        String::from_utf8_lossy(&method.stderr)
+        String::from_utf8_lossy(&out.stderr)
     );
+    assert!(listing.contains("initializer Bare ("), "{listing}");
+    assert!(!listing.contains("own part"), "{listing}");
+    assert!(listing.contains("method Bare factory new"), "{listing}");
+}
+
+/// Every row carries its full initializer, so an artifact whose root row
+/// names none is refused when `disasm` loads it -- with a message, not a
+/// panic: an artifact is untrusted input.
+#[test]
+fn disasm_refuses_an_artifact_without_an_instance_initializer() {
+    let bytes = bare_artifact(|mixin| ns_runtime::Mixin {
+        initializer_code: None,
+        ..mixin
+    });
+    let directory = ScratchDirectory::new("disasm-no-init");
+    let image = directory.join("bare.nsi");
+    std::fs::write(&image, bytes).expect("write artifact");
+
+    for arguments in [&["--initializer"][..], &["main:args:"][..]] {
+        let out = Command::new(env!("CARGO_BIN_EXE_ns-next-analyzer"))
+            .arg("disasm")
+            .arg(&image)
+            .args(arguments)
+            .output()
+            .expect("run ns-next-analyzer disasm");
+        let error = String::from_utf8_lossy(&out.stderr);
+        assert!(!error.contains("panicked"), "disasm panicked: {error}");
+        assert_eq!(out.status.code(), Some(1), "stderr: {error}");
+        assert!(
+            error
+                .contains("a class in the image has no compiled code for its instance initializer"),
+            "unexpected stderr: {error}"
+        );
+    }
 }
 
 /// A file that is neither parseable source nor a valid artifact must report

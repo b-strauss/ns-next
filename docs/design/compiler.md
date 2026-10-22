@@ -200,9 +200,11 @@ with no initializer is skipped: its register keeps the **nil** every register
 starts with.
 
 A compiled body lives on the declaration it belongs to. A method's is on its
-`MixinMethod` (`code`); a mixin's instance initializer and its superclass
-clause's two bodies are on the `Mixin` (`initializer_code`,
-`superclass_clause_code`, `superclass_message_code`) — the clause's because a
+`MixinMethod` (`code`); a mixin's three initializer bodies ("The three
+initializer bodies" below) and its superclass clause's two bodies are on the
+`Mixin` (`initializer_code`, `own_initializer_code`,
+`standalone_initializer_code`, `superclass_clause_code`,
+`superclass_message_code`) — the clause's because a
 nested class's superclass clause is code too, evaluated by the accessor once
 per enclosing instance, and its message's because §6.2 evaluates the message's
 arguments on every instantiation. A declaration that applies mixins carries
@@ -214,7 +216,7 @@ message with the applying class's factory arguments — and its superclass
 clause body answers the superclass and every `<:` receiver as one array
 ([object-model.md](object-model.md), "Mixin application"). While the tree is
 built from source, `MixinMethod::from_declaration` compiles each method and
-`compile_mixin_bodies` a mixin's three bodies, before the mixin is wrapped in
+`compile_mixin_bodies` a mixin's per-mixin bodies, before the mixin is wrapped in
 the `Rc` every application shares; on load, `image::mixins::build` attaches
 the bodies a row names from the image's code table, after `mixins::read` has
 checked the rows and `modules::decode_modules` has read the module section,
@@ -250,6 +252,52 @@ both.
 Compiled initializers are layout-dependent, so a class-shape change must flush
 them along with every other cache keyed to the class. See
 [liveness-and-reflection.md](liveness-and-reflection.md).
+
+### The three initializer bodies
+
+A declaration `class C f: a = S ms <: M1 m1 <: … <: Mn mn ( |slots| exprs )`
+compiles three initializer bodies, each of kind `Initializer` and each
+taking the factory's arguments:
+
+- **The own part** (`own_initializer_code`): `C`'s own slot initializers and
+  `initExprs`, then `self` -- nothing of its clauses. It is what a level a
+  `<:` clause adds runs for the mixin it applies, and what the instantiation
+  walk runs today at every level, since the walk evaluates the clauses
+  itself.
+- **The full body** (`initializer_code`): a prologue, then the own part. The
+  prologue (`Lowerer::lower_instance_initialization_prologue`) checks every
+  `<:` clause's selector against the class it names, the topmost first
+  (`CheckAppliedClause`, one statement); evaluates `ms`'s arguments and
+  initializes the superclass with them (`InitializeSuperclass`); then, from
+  the lowest level up, evaluates each `mk`'s arguments and runs that level's
+  own part (`InitializeAppliedLevel`). Levels are counted from the one the
+  initializer is entered at: `<:` clause `k` of `n` names the level `n - k +
+  1` steps up, the superclass clause's class `n + 1`. A declaration that
+  writes no superclass clause initializes `Object` through `new`, one step
+  up (§6.1). The clause arguments are lowered inline, in the factory scope
+  the resolver gave them, and the capture analysis sees them first, in the
+  order they are lowered. A chain of more levels than a `u16` counts
+  compiles to `body_too_large`.
+- **The standalone body** (`standalone_initializer_code`): the full body
+  without the `<:` clauses' checks and levels, the superclass one step up,
+  for a level of `C`'s mixin reached from outside a declaration that applies
+  it. Only a declaration that writes `<:` clauses has one: without them it
+  would be the full body.
+
+A class side has no declaration of its own to read clauses from, so its
+full body is its own part, the same body. Both lowerings emit the same
+shapes, each with its own register allocation
+(`the_reference_lowering_emits_the_same_prologue`).
+
+**A factory's body is synthesized, not lowered.** `compiler::factory_body`
+of the factory's arity allocates an instance of the class object the
+factory was sent to (`AllocateInstance`), runs its initializer on it with
+the factory's arguments (`InitializeInstance`) and returns the instance. It
+depends on nothing but the arity; `mixin::factory_entry` attaches it to
+every factory entry, whoever builds one -- the source path, the embedded
+shipped code or the image decoder -- so no image carries one. A factory
+whose two registers do not fit after its arguments gets `body_too_large`'s
+body.
 
 ## Registers
 
