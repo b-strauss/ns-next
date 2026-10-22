@@ -48,6 +48,7 @@ first.
 | Road step 5b2b — edited programs in images: every declaration's own text, an edited program written to an image through the ids with the code an older version runs, source in every image unless stripped, a loaded program editable | Complete | 2026-10-19 | [edited-programs-in-images](superpowers/plans/2026-10-19-1702-edited-programs-in-images.md) |
 | Road step 5b2c — reclaiming ids: the weak application cache and the ids' reuse rules, enforced by a full collection; nested declarations by id; a serial per nested-class creation | Complete | 2026-10-20 | [reclaiming-ids](superpowers/plans/2026-10-20-1318-reclaiming-ids.md) |
 | Road step 6 — inline allocation in the interpreter: a bump cursor in the reservation, one comparison before the cold `allocate_block`, precomputed headers, a code-id cache per body, arrays without a `Vec`, and `new` of a class that runs no code as a bump | Complete | 2026-10-22 | [inline-allocation](superpowers/plans/2026-10-22-0008-inline-allocation.md) |
+| Java counterparts of the Are We Fast Yet benchmarks, verified in the `benchmarks` gate; `--warm-up` and `--measure` in both harnesses | Complete | 2026-10-22 | [java-benchmarks](superpowers/plans/2026-10-22-1522-java-benchmarks.md) |
 | Road step 7 — an execution model for compiled code | Not started | — | — |
 | Between road steps 7 and 8 — real Newspeak bodies for `whileTrue:`, `whileFalse:` and `do:` | Not started | — | — |
 | Road step 8 (M5) — a baseline JIT | Not started | — | — |
