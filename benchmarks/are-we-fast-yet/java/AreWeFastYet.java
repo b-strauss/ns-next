@@ -59,9 +59,13 @@ public final class AreWeFastYet {
 
   static {
     BENCHMARKS.put("Bounce", Bounce::new);
+    BENCHMARKS.put("Json", Json::new);
     BENCHMARKS.put("List", List::new);
+    BENCHMARKS.put("Mandelbrot", Mandelbrot::new);
+    BENCHMARKS.put("NBody", NBody::new);
     BENCHMARKS.put("Permute", Permute::new);
     BENCHMARKS.put("Queens", Queens::new);
+    BENCHMARKS.put("Richards", Richards::new);
     BENCHMARKS.put("Sieve", Sieve::new);
     BENCHMARKS.put("Storage", Storage::new);
     BENCHMARKS.put("Towers", Towers::new);
