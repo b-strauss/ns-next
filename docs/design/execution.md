@@ -848,7 +848,7 @@ each adapted file keeps the notice it carries upstream;
 
 | Files | Notice |
 |---|---|
-| `AreWeFastYet`, `Benchmark`, `som/*`, `Bounce`, `List`, `Permute`, `Queens`, `Sieve`, `Storage`, `Towers` | MIT, the SOM class library's authors |
+| `AreWeFastYet`, `Benchmark`, `som/*` but `IdentityDictionary`, `Bounce`, `List`, `Permute`, `Queens`, `Sieve`, `Storage`, `Towers` | MIT, the SOM class library's authors |
 | `CD`, `Havlak` | the same MIT text, `Copyright (c) 2001-2016 Stefan Marr` |
 | `Json`, `json/JsonPureStringParser` | MIT, Stefan Marr |
 | the rest of `json/` | MIT, EclipseSource (minimal-json) |
@@ -856,12 +856,14 @@ each adapted file keeps the notice it carries upstream;
 | `Mandelbrot` | Revised BSD, Brent Fulgham (the Computer Language Benchmarks Game) |
 | `NBody`, `nbody/*` | none of their own: their comment names the Benchmarks Game, whose Revised BSD text upstream's `LICENSE.md` carries |
 | `Richards`, `richards/*`, `DeltaBlue`, `deltablue/*` | none of their own: derived from Mario Wolczko's versions, they point to his licence page, as `LICENSE.md` does |
-| `cd/*` | none: upstream's files carry no notice, and `LICENSE.md` names none for them |
+| `cd/*`, `som/IdentityDictionary` | none: upstream's files carry no notice, and `LICENSE.md` names none for them |
 | `RichardsTon80`, `DeltaBlueTon80`, `richardston80/*`, `deltablueton80/*` | Apache License 2.0, the Newspeak project authors: the header of the `.ns` port each is translated from |
 
-`cd/` is the one group with no licence statement at all; `CD.ns`, from
-SOMns, carries Purdue's and Apple's BSD-3 text for the same program, which
-the Java files upstream do not.
+The files with no notice at all are `cd/*`, `som/IdentityDictionary`
+and `havlak/UnionFindNode`, beside `NBody` and `nbody/*`, whose comment
+names the Benchmarks Game without a licence text. `CD.ns`, from SOMns,
+carries Purdue's and Apple's BSD-3 text for the same program, which the
+Java files of `cd/` upstream do not.
 
 `AreWeFastYet.java` takes the `.ns` harness's command line and prints its
 lines:

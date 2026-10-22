@@ -370,7 +370,8 @@ Redistribution and use in source and binary forms, with or without modification,
 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ````
 
-The harness, the SOM class library (`som/`) and the benchmarks Bounce, List,
+The harness, the SOM class library (`som/`, but `IdentityDictionary.java`,
+which carries no notice) and the benchmarks Bounce, List,
 Permute, Queens, Sieve, Storage and Towers carry this notice (MIT); CD and
 Havlak carry the same text with its first two lines replaced by the
 copyright line `Copyright (c) 2001-2016 Stefan Marr`:
@@ -532,8 +533,9 @@ Richards and DeltaBlue are derived from Mario Wolczko's versions; their
 files point to his licence page, as `LICENSE.md` above does, and carry no
 licence text of their own.
 
-The files of `cd/` carry no notice at all, and `LICENSE.md` names no
-licence for them; `CD.java` carries the MIT notice above.
+The files of `cd/` and `som/IdentityDictionary.java` carry no notice at
+all, and `LICENSE.md` names no licence for them; `CD.java` carries the MIT
+notice above.
 
 `RichardsTon80.java`, `DeltaBlueTon80.java` and the files of
 `richardston80/` and `deltablueton80/` are not from Are We Fast Yet: they

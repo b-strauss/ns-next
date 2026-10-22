@@ -11,10 +11,10 @@
 # Yet benchmark, its score's shape checked; and the Java counterparts under
 # `benchmarks/are-we-fast-yet/java/`, compiled with the JDK's `javac` and held
 # to the same record, so this profile needs a JDK (`JAVA_HOME` or `PATH`).
-# It verifies the benchmarks; it measures nothing. The full-size benchmarks take seconds to a minute each in
-# a debug build and much longer under the stress modes, so they run on
-# demand, when benchmarking, and once at the end of a branch, in a plain run
-# without a stress mode.
+# It verifies the benchmarks; it measures nothing. The full-size benchmarks
+# take seconds to a minute each in a debug build and much longer under the
+# stress modes, so they run on demand, when benchmarking, and once at the end
+# of a branch, in a plain run without a stress mode.
 #
 #     cargo nextest run -p ns-cli --profile images
 #
