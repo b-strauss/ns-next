@@ -1892,16 +1892,12 @@ fn own_registers(instruction: &Instruction) -> Vec<u16> {
             ..
         } => vec![*destination, *left, *right],
         Instruction::AllocateInstance { destination } => vec![*destination],
+        // Its arguments are the body's own, which `argument_count` names
+        // and the body's register count was checked against.
         Instruction::InitializeInstance {
             instance,
-            argument_registers,
             destination,
-        } => {
-            let mut registers = argument_registers.clone();
-            registers.push(*instance);
-            registers.push(*destination);
-            registers
-        }
+        } => vec![*instance, *destination],
         Instruction::CheckAppliedClause { .. } => vec![],
         Instruction::InitializeSuperclass {
             argument_registers,
@@ -2378,10 +2374,8 @@ fn decode_instruction(
         },
         OPCODE_INITIALIZE_INSTANCE => {
             let instance = reader.read_u16()?;
-            let argument_registers = decode_registers(reader)?;
             Instruction::InitializeInstance {
                 instance,
-                argument_registers,
                 destination: reader.read_u16()?,
             }
         }

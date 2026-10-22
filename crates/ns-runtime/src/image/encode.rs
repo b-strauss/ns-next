@@ -642,12 +642,10 @@ fn encode_instruction(
         }
         Instruction::InitializeInstance {
             instance,
-            argument_registers,
             destination,
         } => {
             writer.write_u8(OPCODE_INITIALIZE_INSTANCE);
             writer.write_u16(*instance);
-            encode_registers(writer, argument_registers)?;
             writer.write_u16(*destination);
         }
         Instruction::CheckAppliedClause { steps, selector } => {

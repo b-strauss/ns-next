@@ -280,7 +280,6 @@ pub enum CompactInstruction {
     InitializeInstance {
         destination: u8,
         instance: u8,
-        arguments: u16,
     },
     CheckAppliedClause {
         steps: u16,
@@ -700,8 +699,7 @@ impl CodeBuilder {
             Instruction::InitializeInstance {
                 instance,
                 destination,
-                ..
-            } => self.register_lists.len() < TABLE_LIMIT && fits(*instance) && fits(*destination),
+            } => fits(*instance) && fits(*destination),
             Instruction::InitializeSuperclass { destination, .. } => {
                 self.superclass_sites.len() < TABLE_LIMIT && fits(*destination)
             }
@@ -1198,12 +1196,10 @@ impl CodeBuilder {
             },
             Instruction::InitializeInstance {
                 instance,
-                argument_registers,
                 destination,
             } => CompactInstruction::InitializeInstance {
                 destination: destination as u8,
                 instance: instance as u8,
-                arguments: self.push_register_list(argument_registers),
             },
             Instruction::CheckAppliedClause { steps, selector } => {
                 CompactInstruction::CheckAppliedClause { steps, selector }
@@ -1421,9 +1417,8 @@ impl EncodedBody {
         &self.superclass_sites[index]
     }
 
-    /// The registers a narrow `MakeArray`, `InitializeInstance` or
-    /// `InitializeAppliedLevel` names: an array's elements, an
-    /// initializer's arguments.
+    /// The registers a narrow `MakeArray` or `InitializeAppliedLevel`
+    /// names: an array's elements, an initializer's arguments.
     #[inline(always)]
     pub fn register_list(&self, index: usize) -> &[u16] {
         &self.register_lists[index]
@@ -2181,10 +2176,8 @@ impl Tables<'_> {
             CompactInstruction::InitializeInstance {
                 destination,
                 instance,
-                arguments,
             } => Instruction::InitializeInstance {
                 instance: register(instance),
-                argument_registers: self.register_lists[usize::from(arguments)].to_vec(),
                 destination: register(destination),
             },
             CompactInstruction::CheckAppliedClause { steps, selector } => {
@@ -2738,7 +2731,6 @@ mod tests {
                 let arguments: Vec<u16> = (0..count).map(|index| index * 2 + 1).collect();
                 instructions.push(Instruction::InitializeInstance {
                     instance: 4,
-                    argument_registers: arguments.clone(),
                     destination,
                 });
                 for steps in [0, 1, u16::MAX] {
@@ -2762,7 +2754,6 @@ mod tests {
         }
         instructions.push(Instruction::InitializeInstance {
             instance: 256,
-            argument_registers: vec![1],
             destination: 2,
         });
         instructions
@@ -2970,11 +2961,7 @@ mod tests {
                 destination: 1,
                 element_registers: vec![2, 3],
             },
-            Instruction::InitializeInstance {
-                instance: 1,
-                argument_registers: vec![2, 3],
-                destination: 4,
-            },
+            // `InitializeInstance` is not here: it names no table entry.
             Instruction::InitializeSuperclass {
                 steps: 1,
                 selector: Symbol::intern("with:and:"),

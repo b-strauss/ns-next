@@ -7166,8 +7166,9 @@ unchanged:
   selector and its argument registers, since the selector does not fit
   the slot beside the steps;
 - `register_lists`, the element registers of a `MakeArray`, and the
-  argument registers of an `InitializeInstance` or an
-  `InitializeAppliedLevel`, whose slots hold the rest;
+  argument registers of an `InitializeAppliedLevel`, whose slots hold the
+  rest (an `InitializeInstance` passes its body's own arguments and names
+  no list);
 - `wide`, the full `Instruction` of every instruction other than a send
   that has no eight-byte form here.
 

@@ -374,14 +374,15 @@ pub enum Instruction {
     },
     /// A factory body's initialization: runs the initializer of `self`'s
     /// level, the class object the factory was sent to, on the instance in
-    /// `instance`, with the factory's arguments in `argument_registers`;
-    /// `destination` takes what it answers.
+    /// `instance`, with the factory's arguments -- the executing
+    /// activation's own argument registers, `0..argument_count` of its
+    /// body, which it names by no list, so that a factory body's size does
+    /// not grow with its arity; `destination` takes what it answers.
     ///
     /// Reads and writes only registers of the activation executing it, so
     /// its `outer_reach_of` reach is 0.
     InitializeInstance {
         instance: u16,
-        argument_registers: Vec<u16>,
         destination: u16,
     },
     /// §6.1's check for a `<:` clause: the level the clause adds, `steps`
@@ -1275,12 +1276,8 @@ fn format_instruction(instruction: &Instruction) -> String {
         }
         Instruction::InitializeInstance {
             instance,
-            argument_registers,
             destination,
-        } => format!(
-            "InitializeInstance r{destination} <- r{instance} ({})",
-            registers(argument_registers)
-        ),
+        } => format!("InitializeInstance r{destination} <- r{instance} (arguments)"),
         Instruction::CheckAppliedClause { steps, selector } => {
             format!("CheckAppliedClause steps {steps} #{selector}")
         }
@@ -1524,10 +1521,9 @@ mod tests {
             (
                 Instruction::InitializeInstance {
                     instance: 2,
-                    argument_registers: vec![0, 1],
                     destination: 3,
                 },
-                "InitializeInstance r3 <- r2 (r0, r1)",
+                "InitializeInstance r3 <- r2 (arguments)",
             ),
             (
                 Instruction::CheckAppliedClause {

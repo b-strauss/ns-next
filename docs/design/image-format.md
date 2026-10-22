@@ -385,8 +385,9 @@ Instructions:
 - 41 `AllocateInstance`: a factory body's allocation of an instance of the
   class object the factory was sent to, `destination` a `u16`.
 - 42 `InitializeInstance`: a factory body's run of that class object's
-  initializer on the instance, `instance` a `u16`, the argument registers as
-  a send writes them, and `destination` a `u16`.
+  initializer on the instance, `instance` a `u16` and `destination` a `u16`.
+  Its arguments are the running body's own argument registers, so it names
+  no list, and a factory body is three instructions whatever its arity.
 - 43 `CheckAppliedClause`: §6.1's check of a `<:` clause, `steps` a `u16`
   and the selector as a send writes it.
 - 44 `InitializeSuperclass`: §6.1's check, then the initializer of the class

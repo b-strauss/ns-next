@@ -879,7 +879,6 @@ fn every_instantiation_instruction() -> CompiledCode {
         let arguments: Vec<u16> = (0..count).map(|index| index * 2 + 1).collect();
         instructions.push(Instruction::InitializeInstance {
             instance: 0,
-            argument_registers: arguments.clone(),
             destination: 600,
         });
         for steps in [0, 1, u16::MAX] {
@@ -1516,7 +1515,6 @@ fn an_instantiation_instruction_a_crafted_image_runs_raises_an_error() {
             Instruction::AllocateInstance { destination },
             Instruction::InitializeInstance {
                 instance: 0,
-                argument_registers: vec![],
                 destination,
             },
             Instruction::CheckAppliedClause {

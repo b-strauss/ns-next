@@ -123,7 +123,10 @@ fn body_too_large(kind: CodeKind, argument_count: u16, source: Span) -> Compiled
 /// `InitializeInstance` of it with the factory's arguments, which are this
 /// body's own, and `Return` of the instance -- never of what the initializer
 /// answers. The two registers after the arguments hold the instance and
-/// the initializer's answer.
+/// the initializer's answer. Three instructions whatever the arity:
+/// `InitializeInstance` names no argument list, so an arity read off an
+/// image's two bytes cannot make the decoder build a body that grows with
+/// it.
 ///
 /// Synthesized rather than lowered: it has no source and no resolver
 /// bindings, and depends on nothing but the arity, so every factory of one
@@ -147,7 +150,6 @@ pub fn factory_body(argument_count: u16) -> CompiledCode {
             },
             Instruction::InitializeInstance {
                 instance,
-                argument_registers: (0..argument_count).collect(),
                 destination: answer,
             },
             Instruction::Return { register: instance },

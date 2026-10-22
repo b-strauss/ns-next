@@ -741,12 +741,10 @@ impl Out {
             }
             Instruction::InitializeInstance {
                 instance,
-                argument_registers,
                 destination,
             } => {
                 self.u8(33);
                 self.u16(*instance);
-                self.registers(argument_registers);
                 self.u16(*destination);
             }
             Instruction::CheckAppliedClause { steps, selector } => {

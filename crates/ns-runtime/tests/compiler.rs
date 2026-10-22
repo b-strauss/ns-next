@@ -529,10 +529,101 @@ fn the_factory_body_allocates_initializes_and_returns_the_instance() {
             Instruction::AllocateInstance { destination: 2 },
             Instruction::InitializeInstance {
                 instance: 2,
-                argument_registers: vec![0, 1],
                 destination: 3,
             },
             Instruction::Return { register: 2 },
         ]
     );
+    // An arity read off an image cannot make the body grow with it.
+    let widest = ns_runtime::compiler::factory_body(u16::MAX - 2);
+    assert_eq!(widest.instructions().len(), 3);
+    assert_eq!(widest.register_count, u16::MAX);
+}
+
+/// A clause argument is lowered inside the initializer, so a block in one
+/// that reads a factory parameter must be seen by the capture analysis: the
+/// optimized lowering hands the block the parameter's register as a copied
+/// value, the reference lowering reads it by reference, and neither body
+/// is too large.
+#[test]
+fn a_block_in_a_clause_argument_captures_the_factory_parameter() {
+    let source = indoc! {"
+        class Outer = Object new () (
+          class A y: value = Object new () ()
+          class B x: x = A y: [x] value (| s = x. |) ()
+        ) : ()
+    "};
+    for lowering in [
+        ns_runtime::Lowering::Optimized,
+        ns_runtime::Lowering::Reference,
+    ] {
+        let module = ns_syntax::parse(source).expect("parse");
+        let resolved = ns_runtime::resolve(
+            module,
+            Rc::from(source),
+            SourceOrigin::File(PathBuf::from("t.ns")),
+        )
+        .expect("resolve");
+        let mut interpreter = Interpreter::bootstrap_with(lowering);
+        let class = interpreter.load_module(&resolved);
+        let full = nested_mixin(&mut interpreter, &class, "B")
+            .initializer_code
+            .clone()
+            .expect("a full initializer");
+        let instructions = full.instructions();
+        assert!(
+            instructions.iter().all(|instruction| !matches!(
+                instruction,
+                Instruction::LoadLiteral {
+                    literal: Literal::BodyTooLarge,
+                    ..
+                }
+            )),
+            "{lowering:?}: the body is not too large"
+        );
+        let (block, copied) = instructions
+            .iter()
+            .find_map(|instruction| match instruction {
+                Instruction::MakeClosure { code, copied, .. } => {
+                    Some((code.clone(), copied.clone()))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{lowering:?}: the block of `[x] value`"));
+        let superclass = instructions
+            .iter()
+            .position(|instruction| matches!(instruction, Instruction::InitializeSuperclass { .. }))
+            .expect("the superclass's initialization");
+        let closure = instructions
+            .iter()
+            .position(|instruction| matches!(instruction, Instruction::MakeClosure { .. }))
+            .expect("the closure");
+        assert!(
+            closure < superclass,
+            "{lowering:?}: the argument precedes its use"
+        );
+        let block_instructions = block.instructions();
+        match lowering {
+            ns_runtime::Lowering::Optimized => {
+                assert_eq!(copied, vec![0], "the parameter `x` is handed over");
+                assert_eq!(block.copied_count, 1);
+                assert_eq!(block.outer_reach, 0);
+            }
+            ns_runtime::Lowering::Reference => {
+                assert!(copied.is_empty());
+                assert!(
+                    block_instructions.iter().any(|instruction| matches!(
+                        instruction,
+                        Instruction::LoadOuterLocal {
+                            depth: 1,
+                            index: 0,
+                            ..
+                        }
+                    )),
+                    "the block reads `x` in the initializer's frame"
+                );
+                assert_eq!(block.outer_reach, 1, "the frame keeps its registers for it");
+            }
+        }
+    }
 }

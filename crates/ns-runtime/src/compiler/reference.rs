@@ -852,13 +852,7 @@ fn operands(instruction: &Instruction) -> Vec<u16> {
         Instruction::MakeArray {
             element_registers, ..
         } => element_registers.clone(),
-        Instruction::InitializeInstance {
-            instance,
-            argument_registers,
-            ..
-        } => std::iter::once(*instance)
-            .chain(argument_registers.iter().copied())
-            .collect(),
+        Instruction::InitializeInstance { instance, .. } => vec![*instance],
         Instruction::InitializeSuperclass {
             argument_registers, ..
         }

@@ -414,7 +414,7 @@ impl MethodEntry {
 /// arity past what a `u16` counts saturates, and the body it gets raises
 /// the too-large error (`compiler::factory_body`).
 pub fn factory_entry(factory: Option<Factory>) -> (Symbol, MethodEntry) {
-    let selector = factory.map_or(Symbol::NEW, |factory| factory.selector);
+    let selector = factory_entry_selector(factory);
     let argument_count = factory.map_or(0, |factory| factory.argument_count);
     (
         selector,
@@ -427,6 +427,13 @@ pub fn factory_entry(factory: Option<Factory>) -> (Symbol, MethodEntry) {
             )),
         }),
     )
+}
+
+/// The selector `factory_entry` files the entry of `factory` under: the
+/// declared factory's, or `new` for none. For a reader that needs the
+/// selector alone, so that it builds no body.
+pub fn factory_entry_selector(factory: Option<Factory>) -> Symbol {
+    factory.map_or(Symbol::NEW, |factory| factory.selector)
 }
 
 /// The accessor entries `slots` define, in declaration order (§6.3.2): each

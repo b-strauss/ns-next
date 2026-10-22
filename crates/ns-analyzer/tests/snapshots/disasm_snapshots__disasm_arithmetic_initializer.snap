@@ -25,5 +25,5 @@ initializer Arithmetic own part (args 0, registers 4)
 
 method Arithmetic factory new (args 0, registers 2)
    0   stmt 0  AllocateInstance r0
-   1   stmt 0  InitializeInstance r1 <- r0 ()
+   1   stmt 0  InitializeInstance r1 <- r0 (arguments)
    2   stmt 0  Return r0

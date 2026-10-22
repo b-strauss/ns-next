@@ -718,12 +718,9 @@ fn check_ids(raw: &[RawRow]) -> Result<(), DecodeError> {
 ///
 /// Runs after `check_ids`, which is what lets it read a nested row's name.
 fn check_member_names(raw: &[RawRow]) -> Result<(), DecodeError> {
-    let factory_entries = metaclass_factory_entries(raw);
+    let factory_selectors = metaclass_factory_selectors(raw);
     for (index, row) in raw.iter().enumerate() {
-        let factory = factory_entries[index]
-            .as_ref()
-            .map(|(selector, _)| *selector)
-            .into_iter();
+        let factory = factory_selectors[index].into_iter();
         let setters = row
             .slots
             .iter()
@@ -851,13 +848,16 @@ fn check_preorder(raw: &[RawRow]) -> Result<Vec<u32>, DecodeError> {
 /// factory selector.
 ///
 /// The entry is derived rather than written to the image, exactly as a
-/// slot's accessors are (§6.3.2): it carries no body and everything it needs
-/// is already in the parent row's factory field, so writing it would be a
-/// second copy of the format's own answer, free to disagree with it.
+/// slot's accessors are (§6.3.2): its body is `compiler::factory_body` of
+/// the arity and everything else it needs is already in the parent row's
+/// factory field, so writing it would be a second copy of the format's own
+/// answer, free to disagree with it.
 ///
 /// `check_preorder` has established that every row is reached exactly once,
 /// so no row is the class side of two declarations and the answer is unique.
-/// Runs after `check_ids`, which is what lets this index `raw`.
+/// Runs after `check_ids`, which is what lets this index `raw`. Built once
+/// per decode, by `build`; `check_member_names` asks only for the selectors
+/// (`metaclass_factory_selectors`), which build no body.
 fn metaclass_factory_entries(raw: &[RawRow]) -> Vec<Option<(Symbol, MethodEntry)>> {
     let mut entries: Vec<Option<(Symbol, MethodEntry)>> = vec![None; raw.len()];
     for row in raw {
@@ -866,6 +866,20 @@ fn metaclass_factory_entries(raw: &[RawRow]) -> Vec<Option<(Symbol, MethodEntry)
         }
     }
     entries
+}
+
+/// The selector of the factory entry `metaclass_factory_entries` gives each
+/// row, without the entry: `mixin::factory_entry_selector` of the same
+/// factory, so the two cannot disagree.
+fn metaclass_factory_selectors(raw: &[RawRow]) -> Vec<Option<Symbol>> {
+    let mut selectors: Vec<Option<Symbol>> = vec![None; raw.len()];
+    for row in raw {
+        if let Some(class_side) = row.class_side {
+            selectors[class_side as usize] =
+                Some(crate::mixin::factory_entry_selector(row.factory));
+        }
+    }
+    selectors
 }
 
 /// Each row's declaration text (`Mixin::text`), the text of the text

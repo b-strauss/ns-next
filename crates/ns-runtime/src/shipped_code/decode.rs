@@ -644,11 +644,9 @@ impl Decoder<'_> {
             },
             33 => {
                 let instance = self.reader.u16();
-                let argument_registers = self.registers();
                 let destination = self.reader.u16();
                 Instruction::InitializeInstance {
                     instance,
-                    argument_registers,
                     destination,
                 }
             }
