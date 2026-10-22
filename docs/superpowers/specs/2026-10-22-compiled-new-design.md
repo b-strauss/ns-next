@@ -42,8 +42,10 @@ Why, decided with the user on 2026-10-22, in this order of priority:
 - The nested-class accessor is a compiled body whose hit path is code: the
   hidden cache slot read and returned.
 - Every observable behaviour stays as it is, every golden unchanged, with
-  the two exceptions decided below: a `<:` level reached from outside
-  (decision 4) and a chain deeper than the depth limit (decision 6).
+  the exceptions decided below: a `<:` level reached from outside
+  (decision 4), a chain deeper than the depth limit (decision 6), and the
+  declaration without a body, whose spec deviation this batch fixes
+  (decision 8).
 
 ## Non-goals
 
@@ -202,6 +204,40 @@ most:
    Fast Yet benchmarks is accepted and recorded in `execution.md`; a
    large one stops the batch before the merge and goes to the user, with
    the numbers, before anything is optimized or merged.
+
+8. **A declaration without a body is the mixin application itself -- a
+   spec deviation this batch fixes.** For `class M3 x: x = S ms <: M1 m1
+   <: … <: Mn mn.` (a `.` instead of a class body), §6 says "the mixin
+   can be specified along with the superclass via a mixin application",
+   and §6.2 makes the result "a class I with mixin M". Today ns-next
+   builds an empty level of the declaration's own on top of the applied
+   levels, so `M3`'s mixin is empty and `class U = Base new <: M3 new.`
+   gains nothing of `M1` (probe, scratch: `UsesM3 new a` is not
+   understood). Squeak-Newspeak's accessor applies the last mixin itself,
+   named for the declaration (`Newspeak2SqueakCompilation.ns:1931-1955`).
+   Decided:
+   - `M3`'s class object is the level `Mn` adds, with no level above it:
+     its mixin is `Mn`'s, its superclass the levels below, its name `M3`,
+     its enclosing object and declaring class `Mn`'s (§3.3), as every
+     `<:` level's are.
+   - Its primary factory is the declaration's signature (`x:`; `new` when
+     none is written), not `mn`'s selector: the declaration may write a
+     signature, and its parameters are in scope "throughout the mixin
+     application" (§6); Squeak copies the declaration's factory onto the
+     application too. It has no class side of its own (there is no body)
+     and inherits none of `Mn`'s (flat metaclasses).
+   - `M3 x: 1` runs the declaration's initializer: steps 1-4 below, with
+     `Mn`'s own part run at `M3`'s own level, and no step 5.
+   - `class U = S <: M3 x: 5 (…)` elsewhere: §6.1 checks `x:` against
+     `M3`'s factory; the level added has `Mn`'s mixin, and its own part
+     runs "with the arguments of μm" (§6.2), its arity checked against
+     `Mn`'s factory with `check_message_arity`'s text. `M3`'s own
+     clauses (`ms`, the `mk`) never run there, as a declaration's own
+     clauses never run where its mixin is applied (decision 4).
+   - The existing goldens keep their outcomes
+     (`mixin_body_less_application.ns` among them); a new golden pins
+     applying a body-less declaration's mixin, `M3`'s factory, and the
+     arity check of the last point.
 
 ## The shape of a level's initializer
 
