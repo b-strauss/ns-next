@@ -111,7 +111,8 @@ code. `ns-next`'s own license is at `LICENSE`.
   SOM's authors, and EclipseSource for minimal-json), the Apache License 2.0
   (Google, for Havlak), the Revised BSD licence of the Computer Language
   Benchmarks Game (Mandelbrot, NBody), and Mario Wolczko's terms (Richards,
-  DeltaBlue); see `prior-art/are-we-fast-yet/LICENSE.md`, and the section
+  DeltaBlue), and the files of `cd/` and a few others carry no notice at
+  all; see `prior-art/are-we-fast-yet/LICENSE.md`, and the section
   "Are We Fast Yet" of `THIRD-PARTY-NOTICES.md` for which file carries
   which. Code is adapted from it: the Java sources in
   `benchmarks/are-we-fast-yet/java/`, from `benchmarks/Java/src/`, with every

@@ -5812,3 +5812,44 @@ compiled code, next; the residual slowdowns, measured again after it;
 clean blocks; the array probe against the old space's size rather than
 its free room; and the two sites that still build a `Vec` before they
 allocate.
+
+## Java counterparts of the Are We Fast Yet benchmarks (2026-10-22)
+
+Plan: [java-benchmarks](superpowers/plans/2026-10-22-1522-java-benchmarks.md);
+[execution.md](design/execution.md), "The Are We Fast Yet benchmarks";
+`THIRD-PARTY-NOTICES.md`, "Are We Fast Yet"; `prior-art/PROVENANCE.md`.
+
+Decided with the user on 2026-10-22. Every program of
+`benchmarks/are-we-fast-yet/` has a Java counterpart under `java/` that
+does the same work, so ns-next's scores can be put beside a JVM's under one
+protocol. Are We Fast Yet is a submodule at `prior-art/are-we-fast-yet`,
+pinned at `74306fec`; its Java versions of the fourteen benchmarks and of
+the harness are adapted as the `.ns` ports were -- one `bench()` that runs
+once at the port's size and throws the port's `Error` text, the ports'
+sizes and results, names written out, upstream's algorithm and `som`
+collections kept, `Vector.removeLast()` their one addition -- and
+`RichardsTon80` and `DeltaBlueTon80` are translated from our ports. Each
+file keeps its upstream notice, and `THIRD-PARTY-NOTICES.md` carries the
+texts. `AreWeFastYet.java` takes the `.ns` harness's command line and
+prints its lines, and both harnesses take `--warm-up <milliseconds>` and
+`--measure <milliseconds>` after `--timed`, 3 and 20 by default, so a peak
+comparison can give a JIT time on both sides. The microbenchmarks get no
+Java counterpart.
+
+The `benchmarks` gate compiles the Java sources with `javac --release 21`
+once per content, from `JAVA_HOME` or `PATH`, and holds each Java
+benchmark to its line of `benchmarks/are-we-fast-yet.toml`
+(`java::<Name>`), its timed score to the harness's shape
+(`java-timed::<Name>`), and both harnesses' flags to a score and to the
+usage error (`flags::{ns-next,java}::*`); the default profile needs no JDK.
+No golden's outcome changed.
+
+- `2dddcfe5`, `d9fd7569` -- the design and the plan.
+- `a46bc62e`, `068b9744` -- the submodule, the notices, the harness, the
+  `som` collections and seven benchmarks, verified in the gate, and its
+  review.
+- `9b1fcad3` -- Mandelbrot, NBody, Richards and Json.
+- `e04d0de2` -- DeltaBlue, Havlak and CD.
+- `5c00b5cc` -- the Ton80 translations.
+- `a136f4f3` -- `--warm-up` and `--measure` in both harnesses.
+- This commit -- the documents.

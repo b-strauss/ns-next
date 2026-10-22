@@ -65,8 +65,9 @@ with the compact instruction encoding after road step 2 and real Newspeak bodies
 for the control-flow loops between steps 7 and 8. Steps 1 to 6 give a very good
 interpreter on a modern object representation; road step 8 reaches Cog's class,
 road step 9 Strongtalk's and HotSpot's, measured against Java with the Are We
-Fast Yet benchmarks (Newspeak versions in `prior-art/somns/core-lib/Benchmarks`)
-and `prior-art/newspeak-benchmarks`.
+Fast Yet benchmarks (Newspeak versions in `prior-art/somns/core-lib/Benchmarks`,
+Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
+`prior-art/newspeak-benchmarks`.
 
 - **Step 1, the memory layer -- built** (`crates/ns-memory`;
   [memory.md](design/memory.md), "The memory layer").

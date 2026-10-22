@@ -106,8 +106,10 @@ own over the server's document symbols.
 
 `benchmarks/are-we-fast-yet/` — the fourteen Are We Fast Yet benchmarks,
 Primordial Soup's Ton80 Richards and DeltaBlue, and their harness, one
-project; `benchmarks/micro/` — the microbenchmarks `ns-next bench` times.
-Both are held to the outcomes recorded beside them by
+project, with their Java counterparts under `java/`, compiled with plain
+`javac`; `benchmarks/micro/` — the microbenchmarks `ns-next bench` times.
+Both are held to the outcomes recorded beside them, the Java counterparts
+to the same record, by
 `crates/ns-cli/tests/run_benchmarks.rs`, in the nextest profile
 `benchmarks-verify` only, which verifies them and measures nothing
 (`docs/design/execution.md`, "The Are We Fast Yet benchmarks").
@@ -376,7 +378,7 @@ every one runs on 18 threads.
 | `images` | every golden through `build` then `load`, profile `images` | a commit touching the image format (`crates/ns-runtime/src/image/`), the instruction encoding (`crates/ns-runtime/src/bytecode.rs`, `bytecode/`) or `ns-next build`/`load`; the end of a batch that changed the runtime |
 | `caches` | every golden with a two-entry global cache, profile `caches` | a commit touching the caches (`crates/ns-runtime/src/interpreter/inline_cache.rs`); the end of a batch that changed the runtime |
 | `memory` | `ns-memory`'s clippy for `x86_64-unknown-linux-gnu` and `aarch64-apple-darwin` | a commit touching `crates/ns-memory` |
-| `benchmarks` | the benchmark programs verified at full size, profile `benchmarks-verify`; it measures nothing and never runs under a stress mode (`execution.md`, "The Are We Fast Yet benchmarks") | when benchmarking; the end of a batch that changed the runtime |
+| `benchmarks` | the benchmark programs verified at full size, and their Java counterparts; needs a JDK (`JAVA_HOME` or `PATH`); profile `benchmarks-verify`; it measures nothing and never runs under a stress mode (`execution.md`, "The Are We Fast Yet benchmarks") | when benchmarking; the end of a batch that changed the runtime |
 | `stress` | the suite under the five stress modes at once, each into `.temp/stress-<MODE>.log`, then `run-corpus` plain and under each (`docs/design/README.md`, "Gates") | the end of a batch that changed the runtime |
 | `plugin-verification` | `gradlew verifyPlugin buildPlugin`, which downloads several IDEs | the end of a batch that changed `editors/jetbrains/` |
 
@@ -429,7 +431,8 @@ before adding a runtime rule; `unsafe` behind a safe abstraction is acceptable.
 Ground each decision in `prior-art/` (the `making-design-decisions` skill;
 `prior-art/PROVENANCE.md`). Copying code out of `prior-art/` is a licensing
 decision, made so far only for `num-bigint` and `num-integer`
-(`arbitrary_integer/`), and SOMns and Primordial Soup (`benchmarks/are-we-fast-yet/`).
+(`arbitrary_integer/`), SOMns and Primordial Soup (`benchmarks/are-we-fast-yet/`),
+and Are We Fast Yet (`benchmarks/are-we-fast-yet/java/`).
 
 ## Conventions
 

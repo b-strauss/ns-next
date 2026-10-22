@@ -15,7 +15,9 @@ any names the upstream file it comes from in a header:
 - Java code in `benchmarks/are-we-fast-yet/java/`: the Java versions of the
   benchmarks and their harness from Are We Fast Yet, whose files carry
   several licences (below); each adapted file keeps its upstream notice in
-  its header.
+  its header, and a file with none upstream has none here. The Java
+  translations of `RichardsTon80.ns` and `DeltaBlueTon80.ns` beside them
+  carry those files' Apache License 2.0 header.
 
 Each of these licences requires its notice below to accompany every copy.
 
@@ -529,3 +531,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 Richards and DeltaBlue are derived from Mario Wolczko's versions; their
 files point to his licence page, as `LICENSE.md` above does, and carry no
 licence text of their own.
+
+The files of `cd/` carry no notice at all, and `LICENSE.md` names no
+licence for them; `CD.java` carries the MIT notice above.
+
+`RichardsTon80.java`, `DeltaBlueTon80.java` and the files of
+`richardston80/` and `deltablueton80/` are not from Are We Fast Yet: they
+are translated from `RichardsTon80.ns` and `DeltaBlueTon80.ns` and carry
+those files' Apache License 2.0 header, under Primordial Soup above.
