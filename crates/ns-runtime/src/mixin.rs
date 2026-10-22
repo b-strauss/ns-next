@@ -1263,7 +1263,7 @@ impl RootClauseDefect {
     }
 }
 
-/// What `decide_instantiation` refuses before it allocates anything.
+/// What `allocate_for_factory` refuses before it allocates anything.
 #[derive(Debug, Clone)]
 pub enum InstantiationRefusal {
     RootClause(RootClauseDefect),
@@ -1396,29 +1396,28 @@ pub struct MixinApplication {
     /// `None` for one whose word count does not fit in the header; set by
     /// `Heap::register_application`.
     pub instance_header: Option<crate::heap::InstanceHeader>,
-    /// Whether instantiating this application runs no code at any level of
-    /// its chain, so that `new` can allocate and answer the instance
-    /// without the walk; computed by `Mutator::apply_mixin`
-    /// (`instantiates_without_code`).
-    pub instantiates_without_code: bool,
-    /// What the instantiation walk asks of this level's own mixin
-    /// (`LevelFacts::of`), computed where the application is built; a debug
-    /// build's `Heap::register_application` checks it against `mixin`.
+    /// What instantiation asks of this level's own mixin (`LevelFacts::of`),
+    /// computed where the application is built; a debug build's
+    /// `Heap::register_application` checks it against `mixin`.
     pub level_facts: LevelFacts,
 }
 
-/// What the instantiation walk asks of one level, read off the level's own
-/// mixin when its application is built, so the walk copies it out
-/// instead of cloning the application: whether the level needs initializer
-/// code, its superclass clause's selector and whether that clause passes
-/// arguments, and its primary factory's selector and arity. Nothing here
-/// depends on the superclass: the walk compares a level's clause selector
-/// with its superclass's factory selector itself, from both levels' facts.
+/// What instantiation asks of one level, read off the level's own mixin
+/// when its application is built, so that it is copied out instead of the
+/// application cloned: whether the level needs initializer code, its
+/// superclass clause's selector and whether that clause passes arguments,
+/// whether its declaration writes `<:` clauses, and its primary factory's
+/// selector and arity. Nothing here depends on the superclass: §6.1's check
+/// compares a level's clause selector with its superclass's factory
+/// selector from both levels' facts, and a level whose initializer would do
+/// nothing but that check is passed over without an activation
+/// (`Mutator::enter_or_pass`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LevelFacts {
     pub needs_initializer_code: bool,
     pub clause_selector: Symbol,
     pub clause_has_arguments: bool,
+    pub has_applied_clauses: bool,
     pub factory_selector: Symbol,
     pub factory_arity: Option<usize>,
 }
@@ -1433,36 +1432,13 @@ impl LevelFacts {
                 .superclass
                 .map_or(Symbol::NEW, |clause| clause.selector),
             clause_has_arguments: mixin.superclass.is_some_and(|clause| clause.has_arguments),
+            has_applied_clauses: !mixin.mixin_applications.is_empty(),
             factory_selector: mixin
                 .factory
                 .map_or(Symbol::NEW, |factory| factory.selector),
             factory_arity: mixin.factory.map(|factory| factory.argument_count),
         }
     }
-}
-
-/// Whether instantiating an application of a mixin whose own facts are
-/// `level` over `superclass` runs no code: no level of the chain needs
-/// initializer code, every level's superclass clause names its
-/// superclass's primary factory selector and passes it no arguments, and
-/// every level above the first takes no factory arguments. A fact of the
-/// application chain alone; whether a class object's chain has a `<:`
-/// level is asked of the class objects (`Heap::chain_has_applied_level`).
-pub(crate) fn instantiates_without_code(
-    level: &LevelFacts,
-    superclass: Option<&Rc<MixinApplication>>,
-) -> bool {
-    if level.needs_initializer_code {
-        return false;
-    }
-    let Some(superclass) = superclass else {
-        return true;
-    };
-    let above = &superclass.level_facts;
-    level.clause_selector == above.factory_selector
-        && !level.clause_has_arguments
-        && above.factory_arity.is_none_or(|arity| arity == 0)
-        && superclass.instantiates_without_code
 }
 
 /// `MixinApplication::declared_slots` for a level being built: the

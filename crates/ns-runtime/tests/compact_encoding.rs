@@ -290,7 +290,8 @@ fn a_superclass_clause_past_the_register_ceiling_raises_when_it_runs() {
     }
 }
 
-/// A clause message's arguments, one tuple of 65,535 values.
+/// A clause message's arguments, one tuple of 65,535 values, which the
+/// class's initializer evaluates: the initializer is past the ceiling.
 #[test]
 fn a_clause_message_past_the_register_ceiling_raises_when_it_runs() {
     let elements = repeated("1", usize::from(u16::MAX));
@@ -301,15 +302,14 @@ fn a_clause_message_past_the_register_ceiling_raises_when_it_runs() {
     for lowering in [Lowering::Optimized, Lowering::Reference] {
         assert_eq!(
             make_error(&nested, "^Big new", lowering),
-            "inheritance clause message too large: it needs more than 65535 registers"
+            "initializer too large: it needs more than 65535 registers"
         );
     }
 }
 
-/// A factory of 65,536 parameters: the message of its `<:` clause, whose
-/// arity the instantiation checks against the arguments it is handed,
-/// saturates at 65,535, and is handed all 65,536 factory arguments and
-/// raises the too-large error, not an arity mismatch. Under the optimized lowering
+/// A factory of 65,536 parameters: its body, whose arity saturates at
+/// 65,535, is handed all 65,536 arguments and raises the too-large error,
+/// not an arity mismatch, before its initializer runs. Under the optimized lowering
 /// `build:` passes one parameter's register 65,536 times; the reference
 /// lowering copies each argument into a register of its own, so there
 /// `build:` itself is past the ceiling.
@@ -326,7 +326,7 @@ fn a_factory_of_more_parameters_than_registers_raises_the_too_large_error() {
     );
     assert_eq!(
         make_error(&nested, "^build: 1", Lowering::Optimized),
-        "inheritance clause message too large: it needs more than 65535 registers"
+        "factory too large: it needs more than 65535 registers"
     );
     assert_eq!(
         make_error(&nested, "^build: 1", Lowering::Reference),

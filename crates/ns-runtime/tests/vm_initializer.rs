@@ -118,7 +118,7 @@ fn a_closure_created_in_a_slot_initializer_is_compiled_and_homed_at_the_initiali
             .unwrap_or_else(|| panic!("expected a closure"));
         assert!(matches!(
             mutator.heap().frame_kind(home),
-            FrameKind::Initializer(_)
+            FrameKind::Initializer(..)
         ));
     });
 }
@@ -139,6 +139,49 @@ fn a_return_inside_a_block_in_initializer_expressions_escapes_instantiate() {
     let (mut interpreter, class) = load(source);
     let result = interpreter.instantiate(&class, &[]);
     assert!(matches!(result, Err(HostSignal::Return)));
+}
+
+/// A clause's arguments are evaluated by the initializer of the class
+/// whose clause it is (§6.3: the message is evaluated "in the context of
+/// *i*"), so a `^` in a block there is an initializer's `^`: it targets the
+/// initializer's activation, which catches none (the known gap of
+/// `a_return_inside_a_block_in_initializer_expressions_escapes_instantiate`),
+/// and leaves the whole run rather than handing the block's value to the
+/// superclass as its argument.
+#[test]
+fn a_return_inside_a_block_in_a_clause_argument_escapes_instantiate() {
+    let source = indoc! {"
+        class Outer = Object new () (
+          class Base x: x = Object new (
+            | public x = x. |
+          ) ()
+          public class Derived = Base x: [ ^1 ] value () ()
+        ) : ()
+    "};
+    for lowering in [
+        ns_runtime::Lowering::Optimized,
+        ns_runtime::Lowering::Reference,
+    ] {
+        let module = ns_syntax::parse(source).expect("parse");
+        let resolved = ns_runtime::resolve(
+            module,
+            Rc::from(source),
+            SourceOrigin::File(PathBuf::from("t.ns")),
+        )
+        .expect("resolve");
+        let mut interpreter = Interpreter::bootstrap_with(lowering);
+        let class = interpreter.load_module(&resolved);
+        let outer = expect_ok(interpreter.instantiate(&class, &[]), "instantiate Outer");
+        let derived = expect_ok(
+            interpreter.send(&outer, Symbol::intern("Derived"), &[]),
+            "Derived",
+        );
+        let result = interpreter.send(&derived, Symbol::NEW, &[]);
+        assert!(
+            matches!(result, Err(HostSignal::Return)),
+            "{lowering:?}: the return escapes `Derived new`"
+        );
+    }
 }
 
 #[test]

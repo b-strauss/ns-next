@@ -748,7 +748,7 @@ pub(in crate::heap) mod class_field {
     pub(in crate::heap) const THIS_CLASS: usize = 3;
     /// A `SmallInteger`, the position in `BuiltinClass::ALL` of the
     /// core-library class this is, or nil for a user-defined class: for the
-    /// image's class tags, `decide_factory` and a send's per-send re-check.
+    /// image's class tags, `allocate_for_factory` and a send's per-send re-check.
     pub(in crate::heap) const BUILTIN: usize = 4;
     /// Nil, or an `Array` of the object whose not being a value refuses
     /// instantiating this value class and the name of the level it

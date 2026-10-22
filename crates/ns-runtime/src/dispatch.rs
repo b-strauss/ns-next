@@ -448,7 +448,6 @@ mod tests {
             own_slot_base: 0,
             dispatch_ids: crate::mixin::DispatchIds::NONE,
             instance_header: None,
-            instantiates_without_code: false,
             level_facts,
         });
         heap.allocate_self_referential_class(crate::heap::NewClass {
@@ -522,7 +521,6 @@ mod tests {
             own_slot_base: 0,
             dispatch_ids: crate::mixin::DispatchIds::NONE,
             instance_header: None,
-            instantiates_without_code: false,
             level_facts,
         });
         let class_of_class = dummy_class(heap);

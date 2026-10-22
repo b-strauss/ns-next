@@ -1,0 +1,13 @@
+stdout = '''
+the superclass clause of class Marker sends #new, but the primary factory of class Base is #k:
+below
+the superclass clause of class Marker sends #new, but the primary factory of class Base is #k:
+3 7
+Stacked new:
+Extra initializer
+Last initializer
+Stacked initializer
+the level Last adds, new:
+Extra initializer
+Last initializer
+'''

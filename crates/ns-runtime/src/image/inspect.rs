@@ -408,6 +408,21 @@ fn read_frame_record(
         opcodes::FRAME_INITIALIZER => {
             format!("initializer of {}", read_class_tag(reader, targets)?)
         }
+        opcodes::FRAME_OWN_INITIALIZER => {
+            format!(
+                "own part of the initializer of {}",
+                read_class_tag(reader, targets)?
+            )
+        }
+        opcodes::FRAME_STANDALONE_INITIALIZER => {
+            format!(
+                "standalone initializer of {}",
+                read_class_tag(reader, targets)?
+            )
+        }
+        opcodes::FRAME_FACTORY => {
+            format!("factory of {}", read_class_tag(reader, targets)?)
+        }
         opcodes::FRAME_SUPERCLASS_CLAUSE => {
             format!("superclass clause of {}", read_class_tag(reader, targets)?)
         }

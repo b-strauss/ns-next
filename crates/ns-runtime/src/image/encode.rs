@@ -1274,7 +1274,8 @@ fn frame_references<'gc>(
         FrameKind::Closure(closure) => Some(*closure),
         // The class-carrying kinds name a class the same way `current_class`
         // does, so the class needs an id the same way.
-        FrameKind::Initializer(class)
+        FrameKind::Initializer(class, _)
+        | FrameKind::Factory(class)
         | FrameKind::SuperclassClause(class)
         | FrameKind::SuperclassMessage(class)
         | FrameKind::MixinApplicationMessage(class) => Some(*class),
@@ -1951,8 +1952,12 @@ fn encode_frame<'gc>(
             writer.write_u32(context.table.object_id(context.heap, *closure));
         }
         FrameKind::TopLevel => writer.write_u8(FRAME_TOP_LEVEL),
-        FrameKind::Initializer(class) => {
-            writer.write_u8(FRAME_INITIALIZER);
+        FrameKind::Initializer(class, body) => {
+            writer.write_u8(body.frame_tag());
+            encode_class_tag(writer, *class, frame_class, context)?;
+        }
+        FrameKind::Factory(class) => {
+            writer.write_u8(FRAME_FACTORY);
             encode_class_tag(writer, *class, frame_class, context)?;
         }
         FrameKind::SuperclassClause(class) => {
@@ -2022,6 +2027,12 @@ fn encode_frame_body<'gc>(
         writer.write_u8(FRAME_BODY_NONE);
         return Ok(());
     }
+    // A factory's body is derived from its class on the way in, as every
+    // factory entry's is, so that no image carries one.
+    if matches!(snapshot.kind, FrameKind::Factory(_)) {
+        writer.write_u8(FRAME_BODY_DECLARED);
+        return Ok(());
+    }
     let code = context.heap.frame_code(frame).ok_or_else(refusal)?;
     let declared = super::decode::DeclaredKind::of(&snapshot.kind, snapshot.current_class);
     if let Some(declared) = declared.filter(|declared| declared.is_shipped(context.heap)) {
@@ -2072,8 +2083,11 @@ impl<'gc> WalkedGraph<'gc> {
             .iter()
             .filter_map(|object| match heap.object_shape(*object) {
                 ObjectShape::Closure => heap.closure_code(*object),
+                // A factory frame's body is derived on the way in, never
+                // carried (`encode_frame_body`).
                 ObjectShape::Activation => heap
                     .object_frame(*object)
+                    .filter(|frame| !matches!(heap.frame_kind(*frame), FrameKind::Factory(_)))
                     .and_then(|frame| heap.frame_code(frame)),
                 _ => None,
             })

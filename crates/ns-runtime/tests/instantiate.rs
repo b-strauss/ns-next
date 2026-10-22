@@ -3,7 +3,7 @@
 //! See `docs/design/object-model.md`'s "Instantiation" section for the six
 //! numbered steps this exercises.
 
-use indoc::indoc;
+use indoc::{formatdoc, indoc};
 use ns_runtime::{
     HostResult, HostSignal, Interpreter, Lowering, Mutator, Root, Symbol, Value, ValueKind,
 };
@@ -881,4 +881,166 @@ ns_runtime::for_each_lowering! {
             });
         }
     }
+}
+
+/// The small integer `root` holds.
+fn integer(interpreter: &mut Interpreter, root: &Root, what: &str) -> i64 {
+    interpreter.enter(|mutator| match mutator.fetch(root).kind() {
+        ValueKind::SmallInteger(integer) => integer,
+        _ => panic!(
+            "{what}: expected a small integer, got {}",
+            mutator.heap().describe(mutator.fetch(root))
+        ),
+    })
+}
+
+/// A class with no initializer code at any level allocates in its factory
+/// and enters no initializer, and every `new` still answers an instance of
+/// its own, distinct from every other.
+#[test]
+fn a_class_without_code_still_answers_a_fresh_instance_per_new() {
+    let source = indoc! {"
+        class Holder = Object new () (
+          public class Empty = Object new () ()
+          public pair = (
+            ^{Empty new. Empty new}.
+          )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let holder = expect_ok(interpreter.instantiate(&class, &[]), "instantiate Holder");
+    let empty = expect_ok(
+        interpreter.send(&holder, Symbol::intern("Empty"), &[]),
+        "Empty",
+    );
+    let pair = expect_ok(
+        interpreter.send(&holder, Symbol::intern("pair"), &[]),
+        "pair",
+    );
+    interpreter.enter(|mutator| {
+        let elements = mutator
+            .heap()
+            .array_elements(object(mutator, &pair))
+            .expect("pair answers an Array");
+        let first = elements[0].as_object().expect("an instance");
+        let second = elements[1].as_object().expect("an instance");
+        assert!(!first.same(second), "each `new` answers a fresh instance");
+        for made in [first, second] {
+            assert!(mutator
+                .heap()
+                .object_class(made)
+                .same(object(mutator, &empty)));
+        }
+    });
+}
+
+/// How deep `probe:` recurses from a send at the depth of `measure`'s, so
+/// that two measurements differ by exactly the activations between the two
+/// places they were taken -- the probe of
+/// `goldens/runtime/depth-limit/an_error_just_below_the_depth_limit_is_caught.ns`.
+const PROBE: &str = indoc! {"
+    probe: n = (
+      deepest:: n.
+      ^self probe: n + 1.
+    )
+
+    public measure = (
+      [self probe: 1] on: Error do: [:error | nil].
+      ^deepest.
+    )
+"};
+
+/// A factory's activation is an ordinary one, counted toward the depth
+/// limit: `descend:to:` reaches the depth `probe:` measured, and the factory
+/// of `Empty` -- a class with no initializer code, so the factory is the one
+/// activation its `new` pushes -- fits one level short of it and overflows
+/// at it.
+#[test]
+fn a_factory_frame_is_counted_toward_the_depth_limit() {
+    let source = formatdoc! {"
+        class Deep = Object new (
+          | deepest ::= 0. |
+        ) (
+          class Empty = Object new () ()
+        {PROBE}
+          descend: n to: bottom = (
+            n = bottom ifTrue: [^Empty new].
+            ^self descend: n + 1 to: bottom.
+          )
+
+          public newAt: bottom = (
+            ^[(self descend: 1 to: bottom) isNil ifTrue: ['nil'] ifFalse: ['an instance']]
+                on: Error
+                do: [:error | error messageText].
+          )
+
+          public run = (
+            | empty = Empty. depth = self measure. |
+            ^{{self newAt: depth - 1. self newAt: depth}}.
+          )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(&source);
+    let deep = expect_ok(interpreter.instantiate(&class, &[]), "instantiate Deep");
+    let answers = expect_ok(interpreter.send(&deep, Symbol::intern("run"), &[]), "run");
+    interpreter.enter(|mutator| {
+        let elements = mutator
+            .heap()
+            .array_elements(object(mutator, &answers))
+            .expect("run answers an Array");
+        let texts: Vec<String> = elements
+            .iter()
+            .map(|element| {
+                element
+                    .as_object()
+                    .and_then(|text| mutator.heap().str_value(text))
+                    .expect("a String")
+            })
+            .collect();
+        assert_eq!(texts, ["an instance", "stack overflow: recursion too deep"]);
+    });
+}
+
+/// §6.2 invokes each superclass's initializer from the subclass's, but a
+/// level whose initializer would do nothing is passed over without an
+/// activation, in a loop: under 50 such levels, a class with a slot pushes
+/// exactly two activations for its `new`, its factory's and its own
+/// initializer's. The slot initializer measures how deep `probe:` reaches
+/// from inside, which is two less than from the method that sends `new`.
+#[test]
+fn levels_without_code_are_passed_without_an_activation() {
+    let source = formatdoc! {"
+        class Chain = Object new (
+          | deepest ::= 0. |
+        ) (
+          class Builder on: superclass = Object new (
+            | public parent = superclass. |
+          ) (
+            public class Level = parent new () ()
+          )
+
+          class Cap on: superclass = Object new (
+            | public parent = superclass. |
+          ) (
+            public class Bottom = parent new (
+              | public seen = outer Chain measure. |
+            ) ()
+          )
+        {PROBE}
+          build: depth = (
+            | top ::= Object. |
+            1 to: depth do: [:index | top:: (Builder on: top) Level].
+            ^top.
+          )
+
+          public run = (
+            | bottom = (Cap on: (self build: 50)) Bottom. outside = self measure. |
+            ^outside - bottom new seen.
+          )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(&source);
+    let chain = expect_ok(interpreter.instantiate(&class, &[]), "instantiate Chain");
+    let difference = expect_ok(interpreter.send(&chain, Symbol::intern("run"), &[]), "run");
+    assert_eq!(integer(&mut interpreter, &difference, "run"), 2);
 }

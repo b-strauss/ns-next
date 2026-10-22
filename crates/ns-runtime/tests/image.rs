@@ -1485,10 +1485,14 @@ fn a_body_past_the_register_ceiling_round_trips_and_still_raises() {
     assert_eq!(integer_of(&mut loaded.interpreter, &answer), 7);
 }
 
-/// An image may carry the instructions of a compiled `new`, and until they
-/// run a crafted one can put one where it runs: in an ordinary method. Each
-/// raises an ordinary error there, in its eight-byte form and in its wide
-/// one, rather than panicking.
+/// An image may carry the instructions of a compiled `new`, and a crafted
+/// one can put one where no compiler does: in an ordinary method, on a
+/// receiver that is no class, in a class with no level a `<:` clause added.
+/// Each checks what it runs on, in its eight-byte form and in its wide one:
+/// the factory's two refuse a receiver that is no class and the two that
+/// name an applied level a class without one, each with an ordinary error
+/// rather than a panic, and the superclass initialization of a class whose
+/// superclass runs no code answers the receiver.
 #[test]
 fn an_instantiation_instruction_a_crafted_image_runs_raises_an_error() {
     let source = indoc! {"
@@ -1511,29 +1515,46 @@ fn an_instantiation_instruction_a_crafted_image_runs_raises_an_error() {
                 Span::new(0, 0),
             ))
         };
+        let not_a_class = Some("cannot instantiate an instance of X: it is not a class");
+        let no_applied_level = Some(
+            "the initializer of class X names a level a mixin application added 1 above it, \
+             and its class has none there",
+        );
         let instructions = [
-            Instruction::AllocateInstance { destination },
-            Instruction::InitializeInstance {
-                instance: 0,
-                destination,
-            },
-            Instruction::CheckAppliedClause {
-                steps: 1,
-                selector: Symbol::NEW,
-            },
-            Instruction::InitializeSuperclass {
-                steps: 1,
-                selector: Symbol::NEW,
-                argument_registers: vec![],
-                destination,
-            },
-            Instruction::InitializeAppliedLevel {
-                steps: 1,
-                argument_registers: vec![],
-                destination,
-            },
+            (Instruction::AllocateInstance { destination }, not_a_class),
+            (
+                Instruction::InitializeInstance {
+                    instance: 0,
+                    destination,
+                },
+                not_a_class,
+            ),
+            (
+                Instruction::CheckAppliedClause {
+                    steps: 1,
+                    selector: Symbol::NEW,
+                },
+                no_applied_level,
+            ),
+            (
+                Instruction::InitializeSuperclass {
+                    steps: 1,
+                    selector: Symbol::NEW,
+                    argument_registers: vec![],
+                    destination,
+                },
+                None,
+            ),
+            (
+                Instruction::InitializeAppliedLevel {
+                    steps: 1,
+                    argument_registers: vec![],
+                    destination,
+                },
+                no_applied_level,
+            ),
         ];
-        for instruction in instructions {
+        for (instruction, expected) in instructions {
             let (mut interpreter, class) = load(source);
             let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
             let bytes = interpreter.enter(|mutator| {
@@ -1555,16 +1576,17 @@ fn an_instantiation_instruction_a_crafted_image_runs_raises_an_error() {
                 .expect("snapshot")
             });
             let mut loaded = image::load(&bytes).expect("load");
-            assert_eq!(
-                expect_error(
-                    loaded
-                        .interpreter
-                        .send(&loaded.roots[0], Symbol::intern("run"), &[]),
-                    "run",
-                ),
-                "internal: compiled instantiation is not running yet",
-                "{instruction:?}"
-            );
+            let result = loaded
+                .interpreter
+                .send(&loaded.roots[0], Symbol::intern("run"), &[]);
+            match expected {
+                Some(expected) => {
+                    assert_eq!(expect_error(result, "run"), expected, "{instruction:?}")
+                }
+                None => {
+                    expect_ok(result, "run");
+                }
+            }
         }
     }
 }
@@ -4258,10 +4280,15 @@ fn a_closure_stored_in_a_slot_round_trips_with_an_initializer_home() {
             heap.closure_home(object(held))
                 .expect("slot holds a closure"),
         );
-        let FrameKind::Initializer(home_class) = &home_kind else {
+        let FrameKind::Initializer(home_class, body) = &home_kind else {
             panic!("home is the initializer frame")
         };
         assert!(home_class.same(class));
+        assert_eq!(
+            *body,
+            ns_runtime::interpreter::instantiate::InitializerBody::Full,
+            "the class's own level runs its full initializer"
+        );
     });
 }
 
@@ -6196,9 +6223,9 @@ fn a_closure_frame_names_the_closure_object_it_runs() {
 /// assigns, for the two readers of a graph section below.
 fn unknown_frame_kind_graph() -> Vec<u8> {
     let mut writer = one_frame_prefix();
-    writer.write_u8(FRAME_MIXIN_APPLICATION_MESSAGE + 1); // one past the last frame kind
-                                                          // The rest of a well-formed record, so the kind tag itself is what the
-                                                          // reader rejects.
+    writer.write_u8(FRAME_FACTORY + 1); // one past the last frame kind
+                                        // The rest of a well-formed record, so the kind tag itself is what the
+                                        // reader rejects.
     frame_tail(&mut writer, 0, 0);
     writer.write_u32(0); // no roots
     writer.into_bytes()
@@ -6212,7 +6239,7 @@ fn an_unknown_frame_kind_tag_is_refused() {
         GraphFixture::new().decode_error(&unknown_frame_kind_graph()),
         decode::DecodeError::InvalidTag {
             what: "frame kind",
-            tag: FRAME_MIXIN_APPLICATION_MESSAGE + 1
+            tag: FRAME_FACTORY + 1
         }
     );
 }
@@ -6250,10 +6277,7 @@ fn inspect_refuses_an_unknown_frame_kind_tag() {
         Ok(_) => panic!("inspect accepted an unknown frame kind tag"),
         Err(error) => error,
     };
-    let expected = format!(
-        "invalid frame kind tag {}",
-        FRAME_MIXIN_APPLICATION_MESSAGE + 1
-    );
+    let expected = format!("invalid frame kind tag {}", FRAME_FACTORY + 1);
     assert_eq!(error, expected);
     assert_eq!(load_error(&bytes), expected);
 }
@@ -9457,87 +9481,6 @@ fn an_image_with_no_superclass_clause_for_a_clause_that_needs_one_is_refused() {
             "the image declares a superclass clause it has no compiled code for"
         );
     });
-}
-
-/// An image is untrusted input, and `verify_mixins` reconciles a
-/// message body's kind and arity but nothing constrains what it *returns*.
-/// `instantiate` unpacks the argument list out of that value, so a body
-/// returning something that is not an argument list must raise a
-/// `NewspeakError` rather than panic on the way past.
-#[test]
-fn a_superclass_message_body_that_returns_no_argument_list_is_an_error_not_a_panic() {
-    let (mut interpreter, class) = load(NESTED_SUPERCLASS_ARGUMENTS);
-    let bytes = interpreter.enter(|mutator| {
-        let class = class_reference(mutator, &class);
-        // The one thing an image can present that the load-time checks let
-        // through: right kind, right arity, wrong value.
-        let doctored = Rc::new(CompiledCode::new(
-            CodeKind::SuperclassMessage,
-            vec![
-                Instruction::LoadLiteral {
-                    destination: 0,
-                    literal: Literal::SmallInteger(1),
-                },
-                Instruction::Return { register: 0 },
-            ],
-            0,
-            1,
-            0,
-            vec![(0, 0..2)],
-            Span::new(0, 0),
-        ));
-        let doctored = with_nested(mutator.heap(), class, "Derived", |nested| {
-            assert!(
-                nested.superclass_message_code.is_some(),
-                "Derived's clause compiles a message body"
-            );
-            Mixin {
-                superclass_message_code: Some(doctored),
-                ..nested
-            }
-        });
-        install_mixin(mutator, class, doctored);
-        // An image is the only way such a body reaches an interpreter, so
-        // the tampered mixin travels through one.
-        snapshot_one(
-            mutator,
-            false,
-            &Origin::File(PathBuf::from("t.ns")),
-            class,
-            &[],
-        )
-        .expect("snapshot")
-    });
-    let mut loaded = image::load(&bytes).expect("load");
-    let platform = loaded.interpreter.platform();
-    let outer = expect_ok(
-        loaded
-            .interpreter
-            .instantiate(&loaded.modules[0].class, std::slice::from_ref(&platform)),
-        "instantiate Args",
-    );
-    let derived = expect_ok(
-        loaded
-            .interpreter
-            .send(&outer, Symbol::intern("Derived"), &[]),
-        "Derived",
-    );
-    loaded.interpreter.enter(|mutator| {
-        let Some(_) = mutator.fetch(&derived).as_object() else {
-            panic!("the accessor must yield a class object")
-        };
-    });
-    match loaded.interpreter.instantiate(&derived, &[]) {
-        Err(HostSignal::Error(error)) => assert!(
-            error
-                .message
-                .contains("did not evaluate its message arguments"),
-            "unexpected error message: {}",
-            error.message
-        ),
-        Err(HostSignal::Return) => panic!("a non-local return escaped `instantiate`"),
-        Ok(_) => panic!("expected a NewspeakError, got an instance"),
-    }
 }
 
 /// The two clause frame kinds share `Initializer`'s shape on the wire (a class
@@ -13511,15 +13454,15 @@ fn a_root_class_applying_a_builtin_mixin_round_trips() {
     }
 }
 
-/// A `<:` clause message is evaluated in an activation of its own, and a
-/// block written in it captures that activation. The block outlives it --
-/// the applied level's initializer keeps it in a slot -- so a snapshot holds
-/// the dead activation as a frame, and loading reconciles the frame against
-/// the body that ran in it: the clause's message body, which is neither the
-/// applying class's superclass-clause message nor anything else its mixin
-/// carries.
+/// A `<:` clause's message is evaluated by the full initializer of the
+/// class whose clause it is, and a block written in it captures that
+/// initializer's activation. The block outlives it -- the applied level's
+/// own part keeps it in a slot -- so a snapshot holds the dead activation as
+/// a frame, and loading reconciles the frame against the body that ran in
+/// it: the applying class's full initializer, not its own part, which a
+/// frame of the same class could also run.
 #[test]
-fn a_frame_a_mixin_application_message_ran_in_decodes_to_that_messages_body() {
+fn a_frame_a_clause_message_ran_in_decodes_to_the_full_initializer() {
     let source = indoc! {"
         class Host usingPlatform: p = Object new () (
             public class Keeper withBlock: block = Object new (| kept = block. |) (
@@ -13550,7 +13493,7 @@ fn a_frame_a_mixin_application_message_ran_in_decodes_to_that_messages_body() {
 
     let report = image::inspect::render_full(&image::inspect::inspect(&bytes).expect("inspect"));
     assert!(
-        report.contains("mixin application message of"),
+        report.contains("frame initializer of object"),
         "inspect names the frame's kind:\n{report}"
     );
 }

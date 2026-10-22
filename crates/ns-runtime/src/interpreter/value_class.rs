@@ -5,7 +5,7 @@
 //! (`InstantiationNode.signalExceptionsIfFaultFoundElseReturnClassObject`).
 //! Unlike SOMns, the verdict is only *recorded* here, on the class object
 //! (`Mutator::record_value_class_refusal`); `interpreter::instantiate`'s
-//! `decide_instantiation` is what refuses, where an instance would come into
+//! `allocate_for_factory` is what refuses, where an instance would come into
 //! being. `docs/design/object-model.md`, "A value object's four conditions",
 //! explains why: the specification's own §2.3 example creates a class whose
 //! enclosing object is mutable and never instantiates it. `after_clause`

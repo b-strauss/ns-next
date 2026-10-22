@@ -254,6 +254,45 @@ fn a_class_without_a_class_side_still_has_a_factory_entry() {
     );
 }
 
+/// The factory entry carries the body a factory send activates: one that
+/// takes the factory's arguments, allocates the instance first and answers
+/// it (`compiler::factory_body`), for every factory of the same arity the
+/// same instructions.
+#[test]
+fn a_factory_entry_carries_its_body() {
+    let source = indoc! {"
+        class Pair left: l right: r = Object new (
+          | public left = l. public right = r. |
+        ) () : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let code = interpreter.enter(|mutator| {
+        let object = mutator.fetch(&class).as_object().expect("a class object");
+        let metaclass = mutator.metaclass_of(object).expect("a metaclass");
+        let application = mutator
+            .heap()
+            .class_application(metaclass)
+            .expect("a metaclass has an application");
+        match application
+            .mixin
+            .methods
+            .get(&Symbol::intern("left:right:"))
+        {
+            Some(MethodEntry::Factory(factory)) => factory.code.clone(),
+            _ => panic!("the metaclass holds the factory under its selector"),
+        }
+    });
+    assert_eq!(code.argument_count, 2);
+    assert_eq!(
+        code.instructions(),
+        ns_runtime::compiler::factory_body(2).instructions()
+    );
+    assert!(matches!(
+        code.instruction(0),
+        ns_runtime::bytecode::Instruction::AllocateInstance { .. }
+    ));
+}
+
 /// A builtin declares no factory pattern, so the default from §6's
 /// unnumbered introduction (before §6.1 begins) applies: its metaclass
 /// holds one entry, under `new`.

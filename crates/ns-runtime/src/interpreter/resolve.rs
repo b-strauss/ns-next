@@ -531,11 +531,15 @@ impl<'gc> Mutator<'gc> {
                 _ => crate::builtins::execute(self, primitive, receiver, selector, arguments)
                     .unwrap_or_else(|| Err(unhandled_error(receiver, selector))),
             },
-            // §6.3's factory entry, run with no re-check: the lookup found
-            // it on the receiver's own metaclass, and the class-side
-            // dispatch id a cache entry is guarded by determines that
-            // metaclass, so a hit reaches the class a miss would.
-            Resolved::Factory { level, .. } => self.decide_factory(level, arguments),
+            // §6.3's factory entry, its body activated on the receiver with
+            // no re-check: the lookup found it on the receiver's own
+            // metaclass, and the class-side dispatch id a cache entry is
+            // guarded by determines that metaclass, so a hit reaches the
+            // class and the entry a miss would. The send's arguments are the
+            // factory activation's (`StepArguments::Send`).
+            Resolved::Factory { level, .. } => self
+                .decide_factory(level, selector)
+                .ok_or_else(|| unhandled_error(receiver, selector)),
             Resolved::Unhandled => Err(unhandled_error(receiver, selector)),
         }
     }

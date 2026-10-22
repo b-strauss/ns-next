@@ -20,7 +20,7 @@ use crate::interpreter::future::{
     not_a_closure, resolve_for_instruction, value_for_a_value_slot, FutureOutcome, Resolution,
 };
 use crate::interpreter::inline_cache::{send_lexical, send_public, send_super};
-use crate::interpreter::instantiate::{check_value_slot, compiled_instantiation_not_running};
+use crate::interpreter::instantiate::check_value_slot;
 use crate::interpreter::literals::{body_too_large_error, unresolved_identifier_error};
 use crate::interpreter::locals::{
     check_own_slots, filled_own_slot, load_own_slot, load_vector, read_local, read_outer_local,
@@ -32,6 +32,7 @@ use crate::interpreter::{
     EvaluationResult, FeedbackBase, HostResult, Interpreter, Mutator, Signal, Step,
 };
 use crate::types::*;
+use crate::Symbol;
 
 /// The running frame's state, which the loop holds in locals while it runs
 /// and in this struct between two stretches: nothing here is branded, so it
@@ -270,7 +271,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                         inlinable: false,
                     },
                     program_counter,
-                    $pending.arguments.as_slice(),
+                    $pending.arguments.as_slice().iter().copied(),
                     floor,
                     &mut handoff,
                     |mutator, arguments| {
@@ -299,7 +300,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                         inlinable: true,
                     },
                     program_counter,
-                    $pending.arguments.as_slice(),
+                    $pending.arguments.as_slice().iter().copied(),
                     floor,
                     &mut handoff,
                     |mutator, arguments| mutator.decide_send(receiver, selector, arguments),
@@ -320,7 +321,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                         inlinable: false,
                     },
                     program_counter,
-                    $pending.arguments.as_slice(),
+                    $pending.arguments.as_slice().iter().copied(),
                     floor,
                     &mut handoff,
                     |mutator, arguments| {
@@ -351,7 +352,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                         inlinable: false,
                     },
                     program_counter,
-                    $pending.arguments.as_slice(),
+                    $pending.arguments.as_slice().iter().copied(),
                     floor,
                     &mut handoff,
                     |mutator, arguments| {
@@ -823,19 +824,97 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                         &mut handoff,
                                     )
                                 }
-                                // The instructions of a compiled `new`, which
-                                // nothing runs yet: an ordinary error, since an
-                                // image may carry them.
-                                CompactInstruction::AllocateInstance { .. }
-                                | CompactInstruction::InitializeInstance { .. }
-                                | CompactInstruction::CheckAppliedClause { .. }
-                                | CompactInstruction::InitializeSuperclass { .. }
-                                | CompactInstruction::InitializeAppliedLevel { .. } => {
-                                    let signal = compiled_instantiation_not_running(
-                                        &mutator.heap,
+                                // The instructions of a compiled `new`: each
+                                // one call, out of line; what each decides is
+                                // `interpreter::instantiate`'s.
+                                CompactInstruction::AllocateInstance { destination } => {
+                                    match allocate_instance_into(
+                                        mutator,
                                         activation,
+                                        register_base,
+                                        u16::from(destination),
+                                    ) {
+                                        Ok(()) => next!(),
+                                        Err(signal) => {
+                                            break 'decided unwind(
+                                                mutator,
+                                                signal,
+                                                floor,
+                                                &mut handoff,
+                                            )
+                                        }
+                                    }
+                                }
+                                CompactInstruction::InitializeInstance {
+                                    destination,
+                                    instance,
+                                } => {
+                                    break 'decided initialize_instance(
+                                        mutator,
+                                        Sender {
+                                            activation,
+                                            register_base,
+                                            destination: u16::from(destination),
+                                            inlinable: false,
+                                        },
+                                        program_counter,
+                                        code.argument_count,
+                                        u16::from(instance),
+                                        floor,
+                                        &mut handoff,
+                                    )
+                                }
+                                CompactInstruction::CheckAppliedClause { steps, selector } => {
+                                    match mutator.check_applied_clause(activation, steps, selector)
+                                    {
+                                        Ok(()) => next!(),
+                                        Err(signal) => {
+                                            break 'decided unwind(
+                                                mutator,
+                                                signal,
+                                                floor,
+                                                &mut handoff,
+                                            )
+                                        }
+                                    }
+                                }
+                                CompactInstruction::InitializeSuperclass { destination, site } => {
+                                    let site = code.body().superclass_site(usize::from(site));
+                                    break 'decided initialize_superclass(
+                                        mutator,
+                                        Sender {
+                                            activation,
+                                            register_base,
+                                            destination: u16::from(destination),
+                                            inlinable: false,
+                                        },
+                                        program_counter,
+                                        site.steps(),
+                                        site.selector(),
+                                        site.arguments(),
+                                        floor,
+                                        &mut handoff,
                                     );
-                                    break 'decided unwind(mutator, signal, floor, &mut handoff);
+                                }
+                                CompactInstruction::InitializeAppliedLevel {
+                                    destination,
+                                    steps,
+                                    arguments,
+                                } => {
+                                    break 'decided initialize_applied_level(
+                                        mutator,
+                                        Sender {
+                                            activation,
+                                            register_base,
+                                            destination: u16::from(destination),
+                                            inlinable: false,
+                                        },
+                                        program_counter,
+                                        steps,
+                                        code.body().register_list(usize::from(arguments)),
+                                        floor,
+                                        &mut handoff,
+                                    )
                                 }
                                 CompactInstruction::Return { register }
                                 | CompactInstruction::ImplicitReturn { register } => {
@@ -1404,14 +1483,76 @@ fn run_wide<'gc>(
                 WideOutcome::Jump(*target)
             };
         }
-        Instruction::AllocateInstance { .. }
-        | Instruction::InitializeInstance { .. }
-        | Instruction::CheckAppliedClause { .. }
-        | Instruction::InitializeSuperclass { .. }
-        | Instruction::InitializeAppliedLevel { .. } => {
-            let signal = compiled_instantiation_not_running(&mutator.heap, activation);
-            unwind(mutator, signal, floor, handoff)
+        Instruction::AllocateInstance { destination } => {
+            match allocate_instance_into(mutator, activation, register_base, *destination) {
+                Ok(()) => return WideOutcome::Next,
+                Err(signal) => unwind(mutator, signal, floor, handoff),
+            }
         }
+        Instruction::InitializeInstance {
+            instance,
+            destination,
+        } => {
+            let argument_count = mutator.heap.activation_code(activation).argument_count;
+            initialize_instance(
+                mutator,
+                Sender {
+                    activation,
+                    register_base,
+                    destination: *destination,
+                    inlinable: false,
+                },
+                program_counter,
+                argument_count,
+                *instance,
+                floor,
+                handoff,
+            )
+        }
+        Instruction::CheckAppliedClause { steps, selector } => {
+            match mutator.check_applied_clause(activation, *steps, *selector) {
+                Ok(()) => return WideOutcome::Next,
+                Err(signal) => unwind(mutator, signal, floor, handoff),
+            }
+        }
+        Instruction::InitializeSuperclass {
+            steps,
+            selector,
+            argument_registers,
+            destination,
+        } => initialize_superclass(
+            mutator,
+            Sender {
+                activation,
+                register_base,
+                destination: *destination,
+                inlinable: false,
+            },
+            program_counter,
+            *steps,
+            *selector,
+            argument_registers,
+            floor,
+            handoff,
+        ),
+        Instruction::InitializeAppliedLevel {
+            steps,
+            argument_registers,
+            destination,
+        } => initialize_applied_level(
+            mutator,
+            Sender {
+                activation,
+                register_base,
+                destination: *destination,
+                inlinable: false,
+            },
+            program_counter,
+            *steps,
+            argument_registers,
+            floor,
+            handoff,
+        ),
     };
     WideOutcome::Transfer(transfer)
 }
@@ -1757,12 +1898,14 @@ struct Sender {
 /// for, and what was decided run -- a value written to the sender's
 /// `destination`, or an activation pushed and switched to, its window filled
 /// straight from the buffer. No vector is allocated once the buffer has grown
-/// to the widest send.
+/// to the widest send. The instructions that invoke a factory's or an
+/// initializer's initializer go the same way: their decision is the body
+/// to run on the instance, or the instance itself when nothing runs.
 fn send<'gc>(
     mutator: &mut Mutator<'gc>,
     sender: Sender,
     program_counter: usize,
-    argument_registers: &[u16],
+    argument_registers: impl IntoIterator<Item = u16>,
     floor: usize,
     handoff: &mut Handoff,
     decide: impl FnOnce(&mut Mutator<'gc>, &[Value<'gc>]) -> Result<Step<'gc>, Signal<'gc>>,
@@ -1770,8 +1913,8 @@ fn send<'gc>(
     let mut arguments = mutator.take_argument_buffer();
     arguments.extend(
         argument_registers
-            .iter()
-            .map(|register| mutator.heap.register(sender.register_base, *register)),
+            .into_iter()
+            .map(|register| mutator.heap.register(sender.register_base, register)),
     );
     mutator
         .heap
@@ -1916,6 +2059,103 @@ fn reexecute<'gc>(mutator: &mut Mutator<'gc>, floor: usize, handoff: &mut Handof
         .expect("internal: an activation above the run's floor has a caller");
     let program_counter = mutator.heap.activation_program_counter(caller);
     handoff.switch_to(mutator, caller, program_counter)
+}
+
+// The instructions of a compiled `new` (`docs/design/object-model.md`,
+// "Instantiation"): the factory's allocation and its initializer, and an
+// initializer's checks and invocations. Out of line, each a call the arm
+// makes and nothing more; the three that may run a body go through `send`,
+// so that what they decide is pushed, and its value delivered to
+// `destination`, as a send's is.
+
+/// `AllocateInstance`: a fresh instance of the factory's receiver.
+#[inline(never)]
+fn allocate_instance_into<'gc>(
+    mutator: &mut Mutator<'gc>,
+    activation: ActivationReference,
+    register_base: RegisterBase,
+    destination: u16,
+) -> Result<(), Signal<'gc>> {
+    let instance = mutator.allocate_instance(activation)?;
+    mutator
+        .heap
+        .set_register(register_base, destination, instance);
+    Ok(())
+}
+
+/// `InitializeInstance`: the receiver's initializer on the instance in
+/// `instance`, with the running body's own arguments, registers
+/// `0..argument_count`.
+#[inline(never)]
+fn initialize_instance(
+    mutator: &mut Mutator<'_>,
+    sender: Sender,
+    program_counter: usize,
+    argument_count: u16,
+    instance: u16,
+    floor: usize,
+    handoff: &mut Handoff,
+) -> Transfer {
+    let instance = mutator.heap.register(sender.register_base, instance);
+    send(
+        mutator,
+        sender,
+        program_counter,
+        0..argument_count,
+        floor,
+        handoff,
+        |mutator, arguments| mutator.initialize_instance(sender.activation, instance, arguments),
+    )
+}
+
+/// `InitializeSuperclass`: the superclass's initializer on `self`.
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn initialize_superclass(
+    mutator: &mut Mutator<'_>,
+    sender: Sender,
+    program_counter: usize,
+    steps: u16,
+    selector: Symbol,
+    argument_registers: &[u16],
+    floor: usize,
+    handoff: &mut Handoff,
+) -> Transfer {
+    send(
+        mutator,
+        sender,
+        program_counter,
+        argument_registers.iter().copied(),
+        floor,
+        handoff,
+        |mutator, arguments| {
+            mutator.decide_superclass_initializer(sender.activation, steps, selector, arguments)
+        },
+    )
+}
+
+/// `InitializeAppliedLevel`: an applied level's own part on `self`.
+#[inline(never)]
+fn initialize_applied_level(
+    mutator: &mut Mutator<'_>,
+    sender: Sender,
+    program_counter: usize,
+    steps: u16,
+    argument_registers: &[u16],
+    floor: usize,
+    handoff: &mut Handoff,
+) -> Transfer {
+    send(
+        mutator,
+        sender,
+        program_counter,
+        argument_registers.iter().copied(),
+        floor,
+        handoff,
+        |mutator, arguments| {
+            mutator.decide_applied_level_initializer(sender.activation, steps, arguments)
+        },
+    )
 }
 
 // The arms of §6.3.2's simultaneous slot clauses -- `InitializeSlot`'s
@@ -2216,7 +2456,11 @@ fn send_destination(code: &CompiledCode, program_counter: usize) -> u16 {
         | CompactInstruction::SendSuper2 { destination, .. }
         // A leaf that activates a block (`value:`, `do:`) resumes its
         // caller here.
-        | CompactInstruction::SendMirror { destination, .. } => u16::from(destination),
+        | CompactInstruction::SendMirror { destination, .. }
+        // A factory's or an initializer's initializer returns here.
+        | CompactInstruction::InitializeInstance { destination, .. }
+        | CompactInstruction::InitializeSuperclass { destination, .. }
+        | CompactInstruction::InitializeAppliedLevel { destination, .. } => u16::from(destination),
         CompactInstruction::SendPublicWide { site }
         | CompactInstruction::SendInlinableWide { site }
         | CompactInstruction::SendLexicalWide { site }
@@ -2228,7 +2472,10 @@ fn send_destination(code: &CompiledCode, program_counter: usize) -> u16 {
                 .destination()
         }
         CompactInstruction::Wide { index } => match code.body().wide(index as usize) {
-            Instruction::SendMirror { destination, .. } => *destination,
+            Instruction::SendMirror { destination, .. }
+            | Instruction::InitializeInstance { destination, .. }
+            | Instruction::InitializeSuperclass { destination, .. }
+            | Instruction::InitializeAppliedLevel { destination, .. } => *destination,
             other => unreachable!(
                 "internal: a caller resumed at an instruction that is not a send: {other:?}"
             ),

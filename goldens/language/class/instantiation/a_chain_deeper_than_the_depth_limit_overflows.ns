@@ -1,0 +1,55 @@
+/// newspeak-spec.pdf 6.3: each level's instance initializer invokes its
+/// superclass's from inside its own activation, so a chain nests one
+/// counted activation per level with initializer code, and a chain of
+/// more such levels than the depth limit (100,000 activations, and its
+/// reserve of 1,000) fails with the ordinary stack overflow, as any
+/// recursion that deep does. 1,000 levels instantiate.
+///
+/// Each Level is a class of its own, built by a Builder whose slot names
+/// the class below it, which the Level's superclass clause reads; each
+/// Level's initializer expression is its initializer code.
+class AChainDeeperThanTheDepthLimitOverflows = Object new (
+  |
+    count ::= 0.
+  |
+) (
+  class Builder on: superclass = Object new (
+    |
+      public parent = superclass.
+    |
+  ) (
+    public class Level = parent new (
+      outer AChainDeeperThanTheDepthLimitOverflows tick.
+    ) ()
+  )
+
+  public tick = (
+    count:: count + 1.
+  )
+
+  build: depth = (
+    |
+      top ::= Object.
+    |
+    1 to: depth do: [:index | top:: (Builder on: top) Level].
+    ^top.
+  )
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+      shallow = build: 1000.
+      deep = build: 101001.
+    |
+    shallow new.
+    t
+        show: count printString , ' levels initialized';
+        newLine.
+    t
+        show: ([
+          deep new.
+          'instantiated'.
+        ] on: Error do: [:error | error messageText]);
+        newLine.
+  )
+)

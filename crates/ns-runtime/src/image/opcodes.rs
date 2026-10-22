@@ -398,8 +398,9 @@ pub const CLASS_SHIPPED: u8 = 8;
 /// image names a builtin by position any more, only by its shipped name.
 pub const RETIRED_CLASS_TAGS: [u8; 7] = [0, 1, 3, 4, 5, 6, 7];
 
-/// What a frame was activated for, numbered in the order `types::FrameKind`
-/// declares it.
+/// What a frame was activated for (`types::FrameKind`), numbered in the
+/// order the kinds were added; an initializer has one tag per body it can
+/// run.
 ///
 /// A method activation: the `u32` symbol id of its selector and its
 /// method's access tag (`mixins::access_tag`), which together with its
@@ -408,12 +409,26 @@ pub const FRAME_METHOD: u8 = 0;
 /// A closure activation: the object id of the closure object it runs.
 pub const FRAME_CLOSURE: u8 = 1;
 pub const FRAME_TOP_LEVEL: u8 = 2;
+/// An initializer activation running its level's full body
+/// (`InitializerBody::Full`), followed by the class tag of the level it was
+/// entered at; `FRAME_OWN_INITIALIZER` and `FRAME_STANDALONE_INITIALIZER`
+/// name the other two bodies the same way.
 pub const FRAME_INITIALIZER: u8 = 3;
 pub const FRAME_SUPERCLASS_CLAUSE: u8 = 4;
 pub const FRAME_SUPERCLASS_MESSAGE: u8 = 5;
 /// A `<:` clause's message activation, followed by the class tag of the level
 /// the clause added -- whose clause names the body that ran.
 pub const FRAME_MIXIN_APPLICATION_MESSAGE: u8 = 6;
+/// An initializer activation running its level's own part
+/// (`InitializerBody::OwnPart`), followed by the level's class tag.
+pub const FRAME_OWN_INITIALIZER: u8 = 7;
+/// An initializer activation running its level's standalone body
+/// (`InitializerBody::Standalone`), followed by the level's class tag.
+pub const FRAME_STANDALONE_INITIALIZER: u8 = 8;
+/// A factory activation, followed by the class tag of the class object it
+/// runs on. Its body is always `FRAME_BODY_DECLARED`: a factory body is
+/// derived from the class, never carried. Next free number: 10.
+pub const FRAME_FACTORY: u8 = 9;
 
 /// How a frame record names the body that runs in it; each frame has one
 /// spelling. A top-level frame runs none (`FRAME_BODY_NONE`), and no other

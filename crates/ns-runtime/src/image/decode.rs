@@ -298,9 +298,8 @@ pub enum DecodeError {
     MissingMixinApplicationMessage,
     /// A mixin-table row's `<:` clause passes no factory arguments, yet names
     /// a compiled message body. The compiler fills a clause's body only when
-    /// its message has arguments, and the walk never runs one for a clause
-    /// without them (`instantiate::applied_clause_message_body`), so such a
-    /// body is code the row says nothing runs -- while a frame of kind
+    /// its message has arguments, so such a body is code the row says
+    /// nothing runs -- while a frame of kind
     /// `MixinApplicationMessage` could still name it. Refused so a row and the
     /// frames running its clauses cannot disagree about what a clause runs.
     UnexpectedMixinApplicationMessage,
@@ -337,10 +336,10 @@ pub enum DecodeError {
     /// dictionary lacks.
     UnknownSelector(String),
     /// A mixin-table row declares slots or `initExpr`s but carries no
-    /// compiled own part of its initializer. Instantiating such a class runs
-    /// that code on every `X new`, and `Mutator::initializer_body` panics on
-    /// that invariant rather than failing -- so only refusing here keeps a
-    /// crafted image from aborting the process at the first `X new`.
+    /// compiled own part of its initializer. A `<:` clause applying such a
+    /// mixin runs that code on every instantiation, and nothing would be
+    /// there to run -- so the load refuses it rather than let the level
+    /// initialize nothing.
     MissingInitializer,
     /// A mixin-table row carries no full instance initializer, which every
     /// declaration compiles: its class's factory runs it on every
@@ -1404,9 +1403,8 @@ pub fn verify_mixins(mixins: &mixins::Decoded) -> Result<(), DecodeError> {
         if mixin.initializer_code.is_none() {
             return Err(DecodeError::MissingFullInitializer);
         }
-        // A class with slots or `initExpr`s runs its own part on every
-        // `X new`, and `Mutator::initializer_body` *panics* when the mixin
-        // carries none. The row's declaration half says the mixin needs one
+        // A level a `<:` clause applies runs the own part of a mixin with
+        // slots or `initExpr`s on every instantiation. The row's declaration half says the mixin needs one
         // and its code half says whether the image carries it -- two fields
         // only this function compares.
         if mixin.own_initializer_code.is_none() && instantiate::mixin_needs_initializer_code(mixin)
@@ -3060,7 +3058,10 @@ enum FrameBody {
 pub(crate) enum DeclaredKind<'gc> {
     /// A method of the current class's mixin, by selector.
     Method(ClassReference<'gc>, Symbol),
-    Initializer(ClassReference<'gc>),
+    Initializer(ClassReference<'gc>, instantiate::InitializerBody),
+    /// A factory's body, derived from the class it runs on, whatever
+    /// declared it.
+    Factory(ClassReference<'gc>),
     SuperclassClause(ClassReference<'gc>),
     SuperclassMessage(ClassReference<'gc>),
     /// The message of the `<:` clause that added this level.
@@ -3077,7 +3078,8 @@ impl<'gc> DeclaredKind<'gc> {
     ) -> Option<DeclaredKind<'gc>> {
         Some(match kind {
             FrameKind::Method(method) => DeclaredKind::Method(current_class?, method.selector),
-            FrameKind::Initializer(class) => DeclaredKind::Initializer(*class),
+            FrameKind::Initializer(class, body) => DeclaredKind::Initializer(*class, *body),
+            FrameKind::Factory(class) => DeclaredKind::Factory(*class),
             FrameKind::SuperclassClause(class) => DeclaredKind::SuperclassClause(*class),
             FrameKind::SuperclassMessage(class) => DeclaredKind::SuperclassMessage(*class),
             FrameKind::MixinApplicationMessage(level) => {
@@ -3093,7 +3095,8 @@ impl<'gc> DeclaredKind<'gc> {
     fn declaration(&self, heap: &Heap<'gc>) -> Option<Rc<crate::mixin::Mixin>> {
         match self {
             DeclaredKind::Method(class, _)
-            | DeclaredKind::Initializer(class)
+            | DeclaredKind::Initializer(class, _)
+            | DeclaredKind::Factory(class)
             | DeclaredKind::SuperclassClause(class)
             | DeclaredKind::SuperclassMessage(class) => heap
                 .class_application(*class)
@@ -3133,11 +3136,16 @@ fn declared_method<'gc>(
 /// The body a frame written `FRAME_BODY_DECLARED` runs, found through its
 /// kind in the shipped declaration it resolves through
 /// (`DeclaredKind::declaration`). Refused when that declaration is no
-/// shipped one, or carries no body of the kind.
+/// shipped one, or carries no body of the kind. A factory's body is
+/// derived from the class it runs on, whichever declaration that is: its
+/// metaclass's factory entry, which no image carries either.
 pub(crate) fn declared_body<'gc>(
     heap: &Heap<'gc>,
     declared: &DeclaredKind<'gc>,
 ) -> Result<Rc<CompiledCode>, DecodeError> {
+    if let DeclaredKind::Factory(class) = declared {
+        return instantiate::factory_code(heap, *class, None).ok_or(DecodeError::FrameCodeMismatch);
+    }
     if !declared.is_shipped(heap) {
         return Err(DecodeError::DeclaredBodyNotShipped);
     }
@@ -3145,9 +3153,10 @@ pub(crate) fn declared_body<'gc>(
         DeclaredKind::Method(class, selector) => {
             return declared_method(heap, *class, *selector).map(|method| method.code.clone())
         }
-        DeclaredKind::Initializer(_) => declared
+        DeclaredKind::Initializer(_, body) => declared
             .declaration(heap)
-            .and_then(|mixin| mixin.own_initializer_code.clone()),
+            .and_then(|mixin| body.code_of(&mixin)),
+        DeclaredKind::Factory(_) => unreachable!("internal: a factory's body is derived above"),
         DeclaredKind::SuperclassClause(_) => declared
             .declaration(heap)
             .and_then(|mixin| mixin.superclass_clause_code.clone()),
@@ -3227,7 +3236,7 @@ fn decode_frame<'gc>(
             mixins::access_from_tag(reader.read_u8()?)?,
         )),
         FRAME_TOP_LEVEL => Ok(FrameKind::TopLevel),
-        FRAME_INITIALIZER => Ok(FrameKind::Initializer(decode_class_tag(
+        FRAME_FACTORY => Ok(FrameKind::Factory(decode_class_tag(
             reader,
             context,
             tables,
@@ -3249,12 +3258,18 @@ fn decode_frame<'gc>(
             decode_class_tag(reader, context, tables, NamePosition::FrameClass)?,
         )),
         FRAME_CLOSURE => Ok(FrameKind::Closure(decode_object_id(reader, tables)?)),
-        tag => {
-            return Err(DecodeError::InvalidTag {
-                what: "frame kind",
-                tag,
-            })
-        }
+        tag => match instantiate::InitializerBody::of_frame_tag(tag) {
+            Some(body) => Ok(FrameKind::Initializer(
+                decode_class_tag(reader, context, tables, NamePosition::FrameClass)?,
+                body,
+            )),
+            None => {
+                return Err(DecodeError::InvalidTag {
+                    what: "frame kind",
+                    tag,
+                })
+            }
+        },
     };
     let top_level = matches!(kind, Ok(FrameKind::TopLevel));
     // `None` for a body named by declaration, found below once the current
@@ -3264,7 +3279,9 @@ fn decode_frame<'gc>(
         // frame without one would be reconciled against nothing.
         FRAME_BODY_NONE if top_level => FrameBody::None,
         FRAME_BODY_NONE => return Err(DecodeError::FrameCodeMismatch),
-        FRAME_BODY_CODE if top_level => return Err(DecodeError::FrameCodeMismatch),
+        FRAME_BODY_CODE if top_level || matches!(kind, Ok(FrameKind::Factory(_))) => {
+            return Err(DecodeError::FrameCodeMismatch)
+        }
         FRAME_BODY_CODE => FrameBody::Code(frame_code(reader, context)?),
         FRAME_BODY_DECLARED if top_level || matches!(kind, Ok(FrameKind::Closure(_))) => {
             return Err(DecodeError::DeclaredBodyNotShipped)
@@ -3761,7 +3778,8 @@ fn check_class_references<'gc>(
             }
         }
         let kind_class = match &kind {
-            FrameKind::Initializer(class)
+            FrameKind::Initializer(class, _)
+            | FrameKind::Factory(class)
             | FrameKind::SuperclassClause(class)
             | FrameKind::SuperclassMessage(class)
             | FrameKind::MixinApplicationMessage(class) => Some(class),
@@ -3940,6 +3958,9 @@ impl Sizing<'_, '_, '_> {
             }
             FRAME_TOP_LEVEL => {}
             FRAME_INITIALIZER
+            | FRAME_OWN_INITIALIZER
+            | FRAME_STANDALONE_INITIALIZER
+            | FRAME_FACTORY
             | FRAME_SUPERCLASS_CLAUSE
             | FRAME_SUPERCLASS_MESSAGE
             | FRAME_MIXIN_APPLICATION_MESSAGE => {
@@ -5075,7 +5096,8 @@ fn runs_its_kind<'gc>(heap: &Heap<'gc>, kind: &FrameKind<'gc>, code: &Rc<Compile
         FrameKind::Closure(closure) => heap
             .closure_code(*closure)
             .is_some_and(|own| Rc::ptr_eq(&own, code)),
-        FrameKind::Initializer(_) => code.kind == CodeKind::Initializer,
+        FrameKind::Initializer(..) => code.kind == CodeKind::Initializer,
+        FrameKind::Factory(_) => code.kind == CodeKind::Method,
         FrameKind::SuperclassClause(_) => code.kind == CodeKind::SuperclassClause,
         FrameKind::SuperclassMessage(_) | FrameKind::MixinApplicationMessage(_) => {
             code.kind == CodeKind::SuperclassMessage

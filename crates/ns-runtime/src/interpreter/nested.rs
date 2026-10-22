@@ -18,9 +18,7 @@
 //! This lives under `interpreter/` rather than in `mixin.rs` because it is
 //! the one part of nesting that *evaluates Newspeak code*: the superclass
 //! clause. That code runs compiled, in an activation of its own -- a
-//! `Step::SuperclassClause` continuing with `Continuation::NestedClass`, as
-//! `instantiate.rs` runs a clause's deferred message as a
-//! `Step::ClauseMessage` continuing with `Continuation::Instantiate`.
+//! `Step::SuperclassClause` continuing with `Continuation::NestedClass`.
 
 use std::rc::Rc;
 
@@ -278,7 +276,7 @@ pub(crate) fn after_clause<'gc>(
     let application = mutator.apply_mixin(&nested, Some(&super_application));
     // §3.1.1's enclosing-object condition, asked once, where this class
     // object comes into being; a class that is no value pays this one
-    // test. Only *decided* here -- `decide_instantiation` is what refuses,
+    // test. Only *decided* here -- `allocate_for_factory` is what refuses,
     // once the verdict is recorded on the class object below
     // (`value_class.rs`'s doc comment says why). The other class-level
     // condition, no identity method, is already folded into `application`'s
@@ -493,7 +491,7 @@ pub(crate) fn build_applied_levels<'gc>(
 /// know the declaration (an internal inconsistency) or because its payload
 /// is not an `Instance` at all, which a user class inheriting `Array`'s
 /// representation really is:
-/// `decide_factory` gives those an `ObjectShape::Array` payload with no
+/// `allocate_for_factory` gives those an `ObjectShape::Array` payload with no
 /// fields to cache into. Handing back the handle, not just the index,
 /// means every caller downstream already holds proof that `receiver` is an
 /// object instead of re-deriving it from `receiver` a second time --

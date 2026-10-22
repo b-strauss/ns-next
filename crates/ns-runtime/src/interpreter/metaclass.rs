@@ -292,7 +292,7 @@ mod tests {
                 (object_metaclass, "Object class"),
             ];
             for (class, name) in refused {
-                let message = match mutator.decide_instantiation(class, Vec::new()) {
+                let message = match mutator.allocate_for_factory(class) {
                     Err(Signal::Error(error)) => String::from(error.message),
                     Err(_) => panic!("{name}: refused with something other than an error"),
                     Ok(_) => panic!("{name}: instantiated"),

@@ -1,0 +1,102 @@
+/// newspeak-spec.pdf 6.2: a mixin application clause makes "a class I with
+/// mixin M and superclass S". A program reaches such a level I only
+/// through a mirror, from outside the declaration that applied M; there I
+/// is a class of its mixin like any other: instantiated directly or named
+/// as the superclass of another class, it initializes as a class whose
+/// mixin is M and whose superclass is S. So M's own superclass clause runs
+/// against S, checked by 6.1, and then M's own slots -- never M's own <:
+/// clauses, whose levels are not above I. Only the initializer of the
+/// declaration that applied M runs I the <: way, with that clause's
+/// message.
+class Spec62ALevelReachedThroughAMirrorIsAClassOfItsMixin = Object new (
+  |
+    t ::= nil.
+    level ::= nil.
+  |
+) (
+  class Base k: k = Object new (
+    |
+      public base = k.
+    |
+  ) ()
+
+  /// Its own superclass clause sends #new to Object, so over Base, whose
+  /// primary factory is #k:, 6.1 refuses it.
+  class Marker tag: x = Object new (
+    |
+      public tag = x.
+    |
+  ) ()
+
+  /// Its own superclass clause is Base k: 3, which fits Base.
+  class FittingMarker tag: x = Base k: 3 (
+    |
+      public tag = x.
+    |
+  ) ()
+
+  class Tagged = Base k: 1 <: Marker tag: 2 () ()
+
+  class FittingTagged = Base k: 1 <: FittingMarker tag: 2 () ()
+
+  /// Named over the level Marker added to Base, Below's message is
+  /// evaluated first (6.3), and then the level's initializer is Marker's
+  /// own clause against Base.
+  class Below y: y
+      = level tag: (outer Spec62ALevelReachedThroughAMirrorIsAClassOfItsMixin note: 'below') () ()
+
+  class Extra = Object new (
+    |
+      extra = outer Spec62ALevelReachedThroughAMirrorIsAClassOfItsMixin note: 'Extra initializer'.
+    |
+  ) ()
+
+  /// Written over Object, and applied over the level Extra adds, whose
+  /// primary factory is #new as Object's is.
+  class Last = Object new (
+    |
+      last = outer Spec62ALevelReachedThroughAMirrorIsAClassOfItsMixin note: 'Last initializer'.
+    |
+  ) ()
+
+  class Stacked = Object new <: Extra <: Last (
+    |
+      stacked = outer
+          Spec62ALevelReachedThroughAMirrorIsAClassOfItsMixin note: 'Stacked initializer'.
+    |
+  ) ()
+
+  public note: text = (
+    t
+        show: text;
+        newLine.
+    ^text.
+  )
+
+  public main: platform args: arguments = (
+    |
+      ClassMirror = platform mirrors ClassMirror.
+      fitting
+    |
+    t:: platform transcript.
+    level:: (ClassMirror reflecting: Tagged) superclass reflectee.
+    t
+        show: ([level tag: 7] on: Error do: [:error | error messageText]);
+        newLine.
+    t
+        show: ([Below y: 1] on: Error do: [:error | error messageText]);
+        newLine.
+    fitting:: (ClassMirror reflecting: FittingTagged) superclass reflectee tag: 7.
+    t
+        show: fitting base printString , ' ' , fitting tag printString;
+        newLine.
+    t
+        show: 'Stacked new:';
+        newLine.
+    Stacked new.
+    t
+        show: 'the level Last adds, new:';
+        newLine.
+    (ClassMirror reflecting: Stacked) superclass reflectee new.
+  )
+)

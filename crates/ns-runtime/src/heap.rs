@@ -20,6 +20,7 @@
 use crate::builtins::primitive::ElementKind;
 use crate::bytecode::CompiledCode;
 use crate::hash::IdentityMap;
+use crate::interpreter::instantiate::InitializerBody;
 use crate::interpreter::FeedbackBase;
 use crate::mixin::{DispatchId, DispatchIds, Mixin, MixinApplication, MixinMethod};
 use crate::types::*;
@@ -82,17 +83,6 @@ impl InstanceHeader {
         (word_count < WORD_COUNT_OVERFLOW)
             .then(|| InstanceHeader(Header::new(guard, Format::FixedPointers, 0, word_count).0))
     }
-}
-
-/// What `new` reads of a class's application, copied out in one lookup.
-#[derive(Clone, Copy)]
-pub(crate) struct InstantiationFacts {
-    pub(crate) refused: bool,
-    pub(crate) inherits_value: bool,
-    pub(crate) slot_count: usize,
-    pub(crate) header: Option<InstanceHeader>,
-    pub(crate) without_code: bool,
-    pub(crate) factory_arity: Option<usize>,
 }
 
 /// The sizes `image::decode::decode_graph_section`'s first pass gives each
@@ -2194,7 +2184,7 @@ impl<'gc> Heap<'gc> {
             None => Word::NIL,
         };
         use crate::image::opcodes::{
-            FRAME_CLOSURE, FRAME_INITIALIZER, FRAME_METHOD, FRAME_MIXIN_APPLICATION_MESSAGE,
+            FRAME_CLOSURE, FRAME_FACTORY, FRAME_METHOD, FRAME_MIXIN_APPLICATION_MESSAGE,
             FRAME_SUPERCLASS_CLAUSE, FRAME_SUPERCLASS_MESSAGE, FRAME_TOP_LEVEL,
         };
         let (tag, operand) = match kind {
@@ -2202,7 +2192,8 @@ impl<'gc> Heap<'gc> {
             FrameKind::Method(_) => (FRAME_METHOD, None),
             FrameKind::Closure(closure) => (FRAME_CLOSURE, Some(closure)),
             FrameKind::TopLevel => (FRAME_TOP_LEVEL, None),
-            FrameKind::Initializer(class) => (FRAME_INITIALIZER, Some(class)),
+            FrameKind::Initializer(class, body) => (body.frame_tag(), Some(class)),
+            FrameKind::Factory(class) => (FRAME_FACTORY, Some(class)),
             FrameKind::SuperclassClause(class) => (FRAME_SUPERCLASS_CLAUSE, Some(class)),
             FrameKind::SuperclassMessage(class) => (FRAME_SUPERCLASS_MESSAGE, Some(class)),
             FrameKind::MixinApplicationMessage(class) => {
@@ -3858,9 +3849,8 @@ impl<'gc> Heap<'gc> {
         application.instance_header =
             InstanceHeader::for_slots(application.dispatch_ids.instances, application.slot_count);
         // The facts come from the literal alone, which every caller computes
-        // from the same mixin; a debug build refuses one that does not, so
-        // `apply_mixin`'s `instantiates_without_code`, derived from them
-        // before this call, can never rest on facts the table then replaces.
+        // from the same mixin; a debug build refuses one that does not, so that
+        // no instantiation reads facts of another mixin than the one it runs.
         debug_assert_eq!(
             application.level_facts,
             crate::mixin::LevelFacts::of(&application.mixin),
@@ -4089,24 +4079,7 @@ impl<'gc> Heap<'gc> {
         self.class_application_entry(class).cloned()
     }
 
-    /// What `new` needs of `class`'s application, read once and copied
-    /// out; `None` for a class object with no application.
-    pub(crate) fn class_instantiation_facts(
-        &self,
-        class: ClassReference<'gc>,
-    ) -> Option<InstantiationFacts> {
-        let application = self.class_application_entry(class)?;
-        Some(InstantiationFacts {
-            refused: application.instantiation_refusal.is_some(),
-            inherits_value: application.inherits_value,
-            slot_count: application.slot_count,
-            header: application.instance_header,
-            without_code: application.instantiates_without_code,
-            factory_arity: application.level_facts.factory_arity,
-        })
-    }
-
-    /// The instantiation walk's facts of `class`'s level, copied out of its
+    /// Instantiation's facts of `class`'s level, copied out of its
     /// application without cloning it; `None` for a class object with no
     /// application.
     pub(crate) fn class_level_facts(
@@ -4115,21 +4088,6 @@ impl<'gc> Heap<'gc> {
     ) -> Option<crate::mixin::LevelFacts> {
         self.class_application_entry(class)
             .map(|application| application.level_facts)
-    }
-
-    /// Whether any class object of `class`'s superclass chain, `class`
-    /// included, is a level a `<:` clause added: a fact of the class
-    /// objects, not of their applications, since a class object may name
-    /// another declaration's applied level as its superclass.
-    pub(crate) fn chain_has_applied_level(&self, class: ClassReference<'gc>) -> bool {
-        let mut level = Some(class);
-        while let Some(current) = level {
-            if self.class_is_applied_level(current) {
-                return true;
-            }
-            level = self.class_superclass(current);
-        }
-        false
     }
 
     /// The index of `class`'s application in the table: the identity of
@@ -4191,9 +4149,9 @@ impl<'gc> Heap<'gc> {
     }
 
     /// Whether `class` is a level a mixin application added: exactly when
-    /// `class_applied_clause` answers a clause, without copying it out. The
-    /// instantiation walk asks this of every superclass it climbs to, so an
-    /// ordinary level costs one test of an object the walk reads anyway.
+    /// `class_applied_clause` answers a clause, without copying it out.
+    /// Instantiation asks this of every level it initializes or passes, so an
+    /// ordinary level costs one test of an object it reads anyway.
     pub fn class_is_applied_level(&self, class: ClassReference<'gc>) -> bool {
         self.class_applied_parts(class)
             .is_some_and(|(declaration, index, _)| index < declaration.mixin_applications.len())
@@ -4225,7 +4183,7 @@ impl<'gc> Heap<'gc> {
     }
 
     /// Whether `class` carries a recorded `ValueClassRefusal`, without
-    /// reading it: `decide_instantiation` asks this on every instantiation
+    /// reading it: `allocate_for_factory` asks this on every instantiation
     /// of a value class, and only the cold error path reads the refusal
     /// itself (`class_value_refusal`).
     pub fn class_has_value_refusal(&self, class: ClassReference<'gc>) -> bool {
@@ -4234,7 +4192,7 @@ impl<'gc> Heap<'gc> {
     }
 
     /// §3.1.1's enclosing-object condition on a value class, decided when
-    /// `class` was created and read here by `decide_instantiation`'s cold
+    /// `class` was created and read here by `allocate_for_factory`'s cold
     /// error path and by `check_value_class`'s walk --
     /// `ValueClassRefusal`'s doc comment says why creation and refusal are
     /// two different moments. `None` for a class that is no value, for a
@@ -4769,7 +4727,10 @@ impl<'gc> Heap<'gc> {
         };
         match kind {
             FrameKind::Method(method) => Some(method.code.clone()),
-            FrameKind::Initializer(class) => mixin(*class)?.own_initializer_code.clone(),
+            FrameKind::Initializer(class, body) => body.code_of(mixin(*class)?.as_ref()),
+            FrameKind::Factory(class) => {
+                crate::interpreter::instantiate::factory_code(self, *class, None)
+            }
             FrameKind::SuperclassClause(class) => mixin(*class)?.superclass_clause_code.clone(),
             FrameKind::SuperclassMessage(class) => mixin(*class)?.superclass_message_code.clone(),
             FrameKind::MixinApplicationMessage(level) => self
@@ -4877,7 +4838,7 @@ impl<'gc> Heap<'gc> {
     /// (`check_class_references`).
     pub fn frame_kind(&self, frame: FrameReference<'gc>) -> FrameKind<'gc> {
         use crate::image::opcodes::{
-            FRAME_CLOSURE, FRAME_INITIALIZER, FRAME_METHOD, FRAME_MIXIN_APPLICATION_MESSAGE,
+            FRAME_CLOSURE, FRAME_FACTORY, FRAME_METHOD, FRAME_MIXIN_APPLICATION_MESSAGE,
             FRAME_SUPERCLASS_CLAUSE, FRAME_SUPERCLASS_MESSAGE,
         };
         let operand = self
@@ -4893,7 +4854,10 @@ impl<'gc> Heap<'gc> {
                 .and_then(|id| self.code_method(id))
                 .map(FrameKind::Method),
             Some(FRAME_CLOSURE) => operand.map(FrameKind::Closure),
-            Some(FRAME_INITIALIZER) => operand.map(FrameKind::Initializer),
+            Some(FRAME_FACTORY) => operand.map(FrameKind::Factory),
+            Some(tag) if InitializerBody::of_frame_tag(tag).is_some() => operand
+                .zip(InitializerBody::of_frame_tag(tag))
+                .map(|(class, body)| FrameKind::Initializer(class, body)),
             Some(FRAME_SUPERCLASS_CLAUSE) => operand.map(FrameKind::SuperclassClause),
             Some(FRAME_SUPERCLASS_MESSAGE) => operand.map(FrameKind::SuperclassMessage),
             Some(FRAME_MIXIN_APPLICATION_MESSAGE) => {
@@ -5097,8 +5061,8 @@ impl<'gc> Heap<'gc> {
         // Only code that addresses its own slots pays for these reads; a
         // send to any other method tests one flag. The receiver's guard is
         // recorded only when its chain contains the entered level: a
-        // private lexical send, a super send and the instantiation walk's
-        // next level bind their code without looking at the receiver, so a
+        // private lexical send, a super send and an initializer's superclass
+        // or applied level bind their code without looking at the receiver, so a
         // receiver the bulk forward replaced before the push would
         // otherwise be vouched for by its own guard and read or written in
         // the old layout. Without one, the first own-slot access takes the
@@ -7230,7 +7194,7 @@ mod tests {
                 current_class: Some(class),
                 program_counter,
                 code: Some(code),
-                kind: FrameKind::Initializer(class),
+                kind: FrameKind::Initializer(class, InitializerBody::OwnPart),
                 uncontinuable: true,
             },
             &[],
@@ -7314,7 +7278,6 @@ mod tests {
             own_slot_base: 0,
             dispatch_ids: crate::mixin::DispatchIds::NONE,
             instance_header: None,
-            instantiates_without_code: false,
             level_facts,
         });
         heap.allocate_self_referential_class(NewClass {
@@ -8573,7 +8536,7 @@ mod tests {
         let activation = heap.push_activation(
             ActivationHeader {
                 current_class: Some(class),
-                kind: FrameKind::Initializer(class),
+                kind: FrameKind::Initializer(class, InitializerBody::OwnPart),
                 code: shaped_code(1, 2),
                 ..header()
             },

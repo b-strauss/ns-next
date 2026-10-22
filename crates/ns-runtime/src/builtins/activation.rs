@@ -208,10 +208,19 @@ fn activation_object<'gc>(
 
 /// `"{class}>>{selector}"` for an activation running a method: the class
 /// that declares it, named as `Class>>name` and `Metaclass>>name` answer,
-/// and the selector its mixin holds the method's code under. `None` for an
-/// activation running a block, an initializer or a clause, which have no
-/// selector to report.
+/// and the selector its mixin holds the method's code under. A factory's
+/// activation is named as its entry's method on the metaclass, `Foo
+/// class>>new`. `None` for an activation running a block, an initializer or
+/// a clause, which have no selector to report.
 fn method_name(mutator: &Mutator<'_>, activation: ActivationReference) -> Option<String> {
+    if let FrameKind::Factory(class) = mutator.heap.activation_kind(activation) {
+        let application = mutator.heap.class_application(class)?;
+        return Some(format!(
+            "{} class>>{}",
+            mutator.heap.class_display_name(class),
+            crate::interpreter::instantiate::factory_selector(&application)
+        ));
+    }
     let code = mutator.heap.activation_code(activation);
     if code.kind != CodeKind::Method {
         return None;

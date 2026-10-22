@@ -1486,7 +1486,10 @@ mod tests {
                 ActivationHeader {
                     receiver,
                     current_class: Some(class),
-                    kind: FrameKind::Initializer(class),
+                    kind: FrameKind::Initializer(
+                        class,
+                        crate::interpreter::instantiate::InitializerBody::OwnPart,
+                    ),
                     feedback_base: crate::interpreter::FeedbackBase::NOT_ASSIGNED,
                     code,
                     then: Continuation::Deliver,

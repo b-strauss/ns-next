@@ -670,14 +670,14 @@ pub(super) fn check_kernel_shape(heap: &Heap<'_>, root: &Rc<Mixin>, resolved: &R
         let nested = nested_named(heap, root, name);
         // Rust builds a builtin's instances with a payload and no fields, so
         // a slot would have nowhere to live -- except on the exception
-        // classes, whose instances `decide_instantiation` gives an ordinary
+        // classes, whose instances `allocate_for_factory` gives an ordinary
         // field vector like any other class's (`docs/design/core-library.md`,
         // "Exceptions"). `Activation` declares no slots of its own: an
         // activation's state lives in the running activation it wraps.
         // `FutureImplementation`'s two slots are an ordinary field vector
         // too, which `interpreter::future` allocates and alone reads and
         // writes. `Ephemeron`'s three are the fields of its own format,
-        // which `decide_factory` allocates and only its mirror leaves
+        // which `allocate_for_factory` allocates and only its mirror leaves
         // reach (`builtins/weak.rs`); declared with no initializer, since
         // an initializer's slot store does not reach that format.
         assert!(
