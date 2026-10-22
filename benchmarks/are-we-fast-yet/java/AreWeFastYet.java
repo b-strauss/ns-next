@@ -61,6 +61,7 @@ public final class AreWeFastYet {
     BENCHMARKS.put("Bounce", Bounce::new);
     BENCHMARKS.put("CD", CD::new);
     BENCHMARKS.put("DeltaBlue", DeltaBlue::new);
+    BENCHMARKS.put("DeltaBlueTon80", DeltaBlueTon80::new);
     BENCHMARKS.put("Havlak", Havlak::new);
     BENCHMARKS.put("Json", Json::new);
     BENCHMARKS.put("List", List::new);
@@ -69,6 +70,7 @@ public final class AreWeFastYet {
     BENCHMARKS.put("Permute", Permute::new);
     BENCHMARKS.put("Queens", Queens::new);
     BENCHMARKS.put("Richards", Richards::new);
+    BENCHMARKS.put("RichardsTon80", RichardsTon80::new);
     BENCHMARKS.put("Sieve", Sieve::new);
     BENCHMARKS.put("Storage", Storage::new);
     BENCHMARKS.put("Towers", Towers::new);

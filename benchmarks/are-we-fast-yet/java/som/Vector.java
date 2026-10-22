@@ -2,7 +2,9 @@
  * (https://github.com/smarr/are-we-fast-yet, commit
  * 74306fec151070fd07157cefeacf19e7e0bcdc89,
  * benchmarks/Java/src/som/Vector.java).
- * Changed for ns-next: names are written out.
+ * Changed for ns-next: names are written out; removeLast, which upstream's
+ * Vector lacks, is added for deltablueton80, whose port takes its work lists
+ * from the end.
  */
 /* This code is based on the SOM class library.
  *
@@ -136,6 +138,15 @@ public class Vector<E> {
     }
     firstIndex++;
     return (E) storage[firstIndex - 1];
+  }
+
+  @SuppressWarnings("unchecked")
+  public E removeLast() {
+    if (isEmpty()) {
+      return null;
+    }
+    lastIndex--;
+    return (E) storage[lastIndex];
   }
 
   public boolean remove(final E object) {

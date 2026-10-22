@@ -1,0 +1,32 @@
+/* Translated for ns-next from `DeltaBlueTon80.ns`, itself adapted from
+ * Primordial Soup's `DeltaBlue.ns`, commit
+ * `338f0bb342a618f5608ab72ab1b1fae9b226e472`.
+ * This file is its class Planner's class StayConstraint.
+ */
+/* Copyright 2008, the Newspeak project authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the ''License''); you
+ * may not use this file except in compliance with the License. You may
+ * obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+ * and in THIRD-PARTY-NOTICES.md at the repository root.
+ */
+package deltablueton80;
+
+/**
+ * I mark variables that should, with some level of preference, stay the
+ * same. I have one method with zero inputs and one output, which does
+ * nothing. Planners may exploit the fact that, if I am satisfied, my output
+ * will not change during plan execution. This is called "stay optimization".
+ */
+final class StayConstraint extends UnaryConstraint {
+
+  StayConstraint(final Planner enclosingPlanner, final Variable variable,
+      final Strength initialStrength) {
+    super(enclosingPlanner, variable, initialStrength);
+    addConstraint();
+  }
+
+  /** Stay constraints do nothing. */
+  @Override
+  public void execute() { }
+}
