@@ -1334,11 +1334,10 @@ fn global_hit<'gc>(
 /// A `super` send (§5.10), cached, keyed by S's application
 /// (`sends::super_start`): everything §5.10 finds, and the step `level_above`
 /// takes from S on a hit, is a function of S alone. A body-less
-/// declaration's own code, whose S is its class object rather than that
-/// object's superclass, runs uncached. Its two errors are raised by the
-/// uncached path, which is where a send without a `current_class` or a
-/// superclass goes.
-#[allow(clippy::too_many_arguments)]
+/// declaration's own code is cached like any other: its S is its class
+/// object's superclass, as every code's is. Its two errors are raised by
+/// the uncached path, which is where a send without a `current_class` or
+/// a superclass goes.
 #[inline(always)]
 pub(crate) fn send_super<'gc>(
     mutator: &mut Mutator<'gc>,
@@ -1346,24 +1345,18 @@ pub(crate) fn send_super<'gc>(
     feedback_base: FeedbackBase,
     family_size: u32,
     site: CallSite,
-    declaration_code: bool,
     selector: Symbol,
     arguments: &[Value<'gc>],
 ) -> Result<Step<'gc>, Signal<'gc>> {
     // The classes are read only for a cached site; the uncached path reads
     // them itself.
-    // A body-less declaration's own code runs uncached, as its lexical
-    // sends do (`send_lexical`).
-    let cached_site = site_index(feedback_base, family_size, site)
-        .filter(|_| !declaration_code)
-        .and_then(|index| {
-            let current_class = mutator.heap.activation_current_class(activation)?;
-            let superclass =
-                super::sends::super_start(&mutator.heap, activation, current_class, false)?;
-            Some((index, current_class, superclass))
-        });
+    let cached_site = site_index(feedback_base, family_size, site).and_then(|index| {
+        let current_class = mutator.heap.activation_current_class(activation)?;
+        let superclass = super::sends::super_start(&mutator.heap, current_class)?;
+        Some((index, current_class, superclass))
+    });
     let Some((index, current_class, superclass)) = cached_site else {
-        return decide_super_send(mutator, activation, declaration_code, selector, arguments);
+        return decide_super_send(mutator, activation, selector, arguments);
     };
     let self_value = mutator.heap.activation_receiver(activation);
     let key = SendKey {

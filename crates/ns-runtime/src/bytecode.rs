@@ -516,8 +516,8 @@ pub struct CompiledCode {
     /// Whether this body is a body-less declaration's own code: its full
     /// initializer (`Mixin::has_body`), or a block created in it at any
     /// depth. Such code runs only at the declaration's class object, and
-    /// its lexical sends, `outer` and `super` start from the declaration's
-    /// scope instead of the class object's (`interpreter::sends::lexical_origin`),
+    /// its lexical sends and `outer` start from the declaration's scope
+    /// instead of the class object's (`interpreter::sends::lexical_origin`),
     /// so where they start is decided here, once, from the code -- never
     /// per send from the class object. Derived from the mixin the body is
     /// attached to (`Mixin::mark_declaration_code`) whenever a body-less
@@ -652,8 +652,8 @@ impl CompiledCode {
     }
 
     /// Whether this body is a body-less declaration's own code
-    /// (`declaration_code`): what a lexical send, `outer` and a `super`
-    /// send in it read to decide where they start.
+    /// (`declaration_code`): what a lexical send and `outer` in it read to
+    /// decide where they start.
     #[inline(always)]
     pub(crate) fn is_declaration_code(&self) -> bool {
         self.declaration_code.get()

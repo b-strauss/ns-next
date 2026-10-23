@@ -2347,8 +2347,9 @@ own, so its figures are not compared with these:
   `bench_newarg.ns` joined the measurement: 15.4% and 18.3% slower than
   `be3eb40`.
 - **Every body inline.** Carrying `Step::InitializerThen`,
-  `Step::ClauseMessage` and `Step::SuperclassClause` inline instead of a boxed
-  body description: `bench_new2.ns` −5.2%, `bench_newarg.ns` −8.0%, both
+  `Step::ClauseMessage` and `Step::SuperclassClause` inline instead of a
+  boxed body description (the first two since gone with the walk, "What
+  `new` as compiled code moved"): `bench_new2.ns` −5.2%, `bench_newarg.ns` −8.0%, both
   entirely below, the other five sources level. The first version gave
   `Step::Initializer` an optional continuation, which made it as large as
   `Step::Method`; `Result<Step, Signal>` stayed at 56 bytes, yet the four
@@ -5956,11 +5957,12 @@ per instruction), found these causes, each of which is a reason still true:
   are attached (the compiler, the image's mixin decoding, the embedded
   shipped code's decoder), never on a wire and outside `CompiledCode`'s
   equality. `vm.rs` reads it off the running code beside `family_size` and
-  hands it to `sends::lexical_origin` and `sends::super_start`. Declaration
-  code runs once per instantiation, so its lexical and `super` sends go
-  uncached and every cached send starts at its current class exactly as on
-  `master`; a debug build asserts on every such send that the code's answer
-  equals the class-object answer.
+  hands it to `sends::lexical_origin`. Declaration code runs once per
+  instantiation, so its lexical sends go uncached and every cached lexical
+  send starts at its current class exactly as on `master`; a debug build
+  asserts on every such send that the code's answer equals the
+  class-object answer. A `super` send reads no flag: its S is the
+  superclass of its current class for every code.
 - **The factory activation's first two instructions.** A factory costs an
   activation, its push and pop, three dispatches, `InitializeInstance`'s
   `send` wrapper and a switch: about 19% of `bench_new.ns` (a probe that ran

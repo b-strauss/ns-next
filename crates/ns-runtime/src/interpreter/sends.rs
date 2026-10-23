@@ -66,29 +66,19 @@ fn declaration_origin<'gc>(
     }
 }
 
-/// §5.10's S for a `super` send in `activation`, whose current class is
-/// `current_class`: "the superclass of the current class C'". The one
-/// place that decides it, for `decide_super_send` and
-/// `inline_cache::send_super`. C' is `current_class` -- except for a
-/// body-less declaration's own code (`declaration_code`, decided as
-/// `lexical_origin` decides it), where C' is the declaration, whose
-/// superclass in a body version is the level its last clause added: the
-/// class object itself. `None` where there is no superclass.
+/// §5.10's S for a `super` send in an activation whose current class is
+/// `current_class`: "let *S* be the superclass of *C*". The one place
+/// that decides it, for `decide_super_send` and
+/// `inline_cache::send_super`. A body-less declaration's own code is no
+/// exception: it runs at its class object, which is the class *I* §6.2
+/// makes, so its S is that object's superclass, as for every other code
+/// (`newspeak-spec.pdf` §3.6, §5.10, §6.2). `None` where there is no
+/// superclass.
 #[inline(always)]
 pub(crate) fn super_start<'gc>(
     heap: &Heap<'gc>,
-    activation: ActivationReference,
     current_class: ClassReference<'gc>,
-    declaration_code: bool,
 ) -> Option<ClassReference<'gc>> {
-    debug_assert_eq!(
-        declaration_code,
-        runs_declaration_code(heap, activation, current_class),
-        "internal: a super send's code and its activation disagree on whether it is a          body-less declaration's own"
-    );
-    if declaration_code && heap.class_has_declaration_scope(current_class) {
-        return Some(current_class);
-    }
     heap.class_superclass(current_class)
 }
 
@@ -165,7 +155,6 @@ pub(crate) fn enclosing_object<'gc>(
 pub(crate) fn decide_super_send<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
-    declaration_code: bool,
     selector: Symbol,
     arguments: &[Value<'gc>],
 ) -> Result<Step<'gc>, Signal<'gc>> {
@@ -176,7 +165,7 @@ pub(crate) fn decide_super_send<'gc>(
             "super send with no enclosing current_class (used outside a method activation)",
         )));
     };
-    let superclass = super_start(&mutator.heap, activation, current_class, declaration_code);
+    let superclass = super_start(&mutator.heap, current_class);
     let Some(superclass) = superclass else {
         return Err(Signal::Error(NewspeakError::error(
             selector,

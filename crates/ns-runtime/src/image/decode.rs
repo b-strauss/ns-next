@@ -430,6 +430,13 @@ pub enum DecodeError {
     /// wraps every block body in its own `Rc`, used exactly once, which is
     /// what makes "the body one closure hop out" well defined.
     SharedBlockBody,
+    /// A body-less declaration's full initializer named anywhere but as
+    /// that declaration's full initializer: as another body of its own
+    /// row, or as a body of another row. The body is its declaration's own
+    /// code (`CompiledCode::is_declaration_code`), whose lexical sends and
+    /// `outer` start from the declaration's scope, so run as any other
+    /// body it would start them there too.
+    SharedDeclarationCode,
     /// A decoded frame's register file does not match the body that runs in
     /// it, so a register index the body considers in range would index
     /// `arguments`/`temporaries` out of range.
@@ -447,8 +454,11 @@ pub enum DecodeError {
     /// not a method body of its method's argument count, a closure frame's
     /// not its closure's own code, a clause frame's not a body of that
     /// clause's kind, or a body named for a top-level frame, or none for
-    /// any other. The program counter and the register file mean nothing
-    /// against a body the frame never ran.
+    /// any other; or a body-less declaration's own code in a frame that
+    /// does not run it at that declaration's class object, or other code
+    /// in a frame that would (`Heap::frame_runs_declaration_code`). The
+    /// program counter and the register file mean nothing against a body
+    /// the frame never ran.
     FrameCodeMismatch,
     /// A frame record names its body by declaration (`FRAME_BODY_DECLARED`)
     /// where the class it resolves through applies no shipped mixin, or
@@ -884,6 +894,10 @@ impl std::fmt::Display for DecodeError {
             DecodeError::SharedBlockBody => write!(
                 f,
                 "one block body in the image is created by more than one MakeClosure"
+            ),
+            DecodeError::SharedDeclarationCode => write!(
+                f,
+                "a body-less declaration's instance initializer is named as another body too"
             ),
             DecodeError::FrameRegisterFile {
                 arguments,
@@ -1478,6 +1492,35 @@ pub fn verify_mixins(mixins: &mixins::Decoded) -> Result<(), DecodeError> {
         if !mixin.mixin_applications.is_empty() && mixin.superclass.is_none() {
             return Err(DecodeError::MixinApplicationWithoutSuperclass);
         }
+    }
+    check_declaration_code_unshared(mixins)
+}
+
+/// No body-less declaration's full initializer is named as any other body
+/// (`DecodeError::SharedDeclarationCode`). `mixins::build` marks it, and
+/// every block it creates, as the declaration's own code, which starts its
+/// lexical sends and `outer` from the declaration's scope; a crafted row
+/// that names it again would run it there from another body. A block it
+/// creates needs no check: a block has one creator (`SharedBlockBody`), and
+/// no row names a block as a body (`check_code_arity`).
+fn check_declaration_code_unshared(mixins: &mixins::Decoded) -> Result<(), DecodeError> {
+    let mut named: HashMap<usize, usize> = HashMap::new();
+    for mixin in &mixins.mixins {
+        let bodies = mixin
+            .compiled_methods()
+            .map(|method| &method.code)
+            .chain(mixin.initializer_code.iter())
+            .chain(mixin.own_initializer_code.iter())
+            .chain(mixin.standalone_initializer_code.iter())
+            .chain(mixin.superclass_clause_code.iter());
+        for code in bodies {
+            if code.is_declaration_code() {
+                *named.entry(Rc::as_ptr(code) as usize).or_default() += 1;
+            }
+        }
+    }
+    if named.values().any(|count| *count > 1) {
+        return Err(DecodeError::SharedDeclarationCode);
     }
     Ok(())
 }
@@ -5133,7 +5176,7 @@ fn frame_body<'gc>(heap: &Heap<'gc>, frame: FrameReference<'gc>) -> Option<Rc<Co
 /// decoded mixins carry. First a frame's body, which its record names by
 /// code id, must be one its kind runs (`runs_its_kind`), since what
 /// follows means nothing against a body the frame never ran. Then the
-/// three gaps a per-record decoder cannot see are closed:
+/// four gaps a per-record decoder cannot see are closed:
 ///
 /// 0. A frame's `program_counter` must be an instruction index of the body
 ///    that runs in it. A frame's `program_counter` counts instructions (an
@@ -5148,6 +5191,10 @@ fn frame_body<'gc>(heap: &Heap<'gc>, frame: FrameReference<'gc>) -> Option<Rc<Co
 ///    two together, and `verify_code_table`'s outer-local bound -- which
 ///    walks the *static* `MakeClosure` nesting -- is only a bound on the
 ///    real `frame_at_depth` walk because of this.
+/// 3. A frame must run a body-less declaration's own code exactly when it
+///    runs it at that declaration's class object
+///    (`Heap::frame_runs_declaration_code`), since the code's mark, not the
+///    frame, decides where its lexical sends start.
 pub fn verify_graph<'gc>(
     heap: &Heap<'gc>,
     graph: &DecodedGraph<'gc>,
@@ -5200,6 +5247,25 @@ pub fn verify_graph<'gc>(
             heap.closure_captured_frame(*object),
         ) {
             verify_closure(heap, &code, captured_frame, table, &parents, &index_of)?;
+        }
+    }
+    // A frame runs a body-less declaration's own code exactly when it runs
+    // it at the declaration's class object: what the sends read off the
+    // code (`sends::lexical_origin`) and a debug build holds to the frame.
+    // Every activation a decoded frame later gives rise to -- a block it
+    // created, evaluated -- takes its current class from the frame and its
+    // code's mark from the frame's code, so it agrees too. After the
+    // closures, whose captured frames bound the walk by the static nesting.
+    for frame in &graph.frames {
+        let (Some(code), Some(class)) =
+            (frame_body(heap, *frame), heap.frame_current_class(*frame))
+        else {
+            continue;
+        };
+        let runs_declaration_code = heap.class_has_declaration_scope(class)
+            && heap.frame_runs_declaration_code(*frame, class);
+        if code.is_declaration_code() != runs_declaration_code {
+            return Err(DecodeError::FrameCodeMismatch);
         }
     }
     Ok(())

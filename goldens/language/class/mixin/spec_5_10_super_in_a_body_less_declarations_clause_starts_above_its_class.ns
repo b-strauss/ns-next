@@ -1,20 +1,23 @@
-/// newspeak-spec.pdf 5.10: a super send starts at "the superclass of the
-/// current class C'". For a declaration without a body, its clause
-/// messages and arguments are its own code, so C' is the declaration, and
-/// a body version's superclass is the level its last clause added (6.2) --
-/// the body-less declaration's class object itself. A method of the
-/// applied mixin M1 runs with C' the level, so its super starts below M1.
+/// newspeak-spec.pdf 5.10: a super send starts at "the superclass of C",
+/// C the current class of the activation, which 3.6 makes the class
+/// defining the running code. A declaration without a body "is a class I
+/// with mixin M and superclass S" (6.2), and its clause messages and
+/// arguments are evaluated by I's own initializer: their current class is
+/// I, the declaration's class object, so their super starts at I's
+/// superclass, Base, and passes over M1. A body version's class is a
+/// level of its own below the one its clause added, so its super finds
+/// M1.
 ///
-/// Each line runs three times, so a cached send answers as the first did,
-/// and the two kinds of code share one class object:
+/// Each line runs three times, so a cached send answers as the first did:
 ///
-/// 1. `tag: super foo`: M1's foo, as the body version answers.
+/// 1. `tag: super foo`: Base's foo.
 /// 2. `tag: [super foo] value`: the same from a block.
-/// 3. `tag: super a printString`: M1's slot accessor, nil while the clause
-///    runs, before M1's own part initializes it.
+/// 3. `tag: super a printString`: Base has no `a` and M1's slot accessor
+///    is passed over, so the send is not understood: Base's
+///    doesNotUnderstand: signals, and the instantiation fails.
 /// 4. M1's own `^super foo` on the same instances: Base's foo.
 /// 5. The body version of line 1: M1's foo.
-class Spec510SuperInABodyLessDeclarationsClauseStartsAtItsClass = Object new () (
+class Spec510SuperInABodyLessDeclarationsClauseStartsAboveItsClass = Object new () (
   class Base = Object new () (
     public foo = (
       ^'Base foo'.
@@ -53,7 +56,7 @@ class Spec510SuperInABodyLessDeclarationsClauseStartsAtItsClass = Object new () 
           show: ', ';
           show: InBlock new a;
           show: ', ';
-          show: Slot new a;
+          show: ([Slot new a] on: Error do: [:error | error messageText]);
           show: ', ';
           show: Direct new superFoo;
           show: ', ';

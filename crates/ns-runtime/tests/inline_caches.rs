@@ -235,7 +235,8 @@ fn a_private_nested_class_hit_reads_the_field_only_for_the_guard_s_application()
 /// class's application. A subclass's instance takes the lookup; each
 /// enclosing object still answers a class of its own, the same on every
 /// send. A body-less declaration's own `super Inner` starts at its class
-/// object, which its instances are instances of, and finds `Base`'s.
+/// object's superclass, `Base`, as every `super` starts at its current
+/// class's, and finds `Base`'s.
 #[test]
 fn a_super_nested_class_hit_reads_the_field_in_s_layout() {
     let source = indoc! {"

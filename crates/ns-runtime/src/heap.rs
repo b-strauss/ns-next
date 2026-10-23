@@ -5971,14 +5971,30 @@ impl<'gc> Heap<'gc> {
         activation: ActivationReference,
         class: ClassReference<'gc>,
     ) -> bool {
-        use crate::image::opcodes::{FRAME_CLOSURE, FRAME_INITIALIZER};
         self.check_activation(activation);
         let closure = match &self.stack.entries[activation.index as usize].kind {
             FrameKind::Initializer(level, InitializerBody::Full) => return level.same(class),
             FrameKind::Closure(closure) => *closure,
             _ => return false,
         };
-        let mut frame = self.closure_captured_frame(closure);
+        self.closure_captured_frame(closure)
+            .is_some_and(|frame| self.frame_runs_declaration_code(frame, class))
+    }
+
+    /// `activation_runs_declaration_code` for the activation `frame` is
+    /// the frame object of, read off the frame alone: what
+    /// `image::decode::verify_graph` holds a decoded frame's body to, so
+    /// that no decoded frame runs a body-less declaration's own code
+    /// anywhere else, nor other code where it would. The walk is bounded
+    /// by the static block nesting, which a decoded closure's captured
+    /// frame is held to.
+    pub(crate) fn frame_runs_declaration_code(
+        &self,
+        frame: FrameReference<'gc>,
+        class: ClassReference<'gc>,
+    ) -> bool {
+        use crate::image::opcodes::{FRAME_CLOSURE, FRAME_INITIALIZER};
+        let mut frame = Some(frame);
         while let Some(current) = frame {
             let operand = self
                 .frame_field(current, frame_field::KIND_OPERAND)

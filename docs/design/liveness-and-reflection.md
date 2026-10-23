@@ -316,7 +316,17 @@ member set, superclass first, a mixin mirror only the mixin's own:
 Every mirror but a `SlotMirror` and a `MirrorGroup` also answers its
 `isKindOf...Mirror` test. `name` and
 `simpleName` agree: a class's name is its declaration's, never qualified
-by the classes it is nested in. `accessModifier` answers `#public`,
+by the classes it is nested in. A class mirror's `name` is the class's
+own, as `Class>>name` answers it (`Heap::class_name`, read through the
+metaclass; a metaclass's is its class's followed by `' class'`), not its
+mixin's: the class object of a declaration without a body,
+`class M3 = Base new <: M1 tag: 3.`, is the level its last clause adds and
+applies `M1`'s mixin, yet is named `M3` (§6: "The class has a name, given
+by the class expression"), and a level a `<:` clause adds is named for the
+class the clause names. Its `mixin` is `M1`'s, whose `name`, `declaration`
+and `asBuilder` are `M1`'s: the class object *is* the level applying it
+([object-model.md](object-model.md), "Mixin application";
+`goldens/library/mirror/a_body_less_classs_name_is_its_declarations.ns`). `accessModifier` answers `#public`,
 `#protected` or `#private`, the default already applied (§6.3.1: an
 unmarked member is protected); a class declaration's is its accessor's, a
 class side's its instance side's. A method mirror covers the methods a

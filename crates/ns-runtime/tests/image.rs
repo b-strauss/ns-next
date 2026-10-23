@@ -13896,6 +13896,123 @@ fn a_body_less_row_with_nested_declarations_is_refused() {
     );
 }
 
+/// A body-less declaration's full initializer is its declaration's own
+/// code, marked so when its row is built, and its lexical sends start from
+/// the declaration's scope: a row that names it as another body -- of
+/// another row, or another of its own -- would run it there from a frame
+/// that is no frame of the declaration, which a debug build aborts on.
+/// Refused before anything runs.
+#[test]
+fn a_body_less_declarations_initializer_named_as_another_body_is_refused() {
+    let fixture = GraphFixture::with_source(BODY_LESS_MODULE);
+    let applied = fixture.mixins[row_named(&fixture, "Applied") as usize].clone();
+    let marker = fixture.mixins[row_named(&fixture, "Marker") as usize].clone();
+    let declaration_code = applied
+        .initializer_code
+        .clone()
+        .expect("a body-less declaration has a full body");
+    let decoded = |rows: Vec<Mixin>| mixins::Decoded {
+        mixins: rows.into_iter().map(Rc::new).collect(),
+        ..mixins::Decoded::empty()
+    };
+    assert_eq!(
+        decode::verify_mixins(&decoded(vec![(*applied).clone(), (*marker).clone()])),
+        Ok(())
+    );
+    let mut sharing = (*marker).clone();
+    sharing.initializer_code = Some(declaration_code.clone());
+    let error = decode::verify_mixins(&decoded(vec![(*applied).clone(), sharing]))
+        .expect_err("another row's full body is the declaration's");
+    assert_eq!(error, decode::DecodeError::SharedDeclarationCode);
+    assert_eq!(
+        error.to_string(),
+        "a body-less declaration's instance initializer is named as another body too"
+    );
+    let mut own_part = (*applied).clone();
+    own_part.own_initializer_code = Some(declaration_code);
+    assert_eq!(
+        decode::verify_mixins(&decoded(vec![own_part])),
+        Err(decode::DecodeError::SharedDeclarationCode)
+    );
+}
+
+/// A snapshot of a module whose slot `held` holds a block a body-less
+/// declaration's clause created: a block of the declaration's own code,
+/// captured by the declaration's full initializer at its class object.
+fn body_less_clause_block_snapshot() -> Vec<u8> {
+    let source = indoc! {"
+        class Module = Object new (|
+          library = Library new.
+          public held = Applied new a.
+        |) (
+          class Library = Object new () (
+            public class Marker tag: t = Object new (| public a = t. |) ()
+            public helper = ( ^'the library helper' )
+          )
+          class Applied = Object new <: libraryMarker tag: [helper].
+          libraryMarker = ( ^library Marker )
+          helper = ( ^'the module helper' )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let instance = mutator.fetch(&instance);
+        snapshot_one(
+            mutator,
+            true,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &[instance],
+        )
+        .expect("snapshot")
+    })
+}
+
+/// The block verifies, and after load it still reaches the module's
+/// `helper` from the declaration's scope, not the library's from the
+/// applied mixin's.
+#[test]
+fn a_block_from_a_body_less_clause_survives_build_and_load() {
+    let bytes = body_less_clause_block_snapshot();
+    let mut loaded = image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
+    let held = expect_ok(
+        loaded
+            .interpreter
+            .send(&loaded.roots[0], Symbol::intern("held"), &[]),
+        "held",
+    );
+    let value = expect_ok(
+        loaded.interpreter.send(&held, Symbol::intern("value"), &[]),
+        "value",
+    );
+    loaded.interpreter.enter(|mutator| {
+        assert_eq!(
+            text_or_class_name(mutator, mutator.fetch(&value)),
+            "the module helper"
+        );
+    });
+}
+
+/// The same block's captured frame recast as the own part of the
+/// initializer, which runs the same kind of body: a frame that runs the
+/// declaration's own code anywhere but as its full initializer is refused,
+/// since the code, not the frame, decides where its sends start.
+#[test]
+fn a_frame_running_a_body_less_declarations_code_elsewhere_is_refused() {
+    let mut bytes = body_less_clause_block_snapshot();
+    rewrite_in_graph(
+        &mut bytes,
+        &[OBJECT_FRAME, FRAME_INITIALIZER],
+        &[OBJECT_FRAME, FRAME_OWN_INITIALIZER],
+    );
+    assert_eq!(
+        load_error(&bytes),
+        decode::DecodeError::FrameCodeMismatch.to_string()
+    );
+}
+
 /// One past the last mixin reference, and every retired one: a stale
 /// image's builtin level names no mixin rather than whatever took the number.
 #[test]

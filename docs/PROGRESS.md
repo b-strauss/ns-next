@@ -5894,9 +5894,10 @@ the mixin application it writes -- a deviation from §6 and §6.2 fixed --
 its class object the level its last clause adds, named for the declaration
 and carrying its factory through its metaclass; amended with the user while
 building it, that class object also records the declaration's enclosing
-object and declaring class, where its own code starts its lexical walk and
-its `super` lookup, as SOMns decides it, while the applied mixin's code
-walks its own; reflection reports the declaration's enclosing object, the
+object and declaring class, where its own code starts its lexical walk, as
+SOMns decides it, while the applied mixin's code walks its own, and its own
+`super` starts at the class object's superclass, as §5.10 says; reflection
+reports the declaration's name and enclosing object, the
 value conditions and equality hold to both, and a new mirror leaf,
 `behaviorLevelEnclosing:ifFail:`, gives `Behavior>>=`'s fallback the
 level's. A nested-class accessor stays bodiless, and its cache entry holds

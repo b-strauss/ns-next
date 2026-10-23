@@ -1,5 +1,0 @@
-stdout = '''
-M1 foo, M1 foo, nil, Base foo, Base foo, M1 foo
-M1 foo, M1 foo, nil, Base foo, Base foo, M1 foo
-M1 foo, M1 foo, nil, Base foo, Base foo, M1 foo
-'''

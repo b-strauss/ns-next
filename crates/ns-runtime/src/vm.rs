@@ -344,7 +344,6 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                 let site = code.body().send_site($pending.site as usize);
                 let selector = site.selector();
                 let call_site = site.call_site();
-                let declaration_code = code.is_declaration_code();
                 let family_size = code.family_size;
                 send(
                     mutator,
@@ -365,7 +364,6 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                             feedback_base,
                             family_size,
                             call_site,
-                            declaration_code,
                             selector,
                             arguments,
                         )

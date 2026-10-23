@@ -1051,7 +1051,7 @@ classes and a class from source with no predecessor are not edited
 - **No micro source covers instantiating a class whose levels run no code
   (a factory started at its `Return`), `super` sends, or body-less
   declarations** (2026-10-23). The goldens and the debug cross-check of
-  `lexical_origin` and `super_start` hold their correctness; their speed is
+  `lexical_origin` hold their correctness; their speed is
   unmeasured. [execution.md](design/execution.md), "What `new` as compiled
   code moved".
 

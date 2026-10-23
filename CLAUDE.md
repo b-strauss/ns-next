@@ -301,12 +301,13 @@ clause adds takes its enclosing object and declaring class from the class the
 clause names (`interpreter/nested.rs`, `build_applied_levels`). A body-less
 declaration's class object is the level its last clause adds, so its own
 code -- its full initializer at that class object, and a block created in
-it -- starts its walk, and its `super` lookup, at the declaration's own
-enclosing object and declaring class, which the class object records
-(`interpreter/sends.rs`, `lexical_origin` and `super_start`, decided from
-the code: `CompiledCode::is_declaration_code`), while the
-applied mixin's code there starts at the level's (`object-model.md`,
-"Mixin application").
+it -- starts its walk at the declaration's own enclosing object and
+declaring class, which the class object records (`interpreter/sends.rs`,
+`lexical_origin`, decided from the code:
+`CompiledCode::is_declaration_code`), while the applied mixin's code there
+starts at the level's; its `super` starts at the class object's
+superclass, as every code's does (§5.10; `object-model.md`, "Mixin
+application").
 
 **A `<:` clause's message runs with the applying class's factory arguments, just
 before the initializer of the level it adds**: its arguments are lowered into

@@ -181,9 +181,9 @@ Newspeak's algorithm is two-phase, not a single linear scope walk:
   predefined classes are accessors on `Object`").
 - `SuperSend` — a `super m` send (§5.10). Not depth-based; resolved at run time
   from S, the superclass of the current activation's `current_class`, which need not be `self`'s
-  own class -- or, for a body-less declaration's own code, `current_class`
-  itself (`interpreter::sends::super_start`; [object-model.md](object-model.md),
-  "Mixin application").
+  own class -- a body-less declaration's own code included, whose current
+  class is its class object (`interpreter::sends::super_start`;
+  [object-model.md](object-model.md), "Mixin application").
 - `EnclosingObject { depth }` — `outer N` with no message after it: the kth
   enclosing object itself, no send ("Shapes the resolver must recognize").
 
@@ -418,8 +418,10 @@ declaration's scope its class object keeps
 `dispatch::LexicalOrigin`). Which code a site belongs to is static, so the
 decision is read off the running body (`CompiledCode::is_declaration_code`),
 never off the class object per send; a body-less declaration's own code
-runs once per instantiation of its class, and its lexical and `super` sends
-run uncached, so that a cached send always starts at its current class. Then §5.9: "If N declares a private method f named s then the
+runs once per instantiation of its class, and its lexical sends run
+uncached, so that a cached lexical send always starts at its current
+class. Its `super` sends are no exception to §5.10 and are cached like any
+other. Then §5.9: "If N declares a private method f named s then the
 value of the send is the result of invoking f in response to (3.5) message µ on
 o. Otherwise, Let f = lookupProtected(s, R) where R is the class of o".
 
@@ -1244,8 +1246,7 @@ so it gains no dispatch logic:
    `o = kth_enclosing_object(...)`, then `dispatch_id(o)`, or N's instances
    id at a private site (below). `SendSuper`: the instances id of S's
    application, S being where the lookup starts (`sends::super_start`: the
-   superclass of `current_class`; a body-less declaration's own code, whose
-   S is the class object itself, runs uncached); the receiver stays `self`,
+   superclass of `current_class`, for every code); the receiver stays `self`,
    the key carries `current_class` beside S for a nested-class hit (below),
    and a send with no `current_class` or no superclass runs uncached, which
    is where its two errors are raised. The key is keyed on S because

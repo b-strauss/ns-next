@@ -1191,7 +1191,16 @@ takes the factory's arity, the full body is always present, the own part
 whenever the class has slots or `initExpr`s, and the standalone body exactly
 when the row writes `<:` clauses and a body
 (`an_initializer_whose_arity_disagrees_with_the_factory_is_refused`,
-`a_mixin_with_clauses_but_no_standalone_initializer_is_refused`). `load` reads the text table, when the
+`a_mixin_with_clauses_but_no_standalone_initializer_is_refused`). One code
+id may be named by several rows, with one exception: a body-less
+declaration's full initializer is its declaration's own code, which
+`mixins::build` marks so (`CompiledCode::is_declaration_code`) and whose
+lexical sends start from the declaration's scope, so a row that names it
+as any other body -- another row's, or another of its own -- is refused
+(`SharedDeclarationCode`;
+`a_body_less_declarations_initializer_named_as_another_body_is_refused`).
+A block it creates needs no such check, since a block has one creator
+(`SharedBlockBody`) and no row names a block. `load` reads the text table, when the
 image carries source (`texts::decode`, each text checked against itself),
 then the mixin table (`mixins::read`, which checks the rows and finds the
 trees), then the module section (`modules::decode_modules`), then builds
@@ -1258,7 +1267,14 @@ factory frame to the method-kind body its class's factory entry derives
 not to the frame's class: a crafted initializer frame may name another
 class's initializer, which is checked for its program counter, its
 registers and its closures' lexical parents like any, and a decoded frame
-is never entered again.
+is never entered again. One kind of body is held to the frame's class as
+well: a frame runs a body-less declaration's own code exactly when it runs
+it at that declaration's class object -- an initializer frame of the full
+body at a class object with a declaration scope, or a closure frame whose
+captured frames lead to one (`Heap::frame_runs_declaration_code`) -- and
+`FrameCodeMismatch` otherwise, since the code's mark decides where its
+lexical sends start and a block a decoded frame created still runs at the
+frame's class (`a_frame_running_a_body_less_declarations_code_elsewhere_is_refused`).
 
 **`Instruction::InitializeSlot`'s and `ReturnSlotIfFilled`'s `own_index` is not
 one of the counts these passes bound.** `verify_mixins` checks a body's kind and

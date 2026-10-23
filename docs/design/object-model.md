@@ -1419,15 +1419,25 @@ created with the declaration's enclosing object (`apply:withName:index:enclosing
 with `self`, `Newspeak2SqueakCompilation.ns:1931-1955`), so `M1`'s methods
 walk out of the declaration's scope. Which walk a
 frame takes is a function of the code it runs, so it is read off the code,
-never off the class object per send, and the sends of `M3`'s own code,
-which runs once per instantiation, run uncached: every cached lexical send
-starts at its current class
+never off the class object per send, and the lexical sends of `M3`'s own
+code, which runs once per instantiation, run uncached: every cached
+lexical send starts at its current class
 (`goldens/language/class/mixin/spec_6_a_body_less_declarations_clause_resolves_in_its_own_scope.ns`).
-`super` follows the same rule (`interpreter::sends::super_start`): §5.10's
-S is the superclass of C', which for `M3`'s own code is `M3`, whose
-superclass in a body version is `M1`'s level -- the class object itself --
-while `M1`'s code starts below it; `M3`'s own `super` sends run uncached
-(`goldens/language/class/mixin/spec_5_10_super_in_a_body_less_declarations_clause_starts_at_its_class.ns`).
+`super` takes no part in this: §5.10 starts it at "the superclass of *C*",
+*C* the current class of the activation (§3.6), and `M3`'s own code is
+evaluated by the instance initializer of the class *I* §6.2 makes
+("the instance initializer for *I* evaluates *m*<sub>s</sub> ... Then,
+*m* is evaluated"), which is the class object itself. So its `super`
+starts at the class object's superclass, `Base` in
+`class M3 = Base new <: M1 tag: super foo.`, passing over `M1`, as
+`M1`'s own methods' `super` does, and is cached like any other
+(`interpreter::sends::super_start`, which has no exception;
+`goldens/language/class/mixin/spec_5_10_super_in_a_body_less_declarations_clause_starts_above_its_class.ns`).
+A body version `class M3 = Base new <: M1 tag: super foo () ()` differs:
+its class is a level of its own below the one its clause adds, so its
+`super foo` finds `M1`'s. SOMns and Squeak-Newspeak start it at the
+superclass too (decided with the user on 2026-10-23, after the final
+review of the batch read §5.10 to the letter).
 Reflection reports `M3`'s own enclosing object, the declaration's, as §6
 gives the class of a declaration "an enclosing object which is eo"
 (`Heap::class_reflected_enclosing`, for a mirror's `enclosingObject` and
@@ -3127,8 +3137,9 @@ no program can observe, since a value has no identity.
      factory and no class side of its own. Amended with the user while
      building it: that one class object also records the declaration's
      own enclosing object and declaring class, and only the frames
-     running the declaration's own code start their lexical walk and
-     their `super` lookup there, as SOMns decides it per running method.
+     running the declaration's own code start their lexical walk there,
+     as SOMns decides it per running method; their `super` starts at the
+     class object's superclass, as §5.10 says for every code.
 
   Refined while planning: which factory a class object has, and its name,
   are read through its metaclass; the factory body is synthesized by one
