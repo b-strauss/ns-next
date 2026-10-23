@@ -303,7 +303,8 @@ pub enum DecodeError {
     /// clause adds, which such a row has none of.
     BodyLessWithoutClauses,
     /// A mixin-table row says it has no body yet declares members of one:
-    /// slots, `initExpr`s, methods or a class side. Nothing could run them,
+    /// slots, `initExpr`s, methods, a class side or nested declarations.
+    /// Nothing could run or reach them,
     /// since no class applies a body-less declaration's mixin.
     BodyLessWithMembers,
     /// A class record applies a body-less row's mixin. A body-less
@@ -1441,6 +1442,7 @@ pub fn verify_mixins(mixins: &mixins::Decoded) -> Result<(), DecodeError> {
                 || mixin.has_initializer_expressions
                 || !mixin.methods.is_empty()
                 || mixin.class_side.is_some()
+                || !mixin.declared_nested().is_empty()
             {
                 return Err(DecodeError::BodyLessWithMembers);
             }
@@ -3071,14 +3073,19 @@ impl<'gc> DeclaredKind<'gc> {
     }
 
     /// The declaration that carries the body: the mixin of the class it
-    /// resolves through.
+    /// resolves through -- for an initializer, the mixin whose body a frame
+    /// of it runs (`Heap::initializer_mixin`), which for a body-less
+    /// declaration's full body is the declaration's, not the applied
+    /// mixin's.
     fn declaration(&self, heap: &Heap<'gc>) -> Option<Rc<crate::mixin::Mixin>> {
-        let (DeclaredKind::Method(class, _)
-        | DeclaredKind::Initializer(class, _)
-        | DeclaredKind::Factory(class)
-        | DeclaredKind::SuperclassClause(class)) = self;
-        heap.class_application(*class)
-            .map(|application| application.mixin.clone())
+        match self {
+            DeclaredKind::Initializer(class, body) => heap.initializer_mixin(*class, *body),
+            DeclaredKind::Method(class, _)
+            | DeclaredKind::Factory(class)
+            | DeclaredKind::SuperclassClause(class) => heap
+                .class_application(*class)
+                .map(|application| application.mixin.clone()),
+        }
     }
 
     /// Whether the body is a shipped declaration's: exactly when a frame
@@ -3519,6 +3526,25 @@ fn rebuild_applications<'gc>(
         let own_class = !heap.class_is_applied_level(object)
             || heap.class_body_less_declaration(object).is_some();
         if !application.inherits_value || !own_class {
+            continue;
+        }
+        // A body-less declaration's class object is decided as
+        // `nested::body_less_class` decides it, on its declaration's
+        // enclosing object and its level's both; a root's, whose scope is
+        // empty, is never decided, as no root is.
+        if let Some(scope) = heap.class_declaration_scope(object) {
+            let Some(declaration_enclosing) = scope.enclosing else {
+                continue;
+            };
+            if let Some(refusal) = crate::interpreter::value_class::check_body_less_value_class(
+                context.mutator,
+                declaration_enclosing,
+                object,
+            ) {
+                if !context.mutator.record_value_class_refusal(object, refusal) {
+                    unreachable!("internal: a pending class record fills a class object");
+                }
+            }
             continue;
         }
         let (Some(enclosing), Some(superclass_class)) = (

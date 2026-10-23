@@ -930,7 +930,7 @@ fn record<'gc>(
 /// The hidden slot a nested-class entry records: its index in the layout
 /// of the application the entry's guard names, which is the one a hit can
 /// rely on. A public or protected guard is the receiver's own dispatch id,
-/// a private one N's application, and a `super` one `current_class`'s,
+/// a private one N's application, and a `super` one S's (`sends::super_start`),
 /// which the key does not carry: there the index is the receiver's when
 /// its own dispatch id is the guard, and none otherwise.
 fn nested_field<'gc>(
@@ -1296,10 +1296,14 @@ fn global_hit<'gc>(
     Some(mutator.act_with_base(resolved, base, *key.receiver, selector, arguments))
 }
 
-/// A `super` send (§5.10), cached, keyed by the running method's
-/// application: S, and so everything §5.10 finds from it, is a function of
-/// that application. Its two errors are raised by the uncached path, which
-/// is where a send without a `current_class` or a superclass goes.
+/// A `super` send (§5.10), cached, keyed by S's application
+/// (`sends::super_start`): everything §5.10 finds, and the step `level_above`
+/// takes from S on a hit, is a function of S alone. Not keyed by the
+/// running class's: at a body-less declaration's class object the
+/// declaration's own code starts at the class object and the applied
+/// mixin's code at its superclass, so one running class has two S. Its
+/// two errors are raised by the uncached path, which is where a send
+/// without a `current_class` or a superclass goes.
 #[inline(always)]
 pub(crate) fn send_super<'gc>(
     mutator: &mut Mutator<'gc>,
@@ -1314,15 +1318,15 @@ pub(crate) fn send_super<'gc>(
     // them itself.
     let cached_site = site_index(feedback_base, family_size, site).and_then(|index| {
         let current_class = mutator.heap.activation_current_class(activation)?;
-        let superclass = mutator.heap.class_superclass(current_class)?;
-        Some((index, current_class, superclass))
+        let superclass = super::sends::super_start(&mutator.heap, activation, current_class)?;
+        Some((index, superclass))
     });
-    let Some((index, current_class, superclass)) = cached_site else {
+    let Some((index, superclass)) = cached_site else {
         return decide_super_send(mutator, activation, selector, arguments);
     };
     let self_value = mutator.heap.activation_receiver(activation);
     let key = SendKey {
-        guard: mutator.heap.class_dispatch_ids(current_class).instances,
+        guard: mutator.heap.class_dispatch_ids(superclass).instances,
         rule: CacheRule::Super,
         receiver: &self_value,
         lexical_class: None,

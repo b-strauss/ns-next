@@ -13876,6 +13876,26 @@ fn a_body_less_class_records_scope_is_checked() {
     );
 }
 
+/// A body-less declaration declares nothing a body would, nested classes
+/// included: nothing could reach them, since no class applies its mixin.
+#[test]
+fn a_body_less_row_with_nested_declarations_is_refused() {
+    let fixture = GraphFixture::with_source(BODY_LESS_MODULE);
+    let applied = fixture.mixins[row_named(&fixture, "Applied") as usize].clone();
+    let marker = fixture.mixins[row_named(&fixture, "Marker") as usize].clone();
+    let decoded = |mixin: Mixin| mixins::Decoded {
+        mixins: vec![Rc::new(mixin)],
+        ..mixins::Decoded::empty()
+    };
+    assert_eq!(decode::verify_mixins(&decoded((*applied).clone())), Ok(()));
+    let mut with_nested = (*applied).clone();
+    with_nested.nested_declarations = ns_runtime::mixin::NestedDeclarations::new(vec![marker]);
+    assert_eq!(
+        decode::verify_mixins(&decoded(with_nested)),
+        Err(decode::DecodeError::BodyLessWithMembers)
+    );
+}
+
 /// One past the last mixin reference, and every retired one: a stale
 /// image's builtin level names no mixin rather than whatever took the number.
 #[test]
@@ -16897,4 +16917,69 @@ fn check_body_less_root<'gc>(mutator: &Mutator<'gc>, class: ClassReference<'gc>)
         heap.class_enclosing(class).is_some(),
         "the level's own enclosing object is Value's"
     );
+}
+
+/// §3.1.1 is decided on a body-less value class's declaration's enclosing
+/// object as well as on its level's, when the class object is created and
+/// again when an image rebuilds it: `Valued`'s level is enclosed by the
+/// value module, its declaration by a mutable `Holder`, so it is refused
+/// before the snapshot and after the load alike.
+#[test]
+fn a_body_less_value_class_is_refused_alike_after_build_and_load() {
+    let source = indoc! {"
+        class Module = Object <: Value () (
+          public class Marker = Object new () ()
+          public class Holder = Object new (| public count ::= 0. |) (
+            public class Valued = Value new <: Marker.
+            public valued = ( ^Valued )
+            public refused = ( ^[Valued new] on: Error do: [:error | error messageText] )
+          )
+          public holder = ( ^Holder new )
+        ) : ()
+    "};
+    let expected = "cannot instantiate Valued: a value class's enclosing objects must be \
+                    values, and its enclosing object, an instance of Holder, is not one";
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let holder = expect_ok(
+        interpreter.send(&instance, Symbol::intern("holder"), &[]),
+        "holder",
+    );
+    expect_ok(
+        interpreter.send(&holder, Symbol::intern("valued"), &[]),
+        "valued",
+    );
+    let refused = expect_ok(
+        interpreter.send(&holder, Symbol::intern("refused"), &[]),
+        "refused",
+    );
+    let bytes = interpreter.enter(|mutator| {
+        assert_eq!(
+            text_or_class_name(mutator, mutator.fetch(&refused)),
+            expected
+        );
+        let class = class_reference(mutator, &class);
+        let holder = mutator.fetch(&holder);
+        snapshot_one(
+            mutator,
+            true,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &[holder],
+        )
+        .expect("snapshot")
+    });
+    let mut loaded = image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
+    let refused = expect_ok(
+        loaded
+            .interpreter
+            .send(&loaded.roots[0], Symbol::intern("refused"), &[]),
+        "refused",
+    );
+    loaded.interpreter.enter(|mutator| {
+        assert_eq!(
+            text_or_class_name(mutator, mutator.fetch(&refused)),
+            expected
+        );
+    });
 }

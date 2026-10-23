@@ -1211,19 +1211,6 @@ classes and a class from source with no predecessor are not edited
   close it. The editor's hint B stays conservative regardless, never making
   such a local `=` ([editor-support.md](design/editor-support.md), "Hints").
   Noted 2026-10-14.
-- **`super` in a body-less declaration's clause argument looks up from the
-  wrong level.** `class M3 = Object new <: M1 tag: super foo.` runs its
-  clause at its class object, the level `M1`'s clause added, so `super foo`
-  starts at that level's superclass and misses `M1`'s `foo`, which the body
-  version `… tag: super foo () ()` finds, since its own level's superclass
-  is `M1`'s level: `doesNotUnderstand:` where the body version answers. The
-  lexical walk already tells the declaration's own code from `M1`'s
-  (`interpreter::sends::lexical_origin`); `super` needs the same, starting
-  at the class object itself for that code. The super cache keys a row by
-  the running class's dispatch id alone, which both kinds of code at one
-  class object share, so the fix needs a key that tells them apart too.
-  [object-model.md](design/object-model.md), "Mixin application". Noted
-  2026-10-23.
 
 ## Known defects and gaps
 

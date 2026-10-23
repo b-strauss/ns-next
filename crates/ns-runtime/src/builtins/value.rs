@@ -532,6 +532,16 @@ fn classes_can_be_equal<'gc>(
     if !class_object_is_a_value(mutator, first) || !class_object_is_a_value(mutator, second) {
         return false;
     }
+    // Two body-less declarations applying one mixin share one application
+    // (the application cache keys it by mixin and superclass application),
+    // yet are two classes, as their body versions, two applications, are:
+    // each is its own declaration's.
+    if !mutator
+        .heap()
+        .classes_share_body_less_declaration(first, second)
+    {
+        return false;
+    }
     match (
         mutator.heap().class_application_index(first),
         mutator.heap().class_application_index(second),
@@ -547,7 +557,8 @@ fn classes_can_be_equal<'gc>(
 /// are unequal outright. Two metaclasses are equal when their classes are:
 /// a metaclass's enclosing object is its class's and its superclass is
 /// always `Class`, so its class is all its state. Any other two are equal
-/// when they are values of one application whose enclosing objects are
+/// when they are values of one application, and for a body-less
+/// declaration's class object of one declaration, whose enclosing objects are
 /// equal and whose superclass class objects are -- the application alone
 /// is not enough, because it is keyed by the superclass's *application*,
 /// and two classes can share one over distinct superclass class objects
@@ -571,7 +582,17 @@ fn class_state_pairs<'gc>(
     }
     let as_value =
         |object: Option<ObjectReference<'gc>>| object.map_or(Value::nil(), Value::object);
+    // A body-less declaration's class object is also the declaration's,
+    // whose enclosing object is state as a body version's own is; nil for
+    // a root and for every other class object.
+    let declaration_enclosing = |class: ClassReference<'gc>| {
+        as_value(
+            heap.class_declaration_scope(class)
+                .and_then(|scope| scope.enclosing),
+        )
+    };
     Some(vec![
+        (declaration_enclosing(first), declaration_enclosing(second)),
         (
             as_value(heap.class_enclosing(first)),
             as_value(heap.class_enclosing(second)),

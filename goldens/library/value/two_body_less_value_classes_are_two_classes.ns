@@ -1,0 +1,45 @@
+/// newspeak-spec.pdf 6: a declaration without a body is the mixin
+/// application it writes, and 6.2 makes that a class of its own; 3.1.1
+/// compares values by their state, and a class object's state is its
+/// enclosing objects and superclass. A and B apply one mixin with one
+/// message, so their class objects share one mixin application, but they
+/// are two declarations, as their body versions C and D are two classes:
+/// neither the classes nor their instances are equal. Each is equal to
+/// itself, and its instances to each other, by their slots.
+class TwoBodyLessValueClassesAreTwoClasses = Object <: Value () (
+  public class M1 tag: t = Value new (
+    |
+      public a = t.
+    |
+  ) ()
+
+  public class A = Value new <: M1 tag: 1.
+
+  public class B = Value new <: M1 tag: 1.
+
+  public class C = Value new <: M1 tag: 1 () ()
+
+  public class D = Value new <: M1 tag: 1 () ()
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+    |
+    t
+        show: (A = B) printString;
+        show: ' ';
+        show: (A new = B new) printString;
+        show: ' ';
+        show: (C = D) printString;
+        show: ' ';
+        show: (C new = D new) printString;
+        newLine.
+    t
+        show: (A = A) printString;
+        show: ' ';
+        show: (A new = A new) printString;
+        show: ' ';
+        show: (C new = C new) printString;
+        newLine.
+  )
+)

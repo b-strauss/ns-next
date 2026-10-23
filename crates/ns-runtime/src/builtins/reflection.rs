@@ -326,12 +326,12 @@ fn string_or_nil<'gc>(mutator: &mut Mutator<'gc>, text: Option<String>) -> Value
 /// value that is withheld.
 fn enclosing_object<'gc>(mutator: &Mutator<'gc>, subject: Value<'gc>) -> Option<Value<'gc>> {
     let class = class_object(mutator, subject)?;
-    if is_shipped(&mutator.heap.class_application(class)?.mixin) {
+    if is_shipped(&mutator.heap.class_declaration(class)?) {
         return None;
     }
     let enclosing = mutator
         .heap
-        .class_enclosing(class)
+        .class_reflected_enclosing(class)
         .map_or(Value::nil(), Value::object);
     (!mutator.is_withheld(enclosing)).then_some(enclosing)
 }

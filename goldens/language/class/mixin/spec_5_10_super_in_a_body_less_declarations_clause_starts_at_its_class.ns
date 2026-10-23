@@ -1,0 +1,66 @@
+/// newspeak-spec.pdf 5.10: a super send starts at "the superclass of the
+/// current class C'". For a declaration without a body, its clause
+/// messages and arguments are its own code, so C' is the declaration, and
+/// a body version's superclass is the level its last clause added (6.2) --
+/// the body-less declaration's class object itself. A method of the
+/// applied mixin M1 runs with C' the level, so its super starts below M1.
+///
+/// Each line runs three times, so a cached send answers as the first did,
+/// and the two kinds of code share one class object:
+///
+/// 1. `tag: super foo`: M1's foo, as the body version answers.
+/// 2. `tag: [super foo] value`: the same from a block.
+/// 3. `tag: super a printString`: M1's slot accessor, nil while the clause
+///    runs, before M1's own part initializes it.
+/// 4. M1's own `^super foo` on the same instances: Base's foo.
+/// 5. The body version of line 1: M1's foo.
+class Spec510SuperInABodyLessDeclarationsClauseStartsAtItsClass = Object new () (
+  class Base = Object new () (
+    public foo = (
+      ^'Base foo'.
+    )
+  )
+
+  class M1 tag: t = Object new (
+    |
+      public a = t.
+    |
+  ) (
+    public foo = (
+      ^'M1 foo'.
+    )
+
+    public superFoo = (
+      ^super foo.
+    )
+  )
+
+  class Direct = Base new <: M1 tag: super foo.
+
+  class InBlock = Base new <: M1 tag: [super foo] value.
+
+  class Slot = Base new <: M1 tag: super a printString.
+
+  class WithBody = Base new <: M1 tag: super foo () ()
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+    |
+    1 to: 3 do: [:each |
+      t
+          show: Direct new a;
+          show: ', ';
+          show: InBlock new a;
+          show: ', ';
+          show: Slot new a;
+          show: ', ';
+          show: Direct new superFoo;
+          show: ', ';
+          show: InBlock new superFoo;
+          show: ', ';
+          show: WithBody new a;
+          newLine.
+    ].
+  )
+)

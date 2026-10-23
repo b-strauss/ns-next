@@ -179,8 +179,10 @@ Newspeak's algorithm is two-phase, not a single linear scope walk:
   receiver's inheritance chain ([core-library.md](core-library.md), "The
   predefined classes are accessors on `Object`").
 - `SuperSend` — a `super m` send (§5.10). Not depth-based; resolved at run time
-  against the current activation's `current_class`, which need not be `self`'s
-  own class.
+  from S, the superclass of the current activation's `current_class`, which need not be `self`'s
+  own class -- or, for a body-less declaration's own code, `current_class`
+  itself (`interpreter::sends::super_start`; [object-model.md](object-model.md),
+  "Mixin application").
 - `EnclosingObject { depth }` — `outer N` with no message after it: the kth
   enclosing object itself, no send ("Shapes the resolver must recognize").
 
@@ -1085,7 +1087,7 @@ and V8's shape, with V8's width. Beyond the speed of a polymorphic hit, a
 site's entries are the receiver-type profile the optimizing JIT (road step 9)
 will read, which is what Strongtalk's interpreter caches are for. Two kinds
 of site go polymorphic only when a mixin is applied more than once: a `super`
-send, whose target depends only on the running method's application, and a
+send, whose target depends only on S's application (`sends::super_start`), and a
 lexical send the private rule decides (below). And some are polymorphic by
 nature: `true` and `false` are instances of two builtin classes, so every
 site that is not inlined and sees both is bimorphic.

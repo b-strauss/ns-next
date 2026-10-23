@@ -214,11 +214,14 @@ fn activation_object<'gc>(
 /// a clause, which have no selector to report.
 fn method_name(mutator: &Mutator<'_>, activation: ActivationReference) -> Option<String> {
     if let FrameKind::Factory(class) = mutator.heap.activation_kind(activation) {
-        let application = mutator.heap.class_application(class)?;
+        // Read through the metaclass (`Heap::class_factory`): a body-less
+        // declaration's class object applies its last clause's mixin and
+        // has its declaration's factory.
+        let factory = mutator.heap.class_factory(class)?;
         return Some(format!(
             "{} class>>{}",
             mutator.heap.class_display_name(class),
-            crate::interpreter::instantiate::factory_selector(&application)
+            factory.selector
         ));
     }
     let code = mutator.heap.activation_code(activation);

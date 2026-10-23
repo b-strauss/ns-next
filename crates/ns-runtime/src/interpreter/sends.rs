@@ -56,6 +56,41 @@ fn declaration_origin<'gc>(
     }
 }
 
+/// §5.10's S for a `super` send in `activation`, whose current class is
+/// `current_class`: "the superclass of the current class C'". The one
+/// place that decides it, for `decide_super_send` and
+/// `inline_cache::send_super`. C' is `current_class` -- except for a
+/// body-less declaration's own code, decided as `lexical_origin` decides
+/// it, where C' is the declaration, whose superclass in a body version is
+/// the level its last clause added: the class object itself. `None` where
+/// there is no superclass. Every other activation pays the one header read
+/// `lexical_origin` pays.
+#[inline(always)]
+pub(crate) fn super_start<'gc>(
+    heap: &Heap<'gc>,
+    activation: ActivationReference,
+    current_class: ClassReference<'gc>,
+) -> Option<ClassReference<'gc>> {
+    if heap.class_has_declaration_scope(current_class)
+        && runs_declaration_code(heap, activation, current_class)
+    {
+        return Some(current_class);
+    }
+    heap.class_superclass(current_class)
+}
+
+/// `Heap::activation_runs_declaration_code`, out of line: only an
+/// activation at a body-less declaration's class object asks it.
+#[cold]
+#[inline(never)]
+fn runs_declaration_code<'gc>(
+    heap: &Heap<'gc>,
+    activation: ActivationReference,
+    class: ClassReference<'gc>,
+) -> bool {
+    heap.activation_runs_declaration_code(activation, class)
+}
+
 /// `newspeak-spec.pdf` §5.7-§5.9: an implicit receiver send whose declaring
 /// class N is at lexical depth `k` is `outer N m`. `enclosing` is the kth
 /// enclosing object of this activation's defining level
@@ -93,7 +128,7 @@ pub(crate) fn enclosing_object<'gc>(
     dispatch::kth_enclosing_object(&mutator.heap, self_value, origin, depth)
 }
 
-/// `newspeak-spec.pdf` §5.10: starts at S, the superclass of the *current
+/// `newspeak-spec.pdf` §5.10: starts at S (`super_start`), the superclass of the *current
 /// activation's* `current_class`, not `self`'s own class. "If a public or
 /// protected method f named s is defined for (3.5) S, the value of the send
 /// is the result of invoking f in response to (3.5) message µ on o" -- so the
@@ -125,7 +160,7 @@ pub(crate) fn decide_super_send<'gc>(
             "super send with no enclosing current_class (used outside a method activation)",
         )));
     };
-    let superclass = mutator.heap.class_superclass(current_class);
+    let superclass = super_start(&mutator.heap, activation, current_class);
     let Some(superclass) = superclass else {
         return Err(Signal::Error(NewspeakError::error(
             selector,

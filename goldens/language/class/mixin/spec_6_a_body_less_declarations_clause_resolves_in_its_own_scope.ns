@@ -26,6 +26,9 @@
 /// 8. A method of M1 on a body-less declaration's instance still resolves
 ///    in M1's scope (6.2: "the enclosing object of I is the enclosing
 ///    object of C"): the library's helper.
+/// 9. So does M1's own slot initializer, `b = helper`, an initializer
+///    running at the same class object as the clause: the library's
+///    helper.
 class Spec6ABodyLessDeclarationsClauseResolvesInItsOwnScope = Object new (
   |
     library = Shelf new Library new.
@@ -36,6 +39,7 @@ class Spec6ABodyLessDeclarationsClauseResolvesInItsOwnScope = Object new (
       public class M1 tag: t = Object new (
         |
           public a = t.
+          public b = helper.
         |
       ) (
         public fromM1 = (
@@ -121,6 +125,9 @@ class Spec6ABodyLessDeclarationsClauseResolvesInItsOwnScope = Object new (
         newLine.
     t
         show: holder Implicit new fromM1;
+        newLine.
+    t
+        show: holder Implicit new b;
         newLine.
   )
 )

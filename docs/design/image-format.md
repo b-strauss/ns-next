@@ -666,7 +666,11 @@ prints the record as `body-less class …, declaration enclosing …,
 declaration declaring …`. A body-less module root is such a record, the
 `Value` level over `Object` with an empty scope, which the root rule
 (`modules::root_record_defect`) accepts as exactly that; the module's row
-is its declaration's, not `Value`'s.
+is its declaration's, not `Value`'s. The rebuild decides §3.1.1's
+enclosing-object condition on a body-less value class as its creation does,
+on the declaration's enclosing object and the level's both
+(`value_class::check_body_less_value_class`), so a verdict survives the round
+trip.
 
 **A class record's header names its metaclass record** (object body tag 8,
 `OBJECT_METACLASS`): every class object's class is its metaclass (§3.2), so a
@@ -966,7 +970,8 @@ a header and class word rewritten, each value stored as it is read, a string
 packed straight from the buffer, a byte array's bytes copied to the data
 words at its placeholder's 32-byte alignment, the header's format becoming
 `AlignedBytes`, a weak array's or an ephemeron's header taking its format,
-`WeakPointers` or `Ephemeron`, a class record's eight fields (a level's nine) copied in
+`WeakPointers` or `Ephemeron`, a class record's eight fields (a level's nine, a
+body-less declaration's class object's eleven) copied in
 (`Heap::shape_placeholder` and the `fill_placeholder_*` and `fill_frame_*`
 accessors), so no record is ever built beside its placeholder. A frame
 record's body is filled last, from its remembered position, once the

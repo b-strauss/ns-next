@@ -1,0 +1,62 @@
+/// newspeak-spec.pdf 6: the class a declaration evaluates to has "an
+/// enclosing object which is eo", the object that received the message
+/// that created it. A declaration without a body is the level its last
+/// clause adds (6.2), whose enclosing object, the named class's, is what
+/// the applied mixin's methods reach; reflection reports the class's own.
+///
+/// M3, declared in a Holder and applying M1 from a Library, reflects the
+/// holder as its enclosing object and its metaclass the same, where its
+/// body version WithBody does, and not the library. M1's method still
+/// reaches the library's helper.
+class ABodyLessClasssEnclosingObjectIsItsDeclarations = Object new (
+  |
+    library = Library new.
+  |
+) (
+  class Library = Object new () (
+    public class M1 tag: t = Object new (
+      |
+        public a = t.
+      |
+    ) (
+      public fromM1 = (
+        ^helper.
+      )
+    )
+
+    public helper = (
+      ^'the library helper'.
+    )
+  )
+
+  class Holder = Object new () (
+    public class M3 = Object new <: libraryM1 tag: 3.
+
+    public class WithBody = Object new <: libraryM1 tag: 4 () ()
+
+    libraryM1 = (
+      ^library M1.
+    )
+  )
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      ObjectMirror = platform mirrors ObjectMirror.
+      holder = Holder new.
+    |
+    t
+        print: (ClassMirror reflecting: holder M3) enclosingObject reflectee == holder;
+        show: ' ';
+        print: (ClassMirror reflecting: holder WithBody) enclosingObject reflectee == holder;
+        show: ' ';
+        print: (ClassMirror reflecting: holder M3) enclosingObject reflectee == library;
+        show: ' ';
+        print: (ObjectMirror reflecting: holder M3) getClass enclosingObject reflectee == holder;
+        newLine.
+    t
+        show: holder M3 new fromM1;
+        newLine.
+  )
+)

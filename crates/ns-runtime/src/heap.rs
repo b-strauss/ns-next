@@ -4367,6 +4367,48 @@ impl<'gc> Heap<'gc> {
         }
     }
 
+    /// Whether `first` and `second` are the class objects of one body-less
+    /// declaration, or neither is a body-less declaration's. Two body-less
+    /// declarations applying one mixin with one superclass share one
+    /// application, yet are two classes, as their body versions, two
+    /// applications, are: what value equality and `Behavior`'s
+    /// `sharesApplicationWith:` ask beside the application.
+    pub(crate) fn classes_share_body_less_declaration(
+        &self,
+        first: ClassReference<'gc>,
+        second: ClassReference<'gc>,
+    ) -> bool {
+        match (
+            self.class_body_less_declaration(first),
+            self.class_body_less_declaration(second),
+        ) {
+            (None, None) => true,
+            (Some(first_declaration), Some(second_declaration)) => {
+                Rc::ptr_eq(first_declaration, second_declaration)
+            }
+            _ => false,
+        }
+    }
+
+    /// The enclosing object reflection reports for `class` (a mirror's
+    /// `enclosingObject`, `Behavior`'s): §6 gives the class of a
+    /// declaration "an enclosing object which is eo", so a body-less
+    /// declaration's class object -- and its metaclass, which shares its
+    /// class's -- answers its declaration's (`class_declaration_scope`), nil
+    /// for a module's root, where `class_enclosing` answers its level's,
+    /// which the applied mixin's code walks out from. Every other class
+    /// object answers `class_enclosing`.
+    pub fn class_reflected_enclosing(
+        &self,
+        class: ClassReference<'gc>,
+    ) -> Option<ObjectReference<'gc>> {
+        let instance_side = self.class_this_class(class).unwrap_or(class);
+        match self.class_declaration_scope(instance_side) {
+            Some(scope) => scope.enclosing,
+            None => self.class_enclosing(class),
+        }
+    }
+
     /// Whether `class` is a body-less declaration's class object, the one
     /// class object with its declaration's scope
     /// (`class_declaration_scope`), told by its size alone: what the

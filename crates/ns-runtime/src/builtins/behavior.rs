@@ -44,11 +44,17 @@ pub(crate) fn execute<'gc>(
             }
             let own = mutator.heap().class_application_index(object)?;
             let others = mutator.heap().class_application_index(other)?;
-            Some(Ok(Value::boolean(own == others)))
+            // Two body-less declarations applying one mixin share one
+            // application yet are two classes, as their body versions are
+            // (`builtins::value`'s `classes_can_be_equal` decides alike).
+            let same_declaration = mutator
+                .heap()
+                .classes_share_body_less_declaration(object, other);
+            Some(Ok(Value::boolean(own == others && same_declaration)))
         }
         BehaviorPrimitive::Enclosing => Some(Ok(mutator
             .heap()
-            .class_enclosing(object)
+            .class_reflected_enclosing(object)
             .map_or(Value::nil(), Value::object))),
         BehaviorPrimitive::Superclass => Some(Ok(mutator
             .heap()

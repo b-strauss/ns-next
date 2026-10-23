@@ -1,0 +1,40 @@
+/// newspeak-spec.pdf 3.1.1: a class object is a value when its enclosing
+/// objects (3.3) are, and a value's slots hold only values. A declaration
+/// without a body is the level its last clause adds (6.2), enclosed where
+/// the named class is, and a member class (6, "an enclosing object which
+/// is eo"), enclosed where it is declared; its class object is a value only
+/// when both are. Here is declared in the value module and may be kept in a
+/// value's slot; Held is declared in a Holder, whose mutable slot makes it
+/// no value, so a value's slot refuses it, though its level is enclosed by
+/// the value module as Here's is.
+class ABodyLessClassDeclaredInAMutableObjectIsNoValue = Object <: Value () (
+  public class M1 tag: t = Value new (
+    |
+      public a = t.
+    |
+  ) ()
+
+  public class Keeper k: k = Value new (
+    |
+      public kept = k.
+    |
+  ) ()
+
+  public class Holder = Object new (
+    |
+      public count ::= 0.
+    |
+  ) (
+    public class Held = Value new <: M1 tag: 1.
+  )
+
+  public class Here = Value new <: M1 tag: 1.
+
+  public main: platform args: arguments = (
+    platform transcript
+        show: (Keeper k: Here) kept name;
+        newLine;
+        show: ([(Keeper k: Holder new Held) kept name] on: Error do: [:error | error messageText]);
+        newLine.
+  )
+)

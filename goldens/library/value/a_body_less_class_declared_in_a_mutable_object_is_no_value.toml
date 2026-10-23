@@ -1,0 +1,4 @@
+stdout = '''
+Here
+cannot store the class Held in Keeper's slot kept: a value object is deeply immutable, so every slot it declares holds a value
+'''

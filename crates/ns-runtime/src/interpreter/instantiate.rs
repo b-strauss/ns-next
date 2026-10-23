@@ -1655,7 +1655,9 @@ pub(crate) fn is_a_value<'gc>(mutator: &Mutator<'gc>, object: ObjectReference<'g
 }
 
 /// Whether the class object `class` is a value: exactly when its enclosing
-/// object is (`docs/design/object-model.md`, "Class sides and metaclasses",
+/// objects are -- a body-less declaration's class object has its
+/// declaration's besides its level's (`Heap::class_declaration_scope`)
+/// (`docs/design/object-model.md`, "Class sides and metaclasses",
 /// after SOMns's `SClass.isValue`). A module definition has none and is one
 /// (§6.4: "Module definitions are value objects"); a nested class's only
 /// state is its enclosing object (§6.1), so §3.1.1's condition on enclosing
@@ -1670,18 +1672,26 @@ pub(crate) fn class_object_is_a_value<'gc>(
     mutator: &Mutator<'gc>,
     class: ClassReference<'gc>,
 ) -> bool {
-    match mutator.heap().class_enclosing(class) {
+    // An enclosing object is always an instance, never a class object, so
+    // this does not recurse -- and an image that claims otherwise gets
+    // `false`, the answer that refuses rather than accepts.
+    let is_a_value = |enclosing: Option<ObjectReference<'gc>>| match enclosing {
         None => true,
-        // An enclosing object is always an instance, never a class object,
-        // so this does not recurse -- and an image that claims otherwise
-        // gets `false`, the answer that refuses rather than accepts.
         Some(enclosing) => {
             !mutator.heap().is_class(enclosing)
                 && mutator
                     .heap()
                     .class_inherits_value(mutator.heap().object_class(enclosing))
         }
-    }
+    };
+    // A body-less declaration's class object has two enclosing objects,
+    // its declaration's and its level's (§3.3, §6), and is a value only
+    // when both are; its metaclass shares its verdict.
+    let heap = mutator.heap();
+    let declaration_enclosing = heap
+        .class_declaration_scope(heap.class_this_class(class).unwrap_or(class))
+        .and_then(|scope| scope.enclosing);
+    is_a_value(mutator.heap().class_enclosing(class)) && is_a_value(declaration_enclosing)
 }
 
 /// The refusal itself, off the checking path so that the check stays a

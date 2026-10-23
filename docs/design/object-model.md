@@ -1270,15 +1270,34 @@ which belongs to that code, is only ever filled and hit by one kind of
 frame, and a global row is keyed by the enclosing object's class and N's
 application, both of which the walk decides
 (`goldens/language/class/mixin/spec_6_a_body_less_declarations_clause_resolves_in_its_own_scope.ns`).
-`super` in a clause argument still looks up from the class object's
-superclass, not from `M1`'s level as a body version's would (`OPEN-WORK.md`).
+`super` follows the same rule (`interpreter::sends::super_start`): §5.10's
+S is the superclass of C', which for `M3`'s own code is `M3`, whose
+superclass in a body version is `M1`'s level -- the class object itself --
+while `M1`'s code starts below it. The super cache keys its rows by S's
+application, so the two never share one
+(`goldens/language/class/mixin/spec_5_10_super_in_a_body_less_declarations_clause_starts_at_its_class.ns`).
+Reflection reports `M3`'s own enclosing object, the declaration's, as §6
+gives the class of a declaration "an enclosing object which is eo"
+(`Heap::class_reflected_enclosing`, for a mirror's `enclosingObject` and
+`Behavior`'s; nil for a root), while the walk of `M1`'s code keeps the
+level's
+(`goldens/library/mirror/a_body_less_classs_enclosing_object_is_its_declarations.ns`).
 
 §3.1.1's enclosing-object condition is decided on both: an instance's
 enclosing objects (§3.3, "with respect to S") are `M3`'s, `M1`'s level's
 and every level's below, as a body version's are, so a body-less value
 class is refused when `M3`'s enclosing object is no value as well as when a
 level's is (`value_class::check_body_less_value_class`;
-`goldens/library/value/a_body_less_value_class_is_held_to_its_declarations_enclosing_object.ns`). A body-less
+`goldens/library/value/a_body_less_value_class_is_held_to_its_declarations_enclosing_object.ns`),
+and the image's rebuild decides it the same way. The class object itself
+is a value only when both enclosing objects are
+(`instantiate::class_object_is_a_value`;
+`goldens/library/value/a_body_less_class_declared_in_a_mutable_object_is_no_value.ns`),
+and two body-less class objects are equal only when they are one
+declaration's with equal declaration enclosing objects -- two declarations
+applying one mixin share an application, yet are two classes, as their
+body versions are (`Heap::classes_share_body_less_declaration`;
+`goldens/library/value/two_body_less_value_classes_are_two_classes.ns`). A body-less
 module root, `class R = Object <: Value.`, is the `Value` level over
 `Object`, named `R`, with `Value`'s enclosing object and an empty
 declaration scope; the image's root rule holds it to exactly that
