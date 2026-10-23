@@ -9,7 +9,7 @@ use ns_syntax::ast;
 use ns_syntax::Span;
 
 use crate::hash::IdentityMap;
-use crate::heap::{ActivationReference, Heap, Root};
+use crate::heap::{ActivationReference, ClassLevel, Heap, Root};
 use crate::mixin::{
     slot_accessors, ClauseMessage, DeclarationText, Factory, MethodEntry, Mixin,
     MixinApplicationClause, MixinMethod, MixinSlot,
@@ -586,6 +586,78 @@ impl<'gc> Mutator<'gc> {
         }
     }
 
+    /// The factory activation `factory`, just pushed for `class` with the
+    /// send's `arguments`, carried through its body's first two
+    /// instructions (`compiler::factory_body`) here rather than by the run
+    /// loop, which would run them next with nothing in between: the
+    /// instance allocated into its register, and the initializer that
+    /// `InitializeInstance` decides pushed above it -- or, for a class
+    /// whose levels run no code, its answer written -- with the factory's
+    /// program counter at `InitializeInstance`, as that send stores it.
+    /// Answers the activation to run and where: the initializer from its
+    /// start, or the factory at its `Return`.
+    ///
+    /// The run loop's order of errors is kept by not taking this path
+    /// whenever one is raised: the initializer is decided first, which
+    /// changes nothing, and only a decision that raises nothing is
+    /// allocated for; an allocation that refuses allocates nothing. Either
+    /// way the factory is answered from its start, and the loop runs the
+    /// body, raising the allocation's refusal before the decision's error,
+    /// from the factory's activation. An initializer whose push the depth
+    /// limit refuses raises from the factory's activation, as
+    /// `InitializeInstance`'s send does. What is skipped is the switch to
+    /// the factory before its first instruction, a safepoint at which no
+    /// program code runs on either side.
+    pub(crate) fn enter_factory_body(
+        &mut self,
+        factory: ActivationReference,
+        class: ClassReference<'gc>,
+        registers: FactoryRegisters,
+        arguments: &[Value<'gc>],
+    ) -> Result<(ActivationReference, usize), Signal<'gc>> {
+        let decided = self.decide_instance_initializer(class, Value::nil(), arguments);
+        // Read where the decision left it rather than moved out whole: a
+        // move read back in sixteen-byte pieces what the decision had just
+        // written in smaller ones, a store-forwarding stall.
+        let runs_code = match &decided {
+            Ok(Step::Initializer { .. }) => true,
+            Ok(Step::Value(_)) => false,
+            _ => return Ok((factory, 0)),
+        };
+        let Ok(instance) = self.allocate_for_factory(class) else {
+            return Ok((factory, 0));
+        };
+        let register_base = self.heap.activation_register_base(factory);
+        self.heap
+            .set_register(register_base, registers.instance, instance);
+        self.heap
+            .activation_set_program_counter(factory, FACTORY_INITIALIZE);
+        let Ok(Step::Initializer {
+            level,
+            arguments: initializer_arguments,
+            body,
+            code,
+            ..
+        }) = &decided
+        else {
+            debug_assert!(!runs_code);
+            // `InitializeInstance` answered the instance: written to its
+            // destination, and the factory carries on at its `Return`.
+            self.heap
+                .set_register(register_base, registers.answer, instance);
+            return Ok((factory, FACTORY_INITIALIZE + 1));
+        };
+        let initializer_arguments = initializer_arguments.slice(arguments);
+        let pushed = self.push_initializer(
+            instance,
+            *level,
+            initializer_arguments,
+            *body,
+            Rc::clone(code),
+        )?;
+        Ok((pushed, 0))
+    }
+
     /// `AllocateInstance`'s work: a fresh instance of the class object
     /// `activation` runs on, a factory body's receiver. A receiver that is
     /// no class object -- only a crafted image can put the instruction
@@ -708,12 +780,14 @@ impl<'gc> Mutator<'gc> {
             Option<crate::heap::InstanceHeader>,
         ) -> ObjectReference<'gc>,
     ) -> Result<Value<'gc>, Signal<'gc>> {
-        let application = self.heap.class_application(class);
+        // Borrowed, not cloned: the facts the allocation needs are copied
+        // out before the heap is written.
+        let application = self.heap.class_level(class).application();
         // Asked before anything is allocated: a class whose instances could
         // never be what §3.1.1 or the root rule demands has no instance to
         // make. The answer was computed once, when the application was built
         // (`Mutator::apply_mixin`).
-        if let Some(application) = application.as_ref() {
+        if let Some(application) = application {
             if let Some(refusal) = &application.instantiation_refusal {
                 let display_name = self.heap.class_display_name(class);
                 return Err(Signal::Error(instantiation_refusal_error(
@@ -745,12 +819,8 @@ impl<'gc> Mutator<'gc> {
         // The application already knows the whole layout, inherited slots
         // included -- summing the chain here again would be a second answer
         // to the same question.
-        let slot_count = application
-            .as_ref()
-            .map_or(0, |application| application.slot_count);
-        let header = application
-            .as_ref()
-            .and_then(|application| application.instance_header);
+        let slot_count = application.map_or(0, |application| application.slot_count);
+        let header = application.and_then(|application| application.instance_header);
         Ok(Value::object(allocate(
             &mut self.heap,
             class,
@@ -775,7 +845,7 @@ impl<'gc> Mutator<'gc> {
 
     /// Steps 2-5 of `docs/design/object-model.md`, "Instantiation", for
     /// `class` instantiated with `arguments`: the factory's arity checked,
-    /// then `class`'s own initializer on `instance` (`level_initializer`),
+    /// then `class`'s own initializer on `instance` (`level_initializer_of`),
     /// which runs the rest. A class whose level runs no code is not entered
     /// (`enter_or_pass`).
     pub(crate) fn decide_instance_initializer(
@@ -784,8 +854,9 @@ impl<'gc> Mutator<'gc> {
         instance: Value<'gc>,
         arguments: &[Value<'gc>],
     ) -> Result<Step<'gc>, Signal<'gc>> {
-        self.check_factory_arity(class, arguments)?;
-        self.enter_or_pass(class, instance)
+        let level = self.heap.class_level(class);
+        check_arity(class, declared_factory_arity(level), arguments)?;
+        self.enter_or_pass(class, level, instance)
     }
 
     /// `InitializeSuperclass`'s decision, step 3 of the running
@@ -830,8 +901,9 @@ impl<'gc> Mutator<'gc> {
                 expected,
             ));
         }
-        self.check_factory_arity(target, arguments)?;
-        self.enter_or_pass(target, instance)
+        let level = self.heap.class_level(target);
+        check_arity(target, declared_factory_arity(level), arguments)?;
+        self.enter_or_pass(target, level, instance)
     }
 
     /// `CheckAppliedClause`'s work, step 1 of the running initializer: §6.1's
@@ -904,21 +976,21 @@ impl<'gc> Mutator<'gc> {
             .and_then(|facts| facts.factory_arity);
         check_arity(level, own_part_arity, arguments)?;
         let body = InitializerBody::OwnPart;
-        let runs_code = self
+        let code = self
             .heap
-            .class_application(level)
-            .is_some_and(|application| {
-                mixin_needs_initializer_code(&application.mixin)
-                    && body.code_of(&application.mixin).is_some()
-            });
-        if !runs_code {
+            .class_level(level)
+            .application()
+            .filter(|application| mixin_needs_initializer_code(&application.mixin))
+            .and_then(|application| body.code_of(&application.mixin));
+        let Some(code) = code else {
             return Ok(Step::Value(instance));
-        }
+        };
         Ok(Step::Initializer {
             receiver: instance,
             level,
             arguments: StepArguments::Send,
             body,
+            code,
         })
     }
 
@@ -982,19 +1054,22 @@ impl<'gc> Mutator<'gc> {
     /// (decision 4 of `new` as compiled code) -- is always entered. The
     /// chain's top answers the instance.
     fn enter_or_pass(
-        &mut self,
-        mut level: ClassReference<'gc>,
+        &self,
+        level: ClassReference<'gc>,
+        view: ClassLevel<'_, 'gc>,
         instance: Value<'gc>,
     ) -> Result<Step<'gc>, Signal<'gc>> {
+        let (mut level, mut view) = (level, view);
         let mut arguments = StepArguments::Send;
         loop {
-            let Some(pass) = self.passes(level) else {
-                return Ok(match self.level_initializer(level) {
-                    Some((_, body)) => Step::Initializer {
+            let Some(pass) = self.passes(level, view) else {
+                return Ok(match level_initializer_of(view) {
+                    Some((code, body)) => Step::Initializer {
                         receiver: instance,
                         level,
                         arguments,
                         body,
+                        code,
                     },
                     // A mixin no compiler filled -- one a host built by
                     // hand -- has no body to run; an image's carries every
@@ -1002,11 +1077,15 @@ impl<'gc> Mutator<'gc> {
                     None => Step::Value(instance),
                 });
             };
-            self.check_applied_clauses(level, pass)?;
+            self.check_applied_clauses(level, view, pass)?;
             // `applied_levels_run_nothing` has held the count below the
             // steps' ceiling.
             let steps = u16::try_from(pass.applied_count + pass.own_level).unwrap_or(u16::MAX);
-            let Some(superclass) = self.level_above(level, steps) else {
+            let above = match steps {
+                1 => view.superclass(),
+                _ => self.level_above(level, steps),
+            };
+            let Some(superclass) = above else {
                 return Ok(Step::Value(instance));
             };
             let expected = primary_factory_selector(&self.heap, superclass);
@@ -1023,8 +1102,10 @@ impl<'gc> Mutator<'gc> {
                     expected,
                 ));
             }
-            self.check_factory_arity(superclass, &[])?;
+            let superclass_view = self.heap.class_level(superclass);
+            check_arity(superclass, declared_factory_arity(superclass_view), &[])?;
             level = superclass;
+            view = superclass_view;
             arguments = StepArguments::Owned(Vec::new());
         }
     }
@@ -1037,11 +1118,11 @@ impl<'gc> Mutator<'gc> {
     /// object, the level its last clause added, from which its clauses'
     /// levels are counted (decision 8 of `new` as compiled code). Any other
     /// level a clause added is entered.
-    fn passes(&self, level: ClassReference<'gc>) -> Option<Pass> {
-        let (facts, own_level) = match self.heap.class_body_less_declaration(level) {
+    fn passes(&self, level: ClassReference<'gc>, view: ClassLevel<'_, 'gc>) -> Option<Pass> {
+        let (facts, own_level) = match view.body_less_declaration() {
             Some(declaration) => (Some(crate::mixin::LevelFacts::of(declaration)), 0),
-            None if self.heap.class_is_applied_level(level) => return None,
-            None => (self.heap.class_level_facts(level), 1),
+            None if view.is_applied_level() => return None,
+            None => (view.level_facts(), 1),
         };
         let applied_count = facts.map_or(0, |facts| facts.applied_clause_count);
         let runs_nothing = facts.is_none_or(|facts| {
@@ -1076,6 +1157,9 @@ impl<'gc> Mutator<'gc> {
         if count >= usize::from(u16::MAX) {
             return false;
         }
+        if count == 0 {
+            return true;
+        }
         let mut current = Some(level);
         for _ in 0..own_level {
             current = current.and_then(|class| self.heap.class_superclass(class));
@@ -1104,17 +1188,15 @@ impl<'gc> Mutator<'gc> {
     fn check_applied_clauses(
         &self,
         level: ClassReference<'gc>,
+        view: ClassLevel<'_, 'gc>,
         pass: Pass,
     ) -> Result<(), Signal<'gc>> {
         if pass.applied_count == 0 {
             return Ok(());
         }
         let declaration = match pass.own_level {
-            0 => self.heap.class_body_less_declaration(level).cloned(),
-            _ => self
-                .heap
-                .class_application(level)
-                .map(|application| application.mixin.clone()),
+            0 => view.body_less_declaration(),
+            _ => view.application().map(|application| &application.mixin),
         };
         let Some(declaration) = declaration else {
             return Ok(());
@@ -1132,74 +1214,82 @@ impl<'gc> Mutator<'gc> {
         }
         Ok(())
     }
+}
 
-    /// The body `level`'s initializer runs and which of its mixin's three it
-    /// is: the full one for a level no `<:` clause added, which is its
-    /// declaration's own, and for a body-less declaration's class object
-    /// the declaration's full one (decision 8 of `new` as compiled code);
-    /// for any other level one added, reached from outside the declaration
-    /// that applied it (decision 4), the standalone one -- its mixin's own
-    /// superclass clause, then its own part, never the mixin's own `<:`
-    /// clauses, whose levels are not above it -- or the full one when the
-    /// mixin writes no `<:` clause, which is then the same. `None` for a
-    /// class object with no application and for a mixin that carries no
-    /// such body.
-    pub(crate) fn level_initializer(
-        &self,
-        level: ClassReference<'gc>,
-    ) -> Option<(Rc<crate::bytecode::CompiledCode>, InitializerBody)> {
-        if let Some(declaration) = self.heap.class_body_less_declaration(level) {
-            let body = InitializerBody::Full;
-            return body.code_of(declaration).map(|code| (code, body));
-        }
-        let application = self.heap.class_application(level)?;
-        let mixin = &application.mixin;
-        let body = if self.heap.class_is_applied_level(level)
-            && mixin.standalone_initializer_code.is_some()
-        {
-            InitializerBody::Standalone
-        } else {
-            InitializerBody::Full
-        };
-        body.code_of(mixin).map(|code| (code, body))
+/// The body the initializer of the level `view` shows runs and which of
+/// its mixin's three it is: the full one for a level no `<:` clause added,
+/// which is its declaration's own, and for a body-less declaration's class
+/// object the declaration's full one (decision 8 of `new` as compiled
+/// code); for any other level one added, reached from outside the
+/// declaration that applied it (decision 4), the standalone one -- its
+/// mixin's own superclass clause, then its own part, never the mixin's own
+/// `<:` clauses, whose levels are not above it -- or the full one when the
+/// mixin writes no `<:` clause, which is then the same. `None` for a class
+/// object with no application and for a mixin that carries no such body.
+fn level_initializer_of(
+    view: ClassLevel<'_, '_>,
+) -> Option<(Rc<crate::bytecode::CompiledCode>, InitializerBody)> {
+    if let Some(declaration) = view.body_less_declaration() {
+        let body = InitializerBody::Full;
+        return body.code_of(declaration).map(|code| (code, body));
     }
+    let mixin = &view.application()?.mixin;
+    let body = if view.is_applied_level() && mixin.standalone_initializer_code.is_some() {
+        InitializerBody::Standalone
+    } else {
+        InitializerBody::Full
+    };
+    body.code_of(mixin).map(|code| (code, body))
+}
 
-    /// The compiled body an initializer activation of `level` running
-    /// `body` runs (`Heap::initializer_mixin` says whose). `InitializeSlot`'s
-    /// `own_index` is relative to the mixin's own slots, not an absolute
-    /// field index, because the compiled body is shared by every application
-    /// of the mixin. The activation is entered at `level`, whose own
-    /// `MixinApplication.own_slot_base` turns it into an absolute index at
-    /// run time (`Heap::activation_slot_base`).
-    pub(super) fn initializer_code(
-        &self,
-        level: ClassReference<'gc>,
-        body: InitializerBody,
-    ) -> Option<Rc<crate::bytecode::CompiledCode>> {
-        self.heap
-            .initializer_mixin(level, body)
-            .and_then(|mixin| body.code_of(&mixin))
+/// The arity of the factory a level's factory arguments are held to
+/// (`check_arity`) before its activation is pushed or any slot
+/// initializer / initExpr runs: that of the declaration whose full or
+/// standalone body the level `view` shows runs -- the body-less
+/// declaration's for its class object, the mixin's otherwise -- since that
+/// body's registers are laid out for it.
+fn declared_factory_arity(view: ClassLevel<'_, '_>) -> Option<usize> {
+    match view.body_less_declaration() {
+        Some(declaration) => declaration.factory.map(|factory| factory.argument_count),
+        None => view.level_facts().and_then(|facts| facts.factory_arity),
     }
+}
 
-    /// Rejects a factory-arity mismatch as a NewspeakError before this
-    /// level's activation is pushed or any slot initializer / initExpr runs:
-    /// against the factory of the declaration whose full or standalone body
-    /// `class` runs -- the body-less declaration's for its class object, the
-    /// mixin's otherwise -- since that body's registers are laid out for it.
-    #[inline(always)]
-    fn check_factory_arity(
-        &self,
-        class: ClassReference<'gc>,
-        factory_arguments: &[Value<'gc>],
-    ) -> Result<(), Signal<'gc>> {
-        let declared_arity = match self.heap.class_body_less_declaration(class) {
-            Some(declaration) => declaration.factory.map(|factory| factory.argument_count),
-            None => self
-                .heap
-                .class_level_facts(class)
-                .and_then(|facts| facts.factory_arity),
-        };
-        check_arity(class, declared_arity, factory_arguments)
+/// Where `InitializeInstance` stands in a factory body
+/// (`compiler::factory_body`).
+const FACTORY_INITIALIZE: usize = 1;
+
+/// The two registers a factory body (`compiler::factory_body`) writes
+/// after its arguments.
+#[derive(Clone, Copy)]
+pub(crate) struct FactoryRegisters {
+    instance: u16,
+    answer: u16,
+}
+
+/// The registers of `code` when it is a factory body
+/// (`compiler::factory_body`) in its eight-byte form: `AllocateInstance`
+/// into the instance's register, `InitializeInstance` of it into the
+/// answer's, `Return` of the instance. `None` for every other body, which
+/// `Mutator::enter_factory_body` leaves to the run loop.
+pub(crate) fn factory_registers(code: &crate::bytecode::CompiledCode) -> Option<FactoryRegisters> {
+    use crate::bytecode::CompactInstruction;
+    if code.instruction_count() != 3 {
+        return None;
+    }
+    match (code.slot(0), code.slot(1), code.slot(2)) {
+        (
+            CompactInstruction::AllocateInstance { destination },
+            CompactInstruction::InitializeInstance {
+                destination: answer,
+                instance,
+            },
+            CompactInstruction::Return { register },
+        ) if instance == destination && register == destination => Some(FactoryRegisters {
+            instance: u16::from(instance),
+            answer: u16::from(answer),
+        }),
+        _ => None,
     }
 }
 
@@ -2019,7 +2109,9 @@ mod tests {
         interpreter.enter(|mutator| {
             let user = mutator.fetch(&answers[0]).as_object().expect("a class");
             let simple = mutator.fetch(&answers[1]).as_object().expect("a class");
-            let body = |level| mutator.level_initializer(level).map(|(_, body)| body);
+            let body = |level| {
+                super::level_initializer_of(mutator.heap.class_level(level)).map(|(_, body)| body)
+            };
             assert_eq!(body(user), Some(super::InitializerBody::Full));
             let composite_level = mutator.heap().class_superclass(user).expect("a level");
             assert_eq!(

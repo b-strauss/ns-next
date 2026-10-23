@@ -172,14 +172,15 @@ pub(crate) enum Step<'gc> {
     /// `receiver`, entered at `level`, whose slot base its own-slot
     /// instructions take (`instantiate::InitializerBody`); its value goes to
     /// the instruction of the factory or initializer that decided it, which
-    /// does not use it. The code is found again when it is pushed, from
-    /// `level` and `body`, rather than carried: every decision's size is
-    /// paid on every send.
+    /// does not use it. The decision carries the body's `code`, which it
+    /// found to decide that the level runs code, so that the push does not
+    /// look it up again; `Step` keeps its size, which `Method` sets.
     Initializer {
         receiver: Value<'gc>,
         level: ClassReference<'gc>,
         arguments: StepArguments<'gc>,
         body: instantiate::InitializerBody,
+        code: Rc<crate::bytecode::CompiledCode>,
     },
     /// Activate the superclass clause of the nested class `creation`
     /// describes, on its enclosing object and as part of the class that
@@ -1017,6 +1018,7 @@ impl<'gc> Mutator<'gc> {
     /// The check is the one compare it always was: the reserve is looked at
     /// only once the depth has reached L (`push_past_the_limit`), so an
     /// error far from L, and every push below it, pays nothing for it.
+    #[inline(always)]
     pub(crate) fn push(
         &mut self,
         header: ActivationHeader<'gc>,
@@ -1024,7 +1026,10 @@ impl<'gc> Mutator<'gc> {
         temporaries: usize,
     ) -> Result<ActivationReference, Signal<'gc>> {
         if header.counted && self.heap.counted_depth() >= MAX_ACTIVATION_DEPTH {
-            return self.push_past_the_limit(header, arguments, temporaries);
+            // Boxed, so that only this path keeps the header in memory: the
+            // header the push below copies is then never written there
+            // first and read back.
+            return self.push_past_the_limit(Box::new(header), arguments, temporaries);
         }
         Ok(self.heap.push_activation(header, arguments, temporaries))
     }
@@ -1039,7 +1044,7 @@ impl<'gc> Mutator<'gc> {
     #[inline(never)]
     fn push_past_the_limit(
         &mut self,
-        header: ActivationHeader<'gc>,
+        header: Box<ActivationHeader<'gc>>,
         arguments: &[Value<'gc>],
         temporaries: usize,
     ) -> Result<ActivationReference, Signal<'gc>> {
@@ -1051,7 +1056,7 @@ impl<'gc> Mutator<'gc> {
         {
             recursion_too_deep(&header)
         } else if self.heap.counted_depth() < MAX_ACTIVATION_DEPTH + DEPTH_RESERVE {
-            return Ok(self.heap.push_activation(header, arguments, temporaries));
+            return Ok(self.heap.push_activation(*header, arguments, temporaries));
         } else {
             Signal::Terminate(Box::new(self.overrun_of_the_reserve(&header)))
         };
@@ -1322,7 +1327,10 @@ impl<'gc> Mutator<'gc> {
                 level,
                 arguments,
                 body,
-            } => self.push_initializer(receiver, level, arguments.slice(send_arguments), body),
+                code,
+            } => {
+                self.push_initializer(receiver, level, arguments.slice(send_arguments), body, code)
+            }
             Step::SuperclassClause(creation) => {
                 let code = nested::superclass_clause_code(&creation.nested);
                 let feedback_base = self.caches.base_for(&code);
@@ -1388,19 +1396,49 @@ impl<'gc> Mutator<'gc> {
         }
     }
 
+    /// `push_step` for the step a send in the run loop decided, answering
+    /// the activation to run and the instruction to start it at: a factory
+    /// whose body is `compiler::factory_body` is carried through its first
+    /// two instructions at once (`enter_factory_body`), every other step is
+    /// pushed and started at its first. Only the run loop's sends come here,
+    /// since only they switch to what is answered: a host's run starts at
+    /// the activation it pushed, and a continuation of the pushed
+    /// activation is written by some other callers.
+    pub(crate) fn push_sent(
+        &mut self,
+        step: Step<'gc>,
+        send_arguments: &[Value<'gc>],
+        sender: Option<ActivationReference>,
+        inlinable: bool,
+    ) -> Result<(ActivationReference, usize), Signal<'gc>> {
+        let factory = match &step {
+            Step::Factory {
+                class,
+                code,
+                arguments: StepArguments::Send,
+            } => instantiate::factory_registers(code).map(|registers| (*class, registers)),
+            _ => None,
+        };
+        let pushed = self.push_step(step, send_arguments, sender, inlinable)?;
+        match factory {
+            Some((class, registers)) => {
+                self.enter_factory_body(pushed, class, registers, send_arguments)
+            }
+            None => Ok((pushed, 0)),
+        }
+    }
+
     /// Pushes the initializer body `body` of `level`'s mixin on `receiver`,
     /// entered at `level`. The decision found the body, and nothing has run
     /// since.
-    fn push_initializer(
+    pub(super) fn push_initializer(
         &mut self,
         receiver: Value<'gc>,
         level: ClassReference<'gc>,
         arguments: &[Value<'gc>],
         body: instantiate::InitializerBody,
+        code: Rc<crate::bytecode::CompiledCode>,
     ) -> Result<ActivationReference, Signal<'gc>> {
-        let Some(code) = self.initializer_code(level, body) else {
-            unreachable!("internal: an initializer step is decided only for a body its level has")
-        };
         // The decision checked the arguments against the level's factory,
         // whose arity `image::decode::verify_mixins` holds every body to.
         debug_assert!(

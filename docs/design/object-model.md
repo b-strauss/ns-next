@@ -660,6 +660,23 @@ pushed none, is gone with the walk it short-cut, a slowdown accepted until
 the baseline JIT inlines the factory (decision 3, "Decisions" below), and
 measured in [execution.md](execution.md).
 
+**A factory sent from the run loop is entered past its first two
+instructions.** Nothing runs between pushing a factory's activation and
+its `AllocateInstance` and `InitializeInstance`, so `Mutator::push_sent`
+carries a factory of `compiler::factory_body`'s shape through them where
+it pushes it (`Mutator::enter_factory_body`): the instance allocated into
+its register, the factory's program counter at `InitializeInstance`, as
+that send stores it, and the initializer it decides pushed above it -- or
+the instance written to its destination and the factory started at its
+`Return`. The frame, its registers, the depth count and every error stay
+the run loop's: the initializer is decided first, which changes nothing,
+and the allocation made only for a decision that raises nothing, so any
+error leaves the factory to the loop from its start, which raises the
+allocation's refusal before the decision's error, as the body orders
+them; the initializer's push refused at the depth limit raises from the
+factory's activation, as `InitializeInstance`'s send does. What is
+skipped is a safepoint at which no program code runs on either side.
+
 **The allocation decides everything that refuses an instance**, before it
 allocates: `instantiate::allocate_for_factory` builds the builtins whose
 instances are not ordinary ones -- `Array`, `ByteArray`, `String` and
@@ -685,7 +702,7 @@ another selector and runs some higher initializer, leaving the skipped
 level's slots nil without an error, which is what Squeak-Newspeak does;
 here every mismatch stays §6.1's error. A level's initializer runs one of
 its mixin's three bodies ([compiler.md](compiler.md), "The three
-initializer bodies"), chosen by `Mutator::level_initializer` and named by
+initializer bodies"), chosen by `instantiate::level_initializer_of` and named by
 the frame (`FrameKind::Initializer(level, body)`):
 
 - **the full body** at a declaration's own level: `<:` checks, the
@@ -744,7 +761,11 @@ clause's `clause_selector` and `clause_has_arguments`, the
 `applied_clause_count` and `applied_clauses_pass_arguments`, the mixin's own
 `factory_arity`, and for a metaclass mixin the factory entry it holds.
 Which factory a class object has is not among them: it is read through
-the class object's metaclass ("Class sides and metaclasses" below).
+the class object's metaclass ("Class sides and metaclasses" below). The
+level's application, the clause that added it and its superclass are read
+with one look at the class object's words (`Heap::class_level`), and the
+body the decision found rides in its `Step::Initializer`, so the push does
+not look it up again.
 
 **A chain nests one counted activation per level with code** (decision 6).
 Each initializer invokes its superclass's from inside its own activation,

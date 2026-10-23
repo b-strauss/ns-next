@@ -519,6 +519,16 @@ struct ActivationStack<'gc> {
     next_generation: u32,
 }
 
+impl<'gc> ActivationStack<'gc> {
+    /// `Heap::push_activation`'s push where `entries` has no room left:
+    /// out of line, so that the push that has room makes no call.
+    #[cold]
+    #[inline(never)]
+    fn push_entry_growing(&mut self, entry: StackEntry<'gc>) {
+        self.entries.push(entry);
+    }
+}
+
 /// The initial value of `Heap::collection_floor`, and of `next_collection`
 /// before anything has collected, in bytes of objects allocated: about
 /// 4,096 objects at a 128-byte average; `bench_loop.ns` and
@@ -4145,6 +4155,54 @@ impl<'gc> Heap<'gc> {
         Some((declaration, index, named_builtin))
     }
 
+    /// What instantiation asks of the class object `class` as a level --
+    /// its application, the `<:` clause that added it, its superclass --
+    /// read with one look at its words, where `class_application_entry`,
+    /// `class_applied_parts` and `class_superclass` would each look again.
+    /// Every answer is theirs; for a handle that is no class object, every
+    /// part is empty, as each of theirs is.
+    pub(crate) fn class_level(&self, class: ClassReference<'gc>) -> ClassLevel<'_, 'gc> {
+        let Some(words) = self.pointer_words(class, Format::Class) else {
+            return ClassLevel {
+                application: None,
+                applied: None,
+                superclass: None,
+            };
+        };
+        let application = self.application_in_words(words);
+        let applied = self
+            .class_word(words, class_field::APPLIED_CLAUSE)
+            .and_then(Value::as_small_integer)
+            .and_then(crate::mixin::AppliedClause::unpack)
+            .and_then(|(mixin, index, _)| Some((&self.mixin_row(mixin)?.current, index)));
+        let superclass = self
+            .class_word(words, class_field::SUPERCLASS)
+            .and_then(Value::as_object);
+        ClassLevel {
+            application,
+            applied,
+            superclass,
+        }
+    }
+
+    /// Field `index` of a class object whose words are `words`.
+    #[inline(always)]
+    fn class_word(&self, words: &[u64], index: usize) -> Option<Value<'gc>> {
+        words
+            .get(index)
+            .map(|bits| self.load(Word::from_bits(*bits)))
+    }
+
+    /// The table entry the application field of a class object whose words
+    /// are `words` names (`class_application_entry`).
+    #[inline(always)]
+    fn application_in_words(&self, words: &[u64]) -> Option<&Rc<MixinApplication>> {
+        self.class_word(words, class_field::APPLICATION)
+            .and_then(Value::as_small_integer)
+            .and_then(|index| usize::try_from(index).ok())
+            .and_then(|index| self.tables.applications.get(index)?.as_ref())
+    }
+
     /// One accessor for the behaviour half of a class object, so a
     /// construction site that needs a superclass's application never has to
     /// re-derive the borrow-and-match itself.
@@ -4496,13 +4554,32 @@ impl<'gc> Heap<'gc> {
     /// selector as m". `new` with no arguments for a builtin. A class object
     /// with no metaclass yet has its mixin's; `None` for a metaclass and
     /// for a handle that is no class object.
+    ///
+    /// Every instantiation's §6.1 check asks it, so each class object's
+    /// words are looked at once: `class`'s, then its header class's, which
+    /// is its metaclass when that class's `THIS_CLASS` is `class`
+    /// (`class_metaclass`).
     pub fn class_factory(&self, class: ClassReference<'gc>) -> Option<crate::mixin::Factory> {
-        if self.class_this_class(class).is_some() || !self.is_class(class) {
+        let words = self.pointer_words(class, Format::Class)?;
+        if self
+            .class_word(words, class_field::THIS_CLASS)
+            .and_then(Value::as_object)
+            .is_some()
+        {
             return None;
         }
-        match self.class_side_entry(class) {
+        let header = self.object_class(class);
+        let class_side = self
+            .pointer_words(header, Format::Class)
+            .filter(|header_words| {
+                self.class_word(header_words, class_field::THIS_CLASS)
+                    .and_then(Value::as_object)
+                    .is_some_and(|this_class| this_class.same(class))
+            })
+            .and_then(|header_words| self.application_in_words(header_words));
+        match class_side {
             Some(class_side) => class_side.level_facts.metaclass_factory,
-            None => self.class_application_entry(class).map(|application| {
+            None => self.application_in_words(words).map(|application| {
                 application.mixin.factory.unwrap_or(crate::mixin::Factory {
                     selector: Symbol::NEW,
                     argument_count: 0,
@@ -5313,6 +5390,7 @@ impl<'gc> Heap<'gc> {
 
     /// Pushes an activation whose registers are `arguments` followed by
     /// `temporary_count` nils.
+    #[inline(always)]
     pub fn push_activation(
         &mut self,
         header: ActivationHeader<'gc>,
@@ -5369,7 +5447,7 @@ impl<'gc> Heap<'gc> {
         } else {
             (DispatchId::NONE, ApplicationIndex::UNREGISTERED)
         };
-        self.stack.entries.push(StackEntry {
+        let entry = StackEntry {
             receiver: header.receiver,
             current_class: header.current_class,
             kind: header.kind,
@@ -5386,7 +5464,17 @@ impl<'gc> Heap<'gc> {
             entered_level,
             #[cfg(debug_assertions)]
             generation,
-        });
+        };
+        // Pushed where the vector has room, which is every push but the
+        // ones that grow it, without the growth's call in between: around
+        // that call the entry was assembled on the stack and copied into
+        // place, reading back in sixteen-byte pieces fields just written in
+        // smaller ones, a store-forwarding stall on every push.
+        if self.stack.entries.len() < self.stack.entries.capacity() {
+            self.stack.entries.push(entry);
+        } else {
+            self.stack.push_entry_growing(entry);
+        }
         self.activation_handle(index)
     }
 
@@ -5418,19 +5506,30 @@ impl<'gc> Heap<'gc> {
             self.stack.entries.len(),
             "only the top activation can be popped"
         );
+        // Read field by field and dropped in place, rather than the whole
+        // entry moved out and read back: the move read sixteen-byte pieces
+        // of an entry written moments before in smaller ones, a
+        // store-forwarding stall on every return.
         let entry = self
             .stack
             .entries
-            .pop()
+            .last_mut()
             .expect("internal: an activation handle names a live entry");
         let base = entry.base as usize;
-        if let Some(frame) = entry.reified {
+        let reified = entry.reified;
+        let retains_registers = entry.retains_registers;
+        let program_counter = entry.program_counter;
+        let counted = entry.counted;
+        let then = std::mem::replace(&mut entry.then, Continuation::Deliver);
+        let remaining = self.stack.entries.len() - 1;
+        self.stack.entries.truncate(remaining);
+        if let Some(frame) = reified {
             self.check_frame_origin(frame);
             let Heap { space, stack, .. } = self;
             let space_words = space.words_mut();
             let range = block_range(space_words, header_index(frame.offset));
             let words = &mut space_words[range][FIELDS..];
-            if entry.retains_registers {
+            if retains_registers {
                 for (register, word) in words[frame_field::COUNT..]
                     .iter_mut()
                     .zip(&stack.values[base..])
@@ -5438,14 +5537,14 @@ impl<'gc> Heap<'gc> {
                     *register = word.bits();
                 }
             }
-            words[frame_field::PROGRAM_COUNTER] = count_word(entry.program_counter).bits();
+            words[frame_field::PROGRAM_COUNTER] = count_word(program_counter).bits();
             words[frame_field::SENDER] = Word::NIL.bits();
             words[frame_field::UNCONTINUABLE] = Value::boolean(true).word().bits();
             words[frame_field::MARRIED] = Word::NIL.bits();
             // The divorce copied registers into an object the stack's roots
             // no longer cover: an old frame that now holds a young value is
             // remembered like any other old holder.
-            if entry.retains_registers
+            if retains_registers
                 && !space::is_young(frame.offset)
                 && self.stack.values[base..]
                     .iter()
@@ -5455,11 +5554,8 @@ impl<'gc> Heap<'gc> {
             }
         }
         self.stack.values.truncate(base);
-        self.stack.counted -= usize::from(entry.counted);
-        Popped {
-            then: entry.then,
-            counted: entry.counted,
-        }
+        self.stack.counted -= usize::from(counted);
+        Popped { then, counted }
     }
 
     /// The frame object for a live activation, created married to it on the
@@ -7241,6 +7337,45 @@ impl<'gc> Heap<'gc> {
         for root in roots.iter_mut() {
             forwarder.value(root);
         }
+    }
+}
+
+/// A class object as instantiation asks of it as a level
+/// (`Heap::class_level`), borrowed from the heap's tables.
+#[derive(Clone, Copy)]
+pub(crate) struct ClassLevel<'heap, 'gc> {
+    application: Option<&'heap Rc<MixinApplication>>,
+    applied: Option<(&'heap Rc<Mixin>, usize)>,
+    superclass: Option<ClassReference<'gc>>,
+}
+
+impl<'heap, 'gc> ClassLevel<'heap, 'gc> {
+    /// `Heap::class_application`, borrowed.
+    pub(crate) fn application(&self) -> Option<&'heap Rc<MixinApplication>> {
+        self.application
+    }
+
+    /// `Heap::class_level_facts`.
+    pub(crate) fn level_facts(&self) -> Option<crate::mixin::LevelFacts> {
+        self.application.map(|application| application.level_facts)
+    }
+
+    /// `Heap::class_superclass`.
+    pub(crate) fn superclass(&self) -> Option<ClassReference<'gc>> {
+        self.superclass
+    }
+
+    /// `Heap::class_is_applied_level`.
+    pub(crate) fn is_applied_level(&self) -> bool {
+        self.applied
+            .is_some_and(|(declaration, index)| index < declaration.mixin_applications.len())
+    }
+
+    /// `Heap::class_body_less_declaration`.
+    pub(crate) fn body_less_declaration(&self) -> Option<&'heap Rc<Mixin>> {
+        let (declaration, index) = self.applied?;
+        (!declaration.has_body && index + 1 == declaration.mixin_applications.len())
+            .then_some(declaration)
     }
 }
 

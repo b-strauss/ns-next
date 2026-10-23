@@ -160,8 +160,15 @@ pub struct ActivationReference {
   program's depth a push allocates nothing. Every activation the runtime pushes
   goes through one function, `Mutator::push`, which refuses a push past the
   depth limit ("The depth limit" below) before it reaches the heap, so no new
-  push site can skip the check. It is called from one place,
-  `Mutator::push_step`, for the method, block or body a decision answered. An
+  push site can skip the check. It is called from `Mutator::push_step`, for
+  the method, block or body a decision answered, and for the initializer a
+  factory entered past its first instructions decides
+  (`Mutator::enter_factory_body`). The entry is written in place where the
+  vector has room, and a pop reads the fields it needs and drops the entry
+  in place: assembling the entry on the stack around the growth's call, and
+  moving it out whole on a pop, read back in sixteen-byte pieces what had
+  just been written in smaller ones, a store-forwarding stall on every push
+  and every return. An
   activation nothing reifies leaves nothing behind; only a block the compiler
   did not inline reifies one, since an inlined `ifTrue:`/`and:`/`whileTrue:`
   argument creates no closure.
@@ -385,7 +392,10 @@ activations from its callers'.
   decision in `interpreter/instantiate.rs` in place of a lookup. A step is
   pushed by `Mutator::push_step`, which checks a method's, block's or
   factory's arity and the depth limit, and the loop switches to the new activation at `program_counter` 0,
-  its window filled straight from the buffer. A send allocates no vector once
+  its window filled straight from the buffer -- except a factory, which
+  `Mutator::push_sent` carries through its first two instructions where it
+  pushes it, and which the loop starts where that leaves it
+  ([object-model.md](object-model.md), "Instantiation"). A send allocates no vector once
   the buffer has grown to the widest one.
 - **A return** (`vm::finish`) pops the activation and applies its
   continuation. `Continuation::Deliver`, every send's, hands the value to the
@@ -425,8 +435,10 @@ Five kinds of body run, and each reaches the loop one way:
    quick methods — and `do:` answer the block as a step.
 3. **Factory body** — pushed by `push_step` for a `Step::Factory`, which
    `act` answers for a factory entry the lookup found, on the class object
-   the factory was sent to; its value is delivered like a method's
-   ([object-model.md](object-model.md), "Instantiation").
+   the factory was sent to; its value is delivered like a method's. A send
+   in the loop enters it past its `AllocateInstance` and
+   `InitializeInstance` (`Mutator::enter_factory_body`;
+   [object-model.md](object-model.md), "Instantiation").
 4. **Instance initializer** — pushed by `push_step` for a
    `Step::Initializer`, which the factory body's `InitializeInstance` and an
    initializer's `InitializeSuperclass` and `InitializeAppliedLevel` answer:
@@ -5931,7 +5943,10 @@ and their instructions decide without executing: `AllocateInstance` and
 `InitializeSuperclass` and `InitializeAppliedLevel` a `Step` -- the next
 level's initializer to activate, or the instance when that level runs
 nothing -- each from one call into `interpreter/instantiate.rs`
-([object-model.md](object-model.md), "Instantiation"). So no state machine
+([object-model.md](object-model.md), "Instantiation"). A factory's first
+two of them, between which nothing can run, are carried out where the
+factory is pushed (`Mutator::enter_factory_body`), deciding and running
+exactly as the loop would. So no state machine
 carries an instantiation between its bodies: the activation stack is its
 whole state, as it is a method's.
 
@@ -6295,12 +6310,10 @@ are what they were when these paths ran in nested runs of the loop.
 
 **Every body is inline in its `Step`.** `Step::Factory`,
 `Step::Initializer` and `Step::SuperclassClause` each carry only what their
-push cannot find from their level or declaration -- the code of an
-initializer is its level's, found again when it is pushed from the level
-and the body it names (`Mutator::initializer_code`), and a clause's is its
-declaration's -- so none needs a boxed description of its activation, and
-a factory carries its body's `Rc`, which the lookup or the cache entry
-already holds. Each is no larger than `Step::Method`, on purpose: a
+push cannot find cheaply -- an initializer carries the body its decision
+found, and a clause's code is its declaration's -- so none needs a boxed
+description of its activation, and a factory carries its body's `Rc`,
+which the lookup or the cache entry already holds. Each is no larger than `Step::Method`, on purpose: a
 `Step` as large as `Step::Method` with an optional continuation left
 `Result<Step, Signal>` at the 56 bytes the hot path was measured at and
 still made every benchmark 4–6% slower, none of which instantiates in its

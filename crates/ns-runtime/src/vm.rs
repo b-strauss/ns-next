@@ -1961,13 +1961,13 @@ fn deliver<'gc>(
                 .set_register(sender.register_base, sender.destination, value);
             Transfer::Next
         }
-        Ok(step) => match mutator.push_step(
+        Ok(step) => match mutator.push_sent(
             step,
             send_arguments,
             Some(sender.activation),
             sender.inlinable,
         ) {
-            Ok(callee) => handoff.switch_to(mutator, callee, 0),
+            Ok((callee, program_counter)) => handoff.switch_to(mutator, callee, program_counter),
             Err(signal) => unwind(mutator, signal, floor, handoff),
         },
         Err(signal) => unwind(mutator, signal, floor, handoff),

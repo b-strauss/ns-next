@@ -1260,3 +1260,32 @@ fn a_body_less_declaration_on_a_passed_path_checks_its_clause() {
         assert!(heap.object_class(made).same(object(mutator, &right)));
     });
 }
+
+ns_runtime::for_each_lowering! {
+    /// A factory sent from the run loop is entered past its first two
+    /// instructions only when neither raises (`Mutator::enter_factory_body`):
+    /// `Valued` is refused at its allocation -- a value class enclosed by an
+    /// object that is no value -- and its level, which runs no code, is
+    /// passed with a superclass clause that names no primary factory. The
+    /// body allocates first, so the refusal is the error, not §6.1's.
+    fn an_allocation_refused_is_raised_before_the_initializers_error(lowering) {
+        let source = indoc! {"
+            class Holder = Object new () (
+                public class Valued = Value foo () ()
+                public make = ( ^Valued new )
+            ) : ()
+        "};
+        let (mut interpreter, class) = load_with(source, lowering);
+        let module = expect_ok(interpreter.instantiate(&class, &[]), "instantiate Holder");
+        let error = expect_error(
+            interpreter.send(&module, Symbol::intern("make"), &[]),
+            "make",
+        );
+        assert!(
+            error.message.contains("cannot instantiate Valued")
+                && error.message.contains("enclosing objects must be values"),
+            "{lowering:?}: message was: {}",
+            error.message
+        );
+    }
+}
