@@ -2391,7 +2391,7 @@ subclassed, but subclasses won't have the ephemeron property"
 `Ephemeron`'s leaves read and write such an instance's three slots
 instead of an `Ephemeron`'s fields: those that begin at the own slot base
 of the first level of its class's chain applying `Ephemeron`'s mixin,
-matched by mixin as `inheritsMixinOf:` matches, so that a class applying
+matched by mixin, since a slot layout is the mixin's, so that a class applying
 the mixin with `<:` to a superclass with slots of its own reaches the
 mixin's slots too; an object with no such level makes them decline
 (`goldens/library/weak/a_subclass_of_ephemeron_reads_and_writes_through_its_accessors.ns`).
@@ -3478,14 +3478,25 @@ exception class.** §3.2's metaclasses are flat
 class side is its own mixin applied to `Class`, not a subclass of its
 superclass's class side, so a class-side method declared on `Exception`
 alone would not reach `Error`. The default `handles: anException` — "an
-instance of me or of a subclass", the `inheritsMixinOf:` leaf — is
-therefore on `Class`'s instance side, where every class object answers it
+instance of me or of a subclass", the `inheritsMixinOf:` leaf, compared by
+declaration so that a nested exception class catches its instances under
+any enclosing object — is therefore on `Class`'s instance side, where every class object answers it
 and a class side that declares its own `handles:` overrides it. `signal`
 and `signal:` (`^self new signal`) are declared on the class side of each
 of the eight: `Exception`, `Error`, `MessageNotUnderstood`, `Halt` and the
 four classes that carry a subject. A program's own subclass answers
 `signal:` only if its own class side declares it; otherwise it is
 signalled as `MyError new signal: 'text'`, which the goldens use.
+Each level of the exception's chain counts as a class of its
+application's mixin and, for a declaration without a body, whose class
+object is the level its last clause adds and applies that clause's mixin
+([object-model.md](object-model.md), "Mixin application"), of its own
+declaration too, as does a level a `<:` clause adds for such a class: so
+`on: M3 do:` for `class M3 = Error <: M1.` catches `M3`'s instances and
+never those of another declaration applying `M1`, with or without a body,
+while `on: M1 do:` catches them all, as the classes Squeak-Newspeak's
+`isKindOf:` and SOMns's class groups compare would
+(`goldens/library/exception/a_body_less_exception_class_catches_its_own_declarations_instances.ns`).
 
 **Programs name them through `platform kernel`** (decided with the user on
 2026-09-25), as the corpus does — `private Exception = platform kernel

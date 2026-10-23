@@ -1,0 +1,44 @@
+/// `handles:` answers whether an exception is an instance of the handler's
+/// class or of a subclass of it, compared by declaration, so that a nested
+/// exception class catches its instances under any enclosing object. A
+/// declaration without a body is the level its last clause adds
+/// (newspeak-spec.pdf 6.2), a class of the applied mixin M1 and named for
+/// its own declaration (6): so `on: M3` catches M3's instances, and never
+/// those of M4, another body-less declaration applying M1, nor those of N,
+/// which applies M1 with a body of its own -- as two declarations with
+/// bodies are two classes. `on: M1` catches all three, whose chains apply
+/// M1. UsesM3 applies M3 with a body: its level is named for M3, so
+/// `on: M3` catches it, and `on: UsesM3` catches it alone.
+///
+/// One line per handler class -- M3, M4, N, M1, UsesM3 -- and on each, an
+/// instance of M3, M4, N and UsesM3 signalled under it.
+class ABodyLessExceptionClassCatchesItsOwnDeclarationsInstances = Object new () (
+  class M1 = Object new () ()
+
+  class M3 = Error new <: M1.
+
+  class M4 = Error new <: M1.
+
+  class N = Error new <: M1 () ()
+
+  class UsesM3 = Error new <: M3 () ()
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+    |
+    {M3. M4. N. M1. UsesM3} do: [:handler |
+      {M3. M4. N. UsesM3} do: [:signalled |
+        t show: ([
+          [
+            signalled new signal.
+            'none'.
+          ] on: handler do: [:error | 'caught'].
+        ] on: Error do: [:error | 'missed']).
+      ] separatedBy: [
+        t show: ' '.
+      ].
+      t newLine.
+    ].
+  )
+)

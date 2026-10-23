@@ -460,8 +460,11 @@ class Kernel vmMirror: mirror = Value (
     /// exception: any object; never signals.
     ///
     /// ANSI's `handles:`, by default "an instance of me or of a
-    /// subclass", compared by mixin so that a nested exception class
-    /// catches its instances under any enclosing instance. Here rather
+    /// subclass", compared by declaration so that a nested exception
+    /// class catches its instances under any enclosing instance: a class
+    /// declared without a body is its own declaration's class and the
+    /// class of the mixin it applies, never another declaration's that
+    /// applies the same mixin. Here rather
     /// than on `Exception`'s class side because §3.2's metaclasses are
     /// flat: a class side is not inherited, so only `Class` reaches every
     /// exception class, and a class side that declares its own

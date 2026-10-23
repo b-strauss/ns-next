@@ -256,11 +256,18 @@ fn handler_registers(
     }
 }
 
-/// Whether `subject`'s class, or a superclass of it, applies the mixin of
-/// the class object `arguments[0]`. Mixins rather than class objects, as
-/// Primordial Soup's `is:interestedIn:` compares them: a nested exception
-/// class is a class object per enclosing instance, and a handler for one
-/// must catch an instance made under another.
+/// Whether `subject`'s class, or a superclass of it, is a class of the
+/// declaration of the class object `arguments[0]` (`Heap::class_declaration`).
+/// Declarations rather than class objects, as Primordial Soup's
+/// `is:interestedIn:` compares mixins: a nested exception class is a class
+/// object per enclosing instance, and a handler for one must catch an
+/// instance made under another. Each level is a class of its application's
+/// mixin and, when it is a body-less declaration's class object
+/// (`Heap::class_body_less_declaration`), of that declaration too, or,
+/// when a `<:` clause added it for a body-less class, of that class's
+/// declaration: so `class M3 = Error <: M1.` is caught by a handler for
+/// `M3` or for `M1`, and never by one for another declaration applying
+/// `M1`, as a declaration with a body of its own would be.
 fn inherits_mixin_of<'gc>(
     mutator: &Mutator<'gc>,
     subject: Value<'gc>,
@@ -270,16 +277,27 @@ fn inherits_mixin_of<'gc>(
     if !mutator.heap.is_class(class) {
         return None;
     }
-    let mixin = mutator.heap.class_application(class)?.mixin.clone();
-    let id = mutator.heap.known_mixin_id(&mixin);
+    let heap = &mutator.heap;
+    let declaration = heap.class_declaration(class)?;
+    let id = heap.known_mixin_id(&declaration);
+    let is_declaration =
+        |candidate: &Rc<crate::Mixin>| heap.same_mixin(candidate, &declaration, id);
     let mut current = Some(mutator.class_of(subject));
     while let Some(level) = current {
-        if let Some(application) = mutator.heap.class_application(level) {
-            if mutator.heap.same_mixin(&application.mixin, &mixin, id) {
-                return Some(true);
-            }
+        let applied = heap
+            .class_application(level)
+            .is_some_and(|application| is_declaration(&application.mixin));
+        let declared = heap
+            .class_body_less_declaration(level)
+            .is_some_and(&is_declaration);
+        let named = heap
+            .class_named(level)
+            .and_then(|named| heap.class_body_less_declaration(named))
+            .is_some_and(&is_declaration);
+        if applied || declared || named {
+            return Some(true);
         }
-        current = mutator.heap.class_superclass(level);
+        current = heap.class_superclass(level);
     }
     Some(false)
 }
