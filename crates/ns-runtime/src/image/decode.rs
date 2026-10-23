@@ -1432,7 +1432,7 @@ pub fn verify_mixins(mixins: &mixins::Decoded) -> Result<(), DecodeError> {
             return Err(DecodeError::MissingInitializer);
         }
         // A body-less declaration is the mixin application its clauses
-        // write (decision 8 of `new` as compiled code): it has clauses and
+        // write (`object-model.md`, "Mixin application"): it has clauses and
         // nothing a body declares.
         if !mixin.has_body {
             if mixin.mixin_applications.is_empty() {
@@ -4981,7 +4981,7 @@ fn decode_class_record<'gc>(
     };
     // A body-less declaration is applied by no class: its class object is
     // the level its last clause adds, which applies that clause's mixin
-    // (decision 8 of `new` as compiled code).
+    // (`object-model.md`, "Mixin application").
     if !mixin.has_body {
         return Err(DecodeError::BodyLessMixinApplied);
     }

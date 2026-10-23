@@ -5901,7 +5901,12 @@ value conditions and equality hold to both, and a new mirror leaf,
 `behaviorLevelEnclosing:ifFail:`, gives `Behavior>>=`'s fallback the
 level's. A nested-class accessor stays bodiless, and its cache entry holds
 the hidden slot's absolute index, so a hit is a guard and one load; a
-`super` send's cache key is S's application. Measured: see execution.md.
+`super` send's cache key is S's application. Measured against `master`, after a performance round that
+took the lexical origin from the code and did the factory's first two
+instructions at its push, all seven micro sources and fifteen of the sixteen
+Are We Fast Yet programs are faster (`bench_newarg.ns` -20%, the other micro
+sources -2% to -7%, Sieve level): execution.md, "What `new` as compiled code
+moved".
 
 No existing golden's outcome changed. New goldens pin a clause argument's
 effect before §6.1's mismatch, a chain deeper than the depth limit, a level

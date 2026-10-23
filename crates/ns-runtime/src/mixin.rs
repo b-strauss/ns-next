@@ -643,9 +643,9 @@ pub struct Mixin {
     /// application"): such a declaration is the mixin application itself,
     /// so its class object is the level its last clause adds, named for it
     /// and with its factory, and no level of its own is ever built over
-    /// it (decision 8 of `new` as compiled code; `docs/design/object-model.md`,
-    /// "Mixin application"). `true` for every other mixin, a builtin's and a
-    /// class side included. A decoded mixin carries its row's.
+    /// it (`docs/design/object-model.md`, "Mixin application"). `true` for
+    /// every other mixin, a builtin's and a class side included. A decoded
+    /// mixin carries its row's.
     pub has_body: bool,
     /// Whether the declaration wrote any `initExpr`s. Stored because
     /// `instantiate::mixin_needs_initializer_code` asks the question of a

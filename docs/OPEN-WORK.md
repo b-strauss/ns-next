@@ -466,10 +466,12 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   paths, so code or data layout is a likelier cause than the work; it is
   undecided. All five parts were kept (decided with the user on
   2026-10-22). The fast `new` is gone, replaced by `new` as compiled code,
-  whose own measurement against the tree before it is in
-  [execution.md](design/execution.md); the arrays part stays to be
-  measured again with the next change to allocation.
-  [execution.md](design/execution.md), "What inline allocation moved".
+  and measured again against `master` all seven micro sources and fifteen
+  of sixteen Are We Fast Yet programs are faster, Sieve level, NBody
+  included (-3.4%), so none of the residuals survives; what is open is the
+  arrays part, to be measured again by itself with the next change to
+  allocation. [execution.md](design/execution.md), "What inline
+  allocation moved", "What `new` as compiled code moved".
 - **The futures of simultaneous slots stay in Rust** (noted with the user
   on 2026-10-22). Forcing a future is Rust machinery -- a
   `Continuation::Future` on the forcing block's activation, and the
@@ -1032,8 +1034,26 @@ classes and a class from source with no predecessor are not edited
   polymorphic or global hit one store more, and the key is passed by
   reference because its copies were measured to matter. Not isolated by a
   measurement. The alternative that costs no word: a `super` key has no
-  use for `lexical_class`, so it could carry `current_class` there.
-  [dispatch.md](design/dispatch.md), "A send, step by step".
+  use for `lexical_class`, so it could carry `current_class` there. Still
+  not isolated by a measurement: no micro source sends `super` or reaches a
+  polymorphic or global hit with a `super` key, and "What `new` as compiled
+  code moved" measured the whole batch, not this word.
+  [dispatch.md](design/dispatch.md), "A send, step by step";
+  [execution.md](design/execution.md), "What `new` as compiled code moved".
+
+- **A store-forwarding stall in `push_step`'s `FrameKind` write**
+  (2026-10-23). `FrameKind` is written as a byte and a word into a stack
+  slot that the merged push code reads back in sixteen bytes: about 6% of
+  `bench_new.ns`'s samples. A restructured entry write would speed every
+  push, not only a factory's; not attempted.
+  [execution.md](design/execution.md), "What `new` as compiled code moved".
+
+- **No micro source covers instantiating a class whose levels run no code
+  (a factory started at its `Return`), `super` sends, or body-less
+  declarations** (2026-10-23). The goldens and the debug cross-check of
+  `lexical_origin` and `super_start` hold their correctness; their speed is
+  unmeasured. [execution.md](design/execution.md), "What `new` as compiled
+  code moved".
 
 - **What the reclamation of ids costs a full collection is unmeasured**
   (2026-10-20). `drain_marking` gained one match arm that records the ids
@@ -1761,13 +1781,9 @@ Small, deliberately left, none affecting an outcome.
   stop lowering once the body is too large, as `lower.rs`'s prologue does;
   `Heap::frame_kind` (`heap.rs`) calls `InitializerBody::of_frame_tag`
   twice for one tag; `RETIRED_CODE_KIND_TAGS`'s doc in `image/opcodes.rs`
-  names the reader of the live tags loosely, as "`decode`"; a doc comment above
-  `past_sixteen_bits_the_other_tables_take_the_wide_form`
-  (`bytecode/compact.rs`) is wrapped unevenly; and
-  `instantiating_a_class_heading_a_long_superclass_chain_does_not_blow_the_stack`
-  (`tests/image.rs`) still explains itself by the walk's `climb_levels` and
-  an `execution.md` section that is now "A superclass chain nests one
-  activation per level".
+  names the reader of the live tags loosely, as "`decode`"; and a doc
+  comment above `past_sixteen_bits_the_other_tables_take_the_wide_form`
+  (`bytecode/compact.rs`) is wrapped unevenly.
 
 - Leftovers of the Java benchmarks' reviews (noted 2026-10-22): a lone
   `--warm-up` or `--measure` without `--timed` is read as a benchmark

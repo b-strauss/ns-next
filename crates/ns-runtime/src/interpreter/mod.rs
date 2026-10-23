@@ -1941,7 +1941,7 @@ impl<'gc> Mutator<'gc> {
     /// the named class's for a level like any other (§6.2: "a primary
     /// factory method with the same selector as m"), and a body-less
     /// declaration's own for its class object, the level its last clause
-    /// adds (decision 8 of `new` as compiled code). That class object also
+    /// adds (`object-model.md`, "Mixin application"). That class object also
     /// has room for the declaration's own scope, nil until
     /// `nested::body_less_class` writes it -- and nil for good for a
     /// module's root, which no object encloses.

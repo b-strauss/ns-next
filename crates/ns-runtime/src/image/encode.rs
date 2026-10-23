@@ -1696,7 +1696,7 @@ fn encode_class_record<'gc>(
 /// (`Heap::class_named`), after the clause: the decoder holds the level's
 /// §6.1 check to its primary factory and rebuilds the level's metaclass
 /// from its class side, since a body-less named class's is no class side
-/// of the mixin the level applies (decision 8 of `new` as compiled code).
+/// of the mixin the level applies (`object-model.md`, "Mixin application").
 fn encode_named_class<'gc>(
     writer: &mut Writer,
     class: ClassReference<'gc>,

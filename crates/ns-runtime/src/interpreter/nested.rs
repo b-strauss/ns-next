@@ -288,7 +288,7 @@ pub(crate) fn after_clause<'gc>(
         ));
     };
     // A declaration without a body is the mixin application it writes
-    // (§6; decision 8 of `new` as compiled code): its class object is the
+    // (§6; `object-model.md`, "Mixin application"): its class object is the
     // top level `superclass_with_applied_levels` built, with no level of
     // its own over it.
     if !nested.has_body {
@@ -555,7 +555,7 @@ pub(crate) fn build_applied_levels<'gc>(
             named_builtin: mutator.heap.class_builtin(named_class),
         };
         // A body-less declaration's last clause adds its own class object
-        // (decision 8 of `new` as compiled code), which has the
+        // (`object-model.md`, "Mixin application"), which has the
         // declaration's factory and name; every other level the named
         // class's.
         let class_side =

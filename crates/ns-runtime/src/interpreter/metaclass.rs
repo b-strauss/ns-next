@@ -68,7 +68,7 @@ impl<'gc> Mutator<'gc> {
     /// added takes the class side of the class its clause named, and a
     /// body-less declaration's class object its declaration's
     /// (`Mutator::new_applied_level`), so that each has the factory and
-    /// the name §6.2 and decision 8 of `new` as compiled code give it.
+    /// the name §6.2 gives it (`object-model.md`, "Mixin application").
     pub(crate) fn attach_metaclass_of(
         &mut self,
         class: ClassReference<'gc>,

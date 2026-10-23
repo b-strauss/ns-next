@@ -102,7 +102,7 @@ pub enum RootRecordDefect {
 /// cannot bring back a root the resolver refuses to build.
 ///
 /// A root without a body, `class R = Object <: Value.`, is the level its
-/// clause added (decision 8 of `new` as compiled code;
+/// clause added (`object-model.md`, "Mixin application";
 /// `body_less_root_record_defect`).
 pub fn root_record_defect<'gc>(
     mutator: &Mutator<'gc>,

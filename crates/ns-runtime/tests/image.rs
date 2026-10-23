@@ -11143,12 +11143,12 @@ fn a_send_to_a_class_heading_a_long_superclass_chain_does_not_blow_the_stack() {
 
 #[test]
 fn instantiating_a_class_heading_a_long_superclass_chain_does_not_blow_the_stack() {
-    // `climb_levels` visits every level of the chain -- arity,
+    // The instantiation loop passes every level of the chain -- arity,
     // clause message, initializer -- and none of these levels has
     // initializer code, so none pushes an activation: the depth bound would
     // not see a per-level recursion (`docs/design/execution.md`, "A
-    // superclass chain is walked iteratively"). Recursing once per level
-    // would abort here.
+    // superclass chain nests one activation per level"). Recursing once per
+    // level would abort here.
     let bytes = image_with_graph_section(&superclass_chain_graph(DEEP), 2 * DEEP);
     let mut loaded = image::load(&bytes).expect("load");
     let head = loaded.roots[0].clone();
@@ -13728,7 +13728,7 @@ fn applied_levels_naming_each_other_in_a_cycle_are_refused() {
 }
 
 /// A body-less declaration's class object applies its last clause's mixin
-/// (decision 8 of `new` as compiled code), so a class record applying a
+/// (`object-model.md`, "Mixin application"), so a class record applying a
 /// body-less row's own mixin describes a class no live world has.
 #[test]
 fn a_class_record_applying_a_body_less_rows_mixin_is_refused() {

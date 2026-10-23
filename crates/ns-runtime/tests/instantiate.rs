@@ -1150,7 +1150,7 @@ fn body_less_class(names: &[&str]) -> (Interpreter, Vec<Root>) {
     (interpreter, classes)
 }
 
-/// §6, decision 8 of `new` as compiled code: a declaration without a body
+/// §6 (`object-model.md`, "Mixin application"): a declaration without a body
 /// is the mixin application it writes, so `M3`'s class object is the level
 /// `M1`'s mixin adds to `Base` -- `M1`'s application, `Base`'s class object
 /// above it -- named `M3`, with `M3`'s factory, and with no level of its own.

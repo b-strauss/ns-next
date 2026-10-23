@@ -3099,7 +3099,7 @@ no program can observe, since a value has no identity.
   above), for performance first -- `Foo new` becomes ordinary sends to
   compiled bodies, which take the inline caches and which the JIT tiers can
   compile and inline, where a Rust walk is opaque to a JIT -- and for
-  uniformity with the references second. The code cites them by number:
+  uniformity with the references second. The documents cite them by number:
   1. The factory is compiled code with an activation of its own, shaped
      like Squeak-Newspeak's: an allocation on the receiver, with every
      refusal and builtin case, the direct invocation of the receiver's own

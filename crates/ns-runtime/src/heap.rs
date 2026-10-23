@@ -4548,8 +4548,8 @@ impl<'gc> Heap<'gc> {
     /// `class`'s primary factory, as `newspeak-spec.pdf` §6.3 makes it: the
     /// factory entry of its metaclass's class-side mixin, its selector and
     /// arity. That is the declaration's own for a class with a body and for
-    /// a body-less declaration's class object (decision 8 of `new` as
-    /// compiled code), and the named class's for a level a `<:` clause
+    /// a body-less declaration's class object (`object-model.md`, "Mixin
+    /// application"), and the named class's for a level a `<:` clause
     /// added, which §6.2 gives "a primary factory method with the same
     /// selector as m". `new` with no arguments for a builtin. A class object
     /// with no metaclass yet has its mixin's; `None` for a metaclass and

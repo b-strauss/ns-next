@@ -291,8 +291,9 @@ impl<'gc> Mutator<'gc> {
         // `apply_mixin` offsets this class's own slots past every inherited
         // one (`own_slot_base`), so a class object never computes -- or can
         // disagree about -- an instance's shape.
-        // A body-less root is the level its `<:` clause added (decision 8
-        // of `new` as compiled code), named for it and with its factory.
+        // A body-less root is the level its `<:` clause added
+        // (`object-model.md`, "Mixin application"), named for it and with
+        // its factory.
         if let (false, Some((top, _))) = (mixin.has_body, &top) {
             if !applied.is_empty() {
                 return *top;
@@ -969,7 +970,7 @@ impl<'gc> Mutator<'gc> {
         let (_, level) = self.applied_level(instance, applying, steps)?;
         // Against the factory of the mixin whose own part runs, not the
         // named class's: the body's registers are laid out for it, and the
-        // two differ for a body-less named class (decision 8).
+        // two differ for a body-less named class (`object-model.md`, "Mixin application").
         let own_part_arity = self
             .heap
             .class_level_facts(level)
@@ -1051,7 +1052,7 @@ impl<'gc> Mutator<'gc> {
     /// order with the same texts, and carries on at that class, past the
     /// declaration's own applied levels, with no arguments. A level a `<:`
     /// clause added and reached here -- from outside its declaration
-    /// (decision 4 of `new` as compiled code) -- is always entered. The
+    /// (`object-model.md`, "Instantiation") -- is always entered. The
     /// chain's top answers the instance.
     fn enter_or_pass(
         &self,
@@ -1116,7 +1117,7 @@ impl<'gc> Mutator<'gc> {
     /// clause added, whose declaration is its mixin's and whose clauses'
     /// levels start one above it, or a body-less declaration's class
     /// object, the level its last clause added, from which its clauses'
-    /// levels are counted (decision 8 of `new` as compiled code). Any other
+    /// levels are counted (`object-model.md`, "Mixin application"). Any other
     /// level a clause added is entered.
     fn passes(&self, level: ClassReference<'gc>, view: ClassLevel<'_, 'gc>) -> Option<Pass> {
         let (facts, own_level) = match view.body_less_declaration() {
@@ -1219,9 +1220,10 @@ impl<'gc> Mutator<'gc> {
 /// The body the initializer of the level `view` shows runs and which of
 /// its mixin's three it is: the full one for a level no `<:` clause added,
 /// which is its declaration's own, and for a body-less declaration's class
-/// object the declaration's full one (decision 8 of `new` as compiled
-/// code); for any other level one added, reached from outside the
-/// declaration that applied it (decision 4), the standalone one -- its
+/// object the declaration's full one (`object-model.md`, "Mixin
+/// application"); for any other level one added, reached from outside the
+/// declaration that applied it (`object-model.md`, "Instantiation"), the
+/// standalone one -- its
 /// mixin's own superclass clause, then its own part, never the mixin's own
 /// `<:` clauses, whose levels are not above it -- or the full one when the
 /// mixin writes no `<:` clause, which is then the same. `None` for a class
@@ -2093,7 +2095,7 @@ mod tests {
     /// A declaration's own level runs its full initializer, and a level a
     /// `<:` clause added runs its mixin's standalone one when the mixin
     /// writes `<:` clauses of its own, and its full one otherwise
-    /// (decision 4 of `new` as compiled code).
+    /// (`object-model.md`, "Instantiation").
     #[test]
     fn level_initializer_picks_the_full_body_or_for_an_applied_level_the_standalone_one() {
         let source = indoc! {"

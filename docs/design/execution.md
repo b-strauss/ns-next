@@ -1721,8 +1721,8 @@ the fast `new` obviously touches NBody's, Richards' or DeltaBlue's hot
 paths, so code or data layout is a likelier cause than the work; this
 measurement cannot decide it. All five parts were kept (decided with the
 user on 2026-10-22); the residuals are measured again once `new` runs as
-compiled code, which replaces the fast `new` path
-([OPEN-WORK.md](../OPEN-WORK.md)).
+compiled code, which replaced the fast `new` path; that measurement is
+"What `new` as compiled code moved" below.
 
 What the measurement does not cover: one machine and one operating
 system, not idle; data layout (symbol ids, object offsets, dispatch ids),
@@ -5907,6 +5907,200 @@ is "What the eight-byte value moved". The dispatch findings -- the spilled
 niche -- are the input of "The compact instruction encoding" below, which
 replaced the stored enum with eight-byte slots; what that moved is "What
 the compact instruction encoding moved".
+
+### What `new` as compiled code moved
+
+"`new` as compiled code" (a synthesized factory body, three initializer
+bodies per mixin with the clause messages lowered inline, a body-less
+declaration the mixin application it writes; [object-model.md](object-model.md),
+"Instantiation") was measured whole against `master` (`f613cb49`, the tree
+before it) on 2026-10-23, twice: at `1dc3a7bb`, the head before the
+performance round, and at `9280bd91`, the head after it. The protocol is
+that of "What the loop over locals moved": both trees exported with `git
+archive` under the git-ignored `.temp/`, `cargo xtask shipped-code` in each
+before its builds, three release builds a side with the pinned `RUSTFLAGS`
+(`-C target-feature=+crt-static -C llvm-args=-align-all-functions=6`), the
+second and third adding `-C metadata=buildb` and `-C metadata=buildc`, each
+in its own `--target-dir`; all six binaries distinct, none importing
+`VCRUNTIME140.dll`. Micro: the four `benchmarks/micro/*.ns` and
+`bench_new.ns`, `bench_new2.ns` and `bench_newarg.ns` of "What
+spec-conformant lookup moved", `ns-next bench <source> --iterations 30`,
+five rounds a sitting, the six binaries rotating by one position from round
+to round; every run printed its recorded answer. Are We Fast Yet: `ns-next
+bench benchmarks/are-we-fast-yet --iterations N -- <Name>`, N = 3 for CD,
+Havlak, Mandelbrot, NBody and DeltaBlue and 10 for the rest, three rounds
+rotating; every run printed `<Name>: ok`.
+
+**The first measurement found `new` slower.** At `1dc3a7bb` (two sittings)
+all seven micro sources were slower than `master`: `bench_new.ns` +31.0%,
+`bench_new2.ns` +30.1%, `bench_newarg.ns` +11.0%, and the send path
+`bench_block.ns` +5.6%, `bench_loop.ns` +9.5%, `bench_send.ns` +5.5%,
+`bench_megamorphic.ns` +3.9%; of the Are We Fast Yet programs Bounce,
+Havlak and Json (+4.5% to +5.8%) and DeltaBlue and CD (+2% to +4.7%) were
+slower, NBody and List about 3% faster, the rest level. `vm::run` was 8,331
+instructions against 7,670 (one `vm::run`, no `vm::run::closure`, no
+`run_stretch` in either), its stack frame 0x368 bytes in both. A bisection
+with one pinned build per commit, and `xperf` profiles of `bench_new.ns`
+(1,500 runs, debug-information builds, samples mapped onto `dumpbin /disasm`
+per instruction), found these causes, each of which is a reason still true:
+
+- **The header read in the lexical origin.** Whether a lexical send starts
+  at the class object's own declaration scope or at its mixin was asked of
+  the class object, whose header the read had to fetch and size
+  (`Heap::pointer_words`), on every lexical send's cached path: about 8 of
+  `bench_loop.ns`'s 9 points and 4.5 of `bench_send.ns`'s 5, and half of
+  Bounce's, Json's, DeltaBlue's and Havlak's loss. The answer is now decided
+  from the code that runs: `CompiledCode::is_declaration_code`, a derived
+  flag on a body-less declaration's full initializer and every block created
+  in it, set by `Mixin::mark_declaration_code` wherever such a mixin's bodies
+  are attached (the compiler, the image's mixin decoding, the embedded
+  shipped code's decoder), never on a wire and outside `CompiledCode`'s
+  equality. `vm.rs` reads it off the running code beside `family_size` and
+  hands it to `sends::lexical_origin` and `sends::super_start`. Declaration
+  code runs once per instantiation, so its lexical and `super` sends go
+  uncached and every cached send starts at its current class exactly as on
+  `master`; a debug build asserts on every such send that the code's answer
+  equals the class-object answer.
+- **The factory activation's first two instructions.** A factory costs an
+  activation, its push and pop, three dispatches, `InitializeInstance`'s
+  `send` wrapper and a switch: about 19% of `bench_new.ns` (a probe that ran
+  the old Rust path instead, unsound, measured 10% below `master` where the
+  head was 9% above). `Mutator::push_sent`, used by `vm::deliver` only,
+  does the factory's `AllocateInstance` and `InitializeInstance` at the push
+  (`enter_factory_body`) and pushes the initializer above it, or, for a class
+  that runs no code, writes the answer and starts the factory at its
+  `Return`. The frame is kept, so reflection, the depth count, unwinding and
+  stack traces see what they saw; no program code runs between the push and
+  those two instructions, so the only difference is a skipped safepoint. The
+  initializer is decided before the allocation, and any error returns the
+  factory unexecuted at program counter 0 so the loop raises it in the
+  body's order (`an_allocation_refused_is_raised_before_the_initializers_error`).
+- **One class-object read per level.** `decide_instance_initializer`,
+  `decide_superclass_initializer` and `enter_or_pass` read a class object's
+  application, applied clause and superclass up to four times each, every
+  read an out-of-line `class_field`, and `class_factory` read the
+  metaclass twice (+10 points on `bench_new.ns` and `bench_new2.ns`, +14 on
+  `bench_newarg.ns` at the commit that made a body-less declaration its
+  application). `Heap::class_level` answers all three with one look at the
+  object's words.
+- **No `Rc<Mixin>` clone per level.** `push_initializer` found a body again
+  through `initializer_mixin`, an `Rc<Mixin>` and an `Rc<MixinApplication>`
+  clone per level, and the allocation cloned the application. `Step::Initializer`
+  carries the body its decision found (`Step` keeps its size) and the
+  allocation borrows the application.
+- **Store-forwarding stalls on push and pop**, the dominant cost inside every
+  activation push, `master` included. `Heap::push_activation` assembled the
+  96-byte `StackEntry` on the stack around `Vec::push`'s growth call and
+  copied it with 16-byte loads of fields just written by narrower stores
+  (one instruction held about 9% of all samples), `pop_activation` moved
+  the whole entry out the same way, and `enter_factory_body` moved the
+  decided `Step` out of the callee's return slot so (3%). `push_activation`
+  and `Mutator::push` are `#[inline(always)]`, write the entry where the
+  vector has room with the growth path out of line, and `pop_activation`
+  reads the fields it needs and drops the entry in place.
+
+Tried and dropped, measured with three builds a side: returning straight
+through a caller whose next instruction is `Return`, no gain beyond noise;
+carrying a pushed initializer through a first argument-free
+`InitializeSuperclass`, 4 to 5 points slower on `bench_new*`; forcing
+`decide_instance_initializer` and `enter_or_pass` inline, reserving the
+entry before computing it and building it through `iter::once_with`, no
+gain or slower.
+
+**The final measurement**, `9280bd91` against `master`, one sitting. Means
+of the five rounds' medians, in ms:
+
+| Source | master a | master b | master c | Head a | Head b | Head c |
+|---|---|---|---|---|---|---|
+| `bench_block.ns` | 7.8456 | 7.8856 | 7.8001 | 7.6099 | 7.6286 | 7.6464 |
+| `bench_loop.ns` | 2.4248 | 2.4156 | 2.4033 | 2.3580 | 2.3522 | 2.3632 |
+| `bench_megamorphic.ns` | 5.3309 | 5.3055 | 5.3144 | 5.2132 | 5.1882 | 5.2309 |
+| `bench_send.ns` | 3.9661 | 3.8206 | 3.8093 | 3.5870 | 3.5808 | 3.6099 |
+| `bench_new.ns` | 3.0107 | 3.0697 | 2.9801 | 2.9233 | 2.9494 | 2.9418 |
+| `bench_new2.ns` | 3.9292 | 3.9043 | 3.9216 | 3.8281 | 3.8281 | 3.8478 |
+| `bench_newarg.ns` | 4.7958 | 4.7971 | 4.8202 | 3.8363 | 3.8447 | 3.8293 |
+
+Pooled (n = 15 rounds a side), in ms; "Rounds" compares every round,
+"Build means" the three build means a side:
+
+| Source | Head mean | master mean | Change | Head median | master median | Change | Rounds | Build means |
+|---|---|---|---|---|---|---|---|---|
+| `bench_block.ns` | 7.6283 | 7.8438 | -2.75% | 7.6295 | 7.8626 | -2.96% | separated | separated |
+| `bench_loop.ns` | 2.3578 | 2.4146 | -2.35% | 2.3590 | 2.4169 | -2.39% | overlapping | separated |
+| `bench_megamorphic.ns` | 5.2108 | 5.3169 | -2.00% | 5.1943 | 5.3220 | -2.40% | overlapping | separated |
+| `bench_send.ns` | 3.5926 | 3.8653 | -7.06% | 3.5897 | 3.8102 | -5.79% | overlapping | separated |
+| `bench_new.ns` | 2.9382 | 3.0202 | -2.72% | 2.9297 | 2.9887 | -1.97% | overlapping | separated |
+| `bench_new2.ns` | 3.8346 | 3.9184 | -2.14% | 3.8319 | 3.9233 | -2.33% | overlapping | separated |
+| `bench_newarg.ns` | 3.8368 | 4.8044 | -20.14% | 3.8345 | 4.8011 | -20.13% | separated | separated |
+
+**All seven sources are faster than `master`**, every head build mean below
+every master build mean (at `1dc3a7bb`: +3.9% to +31%). Are We Fast Yet,
+per build the median of its three values, in ms:
+
+| Benchmark | master a | master b | master c | Head a | Head b | Head c |
+|---|---|---|---|---|---|---|
+| Bounce | 0.9685 | 0.9842 | 0.9895 | 0.9491 | 0.9391 | 0.9449 |
+| CD | 3700 | 3714 | 3684 | 3545 | 3523 | 3539 |
+| DeltaBlue | 672 | 676.7 | 670.7 | 644.8 | 643.2 | 644.9 |
+| DeltaBlueTon80 | 7.63 | 7.588 | 7.507 | 7.215 | 7.301 | 7.308 |
+| Havlak | 3458 | 3455 | 3453 | 3372 | 3366 | 3369 |
+| Json | 11.03 | 11.23 | 11.17 | 10.62 | 10.56 | 10.45 |
+| List | 1.024 | 1.028 | 1.027 | 0.9995 | 0.9979 | 0.9969 |
+| Mandelbrot | 3048 | 3058 | 3055 | 3021 | 2995 | 2978 |
+| NBody | 2279 | 2296 | 2281 | 2206 | 2187 | 2206 |
+| Permute | 2.631 | 2.565 | 2.642 | 2.487 | 2.433 | 2.441 |
+| Queens | 2.204 | 2.116 | 2.154 | 2.03 | 2.031 | 2.041 |
+| Richards | 70.86 | 70.66 | 70.16 | 66.34 | 66.24 | 66.67 |
+| RichardsTon80 | 4.981 | 4.866 | 4.91 | 4.562 | 4.579 | 4.636 |
+| Sieve | 1.335 | 1.325 | 1.375 | 1.372 | 1.333 | 1.366 |
+| Storage | 1.527 | 1.52 | 1.532 | 1.469 | 1.496 | 1.479 |
+| Towers | 3.429 | 3.383 | 3.408 | 3.266 | 3.252 | 3.233 |
+
+Pooled, the median of each tree's nine values with their range, and whether
+the nine values and the three per-build medians separate:
+
+| Benchmark | master, ms | Range | Head, ms | Range | Change | Separated (9 / builds) |
+|---|---|---|---|---|---|---|
+| Bounce | 0.9842 | 0.938-1.048 | 0.9449 | 0.9254-0.9788 | -4.0% | no / yes |
+| CD | 3,700 | 3,677-3,728 | 3,539 | 3,521-3,571 | -4.4% | yes / yes |
+| DeltaBlue | 671.1 | 665.9-687.5 | 644.8 | 639.6-645.7 | -3.9% | yes / yes |
+| DeltaBlueTon80 | 7.588 | 7.428-7.763 | 7.278 | 7.064-7.395 | -4.1% | yes / yes |
+| Havlak | 3,457 | 3,442-3,496 | 3,369 | 3,347-3,382 | -2.5% | yes / yes |
+| Json | 11.17 | 10.96-11.48 | 10.56 | 10.39-10.69 | -5.5% | yes / yes |
+| List | 1.027 | 0.9999-1.073 | 0.9979 | 0.9771-1.042 | -2.8% | no / yes |
+| Mandelbrot | 3,054 | 3,012-3,111 | 2,995 | 2,936-3,023 | -1.9% | no / yes |
+| NBody | 2,284 | 2,274-2,302 | 2,206 | 2,176-2,221 | -3.4% | yes / yes |
+| Permute | 2.631 | 2.535-2.675 | 2.441 | 2.392-2.527 | -7.2% | yes / yes |
+| Queens | 2.154 | 2.068-2.234 | 2.031 | 1.985-2.09 | -5.7% | no / yes |
+| Richards | 70.6 | 70.14-72.03 | 66.34 | 65.81-66.94 | -6.0% | yes / yes |
+| RichardsTon80 | 4.91 | 4.785-5.001 | 4.579 | 4.522-4.654 | -6.7% | yes / yes |
+| Sieve | 1.371 | 1.301-1.406 | 1.366 | 1.304-1.377 | -0.3% | no / no |
+| Storage | 1.527 | 1.493-1.567 | 1.479 | 1.418-1.522 | -3.2% | no / yes |
+| Towers | 3.408 | 3.32-3.53 | 3.252 | 3.141-3.336 | -4.6% | no / yes |
+
+**Fifteen of sixteen are faster** with the per-build medians separated, and
+Sieve is level (at `1dc3a7bb`: Bounce, Havlak and Json +4.5% to +5.8%,
+DeltaBlue and CD +2% to +4.7%). `dumpbin /disasm` of a release build with
+debug information (`CARGO_PROFILE_RELEASE_DEBUG=limited`, the pinned flags):
+one `ns_runtime::vm::run`, no `vm::run::closure` and no `run_stretch`; `vm::run`
+is **8,090 instructions** (8,331 at `1dc3a7bb`, 7,670 at `master`), its stack
+frame 0x368 bytes as before.
+
+What is still open: the factory's `FrameKind` is written as a byte and a word
+into a stack slot that the merged push code reads back in sixteen bytes, a
+store-forwarding stall that holds about 6% of `bench_new.ns`'s samples and
+that removing would speed every push; and the extra word of `SendKey`
+([dispatch.md](dispatch.md), "A send, step by step") is not isolated by a
+measurement ([OPEN-WORK.md](../OPEN-WORK.md)).
+
+What the measurement did not cover: the final measurement is one sitting,
+one machine and operating system, not idle; data layout (symbol ids, object
+offsets, dispatch ids), which `-C metadata` does not vary; the `master`
+builds are those of the first measurement, built the same way the same day.
+No micro source instantiates a class whose levels run no code (a factory
+started at its `Return`), nor exercises `super` sends or body-less
+declarations: their correctness is held by the goldens and the debug
+cross-check, their speed is unmeasured.
 
 ## The trampoline
 
