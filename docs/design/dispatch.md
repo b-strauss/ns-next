@@ -415,7 +415,11 @@ class (§3.3). Where the walk starts is decided in one place,
 except for a body-less declaration's own code, which starts at the
 declaration's scope its class object keeps
 ([object-model.md](object-model.md), "Mixin application";
-`dispatch::LexicalOrigin`). Then §5.9: "If N declares a private method f named s then the
+`dispatch::LexicalOrigin`). Which code a site belongs to is static, so the
+decision is read off the running body (`CompiledCode::is_declaration_code`),
+never off the class object per send; a body-less declaration's own code
+runs once per instantiation of its class, and its lexical and `super` sends
+run uncached, so that a cached send always starts at its current class. Then §5.9: "If N declares a private method f named s then the
 value of the send is the result of invoking f in response to (3.5) message µ on
 o. Otherwise, Let f = lookupProtected(s, R) where R is the class of o".
 
@@ -1240,17 +1244,14 @@ so it gains no dispatch logic:
    `o = kth_enclosing_object(...)`, then `dispatch_id(o)`, or N's instances
    id at a private site (below). `SendSuper`: the instances id of S's
    application, S being where the lookup starts (`sends::super_start`: the
-   superclass of `current_class`, or for a body-less declaration's own code
-   the class object itself); the receiver stays `self`, the key carries
-   `current_class` beside S for a nested-class hit (below), and a send with
-   no `current_class` or no superclass runs uncached, which is where its two
-   errors are raised. The key is keyed on S rather than on the running
-   class because §5.10's resolution depends on S alone, and at a body-less
-   declaration's class object the declaration's own code and the applied
-   mixin's code share one running class but start at two different S
-   ([object-model.md](object-model.md), "Mixin application"); for any other
-   code S is a function of the running class's application, so the two
-   keys are equivalent. `SendInlinable` is emitted only by the reference
+   superclass of `current_class`; a body-less declaration's own code, whose
+   S is the class object itself, runs uncached); the receiver stays `self`,
+   the key carries `current_class` beside S for a nested-class hit (below),
+   and a send with no `current_class` or no superclass runs uncached, which
+   is where its two errors are raised. The key is keyed on S because
+   §5.10's resolution depends on S alone; for every cached send S is a
+   function of the running class's application, so keying on either is
+   equivalent. `SendInlinable` is emitted only by the reference
    lowering and runs uncached (`decide_send`). A non-private lexical send's
    rule carries a payload, N's instances id, `DispatchId::NONE` until it is
    filled -- computed lazily, only once a miss is certain (`miss`'s

@@ -292,8 +292,14 @@ pub(crate) fn compile_mixin_bodies(
 ) {
     if lowering == Lowering::Reference {
         reference::compile_mixin_bodies(mixin, bindings);
-        return;
+    } else {
+        compile_mixin_bodies_optimized(mixin, bindings);
     }
+    mixin.mark_declaration_code();
+}
+
+/// `compile_mixin_bodies` under the optimized lowering.
+fn compile_mixin_bodies_optimized(mixin: &mut Mixin, bindings: &Rc<HashMap<Span, Binding>>) {
     let own = Rc::new(compile_mixin_initializer(mixin, bindings));
     mixin.initializer_code = Some(
         compile_mixin_full_initializer(mixin, bindings, true)

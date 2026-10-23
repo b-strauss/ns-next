@@ -16,31 +16,39 @@ use super::{Mutator, Signal, Step};
 /// in `inline_cache`. The lexical depth counts levels out from the class
 /// that *defines* the running code, so the walk starts at the
 /// activation's `current_class`, not the receiver's own class -- see
-/// `dispatch::kth_enclosing_object` -- except where that class object is
-/// a body-less declaration's and the activation runs the declaration's
-/// own code (`Heap::activation_runs_declaration_code`): that code was
-/// written in the declaration, whose scope the class object records
+/// `dispatch::kth_enclosing_object` -- except where the running code is a
+/// body-less declaration's own code (`declaration_code`, which the site
+/// reads off its body: `CompiledCode::is_declaration_code`): that code
+/// was written in the declaration, whose scope its class object records
 /// (`Heap::class_declaration_scope`), while the class object's own
-/// enclosing object and declaring class are the named class's, which
-/// that class's methods walk out from (§6.2; `newspeak-spec.pdf` §3.3,
-/// §5.9). Every other activation pays one read of its class object's
-/// header.
+/// enclosing object and declaring class are the named class's, which that
+/// class's methods walk out from (§6.2; `newspeak-spec.pdf` §3.3, §5.9).
+/// Decided from the code, which runs nowhere but at its declaration's
+/// class object, so every other send reads nothing more than the
+/// activation's receiver and class.
 #[inline(always)]
 pub(crate) fn lexical_origin<'gc>(
     heap: &Heap<'gc>,
     activation: ActivationReference,
+    declaration_code: bool,
 ) -> (Value<'gc>, LexicalOrigin<'gc>) {
     let (self_value, defining_class) = heap.activation_receiver_and_current_class(activation);
     match defining_class {
-        Some(class) if heap.class_has_declaration_scope(class) => {
+        Some(class) if declaration_code => {
             (self_value, declaration_origin(heap, activation, class))
         }
-        _ => (self_value, LexicalOrigin::Class(defining_class)),
+        _ => {
+            debug_assert!(
+                !defining_class.is_some_and(|class| runs_declaration_code(heap, activation, class)),
+                "internal: a body-less declaration's own code not marked as such"
+            );
+            (self_value, LexicalOrigin::Class(defining_class))
+        }
     }
 }
 
-/// `lexical_origin` for an activation at a body-less declaration's class
-/// object `class`, out of line: only such an activation comes here.
+/// `lexical_origin` for a body-less declaration's own code running at its
+/// class object `class`, out of line: only such code comes here.
 #[cold]
 #[inline(never)]
 fn declaration_origin<'gc>(
@@ -48,11 +56,13 @@ fn declaration_origin<'gc>(
     activation: ActivationReference,
     class: ClassReference<'gc>,
 ) -> LexicalOrigin<'gc> {
+    debug_assert!(
+        runs_declaration_code(heap, activation, class),
+        "internal: code marked as a body-less declaration's own runs elsewhere"
+    );
     match heap.class_declaration_scope(class) {
-        Some(scope) if heap.activation_runs_declaration_code(activation, class) => {
-            LexicalOrigin::Declaration(scope)
-        }
-        _ => LexicalOrigin::Class(Some(class)),
+        Some(scope) => LexicalOrigin::Declaration(scope),
+        None => LexicalOrigin::Class(Some(class)),
     }
 }
 
@@ -60,35 +70,38 @@ fn declaration_origin<'gc>(
 /// `current_class`: "the superclass of the current class C'". The one
 /// place that decides it, for `decide_super_send` and
 /// `inline_cache::send_super`. C' is `current_class` -- except for a
-/// body-less declaration's own code, decided as `lexical_origin` decides
-/// it, where C' is the declaration, whose superclass in a body version is
-/// the level its last clause added: the class object itself. `None` where
-/// there is no superclass. Every other activation pays the one header read
-/// `lexical_origin` pays.
+/// body-less declaration's own code (`declaration_code`, decided as
+/// `lexical_origin` decides it), where C' is the declaration, whose
+/// superclass in a body version is the level its last clause added: the
+/// class object itself. `None` where there is no superclass.
 #[inline(always)]
 pub(crate) fn super_start<'gc>(
     heap: &Heap<'gc>,
     activation: ActivationReference,
     current_class: ClassReference<'gc>,
+    declaration_code: bool,
 ) -> Option<ClassReference<'gc>> {
-    if heap.class_has_declaration_scope(current_class)
-        && runs_declaration_code(heap, activation, current_class)
-    {
+    debug_assert_eq!(
+        declaration_code,
+        runs_declaration_code(heap, activation, current_class),
+        "internal: a super send's code and its activation disagree on whether it is a          body-less declaration's own"
+    );
+    if declaration_code && heap.class_has_declaration_scope(current_class) {
         return Some(current_class);
     }
     heap.class_superclass(current_class)
 }
 
-/// `Heap::activation_runs_declaration_code`, out of line: only an
-/// activation at a body-less declaration's class object asks it.
-#[cold]
-#[inline(never)]
+/// Whether `activation` runs a body-less declaration's own code at its
+/// class object `class`, asked of the class object and the activation:
+/// what a debug build holds the code's own answer to.
 fn runs_declaration_code<'gc>(
     heap: &Heap<'gc>,
     activation: ActivationReference,
     class: ClassReference<'gc>,
 ) -> bool {
-    heap.activation_runs_declaration_code(activation, class)
+    heap.class_has_declaration_scope(class)
+        && heap.activation_runs_declaration_code(activation, class)
 }
 
 /// `newspeak-spec.pdf` §5.7-§5.9: an implicit receiver send whose declaring
@@ -107,10 +120,11 @@ pub(crate) fn decide_lexical_send<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
     depth: u16,
+    declaration_code: bool,
     selector: Symbol,
     arguments: &[Value<'gc>],
 ) -> Result<Step<'gc>, Signal<'gc>> {
-    let (self_value, origin) = lexical_origin(&mutator.heap, activation);
+    let (self_value, origin) = lexical_origin(&mutator.heap, activation, declaration_code);
     let enclosing = dispatch::kth_enclosing_object(&mutator.heap, self_value, origin, depth);
     let lexical_class = dispatch::kth_lexical_class(&mutator.heap, origin, depth);
     let resolved = mutator.resolve_lexical(enclosing, lexical_class, selector);
@@ -123,8 +137,9 @@ pub(crate) fn enclosing_object<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
     depth: u16,
+    declaration_code: bool,
 ) -> Value<'gc> {
-    let (self_value, origin) = lexical_origin(&mutator.heap, activation);
+    let (self_value, origin) = lexical_origin(&mutator.heap, activation, declaration_code);
     dispatch::kth_enclosing_object(&mutator.heap, self_value, origin, depth)
 }
 
@@ -150,6 +165,7 @@ pub(crate) fn enclosing_object<'gc>(
 pub(crate) fn decide_super_send<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
+    declaration_code: bool,
     selector: Symbol,
     arguments: &[Value<'gc>],
 ) -> Result<Step<'gc>, Signal<'gc>> {
@@ -160,7 +176,7 @@ pub(crate) fn decide_super_send<'gc>(
             "super send with no enclosing current_class (used outside a method activation)",
         )));
     };
-    let superclass = super_start(&mutator.heap, activation, current_class);
+    let superclass = super_start(&mutator.heap, activation, current_class, declaration_code);
     let Some(superclass) = superclass else {
         return Err(Signal::Error(NewspeakError::error(
             selector,

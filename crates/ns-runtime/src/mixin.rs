@@ -1067,6 +1067,21 @@ pub fn source_text(text: &str, span: Span) -> Option<&str> {
 }
 
 impl Mixin {
+    /// Marks a body-less declaration's own code -- its full initializer
+    /// and every block created in it -- as such
+    /// (`CompiledCode::is_declaration_code`), so that where its lexical
+    /// sends start is read off the code. Nothing for a mixin with a body.
+    /// Called wherever a mixin's bodies are attached: by the compiler, the
+    /// image's mixin table and the embedded shipped code's decoder.
+    pub(crate) fn mark_declaration_code(&self) {
+        if self.has_body {
+            return;
+        }
+        if let Some(code) = &self.initializer_code {
+            code.mark_declaration_code();
+        }
+    }
+
     /// A mixin with a name and nothing else: the shape every synthesized
     /// mixin starts from -- a builtin's -- and the base the image decoder
     /// fills in field by field. One definition, so adding a field to `Mixin`

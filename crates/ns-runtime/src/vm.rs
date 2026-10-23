@@ -311,6 +311,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                 let selector = site.selector();
                 let call_site = site.call_site();
                 let depth = site.depth();
+                let declaration_code = code.is_declaration_code();
                 let family_size = code.family_size;
                 send(
                     mutator,
@@ -332,6 +333,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                             family_size,
                             call_site,
                             depth,
+                            declaration_code,
                             selector,
                             arguments,
                         )
@@ -342,6 +344,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                 let site = code.body().send_site($pending.site as usize);
                 let selector = site.selector();
                 let call_site = site.call_site();
+                let declaration_code = code.is_declaration_code();
                 let family_size = code.family_size;
                 send(
                     mutator,
@@ -362,6 +365,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                             feedback_base,
                             family_size,
                             call_site,
+                            declaration_code,
                             selector,
                             arguments,
                         )
@@ -456,6 +460,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                         register_base,
                                         u16::from(destination),
                                         depth,
+                                        code.is_declaration_code(),
                                     );
                                     next!()
                                 }
@@ -1087,6 +1092,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                 CompactInstruction::Wide { index } => match run_wide(
                                     mutator,
                                     code.body().wide(index as usize),
+                                    code.is_declaration_code(),
                                     activation,
                                     register_base,
                                     program_counter,
@@ -1232,6 +1238,7 @@ enum WideOutcome {
 fn run_wide<'gc>(
     mutator: &mut Mutator<'gc>,
     instruction: &Instruction,
+    declaration_code: bool,
     activation: ActivationReference,
     register_base: RegisterBase,
     program_counter: usize,
@@ -1252,7 +1259,14 @@ fn run_wide<'gc>(
             return WideOutcome::Next;
         }
         Instruction::LoadEnclosingObject { destination, depth } => {
-            load_enclosing_object_into(mutator, activation, register_base, *destination, *depth);
+            load_enclosing_object_into(
+                mutator,
+                activation,
+                register_base,
+                *destination,
+                *depth,
+                declaration_code,
+            );
             return WideOutcome::Next;
         }
         Instruction::Move {
@@ -1592,8 +1606,10 @@ fn load_enclosing_object_into(
     register_base: RegisterBase,
     destination: u16,
     depth: u16,
+    declaration_code: bool,
 ) {
-    let value = crate::interpreter::sends::enclosing_object(mutator, activation, depth);
+    let value =
+        crate::interpreter::sends::enclosing_object(mutator, activation, depth, declaration_code);
     mutator.heap.set_register(register_base, destination, value);
 }
 

@@ -4417,8 +4417,7 @@ impl<'gc> Heap<'gc> {
 
     /// Whether `class` is a body-less declaration's class object, the one
     /// class object with its declaration's scope
-    /// (`class_declaration_scope`), told by its size alone: what the
-    /// lexical walk asks of every running activation's class, one read of
+    /// (`class_declaration_scope`), told by its size alone, one read of
     /// the class object's header.
     #[inline(always)]
     pub(crate) fn class_has_declaration_scope(&self, class: ClassReference<'gc>) -> bool {
@@ -5867,7 +5866,9 @@ impl<'gc> Heap<'gc> {
     /// (`MakeClosure` captures its creator; `image::decode::verify_graph`
     /// holds a decoded closure to the same), so the walk climbs the code's
     /// nesting and ends at its root. Which code runs decides it, so every
-    /// activation of one body answers alike. `false` for every other
+    /// activation of one body answers alike, and the sends read it off the
+    /// code (`CompiledCode::is_declaration_code`): this answer is what a
+    /// debug build holds the code's to. `false` for every other
     /// activation.
     pub(crate) fn activation_runs_declaration_code(
         &self,

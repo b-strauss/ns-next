@@ -391,6 +391,9 @@ impl Out {
             // A heap's answer, valid only in that heap; the decoded body
             // starts with none.
             code_id_cache: _,
+            // Derived from the mixin the body is attached to, as the
+            // decoder attaches it (`Mixin::mark_declaration_code`).
+            declaration_code: _,
         } = code.fields();
         self.u8(match kind {
             CodeKind::Method => 0,

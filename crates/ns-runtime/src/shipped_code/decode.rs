@@ -160,6 +160,7 @@ impl Decoder<'_> {
         mixin.own_initializer_code = self.option(Decoder::code);
         mixin.standalone_initializer_code = self.option(Decoder::code);
         mixin.superclass_clause_code = self.option(Decoder::code);
+        mixin.mark_declaration_code();
         mixin.root_shape = self.option(|decoder| {
             let over_value = decoder.reader.boolean();
             let applies_value = decoder.reader.boolean();

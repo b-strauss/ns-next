@@ -1372,8 +1372,11 @@ enclosing object and declaring class (`class_field::DECLARATION_ENCLOSING`,
 `Heap::class_declaration_scope`), written by `nested::body_less_class`
 once the superclass clause has run and nil for a module's root, which §3.3
 gives no enclosing object. A frame running `M3`'s own code -- its full
-initializer entered at that class object, or a block created in it, found
-along the captured frames (`Heap::activation_runs_declaration_code`) --
+initializer entered at that class object, or a block created in it, which
+the code itself says (`CompiledCode::is_declaration_code`, marked on the
+full initializer and its blocks wherever a body-less mixin is built:
+`Mixin::mark_declaration_code`; a debug build holds it to the frame's
+captured chain, `Heap::activation_runs_declaration_code`) --
 starts its lexical walk there (`interpreter::sends::lexical_origin`,
 `dispatch::LexicalOrigin::Declaration`): depth 1 is `M3`'s enclosing
 object, deeper levels step out from `M3`'s declaring class, and depth 0 has
@@ -1394,16 +1397,15 @@ Squeak-Newspeak gets the mixin's side wrong: its mixin application is
 created with the declaration's enclosing object (`apply:withName:index:enclosingObject:`
 with `self`, `Newspeak2SqueakCompilation.ns:1931-1955`), so `M1`'s methods
 walk out of the declaration's scope. Which walk a
-frame takes is a function of the code it runs, so a lexical send's site,
-which belongs to that code, is only ever filled and hit by one kind of
-frame, and a global row is keyed by the enclosing object's class and N's
-application, both of which the walk decides
+frame takes is a function of the code it runs, so it is read off the code,
+never off the class object per send, and the sends of `M3`'s own code,
+which runs once per instantiation, run uncached: every cached lexical send
+starts at its current class
 (`goldens/language/class/mixin/spec_6_a_body_less_declarations_clause_resolves_in_its_own_scope.ns`).
 `super` follows the same rule (`interpreter::sends::super_start`): §5.10's
 S is the superclass of C', which for `M3`'s own code is `M3`, whose
 superclass in a body version is `M1`'s level -- the class object itself --
-while `M1`'s code starts below it. The super cache keys its rows by S's
-application, so the two never share one
+while `M1`'s code starts below it; `M3`'s own `super` sends run uncached
 (`goldens/language/class/mixin/spec_5_10_super_in_a_body_less_declarations_clause_starts_at_its_class.ns`).
 Reflection reports `M3`'s own enclosing object, the declaration's, as §6
 gives the class of a declaration "an enclosing object which is eo"

@@ -1092,6 +1092,7 @@ pub fn build(
             text: texts[index].take(),
         });
         Mixin::set_enclosing_of_children(&mixin);
+        mixin.mark_declaration_code();
         built[index] = Some(mixin);
     }
     Ok(Decoded {

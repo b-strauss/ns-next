@@ -303,7 +303,8 @@ declaration's class object is the level its last clause adds, so its own
 code -- its full initializer at that class object, and a block created in
 it -- starts its walk, and its `super` lookup, at the declaration's own
 enclosing object and declaring class, which the class object records
-(`interpreter/sends.rs`, `lexical_origin` and `super_start`), while the
+(`interpreter/sends.rs`, `lexical_origin` and `super_start`, decided from
+the code: `CompiledCode::is_declaration_code`), while the
 applied mixin's code there starts at the level's (`object-model.md`,
 "Mixin application").
 
