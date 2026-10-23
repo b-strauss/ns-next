@@ -55,6 +55,18 @@ opt-level = 1
 lto = "fat"
 codegen-units = 1
 
+# The suite without debug assertions, which is what the release-only tests
+# (the size tests, `cfg(not(debug_assertions))`) need, built without the
+# release profile's fat LTO and single codegen unit, whose final pass runs on
+# one core and dominates the build. Never measure with it: performance is
+# judged on `release` (the `measuring-performance` skill).
+[profile.release-checks]
+inherits = "release"
+opt-level = 1
+lto = false
+codegen-units = 256
+incremental = true
+
 # `Value`, `ObjectReference` and `FrameReference` are `Copy`, so an iterator
 # chain ending in `.cloned()` reads as a deep copy of what is really a register
 # move. This lint is in `clippy::pedantic` and off by default; enabling it here

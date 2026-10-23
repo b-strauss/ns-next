@@ -26,8 +26,9 @@ groups (CLAUDE.md, \"The gates\", says when each runs):
   memory               ns-memory's clippy for Linux and macOS
   benchmarks           the benchmark programs verified at full size (profile benchmarks-verify)
   stress               the five stress modes over the suite, then run-corpus plain and under each
+  release-checks       the suite without debug assertions (cargo profile release-checks)
   plugin-verification  the plugin against several IDEs (verifyPlugin buildPlugin)
-  end-of-batch         images, caches, benchmarks and stress, for a batch that changed the runtime";
+  end-of-batch         images, caches, benchmarks, release-checks and stress, for a batch that changed the runtime";
 
 /// The stress switches the runtime reads in a debug build
 /// (`docs/design/README.md`, "Gates").
@@ -211,11 +212,24 @@ fn group(name: &str) -> Option<Vec<Part>> {
             }));
             vec![Part::StressSuites, Part::Steps(runs)]
         }
+        // The size tests are `cfg(not(debug_assertions))`, so only a build
+        // without debug assertions runs them; the profile skips the release
+        // profile's fat LTO, which a test run does not need.
+        "release-checks" => steps(vec![Step::cargo(
+            "release checks",
+            &[
+                "nextest",
+                "run",
+                "--workspace",
+                "--cargo-profile",
+                "release-checks",
+            ],
+        )]),
         "plugin-verification" => steps(vec![Step::gradle(
             "plugin verification",
             &["-p", "editors/jetbrains", "verifyPlugin", "buildPlugin"],
         )]),
-        "end-of-batch" => ["images", "caches", "benchmarks", "stress"]
+        "end-of-batch" => ["images", "caches", "benchmarks", "release-checks", "stress"]
             .iter()
             .flat_map(|name| group(name).expect("a group"))
             .collect(),
@@ -465,11 +479,12 @@ mod tests {
             .flatten()
             .collect();
         assert_eq!(
-            &labels[..3],
+            &labels[..4],
             [
                 "image round trips",
                 "cache contention",
-                "benchmark programs"
+                "benchmark programs",
+                "release checks"
             ]
         );
         assert!(parts.contains(&Part::StressSuites));

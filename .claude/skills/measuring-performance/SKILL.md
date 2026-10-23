@@ -39,21 +39,37 @@ the re-entries moved", has the full measurement protocol and its history.
 3. **Several builds per tree, pooled.** With the pin in place,
    `bench_block.ns` still measured 16% apart between two builds of the same
    tree, each stable to about 1%. One build per side measures the build.
-4. **Three runs of the slow programs.** Of the Are We Fast Yet programs, CD,
+   **Build them at once**, each in its own `--target-dir` (the second and
+   third adding `-C metadata=buildb`, `-C metadata=buildc` to the pinned
+   `RUSTFLAGS`): the release profile's fat LTO ends in a pass on one core,
+   so builds one after another leave most cores idle. Nothing is timed while
+   they build.
+4. **Interim and final measurements differ.** Each step of a batch's work,
+   a bisection probe or an experiment, is an *interim* measurement: one
+   pinned build a side, only the sources the change can move (the micro
+   sources and `bench_new*` for a send or instantiation change), `--iterations
+   30`, three rounds, no seconds-long Are We Fast Yet program. It answers
+   "did this move it, roughly"; a difference within the 16% build spread of
+   point 3 is no verdict. The numbers a design document records, and the
+   decision whether a batch regressed, are the *final* measurement: point 3's
+   three builds a side, five rounds rotating, two sittings, and the Are We
+   Fast Yet programs (point 5). Bisect a regression only once the final
+   measurement shows it.
+5. **Three runs of the slow programs.** Of the Are We Fast Yet programs, CD,
    Havlak, Mandelbrot, NBody and DeltaBlue take seconds per run: time them
    with `bench --iterations 3`, every other program with `--iterations 10`
    (`execution.md`, "The Are We Fast Yet benchmarks"). Ten runs of them
    made a three-builds-a-side comparison take an hour and a half. Two
    ns-next trees are compared with `bench` alone; the harness's `--timed`
    is for comparing with Primordial Soup or another VM.
-5. **Before timing a change to a send's path, check the inlining.**
+6. **Before timing a change to a send's path, check the inlining.**
    `run_stretch` (the loop over the frame's locals between two safepoints)
    sits near LLVM's inlining threshold and is forced inline into `vm::run`. On
    a release build with debug information, `dumpbin /disasm` (Visual Studio
    Build Tools; not on `PATH`) must show no `vm::run::closure` and no
    `run_stretch` as a function of its own (`execution.md`, "What the inline
    caches moved", "What the loop over locals moved").
-6. **Report** the per-build numbers, the pooled result and the spread, and
+7. **Report** the per-build numbers, the pooled result and the spread, and
    name what the measurement did not cover before drawing a design
    conclusion from it.
 
