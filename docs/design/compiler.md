@@ -3,7 +3,8 @@
 > **Status:** built, including the reference lowering it is checked against.
 > **Code:** `crates/ns-runtime/src/bytecode.rs` (the instruction set and the
 > compiled-code shapes), `bytecode/compact.rs` (the `CodeBuilder` and the
-> eight-byte form a body is stored in), `compiler/mod.rs` (entry points),
+> eight-byte form a body is stored in), `compiler/mod.rs` (entry points,
+> the initializers' prologue and `factory_body`),
 > `compiler/lower.rs` (lowering, register allocation, the scope stack, the converted register
 > layout), `compiler/capture.rs` (the capture analysis closure conversion runs
 > ahead of the optimized lowering), `compiler/control_flow.rs`
@@ -121,6 +122,27 @@ identity".
   holds anything but `nil`, and falls through to the initializer otherwise.
   Addressed as `InitializeSlot` is; the other layout-dependent instruction.
 
+**Instantiation** ([object-model.md](object-model.md), "Instantiation";
+"The three initializer bodies" below)
+
+- `AllocateInstance { destination }` — a factory body's allocation of an
+  instance of the class object it runs on, after every refusal.
+- `InitializeInstance { instance, destination }` — a factory body's run of
+  that class object's own level's initializer on `instance`, with the
+  body's own arguments.
+- `CheckAppliedClause { steps, selector }` — §6.1's check of a `<:` clause
+  against the primary factory of the class it named, whose level is
+  `steps` above the running initializer's.
+- `InitializeSuperclass { steps, selector, argument_registers, destination }`
+  — §6.1's check of the superclass clause, the arity check, then the
+  initializer of the class `steps` above, on `self`.
+- `InitializeAppliedLevel { steps, argument_registers, destination }` — the
+  own part of the level a `<:` clause added `steps` above, on `self`.
+
+Each reads another level of `self`'s class chain, never another frame's
+registers, so each answers 0 in `bytecode::outer_reach_of` and
+`compact::narrow_outer_reach`.
+
 **Leaving a body**
 
 - `Return { register }` — a `^` in a method or initializer body.
@@ -201,20 +223,17 @@ starts with.
 
 A compiled body lives on the declaration it belongs to. A method's is on its
 `MixinMethod` (`code`); a mixin's three initializer bodies ("The three
-initializer bodies" below) and its superclass clause's two bodies are on the
+initializer bodies" below) and its superclass clause's body are on the
 `Mixin` (`initializer_code`, `own_initializer_code`,
-`standalone_initializer_code`, `superclass_clause_code`,
-`superclass_message_code`) — the clause's because a
-nested class's superclass clause is code too, evaluated by the accessor once
-per enclosing instance, and its message's because §6.2 evaluates the message's
-arguments on every instantiation. A declaration that applies mixins carries
-one more message body per `<:` clause, on that clause's
-`MixinApplicationClause` (`message_code`), compiled exactly as the superclass
-clause's message is — kind `SuperclassMessage`, in the declaration's own
-factory scope and with its factory's arity, since §6.2 evaluates every clause
-message with the applying class's factory arguments — and its superclass
-clause body answers the superclass and every `<:` receiver as one array
-([object-model.md](object-model.md), "Mixin application"). While the tree is
+`standalone_initializer_code`, `superclass_clause_code`) — the clause's
+because a nested class's superclass clause is code too, evaluated by the
+accessor once per enclosing instance, and it answers the superclass and
+every `<:` receiver as one array ([object-model.md](object-model.md),
+"Mixin application"); and a factory's is on its factory entry, synthesized
+("The three initializer bodies" below). A clause's message has no body of
+its own: §6.2 and §6.3 evaluate its arguments on every instantiation, in
+the initializer of the declaration whose clause it is, so they are lowered
+into that declaration's full and standalone bodies. While the tree is
 built from source, `MixinMethod::from_declaration` compiles each method and
 `compile_mixin_bodies` a mixin's per-mixin bodies, before the mixin is wrapped in
 the `Rc` every application shares; on load, `image::mixins::build` attaches
@@ -257,47 +276,78 @@ them along with every other cache keyed to the class. See
 
 A declaration `class C f: a = S ms <: M1 m1 <: … <: Mn mn ( |slots| exprs )`
 compiles three initializer bodies, each of kind `Initializer` and each
-taking the factory's arguments:
+taking the factory's arguments, which run instantiation's steps 2 to 6
+([object-model.md](object-model.md), "Instantiation"):
 
 - **The own part** (`own_initializer_code`): `C`'s own slot initializers and
   `initExprs`, then `self` -- nothing of its clauses. It is what a level a
-  `<:` clause adds runs for the mixin it applies, and what the instantiation
-  walk runs today at every level, since the walk evaluates the clauses
-  itself.
+  `<:` clause adds runs for the mixin it applies (`InitializeAppliedLevel`).
 - **The full body** (`initializer_code`): a prologue, then the own part. The
-  prologue (`Lowerer::lower_instance_initialization_prologue`) checks every
-  `<:` clause's selector against the class it names, the topmost first
-  (`CheckAppliedClause`, one statement); evaluates `ms`'s arguments and
-  initializes the superclass with them (`InitializeSuperclass`); then, from
-  the lowest level up, evaluates each `mk`'s arguments and runs that level's
-  own part (`InitializeAppliedLevel`). Levels are counted from the one the
-  initializer is entered at: `<:` clause `k` of `n` names the level `n - k +
-  1` steps up, the superclass clause's class `n + 1`. A declaration that
-  writes no superclass clause initializes `Object` through `new`, one step
-  up (§6.1). The clause arguments are lowered inline, in the factory scope
-  the resolver gave them, and the capture analysis sees them first, in the
-  order they are lowered. A chain of more levels than a `u16` counts
-  compiles to `body_too_large`.
+  prologue (`Lowerer::lower_instance_initialization_prologue`, the
+  reference lowering's `Body::prologue`) checks every `<:` clause's
+  selector against the class it names, the nearest level -- the last
+  clause's -- first (`CheckAppliedClause`, one statement), before anything
+  runs; evaluates `ms`'s arguments and initializes the superclass with them
+  (`InitializeSuperclass`, one statement), which checks §6.1's selector
+  only once the arguments have run; then, from the lowest level up,
+  evaluates each `mk`'s arguments and runs that level's own part
+  (`InitializeAppliedLevel`, one statement each). Each statement has its own
+  scratch registers: nothing is live across them. Levels are counted from
+  the one the initializer is entered at: `<:` clause `k` of `n` names the
+  level `n - k + 1` steps up, the superclass clause's class `n + 1`. A
+  body-less declaration (`Mixin::has_body`) runs at its class object, the
+  level its last clause adds, so its levels are counted one lower, from 0,
+  and its own part is empty. A declaration that writes no superclass clause
+  initializes `Object` through `new`, one step up (§6.1). The clause
+  arguments are lowered inline, in the factory scope the resolver gave
+  them, as the references lower them, and the capture analysis sees them
+  first, in the order they are lowered, so a block in a clause argument
+  captures a factory parameter like any block in the body
+  (`a_block_in_a_clause_argument_captures_the_factory_parameter`).
 - **The standalone body** (`standalone_initializer_code`): the full body
   without the `<:` clauses' checks and levels, the superclass one step up,
   for a level of `C`'s mixin reached from outside a declaration that applies
-  it. Only a declaration that writes `<:` clauses has one: without them it
-  would be the full body.
+  it. Only a declaration that writes `<:` clauses and a body has one:
+  without clauses it would be the full body, and a body-less declaration's
+  class object is never reached from outside its declaration.
 
 A class side has no declaration of its own to read clauses from, so its
 full body is its own part, the same body. Both lowerings emit the same
 shapes, each with its own register allocation
-(`the_reference_lowering_emits_the_same_prologue`).
+(`the_reference_lowering_emits_the_same_prologue`). The four instructions
+the prologue and the factory emit carry no outer reach and address no own
+slot, and each is one call into `interpreter/instantiate.rs`, which decides
+and raises every error: `vm.rs` runs the three that may start an
+activation -- `InitializeInstance`, `InitializeSuperclass` and
+`InitializeAppliedLevel` -- through the same `send` helper as a send,
+writing a value answered at once to the instruction's destination or
+pushing the activation decided, whose answer goes there too and is not
+used.
 
 **A factory's body is synthesized, not lowered.** `compiler::factory_body`
-of the factory's arity allocates an instance of the class object the
-factory was sent to (`AllocateInstance`), runs its initializer on it with
-the factory's arguments (`InitializeInstance`) and returns the instance. It
-depends on nothing but the arity; `mixin::factory_entry` attaches it to
-every factory entry, whoever builds one -- the source path, the embedded
-shipped code or the image decoder -- so no image carries one. A factory
-whose two registers do not fit after its arguments gets `body_too_large`'s
-body.
+of the factory's arity is three instructions whatever the arity: it
+allocates an instance of the class object the factory was sent to
+(`AllocateInstance`), runs that class's initializer on it with the
+factory's own arguments, the body's argument registers, so it names no
+list (`InitializeInstance`), and returns the instance (`Return`), not the
+initializer's answer. It depends on nothing but the arity, and needs no
+AST and no resolver; `mixin::factory_entry` attaches it to every factory
+entry, whoever builds one -- both lowerings' source path, the embedded
+shipped code or the image decoder -- so no image carries one and none can
+forge one, and the reference lowering has no shape of its own to check
+here. A host's `Interpreter::instantiate` runs `factory_body` of its
+argument count, so a class object a host built by hand, with no
+metaclass, instantiates too.
+
+**The `u16` ceilings.** A step count is a `u16`, so a declaration with
+more than 65,534 `<:` clauses -- valid up to the clause index's 2^23 --
+compiles its full and standalone bodies to `body_too_large`, which raises
+"initializer too large" when the class is instantiated, as every other
+body past a ceiling does ("Compilation cannot fail" below); a passed
+level never passes such a chain, so the too-large body runs. A factory
+of 65,534 or more parameters has no room for its two registers after its
+arguments, and its body is `body_too_large`'s too, raising "factory too
+large".
 
 ## Registers
 
@@ -796,7 +846,7 @@ with no copied value and statement 0 covering both instructions. Its
 register is an argument loads into its last argument's register instead, since
 the literal raises before anything is written. When it runs it raises
 `method too large: it needs more than 65535 registers`, with `block`,
-`initializer`, `superclass clause` or `inheritance clause message` in place of
+`initializer`, `factory` or `superclass clause` in place of
 `method` for the other kinds (`interpreter/literals.rs`,
 `body_too_large_error`, which `vm::make_value` only calls). Each body is judged
 on its own: a block past the ceiling makes only that block raise, its creator
@@ -805,10 +855,11 @@ sibling method still runs. A block with more parameters than a `u16` counts
 takes `u16::MAX` of them, and its `MakeClosure` names as many
 (`compiler::parameters_of`), so a call with more meets the block's arity
 check, which raises too. A method or a factory with more than 65,535
-parameters compiles and raises the same way; the message of a factory's `<:`
-clause, whose arity saturates too, is still handed every factory argument,
-since it raises before it reads one (`CompiledCode::stands_for_too_many_arguments`,
-`instantiate`'s `check_message_arity`). An image cannot carry such a method or
+parameters compiles and raises the same way; its factory body and its
+initializers, whose arity saturates too, are still handed every factory
+argument, since they raise before they read one
+(`CompiledCode::stands_for_too_many_arguments`, which `push_step` asks of
+a factory body). An image cannot carry such a method or
 factory, nor a register list of more than 65,535 entries -- a send or a tuple
 whose operands all read one parameter's register fits the ceiling under the
 optimized lowering -- since the wire stores those counts in 16 bits:
@@ -857,7 +908,10 @@ at all, so that path is what makes `disasm` usable on one. See
 For every body at once rather than one, `ns-next-analyzer inspect <artifact> --full`
 disassembles the whole code table with each body attributed to the declaration
 that owns it. `disasm` is the way in when you know which body you want;
-`inspect` is the way in when you do not.
+`inspect` is the way in when you do not. `disasm --initializer` prints a
+mixin's three initializer bodies -- the full one, `<Name> own part` and
+`<Name> standalone` when it has one -- and the factory entry's body, as
+`method <Name> factory <selector>`.
 
 These are the first pieces of the VM's own introspection tooling, the equivalent
 of `d8`; the rest, inline-cache transition traces and deoptimization reasons,
@@ -1083,7 +1137,7 @@ the reference lowering activates blocks the optimized one inlines:
 level optimized and two under the reference lowering.
 
 **The limit counts every activation on the activation stack — method, block,
-initializer level, superclass clause and message — except a block activation
+factory, initializer level and superclass clause — except a block activation
 that a builtin control-flow step performs for a `SendInlinable`, and a mirror
 send's failure block activated for one.** The steps are `ifTrue:`,
 `ifFalse:`, `ifTrue:ifFalse:`, `ifFalse:ifTrue:`, `and:` and `or:` on a
@@ -1158,8 +1212,8 @@ agree, so this rule is ns-next's own.
 **Where it is decided.** The block arm of `Mutator::push_step`
 (`crates/ns-runtime/src/interpreter/mod.rs`) is the one place an activation is
 exempted. Every other push is counted by construction: `push_step`'s method arm
-and its body arms, for an initializer level, a superclass clause or its
-message, record `counted: true`. The flag
+and its body arms, for a factory, an initializer level and a superclass
+clause, record `counted: true`. The flag
 rides on the stack entry, and `Mutator::push` refuses a counted push at the
 limit. A block is exempt when it carries
 `StepArguments::ControlFlow` — the arguments only the control-flow leaves and a
@@ -1291,6 +1345,14 @@ handle, so none can read one through a heap that did not mint it
   diverge from the native one.
 - **Code lives on the mixin and `InitializeSlot` is mixin-relative**, because one mixin
   backs many applications with different inherited layouts.
+- **Instantiation is compiled code: a synthesized factory body and three
+  initializer bodies per mixin, reached by five dedicated instructions**
+  (decided with the user on 2026-10-22; [object-model.md](object-model.md),
+  "Instantiation", "Decisions"). The clause messages' arguments are lowered
+  inline into the initializers, as the references lower them, and the
+  factory body is synthesized from the arity alone, so no image can carry
+  one; no initializer is in a method table, so no message reaches one
+  ("The three initializer bodies").
 - **Every send carries a call site, numbered per code family as a `u32`**, so
   the inline caches index a per-heap table without any instruction changing
   shape; the reference lowering's `UNCACHED` makes it the uncached oracle

@@ -9,7 +9,8 @@
 > caches), `interpreter/mod.rs` (`decide_send`, the uncached explicit-receiver
 > send), `interpreter/sends.rs` (the uncached lexical and super sends),
 > `interpreter/instantiate.rs` (`decide_factory`, the action of a factory
-> entry and the per-send read a cache key does not cover),
+> entry, and the factory body's allocation, which reads per instantiation
+> what a cache key does not cover),
 > `mixin.rs` (`DispatchId`, `MixinMethod.fast_path`), `heap.rs`
 > (`Heap::dispatch_id`), `builtins/primitive.rs` (the enumerated primitive
 > and the VM mirror's table, `MIRROR`), `interpreter/mirror.rs` (how a send
@@ -443,7 +444,14 @@ plausible answer rather than a crash. A method found at a level a `<:` clause
 added runs with that level as its current class, and the level's enclosing
 object and declaring class are the named class's (§6.2), so `outer` in an
 applied mixin reaches the mixin's own enclosing objects, not those of the
-declaration applying it.
+declaration applying it. The one frame that starts elsewhere runs a
+body-less declaration's own code -- its full initializer at its class
+object, or a block created in it: that class object is the level its last
+clause added, with the named class's enclosing object and declaring class,
+and the code was written in the declaration, so the walk starts at the
+declaration's own enclosing object and declaring class, which the class
+object records (`sends::lexical_origin`, `LexicalOrigin::Declaration`;
+[object-model.md](object-model.md), "Mixin application").
 
 ## The send machinery
 
@@ -1015,7 +1023,8 @@ chain says which class object the defining class is counted from. A
 - `Primitive` — the primitive and its level: a mirror row, found only on the
   mirror's class;
 - `Factory` — §6.3's primary factory, an entry of the receiver's metaclass
-  mixin, with the class object §6.3 instantiates: the receiver. Honoured
+  mixin, with its body (`compiler::factory_body` of its arity, which the
+  entry carries) and the class object §6.3 instantiates: the receiver. Honoured
   only when the lookup found it on the receiver's own class, its metaclass
   (`resolved_for`), on the `Public` or `Protected` chain; found anywhere
   else — which only a crafted image can arrange — it is `Unhandled`;
@@ -1056,8 +1065,10 @@ records with every handle taken out:
   application over the one that declares it, since an application's
   `nested_slot` extends its superclass application's;
 - `Primitive` — the primitive, its level and its chain;
-- `Factory` — its chain, and nothing else: §6.3 instantiates the receiver,
-  which the guard already names, so there is no level to count;
+- `Factory` — its chain and the factory's body, which the lookup found
+  on the receiver's own metaclass, so a hit pushes it without reading the
+  method table: §6.3 instantiates the receiver, which the guard already
+  names, so there is no level to count;
 
 and three states a site can be in, each guarded by `VACANT`: `Vacant`,
 `Polymorphic` (a block in the pool below) and `Megamorphic`. An entry holds
@@ -1065,7 +1076,7 @@ no handle. The defining class is a class object per enclosing instance, so it
 is not recorded but recomputed on a hit, `level` superclass steps from the
 chain's start (`chain_start`): the receiver's class for `Public`, `Protected`
 and `DoesNotUnderstand` — for a class object, its metaclass — N itself
-for `Private`, and S, the superclass of `current_class`, for the two `super`
+for `Private`, and S (`sends::super_start`), for the two `super`
 chains. `level` is 0 in the common case, and a target more than `u16::MAX`
 levels up is not recorded; nor is `Unhandled`. A release `Target` is 16 bytes
 and a `CacheEntry` 24, both pinned: an `Rc` needs a pointer-sized payload
@@ -1172,12 +1183,12 @@ way:
   closure's feedback-base field, since both belong to one family, and the
   block's activation takes it from there — no probe per closure, which `bench_block.ns` would
   pay.
-- An initializer, a clause, a clause message: the map, per push. The design
-  let a `Factory` entry carry the bases of the bodies its instantiation runs,
-  should the map show on the instantiation benchmarks. It is not built, and
-  whether the map shows was not measured: no task isolated its cost (the
-  whole step still made the three instantiation sources 4.3–7.8% faster than
-  3a's head).
+- A factory, an initializer, a superclass clause: the map, per push. The
+  design let a `Factory` entry carry the bases of the bodies its
+  instantiation runs, should the map show on the instantiation benchmarks.
+  It is not built, and whether the map shows was not measured: no task
+  isolated its cost (the whole step still made the three instantiation
+  sources 4.3–7.8% faster than 3a's head).
 - A closure decoded from an image carries `NOT_ASSIGNED`, since a base is
   never serialized, and is given a fresh range of its own `family_size`
   (`InlineCaches::fresh_range`) when it is first activated, written back into
@@ -1227,10 +1238,19 @@ so it gains no dispatch logic:
    the whole lookup — class-side members and the factory, then `Class`,
    `Behavior` and `Object`. `SendLexical`:
    `o = kth_enclosing_object(...)`, then `dispatch_id(o)`, or N's instances
-   id at a private site (below). `SendSuper`: the instances id of
-   `current_class`'s application; the receiver stays `self`, and a send with
+   id at a private site (below). `SendSuper`: the instances id of S's
+   application, S being where the lookup starts (`sends::super_start`: the
+   superclass of `current_class`, or for a body-less declaration's own code
+   the class object itself); the receiver stays `self`, the key carries
+   `current_class` beside S for a nested-class hit (below), and a send with
    no `current_class` or no superclass runs uncached, which is where its two
-   errors are raised. `SendInlinable` is emitted only by the reference
+   errors are raised. The key is keyed on S rather than on the running
+   class because §5.10's resolution depends on S alone, and at a body-less
+   declaration's class object the declaration's own code and the applied
+   mixin's code share one running class but start at two different S
+   ([object-model.md](object-model.md), "Mixin application"); for any other
+   code S is a function of the running class's application, so the two
+   keys are equivalent. `SendInlinable` is emitted only by the reference
    lowering and runs uncached (`decide_send`). A non-private lexical send's
    rule carries a payload, N's instances id, `DispatchId::NONE` until it is
    filled -- computed lazily, only once a miss is certain (`miss`'s
@@ -1268,14 +1288,16 @@ finds the index afresh. Creating a class still runs its clause as a step. `Primi
 which for a mirror row never answers `None` — a declining leaf runs the send's
 failure block ("A primitive can fail" above). An entry whose primitive
 method's leaf declined stays, as Cog keeps a method whose primitive
-failed. `Factory` instantiates the receiver (`instantiate::decide_factory`),
-re-checking nothing the lookup decided — §3.2's flat metaclass leaves the
-entry reachable only on the receiver's own metaclass, which the guard
-determines — but reading the class object's builtin field
-(`Heap::class_builtin`) off the receiver on every send, because `Array`
-needs an object of the indexable format, `String` one of the byte format
-and `Symbol` a refusal, and no entry carries which kind of instance to build ("Every target is
-a function of its key and its site" below). A
+failed. `Factory` answers a factory activation of the entry's body on the
+receiver (`Mutator::decide_factory`, `Step::Factory`), re-checking nothing
+the lookup decided — §3.2's flat metaclass leaves the entry reachable only
+on the receiver's own metaclass, which the guard determines. The body's
+`AllocateInstance` reads the class object's builtin field
+(`Heap::class_builtin`) off the receiver on every instantiation, because
+`Array` needs an object of the indexable format, `String` one of the byte
+format and `Symbol` a refusal, and no entry carries which kind of instance
+to build ("Every target is a function of its key and its site" below;
+[object-model.md](object-model.md), "Instantiation"). A
 handler target builds the message array per send and calls the handler, and
 nothing is checked ahead of it.
 
@@ -1284,8 +1306,9 @@ nothing is checked ahead of it.
 That is the property the entries rest on, and a lookup that also reads something
 the key does not cover re-checks it in `act`. The plan audited every read
 `resolve` and its callees make: the only ones the key does not cover are
-the class object's builtin field, which `decide_factory` re-reads on every
-send off the receiver rather than trusting an entry, and a primitive's payload check,
+the class object's builtin field, which the factory body's allocation
+(`instantiate::allocate_for_factory`) re-reads off the receiver on every
+instantiation rather than trusting an entry, and a primitive's payload check,
 which `builtins::execute` re-runs on every send. Whether a method is a
 primitive method is not such a read: it is a property of the method the entry
 records, and `act` reads it off that method on every send. A class object's factory
@@ -1805,8 +1828,9 @@ reclaimable.
     builtin branch of 3b's pre-lookup factory check goes into the entry's
     action, since `Array` needs an object of the indexable format rather
     than a generic instance. It does **not** leave the reads a key does not
-    cover, as the decision expected it would: `decide_factory` reads the
-    class object's builtin field off the receiver on every send, which is
+    cover, as the decision expected it would: the factory reads the class
+    object's builtin field off the receiver on every instantiation -- since
+    `new` is compiled code, in its body's `AllocateInstance` -- which is
     what keeps
     the entry safe rather than the key covering it ("Every target is a
     function of its key and its site" above). What did leave that list is a

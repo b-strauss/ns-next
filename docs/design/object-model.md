@@ -11,10 +11,12 @@
 > the per-heap ids -- every application, guard id, module tree of mixin
 > ids, superseded version and code id nothing names any more, freed in a
 > full collection and minted again smallest first, the application cache
-> pruned by them (road step 5b2c, "An application has two ids"), and
-> `new` of a class that runs no code as one bump and a nil fill (road
-> step 6, "Instantiation"); the rest of the road to a high-performance
-> VM -- the JIT tiers -- is planned ("Planned: the road to a
+> pruned by them (road step 5b2c, "An application has two ids"), inline
+> allocation (road step 6, [memory.md](memory.md), "Inline allocation"),
+> and `new` as compiled code: a factory body and per-level initializer
+> bodies the compiler emits, reached through the inline caches like any
+> send ("Instantiation"); the rest of the road to a high-performance VM
+> -- the JIT tiers -- is planned ("Planned: the road to a
 > high-performance VM").
 > **Code:** `crates/ns-runtime/src/heap.rs` (the handle types and every read
 > and write of one), `heap/value.rs` (`Value`, `ValueKind`, `Word`, the
@@ -26,8 +28,12 @@
 > `heap/ids.rs` and `heap/reclaim.rs` (their free rows and what a full
 > collection reads to free them), `interpreter/reclaim.rs` (the
 > reclamation's decisions),
-> `mixin.rs`, `interpreter/instantiate.rs`, `interpreter/nested.rs` (the
+> `mixin.rs`, `interpreter/instantiate.rs` (what the factory body's and
+> the initializers' instructions decide), `compiler/mod.rs`
+> (`factory_body`, the initializer bodies), `interpreter/nested.rs` (the
 > nested-class accessor and `build_applied_levels`, §6.2's levels),
+> `interpreter/sends.rs` (where a lexical walk and a `super` lookup
+> start),
 > `interpreter/kernel.rs` (the builtin classes, filled from `Kernel.ns`),
 > `interpreter/value_class.rs` (§3.1.1's conditions on a value class),
 > `interpreter/future.rs` and `compiler/simultaneous.rs` (§6.3.2's
@@ -431,6 +437,27 @@ Caching in a hidden slot rather than a side table is what §6 describes — "the
 class is effectively cached within r" — and it makes the fast path a slot read
 instead of a hash lookup.
 
+**A cache hit is a guard and one field load.** Where the hidden slot sits
+in the receiver's layout depends only on the receiver's application, so an
+inline-cache entry for the accessor records the slot's absolute index in
+the layout of the application its guard names
+(`Target::NestedClass`'s `field`, decided by `nested::hidden_slot_index`),
+as a slot accessor's entry records its field. A hit reads that field; a
+filled slot is the answer, with no activation and without the two hash
+lookups the accessor's own path makes (`Heap::known_mixin_id`,
+`MixinApplication::nested_slot`). An empty slot, one whose creation is
+underway, and a send that brings no index take steps 1 to 5 above, which
+run once per enclosing object. The guard decides the index, so the entry
+records what the lookup decided ([dispatch.md](dispatch.md), "An entry",
+"Every target is a function of its key and its site"). The accessor stays
+bodiless, a quick method in Cog's sense, as the slot accessors are: a
+compiled body would cost the interpreter an activation per `Foo` and make
+no JIT tier faster, since the optimizing JIT inlines either form to the
+same code and the baseline JIT emits the guarded load at the site, which
+it must do for the slot accessors anyway (decision 5 of `new` as compiled
+code, "Decisions" below). The reference lowering runs it uncached, as
+every send.
+
 **Inherited nested declarations get their own slots.** §6 says a distinct nested
 class exists for each declaration given in the declaration of C *and its
 superclasses*, so the hidden slots are part of the absolute layout an application
@@ -448,8 +475,7 @@ is right.
 
 **The accessor lives in `interpreter/`**, beside dispatch. It evaluates Newspeak
 code — the superclass clause, compiled like any other body — which runs as a
-`Step::SuperclassClause` continuing with `Continuation::NestedClass`, the way
-instantiation runs the clause's deferred message as a `Step::ClauseMessage`
+`Step::SuperclassClause` continuing with `Continuation::NestedClass`
 ([execution.md](execution.md), "No re-entry from Rust"); steps 3 to 5 run when
 the clause returns. While it runs, the class's own cache slot holds a marker
 that its creation is underway, which is what detects a cyclic definition. It
@@ -563,7 +589,8 @@ kernel's.
   so its mixin has §6's default, and the arity check applies: a host's
   `Interpreter::instantiate` of a builtin class with factory arguments is
   refused. `Array new` builds its own payload
-  (`instantiate::decide_factory`), and the VM mirror's class is refused
+  (`instantiate::allocate_for_factory`, which the factory body's
+  `AllocateInstance` runs), and the VM mirror's class is refused
   outright, with a `CannotInstantiate` carrying nil rather than the class a
   program must not be handed — there is exactly one mirror.
 - **A user subclass of a builtin inherits its methods but not its payload.**
@@ -583,24 +610,26 @@ in `= Object new (...)` — has its two parts evaluated at **different times**
   the same name resolution as any other identifier. Class names are not a
   separate namespace. Its value fixes the actual superclass directly — there is
   no "evaluate `Object new`, allocate an instance, take its class" step.
-- The trailing **message** part (`new`) is deferred and evaluated fresh on every
-  instantiation, in the context of that instantiation's own instance-initializer
-  activation, so the subclass's own factory parameters are in scope when it runs.
+- The trailing **message** part (`new`) is evaluated fresh on every
+  instantiation, by the instance initializer of the class whose clause it is,
+  so the subclass's own factory parameters are in scope when it runs.
 
 Sending the factory message to a class object then does this:
 
 1. **One** instance `o` is allocated — distinct identity, every slot declared by
    the class and its superclasses initially nil. There is no separate instance
    per inheritance level; `o` is threaded through every step below.
-2. An instance-initializer activation `i` is created, with the factory message's
-   arguments.
-3. In the context of `i`, the superclass clause's deferred message is evaluated,
-   and the result is sent to the superclass's own instance initializer, invoked
-   on the same `o`. This recurses up the chain.
+2. An instance-initializer activation `i` of the class's own level is
+   created, with the factory message's arguments.
+3. In the context of `i`, the superclass clause's message is evaluated, and
+   the superclass's own instance initializer is invoked with its arguments on
+   the same `o`. This recurses up the chain. A declaration that applies
+   mixins then initializes the levels its `<:` clauses added ("Mixin
+   application" below).
 4. Once the chain above has run, this class's own slot clauses execute on `o`, in
    declaration order.
 5. This class's own initializer expressions execute on `o`.
-6. `i` returns `o` to the factory method, which returns it to the caller.
+6. `i` returns to the factory method, which returns `o` to the caller.
 
 Step 3 is why a class body has no access to the factory's actual parameters
 except through slots explicitly extracted in the initializer: only `i` sees them.
@@ -610,69 +639,139 @@ walked the superclass chain upward and ran every level's slots and initializer
 expressions in the *subclass's* activation with the subclass's factory arguments,
 which §6.2 does not permit.
 
-**`new` of a class that runs no code is a bump and a nil fill** (road
-step 6, decided with the user on 2026-10-22). Steps 2 to 5 then do
-nothing a program can see, so `decide_instantiation` answers the instance
-at once -- `Step::Value`, no activation, no copy of the arguments, no walk
--- when all of these hold:
+**The factory is compiled code with an activation of its own**, shaped as
+both references shape it (Squeak-Newspeak's `| o | o := self basicNew. o
+initializer`…`: args. ^o`, `Newspeak2SqueakCompilation.ns:1991-2025`;
+SOMns's `MixinBuilder.assemblePrimaryFactoryMethod`, `MixinBuilder.java:547-600`;
+Primordial Soup's `Newspeak2PrimordialSoupCompilation.ns:1907-1961`).
+The factory entry of the metaclass mixin ("Class sides and metaclasses"
+below) carries `compiler::factory_body` of its arity, three instructions
+([compiler.md](compiler.md), "The three initializer bodies"): step 1,
+`AllocateInstance` on the class object the factory was sent to; step 2,
+`InitializeInstance`, the initializer of that class object's own level on
+the new instance with the factory's own arguments; and the return of the
+instance, whose initializer's answer is not used. So `Foo new` is an
+ordinary send that the lookup and the inline caches answer
+([dispatch.md](dispatch.md), "Resolve, then act"), and a factory activation
+(`Step::Factory`, `FrameKind::Factory`) like any method's, which a JIT can
+compile and inline like any other code. A class whose levels run no code
+costs that one activation; road step 6's `new` of such a class, which
+pushed none, is gone with the walk it short-cut, a slowdown accepted until
+the baseline JIT inlines the factory (decision 3, "Decisions" below), and
+measured in [execution.md](execution.md).
 
-- **The application runs no code** (`MixinApplication`'s
-  `instantiates_without_code`, computed once by `Mutator::apply_mixin`
-  and never changed; `mixin::instantiates_without_code`): no level of the
-  application chain needs initializer code, every level's superclass
-  clause names its superclass's primary factory selector and passes it no
-  arguments, and every level above the first takes no factory arguments.
-- **Nothing refuses the instance**: the application's
-  `instantiation_refusal`, and, for a class that inherits from `Value`,
-  the class object's own `class_has_value_refusal` ("A value object's four
-  conditions").
-- **The arguments match the factory's arity.**
-- **No class object of the chain is a level a `<:` clause added**
-  (`Heap::chain_has_applied_level`): such a level runs its clause's
-  message with the applying class's arguments however little code the
-  applications hold. It is asked of the class objects at every
-  instantiation, two field reads a level, because it is a fact of the
-  class objects and not of the application: a class object can name
-  another declaration's applied level as its superclass, and the
-  application key does not record it. It is asked last, since it walks.
+**The allocation decides everything that refuses an instance**, before it
+allocates: `instantiate::allocate_for_factory` builds the builtins whose
+instances are not ordinary ones -- `Array`, `ByteArray`, `String` and
+`Ephemeron` of their own formats -- refuses the VM mirror's class, `Symbol`
+and `Mixin`, then refuses from the application's `instantiation_refusal`
+and the class object's own value refusal ("A value object's four
+conditions" below), and only then allocates through
+`Heap::allocate_instance_with` with the header the application carries
+([memory.md](memory.md), "Inline allocation"). Each refusal keeps the text
+and the selector it had before the factory was code. A host's
+`Interpreter::instantiate` runs the same factory body
+(`decide_instantiation`), so a host and a program make the same instance.
 
-What it reads of the application it reads in one lookup, copied out
-(`Heap::class_instantiation_facts`): the refusal, whether it inherits
-from `Value`, its slot count, its precomputed instance header, the fact
-above and the factory's arity, with no `Rc` cloned. It then allocates
-through `Heap::allocate_instance_with` with the header the application
-carries ([memory.md](memory.md), "Inline allocation"). Every other
-instantiation walks the chain as described above, and the walk is also
-what raises every refusal and the arity error, worded as always. A debug
-build runs the full walk over every instance the fast path made and
-asserts that it answers that same instance with no code to run
-(`assert_the_walk_agrees`).
+**Each level's initializer is a body on its mixin, outside the method
+table, reached only by the instructions that initialize** (decision 2).
+The references name it ``initializer`sel:`` and put it in the method table,
+where `perform:` with a constructed symbol, or a mirror, reaches it, so a
+program could run a finished object's initializer again, a value's
+included; here no message reaches one, and no mirror lists the factory,
+an initializer or an accessor. Nor is it a `super` send of a hidden
+selector: such a send walks on past a superclass whose factory has
+another selector and runs some higher initializer, leaving the skipped
+level's slots nil without an error, which is what Squeak-Newspeak does;
+here every mismatch stays §6.1's error. A level's initializer runs one of
+its mixin's three bodies ([compiler.md](compiler.md), "The three
+initializer bodies"), chosen by `Mutator::level_initializer` and named by
+the frame (`FrameKind::Initializer(level, body)`):
 
-**The walk reads per-level facts.** Each application carries the facts
-the walk asks of its level (`LevelFacts::of` the level's own mixin,
-computed once where the application is built, before
-`Mutator::apply_mixin` derives `instantiates_without_code` from it; a
-debug build's `Heap::register_application` checks it against the mixin):
-`needs_initializer_code`, the superclass clause's `clause_selector` and
-`clause_has_arguments`, and the primary factory's `factory_selector` and
-`factory_arity`. The walk copies them out (`Heap::class_level_facts`)
-instead of cloning the application several times a level; only a clause
-that passes arguments clones it, for its compiled message body. Nothing
-in them depends on the superclass: the walk compares a level's clause
-selector with its superclass's factory selector itself. The walk's
-shape, order and errors are the ones above, and a `<:` clause's message
-runs with the applying class's factory arguments just before the
-initializer of the level it adds.
+- **the full body** at a declaration's own level: `<:` checks, the
+  superclass, the applied levels, then its own part;
+- **the standalone body** at a level a `<:` clause added that is reached
+  from outside the declaration that applied it ("Mixin application"
+  below), or the full body when the mixin writes no `<:` clause, which is
+  then the same;
+- **the own part** at a level a `<:` clause added, run by the applying
+  declaration's full body with that clause's arguments.
 
-The walk runs each level's own part (`Mixin::own_initializer_code`): it
-evaluates the clauses itself. Each mixin also carries the bodies a
-compiled `new` will run -- the full initializer, which evaluates its
-clauses and initializes the levels above it before its own part, and the
-standalone one for a level reached from outside -- and each factory entry
-the factory's body ([compiler.md](compiler.md), "The three initializer
-bodies"); nothing runs them yet. Running `new` as that code, as both
-references do, is the next piece of work ([OPEN-WORK.md](../OPEN-WORK.md),
-"Next").
+Each is entered at its level, whose `own_slot_base` its `InitializeSlot`s
+resolve against after the recorded guard is checked ("What a slot access
+checks" below). The superclass's is invoked from inside the subclass's
+activation, by `InitializeSuperclass`, which climbs `steps` levels from the
+activation's class, checks that the clause's selector is that class's
+primary factory -- after the clause's arguments were evaluated, since §6.3
+evaluates the message "in the context of *i*" and then invokes, so their
+effects precede §6.1's error
+(`goldens/language/class/instantiation/spec_6_1_a_clause_argument_runs_before_the_mismatch_fails.ns`)
+-- then checks the arity and enters that level. A verdict precomputed per
+application would skip the arguments' side effects. Every instruction that
+reads a level validates what a crafted image can make disagree -- a level
+that is not there, a body that is missing, an arity -- and raises an
+ordinary error, never a panic. Nothing caches the target: it is a few field
+reads, and a cache would key on facts of several class objects rather than
+of one guard; it is left to the JIT.
+
+**The arity is checked at every level**, against the factory of the
+declaration whose body the level runs (`check_factory_arity`: the
+mixin's own, or a body-less declaration's), since that body's registers
+are laid out for it. §6.1's selector check pins the arity for a class with
+a body, since a selector's keyword count is its parameter count, but not
+for a body-less named class, and not for a decoded image, which can pair a
+body with a level whose factory has another arity; the check is what
+stands between such a body and a register window of the wrong size, with
+the text "wrong number of factory arguments: factory takes *n*, got *m*".
+
+**A level whose full body would only check is passed, in a loop.**
+`Mutator::enter_or_pass` does not enter a declaration's own level when its
+declaration needs no initializer code, none of its clauses passes
+arguments, and every level its `<:` clauses added has a mixin with no own
+code and a factory of no arguments: it makes the full body's checks itself,
+in the body's order and with its texts -- each `<:` clause against the
+class it named, nearest level first, then the superclass clause against the
+class above them -- and carries on at that class with no arguments. A level
+a `<:` clause added and reached from outside is always entered. So `Array
+new` is the factory's one activation, and a chain of levels without code
+neither nests nor escapes the depth limit's count, whatever its length
+(`levels_without_code_are_passed_without_an_activation`). What it asks of a
+level it copies out of the level's application in one read
+(`LevelFacts::of` the level's own mixin, computed where the application is
+built and checked against the mixin by a debug build's
+`Heap::register_application`): `needs_initializer_code`, the superclass
+clause's `clause_selector` and `clause_has_arguments`, the
+`applied_clause_count` and `applied_clauses_pass_arguments`, the mixin's own
+`factory_arity`, and for a metaclass mixin the factory entry it holds.
+Which factory a class object has is not among them: it is read through
+the class object's metaclass ("Class sides and metaclasses" below).
+
+**A chain nests one counted activation per level with code** (decision 6).
+Each initializer invokes its superclass's from inside its own activation,
+so the levels with code nest, and a chain of more of them than the depth
+limit fails with the ordinary stack-overflow error, as any recursion that
+deep does (`goldens/language/class/instantiation/a_chain_deeper_than_the_depth_limit_overflows.ns`;
+[execution.md](execution.md), "A superclass chain nests one activation per
+level"). A flat chain would need a Rust driver between the levels, which is
+the walk compiled `new` replaced.
+
+**The initializer's answer is the instance's** only by construction: both
+lowerings end an instance initializer by answering `self` and discard a
+top-level `^`, and the factory answers the instance it allocated whatever
+the initializer answered. A `^` in a block in a clause argument is an
+initializer's `^`: it targets the initializer's activation, which catches
+none, so it escapes the instantiation as an initializer expression's does
+([execution.md](execution.md), "Unwinding";
+`a_return_inside_a_block_in_a_clause_argument_escapes_instantiate`).
+
+**An edit rebuilds them with its mixin.** The MirrorBuilder builds an
+edited declaration's mixin as the source path builds every mixin
+(`Mutator::build_mixin`), so its three initializer bodies and its factory
+entry's body come with it, and the atomic install's re-application
+recomputes every per-application fact, `LevelFacts` included, while each
+metaclass keeps its class side, tracked by mixin id
+([liveness-and-reflection.md](liveness-and-reflection.md), "A
+MirrorBuilder and an atomic install").
 
 ### A value object's four conditions
 
@@ -772,8 +871,9 @@ for a level above `C`).
   root, nested or decoded alike — so a value module whose root class defines
   `==` is refused exactly as a nested one would be
   (`goldens/library/value/a_value_module_defining_identity_is_refused.ns`), and
-  `decide_instantiation` refuses it from `instantiation_refusal`, the same
-  field the root clause defect and the mutable slot are refused from.
+  the factory body's allocation (`allocate_for_factory`) refuses it from
+  `instantiation_refusal`, the same field the root clause defect and the
+  mutable slot are refused from.
 - **Enclosing objects are values** is decided once per *class object*, cold,
   by `interpreter/value_class.rs`'s `check_value_class`, which
   `interpreter/nested.rs`'s `after_clause` calls after `apply_mixin` answers
@@ -782,7 +882,8 @@ for a level above `C`).
   written by `Mutator::record_value_class_refusal` from a
   `ValueClassRefusal`: an `Array` of the offending enclosing object and the
   name of the level at fault, "The object layout" below), and
-  `decide_instantiation` refuses an instance of a class that carries one,
+  the factory body's allocation (`allocate_for_factory`) refuses an
+  instance of a class that carries one,
   rendering the offender with `Heap::describe` only then, beside the
   refusals it makes from
   `instantiation_refusal`. A class that does not inherit `Value` pays one flag
@@ -849,7 +950,8 @@ slots, no `==` of its own, its class inherits `Value` — rather than by an
 exception in `check_value_slot`; SOMns asserts the same
 (`vm/ObjectSystem.java`, `assert vmMirror.isValue()`). Every capability
 guarantee of the mirror is unchanged by it: nothing names it, the encoder
-refuses it, `decide_factory` refuses to instantiate its class, and
+refuses it, the factory body's allocation (`allocate_for_factory`)
+refuses to instantiate its class, and
 `SendMirror` has no wire tag. With the kernel instance a value, every
 builtin value class passes the enclosing-object condition by construction;
 the builtin classes are built by the bootstrap rather than by the
@@ -1187,11 +1289,14 @@ Each `<:` clause is §6.1's `inheritanceClause`, the production the superclass
 clause itself is — a receiver naming a class, with an optional message
 defaulting to `new` — and `<:` is one lexer token. With at least one clause the
 whole body may be replaced by a `.`: such a declaration is the mixin
-application itself (decision 8 of `new` as compiled code, below). `ClassDeclaration::mixin_applications` carries the clauses
+application itself (decision 8 of `new` as compiled code, "Decisions"
+below). `ClassDeclaration::mixin_applications` carries the clauses
 in written order, and the declaration's `Mixin::mixin_applications` one
 `MixinApplicationClause` each — its message (a `ClauseMessage`, the
 selector and whether it has arguments, the same record `Mixin::superclass`
-holds for the superclass clause) and that message's compiled body. Type
+holds for the superclass clause). A clause's message has no body of its
+own: its arguments are lowered into the declaration's initializer
+([compiler.md](compiler.md), "The three initializer bodies"). Type
 arguments on a clause's receiver (`<: Collection[E]`) are kept in the syntax
 tree and ignored, as they are on a superclass clause
 ([frontend.md](frontend.md), "What is kept but ignored, and what a reprint
@@ -1243,7 +1348,18 @@ runs `M1`'s own part with `5`, its arity checked against `M1`'s factory;
 `M3`'s own clauses never run there
 (`goldens/language/class/mixin/spec_6_a_body_less_declaration_is_the_mixin_application.ns`).
 A passed level (`Mutator::passes`) counts a body-less declaration's levels
-the same way. The image never applies a body-less row's mixin.
+the same way. The image never applies a body-less row's mixin. §6.2 makes
+the result of a mixin application "a class I with mixin M", so a level of
+the declaration's own, with an empty mixin, over the applied levels -- what
+ns-next built before -- was a deviation: `class U = Base new <: M3 new.`
+gained nothing of `M1`. Squeak-Newspeak's accessor applies the last mixin
+itself, named for the declaration (`Newspeak2SqueakCompilation.ns:1931-1955`).
+The factory is the declaration's signature, not `M1`'s selector, because
+the declaration may write one and its parameters are in scope "throughout
+the mixin application" (§6); Squeak copies the declaration's factory onto
+the application too. The class object has no class side but the one
+synthesized for its factory, and inherits none of `M1`'s, since
+metaclasses are flat ("Class sides and metaclasses" below).
 
 **A body-less declaration's own code resolves in the declaration's scope.**
 The class object is two classes at once: the level, whose enclosing object
@@ -1263,8 +1379,21 @@ starts its lexical walk there (`interpreter::sends::lexical_origin`,
 object, deeper levels step out from `M3`'s declaring class, and depth 0 has
 no N, since `M3` declares no member and §5.8 makes a self send `outer M3 m`.
 Every other frame at that class object -- `M1`'s methods and initializer
-bodies -- walks `M1`'s chain, as before. SOMns decides the same per running
-method (`OuterObjectRead`'s `lookupClassWithMixinApplied`). Which walk a
+bodies -- walks `M1`'s chain, as before. So one class object serves both,
+and only the frames running the declaration's own code start elsewhere
+(decided with the user on 2026-10-22, decision 8 as amended, "Decisions"
+below): a class object of the declaration's own would break `M1`'s methods,
+which matter far more than the declaration's clause arguments, and a class
+object with only the declaration's context would walk `M1`'s methods out
+of the wrong scope. SOMns decides the same per running method: an outer
+read finds the lexical class by the running code's mixin, falling back to
+the class the mixin was applied to (`OuterObjectRead.getEnclosingClass`,
+`lookupClassWithMixinApplied`,
+`prior-art/somns/src/som/interpreter/nodes/OuterObjectRead.java:120-133`).
+Squeak-Newspeak gets the mixin's side wrong: its mixin application is
+created with the declaration's enclosing object (`apply:withName:index:enclosingObject:`
+with `self`, `Newspeak2SqueakCompilation.ns:1931-1955`), so `M1`'s methods
+walk out of the declaration's scope. Which walk a
 frame takes is a function of the code it runs, so a lexical send's site,
 which belongs to that code, is only ever filled and hit by one kind of
 frame, and a global row is keyed by the enclosing object's class and N's
@@ -1337,32 +1466,58 @@ mixin over the same superclass share each level's `MixinApplication`, as §6.2's
 "they all share their code and structural definition with the mixin" requires.
 
 **Initialization order follows §6.2's text**, generalized to a chain, and
-matches SOMns (`MixinBuilder.assembleInitializationMethod`): `C`'s instance
-initializer evaluates `ms` and runs `S`'s initializer — and everything above
-`S` — with its arguments; then evaluates `m1` and runs `M1`'s initializer with
-its arguments; and so on to `mn` and `Mn`; and then runs `C`'s own slots and
-initializer expressions. Every clause message is compiled in `C`'s factory
-scope and evaluated with `C`'s factory arguments (§6.3 makes the factory's
-parameters visible in the superclass clause), and each `mk` is evaluated just
-before `Mk`'s initializer runs, not on the way up. The walk climbs as for any
-class, checks each clause's selector against the named class's factory as it
-climbs, defers each `<:` message (`Instantiation::deferred`) and evaluates it
-on the descent; a frame running one has kind
-`FrameKind::MixinApplicationMessage`, naming the level its clause added.
-Because a `<:` clause's selector is checked against the named class's primary
-factory on the way up, a misnamed clause fails before `ms` and the
-superclass initializers run -- the policy the superclass clause already
-follows, whose selector is checked before its arguments are evaluated. An
-applied mixin's own superclass clause is never evaluated: only its mixin is
-applied (`goldens/language/class/mixin/mixin_initializer_order.ns`), and so are none of its
-own `<:` clauses
+matches SOMns (`MixinBuilder.assembleInitializationMethod`): `C`'s full
+initializer checks every `<:` clause's selector against the primary factory
+of the class it named, nearest level first (`CheckAppliedClause`);
+evaluates `ms` and runs `S`'s initializer — and everything above `S` — with
+its arguments (`InitializeSuperclass`); then evaluates `m1` and runs `M1`'s
+own part with its arguments at the level `M1`'s clause added
+(`InitializeAppliedLevel`); and so on to `mn` and `Mn`; and then runs `C`'s
+own slots and initializer expressions ([compiler.md](compiler.md), "The
+three initializer bodies"). Every clause message is lowered in `C`'s
+factory scope and evaluated with `C`'s factory arguments (§6.3 makes the
+factory's parameters visible in the superclass clause), and each `mk` is
+evaluated just before `Mk`'s own part runs, so a `<:` clause's message runs
+with the applying class's factory arguments just before the initializer of
+the level it adds (`goldens/language/class/mixin/mixin_initializer_order.ns`).
+An applied level's own part is checked against the arity of its mixin's
+own factory, for which its registers are laid out, with the text of every
+arity check. Because the `<:` clauses' selectors are checked first, a
+misnamed clause fails before `ms` and the superclass initializers run
+(`goldens/language/class/mixin/mixin_clause_naming_the_wrong_factory_fails.ns`),
+while the superclass clause's selector is checked once its arguments have
+run, as §6.3 orders it ("Instantiation" above). An applied mixin's own
+superclass clause is never evaluated there: only its mixin's own part runs,
+and none of its own `<:` clauses
 (`goldens/language/class/mixin/mixin_applied_mixins_own_clauses_are_not_applied.ns`).
 
-**A declaration without `<:` takes the path it took before**, plus one test
-per climbed level, per descent and per nested-class creation; the `<:`
-machinery lives in cold, out-of-line helpers. What that costs is measured in
-[execution.md](execution.md), "What mixin application cost". The image
-carries the clauses on each row and the levels as class records
+**A level a `<:` clause added, reached from outside, is an ordinary class
+of its mixin** (decision 4, "Decisions" below). A program reaches such a
+level only through a mirror (`(ClassMirror reflecting: C) superclass
+reflectee`). Instantiated directly, or named as the superclass of another
+class, it initializes as a class whose mixin is the applied mixin and whose
+superclass is the level's actual superclass: it runs its mixin's
+standalone body -- the mixin's *own* superclass clause, checked by §6.1
+against that superclass, then the mixin's own part -- and never the
+mixin's own `<:` clauses, whose levels are not above it. Only the full
+initializer of the declaration that applied it runs it the `<:` way, its
+clause's message then the mixin's own part. Squeak-Newspeak deletes such a
+level's initializer (`prior-art/newspeak/squeak/KernelForSqueak.ns:968-985`), so both cases end in a
+`doesNotUnderstand:` or silently run a higher initializer; SOMns flattens
+the levels into one class, so none is reachable; Primordial Soup has no
+`<:`. For `class Below y: y = L tag: …` over the level `L` that `Marker`
+adds to `Base k:`, `Below`'s clause message is evaluated and the error is
+"the superclass clause of class Marker sends #new, but the primary factory
+of class Base is #k:"
+(`goldens/language/class/mixin/spec_6_2_a_level_reached_through_a_mirror_is_a_class_of_its_mixin.ns`,
+which pins the single and the stacked case and a mixin with `<:` clauses
+of its own).
+
+**A declaration without `<:` pays nothing for them**: its full body has no
+check and no applied level, and its standalone body does not exist. What
+mixin application cost the walk that ran it before `new` was compiled code
+is measured in [execution.md](execution.md), "What mixin application cost".
+The image carries the clauses on each row and the levels as class records
 ([image-format.md](image-format.md), "Sections"). The goldens are under
 `goldens/language/class/mixin/`, with §6.2's own example in
 `goldens/language/class/mixin/spec_6_2_a_mixin_application_derives_a_class.ns`.
@@ -1469,9 +1624,13 @@ by their declarations in `Kernel.ns` like every shipped class
 ([image-format.md](image-format.md), "Shipped names").
 
 **Where a class object's state lives.** In the class object's own eight
-fields, which only the VM reads ("The object layout" below): its
-application, enclosing object, declaring class and superclass, and for a
-metaclass `this_class`, the link back to its class. The three kernel classes
+fields -- nine for a level a `<:` clause added, eleven for a body-less
+declaration's class object -- which only the VM reads ("The object layout"
+below): its application, enclosing object, declaring class and superclass,
+for a metaclass `this_class`, the link back to its class, for a level the
+class its clause named, and for a body-less declaration's class object its
+declaration's enclosing object and declaring class ("Mixin application"
+above). The three kernel classes
 declare no slot for any of it and carry behaviour only, as SOMns's do
 (`Class = Object ()`, `Metaclass = Class ()()` in
 `prior-art/somns/core-lib/Kernel.ns`, the state in the Java `SClass`) and as
@@ -1563,16 +1722,28 @@ under the declared factory's selector (`new` for a declaration that writes
 none, §6's unnumbered introduction, before §6.1 begins), found by the
 ordinary lookups like any other member — as both references build it
 (Primordial Soup's `astForPrimaryFactory:`, SOMns's
-`MixinBuilder.assemblePrimaryFactoryMethod`). What it does is instantiate
-the class object the message was sent to, which `interpreter::resolve::act`
-runs through `instantiate::decide_factory`; the body it carries,
-`compiler::factory_body` of its arity, is not run yet ("Instantiation"). A
+`MixinBuilder.assemblePrimaryFactoryMethod`). **The entry carries its
+body**, `compiler::factory_body` of its arity, which instantiates the class
+object the message was sent to ("Instantiation" above):
+`interpreter::resolve::act` answers it as a factory activation on the
+receiver (`Mutator::decide_factory`, `Step::Factory`), with the body the
+lookup found, which a cache entry records like a method's. A
 flat metaclass puts a factory entry on the receiver's own metaclass and
 nowhere else, and `resolve::resolved_for` honours a factory only when the
 lookup found it on the receiver's own class, so no special case sits ahead of
 or behind the lookup ([dispatch.md](dispatch.md), "Resolve, then act").
-`primary_factory_selector` survives only where §6.1 still needs it, in the
-superclass clause's check.
+
+**A class object's factory and name are read through its metaclass**
+(`Heap::class_factory`, `Heap::class_name`): the factory entry and the name
+of the class-side mixin its metaclass applies, or its own mixin's while it
+has no metaclass yet. For a class of its own declaration that is its
+mixin's, as before; it differs where the metaclass applies another
+declaration's class side than the mixin the class object applies: a level a
+`<:` clause added has the class side of the class its clause named, and a
+body-less declaration's class object its declaration's ("Mixin application"
+above). `primary_factory_selector` reads it where §6.1 needs it, in the
+checks of the superclass clause and of the `<:` clauses, and an
+instantiation refusal names the class and its factory the same way.
 
 The entry is derived, never stored twice: `instantiate::build_class_side`
 inserts it as a class side is built from source, `image::mixins::build`
@@ -1620,7 +1791,7 @@ instantiate them is needed whatever is nameable. `Mutator::apply_mixin` folds
 `Behavior`'s application — recognized by the mixin the kernel phase records
 as `Mutator.behavior_mixin` before `Behavior` is filled — and every
 application below it inherits the refusal from its superclass, so
-`decide_instantiation` refuses `Class`, `Metaclass`, every metaclass and any
+the factory body's allocation refuses `Class`, `Metaclass`, every metaclass and any
 subclass of them a program manages to declare with an ordinary Newspeak error
 under its factory selector: "cannot instantiate `C`: a class object is made
 only by evaluating its declaration" (`interpreter/instantiate.rs`;
@@ -1885,9 +2056,9 @@ road, each step landing green on its own:
    5b2c, the reclaiming of ids, built.
 6. **Inline allocation in the interpreter** -- built ([memory.md](memory.md),
    "Inline allocation"; "Instantiation" above).
-   - **After road step 6, `new` as compiled code** -- the primary factory
-     run as code the compiler emits, as both references do
-     ([OPEN-WORK.md](../OPEN-WORK.md), "Next").
+   - **After road step 6, `new` as compiled code** -- built: the primary
+     factory and the initializers run as code the compiler emits, as both
+     references do ("Instantiation" above).
 7. **The execution model for compiled code** ([execution.md](execution.md),
    "Planned: JIT tiers").
    - **Between road steps 7 and 8, real Newspeak bodies for `whileTrue:`,
@@ -2156,7 +2327,7 @@ either layout open.
 | 4 | 64-bit-indexed | a `LargeInteger`'s magnitude (its sign in the header's negative bit), a boxed `Float` |
 | 5 | forwarded | a forwarder -- the scavenger's for a young object it has copied, and the bulk forward's for each object it forwarded, its guard `FORWARDED` ("`become:` is an eager bulk forward") -- whose class word holds the new location; once the scavenge or the forward that made it ends, nothing names it, so no send, accessor or reader outside the two ever meets one, and a bulk forward's stays in the space as garbage until the next scavenge (a young one) or full collection (an old one) |
 | 6 | free | a gap a collector leaves, walkable like an object; no object has it, since the sliding compaction and the scavenge leave no gap; a debug build writes it as the poison over the nursery a scavenge vacated, and `Heap::block` refuses it there ([memory.md](memory.md), "Finding a missed barrier: the scavenge stress mode") |
-| 7 | class | a class object: eight fixed fields |
+| 7 | class | a class object: eight fixed fields, nine for a level a `<:` clause added, eleven for a body-less declaration's class object |
 | 8-9 | 32-bit-indexed | a wide string or symbol |
 | 10 | weak pointers (`WeakPointers`) | a `WeakArray`'s slots, forwarded like any pointer words but not traced for liveness ([memory.md](memory.md), "Weak references") |
 | 11 | ephemeron (`Ephemeron`) | an `Ephemeron`: its key, then the value and the finalizer, traced only once the key is reached and set to `nil` when it is not ([memory.md](memory.md), "Weak references") |
@@ -2196,8 +2367,10 @@ digits of a `LargeInteger`, a `Float`'s bits, a string's code points or a
 eight fixed fields (`object.rs`'s `class_field`) everything that holds per
 class object: its enclosing object, declaring class, superclass, for a
 metaclass the class it describes (`this_class`), its builtin tag (a
-`SmallInteger`, the class's position in `BuiltinClass::ALL`, or `nil`; `act`
-re-reads it on every send, [dispatch.md](dispatch.md), "Primitive methods"),
+`SmallInteger`, the class's position in `BuiltinClass::ALL`, or `nil`; the
+factory body's allocation re-reads it on every instantiation,
+[dispatch.md](dispatch.md), "Every target is a function of its key and its
+site"),
 its value-class refusal (`nil`, or a two-element `Array` the VM alone reads:
 the offending enclosing object and the name of the level at fault as a
 `Symbol`, or `nil` for the class's own enclosing object), for a level a `<:`
@@ -2208,7 +2381,15 @@ as a `SmallInteger` full-width index, separate from the 22-bit guard id in
 instances' headers; the behaviour stays Rust. A class object is 80 bytes
 with its header and class word. The builtin tag, the applied clause and the
 application are numbers, the other five fields objects or `nil`, and the
-tracer sees only those. The applied clause packs the named builtin into a
+tracer sees only those. Two kinds of class object carry more, and only they
+grow, so the image's amplification bound does not move
+([memory.md](memory.md), "The amplification bound of a rejected load"): a
+level a `<:` clause added has a ninth field, the class object its clause
+named (`NAMED_CLASS`, 88 bytes), and a body-less declaration's class object
+two fields more, its declaration's enclosing object and declaring class
+(`DECLARATION_ENCLOSING`, `DECLARATION_DECLARING_CLASS`, 104 bytes; "Mixin
+application" above). All three are pointer fields, and on a shorter class
+object their ranges are empty (`pointer_ranges`). The applied clause packs the named builtin into a
 6-bit field, as its position in `BuiltinClass::ALL` plus one (0 for none),
 which caps the builtins: `mixin.rs`'s compile-time assertion keeps
 `BuiltinClass::ALL` shorter than 63, so there are at most 62.
@@ -2353,7 +2534,7 @@ compiled against the old layout; the check is what keeps the rest of such
 an activation, and a cached private or super accessor, from writing the old
 layout into an object of another shape. The forward can come at any send,
 so it can come *before* a push as well as during an activation: a private
-lexical send, a super send and the instantiation walk's next level bind
+lexical send, a super send and an initializer instruction's level bind
 their code without looking at the receiver, so nothing about the binding
 vouches for the receiver's shape.
 
@@ -2523,10 +2704,12 @@ run in:
 `<class>` is the declaring level's mixin's name and `<name>` the
 declaration's; the error's selector is the declaration's name.
 A cache hit reads the slot at the index its entry recorded, without the
-two hash lookups, only when the receiver's own application is the one the
-entry's guard names -- always on a public or protected site, and on a
-private or `super` one after a compare of the receiver's id with the
-guard -- since that application decides the index
+two hash lookups, only for a receiver whose layout holds that index --
+always on a public or protected site, whose guard is the receiver's
+application; on a private one after a compare of the receiver's id with
+the guard, N's application; and on a `super` one after a compare with the
+running class's application, whose chain contains S, since a hidden slot's
+index is the same in every application over the one that declares it
 ([dispatch.md](dispatch.md), "An entry"); a forwarded enclosing object of
 another shape misses the guard or fails the compare, and takes the
 accessor's lookup.
@@ -2886,3 +3069,49 @@ no program can observe, since a value has no identity.
   measurement while building it: the private and super accessor check out
   of line, with one verified (guard, level) pair per heap rather than a
   rewrite of the entry that hit.
+- **`new` is compiled code** (eight decisions taken with the user on
+  2026-10-22, built by
+  [its plan](../superpowers/plans/2026-10-22-2051-compiled-new.md);
+  "Instantiation", "Mixin application" and "The nested-class accessor"
+  above), for performance first -- `Foo new` becomes ordinary sends to
+  compiled bodies, which take the inline caches and which the JIT tiers can
+  compile and inline, where a Rust walk is opaque to a JIT -- and for
+  uniformity with the references second. The code cites them by number:
+  1. The factory is compiled code with an activation of its own, shaped
+     like Squeak-Newspeak's: an allocation on the receiver, with every
+     refusal and builtin case, the direct invocation of the receiver's own
+     level's initializer with the factory's arguments, and the return of
+     the instance.
+  2. Each level's initializer is a body on its mixin, outside the method
+     table, invoked by dedicated instructions -- never a super send of a
+     hidden selector, which a program could reach with `perform:` or a
+     mirror and which skips a mismatched level silently.
+  3. A class without initializer code costs one factory activation until
+     the JIT inlines it; road step 6's `new` with no activation goes.
+  4. A level a `<:` clause added, reached from outside, is an ordinary
+     class of its mixin: its own superclass clause, then its own part.
+  5. The nested-class accessor stays bodiless, and its cache entry holds
+     the hidden slot's absolute index.
+  6. A level's initializer invokes its superclass's from inside its own
+     activation, so a chain nests one counted activation per level with
+     code, and a chain deeper than the depth limit overflows; levels
+     without code are passed in a loop.
+  7. The measurements are a record with a tolerance, not a strict gate
+     ([execution.md](execution.md)).
+  8. A declaration without a body is the mixin application it writes, a
+     specification deviation fixed: its class object is the level its last
+     `<:` clause adds, named for the declaration, with the declaration's
+     factory and no class side of its own. Amended with the user while
+     building it: that one class object also records the declaration's
+     own enclosing object and declaring class, and only the frames
+     running the declaration's own code start their lexical walk and
+     their `super` lookup there, as SOMns decides it per running method.
+
+  Refined while planning: which factory a class object has, and its name,
+  are read through its metaclass; the factory body is synthesized by one
+  function, never lowered and never on the wire; each mixin carries three
+  initializer bodies, its clause messages lowered inline; and the
+  initializer instructions have no cache of their own. Left for later:
+  the futures of simultaneous slots, which stay in Rust, and the
+  scalarization of values in the optimizing JIT
+  ([OPEN-WORK.md](../OPEN-WORK.md)).

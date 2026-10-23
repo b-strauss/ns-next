@@ -180,13 +180,20 @@ activation.
 class object's class is its own metaclass — its class side applied to
 `Class` — and every metaclass's class is `Metaclass`. They carry behaviour
 only; a class object's state stays in fields only the runtime reads (its
-eight fixed fields, [object-model.md](object-model.md), "The object
-layout"), and their
+eight fixed fields, nine for a level a `<:` clause added and eleven for a
+body-less declaration's class object, [object-model.md](object-model.md),
+"The object layout"), and their
 leaves are in `builtins/behavior.rs`: a class's name
 (`className:ifFail:`), a metaclass's class (`metaclassThisClass:ifFail:`),
 and the four parts of a class object's state `Behavior>>=`'s fallback
-compares. `Object` declares no accessor for any of the four, and nothing
-below `Behavior` can be instantiated
+compares -- whether two share an application and one body-less
+declaration (`behavior:sharesApplicationWith:ifFail:`), the enclosing
+object reflection reports (`behaviorEnclosing:ifFail:`), the enclosing
+object its level's code reaches (`behaviorLevelEnclosing:ifFail:`, the
+last row of the mirror's table, which differs from the first only for a
+body-less declaration's class object and its metaclass) and the superclass
+(`behaviorSuperclass:ifFail:`). `Object` declares no accessor for any of
+the three classes, and nothing below `Behavior` can be instantiated
 ([object-model.md](object-model.md), "Class sides and metaclasses").
 
 That is §3.2's shape and §3.1.1's, taken literally. §3.2 says "a class is
@@ -425,8 +432,9 @@ subclass of `Symbol` instantiates as an ordinary instance
 (`goldens/library/builtin-subclass/a_subclass_of_a_builtin_falls_to_objects_methods.ns`);
 and `String new` answers the empty string, of the byte format
 (`string_new_answers_an_empty_string.ns`). Both are decided in
-`instantiate::decide_factory`, which reads the class object's builtin field on
-every send, beside `Array`'s and the VM mirror's class.
+`instantiate::allocate_for_factory`, which the factory body's
+`AllocateInstance` runs and which reads the class object's builtin field on
+every instantiation, beside `Array`'s and the VM mirror's class.
 
 Four further rows serve `Value` itself rather than one builtin:
 `value:sameAs:ifFail:` (reported `=`), `valueHash:ifFail:` (`hash`),
@@ -524,7 +532,8 @@ value object's four conditions", has the whole design:
 - **A mutable slot anywhere in a value's chain means no instance.**
   `Mutator::apply_mixin` computes `inherits_value` and the first mutable slot
   of the whole chain (`first_mutable_slot`) once, when it builds the
-  application; `decide_instantiation` refuses before it allocates anything,
+  application; the factory body's allocation (`allocate_for_factory`)
+  refuses before it allocates anything,
   and names both the class asked and the class that declares the slot, since
   a subclass inherits the fault. The slot counts above the `Value` level too,
   where a `<:` clause can put a class with slots. §6.3.2's immutable slot is
@@ -912,9 +921,10 @@ next demand instantiates the same pending class again
 (`goldens/runtime/depth-limit/a_module_first_demanded_at_the_depth_limit_is_built_later.ns`).
 The build is arranged in Newspeak rather than added to the run loop because
 an instantiation in the run loop has no "afterwards" to hang a record on:
-its last initializer delivers the instance straight to the sender
-(`types.rs`, `Continuation::Instantiate`), and a hook there would sit on an
-instantiation path whose `Step` sizes are measured to the percent. So a
+its factory delivers the instance straight to the sender
+(`Continuation::Deliver`, as a method's return does), and a hook there would
+sit on every factory activation, on a path whose `Step` sizes are measured
+to the percent. So a
 program pays for the modules it uses and no other
 ([execution.md](execution.md), "What the precompiled shipped code moved",
 has the numbers).
@@ -1811,7 +1821,7 @@ bootstrap and the image take them" below).
 **As a builtin class** `BuiltinClass::ByteArray` is appended to `ALL` and
 reaches the list `types.rs` keeps: `kernel_class_name`, the hierarchy
 test, `OBJECT_CLASS_ACCESSORS` with `Object>>ByteArray` beside
-`Object>>Array`, a `decide_factory` branch for `new` and `new:`, and
+`Object>>Array`, an `allocate_for_factory` branch for `new`, and
 `isKindOfByteArray` as a quick method. The leaves decline an instance of a
 subclass, as `Array`'s and `String`'s do.
 
@@ -1831,10 +1841,11 @@ as `Array`'s and `ByteArray`'s `copyFrom:to:` and
 `replaceFrom:to:with:startingAt:` do.
 Programs see the same selectors and no new level: the kernel has no
 public `superclass`, so only a class mirror's `superclass` shows the level
-between `Array` and `Collection`, a class whose name is its mixin's,
-`IndexedCollection` -- `Class>>name` answers the name of a class's
-application's mixin (`builtins/behavior.rs`), and an applied level's
-application is the named class's mixin over the level below
+between `Array` and `Collection`, a class whose name is the class its
+clause named, `IndexedCollection` -- `Class>>name` answers the name a class
+object's metaclass gives it (`builtins/behavior.rs`, `Heap::class_name`),
+and an applied level's metaclass applies the named class's class side over
+an application of the named class's mixin to the level below
 (`interpreter/nested.rs`, `build_applied_levels`), §6.2's "class *I* with
 mixin *M*". `IndexedCollection` declares `Collection` its own
 superclass, which records that its members build on `Collection`'s
@@ -2365,7 +2376,7 @@ is whole, and running it comes with the actors' event loop
 ([OPEN-WORK.md](../OPEN-WORK.md)).
 
 **A user subclass gets no payload**, as of every builtin ("The shape of a
-kernel method" below). `decide_factory` (`interpreter/instantiate.rs`)
+kernel method" below). `allocate_for_factory` (`interpreter/instantiate.rs`)
 allocates the `Ephemeron` format only for the class whose own builtin is
 `Ephemeron`, and `WeakArray new:`'s leaf declines for any subject but
 `WeakArray` itself -- unreachable, since a flat class side is sent from
@@ -2749,7 +2760,9 @@ lets a program claim every primitive:
   refuses `Top`, `Activation` and every other shipped name in a position the
   rule does not allow ([image-format.md](image-format.md), "Verification").
 - The image encoder refuses an image whose graph reaches the mirror, its
-  class, `Top` or their metaclasses, and `decide_factory` refuses to
+  class, `Top` or their metaclasses, and the factory body's allocation
+  (`instantiate::allocate_for_factory`, which `AllocateInstance` runs for
+  a program's factory send and a host's `instantiate` alike) refuses to
   instantiate the mirror's class, so there is never a second mirror.
 - `SendMirror`, the instruction that runs a leaf with no lookup, is emitted
   only for a `MirrorSend` and has no wire tag, so no image can carry one.
@@ -3069,12 +3082,13 @@ boots from source still compiles it, because compiled code is numbered
 against one heap's inline caches, and each optimized boot decodes its own.
 
 **A builtin mixin carries the factory `new`, with no arguments.** A kernel
-class declares no factory, so its mixin has §6's default, and
-`decide_instantiation`'s arity check applies to it like any class's: a host's
+class declares no factory, so its mixin has §6's default, and the
+initializer's arity check applies to it like any class's: a host's
 `Interpreter::instantiate` of a builtin class with factory arguments is
 refused ("wrong number of factory arguments"), where a placeholder, which
 declared no factory at all, let any count through. `Array new` still builds
-its own payload (`instantiate::decide_factory`).
+its own payload (`instantiate::allocate_for_factory`), from a program's
+send and a host's `instantiate` alike, since both run the factory body.
 
 **`Kernel` is a value, and so is the mirror** (decided with the user on
 2026-09-23). `Kernel.ns` declares
@@ -3131,8 +3145,10 @@ the `u64` fingerprint, the module count -- and then per module, `Kernel`
 first and the `SHIPPED_MODULES` in order, its name, its section's byte
 length and the section: a symbol table in order of first use and the root
 mixin with every nested one, each mixin with everything the run time reads
--- name, access, slots, the factory, the superclass clause and every `<:`
-clause with their receiver names and code, the three initializer bodies,
+-- name, access, slots, the factory, the superclass clause with its
+receiver name and code, every `<:` clause with its receiver name and its
+message's selector, whether the declaration writes a body, the three
+initializer bodies,
 the root shape, `shipped`, the class side, the nested mixins, the span --
 and its methods, sorted by selector name so the bytes do not depend on a
 `HashMap`'s order. A method is compiled, a slot accessor or a factory, the

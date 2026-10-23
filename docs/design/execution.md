@@ -35,7 +35,7 @@ lowering, register allocation, inlining — is [compiler.md](compiler.md).
 
 The bytecode VM is the only engine. A module's code is compiled when the module
 is loaded, or decoded from an artifact, and every Newspeak-level body — method,
-block, initializer, superclass clause — runs as compiled code in the run loop,
+block, factory, initializer, superclass clause — runs as compiled code in the run loop,
 `vm::run`.
 
 The Milestone 1 tree-walking interpreter, which ran beside the VM as a
@@ -311,8 +311,12 @@ and remapping the `program_counter`, the edit-and-continue requirement — there
 taking the activation off the stack first; see "How this meets the liveness
 requirements" below, which is not built.
 
-`kind` distinguishes a method, closure, initializer, superclass-clause,
-superclass-message and top-level activation. An initializer activation must be
+`kind` distinguishes a method, closure, factory, initializer,
+superclass-clause and top-level activation; an initializer's names the
+level it was entered at and which of its mixin's three bodies it runs
+(`FrameKind::Initializer(level, body)`), and a factory's the class object
+it runs on, whose metaclass's factory entry holds its body. An
+initializer activation must be
 able to name the code it is executing so that `program_counter` is interpretable, since the
 statement→program-counter table is reached through its kind. A stack entry also holds its
 `code` directly, because the loop resumes a caller in it after a callee returns;
@@ -340,7 +344,8 @@ serializes reified frames only, and is written when nothing is running
 
 Every body a program runs hangs off the declaration it belongs to — a method's
 off its `MixinMethod`, an initializer's and a superclass clause's off the
-`Mixin` — so what dispatch finds is what runs; nothing looks code up beside it.
+`Mixin`, a factory's off its factory entry — so what dispatch finds is what
+runs; nothing looks code up beside it.
 Everything in `interpreter/` decides *what* to run; `vm.rs` runs it.
 
 `vm::run(interpreter, base)` is the run loop. It is handed an activation its caller
@@ -369,14 +374,17 @@ activations from its callers'.
   `send_lexical` or `send_super`, which answer from the call site's cache or
   run the lookup ([dispatch.md](dispatch.md), "3b — The caches"), or, for
   the reference lowering's `SendInlinable`, `Mutator::decide_send`. Each
-  answers a `Step`. `Step::Value` — a native leaf, a slot access, a nested class or an
-  instantiation that runs no code — is written to the send's `destination`,
+  answers a `Step`. `Step::Value` — a native leaf, a slot access, a nested class or
+  a level whose initializer runs no code — is written to the send's `destination`,
   and the caller goes on. Anything else is an activation: `Step::Method`,
   `Step::Block`, or one of the bodies an instantiation or a nested-class
-  accessor runs, `Step::Initializer`, `Step::InitializerThen`,
-  `Step::ClauseMessage` and `Step::SuperclassClause`. It is
-  pushed by `Mutator::push_step`, which checks a method's or block's arity
-  and the depth limit, and the loop switches to the new activation at `program_counter` 0,
+  accessor runs, `Step::Factory`, `Step::Initializer` and
+  `Step::SuperclassClause`. The three initializer instructions that may
+  start an activation -- `InitializeInstance`, `InitializeSuperclass` and
+  `InitializeAppliedLevel` -- go through the same `vm::send`, with their
+  decision in `interpreter/instantiate.rs` in place of a lookup. A step is
+  pushed by `Mutator::push_step`, which checks a method's, block's or
+  factory's arity and the depth limit, and the loop switches to the new activation at `program_counter` 0,
   its window filled straight from the buffer. A send allocates no vector once
   the buffer has grown to the widest one.
 - **A return** (`vm::finish`) pops the activation and applies its
@@ -385,10 +393,10 @@ activations from its callers'.
   the value to that send's `destination` and continues at the next instruction — or,
   when the popped activation was `base`, the loop leaves `run` with it. Every
   other continuation — a native loop's, `do:`'s, the nested-class
-  accessor's, an instantiation's — is applied by `Mutator::resume`, which
+  accessor's — is applied by `Mutator::resume`, which
   calls into `builtins/` or `interpreter/`; it may answer a value, or another
   activation — a native loop's next block, `do:`'s block for the next element,
-  an instantiation's next body, or the `valueOf:` that runs a loop body which
+  or the `valueOf:` that runs a loop body which
   is no block — which `Mutator::push_continuation` pushes
   in the popped activation's place; a native loop whose condition answers no
   Boolean signals `NonBooleanReceiver` instead ("The trampoline" below). A future's
@@ -406,7 +414,7 @@ activations from its callers'.
   activation the unwinder pops hands its continuation to
   `Mutator::abandon`, which undoes what that continuation had begun.
 
-Four kinds of body run, and each reaches the loop one way:
+Five kinds of body run, and each reaches the loop one way:
 
 1. **Method body** — pushed by `push_step` for a `Step::Method`. A method
    activation catches a `^` that targets it (`Mutator::catches_return`).
@@ -415,20 +423,25 @@ Four kinds of body run, and each reaches the loop one way:
    names. `value`, the control-flow steps — `whileTrue:`'s and
    `whileFalse:`'s leaves and `True`'s and `False`'s `^<parameter> value`
    quick methods — and `do:` answer the block as a step.
-3. **Instance initializer** — `descend_levels`, one per initializing level of
-   the superclass chain, answers that level's compiled initializer: its own
-   slot initializers and initializer expressions. While a level below it still
-   has code to run, it is answered as a `Step::InitializerThen`, whose
-   activation continues with `Continuation::Instantiate`; the walk's last
-   initializer is a `Step::Initializer`, whose activation delivers its own
-   value, the instance ("No re-entry from Rust" below). A class with no
-   compiled initializer and no slots is a no-op; a user class whose mixin
-   carries no initializer is refused on load and panics if built any other way
-   (`Mutator::initializer_body`).
-4. **Superclass clause and its message arguments** — the nested-class
+3. **Factory body** — pushed by `push_step` for a `Step::Factory`, which
+   `act` answers for a factory entry the lookup found, on the class object
+   the factory was sent to; its value is delivered like a method's
+   ([object-model.md](object-model.md), "Instantiation").
+4. **Instance initializer** — pushed by `push_step` for a
+   `Step::Initializer`, which the factory body's `InitializeInstance` and an
+   initializer's `InitializeSuperclass` and `InitializeAppliedLevel` answer:
+   one of the level's mixin's three bodies, entered at that level. Its value
+   goes to the instruction that started it, which does not use it; a level
+   whose body would run nothing answers `Step::Value`, the instance, and is
+   not entered. A user class whose mixin carries no full initializer is
+   refused on load (`image::decode::verify_mixins`); a mixin a host built
+   by hand has none, and its level is not entered.
+5. **Superclass clause** — the nested-class
    accessor's clause is a `Step::SuperclassClause`, continuing with
-   `Continuation::NestedClass`; an instantiation's clause message is a
-   `Step::ClauseMessage`, continuing with `Continuation::Instantiate`.
+   `Continuation::NestedClass`. A clause's message is no body of its own:
+   its arguments are lowered into the initializer of the declaration whose
+   clause it is ([compiler.md](compiler.md), "The three initializer
+   bodies").
 
 Rust enters the loop in one place, `Interpreter::run_from_host`, for a host's
 `send` or `instantiate`, and only from outside it: it pushes what the decision
@@ -526,8 +539,8 @@ the milestone that builds one; it is a deliberate trade, not an oversight.
 
 ## Unwinding
 
-A closure's `home` is the reified frame of the method, initializer,
-superclass-clause or superclass-message activation that lexically encloses it.
+A closure's `home` is the reified frame of the method, initializer or
+superclass-clause activation that lexically encloses it.
 It is not a field: `Heap::closure_home` derives it from the closure's
 `captured_frame` ("The closure keeps its defining activation").
 `Signal::Return` carries a `FrameReference`, its target, and `raise_return` picks
@@ -615,7 +628,14 @@ no return, so the unwind pops it with everything else down to the floor of the
 host's run, running every pending `ensure:` block on its way, and leaves
 with the signal, and it reaches the top of the entry send as "internal:
 non-local return escaped the entry send", a known gap
-(`crates/ns-runtime/tests/trampoline.rs` pins it under both lowerings).
+(`crates/ns-runtime/tests/trampoline.rs` pins it under both lowerings). A
+`^` in a block in a superclass or `<:` clause's argument is such a `^`
+too: the argument is lowered into the initializer of the class whose
+clause it is (§6.3 evaluates the message "in the context of *i*"), so the
+`^` targets that initializer's activation and escapes the instantiation;
+its value is never handed to the superclass as the clause's argument
+(`tests/vm_initializer.rs`'s
+`a_return_inside_a_block_in_a_clause_argument_escapes_instantiate`).
 
 A method body's own `^` is an ordinary `Return` and raises no signal. The
 observable discipline — a block invoked after its home has returned gets
@@ -5902,6 +5922,19 @@ gathers a send's arguments from the caller's registers into one reusable
 buffer, and a push copies them from there into the callee's window, so a send
 allocates no vector of its own.
 
+**Instantiation decides the same way, and runs as code.** A factory send is
+an ordinary send: the lookup finds the metaclass's factory entry and `act`
+answers `Step::Factory`, the entry's body to activate on the class object.
+That body and the initializers it reaches run in the loop like any method,
+and their instructions decide without executing: `AllocateInstance` and
+`CheckAppliedClause` answer a value or an error, and `InitializeInstance`,
+`InitializeSuperclass` and `InitializeAppliedLevel` a `Step` -- the next
+level's initializer to activate, or the instance when that level runs
+nothing -- each from one call into `interpreter/instantiate.rs`
+([object-model.md](object-model.md), "Instantiation"). So no state machine
+carries an instantiation between its bodies: the activation stack is its
+whole state, as it is a method's.
+
 Three things the trampoline settles on its own:
 
 - **`Closure value` is not a callback.** It is a native that answers the closure
@@ -6051,8 +6084,8 @@ L and L + 1 and the overruns of the machinery, a `pass`'s included.
   `interpreter::unwind` like any other — leaves it exact. Whether an activation counts
   is recorded on its stack entry. Only the block arm of
   `Mutator::push_step` ever records an exemption; a method, and every body
-  an instantiation or a nested-class accessor runs — an initializer level, a
-  superclass clause or its message — are counted by construction.
+  an instantiation or a nested-class accessor runs — a factory, an
+  initializer level, a superclass clause — are counted by construction.
 - **The exemption is marked by the arguments.** A control-flow step's block —
   one a `whileTrue:` or `whileFalse:` leaf activates, or one a Boolean
   receiver's `^<parameter> value` quick method answers — and the failure
@@ -6099,18 +6132,26 @@ have, or a stack-pointer check, as V8 and HotSpot have: both trip at different
 depths under the two lowerings, whose activations differ in number and size,
 and the second also between a debug and a release build.
 
-### A superclass chain is walked iteratively
+### A superclass chain nests one activation per level
 
-`climb_levels` and `descend_levels` (`interpreter/instantiate.rs`) walk it with
-an explicit list, as a state machine `Mutator::advance_instantiation`
-resumes whenever a body it answered returns: each level's factory arity
-checked and its clause message evaluated from the class upward, each level's
-arguments kept, then the initializers from the top down — the order of every
-observable effect a per-level recursion had. Recursing once per level would
-escape the limit: a level with no initializer code pushes no activation, so
-the count would not see a long chain of such levels, and its length is an
-image's to choose — the same exposure `dispatch::walk` was made iterative
-for.
+A level's initializer invokes its superclass's from inside its own
+activation (`InitializeSuperclass`), so the levels of a chain that run code
+nest, one counted activation each, below the factory's, and a chain of more
+such levels than the depth limit fails with "stack overflow: recursion too
+deep", caught like any other
+(`goldens/language/class/instantiation/a_chain_deeper_than_the_depth_limit_overflows.ns`,
+1,000 levels instantiating and 101,001 overflowing). That is decision 6 of
+`new` as compiled code ([object-model.md](object-model.md), "Decisions"),
+taken knowingly: a flat chain would need a Rust driver between the levels,
+the walk compiled `new` replaced, and the references nest the same way, a
+superclass initializer being an ordinary call. A level whose initializer
+would run nothing is passed by `Mutator::enter_or_pass` in a loop rather
+than by recursion, so such levels neither nest nor escape the count: the
+length of a chain of them is an image's to choose, the same exposure
+`dispatch::walk` is iterative for, and a chain of any length of them costs
+the factory's one activation
+(`levels_without_code_are_passed_without_an_activation`,
+`tests/instantiate.rs`).
 
 ### What the golden outcomes are trusted on
 
@@ -6160,18 +6201,20 @@ one bound, L ("The depth limit" above), is all it needs.
 
 Rust enters the run loop only as its outermost caller — a host's `send` or
 `instantiate`, an application's assembly and its `main:args:` among them — and never from inside a
-running computation. `do:`, instantiation and the nested-class accessor, the
-three paths that used to run Newspeak code from Rust, are trampoline steps.
+running computation. `do:` and the nested-class accessor, two of the three
+paths that used to run Newspeak code from Rust, are trampoline steps, and
+the third, instantiation, is compiled code that runs in the loop like any
+method.
 This was step 2a of Milestone 4, decided 2026-09-13, and it is what the root
 discipline stands on ([memory.md](memory.md), "No Rust frame is live below a
 safepoint"): between two instructions no Rust frame between the host and the
 loop holds a value.
 
-All three follow the pattern `whileTrue:` set: a decision answers an activation
-together with a `Continuation`, the continuation rides on the activation's
-stack entry, and `Mutator::resume` applies it when the activation returns.
-The semantics and the order of every observable effect are what they were
-when these paths ran in nested runs of the loop.
+The first two follow the pattern `whileTrue:` set: a decision answers an
+activation together with a `Continuation`, the continuation rides on the
+activation's stack entry, and `Mutator::resume` applies it when the
+activation returns. The semantics and the order of every observable effect
+are what they were when these paths ran in nested runs of the loop.
 
 - **`do:`** (`builtins/collections.rs`) reads the size once, when the walk
   starts, and each element when it reaches it, so a store the action makes
@@ -6231,62 +6274,41 @@ when these paths ran in nested runs of the loop.
   continuation whose activation the unwinder throws away rather than returns
   from: the loop forwards every popped entry's continuation to it and decides
   nothing, as `vm::finish` forwards to `resume`.
-- **Instantiation** (`interpreter/instantiate.rs`) is a state machine.
-  `decide_instantiation` allocates the instance and walks the superclass chain
-  ("A superclass chain is walked iteratively" above) with its state, an
-  `Instantiation` — the instance, the levels reached with their factory
-  arguments, and the phase: climbing at a level and its superclass, or
-  descending at an index. The walk does the synchronous parts itself — each
-  level's arity check, the clause selector check, a level with no code — and
-  answers an activation as soon as code must run. A clause message's
-  arguments are a `Step::ClauseMessage`, and an initializer with a level below
-  it that still has code a `Step::InitializerThen`; each carries the state
-  into its activation's `Continuation::Instantiate`, and
-  `advance_instantiation` carries the walk on when the body returns. The
-  walk's last initializer is a `Step::Initializer`, and its
-  activation delivers its own value, since that value is the instance: both
-  lowerings end an instance initializer by answering `self` and discard a
-  top-level `^` (`compiler::lower`'s `finish_body`, `compiler::reference`'s
-  `end`), and `new_answers_the_instance_its_initializers_ran_on`
+- **Instantiation** is compiled code ([object-model.md](object-model.md),
+  "Instantiation"): a factory send activates the factory entry's body, a
+  `Step::Factory`, whose instructions allocate the instance and answer the
+  class's initializer as a `Step::Initializer`, and each initializer
+  answers the next level's the same way from inside its own activation
+  ("A superclass chain nests one activation per level" above). Every
+  activation delivers its value with `Continuation::Deliver`, as a method's
+  does, so no continuation and no state outside the stack carry an
+  instantiation. The factory answers the instance it allocated, whatever
+  its initializer answered: both lowerings end an instance initializer by
+  answering `self` and discard a top-level `^` (`compiler::lower`'s
+  `finish_body`, `compiler::reference`'s `end`), and
+  `new_answers_the_instance_its_initializers_ran_on`
   (`crates/ns-runtime/tests/instantiate.rs`) pins it under both lowerings,
-  from a host's `new` and from a program's. A decoded image's initializer is
-  not held to that: `new` then answers whatever that code answers, which is
-  wrong but safe — no panic, the image's own program running. An instantiation
-  with no code at all answers the instance as a `Step::Value`.
-  A factory send is an ordinary decision: the lookup finds the metaclass
-  mixin's `MethodEntry::Factory` and `act` runs `decide_factory`, which
-  reaches `decide_instantiation` ([dispatch.md](dispatch.md), "Resolve, then
-  act"). `Interpreter::instantiate` is the host entry, shaped like `send`.
+  from a host's `new` and from a program's; a decoded image's initializer,
+  which may answer anything, cannot change it, since the factory body is
+  never on the wire. `Interpreter::instantiate` is the host entry, shaped
+  like `send`: it runs the same factory body (`decide_instantiation`).
 
-  The state is always boxed, and the box is reused: the walk runs in a box
-  taken from the interpreter's spares (`walk_state`), and when the walk ends —
-  at its last initializer, or with no code left — the box goes back, emptied
-  of every handle, with its list of levels keeping its room (`retire_walk`).
-  So once one instantiation has run, the next allocates the instance's fields
-  and nothing else, one with code at several levels included; allocating the
-  box and the list per instantiation measured 3–13% slower on the
-  instantiation benchmarks. The spares are capped at 16 boxes of 64 levels'
-  room, because the boxes held at once grow with how deeply instantiations
-  nest and the list with the superclass chain, an image's to choose.
-
-**Every body is inline in its `Step`.** `Step::Initializer`,
-`Step::InitializerThen`, `Step::ClauseMessage` and `Step::SuperclassClause` each
-carry only what their push cannot find from their level or declaration — the
-code and slot base of an initializer are its level's, found when it is pushed
-(`Mutator::initializer_body`), and a clause's are its declaration's — so
-none needs a boxed description of its activation; boxing one per body, beside
-a fresh box for the walk's state, made a chain of two levels with code 15–18%
-slower than running it in a nested run of the loop had been
-(`bench_new2.ns`, `bench_newarg.ns`). Each is smaller than `Step::Method`, on
-purpose: an `Initializer` with an optional continuation, as large as
-`Step::Method`, left `Result<Step, Signal>` at the 56 bytes the hot path was
-measured at and still made every benchmark 4–6% slower, none of which
-instantiates in its loop — the same effect `StepArguments::ControlFlow`'s comment
-describes, presumably the discriminant's niche. Splitting it into
-`Initializer` and `InitializerThen`, which takes the receiver from its state,
-measured level with before. `a_decision_stays_the_size_the_hot_path_was_measured_at`
-(`interpreter/mod.rs`) pins the size; it cannot see the niche. Every body is
-counted.
+**Every body is inline in its `Step`.** `Step::Factory`,
+`Step::Initializer` and `Step::SuperclassClause` each carry only what their
+push cannot find from their level or declaration -- the code of an
+initializer is its level's, found again when it is pushed from the level
+and the body it names (`Mutator::initializer_code`), and a clause's is its
+declaration's -- so none needs a boxed description of its activation, and
+a factory carries its body's `Rc`, which the lookup or the cache entry
+already holds. Each is no larger than `Step::Method`, on purpose: a
+`Step` as large as `Step::Method` with an optional continuation left
+`Result<Step, Signal>` at the 56 bytes the hot path was measured at and
+still made every benchmark 4–6% slower, none of which instantiates in its
+loop — the same effect `StepArguments::ControlFlow`'s comment describes,
+presumably the discriminant's niche.
+`a_decision_stays_the_size_the_hot_path_was_measured_at`
+(`interpreter/mod.rs`) pins the size; it cannot see the niche. Every body
+is counted.
 
 **One host entry.** `Interpreter::send` and `Interpreter::instantiate` fetch
 what the host's roots hold, decide, and hand what they decided to
@@ -6451,7 +6473,7 @@ pass calls `control_flow::recognize`, so it and the lowering agree on every
 block. Neither the resolver nor the reference lowering knows about it.
 
 `analyze(RootBody, &bindings) -> Captures` walks one code family — a root body
-(method, initializer, superclass clause or clause message) and every block
+(method, initializer or superclass clause) and every block
 literal under it — and answers, per body, keyed by `BodyKey::Root` or
 `BodyKey::Block(Span)`:
 
@@ -7394,10 +7416,17 @@ HotSpot's.
   because code runs while an unwind is in progress and a release build
   does not check an activation's generation.
 - **Rust does not re-enter the run loop** (decided 2026-09-13, "No re-entry
-  from Rust"): `do:`, instantiation and the nested-class accessor are
-  trampoline steps, so that no Rust frame is live below a safepoint and the
-  root discipline has nothing to root but the host's values. The bound on
-  re-entries went with them.
+  from Rust"): `do:` and the nested-class accessor are trampoline steps,
+  and instantiation is compiled code since `new` is (decided with the user
+  on 2026-10-22, [object-model.md](object-model.md), "Decisions"), so that
+  no Rust frame is live below a safepoint and the root discipline has
+  nothing to root but the host's values. The bound on re-entries went with
+  them.
+- **A superclass chain nests one activation per level with code**
+  (decided with the user on 2026-10-22, "A superclass chain nests one
+  activation per level"), and a chain deeper than the depth limit
+  overflows, where a Rust driver flattening it would be the walk compiled
+  `new` replaced.
 - **The run loop's stretch is forced inline** (2026-09-16 for the
   per-instruction step it replaced, confirmed by the user 2026-09-17), since
   the inline caches' hit path makes it too large for the inliner to take on

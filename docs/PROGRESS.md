@@ -49,6 +49,7 @@ first.
 | Road step 5b2c — reclaiming ids: the weak application cache and the ids' reuse rules, enforced by a full collection; nested declarations by id; a serial per nested-class creation | Complete | 2026-10-20 | [reclaiming-ids](superpowers/plans/2026-10-20-1318-reclaiming-ids.md) |
 | Road step 6 — inline allocation in the interpreter: a bump cursor in the reservation, one comparison before the cold `allocate_block`, precomputed headers, a code-id cache per body, arrays without a `Vec`, and `new` of a class that runs no code as a bump | Complete | 2026-10-22 | [inline-allocation](superpowers/plans/2026-10-22-0008-inline-allocation.md) |
 | Java counterparts of the Are We Fast Yet benchmarks, verified in the `benchmarks` gate; `--warm-up` and `--measure` in both harnesses | Complete | 2026-10-22 | [java-benchmarks](superpowers/plans/2026-10-22-1522-java-benchmarks.md) |
+| After road step 6 — `new` as compiled code: a synthesized factory body, three initializer bodies per mixin with the clause messages lowered inline, a level reached through a mirror an ordinary class of its mixin, a declaration without a body the mixin application it writes, and a nested-class accessor's hit one field load | Complete | 2026-10-23 | [compiled-new](superpowers/plans/2026-10-22-2051-compiled-new.md) |
 | Road step 7 — an execution model for compiled code | Not started | — | — |
 | Between road steps 7 and 8 — real Newspeak bodies for `whileTrue:`, `whileFalse:` and `do:` | Not started | — | — |
 | Road step 8 (M5) — a baseline JIT | Not started | — | — |
@@ -5858,3 +5859,76 @@ No golden's outcome changed.
   `javac` without the JVM option variables, an empty `JAVA_HOME` counts as
   unset, older compilations are removed, the three score trials are one
   function, and the CD files carry CDx's BSD-3 notice.
+
+## `new` as compiled code, after road step 6 (2026-10-23)
+
+Plan: [compiled-new](superpowers/plans/2026-10-22-2051-compiled-new.md);
+[object-model.md](design/object-model.md), "Instantiation", "Mixin
+application", "The nested-class accessor", "Decisions";
+[compiler.md](design/compiler.md), "The three initializer bodies";
+[execution.md](design/execution.md), "A superclass chain nests one
+activation per level".
+
+Decided with the user on 2026-10-22, in eight decisions, for performance
+first and uniformity with the references second. Instantiation was the one
+piece of ordinary Newspeak semantics still run by a Rust state machine, the
+walk in `interpreter/instantiate.rs`; it is now code the compiler emits, as
+Squeak-Newspeak, SOMns and Primordial Soup compile it. A factory entry
+carries `compiler::factory_body` of its arity -- `AllocateInstance`, which
+makes every refusal and builtin case the walk made, `InitializeInstance`
+and a return of the instance -- synthesized from the arity alone by both
+lowerings and the image decoder, so no image carries one; `Foo new` is an
+ordinary send that the inline caches answer, the entry's body riding the
+cache. Each mixin carries three initializer bodies, the full one, its own
+part and, for a declaration with `<:` clauses, a standalone one, outside
+the method table so that no message reaches them; the clause messages'
+arguments are lowered inline, and their bodies, code kind 4 and frame kinds
+5 and 6 are retired. Five instructions (41 to 45) check the `<:` clauses,
+initialize the superclass from inside the running initializer after its
+arguments ran, and run each applied level's own part; levels whose bodies
+would only check are passed in a loop, so `Array new` is one activation.
+Initializers of levels with code nest, so a chain deeper than the depth
+limit overflows. A level a `<:` clause added that a program reaches through
+a mirror is an ordinary class of its mixin. A declaration without a body is
+the mixin application it writes -- a deviation from §6 and §6.2 fixed --
+its class object the level its last clause adds, named for the declaration
+and carrying its factory through its metaclass; amended with the user while
+building it, that class object also records the declaration's enclosing
+object and declaring class, where its own code starts its lexical walk and
+its `super` lookup, as SOMns decides it, while the applied mixin's code
+walks its own; reflection reports the declaration's enclosing object, the
+value conditions and equality hold to both, and a new mirror leaf,
+`behaviorLevelEnclosing:ifFail:`, gives `Behavior>>=`'s fallback the
+level's. A nested-class accessor stays bodiless, and its cache entry holds
+the hidden slot's absolute index, so a hit is a guard and one load; a
+`super` send's cache key is S's application. Measured: see execution.md.
+
+No existing golden's outcome changed. New goldens pin a clause argument's
+effect before §6.1's mismatch, a chain deeper than the depth limit, a level
+reached through a mirror, the body-less declaration and the scope, `super`
+and reflection of its own code, a body-less root and three value cases; new
+tests in `tests/compiler.rs`, `tests/reference_lowering.rs`,
+`tests/image.rs`, `tests/instantiate.rs`, `tests/vm_initializer.rs`,
+`tests/inline_caches.rs`, `tests/factory_send.rs`, `tests/opcode_tags.rs`
+and `builtins/value.rs`.
+
+- `0d54a60b`, `fc14d8b5`, `d241ee2d`, `ced6494c` -- the design and the plan.
+- `0cdb16d8` -- the five instructions and their encodings.
+- `9a22435e`, `4f942e0c` -- the three initializer bodies and the factory
+  body, and a factory body of constant size.
+- `15fc0bca`, `235f642c` -- `new` runs the compiled factory and
+  initializers, and the walk goes; the factory's body rides the cache, and
+  levels whose clauses run nothing are passed.
+- `b3b52876`, `9fc2d90e`, `0c62db5b` -- the clause-message bodies and their
+  frame kinds go, and code kind 4 is retired.
+- `bda041e6` -- a nested-class accessor hit reads the cached field.
+- `cb0de87c`, `199af6b1`, `ad98e283`, `fbd27f0a`, `1dc3a7bb` -- a
+  declaration without a body is the mixin application it writes, and its
+  own code resolves, sends `super` and is reflected in its own scope.
+- This commit -- the documents.
+
+What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): road step
+7, next; the futures of simultaneous slots, which stay in Rust; the
+scalar replacement of values, at road step 9; instantiation's `u16`
+ceilings; a private nested class's cached field for a subclass instance;
+`SendKey`'s word for the running class; and the reviews' leftovers.

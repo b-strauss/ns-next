@@ -397,12 +397,15 @@ Instructions:
   `steps` above, `steps` a `u16`, the argument registers as a send writes
   them, and `destination` a `u16`.
 
-Every initializer body carries 43 to 45 and every factory body 41 and 42,
-so the loader accepts them in any body. Instantiation still runs the walk,
-which runs each level's own part and never a full body or a factory's, so
-the run loop meets one only in a crafted image, and raises an ordinary
-error for it (`interpreter::instantiate::compiled_instantiation_not_running`,
-`an_instantiation_instruction_a_crafted_image_runs_raises_an_error`).
+An initializer body carries 43 to 45 and a factory body 41 and 42, and
+the loader accepts all five in any body: a factory body never travels
+(below), and what a crafted body can make disagree -- a receiver that is no
+class object, a level that is not there, an arity -- each instruction
+checks when it runs and raises an ordinary error for, never a panic
+(`interpreter/instantiate.rs`;
+`an_instantiation_instruction_a_crafted_image_runs_raises_an_error`, each
+of the five in its narrow and its wide form, through a real
+`image::load`).
 
 The next free instruction number is 46. A send's `CallSite` -- its number
 within its code family, a `u32`, or `u32::MAX` (`CallSite::UNCACHED`) for
@@ -566,17 +569,20 @@ boxed float allocate, and count toward a failed load's peak
 factory selector and arity, the compiled methods as selector → code id, the ids
 of its nested declarations with their accessor names and accessibility, the
 class-side mixin id, the code ids of its three initializer bodies -- the full
-one, its own part and the standalone one ([compiler.md](compiler.md), "One
-body per mixin") -- the superclass clause's and its message's, the
+one, its own part and the standalone one ([compiler.md](compiler.md), "The
+three initializer bodies") -- and of its superclass clause's, the
 provenance span, and, in an image with source, the index of its
 declaration's text in the text table ("Source" below). This is what replaced
 the embedded source text and the re-parse on load.
 
 A factory's body is not on the wire. A metaclass row's factory entry is
 derived from its instance side's factory selector and arity
-(`mixins::metaclass_factory_entries`, `mixin::factory_entry`), and gets
-`compiler::factory_body` of the arity, as every factory built from source
-does, so an image cannot carry a factory body of its own.
+(`mixins::metaclass_factory_entries`, once per decode, `mixin::factory_entry`),
+and gets `compiler::factory_body` of the arity, as every factory built from
+source does, so an image cannot carry or forge a factory body. The body is
+three instructions whatever the arity, so a crafted arity on the wire
+amplifies nothing ([memory.md](memory.md), "The amplification bound of a
+rejected load").
 
 The table is a **forest**: one tree per module, each in `mixin::preorder`
 order, the trees in module order (`image/mixins.rs`). A tree's first row is
@@ -604,8 +610,12 @@ setter, a nested declaration — is refused before any mixin is built, so a
 crafted row cannot make one member silently hide another.
 
 A row also carries its `<:` clauses (`newspeak-spec.pdf` §6.2), in declaration
-order: each one's selector, whether its message takes arguments, and the code id
-of that message's body. How each clause's *receiver* is identified is not
+order: each one's selector and whether its message takes arguments. A
+clause's message has no body of its own: its arguments are lowered into the
+row's full initializer ([compiler.md](compiler.md), "The three initializer
+bodies"), and code kind tag 4, the body a clause message's arguments had,
+is retired (`opcodes::RETIRED_CODE_KIND_TAGS`), so a stale image's clause
+message body meets an unknown tag. How each clause's *receiver* is identified is not
 repeated there: the superclass clause's body evaluates the superclass and every
 `<:` receiver together and answers them as one array
 (`interpreter::nested::superclass_clause_expression`), so the row's clause
@@ -791,7 +801,7 @@ other record is `ShippedNameNotAllowed`, as it is anywhere but a record's
 class and a frame's class ("What may be named where" below). The body is, in
 order: the frame's kind tag (`FRAME_*`) and that kind's payload — a method
 frame's selector symbol id and its method's access tag, a closure frame's
-closure object id, nothing for a top-level frame, a class tag for the four
+closure object id, nothing for a top-level frame, a class tag for the five
 class-carrying kinds — then the body that runs in it, a `FRAME_BODY_*` tag
 ("A frame names its body" below), a `u32` `program_counter`, an instruction
 index into that body;
@@ -803,13 +813,29 @@ a closure's captured frame, a frame's sender or home — is an object id that
 must name a frame record (`NotAFrameReference`), checked as it is read, since
 every placeholder exists by then; that a closure frame's kind names a closure
 (`NotAClosureReference`) is checked once every record has been read, as a
-class reference is. A `<:` clause message's frame
-(`FRAME_MIXIN_APPLICATION_MESSAGE`, 6) names the *level* its clause added
-rather than the applying class: the applying class's mixin carries one
-message body per clause, and the level's applied clause says which one ran,
-which is how `verify_graph` finds the body to reconcile the frame with. A
-block written in such a message captures that frame, so a snapshot can hold
-one. The kernel's `Activation` object for a frame is the frame object itself,
+class reference is.
+
+The frame kinds (`opcodes.rs`, `FRAME_*`) are numbered in the order they
+were added: 0 a method, 1 a closure, 2 a top-level frame, 3 an initializer
+running its level's full body, 4 a superclass clause, 7 an initializer
+running its level's own part, 8 one running its level's standalone body,
+and 9 a factory; each of 3, 4, 7, 8 and 9 is followed by the class tag of
+the class object it runs at. An initializer has one kind per body it can
+run (`instantiate::InitializerBody`), so the kind and the level name the
+body, as a method's selector names its own. A factory frame's body is
+always `FRAME_BODY_DECLARED`, whatever its class: it is the factory entry's
+of the class's metaclass, derived on load as every factory body is, and
+found without allocating (`instantiate::factory_code`); a factory frame
+written with a code id is refused. Kinds 5 and 6, the frames of a
+superclass clause's message and of a `<:` clause's message, are retired
+(`RETIRED_FRAME_KINDS`): those arguments run in the initializer of the
+class whose clause it is, so a block written in one captures that
+initializer's frame, and a snapshot holding it decodes to the full
+initializer (`a_frame_a_clause_message_ran_in_decodes_to_the_full_initializer`).
+A stale image naming 5 or 6 meets an unknown tag
+(`a_retired_frame_kind_is_refused`). The next free frame kind is 10.
+
+The kernel's `Activation` object for a frame is the frame object itself,
 so an activation object in a graph is this one record. There is no frame
 table: tag 9, the activation record whose body was one frame-table id, is
 retired with it, and so is 10, the frame record while it named no body and
@@ -823,9 +849,10 @@ with the bytes after it as a body (`RETIRED_OBJECT_BODIES` is 4, 5, 9 and
 `FRAME_BODY_CODE` (1) and its `u32` code id; a body of a shipped declaration
 is `FRAME_BODY_DECLARED` (2), found through the frame's kind in the
 declaration of the class it resolves through -- a method by selector in the
-current class's mixin, the initializer and the superclass clause and message
-in the kind's class's mixin, a `<:` clause's message in the clause that
-added the kind's level. A program's body is named by code id rather than
+current class's mixin, the initializer body the kind names and the
+superclass clause in the mixin of the kind's class (for an initializer,
+`Heap::initializer_mixin`: a body-less declaration's for its class object),
+and a factory's body on the kind's class's metaclass. A program's body is named by code id rather than
 found through its class, because after an edit the class's current version
 carries another body and the frame runs the old one, whose code is in the
 code table too ("Edited programs in the image" below). A shipped body is
@@ -1224,8 +1251,8 @@ it checks the program counter and the register file against the body,
 holds a method frame to a method body of its method's argument count, a
 closure frame to its closure's own code, an initializer frame to an
 initializer, a superclass clause frame to a superclass clause, and a
-superclass message's or a `<:` clause's message frame to a clause message,
-which both compile to (`runs_its_kind`;
+factory frame to the method-kind body its class's factory entry derives
+(`runs_its_kind`;
 `a_frame_whose_code_disagrees_with_its_kind_is_refused`,
 `a_frame_code_id_past_the_table_is_refused`). A body is held to its kind,
 not to the frame's class: a crafted initializer frame may name another
@@ -1246,14 +1273,14 @@ packaged application already runs its own code, with the same exposure as
 running the equivalent source, so a wrong slot from a malformed index is no worse
 than any other wrong answer a mutated program's own code can produce.
 
-**A mixin application is checked against the row that declares it.** Every
-`<:` clause's message body is a clause-message body taking exactly the row's
-factory arity, since §6.2 evaluates it with the applying declaration's factory
-arguments (`CodeArityMismatch`, `WrongCodeKind`), and a clause whose message
-takes arguments has one (`MissingMixinApplicationMessage`) and a clause whose
-message takes none has none (`UnexpectedMixinApplicationMessage`), so a row and
-the frames running its clauses agree on what each clause runs; a row with `<:`
-clauses but no superclass clause is refused
+**A mixin application is checked against the row that declares it.** Its
+clauses' arguments run in the row's full and standalone initializers, which
+take exactly the row's factory arity, since §6.2 evaluates every clause
+message with the applying declaration's factory arguments
+(`CodeArityMismatch`, `WrongCodeKind`); a row with `<:` clauses and a body
+has a standalone initializer and every other row none
+(`MissingStandaloneInitializer`, `UnexpectedStandaloneInitializer`); a
+row with `<:` clauses but no superclass clause is refused
 (`MixinApplicationWithoutSuperclass`). A level's record names an applying row
 and a position that must exist (`BadMixinId`, `BadMixinApplicationClause`) and
 fit the 23 bits a class object's packed applied clause gives it
@@ -1265,9 +1292,10 @@ the root rule -- never another module's (`a_module_root_is_held_to_its_own_modul
 Levels whose superclass links close on themselves have no order to be rebuilt
 in and are refused like any other class records that do (`SuperclassCycle`).
 What is not checked is that a level sits directly above a class of its applying
-row; the instantiation walk re-checks a clause body's arity against the
-arguments it is given and raises a Newspeak error rather than indexing past
-them.
+row; the initializer instructions check every level they reach at run time
+-- that a level a `<:` clause added is there, and the arity of the body
+they enter against the arguments they hand it -- and raise a Newspeak
+error rather than indexing past them.
 
 **A class record and its metaclass record are held to each other both ways.**
 A class record's header must name a metaclass record whose reference back is
@@ -2276,14 +2304,13 @@ re-enters the run loop from Rust ([execution.md](execution.md), "No re-entry
 from Rust"). What is missing is a yield path out of `vm::run`, a re-entry point
 that would continue a decoded frame at its `program_counter`, and an encoding
 for what each stack entry's `Continuation` carries in Rust: a native loop's
-`WhileLoop` or `DoLoop`, a nested class's `NestedClassCreation`, an
-instantiation's `Instantiation`, the unwind an `ensure:` block's return carries
+`WhileLoop` or `DoLoop`, a nested class's `NestedClassCreation`, the unwind an `ensure:` block's return carries
 on (`Unwind`, holding a `PendingUnwind`: its target frame and whether it returns
 a value, restarts or terminates), the end of the run a VM error's `signal`
 returns into (`VmErrorSignalled`) and a future's forcing (`Future`, holding a
 `FutureForcing`). An image records none of them today, and a suspended
 activation without its continuation would resume without the rest of the loop,
-the class creation, the walk or the unwind it belongs to. The depth limit's
+the class creation or the unwind it belongs to. The depth limit's
 reserve (`Mutator.depth_reserve`), a frame held while an error near the limit is
 signalled, would have to travel with the stack as well
 ([execution.md](execution.md), "The depth limit"). Every reified frame has
@@ -2662,6 +2689,23 @@ shipped world.
   an image of the old layout is refused rather than misread; a text belongs
   to one declaration, refused otherwise, so assembly cannot multiply an
   image's bytes.
+- **A factory body is never on the wire, and an initializer frame names
+  the body it runs by its kind** (`new` as compiled code, decided with the
+  user on 2026-10-22; [object-model.md](object-model.md), "Instantiation").
+  A factory body is derived from the arity on load, three instructions for
+  any arity, so an image can neither forge one nor amplify a two-byte arity
+  into a body; a factory frame names its body by declaration. A row carries
+  the code ids of all three initializer bodies and whether its declaration
+  writes a body (`has_body`); a level a `<:` clause added carries the class
+  its clause named, and a body-less declaration's class object is a record
+  of its own (`OBJECT_BODY_LESS_CLASS`, 16) carrying its declaration's
+  scope, so that only those records grow and the amplification bound does
+  not move. The clause messages' bodies are gone: code kind 4 and frame
+  kinds 5 and 6 are retired, and the five instructions took 41 to 45, the
+  three initializer frame kinds 3, 7 and 8 and the factory's 9. Images stay
+  at `FORMAT_VERSION` 1, being disposable; the embedded shipped code's own
+  format version moved, so a stale artifact falls back to compiling the
+  source.
 
 ## Open questions
 

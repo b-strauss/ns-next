@@ -484,7 +484,8 @@ nothing can compare it, and the next reflection makes a fresh one
 ([memory.md](memory.md), "Weak references").
 `Heap::mixin_object_id` reads an object as a mixin only when it is the one
 the table holds for the id its field names, so no other object of the
-class ever stands for a mixin. `Mixin new` is refused (`decide_factory`),
+class ever stands for a mixin. `Mixin new` is refused (the factory body's
+allocation, `instantiate::allocate_for_factory`),
 as `Symbol new` is; no program can name the class; the object answers
 nothing of its own, and only `MirrorsFactory.ns` reads it, through the
 leaves. A class side is a mixin of its own, the synthesized one of a class
