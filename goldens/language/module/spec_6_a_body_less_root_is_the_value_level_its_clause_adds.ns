@@ -1,0 +1,13 @@
+/// newspeak-spec.pdf 6: a declaration that ends in a dot instead of a class
+/// body is the mixin application it writes, and 6.2 makes that "a class I
+/// with mixin M and superclass S". At a module's root the one clause the
+/// root rule allows is <: Value, so this module's class is the level Value's
+/// mixin adds to Object, named for the module and with its factory, new.
+/// 3.3 makes "the enclosing object of a module definition" nil: the level's
+/// own enclosing object is Value's, which Value's methods reach, and the
+/// declaration's own is nil.
+///
+/// The module declares no member, so instantiating it succeeds and the
+/// entry send, main:args:, is not understood -- by run, and by load of the
+/// image build writes, which carries the root as that level.
+class Spec6ABodyLessRootIsTheValueLevelItsClauseAdds = Object <: Value.

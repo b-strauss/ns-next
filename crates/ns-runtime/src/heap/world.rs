@@ -132,7 +132,6 @@ impl World {
                 metaclass_mixins: IdentityMap::default(),
                 #[cfg(debug_assertions)]
                 creations_in_progress: 0,
-                spare_walks: Vec::new(),
                 lowering,
                 shipped_code_path,
                 argument_buffer: Vec::new(),
@@ -348,25 +347,14 @@ impl World {
 
     /// What must hold no handle when everything moves, because nothing
     /// traces it: the argument buffer, which a send fills and empties within
-    /// one instruction, and the spare boxes finished instantiations leave
-    /// for the next ones (`docs/design/memory.md`, "What the collector
+    /// one instruction (`docs/design/memory.md`, "What the collector
     /// traces"). As true a requirement for a release collection as for a
     /// debug-build move, so unlike `move_everything` this is not gated to
     /// debug builds.
     fn check_quiescent_state(&self) {
-        use crate::types::InstantiationPhase;
-        let mutator = &self.mutator;
         assert!(
-            mutator.argument_buffer.is_empty(),
+            self.mutator.argument_buffer.is_empty(),
             "internal: the argument buffer holds values between instructions"
-        );
-        assert!(
-            mutator.spare_walks.iter().all(|walk| {
-                walk.instance.is_nil()
-                    && walk.levels.is_empty()
-                    && matches!(walk.phase, InstantiationPhase::Descending { .. })
-            }),
-            "internal: a spare instantiation box holds a handle"
         );
     }
 }

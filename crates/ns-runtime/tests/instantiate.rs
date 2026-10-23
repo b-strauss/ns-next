@@ -3,7 +3,7 @@
 //! See `docs/design/object-model.md`'s "Instantiation" section for the six
 //! numbered steps this exercises.
 
-use indoc::indoc;
+use indoc::{formatdoc, indoc};
 use ns_runtime::{
     HostResult, HostSignal, Interpreter, Lowering, Mutator, Root, Symbol, Value, ValueKind,
 };
@@ -880,5 +880,412 @@ ns_runtime::for_each_lowering! {
                 ),
             });
         }
+    }
+}
+
+/// The small integer `root` holds.
+fn integer(interpreter: &mut Interpreter, root: &Root, what: &str) -> i64 {
+    interpreter.enter(|mutator| match mutator.fetch(root).kind() {
+        ValueKind::SmallInteger(integer) => integer,
+        _ => panic!(
+            "{what}: expected a small integer, got {}",
+            mutator.heap().describe(mutator.fetch(root))
+        ),
+    })
+}
+
+/// A class with no initializer code at any level allocates in its factory
+/// and enters no initializer, and every `new` still answers an instance of
+/// its own, distinct from every other.
+#[test]
+fn a_class_without_code_still_answers_a_fresh_instance_per_new() {
+    let source = indoc! {"
+        class Holder = Object new () (
+          public class Empty = Object new () ()
+          public pair = (
+            ^{Empty new. Empty new}.
+          )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let holder = expect_ok(interpreter.instantiate(&class, &[]), "instantiate Holder");
+    let empty = expect_ok(
+        interpreter.send(&holder, Symbol::intern("Empty"), &[]),
+        "Empty",
+    );
+    let pair = expect_ok(
+        interpreter.send(&holder, Symbol::intern("pair"), &[]),
+        "pair",
+    );
+    interpreter.enter(|mutator| {
+        let elements = mutator
+            .heap()
+            .array_elements(object(mutator, &pair))
+            .expect("pair answers an Array");
+        let first = elements[0].as_object().expect("an instance");
+        let second = elements[1].as_object().expect("an instance");
+        assert!(!first.same(second), "each `new` answers a fresh instance");
+        for made in [first, second] {
+            assert!(mutator
+                .heap()
+                .object_class(made)
+                .same(object(mutator, &empty)));
+        }
+    });
+}
+
+/// How deep `probe:` recurses from a send at the depth of `measure`'s, so
+/// that two measurements differ by exactly the activations between the two
+/// places they were taken -- the probe of
+/// `goldens/runtime/depth-limit/an_error_just_below_the_depth_limit_is_caught.ns`.
+const PROBE: &str = indoc! {"
+    probe: n = (
+      deepest:: n.
+      ^self probe: n + 1.
+    )
+
+    public measure = (
+      [self probe: 1] on: Error do: [:error | nil].
+      ^deepest.
+    )
+"};
+
+/// A factory's activation is an ordinary one, counted toward the depth
+/// limit: `descend:to:` reaches the depth `probe:` measured, and the factory
+/// of `Empty` -- a class with no initializer code, so the factory is the one
+/// activation its `new` pushes -- fits one level short of it and overflows
+/// at it.
+#[test]
+fn a_factory_frame_is_counted_toward_the_depth_limit() {
+    let source = formatdoc! {"
+        class Deep = Object new (
+          | deepest ::= 0. |
+        ) (
+          class Empty = Object new () ()
+        {PROBE}
+          descend: n to: bottom = (
+            n = bottom ifTrue: [^Empty new].
+            ^self descend: n + 1 to: bottom.
+          )
+
+          public newAt: bottom = (
+            ^[(self descend: 1 to: bottom) isNil ifTrue: ['nil'] ifFalse: ['an instance']]
+                on: Error
+                do: [:error | error messageText].
+          )
+
+          public run = (
+            | empty = Empty. depth = self measure. |
+            ^{{self newAt: depth - 1. self newAt: depth}}.
+          )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(&source);
+    let deep = expect_ok(interpreter.instantiate(&class, &[]), "instantiate Deep");
+    let answers = expect_ok(interpreter.send(&deep, Symbol::intern("run"), &[]), "run");
+    interpreter.enter(|mutator| {
+        let elements = mutator
+            .heap()
+            .array_elements(object(mutator, &answers))
+            .expect("run answers an Array");
+        let texts: Vec<String> = elements
+            .iter()
+            .map(|element| {
+                element
+                    .as_object()
+                    .and_then(|text| mutator.heap().str_value(text))
+                    .expect("a String")
+            })
+            .collect();
+        assert_eq!(texts, ["an instance", "stack overflow: recursion too deep"]);
+    });
+}
+
+/// §6.2 invokes each superclass's initializer from the subclass's, but a
+/// level whose initializer would do nothing is passed over without an
+/// activation, in a loop: under 50 such levels, a class with a slot pushes
+/// exactly two activations for its `new`, its factory's and its own
+/// initializer's. The slot initializer measures how deep `probe:` reaches
+/// from inside, which is two less than from the method that sends `new`.
+#[test]
+fn levels_without_code_are_passed_without_an_activation() {
+    let source = formatdoc! {"
+        class Chain = Object new (
+          | deepest ::= 0. |
+        ) (
+          class Builder on: superclass = Object new (
+            | public parent = superclass. |
+          ) (
+            public class Level = parent new () ()
+          )
+
+          class Cap on: superclass = Object new (
+            | public parent = superclass. |
+          ) (
+            public class Bottom = parent new (
+              | public seen = outer Chain measure. |
+            ) ()
+          )
+        {PROBE}
+          build: depth = (
+            | top ::= Object. |
+            1 to: depth do: [:index | top:: (Builder on: top) Level].
+            ^top.
+          )
+
+          public run = (
+            | bottom = (Cap on: (self build: 50)) Bottom. outside = self measure. |
+            ^outside - bottom new seen.
+          )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(&source);
+    let chain = expect_ok(interpreter.instantiate(&class, &[]), "instantiate Chain");
+    let difference = expect_ok(interpreter.send(&chain, Symbol::intern("run"), &[]), "run");
+    assert_eq!(integer(&mut interpreter, &difference, "run"), 2);
+}
+
+/// Decision 3 of `new` as compiled code: a class whose initializers would
+/// run nothing pays its factory's activation alone. `Array`'s declaration
+/// writes a `<:` clause whose level has no code, as `Marked`'s does, so the
+/// full bodies of both would only check their clauses; each `new` fits one
+/// level short of the depth `probe:` measured, where a second activation
+/// would overflow.
+#[test]
+fn a_class_whose_levels_run_nothing_pushes_only_its_factory() {
+    let source = formatdoc! {"
+        class Deep = Object new (
+          | deepest ::= 0. |
+        ) (
+          class Marker = Object new () ()
+          class Marked = Object new <: Marker new () ()
+        {PROBE}
+          descend: n to: bottom with: class = (
+            n = bottom ifTrue: [^class new].
+            ^self descend: n + 1 to: bottom with: class.
+          )
+
+          public newAt: bottom of: class = (
+            ^[(self descend: 1 to: bottom with: class) isNil ifTrue: ['nil'] ifFalse: ['an instance']]
+                on: Error
+                do: [:error | error messageText].
+          )
+
+          public run = (
+            | marked = Marked. depth = self measure. |
+            ^{{self newAt: depth - 1 of: Array. self newAt: depth - 1 of: marked}}.
+          )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(&source);
+    let deep = expect_ok(interpreter.instantiate(&class, &[]), "instantiate Deep");
+    let answers = expect_ok(interpreter.send(&deep, Symbol::intern("run"), &[]), "run");
+    interpreter.enter(|mutator| {
+        let elements = mutator
+            .heap()
+            .array_elements(object(mutator, &answers))
+            .expect("run answers an Array");
+        let texts: Vec<String> = elements
+            .iter()
+            .map(|element| {
+                element
+                    .as_object()
+                    .and_then(|text| mutator.heap().str_value(text))
+                    .expect("a String")
+            })
+            .collect();
+        assert_eq!(texts, ["an instance", "an instance"]);
+    });
+}
+
+/// A level passed without an activation still makes its full body's
+/// checks: a `<:` clause naming another selector than its level's primary
+/// factory raises the error the compiled check raises for a class with
+/// code, word for word.
+#[test]
+fn a_misnamed_applied_clause_on_a_passed_level_raises_its_error() {
+    let source = indoc! {"
+        class Holder = Object new () (
+          class Marker make = Object new () ()
+          public class Passed = Object new <: Marker new () ()
+          public class Entered = Object new <: Marker new (| slot = 1. |) ()
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let holder = expect_ok(interpreter.instantiate(&class, &[]), "instantiate Holder");
+    let mut messages = Vec::new();
+    for name in ["Passed", "Entered"] {
+        let class = expect_ok(interpreter.send(&holder, Symbol::intern(name), &[]), name);
+        let error = expect_error(interpreter.instantiate(&class, &[]), name);
+        messages.push(error.message.replace(name, "C"));
+    }
+    assert_eq!(
+        messages,
+        ["a mixin application clause of class C sends #new, but the primary factory of \
+             class Marker is #make"; 2]
+    );
+}
+
+/// The declarations of `goldens/language/class/mixin/spec_6_a_body_less_declaration_is_the_mixin_application.ns`
+/// that the two tests below read the class objects of.
+const BODY_LESS_SOURCE: &str = indoc! {"
+    class Holder = Object new () (
+      public class Base = Object new () ()
+      public class M1 tag: t = Object new (| public a = t. |) ()
+      public class M3 x: x = Base new <: M1 tag: x + 1.
+      public class UsesM1 = Base new <: M1 tag: 5 () ()
+      public class UsesM3 = Base new <: M3 x: 5 () ()
+    ) : ()
+"};
+
+/// The class object `name` answers on a fresh instance of `BODY_LESS_SOURCE`'s
+/// `Holder`, with the interpreter it lives in.
+fn body_less_class(names: &[&str]) -> (Interpreter, Vec<Root>) {
+    let (mut interpreter, class) = load(BODY_LESS_SOURCE);
+    let holder = expect_ok(interpreter.instantiate(&class, &[]), "instantiate Holder");
+    let classes = names
+        .iter()
+        .map(|name| expect_ok(interpreter.send(&holder, Symbol::intern(name), &[]), name))
+        .collect();
+    (interpreter, classes)
+}
+
+/// §6 (`object-model.md`, "Mixin application"): a declaration without a body
+/// is the mixin application it writes, so `M3`'s class object is the level
+/// `M1`'s mixin adds to `Base` -- `M1`'s application, `Base`'s class object
+/// above it -- named `M3`, with `M3`'s factory, and with no level of its own.
+#[test]
+fn a_body_less_declaration_builds_no_level_of_its_own() {
+    let (mut interpreter, classes) = body_less_class(&["M3", "Base"]);
+    interpreter.enter(|mutator| {
+        let heap = mutator.heap();
+        let declared = object(mutator, &classes[0]);
+        let base = object(mutator, &classes[1]);
+        let mixin_name = |class| {
+            heap.class_application(class)
+                .expect("a class object")
+                .mixin
+                .name
+                .to_string()
+        };
+        assert_eq!(mixin_name(declared), "M1");
+        let above = heap
+            .class_superclass(declared)
+            .expect("M3 has a superclass");
+        assert!(above.same(base), "M3's superclass is Base itself");
+        assert_eq!(heap.class_name(declared), Some(Symbol::intern("M3")));
+        assert_eq!(
+            heap.class_factory(declared),
+            Some(ns_runtime::mixin::Factory {
+                selector: Symbol::intern("x:"),
+                argument_count: 1,
+            })
+        );
+    });
+}
+
+/// §6.1 checks a `<:` clause against the primary factory of the class it
+/// names, and §6.2 gives the level it adds "a primary factory method with
+/// the same selector": a level has the factory, and the name, of the class
+/// its clause named -- `M1`'s for `<: M1`, and `M3`'s own, not its mixin's,
+/// for `<: M3`.
+#[test]
+fn an_applied_level_has_the_factory_of_the_class_it_named() {
+    let (mut interpreter, classes) = body_less_class(&["UsesM1", "UsesM3"]);
+    interpreter.enter(|mutator| {
+        let heap = mutator.heap();
+        let level = |root| {
+            heap.class_superclass(object(mutator, root))
+                .expect("a class applying a mixin has a level below it")
+        };
+        let (m1_level, m3_level) = (level(&classes[0]), level(&classes[1]));
+        assert_eq!(
+            heap.class_factory(m1_level),
+            Some(ns_runtime::mixin::Factory {
+                selector: Symbol::intern("tag:"),
+                argument_count: 1,
+            })
+        );
+        assert_eq!(heap.class_name(m1_level), Some(Symbol::intern("M1")));
+        assert_eq!(
+            heap.class_factory(m3_level),
+            Some(ns_runtime::mixin::Factory {
+                selector: Symbol::intern("x:"),
+                argument_count: 1,
+            })
+        );
+        assert_eq!(heap.class_name(m3_level), Some(Symbol::intern("M3")));
+        let applied = heap
+            .class_application(m3_level)
+            .expect("a level is a class object");
+        assert_eq!(applied.mixin.name.as_str(), "M1");
+    });
+}
+
+/// A body-less declaration whose levels run nothing is passed without an
+/// activation, and still makes its full body's checks: its own clause,
+/// checked at its own class object, raises the compiled check's error word
+/// for word.
+#[test]
+fn a_body_less_declaration_on_a_passed_path_checks_its_clause() {
+    let source = indoc! {"
+        class Holder = Object new () (
+          class Marker make = Object new () ()
+          public class Passed = Object new <: Marker new.
+          public class Entered = Object new <: Marker new (| slot = 1. |) ()
+          public class Right = Object new <: Marker make.
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let holder = expect_ok(interpreter.instantiate(&class, &[]), "instantiate Holder");
+    let mut messages = Vec::new();
+    for name in ["Passed", "Entered"] {
+        let class = expect_ok(interpreter.send(&holder, Symbol::intern(name), &[]), name);
+        let error = expect_error(interpreter.instantiate(&class, &[]), name);
+        messages.push(error.message.replace(name, "C"));
+    }
+    assert_eq!(
+        messages,
+        ["a mixin application clause of class C sends #new, but the primary factory of \
+             class Marker is #make"; 2]
+    );
+    let right = expect_ok(
+        interpreter.send(&holder, Symbol::intern("Right"), &[]),
+        "Right",
+    );
+    let instance = expect_ok(interpreter.instantiate(&right, &[]), "Right new");
+    interpreter.enter(|mutator| {
+        let heap = mutator.heap();
+        let made = object(mutator, &instance);
+        assert!(heap.object_class(made).same(object(mutator, &right)));
+    });
+}
+
+ns_runtime::for_each_lowering! {
+    /// A factory sent from the run loop is entered past its first two
+    /// instructions only when neither raises (`Mutator::enter_factory_body`):
+    /// `Valued` is refused at its allocation -- a value class enclosed by an
+    /// object that is no value -- and its level, which runs no code, is
+    /// passed with a superclass clause that names no primary factory. The
+    /// body allocates first, so the refusal is the error, not §6.1's.
+    fn an_allocation_refused_is_raised_before_the_initializers_error(lowering) {
+        let source = indoc! {"
+            class Holder = Object new () (
+                public class Valued = Value foo () ()
+                public make = ( ^Valued new )
+            ) : ()
+        "};
+        let (mut interpreter, class) = load_with(source, lowering);
+        let module = expect_ok(interpreter.instantiate(&class, &[]), "instantiate Holder");
+        let error = expect_error(
+            interpreter.send(&module, Symbol::intern("make"), &[]),
+            "make",
+        );
+        assert!(
+            error.message.contains("cannot instantiate Valued")
+                && error.message.contains("enclosing objects must be values"),
+            "{lowering:?}: message was: {}",
+            error.message
+        );
     }
 }

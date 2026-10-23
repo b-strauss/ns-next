@@ -1,0 +1,9 @@
+stdout = '''
+2
+M3
+5
+an object does not understand #new
+a mixin application clause of class Wrong sends #tag:, but the primary factory of class M3 is #x:
+7
+wrong number of factory arguments: factory takes 1, got 2
+'''

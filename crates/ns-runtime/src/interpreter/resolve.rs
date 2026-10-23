@@ -64,6 +64,10 @@ pub(crate) enum Resolved<'gc> {
         /// whichever chain found it -- but a cache entry records it
         /// (`inline_cache::Target::NestedClass`), to count `level` from.
         chain: Chain,
+        /// The receiver's hidden slot for `mixin`, as a cache hit whose
+        /// guard fixed the receiver's application brings it;
+        /// `nested::NO_CACHED_FIELD` for every resolution the lookup makes.
+        field: u32,
     },
     Primitive {
         primitive: Primitive,
@@ -75,9 +79,11 @@ pub(crate) enum Resolved<'gc> {
     /// is `Public` or `Protected`: a factory entry lives on a metaclass,
     /// which only a class object's own public or protected lookup starts
     /// from, and metaclasses are flat (§3.2), so no other chain reaches
-    /// one (`resolved_for`).
+    /// one (`resolved_for`). `code` is the entry's body, which the send
+    /// activates on `level`.
     Factory {
         level: ClassReference<'gc>,
+        code: Rc<crate::bytecode::CompiledCode>,
         chain: Chain,
     },
     /// Nothing handles it, not even `doesNotUnderstand:`. Never recorded.
@@ -268,6 +274,7 @@ fn resolved<'gc>(lookup: Lookup<'gc>, chain: Chain) -> Resolved<'gc> {
             mixin,
             declaring_class,
             chain,
+            field: nested::NO_CACHED_FIELD,
         },
         Lookup::Primitive(primitive, level) => Resolved::Primitive {
             primitive,
@@ -282,7 +289,7 @@ fn resolved<'gc>(lookup: Lookup<'gc>, chain: Chain) -> Resolved<'gc> {
         // image can arrange (`image::mixins::build` derives one for a
         // class-side row alone): refused, rather than instantiating whatever
         // object happened to receive the send.
-        Lookup::Factory(_) => Resolved::Unhandled,
+        Lookup::Factory(..) => Resolved::Unhandled,
         Lookup::NotFound => unreachable!("internal: the caller resolves what nothing found"),
     }
 }
@@ -305,15 +312,16 @@ fn resolved_for<'gc>(
     chain: Chain,
 ) -> Resolved<'gc> {
     match (lookup, receiver.as_object()) {
-        (Lookup::Factory(level), Some(class_object))
+        (Lookup::Factory(level, code), Some(class_object))
             if heap.is_class(class_object) && heap.object_class(class_object).same(level) =>
         {
             Resolved::Factory {
                 level: class_object,
+                code,
                 chain,
             }
         }
-        (Lookup::Factory(_), _) => Resolved::Unhandled,
+        (Lookup::Factory(..), _) => Resolved::Unhandled,
         (found, _) => resolved(found, chain),
     }
 }
@@ -480,8 +488,8 @@ impl<'gc> Mutator<'gc> {
                 // method with the slot's accessibility would; `super x`
                 // reaches the superclass's accessor even where the
                 // receiver's own class overrides it (§5.10). A private
-                // site is guarded by N's application and a super site by
-                // `current_class`'s, never by the receiver's, so their
+                // site is guarded by N's application and a super site by S's
+                // (`sends::super_start`), never by the receiver's, so their
                 // field was decided without looking at the receiver, which
                 // must still have the level's slots
                 // (`docs/design/object-model.md`, "what a slot access
@@ -511,8 +519,9 @@ impl<'gc> Mutator<'gc> {
             Resolved::NestedClass {
                 mixin,
                 declaring_class,
+                field,
                 ..
-            } => nested::nested_class(self, receiver, &mixin, declaring_class),
+            } => nested::nested_class(self, receiver, &mixin, declaring_class, field),
             // A primitive entry is a mirror row, and a mirror row's failure
             // path is its block: `builtins::execute` answers `Some` for every
             // one, so no primitive passes its level over any more. The
@@ -531,11 +540,14 @@ impl<'gc> Mutator<'gc> {
                 _ => crate::builtins::execute(self, primitive, receiver, selector, arguments)
                     .unwrap_or_else(|| Err(unhandled_error(receiver, selector))),
             },
-            // §6.3's factory entry, run with no re-check: the lookup found
-            // it on the receiver's own metaclass, and the class-side
-            // dispatch id a cache entry is guarded by determines that
-            // metaclass, so a hit reaches the class a miss would.
-            Resolved::Factory { level, .. } => self.decide_factory(level, arguments),
+            // §6.3's factory entry, its body activated on the receiver with
+            // no re-check: the lookup found it on the receiver's own
+            // metaclass, and the class-side dispatch id a cache entry is
+            // guarded by determines that metaclass, so a hit reaches the
+            // class and the entry a miss would, and carries the body the
+            // lookup found. The send's arguments are the factory
+            // activation's (`StepArguments::Send`).
+            Resolved::Factory { level, code, .. } => Ok(Self::decide_factory(level, code)),
             Resolved::Unhandled => Err(unhandled_error(receiver, selector)),
         }
     }

@@ -101,8 +101,10 @@ pub struct Report {
 
 /// Attributes each code id to the declaration that owns it.
 ///
-/// A mixin row names its methods, its initializer and its two superclass-clause
-/// bodies by id, so those attribute directly. A block body is named by no row
+/// A mixin row names its methods, its three initializer bodies and its two
+/// superclass-clause bodies by id, so those attribute directly; a class
+/// side's full initializer is its own part, one id claimed as the
+/// initializer. A block body is named by no row
 /// at all -- it is reachable only from the `MakeClosure` instruction that
 /// creates it -- so it is labelled by its kind instead. Anything left over
 /// would be a code id no declaration claims and no body's kind explains, which
@@ -125,23 +127,17 @@ fn attribute_code(decoded: &mixins::Decoded, codes: &[Rc<CompiledCode>]) -> Vec<
         for (selector, id) in &code.methods {
             claim(*id, &owner, &selector.to_string());
         }
+        if let Some(id) = code.own_initializer {
+            claim(id, &owner, "initializer own part");
+        }
+        if let Some(id) = code.standalone_initializer {
+            claim(id, &owner, "standalone initializer");
+        }
         if let Some(id) = code.initializer {
             claim(id, &owner, "initializer");
         }
         if let Some(id) = code.superclass_clause {
             claim(id, &owner, "superclass clause");
-        }
-        if let Some(id) = code.superclass_message {
-            claim(id, &owner, "superclass message");
-        }
-        for (index, id) in code.mixin_applications.iter().enumerate() {
-            if let Some(id) = id {
-                claim(
-                    *id,
-                    &owner,
-                    &format!("mixin application clause {} message", index + 1),
-                );
-            }
         }
     }
     for (label, body) in labels.iter_mut().zip(codes.iter()) {
@@ -187,22 +183,18 @@ fn expand_mixin(mixin: &Rc<crate::mixin::Mixin>, code: &mixins::MixinCode) -> St
     }
     for (what, id) in [
         ("initializer", code.initializer),
+        ("initializer own part", code.own_initializer),
+        ("standalone initializer", code.standalone_initializer),
         ("superclass clause", code.superclass_clause),
-        ("superclass message", code.superclass_message),
     ] {
         if let Some(id) = id {
             let _ = writeln!(out, "      {what} -> code {id}");
         }
     }
     for (index, clause) in mixin.mixin_applications.iter().enumerate() {
-        let message = match code.mixin_applications.get(index).copied().flatten() {
-            Some(id) => format!(" -> code {id}"),
-            None if clause.message.has_arguments => " -> (no code)".to_string(),
-            None => String::new(),
-        };
         let _ = writeln!(
             out,
-            "      mixin application {}  {}{message}",
+            "      mixin application {}  {}",
             index + 1,
             clause.message.selector
         );
@@ -298,7 +290,8 @@ fn read_class_record(
     let applied_by = |reader: &mut decode::Reader| -> Result<String, decode::DecodeError> {
         let row = reader.read_u32()?;
         let index = reader.read_u32()?;
-        Ok(format!("clause {index} of row {row}"))
+        let named = read_class_tag(reader, targets)?;
+        Ok(format!("clause {index} of row {row}, naming {named}"))
     };
     Ok(match reader.read_u8()? {
         opcodes::MIXIN_ROW => {
@@ -398,16 +391,24 @@ fn read_frame_record(
         opcodes::FRAME_INITIALIZER => {
             format!("initializer of {}", read_class_tag(reader, targets)?)
         }
+        opcodes::FRAME_OWN_INITIALIZER => {
+            format!(
+                "own part of the initializer of {}",
+                read_class_tag(reader, targets)?
+            )
+        }
+        opcodes::FRAME_STANDALONE_INITIALIZER => {
+            format!(
+                "standalone initializer of {}",
+                read_class_tag(reader, targets)?
+            )
+        }
+        opcodes::FRAME_FACTORY => {
+            format!("factory of {}", read_class_tag(reader, targets)?)
+        }
         opcodes::FRAME_SUPERCLASS_CLAUSE => {
             format!("superclass clause of {}", read_class_tag(reader, targets)?)
         }
-        opcodes::FRAME_SUPERCLASS_MESSAGE => {
-            format!("superclass message of {}", read_class_tag(reader, targets)?)
-        }
-        opcodes::FRAME_MIXIN_APPLICATION_MESSAGE => format!(
-            "mixin application message of {}",
-            read_class_tag(reader, targets)?
-        ),
         opcodes::FRAME_CLOSURE => format!("closure object {}", reader.read_u32()?),
         tag => {
             return Err(decode::DecodeError::InvalidTag {
@@ -570,6 +571,19 @@ fn walk_graph(
             }
             opcodes::OBJECT_CLOSURE => format!("closure {}", read_closure_record(reader, targets)?),
             opcodes::OBJECT_CLASS => read_class_record(reader, targets)?,
+            opcodes::OBJECT_BODY_LESS_CLASS => {
+                let record = read_class_record(reader, targets)?;
+                let enclosing = if reader.read_boolean()? {
+                    read_value(reader, targets)?
+                } else {
+                    "-".to_string()
+                };
+                let declaring = read_optional_class(reader, targets)?;
+                format!(
+                    "body-less {record}, declaration enclosing {enclosing}, \
+                     declaration declaring {declaring}"
+                )
+            }
             opcodes::OBJECT_METACLASS => {
                 format!("metaclass of {}", read_class_tag(reader, targets)?)
             }

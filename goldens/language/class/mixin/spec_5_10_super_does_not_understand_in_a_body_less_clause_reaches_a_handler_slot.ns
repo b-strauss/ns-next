@@ -1,0 +1,58 @@
+/// newspeak-spec.pdf 5.10: "Otherwise, the #doesNotUnderstand: method
+/// defined for S is invoked", and 6.3.2 makes a mutable slot named
+/// doesNotUnderstand define that method, its setter. For a declaration
+/// without a body, its own code runs with its class object I as the
+/// current class (6.2, 3.6), so S is I's superclass, the class its clause
+/// is applied to: over Base, whose handler slot stores the message and
+/// answers the receiver, `super zork` in the clause answers true, as in
+/// the body version, and so does M1's own `super zork`, which starts at
+/// Base too. Over Plain, which has no handler, the clause's `super zork`
+/// is not understood, M1's handler slot passed over, and so is M1's own.
+class Spec510SuperDoesNotUnderstandInABodyLessClauseReachesAHandlerSlot = Object new () (
+  class Base = Object new (
+    |
+      public doesNotUnderstand ::= nil.
+    |
+  ) ()
+
+  class Plain = Object new () ()
+
+  class M1 tag: t = Object new (
+    |
+      public a = t.
+      public doesNotUnderstand ::= nil.
+    |
+  ) (
+    public superZork = (
+      ^super zork == self.
+    )
+  )
+
+  class Applied = Base new <: M1 tag: super zork == self.
+
+  class WithBody = Base new <: M1 tag: super zork == self () ()
+
+  class OnPlain = Plain new <: M1 tag: 0.
+
+  class ClauseOnPlain
+      = Plain new <: M1 tag: ([super zork == self] on: Error do: [:error | error messageText]).
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+    |
+    1 to: 2 do: [:each |
+      t
+          print: Applied new a;
+          show: ' ';
+          print: WithBody new a;
+          show: ' ';
+          print: Applied new superZork;
+          show: ' ';
+          show: ([OnPlain new superZork] on: Error do: [:error | error messageText]);
+          show: ' ';
+          show: ClauseOnPlain new a;
+          newLine.
+    ].
+  )
+)

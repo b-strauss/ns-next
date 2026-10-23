@@ -1,0 +1,7 @@
+status = 1
+stdout = '''
+argument
+'''
+stderr = '''
+Uncaught Newspeak error: the superclass clause of class Middle sends #new, but the primary factory of class Base is #k:
+'''

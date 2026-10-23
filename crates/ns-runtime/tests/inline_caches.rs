@@ -124,6 +124,174 @@ fn nested_class_instances_of_two_enclosing_objects_share_one_entry() {
     );
 }
 
+fn nested_class(name: &str, field: Option<u32>, private: bool) -> CachedTarget {
+    CachedTarget {
+        kind: CachedTargetKind::NestedClass {
+            name: Symbol::intern(name),
+            field,
+        },
+        private,
+    }
+}
+
+/// A nested-class accessor's entry records the absolute index of the
+/// receiver's hidden slot -- after `Holder`'s two slots, `Object` having
+/// none, so 2 -- and the second send, a hit, answers the class the first
+/// created.
+#[test]
+fn a_nested_class_hit_reads_the_cached_field() {
+    let source = indoc! {"
+        class Subject = Object new () (
+          class Holder = Object new (
+            | first ::= 1. second ::= 2. |
+          ) (
+            public class Inner = Object new () ()
+          )
+          public run = (
+            | holder classes |
+            holder:: Holder new.
+            classes:: Array new: 2.
+            1 to: 2 do: [:index | classes at: index put: holder Inner].
+            ^(classes at: 1) == (classes at: 2) ifTrue: [1] ifFalse: [0]
+          )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = instantiate(&mut interpreter, &class);
+    let answer = send(&mut interpreter, &instance, "run", &[]);
+    assert_eq!(small_integer(&mut interpreter, &answer), 1);
+    assert_eq!(
+        states(
+            &mut interpreter,
+            &class,
+            MethodSide::Instance,
+            "run",
+            "Inner"
+        ),
+        vec![CallSiteState::Monomorphic(nested_class(
+            "Inner",
+            Some(2),
+            false
+        ))]
+    );
+}
+
+/// A private site's guard is N's application, not the receiver's, so its
+/// entry records the hidden slot's index in N's application, and a hit
+/// uses it only for a receiver of exactly that application: a subclass's
+/// instance takes the lookup. Each enclosing object still answers a class
+/// of its own, the same on every send.
+#[test]
+fn a_private_nested_class_hit_reads_the_field_only_for_the_guard_s_application() {
+    let source = indoc! {"
+        class Subject = Object new () (
+          class Base = Object new (
+            | first ::= 1. |
+          ) (
+            private class Inner = Object new () ()
+            public inner = ( ^Inner )
+          )
+          class Derived = Base new (
+            | second ::= 2. |
+          ) ()
+          public baseClass = ( ^Base )
+          public run = (
+            | derived base answers |
+            derived:: Derived new.
+            base:: Base new.
+            answers:: {derived inner. base inner. derived inner. base inner}.
+            (answers at: 1) == (answers at: 3) ifFalse: [^1].
+            (answers at: 2) == (answers at: 4) ifFalse: [^2].
+            (answers at: 1) == (answers at: 2) ifTrue: [^3].
+            ^0
+          )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = instantiate(&mut interpreter, &class);
+    let answer = send(&mut interpreter, &instance, "run", &[]);
+    assert_eq!(small_integer(&mut interpreter, &answer), 0);
+    let base = send(&mut interpreter, &instance, "baseClass", &[]);
+    assert_eq!(
+        states(
+            &mut interpreter,
+            &base,
+            MethodSide::Instance,
+            "inner",
+            "Inner"
+        ),
+        vec![CallSiteState::Monomorphic(nested_class(
+            "Inner",
+            Some(1),
+            true
+        ))]
+    );
+}
+
+/// A `super` site's guard is S's application, and a hidden slot's index
+/// is the same in every application over the one that declares it, so its
+/// entry records the index in S's layout -- `Base`'s one slot, then the
+/// hidden slot, so 1 -- and a hit reads it for a receiver of the running
+/// class's application. A subclass's instance takes the lookup; each
+/// enclosing object still answers a class of its own, the same on every
+/// send. A body-less declaration's own `super Inner` starts at its class
+/// object's superclass, `Base`, as every `super` starts at its current
+/// class's, and finds `Base`'s.
+#[test]
+fn a_super_nested_class_hit_reads_the_field_in_s_layout() {
+    let source = indoc! {"
+        class Subject = Object new () (
+          class Base = Object new (
+            | first ::= 1. |
+          ) (
+            public class Inner = Object new () ()
+          )
+          class Holder = Base new (
+            | second ::= 2. |
+          ) (
+            public baseInner = ( ^super Inner )
+          )
+          class Deeper = Holder new (
+            | third ::= 3. |
+          ) ()
+          class Marker tag: t = Object new (| public a = t. |) ()
+          class Applied = Base new <: Marker tag: super Inner.
+          public holderClass = ( ^Holder )
+          public run = (
+            | holder deeper answers applied |
+            holder:: Holder new.
+            deeper:: Deeper new.
+            answers:: {holder baseInner. holder baseInner. deeper baseInner. deeper baseInner}.
+            (answers at: 1) == (answers at: 2) ifFalse: [^1].
+            (answers at: 3) == (answers at: 4) ifFalse: [^2].
+            (answers at: 1) == (answers at: 3) ifTrue: [^3].
+            applied:: Applied new.
+            applied a name = 'Inner' ifFalse: [^4].
+            ^0
+          )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = instantiate(&mut interpreter, &class);
+    let answer = send(&mut interpreter, &instance, "run", &[]);
+    assert_eq!(small_integer(&mut interpreter, &answer), 0);
+    let holder = send(&mut interpreter, &instance, "holderClass", &[]);
+    assert_eq!(
+        states(
+            &mut interpreter,
+            &holder,
+            MethodSide::Instance,
+            "baseInner",
+            "Inner"
+        ),
+        vec![CallSiteState::Monomorphic(nested_class(
+            "Inner",
+            Some(1),
+            false
+        ))]
+    );
+}
+
 const FIVE_KINDS: &str = indoc! {"
     class Subject = Object new () (
       class KindOne = Object new () ( public value = ( ^1 ) )

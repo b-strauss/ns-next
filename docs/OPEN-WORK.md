@@ -15,34 +15,19 @@ when they were written.
 
 ## Next
 
-**`new` as compiled code** (decided with the user on 2026-10-22, before
-road step 7; "The road to a high-performance VM" below). The primary
-factory runs as code the compiler emits, as both references do, instead of
-the instantiation walk in Rust ([object-model.md](design/object-model.md),
-"Instantiation"):
-
-- Squeak-Newspeak compiles it as `basicNew` followed by an ordinary send to
-  the initializer (`prior-art/newspeak/Newspeak2SqueakCompilation.ns:1991-2020`);
-  SOMns does the same in `MixinBuilder.assemblePrimaryFactoryMethod`.
-- Then `new` takes the inline caches, and road steps 8 and 9 can inline it.
-  It replaces road step 6's fast `new` of a class that runs no code, which
-  only skips the walk.
-- Why the walk exists: Milestone 1 built it in Rust, and Milestone 4's step
-  2a made it a state machine with its semantics unchanged. Its step 3b took the
-  factory's place in the method table from the references but kept it
-  bodiless, and the `<:` clauses were built into the walk. No document
-  weighed compiled code against it.
-- What the compiled form must keep: §6.1's superclass-selector check at run
-  time, the per-level arity check an untrusted image relies on, and the
-  deferred `<:` messages, each run just before its level's initializer.
-- Road step 7 follows it.
+**Road step 7, an execution model for compiled code** ("The road to a
+high-performance VM" below; [execution.md](design/execution.md), "Planned:
+JIT tiers"): frames that interpreted and compiled code share, a calling
+convention, GC maps for compiled frames and deoptimization metadata. Road
+step 6 and `new` as compiled code after it are built, so a factory and the
+initializers are compiled code the JIT tiers will compile like any other.
 
 **What 5b1 cost.** Measured in release, three pinned builds a side, against
 master (`733c15bd`) and task by task: every program within noise, but
 `bench_megamorphic.ns`, +1.3-2.1% after the private and super accessor
 check, at the edge of build noise and not diagnosed ("Planned: performance
 and representation" below). Everything up to road step 6 on the road
-is built, road step 6 last; each step has its entry in
+is built, and `new` as compiled code after it; each step has its entry in
 [PROGRESS.md](PROGRESS.md), and the whole road is below.
 
 **Measuring.** The protocol is [execution.md](design/execution.md)'s "What
@@ -241,7 +226,21 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
   fill, with no walk. [memory.md](design/memory.md), "Inline allocation";
   [object-model.md](design/object-model.md), "Instantiation";
   [execution.md](design/execution.md), "What inline allocation moved".
-- **After step 6, `new` as compiled code** ("Next" above).
+- **After step 6, `new` as compiled code -- built** (2026-10-22,
+  [its plan](superpowers/plans/2026-10-22-2051-compiled-new.md)): the
+  primary factory is a body the compiler synthesizes -- allocate, run the
+  class's initializer, answer the instance -- on the metaclass's factory
+  entry, reached by ordinary dispatch and the inline caches; each mixin
+  carries a full, an own-part and a standalone initializer body, with its
+  clause messages' arguments lowered inline, and each level's initializer
+  invokes its superclass's from inside its own activation; the Rust walk
+  and road step 6's `new` without an activation are gone. A level a `<:`
+  clause added reached from outside is an ordinary class of its mixin; a
+  declaration without a body is the mixin application it writes, its own
+  code resolving in its own scope; and a nested-class accessor's cache hit
+  is a guard and one field load. [object-model.md](design/object-model.md),
+  "Instantiation", "Mixin application", "The nested-class accessor";
+  [compiler.md](design/compiler.md), "The three initializer bodies".
 - **Step 7, an execution model for compiled code**: frames interpreted and
   compiled code share, a calling convention, GC maps for compiled frames, and
   deoptimization metadata, which the debugger needs as much as the optimizer.
@@ -260,6 +259,20 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
 - **Step 8, a baseline JIT**, Cog's class, for x64 and arm64.
 - **Step 9, an optimizing JIT** with type feedback, inlining and
   deoptimization, Strongtalk's and HotSpot's class.
+  - **Scalar replacement of value objects** (noted with the user on
+    2026-10-22): a value whose allocation the JIT sees can live in
+    registers and never be allocated, as escape analysis does for any
+    object, and a value need not even keep its identity when it escapes,
+    since its `==` is its `=` and its `identityHash` its `hash`
+    (`Kernel.ns`, `newspeak-spec.pdf` §3.1.1). `new` as compiled code is
+    what makes it possible: allocation and initialization are code the JIT
+    can inline. Four questions are open: a value's lazy slot (§6.3.3),
+    which each copy would compute again; `self` escaping a value's
+    initializer before its slots are filled; whether the bulk forward
+    (`become:`) may take a value; and flattening values into other objects
+    and arrays, which without static slot types needs speculative layouts.
+    [object-model.md](design/object-model.md), "A value object's four
+    conditions".
 - **Last, after step 9: whether pointer compression pays, measured** (noted
   with the user on 2026-10-11). A value as a 32-bit word -- an object
   space offset divided by 8, addressing 32 GB, which handles that are
@@ -424,10 +437,12 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 - **Register reuse within a statement, and liveness across statements**, both
   permitted and not done. [compiler.md](design/compiler.md).
 - **A `Factory` entry carrying the bases of its instantiation bodies**, to
-  drop the family-map probe per initializer push (`inline_cache.rs`'s
-  `base_for`); its cost was never isolated. Road step 6's fast `new` runs
-  no initializer, so it leaves the probe of every other instantiation
-  where it was. [dispatch.md](design/dispatch.md), "Code families".
+  drop the family-map probe per factory and initializer push
+  (`inline_cache.rs`'s `base_for`, from `push_step` and
+  `push_initializer`); its cost was never isolated. Since `new` is compiled
+  code every instantiation pushes its factory body, so the probe is paid
+  at least once per `new`. [dispatch.md](design/dispatch.md), "Code
+  families".
 - **Clean blocks** (noted 2026-10-22): a block that needs neither `self`,
   outer registers, an implicit receiver nor `^` needs no frame and could
   be one closure made once, as Cog's clean blocks are, instead of a
@@ -450,9 +465,35 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   microbenchmark sources. Neither obviously touches those programs' hot
   paths, so code or data layout is a likelier cause than the work; it is
   undecided. All five parts were kept (decided with the user on
-  2026-10-22). Measure again after `new` as compiled code lands ("Next"),
-  which replaces the fast `new` path. [execution.md](design/execution.md),
-  "What inline allocation moved".
+  2026-10-22). The fast `new` is gone, replaced by `new` as compiled code,
+  and measured again against `master` all seven micro sources and fifteen
+  of sixteen Are We Fast Yet programs are faster, Sieve level, NBody
+  included (-3.4%), so none of the residuals survives; what is open is the
+  arrays part, to be measured again by itself with the next change to
+  allocation. [execution.md](design/execution.md), "What inline
+  allocation moved", "What `new` as compiled code moved".
+- **The futures of simultaneous slots stay in Rust** (noted with the user
+  on 2026-10-22). Forcing a future is Rust machinery -- a
+  `Continuation::Future` on the forcing block's activation, and the
+  stopped instruction run again once it is resolved
+  (`interpreter/future.rs`; [execution.md](design/execution.md),
+  "Running an instruction again after forcing a future") -- the last
+  piece of a slot clause's semantics that is no code the compiler emits,
+  as instantiation was before `new` became compiled code. A JIT sees it
+  as an opaque call, and every instruction that can meet a future keeps
+  its forcing path. How a future's forcing becomes code the compiler
+  emits is open.
+  [object-model.md](design/object-model.md), "Simultaneous slots".
+- **A private nested class sent from a subclass instance never takes the
+  cached field** (noted 2026-10-22). A private site's entry is guarded by
+  N's application, and its hidden-slot index is that application's, so a
+  hit reads the field only for a receiver of exactly that application
+  (`inline_cache.rs`'s `materialize`); a receiver of a subclass takes the
+  accessor's own path, two hash lookups, as before the field was cached.
+  Recording the receiver's guard as well would take the entry past
+  `Target`'s pinned 16 bytes. Measure a program that does this before
+  acting. [object-model.md](design/object-model.md), "The nested-class
+  accessor"; [dispatch.md](design/dispatch.md), "An entry".
 - **Guarding a private lexical site on N's mixin** rather than its
   application — kept open until a program has such a site (a mixin under
   several superclasses) to measure; the per-mixin id it wants, `MixinId`,
@@ -547,6 +588,16 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   measurement shows an image meets such chains. Noted 2026-10-16.
   [core-library.md](design/core-library.md), "The heap and the
   collectors".
+- **An application lists the declared slots of its whole chain.**
+  `MixinApplication::declared_slots` (`mixin::declared_slots_of`) copies
+  the superclass's list and extends it, so a chain of *n* levels with a
+  slot each holds about *n*²/2 entries in all: about 5 x 10⁹ for the
+  101,001 levels
+  `goldens/language/class/instantiation/a_chain_deeper_than_the_depth_limit_overflows.ns`
+  builds, which is why that golden's levels use initializer expressions
+  instead. A list shared with the superclass's (a persistent list, or the
+  level's own slots and a link) would keep it linear. Noted 2026-10-22.
+  [object-model.md](design/object-model.md), "Instantiation".
 
 ## Planned: language and library
 
@@ -784,6 +835,13 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 
 ## Planned: editor support and the analyzer
 
+- **`disasm --initializer` leaves out the factory of a class that declares
+  none** (noted 2026-10-22). It lists a factory entry's body only when the
+  mixin declares a factory (`crates/ns-analyzer/src/commands/disasm.rs`),
+  so a class with §6's default `new` shows no `method <Name> factory new`,
+  though its metaclass's entry carries the same synthesized body.
+  [compiler.md](design/compiler.md), "Reading the output".
+
 - **Range formatting (`textDocument/rangeFormatting`) and formatting on
   type** (`textDocument/onTypeFormatting`). The server formats a whole
   open document only; the printer lays out a module from its tree and
@@ -967,6 +1025,35 @@ classes and a class from source with no predecessor are not edited
   stage 3.
 
 ## Unexplained measurements and unmeasured decisions
+
+- **`SendKey`'s word for `current_class`** (2026-10-22). A `super` send's
+  key carries the running class beside S, so that a nested-class hit on a
+  `super` site keeps its cached field for a receiver of the running
+  class's application (`inline_cache.rs`, `SendKey`, `materialize`); every
+  other send sets it to `None`. A monomorphic hit pays nothing for it, a
+  polymorphic or global hit one store more, and the key is passed by
+  reference because its copies were measured to matter. Not isolated by a
+  measurement. The alternative that costs no word: a `super` key has no
+  use for `lexical_class`, so it could carry `current_class` there. Still
+  not isolated by a measurement: no micro source sends `super` or reaches a
+  polymorphic or global hit with a `super` key, and "What `new` as compiled
+  code moved" measured the whole batch, not this word.
+  [dispatch.md](design/dispatch.md), "A send, step by step";
+  [execution.md](design/execution.md), "What `new` as compiled code moved".
+
+- **A store-forwarding stall in `push_step`'s `FrameKind` write**
+  (2026-10-23). `FrameKind` is written as a byte and a word into a stack
+  slot that the merged push code reads back in sixteen bytes: about 6% of
+  `bench_new.ns`'s samples. A restructured entry write would speed every
+  push, not only a factory's; not attempted.
+  [execution.md](design/execution.md), "What `new` as compiled code moved".
+
+- **No micro source covers instantiating a class whose levels run no code
+  (a factory started at its `Return`), `super` sends, or body-less
+  declarations** (2026-10-23). The goldens and the debug cross-check of
+  `lexical_origin` hold their correctness; their speed is
+  unmeasured. [execution.md](design/execution.md), "What `new` as compiled
+  code moved".
 
 - **What the reclamation of ids costs a full collection is unmeasured**
   (2026-10-20). `drain_marking` gained one match arm that records the ids
@@ -1206,11 +1293,11 @@ classes and a class from source with no predecessor are not edited
 
 None of these changes a correct program's output; each is wrong but safe, or
 reachable only from a crafted artifact, except the first four, which a
-program can reach and which end the process, and five a program meets as a
+program can reach and which end the process, and six a program meets as a
 gap: `ns-next run`'s panic on a closed pipe, `Object>>printString`'s one
 text, `to:by:do:`'s zero step, `String withAll:`'s nil for an argument
-that only answers `isKindOfArray` or `isKindOfString`, and the error of a
-`hash` that is no Integer.
+that only answers `isKindOfArray` or `isKindOfString`, the error of a
+`hash` that is no Integer, and the `u16` ceilings of instantiation.
 
 - **`<<`, `Array new:`, `ByteArray new:` and `WeakArray new:` probe a
   program-chosen size with
@@ -1277,9 +1364,6 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
   not check a send's argument count against its selector, so a crafted
   artifact can panic while executing — not a decoder defect, but a check
   away from none.
-- **A decoded image's last initializer is not held to answering `self`**, so
-  a crafted image's `new` answers whatever it answers. `verify_mixins` could
-  refuse it.
 - **A ready-made instance decoded from an image is not re-checked** against
   §3.1.1's value conditions (a decoded class is). Also unchecked: a value class
   nothing instantiates, agreement of `=` and `hash`, and global uniqueness of
@@ -1538,17 +1622,6 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
   oxc) are hand-written recursive descent too, and the cost is building
   the tree, which any algorithm building this AST pays; how much the
   parser's speculative parses re-read on a clean source is not measured.
-- **`Interpreter::instantiate`, the host's way to instantiate, bypasses
-  `decide_factory`.** It calls `decide_instantiation` directly
-  (`interpreter/instantiate.rs`), so a host that instantiates `Ephemeron`,
-  `ByteArray` or `Array` gets an ordinary instance of `FixedPointers`
-  where a send of the class's factory would have made one of the class's
-  own format: an `Ephemeron` that holds its value strongly, for one, and
-  an image holding such an `Ephemeron` or `ByteArray` is refused at load,
-  since the decoder holds those classes' records to their formats. No
-  program reaches the path; route it
-  through `decide_factory`. Noted 2026-10-16.
-  [core-library.md](design/core-library.md), "Weak references".
 - **The feedback range a decoded closure is given is never reclaimed**
   (2026-10-20). A closure an image decoded carries no base and is given a
   range of its own on its first activation (`InlineCaches::fresh_range`,
@@ -1567,6 +1640,23 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
   program reaches meets such a version, since reflection goes through the
   id to the current version. [object-model.md](design/object-model.md),
   "An application has two ids".
+
+- **Instantiation's `u16` ceilings** (2026-10-22). An initializer
+  counts levels in a `u16`, so a declaration with more than 65,534 `<:`
+  clauses -- valid up to the clause index's 2^23 -- compiles its full and
+  standalone initializers to the too-large body and raises "initializer too
+  large" when it is instantiated, and a factory of 65,534 or more
+  parameters raises "factory too large", where a smaller one instantiates.
+  An implementation limit as the register ceiling is, which no program
+  comes near. [compiler.md](design/compiler.md), "The three initializer
+  bodies".
+- **A host's `Interpreter::instantiate` with more than 65,535 arguments
+  raises "factory too large" rather than the arity error** a send with a
+  wrong count gets (2026-10-22): `decide_instantiation` builds
+  `factory_body` of the count saturated to a `u16`, which is the too-large
+  body, and builds that body afresh on every call rather than reading the
+  class's factory entry, a cold path. Only a host reaches it.
+  [object-model.md](design/object-model.md), "Instantiation".
 
 ## Missing tests
 
@@ -1676,10 +1766,24 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
   tests for a negative `shift_right` at a 64-bit boundary, for
   `float_text`'s precision text of zero and of 21 digits; and `numeric_hash`'s test of `1/P`, which
   should assert the infinity's hash.
+- `new` as compiled code's (noted 2026-10-22): the reshape test
+  (`inline_cache.rs`,
+  `a_nested_class_hit_after_the_enclosing_object_was_reshaped_takes_the_slow_path`)
+  never runs a hit on a stale guard, since every forward and every edit
+  invalidates the caches before the next send.
 
 ## Code quality follow-ups
 
 Small, deliberately left, none affecting an outcome.
+
+- Leftovers of `new` as compiled code's reviews (noted 2026-10-22): the
+  reference lowering's `Body::prologue` (`compiler/reference.rs`) does not
+  stop lowering once the body is too large, as `lower.rs`'s prologue does;
+  `Heap::frame_kind` (`heap.rs`) calls `InitializerBody::of_frame_tag`
+  twice for one tag; `RETIRED_CODE_KIND_TAGS`'s doc in `image/opcodes.rs`
+  names the reader of the live tags loosely, as "`decode`"; and a doc
+  comment above `past_sixteen_bits_the_other_tables_take_the_wide_form`
+  (`bytecode/compact.rs`) is wrapped unevenly.
 
 - Leftovers of the Java benchmarks' reviews (noted 2026-10-22): a lone
   `--warm-up` or `--measure` without `--timed` is read as a benchmark

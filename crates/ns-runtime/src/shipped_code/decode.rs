@@ -13,9 +13,9 @@ use crate::bytecode::{
     UnwindMarker,
 };
 use crate::mixin::{
-    AccessorKind, ClassAccessor, ClauseMessage, DeclarationText, Factory, FactoryMethod,
-    MethodEntry, MethodFastPath, Mixin, MixinApplicationClause, MixinMethod, MixinSlot,
-    QuickConstant, SlotAccessor,
+    AccessorKind, ClassAccessor, ClauseMessage, DeclarationText, Factory, MethodEntry,
+    MethodFastPath, Mixin, MixinApplicationClause, MixinMethod, MixinSlot, QuickConstant,
+    SlotAccessor,
 };
 use crate::resolver::RootShape;
 use crate::types::BuiltinClass;
@@ -147,22 +147,20 @@ impl Decoder<'_> {
             .map(|_| {
                 let message = self.clause_message();
                 let receiver = self.option(Decoder::symbol);
-                let message_code = self.option(Decoder::code);
-                MixinApplicationClause {
-                    message,
-                    receiver,
-                    message_code,
-                }
+                MixinApplicationClause { message, receiver }
             })
             .collect();
+        mixin.has_body = self.reader.boolean();
         mixin.has_initializer_expressions = self.reader.boolean();
         let nested = (0..self.reader.length()).map(|_| self.mixin()).collect();
         mixin = mixin.with_declared_nested(nested);
         let class_side = self.option(|decoder| decoder.mixin_fields(Position::ClassSide));
         mixin.span = self.span();
         mixin.initializer_code = self.option(Decoder::code);
+        mixin.own_initializer_code = self.option(Decoder::code);
+        mixin.standalone_initializer_code = self.option(Decoder::code);
         mixin.superclass_clause_code = self.option(Decoder::code);
-        mixin.superclass_message_code = self.option(Decoder::code);
+        mixin.mark_declaration_code();
         mixin.root_shape = self.option(|decoder| {
             let over_value = decoder.reader.boolean();
             let applies_value = decoder.reader.boolean();
@@ -250,12 +248,11 @@ impl Decoder<'_> {
             2 => {
                 let selector = self.symbol();
                 let argument_count = self.reader.length();
-                let access = self.access();
-                MethodEntry::Factory(FactoryMethod {
+                crate::mixin::factory_entry(Some(Factory {
                     selector,
                     argument_count,
-                    access,
-                })
+                }))
+                .1
             }
             tag => panic!("internal: the embedded shipped code has method entry tag {tag}"),
         }
@@ -298,7 +295,6 @@ impl Decoder<'_> {
             1 => CodeKind::Block,
             2 => CodeKind::Initializer,
             3 => CodeKind::SuperclassClause,
-            4 => CodeKind::SuperclassMessage,
             tag => panic!("internal: the embedded shipped code has code kind tag {tag}"),
         }
     }
@@ -636,6 +632,44 @@ impl Decoder<'_> {
                     left,
                     right,
                     target,
+                }
+            }
+            32 => Instruction::AllocateInstance {
+                destination: self.reader.u16(),
+            },
+            33 => {
+                let instance = self.reader.u16();
+                let destination = self.reader.u16();
+                Instruction::InitializeInstance {
+                    instance,
+                    destination,
+                }
+            }
+            34 => {
+                let steps = self.reader.u16();
+                let selector = self.symbol();
+                Instruction::CheckAppliedClause { steps, selector }
+            }
+            35 => {
+                let steps = self.reader.u16();
+                let selector = self.symbol();
+                let argument_registers = self.registers();
+                let destination = self.reader.u16();
+                Instruction::InitializeSuperclass {
+                    steps,
+                    selector,
+                    argument_registers,
+                    destination,
+                }
+            }
+            36 => {
+                let steps = self.reader.u16();
+                let argument_registers = self.registers();
+                let destination = self.reader.u16();
+                Instruction::InitializeAppliedLevel {
+                    steps,
+                    argument_registers,
+                    destination,
                 }
             }
             tag => panic!("internal: the embedded shipped code has instruction tag {tag}"),

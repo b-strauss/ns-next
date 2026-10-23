@@ -14,6 +14,7 @@
 //! Adding an instruction is expected to add a line here with the next free
 //! number. Changing a line that already exists is the thing being prevented.
 
+use ns_runtime::bytecode::CodeKind;
 use ns_runtime::image::opcodes::*;
 
 #[test]
@@ -60,6 +61,32 @@ fn the_simultaneous_slot_instructions_keep_their_numbers() {
 #[test]
 fn the_non_boolean_signal_keeps_its_number() {
     assert_eq!(OPCODE_SIGNAL_NON_BOOLEAN, 40);
+}
+
+/// A compiled `new`: the factory's allocation, the initializer it runs, and
+/// the three instructions by which an initializer reaches the levels above
+/// its own.
+#[test]
+fn the_instantiation_instructions_keep_their_numbers() {
+    assert_eq!(OPCODE_ALLOCATE_INSTANCE, 41);
+    assert_eq!(OPCODE_INITIALIZE_INSTANCE, 42);
+    assert_eq!(OPCODE_CHECK_APPLIED_CLAUSE, 43);
+    assert_eq!(OPCODE_INITIALIZE_SUPERCLASS, 44);
+    assert_eq!(OPCODE_INITIALIZE_APPLIED_LEVEL, 45);
+}
+
+/// The instruction section's "next free number" comment is where the next
+/// instruction takes its tag from, so it moves with every new one.
+#[test]
+fn the_next_free_instruction_tag_is_forty_six() {
+    let source = include_str!("../src/image/opcodes.rs");
+    assert!(
+        source.contains(
+            "// Next free number: 46.
+"
+        ),
+        "image/opcodes.rs names 46 as the next free instruction tag"
+    );
 }
 
 #[test]
@@ -121,6 +148,11 @@ fn no_two_tags_share_a_number() {
         OPCODE_LOAD_OWN_SLOT,
         OPCODE_INITIALIZE_SLOT_PROVISIONALLY,
         OPCODE_SIGNAL_NON_BOOLEAN,
+        OPCODE_ALLOCATE_INSTANCE,
+        OPCODE_INITIALIZE_INSTANCE,
+        OPCODE_CHECK_APPLIED_CLAUSE,
+        OPCODE_INITIALIZE_SUPERCLASS,
+        OPCODE_INITIALIZE_APPLIED_LEVEL,
     ];
     let mut sorted = opcodes;
     sorted.sort_unstable();
@@ -194,6 +226,11 @@ fn retired_instruction_tags_are_never_reused() {
         OPCODE_LOAD_OWN_SLOT,
         OPCODE_INITIALIZE_SLOT_PROVISIONALLY,
         OPCODE_SIGNAL_NON_BOOLEAN,
+        OPCODE_ALLOCATE_INSTANCE,
+        OPCODE_INITIALIZE_INSTANCE,
+        OPCODE_CHECK_APPLIED_CLAUSE,
+        OPCODE_INITIALIZE_SUPERCLASS,
+        OPCODE_INITIALIZE_APPLIED_LEVEL,
     ];
     for retired in RETIRED_OPCODES {
         assert!(!live.contains(&retired), "tag {retired} is retired");
@@ -227,6 +264,7 @@ fn retired_object_body_tags_are_refused() {
         OBJECT_WEAK_ARRAY,
         OBJECT_EPHEMERON,
         OBJECT_MIXIN,
+        OBJECT_BODY_LESS_CLASS,
     ];
     for retired in RETIRED_OBJECT_BODIES {
         assert!(!live.contains(&retired), "tag {retired} is retired");
@@ -237,7 +275,7 @@ fn retired_object_body_tags_are_refused() {
         .chain(RETIRED_OBJECT_BODIES.iter())
         .max()
         .map_or(0, |highest| highest + 1);
-    assert_eq!(next_free, 16);
+    assert_eq!(next_free, 17);
 }
 
 /// The graph section's tags, pinned for the same reason as the instruction
@@ -271,6 +309,7 @@ fn graph_section_tags_are_fixed() {
     assert_eq!(OBJECT_WEAK_ARRAY, 12);
     assert_eq!(OBJECT_EPHEMERON, 13);
     assert_eq!(OBJECT_MIXIN, 14);
+    assert_eq!(OBJECT_BODY_LESS_CLASS, 16);
 
     assert_eq!(MIXIN_ROW, 0);
     assert_eq!(MIXIN_SHIPPED, 2);
@@ -285,8 +324,10 @@ fn graph_section_tags_are_fixed() {
     assert_eq!(FRAME_TOP_LEVEL, 2);
     assert_eq!(FRAME_INITIALIZER, 3);
     assert_eq!(FRAME_SUPERCLASS_CLAUSE, 4);
-    assert_eq!(FRAME_SUPERCLASS_MESSAGE, 5);
-    assert_eq!(FRAME_MIXIN_APPLICATION_MESSAGE, 6);
+    assert_eq!(RETIRED_FRAME_KINDS, [5, 6]);
+    assert_eq!(FRAME_OWN_INITIALIZER, 7);
+    assert_eq!(FRAME_STANDALONE_INITIALIZER, 8);
+    assert_eq!(FRAME_FACTORY, 9);
 
     assert_eq!(FRAME_BODY_NONE, 0);
     assert_eq!(FRAME_BODY_CODE, 1);
@@ -316,10 +357,24 @@ const LIVE_MIXIN_TAGS: [u8; 2] = [MIXIN_ROW, MIXIN_SHIPPED];
 /// The live class tags, which no retired one may rejoin.
 const LIVE_CLASS_TAGS: [u8; 2] = [CLASS_RECORD, CLASS_SHIPPED];
 
+/// The live frame kinds, which no retired one may rejoin.
+const LIVE_FRAME_KINDS: [u8; 8] = [
+    FRAME_METHOD,
+    FRAME_CLOSURE,
+    FRAME_TOP_LEVEL,
+    FRAME_INITIALIZER,
+    FRAME_SUPERCLASS_CLAUSE,
+    FRAME_OWN_INITIALIZER,
+    FRAME_STANDALONE_INITIALIZER,
+    FRAME_FACTORY,
+];
+
 /// The live tag-named hash tags, which no retired one may rejoin.
 const LIVE_HASHED_TAGS: [u8; 1] = [HASHED_SHIPPED];
 
-/// A retired value, mixin, class or hash tag stays retired: 1 and 3 named
+/// A retired value, mixin, class, frame kind or hash tag stays retired: 5 and 6
+/// named the clause-message frames before their bodies were lowered into
+/// the initializers, 1 and 3 named
 /// the one root class and its levels before an image carried several
 /// modules, the module, module level and metaclass tags named a module's
 /// root class, its levels and their metaclasses before those became
@@ -345,6 +400,26 @@ fn retired_class_and_hashed_tags_are_never_reused() {
             !LIVE_CLASS_TAGS.contains(&retired),
             "class tag {retired} is retired"
         );
+    }
+    for retired in RETIRED_FRAME_KINDS {
+        assert!(
+            !LIVE_FRAME_KINDS.contains(&retired),
+            "frame kind {retired} is retired"
+        );
+    }
+    for retired in RETIRED_CODE_KIND_TAGS {
+        for kind in [
+            CodeKind::Method,
+            CodeKind::Block,
+            CodeKind::Initializer,
+            CodeKind::SuperclassClause,
+        ] {
+            assert_ne!(
+                ns_runtime::image::encode::code_kind_tag(kind),
+                retired,
+                "code kind tag {retired} is retired"
+            );
+        }
     }
     for retired in RETIRED_HASHED_TAGS {
         assert!(
@@ -373,6 +448,7 @@ fn no_two_graph_tags_in_a_family_share_a_number() {
             OBJECT_WEAK_ARRAY,
             OBJECT_EPHEMERON,
             OBJECT_MIXIN,
+            OBJECT_BODY_LESS_CLASS,
         ],
         &LIVE_MIXIN_TAGS,
         &LIVE_CLASS_TAGS,
@@ -382,8 +458,9 @@ fn no_two_graph_tags_in_a_family_share_a_number() {
             FRAME_TOP_LEVEL,
             FRAME_INITIALIZER,
             FRAME_SUPERCLASS_CLAUSE,
-            FRAME_SUPERCLASS_MESSAGE,
-            FRAME_MIXIN_APPLICATION_MESSAGE,
+            FRAME_OWN_INITIALIZER,
+            FRAME_STANDALONE_INITIALIZER,
+            FRAME_FACTORY,
         ],
         &[FRAME_BODY_NONE, FRAME_BODY_CODE, FRAME_BODY_DECLARED],
         &LIVE_HASHED_TAGS,

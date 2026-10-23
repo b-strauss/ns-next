@@ -57,6 +57,17 @@ pub struct NewClass<'gc> {
     pub builtin: Option<BuiltinClass>,
 }
 
+/// Where a body-less declaration's own code walks out from
+/// (`Heap::class_declaration_scope`): the enclosing object the declaration
+/// was evaluated in and the class object of the level whose declaration
+/// lexically contains it -- what a body version of the declaration would
+/// have as its own -- both `None` for a module's root.
+#[derive(Clone, Copy)]
+pub struct DeclarationScope<'gc> {
+    pub enclosing: Option<ObjectReference<'gc>>,
+    pub declaring_class: Option<ClassReference<'gc>>,
+}
+
 /// A block closure to build (`Heap::allocate_closure`): the body it runs,
 /// shared with the `MakeClosure` that makes it, the frame it was created
 /// in, the values it was handed, and the start of its family's range in the

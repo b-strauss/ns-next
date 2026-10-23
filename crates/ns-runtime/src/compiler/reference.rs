@@ -38,22 +38,34 @@ pub(crate) fn compile_method(method: &ast::MethodDeclaration, bindings: &Binding
 }
 
 pub(crate) fn compile_mixin_bodies(mixin: &mut Mixin, bindings: &Bindings) {
-    mixin.initializer_code = Some(Rc::new(initializer(mixin, bindings)));
-    mixin.superclass_clause_code = superclass_clause(mixin, bindings).map(Rc::new);
-    mixin.superclass_message_code = superclass_message(mixin, bindings).map(Rc::new);
-    super::fill_mixin_application_messages(mixin, |mixin, clause| {
-        clause_message(mixin, clause, bindings)
+    let own = Rc::new(initializer(mixin, bindings, None));
+    mixin.initializer_code = Some(match super::Prologue::of(mixin, true) {
+        Some(prologue) => Rc::new(initializer(mixin, bindings, Some(prologue))),
+        None => Rc::clone(&own),
     });
+    mixin.standalone_initializer_code = if mixin.mixin_applications.is_empty() || !mixin.has_body {
+        None
+    } else {
+        super::Prologue::of(mixin, false)
+            .map(|prologue| Rc::new(initializer(mixin, bindings, Some(prologue))))
+    };
+    mixin.own_initializer_code = Some(own);
+    mixin.superclass_clause_code = superclass_clause(mixin, bindings).map(Rc::new);
 }
 
-/// Each own slot's initializer followed by `InitializeSlot`, one statement
-/// apiece, then the `initExprs`, then `self`. `InitializeSlot`'s index is the
-/// slot's position among the mixin's own slots, never an absolute field index
-/// (`docs/design/compiler.md`, "One body per mixin"). A simultaneous slot
-/// (§6.3.2) stores its initializer's future provisionally instead, and the
-/// clause's end reads each such slot back and stores it resolved, in
-/// declaration order.
-fn initializer(mixin: &Mixin, bindings: &Bindings) -> CompiledCode {
+/// `prologue`'s clauses when there is one -- the full or the standalone
+/// body -- then each own slot's initializer followed by `InitializeSlot`,
+/// one statement apiece, then the `initExprs`, then `self`.
+/// `InitializeSlot`'s index is the slot's position among the mixin's own
+/// slots, never an absolute field index (`docs/design/compiler.md`, "One
+/// body per mixin"). A simultaneous slot (§6.3.2) stores its initializer's
+/// future provisionally instead, and the clause's end reads each such slot
+/// back and stores it resolved, in declaration order.
+fn initializer(
+    mixin: &Mixin,
+    bindings: &Bindings,
+    prologue: Option<super::Prologue<'_>>,
+) -> CompiledCode {
     let mut body = Body::new(
         CodeKind::Initializer,
         super::factory_argument_count(mixin),
@@ -61,6 +73,10 @@ fn initializer(mixin: &Mixin, bindings: &Bindings) -> CompiledCode {
         bindings,
     );
     let mut source_span: Option<Span> = None;
+    if let Some(prologue) = prologue {
+        body.prologue(prologue.superclass, prologue.applied, prologue.has_body);
+        source_span = prologue.merge_spans(source_span);
+    }
     for (own_index, slot) in mixin.slots.iter().enumerate() {
         // A lazy slot's initializer is its getter's (`compile_lazy_slot_getter`).
         if slot.lazy {
@@ -169,32 +185,6 @@ fn superclass_clause(mixin: &Mixin, bindings: &Bindings) -> Option<CompiledCode>
     Some(body.finish(clause.span))
 }
 
-/// The clause's message arguments as a single `^{argument. argument}`, run with
-/// the declaring class's own factory arguments.
-fn superclass_message(mixin: &Mixin, bindings: &Bindings) -> Option<CompiledCode> {
-    let clause = mixin.declaration.as_ref()?.superclass.as_ref()?;
-    clause_message(mixin, clause, bindings)
-}
-
-/// Any inheritance clause's message arguments -- the superclass clause's or
-/// a `<:` clause's -- the same way.
-fn clause_message(
-    mixin: &Mixin,
-    clause: &ast::SuperclassClause,
-    bindings: &Bindings,
-) -> Option<CompiledCode> {
-    let arguments =
-        crate::interpreter::nested::superclass_clause_message_arguments_expression(clause)?;
-    let mut body = Body::new(
-        CodeKind::SuperclassMessage,
-        super::factory_argument_count(mixin),
-        0,
-        bindings,
-    );
-    body.statements_and_end(&[Statement::of_return(arguments)]);
-    Some(body.finish(clause.span))
-}
-
 /// One body being lowered: a method, a block, an initializer or a
 /// superclass-clause body.
 struct Body<'a> {
@@ -271,6 +261,65 @@ impl<'a> Body<'a> {
         let index = self.statement_program_counter.len();
         self.statement_program_counter
             .push((index, start..self.code.len()));
+    }
+
+    /// An initializer's clauses, in `lower.rs`'s order
+    /// (`Lowerer::lower_instance_initialization_prologue`): each `<:`
+    /// clause's check, the topmost first, as one statement; the superclass
+    /// clause's arguments and its initialization; each `<:` clause's
+    /// arguments and its level's initialization, from the lowest level up.
+    /// The declaration's own level is the one the body runs at, so `<:`
+    /// clause `k` (from 1) of `n` names the level `n - k + 1` steps up and
+    /// the superclass clause the class `n + 1` steps up -- one step fewer
+    /// each for a body-less declaration (`has_body` false), whose body runs
+    /// at the level its last clause adds; past what a `u16` counts, the
+    /// body is too large.
+    fn prologue(
+        &mut self,
+        superclass: Option<&ast::SuperclassClause>,
+        applied: &[ast::SuperclassClause],
+        has_body: bool,
+    ) {
+        let count = applied.len();
+        let own_level = usize::from(has_body);
+        let Ok(superclass_steps) = u16::try_from(count + own_level) else {
+            self.too_large = true;
+            return;
+        };
+        // The level clause `index` (from 0) adds: below the superclass
+        // clause's class, whose steps fit a `u16`.
+        let steps_of = |index: usize| (count + own_level - 1 - index) as u16;
+        if count > 0 {
+            let start = self.code.len();
+            for (index, clause) in applied.iter().enumerate().rev() {
+                self.emit(Instruction::CheckAppliedClause {
+                    steps: steps_of(index),
+                    selector: super::clause_selector(Some(clause)),
+                });
+            }
+            self.record_statement(start);
+        }
+        let start = self.code.len();
+        let argument_registers = self.values(super::clause_arguments(superclass));
+        let destination = self.fresh();
+        self.emit(Instruction::InitializeSuperclass {
+            steps: superclass_steps,
+            selector: super::clause_selector(superclass),
+            argument_registers,
+            destination,
+        });
+        self.record_statement(start);
+        for (index, clause) in applied.iter().enumerate() {
+            let start = self.code.len();
+            let argument_registers = self.values(super::clause_arguments(Some(clause)));
+            let destination = self.fresh();
+            self.emit(Instruction::InitializeAppliedLevel {
+                steps: steps_of(index),
+                argument_registers,
+                destination,
+            });
+            self.record_statement(start);
+        }
     }
 
     /// Each local slot with an initializer, in declaration order, as one
@@ -368,7 +417,7 @@ impl<'a> Body<'a> {
             StatementKind::Return(expression) => {
                 let register = self.value(expression);
                 match self.kind {
-                    CodeKind::Method | CodeKind::SuperclassClause | CodeKind::SuperclassMessage => {
+                    CodeKind::Method | CodeKind::SuperclassClause => {
                         self.emit(Instruction::Return { register });
                         None
                     }
@@ -394,19 +443,14 @@ impl<'a> Body<'a> {
         match self.kind {
             CodeKind::Initializer => self.return_self(),
             CodeKind::Method if !ends_in_return => self.return_self(),
-            CodeKind::Block | CodeKind::SuperclassClause | CodeKind::SuperclassMessage
-                if !ends_in_return =>
-            {
+            CodeKind::Block | CodeKind::SuperclassClause if !ends_in_return => {
                 let register = match last_value {
                     Some(register) => register,
                     None => self.literal(BytecodeLiteral::Nil),
                 };
                 self.emit(Instruction::ImplicitReturn { register });
             }
-            CodeKind::Method
-            | CodeKind::Block
-            | CodeKind::SuperclassClause
-            | CodeKind::SuperclassMessage => {}
+            CodeKind::Method | CodeKind::Block | CodeKind::SuperclassClause => {}
         }
     }
 
@@ -778,6 +822,13 @@ fn operands(instruction: &Instruction) -> Vec<u16> {
         Instruction::MakeArray {
             element_registers, ..
         } => element_registers.clone(),
+        Instruction::InitializeInstance { instance, .. } => vec![*instance],
+        Instruction::InitializeSuperclass {
+            argument_registers, ..
+        }
+        | Instruction::InitializeAppliedLevel {
+            argument_registers, ..
+        } => argument_registers.clone(),
         // Unreachable in reference-lowered code: closure conversion, which
         // is what emits these, does not run under the reference lowering.
         // Named here anyway, so a real fifth-instruction addition still has
@@ -814,7 +865,9 @@ fn operands(instruction: &Instruction) -> Vec<u16> {
         | Instruction::MakeVector { .. }
         | Instruction::ReturnSlotIfFilled { .. }
         | Instruction::LoadOwnSlot { .. }
-        | Instruction::Jump { .. } => vec![],
+        | Instruction::Jump { .. }
+        | Instruction::AllocateInstance { .. }
+        | Instruction::CheckAppliedClause { .. } => vec![],
     }
 }
 
@@ -839,8 +892,13 @@ fn destination(instruction: &Instruction) -> Option<u16> {
         | Instruction::SendMirror { destination, .. }
         | Instruction::MakeFuture { destination, .. }
         | Instruction::ResolveFuture { destination, .. }
-        | Instruction::LoadOwnSlot { destination, .. } => Some(*destination),
-        Instruction::StoreLocal { .. }
+        | Instruction::LoadOwnSlot { destination, .. }
+        | Instruction::AllocateInstance { destination }
+        | Instruction::InitializeInstance { destination, .. }
+        | Instruction::InitializeSuperclass { destination, .. }
+        | Instruction::InitializeAppliedLevel { destination, .. } => Some(*destination),
+        Instruction::CheckAppliedClause { .. }
+        | Instruction::StoreLocal { .. }
         | Instruction::StoreOuterLocal { .. }
         | Instruction::StoreVector { .. }
         | Instruction::InitializeSlot { .. }

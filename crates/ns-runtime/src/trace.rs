@@ -40,21 +40,14 @@ pub(crate) trait Trace {
     fn trace<T: Tracer>(&mut self, tracer: &mut T);
 }
 
-fn trace_values<T: Tracer>(values: &mut [Value<'_>], tracer: &mut T) {
-    for value in values {
-        tracer.value(value);
-    }
-}
-
 impl Trace for FrameKind<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         match self {
             FrameKind::Method(_) | FrameKind::TopLevel => {}
             FrameKind::Closure(closure) => tracer.object(closure),
-            FrameKind::Initializer(class)
-            | FrameKind::SuperclassClause(class)
-            | FrameKind::SuperclassMessage(class)
-            | FrameKind::MixinApplicationMessage(class) => tracer.object(class),
+            FrameKind::Initializer(class, _)
+            | FrameKind::Factory(class)
+            | FrameKind::SuperclassClause(class) => tracer.object(class),
         }
     }
 }
@@ -68,7 +61,6 @@ impl Trace for Continuation<'_> {
             }
             Continuation::DoElement(state) => state.trace(tracer),
             Continuation::NestedClass(state) => state.trace(tracer),
-            Continuation::Instantiate(state) => state.trace(tracer),
             Continuation::Unwind(pending) => pending.trace(tracer),
             Continuation::VmErrorSignalled(error) => {
                 tracer.value(&mut error.receiver);
@@ -164,41 +156,5 @@ impl Trace for NestedClassCreation<'_> {
         } = self;
         tracer.object(enclosing);
         tracer.object(declaring_class);
-    }
-}
-
-impl Trace for Instantiation<'_> {
-    fn trace<T: Tracer>(&mut self, tracer: &mut T) {
-        let Instantiation {
-            instance,
-            levels,
-            // An index into `levels`, which is traced below.
-            applying: _,
-            // Compiled code and indices into `levels`: no handle.
-            deferred: _,
-            phase,
-        } = self;
-        tracer.value(instance);
-        for (level, arguments) in levels {
-            tracer.object(level);
-            trace_values(arguments, tracer);
-        }
-        phase.trace(tracer);
-    }
-}
-
-impl Trace for InstantiationPhase<'_> {
-    fn trace<T: Tracer>(&mut self, tracer: &mut T) {
-        match self {
-            InstantiationPhase::Climbing { level, superclass } => {
-                tracer.object(level);
-                tracer.object(superclass);
-            }
-            InstantiationPhase::Descending { index: _ }
-            | InstantiationPhase::Applying {
-                index: _,
-                applying: _,
-            } => {}
-        }
     }
 }

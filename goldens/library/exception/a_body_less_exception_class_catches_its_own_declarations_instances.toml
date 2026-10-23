@@ -1,0 +1,7 @@
+stdout = '''
+caught missed missed caught
+missed caught missed missed
+missed missed caught missed
+caught caught caught caught
+missed missed missed caught
+'''

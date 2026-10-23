@@ -326,12 +326,12 @@ fn string_or_nil<'gc>(mutator: &mut Mutator<'gc>, text: Option<String>) -> Value
 /// value that is withheld.
 fn enclosing_object<'gc>(mutator: &Mutator<'gc>, subject: Value<'gc>) -> Option<Value<'gc>> {
     let class = class_object(mutator, subject)?;
-    if is_shipped(&mutator.heap.class_application(class)?.mixin) {
+    if is_shipped(&mutator.heap.class_declaration(class)?) {
         return None;
     }
     let enclosing = mutator
         .heap
-        .class_enclosing(class)
+        .class_reflected_enclosing(class)
         .map_or(Value::nil(), Value::object);
     (!mutator.is_withheld(enclosing)).then_some(enclosing)
 }
@@ -2315,9 +2315,9 @@ mod tests {
     /// A module whose receivers are forwarded just before code that
     /// addresses their own slots is pushed, by a send that binds its method
     /// without looking at the receiver: `Lazy`'s private lexical send,
-    /// `Derived`'s super send, and `Applied`'s instantiation walk, whose
-    /// `<:` clause message forwards the instance `Registering`'s
-    /// initializer registered before `Mix`'s level is pushed. `Host`'s
+    /// `Derived`'s super send, and `Applied`'s initializer, whose `<:`
+    /// clause's argument forwards the instance `Registering`'s initializer
+    /// registered before `Mix`'s own part is pushed. `Host`'s
     /// nested class `Inner` has a superclass clause that forwards the
     /// enclosing object while the class is being created, when the `Host`
     /// was handed a mirror; `HostChild` inherits it, and `Inner`'s

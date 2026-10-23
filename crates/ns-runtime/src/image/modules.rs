@@ -100,11 +100,18 @@ pub enum RootRecordDefect {
 /// clause, and for one with its one permitted clause the level that clause
 /// added, applying `Kernel Value` over `Kernel Object`. A crafted image
 /// cannot bring back a root the resolver refuses to build.
+///
+/// A root without a body, `class R = Object <: Value.`, is the level its
+/// clause added (`object-model.md`, "Mixin application";
+/// `body_less_root_record_defect`).
 pub fn root_record_defect<'gc>(
     mutator: &Mutator<'gc>,
     root_mixin: &Rc<Mixin>,
     class: ClassReference<'gc>,
 ) -> Option<RootRecordDefect> {
+    if !root_mixin.has_body {
+        return body_less_root_record_defect(mutator, root_mixin, class);
+    }
     let heap: &Heap<'gc> = &mutator.heap;
     // By id, not by address: an edit of the root replaces it under its id,
     // and the level its clause added still names the version that applied
@@ -152,6 +159,54 @@ pub fn root_record_defect<'gc>(
         }
         _ => false,
     };
+    (!obeys).then_some(RootRecordDefect::RootRule)
+}
+
+/// `root_record_defect` for a root declaration without a body: its class
+/// is the level its one clause added, `Kernel Value`'s mixin over `Kernel
+/// Object`, named by the declaration. The rule of the outermost level
+/// holds for the declaration's own scope, the one its own code walks out
+/// from: §3.3 makes "the enclosing object of a module definition" nil, so
+/// the record has neither a declaration enclosing object nor a declaration
+/// declaring class. Its level's own enclosing object and declaring class
+/// are `Value`'s (§6.2, "the enclosing object of I is the enclosing object
+/// of C"), which `Value`'s methods walk out from, as every level applying
+/// a shipped class has them.
+fn body_less_root_record_defect<'gc>(
+    mutator: &Mutator<'gc>,
+    root_mixin: &Rc<Mixin>,
+    class: ClassReference<'gc>,
+) -> Option<RootRecordDefect> {
+    let heap: &Heap<'gc> = &mutator.heap;
+    let root_id = heap.known_mixin_id(root_mixin);
+    let is_its_class_object = heap.is_class(class)
+        && heap.class_this_class(class).is_none()
+        && heap
+            .class_body_less_declaration(class)
+            .is_some_and(|declaration| heap.same_mixin(declaration, root_mixin, root_id))
+        && heap
+            .class_declaration_scope(class)
+            .is_some_and(|scope| scope.enclosing.is_none() && scope.declaring_class.is_none());
+    if !is_its_class_object {
+        return Some(RootRecordDefect::NotItsRecord);
+    }
+    let object = mutator.builtin_class(BuiltinClass::Object);
+    let value = mutator.builtin_class(BuiltinClass::Value);
+    let value_mixin = heap
+        .class_application(value)
+        .map(|application| application.mixin.clone());
+    let applies_value = heap
+        .class_application(class)
+        .zip(value_mixin)
+        .is_some_and(|(application, value_mixin)| Rc::ptr_eq(&application.mixin, &value_mixin));
+    let obeys = root_mixin.mixin_applications.len() == 1
+        && applies_value
+        && heap
+            .class_named(class)
+            .is_some_and(|named| named.same(value))
+        && heap
+            .class_superclass(class)
+            .is_some_and(|below| below.same(object));
     (!obeys).then_some(RootRecordDefect::RootRule)
 }
 

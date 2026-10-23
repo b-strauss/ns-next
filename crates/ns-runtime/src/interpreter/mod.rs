@@ -138,7 +138,7 @@ pub const DEPTH_RESERVE: usize = 1_000;
 /// logic once sends stop recursing.
 pub(crate) enum Step<'gc> {
     /// The send's value is already known: a native leaf, a slot accessor, a
-    /// nested class, a finished instantiation.
+    /// nested class, an initialization with nothing to run.
     Value(Value<'gc>),
     /// Activate `method` on `receiver`; `defining_class` becomes the
     /// activation's current class (§3.6).
@@ -160,45 +160,27 @@ pub(crate) enum Step<'gc> {
         arguments: StepArguments<'gc>,
         then: Continuation<'gc>,
     },
-    /// Activate `level`'s instance initializer on `receiver`, and deliver its
-    /// value: an instantiation's last initializer, whose value is the
-    /// instance (`Mutator::descend_levels` says why). Its code and slot
-    /// base are `level`'s, found when it is pushed.
-    ///
-    /// This and the three bodies below are inline rather than one boxed
-    /// description of an activation: every instantiation with code runs at
-    /// least one of them, and boxing each one's description measured 5-8%
-    /// slower on a chain of two levels with code. Each is smaller than
-    /// `Step::Method`, deliberately: an `Initializer` as large as it (with an
-    /// optional continuation instead of `InitializerThen`) measured 4-6%
-    /// slower on every benchmark, none of which instantiates anything in its
-    /// loop, though `Result<Step, Signal>` kept its size -- presumably
-    /// because two variants of the largest size leave the discriminant a
-    /// different niche, the effect `StepArguments::ControlFlow`'s comment
-    /// describes.
+    /// Activate the factory body `code` on the class object `class` (§6.3):
+    /// allocate an instance, run `class`'s initializer on it, answer it
+    /// (`compiler::factory_body`). Its value is delivered like a method's.
+    Factory {
+        class: ClassReference<'gc>,
+        code: Rc<crate::bytecode::CompiledCode>,
+        arguments: StepArguments<'gc>,
+    },
+    /// Activate the initializer body `body` of `level`'s mixin on
+    /// `receiver`, entered at `level`, whose slot base its own-slot
+    /// instructions take (`instantiate::InitializerBody`); its value goes to
+    /// the instruction of the factory or initializer that decided it, which
+    /// does not use it. The decision carries the body's `code`, which it
+    /// found to decide that the level runs code, so that the push does not
+    /// look it up again; `Step` keeps its size, which `Method` sets.
     Initializer {
         receiver: Value<'gc>,
         level: ClassReference<'gc>,
-        arguments: Vec<Value<'gc>>,
-    },
-    /// Activate `level`'s instance initializer on the instance `then` is
-    /// initializing, and carry the walk on below it when it returns: an
-    /// initializer with a level below it that still has code.
-    InitializerThen {
-        level: ClassReference<'gc>,
-        arguments: Vec<Value<'gc>>,
-        then: Box<Instantiation<'gc>>,
-    },
-    /// Activate `code`, the arguments of a clause message written in
-    /// `level`'s declaration, on the instance `then` is initializing and with
-    /// `level`'s factory arguments (§6.2); its value is the factory arguments
-    /// of the level above -- the superclass, or an applied level -- with which
-    /// `then` carries the walk on.
-    ClauseMessage {
-        level: ClassReference<'gc>,
+        arguments: StepArguments<'gc>,
+        body: instantiate::InitializerBody,
         code: Rc<crate::bytecode::CompiledCode>,
-        arguments: Vec<Value<'gc>>,
-        then: Box<Instantiation<'gc>>,
     },
     /// Activate the superclass clause of the nested class `creation`
     /// describes, on its enclosing object and as part of the class that
@@ -222,6 +204,18 @@ pub(crate) struct MethodThen<'gc> {
     pub(crate) defining_class: ClassReference<'gc>,
     pub(crate) arguments: Vec<Value<'gc>>,
     pub(crate) then: Continuation<'gc>,
+}
+
+/// The parts of a level a `<:` clause adds that every class object has
+/// (`Mutator::new_applied_level`): the application of the named class's
+/// mixin to the level below, the named class's enclosing object and
+/// declaring class (§6.2: "the enclosing object of I is the enclosing
+/// object of C"), and the level below.
+pub(crate) struct AppliedLevel<'gc> {
+    pub(crate) application: Rc<crate::mixin::MixinApplication>,
+    pub(crate) enclosing: Option<ObjectReference<'gc>>,
+    pub(crate) declaring_class: Option<ClassReference<'gc>>,
+    pub(crate) superclass: Option<ClassReference<'gc>>,
 }
 
 /// Where an activation's arguments come from.
@@ -261,8 +255,8 @@ impl<'gc> StepArguments<'gc> {
 }
 
 /// Everything a step of the interpreter works on -- the heap and the
-/// bootstrap's builtin classes, the caches of behaviour, the argument
-/// buffer and the spare instantiation boxes -- and every decision, native
+/// bootstrap's builtin classes, the caches of behaviour and the argument
+/// buffer -- and every decision, native
 /// and continuation that runs one. A host reaches it only through
 /// `Interpreter::enter`, and nothing here reaches back: no method takes or
 /// answers the `Interpreter`, so no step can run the loop, reach its
@@ -358,13 +352,6 @@ pub struct Mutator<'gc> {
     /// cache slot; this only counts it, so a release build keeps nothing.
     #[cfg(debug_assertions)]
     pub(crate) creations_in_progress: usize,
-    /// Boxes finished instantiations left behind, emptied, for the next ones
-    /// to walk in (`instantiate.rs`'s `walk_state` and `retire_walk`).
-    /// Allocating a box and a list of levels per instantiation instead
-    /// measured 3-13% slower on instantiation benchmarks. They hold no
-    /// handle, so a collector has nothing to trace in them.
-    #[allow(clippy::vec_box)] // the boxes are what is reused, not only their contents
-    pub(crate) spare_walks: Vec<Box<Instantiation<'gc>>>,
     /// The lowering every module this interpreter loads is compiled with
     /// (`docs/design/compiler.md`, "The reference lowering"). Fixed at
     /// construction, so one interpreter never mixes the two.
@@ -659,7 +646,13 @@ impl Interpreter {
                 Some(object) => mutator.heap().object_class(object),
                 None => unreachable!("internal: a shipped module instance is an object"),
             };
-            let decided = nested::nested_class(mutator, receiver, nested, declaring_class);
+            let decided = nested::nested_class(
+                mutator,
+                receiver,
+                nested,
+                declaring_class,
+                nested::NO_CACHED_FIELD,
+            );
             mutator.start(decided, &[])
         });
         self.run_from_host(start, depth)
@@ -990,12 +983,12 @@ impl<'gc> Mutator<'gc> {
     /// Decides what an ordinary (explicit-receiver) send would run, without
     /// running it (`docs/design/execution.md`, "Deciding, then running"):
     /// the lookup (`resolve_public`), then what it found (`act`), which
-    /// decides an instantiation (`decide_instantiation`) rather than
+    /// decides a factory's activation (`decide_factory`) rather than
     /// entering the host entry `instantiate`, which would enter the run loop
     /// from inside it -- the re-entry `run_from_host` refuses. See
     /// `instantiate::decide_factory`'s own doc comment for why this can never
-    /// double-fire against the superclass clause's own deferred factory
-    /// message (`climb_levels` never decides a send).
+    /// double-fire against the superclass clause's own factory message (an
+    /// initializer never decides a send to its superclass).
     pub(crate) fn decide_send(
         &mut self,
         receiver: Value<'gc>,
@@ -1025,6 +1018,7 @@ impl<'gc> Mutator<'gc> {
     /// The check is the one compare it always was: the reserve is looked at
     /// only once the depth has reached L (`push_past_the_limit`), so an
     /// error far from L, and every push below it, pays nothing for it.
+    #[inline(always)]
     pub(crate) fn push(
         &mut self,
         header: ActivationHeader<'gc>,
@@ -1032,7 +1026,10 @@ impl<'gc> Mutator<'gc> {
         temporaries: usize,
     ) -> Result<ActivationReference, Signal<'gc>> {
         if header.counted && self.heap.counted_depth() >= MAX_ACTIVATION_DEPTH {
-            return self.push_past_the_limit(header, arguments, temporaries);
+            // Boxed, so that only this path keeps the header in memory: the
+            // header the push below copies is then never written there
+            // first and read back.
+            return self.push_past_the_limit(Box::new(header), arguments, temporaries);
         }
         Ok(self.heap.push_activation(header, arguments, temporaries))
     }
@@ -1047,7 +1044,7 @@ impl<'gc> Mutator<'gc> {
     #[inline(never)]
     fn push_past_the_limit(
         &mut self,
-        header: ActivationHeader<'gc>,
+        header: Box<ActivationHeader<'gc>>,
         arguments: &[Value<'gc>],
         temporaries: usize,
     ) -> Result<ActivationReference, Signal<'gc>> {
@@ -1059,7 +1056,7 @@ impl<'gc> Mutator<'gc> {
         {
             recursion_too_deep(&header)
         } else if self.heap.counted_depth() < MAX_ACTIVATION_DEPTH + DEPTH_RESERVE {
-            return Ok(self.heap.push_activation(header, arguments, temporaries));
+            return Ok(self.heap.push_activation(*header, arguments, temporaries));
         } else {
             Signal::Terminate(Box::new(self.overrun_of_the_reserve(&header)))
         };
@@ -1287,46 +1284,52 @@ impl<'gc> Mutator<'gc> {
                 self.heap.fill_copied_values(activation, closure);
                 Ok(activation)
             }
-            // An initializer level, a superclass clause or its message is
-            // never an activation the optimized lowering inlines away, so
-            // each of the three below is always counted.
+            // A factory, an initializer or a superclass clause is never an
+            // activation the optimized lowering inlines away, so each of the
+            // three below is always counted.
+            Step::Factory {
+                class,
+                code,
+                arguments,
+            } => {
+                let arguments = arguments.slice(send_arguments);
+                // The entry's arity is its selector's, which the send
+                // matched, and a host's factory is built for its count;
+                // checked all the same, since the window is laid out from
+                // the count.
+                if arguments.len() != usize::from(code.argument_count)
+                    && !code.stands_for_too_many_arguments(arguments.len())
+                {
+                    return Err(instantiate::factory_arity_error(
+                        class,
+                        usize::from(code.argument_count),
+                        arguments.len(),
+                    ));
+                }
+                let feedback_base = self.caches.base_for(&code);
+                let temporaries = (code.register_count - code.argument_count) as usize;
+                self.push(
+                    ActivationHeader {
+                        receiver: Value::object(class),
+                        current_class: Some(class),
+                        kind: FrameKind::Factory(class),
+                        code,
+                        then: Continuation::Deliver,
+                        counted: true,
+                        feedback_base,
+                    },
+                    arguments,
+                    temporaries,
+                )
+            }
             Step::Initializer {
                 receiver,
                 level,
                 arguments,
-            } => self.push_initializer(receiver, level, &arguments, Continuation::Deliver),
-            Step::InitializerThen {
-                level,
-                arguments,
-                then,
-            } => self.push_initializer(
-                then.instance,
-                level,
-                &arguments,
-                Continuation::Instantiate(then),
-            ),
-            Step::ClauseMessage {
-                level,
+                body,
                 code,
-                arguments,
-                then,
             } => {
-                let feedback_base = self.caches.base_for(&code);
-                let temporaries = (code.register_count - code.argument_count) as usize;
-                let kind = instantiate::clause_message_frame_kind(level, &then);
-                self.push(
-                    ActivationHeader {
-                        receiver: then.instance,
-                        current_class: Some(level),
-                        kind,
-                        code,
-                        then: Continuation::Instantiate(then),
-                        counted: true,
-                        feedback_base,
-                    },
-                    &arguments,
-                    temporaries,
-                )
+                self.push_initializer(receiver, level, arguments.slice(send_arguments), body, code)
             }
             Step::SuperclassClause(creation) => {
                 let code = nested::superclass_clause_code(&creation.nested);
@@ -1393,26 +1396,65 @@ impl<'gc> Mutator<'gc> {
         }
     }
 
-    /// Pushes `level`'s instance initializer on `receiver`, the one body
-    /// `Step::Initializer` and `Step::InitializerThen` share; only what
-    /// happens once it returns differs.
-    fn push_initializer(
+    /// `push_step` for the step a send in the run loop decided, answering
+    /// the activation to run and the instruction to start it at: a factory
+    /// whose body is `compiler::factory_body` is carried through its first
+    /// two instructions at once (`enter_factory_body`), every other step is
+    /// pushed and started at its first. Only the run loop's sends come here,
+    /// since only they switch to what is answered: a host's run starts at
+    /// the activation it pushed, and a continuation of the pushed
+    /// activation is written by some other callers.
+    pub(crate) fn push_sent(
+        &mut self,
+        step: Step<'gc>,
+        send_arguments: &[Value<'gc>],
+        sender: Option<ActivationReference>,
+        inlinable: bool,
+    ) -> Result<(ActivationReference, usize), Signal<'gc>> {
+        let factory = match &step {
+            Step::Factory {
+                class,
+                code,
+                arguments: StepArguments::Send,
+            } => instantiate::factory_registers(code).map(|registers| (*class, registers)),
+            _ => None,
+        };
+        let pushed = self.push_step(step, send_arguments, sender, inlinable)?;
+        match factory {
+            Some((class, registers)) => {
+                self.enter_factory_body(pushed, class, registers, send_arguments)
+            }
+            None => Ok((pushed, 0)),
+        }
+    }
+
+    /// Pushes the initializer body `body` of `level`'s mixin on `receiver`,
+    /// entered at `level`. The decision found the body, and nothing has run
+    /// since.
+    pub(super) fn push_initializer(
         &mut self,
         receiver: Value<'gc>,
         level: ClassReference<'gc>,
         arguments: &[Value<'gc>],
-        then: Continuation<'gc>,
+        body: instantiate::InitializerBody,
+        code: Rc<crate::bytecode::CompiledCode>,
     ) -> Result<ActivationReference, Signal<'gc>> {
-        let code = self.initializer_body(level);
+        // The decision checked the arguments against the level's factory,
+        // whose arity `image::decode::verify_mixins` holds every body to.
+        debug_assert!(
+            arguments.len() == usize::from(code.argument_count)
+                || code.stands_for_too_many_arguments(arguments.len()),
+            "internal: an initializer is pushed with its own number of arguments"
+        );
         let feedback_base = self.caches.base_for(&code);
         let temporaries = (code.register_count - code.argument_count) as usize;
         self.push(
             ActivationHeader {
                 receiver,
                 current_class: Some(level),
-                kind: FrameKind::Initializer(level),
+                kind: FrameKind::Initializer(level, body),
                 code,
-                then,
+                then: Continuation::Deliver,
                 counted: true,
                 feedback_base,
             },
@@ -1448,7 +1490,6 @@ impl<'gc> Mutator<'gc> {
                 nested::end_creation(self, &creation);
                 nested::after_clause(self, *creation, value)
             }
-            Continuation::Instantiate(state) => self.advance_instantiation(state, value),
             // The block's value is dropped: the unwind it ran for goes on,
             // raised again as the signal it was, from the activation it had
             // stopped at -- now the top of the stack again.
@@ -1894,27 +1935,52 @@ impl<'gc> Mutator<'gc> {
 
     /// A level a mixin application adds (`newspeak-spec.pdf` §6.2): a class
     /// object like any other -- `new_class_object`'s invariant holds for it
-    /// too -- that also carries the `<:` clause it was built for.
+    /// too -- that also carries the `<:` clause it was built for and the
+    /// class object `named` that clause named. Its metaclass applies
+    /// `class_side`, the class side whose factory and name the level has:
+    /// the named class's for a level like any other (§6.2: "a primary
+    /// factory method with the same selector as m"), and a body-less
+    /// declaration's own for its class object, the level its last clause
+    /// adds (`object-model.md`, "Mixin application"). That class object also
+    /// has room for the declaration's own scope, nil until
+    /// `nested::body_less_class` writes it -- and nil for good for a
+    /// module's root, which no object encloses.
     pub(crate) fn new_applied_level(
         &mut self,
-        application: Rc<crate::mixin::MixinApplication>,
-        enclosing: Option<ObjectReference<'gc>>,
-        declaring_class: Option<ClassReference<'gc>>,
-        superclass: Option<ClassReference<'gc>>,
+        level: AppliedLevel<'gc>,
         clause: crate::mixin::AppliedClause,
+        named: ClassReference<'gc>,
+        class_side: Rc<crate::mixin::Mixin>,
     ) -> ClassReference<'gc> {
-        let class = self.allocate_class_object(crate::heap::NewClass {
+        let AppliedLevel {
             application,
             enclosing,
             declaring_class,
             superclass,
-            builtin: None,
-        });
+        } = level;
+        let object = self.builtin_class(BuiltinClass::Object);
+        // The level a body-less declaration's last clause adds is the
+        // declaration's class object, which also keeps the declaration's
+        // scope (`Heap::class_declaration_scope`).
+        let body_less = !clause.declaration.has_body
+            && clause.index + 1 == clause.declaration.mixin_applications.len();
+        let class = self.heap.allocate_applied_level(
+            object,
+            crate::heap::NewClass {
+                application,
+                enclosing,
+                declaring_class,
+                superclass,
+                builtin: None,
+            },
+            named,
+            body_less,
+        );
         if !self.heap.class_set_applied_clause(class, clause) {
             unreachable!("internal: a level is a class object");
         }
         if self.metaclasses_ready {
-            self.attach_metaclass(class);
+            self.attach_metaclass_of(class, class_side);
         }
         class
     }
@@ -2066,12 +2132,7 @@ impl<'gc> Mutator<'gc> {
         // -- so a value's state is not a prefix of its fields.
         let declared_slots = crate::mixin::declared_slots_of(superclass, inherited, &mixin.slots);
         let dispatch_ids = self.mint_dispatch_ids();
-        // Whether `new` can skip the walk: decided once here, from this
-        // level's facts and the superclass application's verdict, so that
-        // every instantiation asks one flag (`decide_instantiation_from`).
         let level_facts = crate::mixin::LevelFacts::of(mixin);
-        let instantiates_without_code =
-            crate::mixin::instantiates_without_code(&level_facts, superclass);
         let application = self
             .heap
             .register_application(crate::mixin::MixinApplication {
@@ -2087,7 +2148,6 @@ impl<'gc> Mutator<'gc> {
                 own_slot_base: inherited,
                 dispatch_ids,
                 instance_header: None,
-                instantiates_without_code,
                 level_facts,
             });
         self.applications.insert(key, application.clone());
@@ -2799,15 +2859,13 @@ mod tests {
         });
     }
 
-    /// A factory send is decided as the instantiation's first body to run --
-    /// a clause message with arguments on the way up, or else the
-    /// initializer of the topmost level with code -- with the rest of the
-    /// walk in the continuation when anything is left to run below it, and a
-    /// plain delivery when nothing is (the initializer answers the
-    /// instance); a class with nothing to initialize at any level is decided
-    /// as its instance outright.
+    /// A factory send is decided as the factory's activation on the class
+    /// object it was sent to, whatever the class's initializers do: the
+    /// body of the entry its metaclass holds, with the send's arguments. A
+    /// send decides nothing of the instance's initialization, which the
+    /// factory's own instructions decide once it runs.
     #[test]
-    fn deciding_new_answers_the_first_initializer_as_an_activation() {
+    fn deciding_new_answers_the_factory_as_an_activation() {
         let source = indoc! {"
             class X = Object new (
             ) (
@@ -2818,15 +2876,8 @@ mod tests {
               public class Q = Object new (
               ) (
               ) : ()
-              public class R = P new (
-                | w = 2. |
-              ) (
-              ) : ()
               public class M x: a = Object new (
                 | m = a. |
-              ) (
-              ) : ()
-              public class S = M x: 3 (
               ) (
               ) : ()
             ) : ()
@@ -2835,158 +2886,38 @@ mod tests {
         let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         let p_class_root = expect_ok(interpreter.send(&instance, Symbol::intern("P"), &[]), "P");
         let q_class_root = expect_ok(interpreter.send(&instance, Symbol::intern("Q"), &[]), "Q");
-        let r_class_root = expect_ok(interpreter.send(&instance, Symbol::intern("R"), &[]), "R");
-        let s_class_root = expect_ok(interpreter.send(&instance, Symbol::intern("S"), &[]), "S");
+        let m_class_root = expect_ok(interpreter.send(&instance, Symbol::intern("M"), &[]), "M");
         interpreter.enter(|mutator| {
-            let (p_class, q_class, r_class, s_class) = (
-                mutator.fetch(&p_class_root),
-                mutator.fetch(&q_class_root),
-                mutator.fetch(&r_class_root),
-                mutator.fetch(&s_class_root),
-            );
-            let Some(p_class_object) = p_class.as_object() else {
-                panic!("`P` answers a class object")
-            };
-            let Some(s_class_object) = s_class.as_object() else {
-                panic!("`S` answers a class object")
-            };
-            assert!(
-                matches!(
-                    mutator.decide_send(p_class, Symbol::NEW, &[]),
-                    Ok(Step::Initializer { level, .. }) if level.same(p_class_object)
-                ),
-                "`P new` is decided as P's initializer, which delivers"
-            );
-            match mutator.decide_send(r_class, Symbol::NEW, &[]) {
-                Ok(Step::InitializerThen {
-                    level, then: state, ..
-                }) => {
-                    assert!(level.same(p_class_object));
-                    assert!(matches!(
-                        state.phase,
-                        InstantiationPhase::Descending { index: 1 }
-                    ));
-                }
-                _ => {
-                    panic!("`R new` is decided as its superclass P's initializer, R's still to run")
+            for (root, selector, arity) in [
+                (&p_class_root, Symbol::NEW, 0),
+                (&q_class_root, Symbol::NEW, 0),
+                (&m_class_root, Symbol::intern("x:"), 1),
+            ] {
+                let class = mutator.fetch(root);
+                let Some(class_object) = class.as_object() else {
+                    panic!("the accessor answers a class object")
+                };
+                let arguments = vec![Value::small_integer(3); arity];
+                match mutator.decide_send(class, selector, &arguments) {
+                    Ok(Step::Factory {
+                        class: decided,
+                        code,
+                        arguments: StepArguments::Send,
+                    }) => {
+                        assert!(decided.same(class_object), "{selector}");
+                        assert_eq!(usize::from(code.argument_count), arity, "{selector}");
+                        assert!(
+                            matches!(
+                                code.instruction(0),
+                                crate::bytecode::Instruction::AllocateInstance { .. }
+                            ),
+                            "{selector}: the factory's body allocates first"
+                        );
+                    }
+                    _ => panic!("`{selector}` is decided as the factory's activation"),
                 }
             }
-            match mutator.decide_send(s_class, Symbol::NEW, &[]) {
-                Ok(Step::ClauseMessage { level, then, .. }) => {
-                    assert!(level.same(s_class_object));
-                    assert!(matches!(
-                        then.phase,
-                        InstantiationPhase::Climbing { level, .. } if level.same(s_class_object)
-                    ));
-                }
-                _ => panic!("`S new` is decided as its clause message's activation"),
-            }
-            assert!(
-                matches!(
-                    mutator.decide_send(q_class, Symbol::NEW, &[]),
-                    Ok(Step::Value(answer)) if answer.as_object().is_some()
-                ),
-                "`Q new` is decided as its instance"
-            );
             assert_eq!(mutator.heap().activation_depth(), 0, "nothing was pushed");
-        });
-    }
-
-    /// A finished instantiation leaves its walk's box among the spares for
-    /// the next one, and leaves it empty: a spare holds no handle, so it
-    /// keeps nothing alive and a collector need not trace it. The next
-    /// instantiation walks in the same box.
-    #[test]
-    fn a_finished_walk_leaves_an_empty_box_for_the_next() {
-        let source = indoc! {"
-            class X = Object new (
-            ) (
-              public class P x: a = Object new (
-                | v = a. |
-              ) (
-              ) : ()
-              public class R = P x: 1 (
-                | w = 2. |
-              ) (
-              ) : ()
-            ) : ()
-        "};
-        let (mut interpreter, class) = load(source);
-        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-        let r_class_root = expect_ok(interpreter.send(&instance, Symbol::intern("R"), &[]), "R");
-        interpreter.enter(|mutator| {
-            let Some(_) = mutator.fetch(&r_class_root).as_object() else {
-                panic!("`R` answers a class object")
-            };
-        });
-        expect_ok(interpreter.instantiate(&r_class_root, &[]), "R new");
-        assert_eq!(
-            interpreter.enter(|mutator| mutator.spare_walks.len()),
-            1,
-            "one walk ran at a time"
-        );
-        // Only the box's address leaves the entry that took it, untyped: a
-        // pointer to an `Instantiation` would name the entry's brand.
-        let spare: *const () =
-            interpreter.enter(|mutator| std::ptr::from_ref(&*mutator.spare_walks[0]).cast::<()>());
-        assert!(
-            interpreter.enter(|mutator| mutator
-                .spare_walks
-                .iter()
-                .all(|state| state.instance.is_nil() && state.levels.is_empty())),
-            "a spare holds no handle"
-        );
-        expect_ok(interpreter.instantiate(&r_class_root, &[]), "R new again");
-        assert_eq!(interpreter.enter(|mutator| mutator.spare_walks.len()), 1);
-        assert!(
-            interpreter.enter(|mutator| std::ptr::eq(
-                spare,
-                std::ptr::from_ref(&*mutator.spare_walks[0]).cast::<()>()
-            )),
-            "the second walk ran in the first one's box"
-        );
-    }
-
-    /// A walk that climbs through a clause message with arguments, and then
-    /// finds no initializer at any level, retires straight out of
-    /// `descend_levels`'s "nothing below" branch -- the branch that never
-    /// writes `Descending` into `phase`. `retire_walk` must clear `phase`
-    /// itself, or the retired box still holds the two `ClassReference`s of the
-    /// last `Climbing` it was in, contradicting "a spare holds no handle".
-    #[test]
-    fn a_retired_walk_holds_no_classref_in_its_phase() {
-        let source = indoc! {"
-            class X = Object new (
-            ) (
-              public class Base x: p = Object new (
-              ) (
-              ) : ()
-              public class Cell = Base x: 1 (
-              ) (
-              ) : ()
-            ) : ()
-        "};
-        let (mut interpreter, class) = load(source);
-        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-        let cell = expect_ok(
-            interpreter.send(&instance, Symbol::intern("Cell"), &[]),
-            "Cell",
-        );
-        interpreter.enter(|mutator| {
-            let Some(_) = mutator.fetch(&cell).as_object() else {
-                panic!("`Cell` answers a class object")
-            };
-        });
-        expect_ok(interpreter.instantiate(&cell, &[]), "Cell new");
-        interpreter.enter(|mutator| {
-            assert_eq!(mutator.spare_walks.len(), 1, "one walk ran");
-            let state = &mutator.spare_walks[0];
-            assert!(state.instance.is_nil(), "no instance handle");
-            assert!(state.levels.is_empty(), "no levels");
-            assert!(
-                matches!(state.phase, InstantiationPhase::Descending { .. }),
-                "a retired box's phase holds no ClassReference either"
-            );
         });
     }
 

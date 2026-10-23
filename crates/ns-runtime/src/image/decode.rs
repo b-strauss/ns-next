@@ -291,25 +291,40 @@ pub enum DecodeError {
         row: u32,
         index: u32,
     },
-    /// A mixin-table row's `<:` clause passes factory arguments the image has
-    /// no compiled body for. `instantiate::clause_message_body` panics on the
-    /// invariant when the clause carries none -- the same refusal, for the
-    /// same reason, as `MissingSuperclassMessage`.
-    MissingMixinApplicationMessage,
-    /// A mixin-table row's `<:` clause passes no factory arguments, yet names
-    /// a compiled message body. The compiler fills a clause's body only when
-    /// its message has arguments, and the walk never runs one for a clause
-    /// without them (`instantiate::applied_clause_message_body`), so such a
-    /// body is code the row says nothing runs -- while a frame of kind
-    /// `MixinApplicationMessage` could still name it. Refused so a row and the
-    /// frames running its clauses cannot disagree about what a clause runs.
-    UnexpectedMixinApplicationMessage,
     /// A mixin-table row declares `<:` clauses but no superclass clause. The
     /// grammar admits `<:` only after a superclass clause, and it is the
     /// superclass clause's body that evaluates every clause's receiver
     /// (`interpreter::nested::superclass_clause_expression`), so such a row
     /// describes a declaration no source has and whose levels nothing builds.
     MixinApplicationWithoutSuperclass,
+    /// A mixin-table row says it has no body (`Mixin::has_body`) but
+    /// declares no `<:` clause: only a mixin application may end in a dot
+    /// (§6's `mixinAppSuffix`), and its class object is the level its last
+    /// clause adds, which such a row has none of.
+    BodyLessWithoutClauses,
+    /// A mixin-table row says it has no body yet declares members of one:
+    /// slots, `initExpr`s, methods, a class side or nested declarations.
+    /// Nothing could run or reach them,
+    /// since no class applies a body-less declaration's mixin.
+    BodyLessWithMembers,
+    /// A class record applies a body-less row's mixin. A body-less
+    /// declaration's class object applies its last clause's mixin (decision
+    /// 8 of `new` as compiled code), so no live class has one, and its full
+    /// body counts its levels from a class object of another mixin.
+    BodyLessMixinApplied,
+    /// A class record's body tag disagrees with its clause: an
+    /// `OBJECT_BODY_LESS_CLASS` record is a body-less declaration's class
+    /// object, the level its last clause added, and carries that
+    /// declaration's scope; an `OBJECT_CLASS` record is any other class
+    /// object and carries none. A record written with the other's tag would
+    /// give a level a scope it has not got, or take one away from the
+    /// declaration's own code.
+    BodyLessClassRecordMismatch,
+    /// The classes the `<:` clauses of levels named form a cycle: each
+    /// level's metaclass is rebuilt from the class its clause named, so a
+    /// cycle names no class side at all. A live clause names a class that
+    /// existed before its level did.
+    NamedClassCycle,
     /// A module has no tree in the image's mixin table, or the image carries
     /// a class it has no application for, so there is no declaration to
     /// build a class on.
@@ -337,23 +352,29 @@ pub enum DecodeError {
     /// dictionary lacks.
     UnknownSelector(String),
     /// A mixin-table row declares slots or `initExpr`s but carries no
-    /// compiled initializer. Instantiating such a class runs initializer
-    /// code on every `X new`, and `Mutator::initializer_body` panics on that
-    /// invariant rather than failing -- so only refusing here keeps a
-    /// crafted image from aborting the process at the first `X new`.
+    /// compiled own part of its initializer. A `<:` clause applying such a
+    /// mixin runs that code on every instantiation, and nothing would be
+    /// there to run -- so the load refuses it rather than let the level
+    /// initialize nothing.
     MissingInitializer,
+    /// A mixin-table row carries no full instance initializer, which every
+    /// declaration compiles: its class's factory runs it on every
+    /// instantiation.
+    MissingFullInitializer,
+    /// A mixin-table row writes `<:` clauses but carries no standalone
+    /// instance initializer, which a level of its mixin reached from
+    /// outside runs.
+    MissingStandaloneInitializer,
+    /// A mixin-table row writes no `<:` clause, or no body, yet carries a
+    /// standalone instance initializer, which no source compiles for such a
+    /// declaration.
+    UnexpectedStandaloneInitializer,
     /// A mixin-table row declares a superclass clause the image carries no
     /// compiled clause for. The nested-class accessor runs that code on the
     /// first access to the declaration, and panics on the invariant when
     /// the mixin carries none -- the same reason `MissingInitializer` is a
     /// refusal rather than a deferred crash.
     MissingSuperclassClause,
-    /// A mixin-table row's superclass clause carries a factory message with
-    /// arguments the image has no compiled body for. `instantiate`
-    /// evaluates that body on every instantiation of the class, and panics
-    /// on the invariant when the mixin carries none -- the same refusal, for
-    /// the same reason, as `MissingSuperclassClause`.
-    MissingSuperclassMessage,
     /// A compiled body attached where a body of another kind belongs, or
     /// named as a closure's body when it is not a block body. The kinds are
     /// not interchangeable: a block body runs in a `FrameKind::Closure`
@@ -409,6 +430,13 @@ pub enum DecodeError {
     /// wraps every block body in its own `Rc`, used exactly once, which is
     /// what makes "the body one closure hop out" well defined.
     SharedBlockBody,
+    /// A body-less declaration's full initializer named anywhere but as
+    /// that declaration's full initializer: as another body of its own
+    /// row, or as a body of another row. The body is its declaration's own
+    /// code (`CompiledCode::is_declaration_code`), whose lexical sends and
+    /// `outer` start from the declaration's scope, so run as any other
+    /// body it would start them there too.
+    SharedDeclarationCode,
     /// A decoded frame's register file does not match the body that runs in
     /// it, so a register index the body considers in range would index
     /// `arguments`/`temporaries` out of range.
@@ -426,8 +454,11 @@ pub enum DecodeError {
     /// not a method body of its method's argument count, a closure frame's
     /// not its closure's own code, a clause frame's not a body of that
     /// clause's kind, or a body named for a top-level frame, or none for
-    /// any other. The program counter and the register file mean nothing
-    /// against a body the frame never ran.
+    /// any other; or a body-less declaration's own code in a frame that
+    /// does not run it at that declaration's class object, or other code
+    /// in a frame that would (`Heap::frame_runs_declaration_code`). The
+    /// program counter and the register file mean nothing against a body
+    /// the frame never ran.
     FrameCodeMismatch,
     /// A frame record names its body by declaration (`FRAME_BODY_DECLARED`)
     /// where the class it resolves through applies no shipped mixin, or
@@ -753,14 +784,6 @@ impl std::fmt::Display for DecodeError {
                 "mixin application clause index {index} of row {row} is past the 2^23 \
                  clauses a class object can name"
             ),
-            DecodeError::MissingMixinApplicationMessage => write!(
-                f,
-                "the image's mixin application clause passes factory arguments it has no compiled code for"
-            ),
-            DecodeError::UnexpectedMixinApplicationMessage => write!(
-                f,
-                "the image's mixin application clause passes no factory arguments but carries compiled code for them"
-            ),
             DecodeError::MixinApplicationWithoutSuperclass => write!(
                 f,
                 "a mixin-table row applies mixins but declares no superclass clause to apply them to"
@@ -786,13 +809,43 @@ impl std::fmt::Display for DecodeError {
                 f,
                 "a class in the image needs an instance initializer, which the image has no compiled code for"
             ),
+            DecodeError::MissingFullInitializer => write!(
+                f,
+                "a class in the image has no compiled code for its instance initializer"
+            ),
+            DecodeError::MissingStandaloneInitializer => write!(
+                f,
+                "a class in the image applies mixins, and the image has no compiled code for its standalone instance initializer"
+            ),
+            DecodeError::UnexpectedStandaloneInitializer => write!(
+                f,
+                "a class in the image applies no mixin or has no body, yet the image carries a standalone instance initializer for it"
+            ),
             DecodeError::MissingSuperclassClause => write!(
                 f,
                 "the image declares a superclass clause it has no compiled code for"
             ),
-            DecodeError::MissingSuperclassMessage => write!(
+            DecodeError::BodyLessWithoutClauses => write!(
                 f,
-                "the image's superclass clause passes factory arguments it has no compiled code for"
+                "a class in the image has no body and applies no mixin"
+            ),
+            DecodeError::BodyLessWithMembers => write!(
+                f,
+                "a class in the image has no body, yet the image gives it members"
+            ),
+            DecodeError::BodyLessMixinApplied => write!(
+                f,
+                "a class object in the image applies the mixin of a class without a body"
+            ),
+            DecodeError::BodyLessClassRecordMismatch => write!(
+                f,
+                "a class record in the image is written as the class of a declaration \
+                 without a body, or as any other class, and its mixin application clause \
+                 says otherwise"
+            ),
+            DecodeError::NamedClassCycle => write!(
+                f,
+                "the classes the mixin application clauses in the image name form a cycle"
             ),
             DecodeError::WrongCodeKind { expected } => {
                 write!(f, "image code is not a {expected} body")
@@ -841,6 +894,10 @@ impl std::fmt::Display for DecodeError {
             DecodeError::SharedBlockBody => write!(
                 f,
                 "one block body in the image is created by more than one MakeClosure"
+            ),
+            DecodeError::SharedDeclarationCode => write!(
+                f,
+                "a body-less declaration's instance initializer is named as another body too"
             ),
             DecodeError::FrameRegisterFile {
                 arguments,
@@ -1331,8 +1388,9 @@ fn check_code_id(id: u32, codes: &[Rc<CompiledCode>]) -> Result<(), DecodeError>
 ///   from the *declaration* -- `arguments` from the send or the factory --
 ///   while its temporaries are sized from the *body*;
 /// - the presence of a body wherever a declaration makes one mandatory (the
-///   three `Missing*` errors), because the run-time paths that reach for
-///   those bodies panic on the invariant rather than failing.
+///   `Missing*` errors), because the run-time paths that reach for those
+///   bodies panic on the invariant rather than failing, and the absence of
+///   a standalone initializer where no source compiles one.
 ///
 /// Methods are checked in selector order, the order the encoder writes a row
 /// in, so for any artifact the encoder produced the reported error is the
@@ -1354,26 +1412,65 @@ pub fn verify_mixins(mixins: &mixins::Decoded) -> Result<(), DecodeError> {
                 method.argument_count,
             )?;
         }
-        match &mixin.initializer_code {
-            // The same reconciliation for the initializer, whose
-            // `argument_count` is the mixin's factory parameter count and whose
-            // activation's `arguments` are the factory arguments `instantiate`
-            // checked against that same pattern.
-            Some(code) => check_code_arity(
-                code,
-                CodeKind::Initializer,
-                "instance initializer".to_string(),
-                mixin.factory.map_or(0, |factory| factory.argument_count),
-            )?,
-            // A class with slots or `initExpr`s runs compiled initializer
-            // code on every `X new`, and `Mutator::initializer_body` *panics*
-            // when the mixin carries none. The row's declaration half says
-            // the mixin needs one and its code half says whether the image
-            // carries it -- two fields only this function compares.
-            None if instantiate::mixin_needs_initializer_code(mixin) => {
-                return Err(DecodeError::MissingInitializer)
+        // The same reconciliation for the three initializer bodies, each of
+        // whose `argument_count` is the mixin's factory parameter count and
+        // whose activation's `arguments` are the factory arguments
+        // `instantiate` checked against that same pattern.
+        let factory_arity = mixin.factory.map_or(0, |factory| factory.argument_count);
+        for (code, what) in [
+            (&mixin.initializer_code, "instance initializer"),
+            (
+                &mixin.own_initializer_code,
+                "own part of the instance initializer",
+            ),
+            (
+                &mixin.standalone_initializer_code,
+                "standalone instance initializer",
+            ),
+        ] {
+            if let Some(code) = code {
+                check_code_arity(code, CodeKind::Initializer, what.to_string(), factory_arity)?;
             }
-            None => {}
+        }
+        // Every declaration compiles a full body, which its class's factory
+        // runs on every instantiation.
+        if mixin.initializer_code.is_none() {
+            return Err(DecodeError::MissingFullInitializer);
+        }
+        // A level a `<:` clause applies runs the own part of a mixin with
+        // slots or `initExpr`s on every instantiation. The row's declaration half says the mixin needs one
+        // and its code half says whether the image carries it -- two fields
+        // only this function compares.
+        if mixin.own_initializer_code.is_none() && instantiate::mixin_needs_initializer_code(mixin)
+        {
+            return Err(DecodeError::MissingInitializer);
+        }
+        // A body-less declaration is the mixin application its clauses
+        // write (`object-model.md`, "Mixin application"): it has clauses and
+        // nothing a body declares.
+        if !mixin.has_body {
+            if mixin.mixin_applications.is_empty() {
+                return Err(DecodeError::BodyLessWithoutClauses);
+            }
+            if !mixin.slots.is_empty()
+                || mixin.has_initializer_expressions
+                || !mixin.methods.is_empty()
+                || mixin.class_side.is_some()
+                || !mixin.declared_nested().is_empty()
+            {
+                return Err(DecodeError::BodyLessWithMembers);
+            }
+        }
+        // A level of a mixin with `<:` clauses and a body reached from
+        // outside runs the standalone body, which only such a mixin has: a
+        // body-less declaration's class object is never reached outside it.
+        match (
+            &mixin.standalone_initializer_code,
+            !mixin.mixin_applications.is_empty() && mixin.has_body,
+        ) {
+            (None, true) => return Err(DecodeError::MissingStandaloneInitializer),
+            (Some(_), false) => return Err(DecodeError::UnexpectedStandaloneInitializer),
+            _ => {}
         }
         match &mixin.superclass_clause_code {
             // A clause body takes no arguments: it is evaluated in an
@@ -1392,65 +1489,40 @@ pub fn verify_mixins(mixins: &mixins::Decoded) -> Result<(), DecodeError> {
             None if mixin.superclass.is_some() => return Err(DecodeError::MissingSuperclassClause),
             None => {}
         }
-        match &mixin.superclass_message_code {
-            // Unlike the clause's receiver, the clause's *message* arguments
-            // run in an activation carrying this mixin's own factory
-            // arguments (`newspeak-spec.pdf` §6.2), so their body's arity is
-            // the factory pattern's -- the same reconciliation the instance
-            // initializer above gets, for the same reason.
-            Some(code) => check_code_arity(
-                code,
-                CodeKind::SuperclassMessage,
-                "superclass clause message".to_string(),
-                mixin.factory.map_or(0, |factory| factory.argument_count),
-            )?,
-            // A mixin whose clause message carries arguments evaluates them
-            // on every instantiation, and
-            // `instantiate::clause_message_body` panics when the mixin
-            // carries no body for them.
-            None if mixin_needs_superclass_message_code(mixin) => {
-                return Err(DecodeError::MissingSuperclassMessage)
-            }
-            None => {}
-        }
         if !mixin.mixin_applications.is_empty() && mixin.superclass.is_none() {
             return Err(DecodeError::MixinApplicationWithoutSuperclass);
         }
-        for (index, clause) in mixin.mixin_applications.iter().enumerate() {
-            match &clause.message_code {
-                Some(_) if !clause.message.has_arguments => {
-                    return Err(DecodeError::UnexpectedMixinApplicationMessage)
-                }
-                // §6.2 evaluates a `<:` clause's message in the applying
-                // declaration's instance initializer, as it does the superclass
-                // clause's, so its body takes this mixin's factory arguments --
-                // which is the precondition `instantiate`'s arity guard only
-                // re-checks at run time, as a Newspeak error rather than a panic.
-                Some(code) => check_code_arity(
-                    code,
-                    CodeKind::SuperclassMessage,
-                    format!("mixin application clause {} message", index + 1),
-                    mixin.factory.map_or(0, |factory| factory.argument_count),
-                )?,
-                None if clause.message.has_arguments => {
-                    return Err(DecodeError::MissingMixinApplicationMessage)
-                }
-                None => {}
+    }
+    check_declaration_code_unshared(mixins)
+}
+
+/// No body-less declaration's full initializer is named as any other body
+/// (`DecodeError::SharedDeclarationCode`). `mixins::build` marks it, and
+/// every block it creates, as the declaration's own code, which starts its
+/// lexical sends and `outer` from the declaration's scope; a crafted row
+/// that names it again would run it there from another body. A block it
+/// creates needs no check: a block has one creator (`SharedBlockBody`), and
+/// no row names a block as a body (`check_code_arity`).
+fn check_declaration_code_unshared(mixins: &mixins::Decoded) -> Result<(), DecodeError> {
+    let mut named: HashMap<usize, usize> = HashMap::new();
+    for mixin in &mixins.mixins {
+        let bodies = mixin
+            .compiled_methods()
+            .map(|method| &method.code)
+            .chain(mixin.initializer_code.iter())
+            .chain(mixin.own_initializer_code.iter())
+            .chain(mixin.standalone_initializer_code.iter())
+            .chain(mixin.superclass_clause_code.iter());
+        for code in bodies {
+            if code.is_declaration_code() {
+                *named.entry(Rc::as_ptr(code) as usize).or_default() += 1;
             }
         }
     }
+    if named.values().any(|count| *count > 1) {
+        return Err(DecodeError::SharedDeclarationCode);
+    }
     Ok(())
-}
-
-/// Whether `mixin`'s superclass clause carries a message with arguments, and
-/// therefore needs a compiled body for them. Mirrors
-/// `instantiate::mixin_needs_initializer_code`: the one question
-/// `verify_mixins` asks of a decoded declaration, answered off the same
-/// field `instantiate::clause_message_body` decides by at run time.
-fn mixin_needs_superclass_message_code(mixin: &Rc<crate::mixin::Mixin>) -> bool {
-    mixin
-        .superclass
-        .is_some_and(|message| message.has_arguments)
 }
 
 /// One decoded body against the declaration it is attached to:
@@ -1468,7 +1540,6 @@ fn check_code_arity(
                 CodeKind::Block => "block",
                 CodeKind::Initializer => "initializer",
                 CodeKind::SuperclassClause => "superclass clause",
-                CodeKind::SuperclassMessage => "superclass clause message",
             },
         });
     }
@@ -1843,6 +1914,28 @@ fn own_registers(instruction: &Instruction) -> Vec<u16> {
             right,
             ..
         } => vec![*destination, *left, *right],
+        Instruction::AllocateInstance { destination } => vec![*destination],
+        // Its arguments are the body's own, which `argument_count` names
+        // and the body's register count was checked against.
+        Instruction::InitializeInstance {
+            instance,
+            destination,
+        } => vec![*instance, *destination],
+        Instruction::CheckAppliedClause { .. } => vec![],
+        Instruction::InitializeSuperclass {
+            argument_registers,
+            destination,
+            ..
+        }
+        | Instruction::InitializeAppliedLevel {
+            argument_registers,
+            destination,
+            ..
+        } => {
+            let mut registers = argument_registers.clone();
+            registers.push(*destination);
+            registers
+        }
     }
 }
 
@@ -1883,7 +1976,12 @@ fn jump_target(instruction: &Instruction) -> Option<u32> {
         | Instruction::Return { .. }
         | Instruction::ImplicitReturn { .. }
         | Instruction::NonLocalReturn { .. }
-        | Instruction::SignalNonBoolean { .. } => None,
+        | Instruction::SignalNonBoolean { .. }
+        | Instruction::AllocateInstance { .. }
+        | Instruction::InitializeInstance { .. }
+        | Instruction::CheckAppliedClause { .. }
+        | Instruction::InitializeSuperclass { .. }
+        | Instruction::InitializeAppliedLevel { .. } => None,
     }
 }
 
@@ -1952,7 +2050,6 @@ fn decode_code(
         1 => CodeKind::Block,
         2 => CodeKind::Initializer,
         3 => CodeKind::SuperclassClause,
-        4 => CodeKind::SuperclassMessage,
         tag => {
             return Err(DecodeError::InvalidTag {
                 what: "code kind",
@@ -2292,6 +2389,43 @@ fn decode_instruction(
                 left,
                 right,
                 target: reader.read_u32()?,
+            }
+        }
+        OPCODE_ALLOCATE_INSTANCE => Instruction::AllocateInstance {
+            destination: reader.read_u16()?,
+        },
+        OPCODE_INITIALIZE_INSTANCE => {
+            let instance = reader.read_u16()?;
+            Instruction::InitializeInstance {
+                instance,
+                destination: reader.read_u16()?,
+            }
+        }
+        OPCODE_CHECK_APPLIED_CLAUSE => {
+            let steps = reader.read_u16()?;
+            Instruction::CheckAppliedClause {
+                steps,
+                selector: decode_symbol(reader, symbols)?,
+            }
+        }
+        OPCODE_INITIALIZE_SUPERCLASS => {
+            let steps = reader.read_u16()?;
+            let selector = decode_symbol(reader, symbols)?;
+            let argument_registers = decode_registers(reader)?;
+            Instruction::InitializeSuperclass {
+                steps,
+                selector,
+                argument_registers,
+                destination: reader.read_u16()?,
+            }
+        }
+        OPCODE_INITIALIZE_APPLIED_LEVEL => {
+            let steps = reader.read_u16()?;
+            let argument_registers = decode_registers(reader)?;
+            Instruction::InitializeAppliedLevel {
+                steps,
+                argument_registers,
+                destination: reader.read_u16()?,
             }
         }
         tag => {
@@ -2643,7 +2777,14 @@ fn read_shipped_module<'gc>(
 ///   record is the smallest record there is, 9 bytes (a two-byte builtin
 ///   header, the hash's 4, the body tag, a two-byte builtin class tag),
 ///   and becomes a class object of 10 words, 80 bytes, 8.9x. A class
-///   record is at least 19 bytes for the same 80, 4.2x; a frame record at
+///   record is at least 19 bytes for the same 80, 4.2x, and one of a level
+///   a `<:` clause added at least 23 (a `MIXIN_SHIPPED` one: the two-byte
+///   header, the hash, the body tag, the mixin reference's 5, the
+///   superclass's flag, the clause's 8 and the named class's two-byte tag)
+///   for the 11 words, 88 bytes, of a level, 3.8x; a body-less
+///   declaration's class object (`OBJECT_BODY_LESS_CLASS`) at least 25, a
+///   level's 23 and the presence flags of its declaration's enclosing
+///   object and declaring class, for 13 words, 104 bytes, 4.2x; a frame record at
 ///   least 21 (the two-byte header, the hash, the body tag, a `TopLevel`
 ///   kind, the program counter's 4, four one-byte flags and fields and the
 ///   register count's 4) for 12 words, 96 bytes, 4.6x; an instance, array,
@@ -2662,7 +2803,9 @@ fn read_shipped_module<'gc>(
 ///   records then holds 80 + 8 + 8 = 96 bytes for 9, **10.7x** in a
 ///   release build, and 80 + 16 + 8 = 104, **11.6x** in a debug one; every
 ///   other record stays below (a class record 104 or 112 for 19, 5.5x or
-///   5.9x; a frame record 120 or 136 for 21, 5.7x or 6.5x).
+///   5.9x; a level's 112 or 120 for 23, 4.9x or 5.2x; a body-less
+///   declaration's class object's 128 or 136 for 25, 5.1x or 5.4x; a frame record 120 or
+///   136 for 21, 5.7x or 6.5x).
 /// - Per value, the word it occupies against the bytes that encode it: a
 ///   one-byte `VALUE_NIL` field, element, copied value or register becomes
 ///   an 8-byte word, 8x, which a record of many values approaches from
@@ -2948,11 +3091,11 @@ enum FrameBody {
 pub(crate) enum DeclaredKind<'gc> {
     /// A method of the current class's mixin, by selector.
     Method(ClassReference<'gc>, Symbol),
-    Initializer(ClassReference<'gc>),
+    Initializer(ClassReference<'gc>, instantiate::InitializerBody),
+    /// A factory's body, derived from the class it runs on, whatever
+    /// declared it.
+    Factory(ClassReference<'gc>),
     SuperclassClause(ClassReference<'gc>),
-    SuperclassMessage(ClassReference<'gc>),
-    /// The message of the `<:` clause that added this level.
-    MixinApplicationMessage(ClassReference<'gc>),
 }
 
 impl<'gc> DeclaredKind<'gc> {
@@ -2965,30 +3108,26 @@ impl<'gc> DeclaredKind<'gc> {
     ) -> Option<DeclaredKind<'gc>> {
         Some(match kind {
             FrameKind::Method(method) => DeclaredKind::Method(current_class?, method.selector),
-            FrameKind::Initializer(class) => DeclaredKind::Initializer(*class),
+            FrameKind::Initializer(class, body) => DeclaredKind::Initializer(*class, *body),
+            FrameKind::Factory(class) => DeclaredKind::Factory(*class),
             FrameKind::SuperclassClause(class) => DeclaredKind::SuperclassClause(*class),
-            FrameKind::SuperclassMessage(class) => DeclaredKind::SuperclassMessage(*class),
-            FrameKind::MixinApplicationMessage(level) => {
-                DeclaredKind::MixinApplicationMessage(*level)
-            }
             FrameKind::Closure(_) | FrameKind::TopLevel => return None,
         })
     }
 
     /// The declaration that carries the body: the mixin of the class it
-    /// resolves through, or for a `<:` clause's message the declaration
-    /// whose clause added the level.
+    /// resolves through -- for an initializer, the mixin whose body a frame
+    /// of it runs (`Heap::initializer_mixin`), which for a body-less
+    /// declaration's full body is the declaration's, not the applied
+    /// mixin's.
     fn declaration(&self, heap: &Heap<'gc>) -> Option<Rc<crate::mixin::Mixin>> {
         match self {
+            DeclaredKind::Initializer(class, body) => heap.initializer_mixin(*class, *body),
             DeclaredKind::Method(class, _)
-            | DeclaredKind::Initializer(class)
-            | DeclaredKind::SuperclassClause(class)
-            | DeclaredKind::SuperclassMessage(class) => heap
+            | DeclaredKind::Factory(class)
+            | DeclaredKind::SuperclassClause(class) => heap
                 .class_application(*class)
                 .map(|application| application.mixin.clone()),
-            DeclaredKind::MixinApplicationMessage(level) => heap
-                .class_applied_origin(*level)
-                .map(|origin| origin.declaration),
         }
     }
 
@@ -3021,30 +3160,25 @@ fn declared_method<'gc>(
 /// The body a frame written `FRAME_BODY_DECLARED` runs, found through its
 /// kind in the shipped declaration it resolves through
 /// (`DeclaredKind::declaration`). Refused when that declaration is no
-/// shipped one, or carries no body of the kind.
+/// shipped one, or carries no body of the kind. A factory's body is
+/// derived from the class it runs on, whichever declaration that is: its
+/// metaclass's factory entry, which no image carries either.
 pub(crate) fn declared_body<'gc>(
     heap: &Heap<'gc>,
     declared: &DeclaredKind<'gc>,
 ) -> Result<Rc<CompiledCode>, DecodeError> {
-    if !declared.is_shipped(heap) {
-        return Err(DecodeError::DeclaredBodyNotShipped);
-    }
     let found = match declared {
+        DeclaredKind::Factory(class) => instantiate::factory_code(heap, *class),
+        _ if !declared.is_shipped(heap) => return Err(DecodeError::DeclaredBodyNotShipped),
         DeclaredKind::Method(class, selector) => {
             return declared_method(heap, *class, *selector).map(|method| method.code.clone())
         }
-        DeclaredKind::Initializer(_) => declared
+        DeclaredKind::Initializer(_, body) => declared
             .declaration(heap)
-            .and_then(|mixin| mixin.initializer_code.clone()),
+            .and_then(|mixin| body.code_of(&mixin)),
         DeclaredKind::SuperclassClause(_) => declared
             .declaration(heap)
             .and_then(|mixin| mixin.superclass_clause_code.clone()),
-        DeclaredKind::SuperclassMessage(_) => declared
-            .declaration(heap)
-            .and_then(|mixin| mixin.superclass_message_code.clone()),
-        DeclaredKind::MixinApplicationMessage(level) => heap
-            .class_applied_clause(*level)
-            .and_then(|clause| clause.message_code),
     };
     found.ok_or(DecodeError::FrameCodeMismatch)
 }
@@ -3115,7 +3249,7 @@ fn decode_frame<'gc>(
             mixins::access_from_tag(reader.read_u8()?)?,
         )),
         FRAME_TOP_LEVEL => Ok(FrameKind::TopLevel),
-        FRAME_INITIALIZER => Ok(FrameKind::Initializer(decode_class_tag(
+        FRAME_FACTORY => Ok(FrameKind::Factory(decode_class_tag(
             reader,
             context,
             tables,
@@ -3127,22 +3261,19 @@ fn decode_frame<'gc>(
             tables,
             NamePosition::FrameClass,
         )?)),
-        FRAME_SUPERCLASS_MESSAGE => Ok(FrameKind::SuperclassMessage(decode_class_tag(
-            reader,
-            context,
-            tables,
-            NamePosition::FrameClass,
-        )?)),
-        FRAME_MIXIN_APPLICATION_MESSAGE => Ok(FrameKind::MixinApplicationMessage(
-            decode_class_tag(reader, context, tables, NamePosition::FrameClass)?,
-        )),
         FRAME_CLOSURE => Ok(FrameKind::Closure(decode_object_id(reader, tables)?)),
-        tag => {
-            return Err(DecodeError::InvalidTag {
-                what: "frame kind",
-                tag,
-            })
-        }
+        tag => match instantiate::InitializerBody::of_frame_tag(tag) {
+            Some(body) => Ok(FrameKind::Initializer(
+                decode_class_tag(reader, context, tables, NamePosition::FrameClass)?,
+                body,
+            )),
+            None => {
+                return Err(DecodeError::InvalidTag {
+                    what: "frame kind",
+                    tag,
+                })
+            }
+        },
     };
     let top_level = matches!(kind, Ok(FrameKind::TopLevel));
     // `None` for a body named by declaration, found below once the current
@@ -3152,7 +3283,9 @@ fn decode_frame<'gc>(
         // frame without one would be reconciled against nothing.
         FRAME_BODY_NONE if top_level => FrameBody::None,
         FRAME_BODY_NONE => return Err(DecodeError::FrameCodeMismatch),
-        FRAME_BODY_CODE if top_level => return Err(DecodeError::FrameCodeMismatch),
+        FRAME_BODY_CODE if top_level || matches!(kind, Ok(FrameKind::Factory(_))) => {
+            return Err(DecodeError::FrameCodeMismatch)
+        }
         FRAME_BODY_CODE => FrameBody::Code(frame_code(reader, context)?),
         FRAME_BODY_DECLARED if top_level || matches!(kind, Ok(FrameKind::Closure(_))) => {
             return Err(DecodeError::DeclaredBodyNotShipped)
@@ -3412,8 +3545,8 @@ fn rebuild_applications<'gc>(
     // created carrying one (or one built of decoded pieces would carry,
     // `Counter`-over-`Holder`-style), so it is recomputed here, exactly as
     // `after_clause` decides it for a class created from source -- never for
-    // a metaclass or an applied level, neither of which `after_clause`
-    // checks either, and only when the application inherits `Value`,
+    // a metaclass or an applied level other than a body-less declaration's
+    // class object, which `after_clause` does not check either, and only when the application inherits `Value`,
     // matching its own guard. A class with no lexical enclosing -- a module
     // root, a builtin -- never reaches `after_clause` and is skipped the
     // same way here. The identity-method condition needs no recompute of
@@ -3432,7 +3565,29 @@ fn rebuild_applications<'gc>(
             .heap
             .class_application(object)
             .expect("every pending class was installed above");
-        if !application.inherits_value || context.mutator.heap.class_is_applied_level(object) {
+        let heap = &context.mutator.heap;
+        let own_class = !heap.class_is_applied_level(object)
+            || heap.class_body_less_declaration(object).is_some();
+        if !application.inherits_value || !own_class {
+            continue;
+        }
+        // A body-less declaration's class object is decided as
+        // `nested::body_less_class` decides it, on its declaration's
+        // enclosing object and its level's both; a root's, whose scope is
+        // empty, is never decided, as no root is.
+        if let Some(scope) = heap.class_declaration_scope(object) {
+            let Some(declaration_enclosing) = scope.enclosing else {
+                continue;
+            };
+            if let Some(refusal) = crate::interpreter::value_class::check_body_less_value_class(
+                context.mutator,
+                declaration_enclosing,
+                object,
+            ) {
+                if !context.mutator.record_value_class_refusal(object, refusal) {
+                    unreachable!("internal: a pending class record fills a class object");
+                }
+            }
             continue;
         }
         let (Some(enclosing), Some(superclass_class)) = (
@@ -3472,6 +3627,7 @@ fn rebuild_metaclasses<'gc>(
     position: &HashMap<usize, usize>,
     pending_metaclasses: &[usize],
 ) -> Result<(), DecodeError> {
+    let class_sides = class_sides(context, objects, pending, position)?;
     let class_class = context.mutator.builtin_class(BuiltinClass::Class);
     let class_application = context.mutator.heap.class_application(class_class);
     for &index in pending_metaclasses {
@@ -3494,9 +3650,7 @@ fn rebuild_metaclasses<'gc>(
         if context.mutator.heap.class_this_class(this_class).is_some() {
             return Err(DecodeError::MetaclassPairing);
         }
-        let class_side_mixin = context
-            .mutator
-            .metaclass_mixin(&pending[this_position].mixin);
+        let class_side_mixin = class_sides[this_position].clone();
         let application = context
             .mutator
             .apply_mixin(&class_side_mixin, class_application.as_ref());
@@ -3510,6 +3664,74 @@ fn rebuild_metaclasses<'gc>(
         }
     }
     Ok(())
+}
+
+/// The class side each pending class record's metaclass applies, chosen as
+/// a live class's is (`nested::build_applied_levels`): a body-less
+/// declaration's own for its class object, the class side of the class its
+/// clause named for any other level a `<:` clause added -- read off that
+/// class's metaclass when the loading world has it, and chosen the same way
+/// when it is another record -- and `Mutator::metaclass_mixin`'s of the
+/// record's own row otherwise.
+///
+/// Linear in the records: each one's answer is computed once and kept for
+/// every level whose chain of named classes reaches it. A chain that closes
+/// on itself is `NamedClassCycle`, never a loop that does not end.
+fn class_sides<'gc>(
+    context: &mut DecodeContext<'_, 'gc>,
+    objects: &[ObjectReference<'gc>],
+    pending: &[PendingClass],
+    position: &HashMap<usize, usize>,
+) -> Result<Vec<Rc<crate::mixin::Mixin>>, DecodeError> {
+    let mut resolved: Vec<Option<Rc<crate::mixin::Mixin>>> = vec![None; pending.len()];
+    let mut on_chain = vec![false; pending.len()];
+    let mut chain: Vec<usize> = Vec::new();
+    for start in 0..pending.len() {
+        let mut current = start;
+        let answer = loop {
+            if let Some(found) = &resolved[current] {
+                break found.clone();
+            }
+            if on_chain[current] {
+                return Err(DecodeError::NamedClassCycle);
+            }
+            on_chain[current] = true;
+            chain.push(current);
+            let object = objects[pending[current].object];
+            let heap = &context.mutator.heap;
+            if let Some(declaration) = heap.class_body_less_declaration(object).cloned() {
+                break context.mutator.metaclass_mixin(&declaration);
+            }
+            let named = heap
+                .class_named(object)
+                .filter(|_| heap.class_is_applied_level(object));
+            let Some(named) = named else {
+                break context.mutator.metaclass_mixin(&pending[current].mixin);
+            };
+            if let Some(&next) = position.get(&heap.object_identity_key(named)) {
+                current = next;
+                continue;
+            }
+            // A class the loading world has before the graph: its
+            // metaclass exists already.
+            let built = heap
+                .class_metaclass(named)
+                .and_then(|metaclass| heap.class_application(metaclass))
+                .map(|class_side| class_side.mixin.clone());
+            break match built {
+                Some(class_side) => class_side,
+                None => context.mutator.metaclass_mixin(&pending[current].mixin),
+            };
+        };
+        for index in chain.drain(..) {
+            on_chain[index] = false;
+            resolved[index] = Some(answer.clone());
+        }
+    }
+    Ok(resolved
+        .into_iter()
+        .map(|class_side| class_side.expect("every pending class was resolved above"))
+        .collect())
 }
 
 /// Holds every class record and its metaclass record to each other, both
@@ -3571,8 +3793,9 @@ fn metaclass_rows(mixins: &[Rc<crate::mixin::Mixin>]) -> HashSet<usize> {
 /// A tag-2 class tag names an object-table id, and nothing in the byte
 /// stream forces that record to have been a class record -- which is only
 /// knowable once every record has been read, so it is checked here rather
-/// than where each tag is decoded. These five positions are the complete
-/// set: a class tag appears nowhere else in the graph section, and a plain
+/// than where each tag is decoded. These positions, a level's named class
+/// (`Heap::class_named`) and a body-less declaration's declaring class
+/// (`Heap::class_declaration_scope`) among them, are the complete set: a class tag appears nowhere else in the graph section, and a plain
 /// object value pointing at a class object is legitimate (that is what a
 /// cached nested class in a slot *is*).
 ///
@@ -3633,7 +3856,16 @@ fn check_class_references<'gc>(
             }
             let superclass = heap.class_superclass(*object);
             let declaring_class = heap.class_declaring(*object);
-            for class in superclass.iter().chain(declaring_class.iter()) {
+            let named = heap.class_named(*object);
+            let declaration_declaring = heap
+                .class_declaration_scope(*object)
+                .and_then(|scope| scope.declaring_class);
+            for class in superclass
+                .iter()
+                .chain(declaring_class.iter())
+                .chain(named.iter())
+                .chain(declaration_declaring.iter())
+            {
                 if !heap.is_class(*class) {
                     return Err(DecodeError::NotAClassReference);
                 }
@@ -3649,10 +3881,9 @@ fn check_class_references<'gc>(
             }
         }
         let kind_class = match &kind {
-            FrameKind::Initializer(class)
-            | FrameKind::SuperclassClause(class)
-            | FrameKind::SuperclassMessage(class)
-            | FrameKind::MixinApplicationMessage(class) => Some(class),
+            FrameKind::Initializer(class, _)
+            | FrameKind::Factory(class)
+            | FrameKind::SuperclassClause(class) => Some(class),
             FrameKind::Method(_) | FrameKind::Closure(_) | FrameKind::TopLevel => None,
         };
         for class in current_class.iter().chain(kind_class) {
@@ -3788,8 +4019,9 @@ impl Sizing<'_, '_, '_> {
         Ok(())
     }
 
-    /// `decode_class_record`'s reading.
-    fn class_record(&self, reader: &mut Reader) -> Result<(), DecodeError> {
+    /// `decode_class_record`'s reading; answers the record's field count, a
+    /// level's one more than a class object's (`Heap::allocate_applied_level`).
+    fn class_record(&self, reader: &mut Reader) -> Result<usize, DecodeError> {
         match reader.read_u8()? {
             MIXIN_ROW => {
                 let id = reader.read_u32()?;
@@ -3803,14 +4035,18 @@ impl Sizing<'_, '_, '_> {
                 self.optional_class(reader, NamePosition::FrameClass)?;
                 if reader.read_boolean()? {
                     decode_applied_clause(reader, self.context, None)?;
+                    self.class_tag(reader, NamePosition::Superclass)?;
+                    return Ok(record_size::APPLIED_LEVEL_FIELDS);
                 }
-                Ok(())
+                Ok(record_size::CLASS_FIELDS)
             }
             MIXIN_SHIPPED => {
                 let named = read_shipped_mixin(reader, self.context.shipped)?;
                 self.optional_class(reader, NamePosition::Superclass)?;
                 let builtin = self.context.mutator.heap.class_builtin(named);
-                decode_applied_clause(reader, self.context, builtin).map(drop)
+                decode_applied_clause(reader, self.context, builtin)?;
+                self.class_tag(reader, NamePosition::Superclass)?;
+                Ok(record_size::APPLIED_LEVEL_FIELDS)
             }
             tag => Err(DecodeError::InvalidTag {
                 what: "mixin reference",
@@ -3828,11 +4064,10 @@ impl Sizing<'_, '_, '_> {
             }
             FRAME_TOP_LEVEL => {}
             FRAME_INITIALIZER
-            | FRAME_SUPERCLASS_CLAUSE
-            | FRAME_SUPERCLASS_MESSAGE
-            | FRAME_MIXIN_APPLICATION_MESSAGE => {
-                self.class_tag(reader, NamePosition::FrameClass)?
-            }
+            | FRAME_OWN_INITIALIZER
+            | FRAME_STANDALONE_INITIALIZER
+            | FRAME_FACTORY
+            | FRAME_SUPERCLASS_CLAUSE => self.class_tag(reader, NamePosition::FrameClass)?,
             FRAME_CLOSURE => self.object_id(reader)?,
             tag => {
                 return Err(DecodeError::InvalidTag {
@@ -4004,9 +4239,19 @@ impl Sizing<'_, '_, '_> {
                 }
                 (record_size::CLOSURE_FIXED_FIELDS + count, false)
             }
-            OBJECT_CLASS => {
-                self.class_record(reader)?;
-                (record_size::CLASS_FIELDS, false)
+            OBJECT_CLASS => (self.class_record(reader)?, false),
+            // A level's record and the declaration's scope; whether the
+            // clause is a body-less declaration's last is the second pass's
+            // to check, which the placeholder's size then agrees with.
+            OBJECT_BODY_LESS_CLASS => {
+                if self.class_record(reader)? != record_size::APPLIED_LEVEL_FIELDS {
+                    return Err(DecodeError::BodyLessClassRecordMismatch);
+                }
+                if reader.read_boolean()? {
+                    self.value(reader, NamePosition::Value)?;
+                }
+                self.optional_class(reader, NamePosition::FrameClass)?;
+                (record_size::BODY_LESS_CLASS_FIELDS, false)
             }
             OBJECT_METACLASS => {
                 self.class_tag(reader, NamePosition::Header)?;
@@ -4349,6 +4594,7 @@ pub fn decode_graph_section<'gc>(
         // metaclass record, each written once the record is filled.
         let mut applied_clause = None;
         let mut this_class = None;
+        let mut declaration_scope = None;
         // `class` may name a record later in this same table -- decoding
         // fills records in table order, not dependency order -- so that
         // class may not have an application yet. The record's header id is
@@ -4514,9 +4760,21 @@ pub fn decode_graph_section<'gc>(
                 heap.record_mixin_object(id, *object);
                 None
             }
-            OBJECT_CLASS => {
+            body @ (OBJECT_CLASS | OBJECT_BODY_LESS_CLASS) => {
                 let (class_record, applied, mixin) =
                     decode_class_record(reader, context, &tables, &placeholder_application)?;
+                // The tag says whether the record carries a declaration's
+                // scope, the clause whether the class object has one.
+                let body_less = applied.as_ref().is_some_and(|(clause, _)| {
+                    !clause.declaration.has_body
+                        && clause.index + 1 == clause.declaration.mixin_applications.len()
+                });
+                if body_less != (body == OBJECT_BODY_LESS_CLASS) {
+                    return Err(DecodeError::BodyLessClassRecordMismatch);
+                }
+                if body_less {
+                    declaration_scope = Some(decode_declaration_scope(reader, context, &tables)?);
+                }
                 if metaclass_rows.contains(&crate::mixin::mixin_key(&mixin)) {
                     return Err(DecodeError::ClassRecordAppliesAClassSide);
                 }
@@ -4563,11 +4821,19 @@ pub fn decode_graph_section<'gc>(
             // A placeholder the first pass sized for some other record is
             // refused, as a string's of the wrong size is: the space cannot
             // resize it.
-            if !heap.fill_placeholder_class(*object, class, identity_hash, record) {
+            let named = applied_clause.as_ref().map(|(_, named)| *named);
+            if !heap.fill_placeholder_class(
+                *object,
+                class,
+                identity_hash,
+                record,
+                named,
+                declaration_scope,
+            ) {
                 return Err(DecodeError::UnexpectedEndOfFile);
             }
         }
-        if let Some(applied) = applied_clause {
+        if let Some((applied, _)) = applied_clause {
             if !heap.class_set_applied_clause(*object, applied) {
                 unreachable!("internal: a class record fills a class object");
             }
@@ -4693,7 +4959,7 @@ pub fn decode_tag_named_hashes<'gc>(
 /// The mixin id is range-checked here, against the decoded mixin table,
 /// before it is used to index anything, and so are a level's applying row
 /// and clause position: the clause is read off that row, so a level can only
-/// ever run a clause message `verify_mixins` reconciled with its row's
+/// ever run a clause `verify_mixins` reconciled with its row's
 /// factory.
 ///
 /// A level whose clause named a shipped class (`MIXIN_SHIPPED`) is its own
@@ -4710,7 +4976,7 @@ pub fn decode_tag_named_hashes<'gc>(
 /// (`Heap::class_set_applied_clause`), and the mixin-table row it applies.
 type DecodedClassRecord<'gc> = (
     NewClass<'gc>,
-    Option<crate::mixin::AppliedClause>,
+    Option<(crate::mixin::AppliedClause, ClassReference<'gc>)>,
     Rc<crate::mixin::Mixin>,
 );
 
@@ -4750,10 +5016,18 @@ fn decode_class_record<'gc>(
     };
     let declaring_class = decode_optional_class(reader, context, tables, NamePosition::FrameClass)?;
     let applied_clause = if reader.read_boolean()? {
-        Some(decode_applied_clause(reader, context, None)?)
+        let clause = decode_applied_clause(reader, context, None)?;
+        let named = decode_class_tag(reader, context, tables, NamePosition::Superclass)?;
+        Some((clause, named))
     } else {
         None
     };
+    // A body-less declaration is applied by no class: its class object is
+    // the level its last clause adds, which applies that clause's mixin
+    // (`object-model.md`, "Mixin application").
+    if !mixin.has_body {
+        return Err(DecodeError::BodyLessMixinApplied);
+    }
     // A record only ever describes a program's class: a shipped class is a
     // shipped name, resolved against the loading world, and never an
     // object-table entry. Its metaclass is its header, which
@@ -4801,6 +5075,7 @@ fn decode_shipped_level<'gc>(
         .ok_or(DecodeError::NotAClass)?;
     let superclass = decode_optional_class(reader, context, tables, NamePosition::Superclass)?;
     let applied_clause = decode_applied_clause(reader, context, heap.class_builtin(named))?;
+    let named_class = decode_class_tag(reader, context, tables, NamePosition::Superclass)?;
     let class = NewClass {
         application: placeholder_application.clone(),
         enclosing: heap.class_enclosing(named),
@@ -4808,7 +5083,34 @@ fn decode_shipped_level<'gc>(
         superclass,
         builtin: None,
     };
-    Ok((class, Some(applied_clause), mixin))
+    Ok((class, Some((applied_clause, named_class)), mixin))
+}
+
+/// The scope an `OBJECT_BODY_LESS_CLASS` record carries after its clause:
+/// the declaration's enclosing object, a value that must be an object, and
+/// its declaring class, a class tag; each behind a presence flag, both
+/// absent for a module's root. Read as the record's own enclosing object
+/// and declaring class are: a reference past the table is refused here, and
+/// a declaring class that is no class object by `check_class_references`
+/// once every record is read.
+fn decode_declaration_scope<'gc>(
+    reader: &mut Reader,
+    context: &mut DecodeContext<'_, 'gc>,
+    tables: &Tables<'_, 'gc>,
+) -> Result<crate::heap::DeclarationScope<'gc>, DecodeError> {
+    let enclosing = if reader.read_boolean()? {
+        match decode_value(reader, context, tables, NamePosition::Value)?.as_object() {
+            Some(object) => Some(object),
+            _ => return Err(DecodeError::EnclosingNotAnObject),
+        }
+    } else {
+        None
+    };
+    let declaring_class = decode_optional_class(reader, context, tables, NamePosition::FrameClass)?;
+    Ok(crate::heap::DeclarationScope {
+        enclosing,
+        declaring_class,
+    })
 }
 
 /// The clause that added a level: the applying declaration's row id and the
@@ -4874,7 +5176,7 @@ fn frame_body<'gc>(heap: &Heap<'gc>, frame: FrameReference<'gc>) -> Option<Rc<Co
 /// decoded mixins carry. First a frame's body, which its record names by
 /// code id, must be one its kind runs (`runs_its_kind`), since what
 /// follows means nothing against a body the frame never ran. Then the
-/// three gaps a per-record decoder cannot see are closed:
+/// four gaps a per-record decoder cannot see are closed:
 ///
 /// 0. A frame's `program_counter` must be an instruction index of the body
 ///    that runs in it. A frame's `program_counter` counts instructions (an
@@ -4889,6 +5191,10 @@ fn frame_body<'gc>(heap: &Heap<'gc>, frame: FrameReference<'gc>) -> Option<Rc<Co
 ///    two together, and `verify_code_table`'s outer-local bound -- which
 ///    walks the *static* `MakeClosure` nesting -- is only a bound on the
 ///    real `frame_at_depth` walk because of this.
+/// 3. A frame must run a body-less declaration's own code exactly when it
+///    runs it at that declaration's class object
+///    (`Heap::frame_runs_declaration_code`), since the code's mark, not the
+///    frame, decides where its lexical sends start.
 pub fn verify_graph<'gc>(
     heap: &Heap<'gc>,
     graph: &DecodedGraph<'gc>,
@@ -4943,14 +5249,32 @@ pub fn verify_graph<'gc>(
             verify_closure(heap, &code, captured_frame, table, &parents, &index_of)?;
         }
     }
+    // A frame runs a body-less declaration's own code exactly when it runs
+    // it at the declaration's class object: what the sends read off the
+    // code (`sends::lexical_origin`) and a debug build holds to the frame.
+    // Every activation a decoded frame later gives rise to -- a block it
+    // created, evaluated -- takes its current class from the frame and its
+    // code's mark from the frame's code, so it agrees too. After the
+    // closures, whose captured frames bound the walk by the static nesting.
+    for frame in &graph.frames {
+        let (Some(code), Some(class)) =
+            (frame_body(heap, *frame), heap.frame_current_class(*frame))
+        else {
+            continue;
+        };
+        let runs_declaration_code = heap.class_has_declaration_scope(class)
+            && heap.frame_runs_declaration_code(*frame, class);
+        if code.is_declaration_code() != runs_declaration_code {
+            return Err(DecodeError::FrameCodeMismatch);
+        }
+    }
     Ok(())
 }
 
 /// Whether `code` is a body a frame of `kind` runs: a method frame a method
 /// body of its method's argument count, a closure frame its closure's own
 /// code, an initializer frame an initializer, a superclass clause frame a
-/// superclass clause, and a superclass message's or a `<:` clause's
-/// message frame a clause message, which both compile to. Nothing ties a
+/// superclass clause. Nothing ties a
 /// decoded frame's body to its kind but this, since the image names the
 /// body by code id.
 fn runs_its_kind<'gc>(heap: &Heap<'gc>, kind: &FrameKind<'gc>, code: &Rc<CompiledCode>) -> bool {
@@ -4963,11 +5287,9 @@ fn runs_its_kind<'gc>(heap: &Heap<'gc>, kind: &FrameKind<'gc>, code: &Rc<Compile
         FrameKind::Closure(closure) => heap
             .closure_code(*closure)
             .is_some_and(|own| Rc::ptr_eq(&own, code)),
-        FrameKind::Initializer(_) => code.kind == CodeKind::Initializer,
+        FrameKind::Initializer(..) => code.kind == CodeKind::Initializer,
+        FrameKind::Factory(_) => code.kind == CodeKind::Method,
         FrameKind::SuperclassClause(_) => code.kind == CodeKind::SuperclassClause,
-        FrameKind::SuperclassMessage(_) | FrameKind::MixinApplicationMessage(_) => {
-            code.kind == CodeKind::SuperclassMessage
-        }
         FrameKind::TopLevel => false,
     }
 }

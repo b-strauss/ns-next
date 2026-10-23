@@ -298,11 +298,26 @@ looked up again after its superclass clause ran
 class** — `current_class`, then each class object's declaring-class field
 (`Heap::class_declaring`). A level a `<:`
 clause adds takes its enclosing object and declaring class from the class the
-clause names (`interpreter/nested.rs`, `build_applied_levels`).
+clause names (`interpreter/nested.rs`, `build_applied_levels`). A body-less
+declaration's class object is the level its last clause adds, so its own
+code -- its full initializer at that class object, and a block created in
+it -- starts its walk at the declaration's own enclosing object and
+declaring class, which the class object records (`interpreter/sends.rs`,
+`lexical_origin`, decided from the code:
+`CompiledCode::is_declaration_code`), while the applied mixin's code there
+starts at the level's; its `super` starts at the class object's
+superclass, as every code's does (§5.10; `object-model.md`, "Mixin
+application").
 
 **A `<:` clause's message runs with the applying class's factory arguments, just
-before the initializer of the level it adds** (§6.2; `object-model.md`, "Mixin
-application"; pinned by `goldens/language/class/mixin/mixin_initializer_order.ns`).
+before the initializer of the level it adds**: its arguments are lowered into
+the applying declaration's full initializer, right before the
+`InitializeAppliedLevel` that runs that level's own part (§6.2;
+`object-model.md`, "Mixin application"; `compiler.md`, "The three initializer
+bodies"; pinned by `goldens/language/class/mixin/mixin_initializer_order.ns`).
+A level a `<:` clause added that a program reaches from outside -- through a
+mirror -- runs its mixin's standalone body instead, never the clause's
+message.
 
 **The VM mirror is a capability.** Whoever holds it runs every leaf, so only the
 shipped core-library modules reach it. Six locks keep it there; never loosen one
@@ -322,7 +337,9 @@ program can name the mirror's class or `Top`: the VM mirror's class has no
 declaration and so no name, and the decoder refuses `Top`, `Activation` and
 every other shipped name in a position the rule does not allow; (5) the
 encoder refuses a graph reaching the mirror, its class, `Top` or their
-metaclasses, and `decide_factory` refuses to instantiate the mirror's class;
+metaclasses, and the factory body's allocation
+(`instantiate::allocate_for_factory`, which `AllocateInstance` runs for a
+send and a host's `instantiate` alike) refuses to instantiate the mirror's class;
 (6) `SendMirror` has no wire tag (`core-library.md`, "The VM mirror is the
 whole Rust boundary"). The bulk-forward leaf
 (`elementsOf:forwardIdentityToElementsOf:ifFail:`) refuses the mirror,
@@ -336,9 +353,10 @@ records a `MirrorSend` binding.
 
 **A cache records what the lookup decided; it never decides.** An inline-cache
 hit is `act` on the resolution `resolve_*` answered for the same key; an entry
-holds no handle. Anything the key does not cover is read afresh in `act` on
-every send — today the class object's builtin field (`Heap::class_builtin`), a
-primitive's payload check and a method's `MethodFastPath`. Add such a read and its per-send re-check goes with
+holds no handle. Anything the key does not cover is read afresh on every
+send — today a primitive's payload check and a method's `MethodFastPath`, in
+`act`, and the class object's builtin field (`Heap::class_builtin`), which the
+factory body's `AllocateInstance` reads on every instantiation. Add such a read and its per-send re-check goes with
 it. A lazy slot's getter has no fast path (`Instruction::ReturnSlotIfFilled`
 instead). The reference lowering runs every send uncached and is the oracle
 (`dispatch.md`, "Primitive methods", "3b — The caches").

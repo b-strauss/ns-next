@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 use crate::builtins::primitive::Primitive;
 use crate::bytecode::{CallSite, CompiledCode, Instruction};
-use crate::dispatch;
+use crate::dispatch::{self, LexicalOrigin};
 use crate::hash::IdentityMap;
 use crate::heap::reclaim::FreedIds;
 use crate::heap::{ActivationReference, ApplicationIndex, Heap};
@@ -79,6 +79,11 @@ pub(crate) enum Target {
     },
     NestedClass {
         mixin: Rc<Mixin>,
+        /// The absolute index of the hidden slot `mixin`'s class is cached
+        /// in, in the layout of the application the entry's guard names
+        /// (`record`); `nested::NO_CACHED_FIELD` where that application
+        /// reserves none or the index passes `u32`.
+        field: u32,
         level: u16,
         chain: Chain,
     },
@@ -90,8 +95,11 @@ pub(crate) enum Target {
     /// §6.3's primary factory. It carries no level, unlike every other
     /// target: §6.3 instantiates the *receiver*, a class object, and the
     /// guard -- its metaclass's instances id -- already names the one
-    /// application whose own method table held the entry.
+    /// application whose own method table held the entry -- and so the
+    /// entry's body, `code`, which the fill records as `Method` records its
+    /// method.
     Factory {
+        code: Rc<crate::bytecode::CompiledCode>,
         chain: Chain,
     },
     /// The site's entries are `block` in the pool. `private` is the site's
@@ -116,7 +124,7 @@ impl Target {
             | Target::Slot { chain, .. }
             | Target::NestedClass { chain, .. }
             | Target::Primitive { chain, .. }
-            | Target::Factory { chain } => Some(*chain == Chain::Private),
+            | Target::Factory { chain, .. } => Some(*chain == Chain::Private),
         }
     }
 }
@@ -787,6 +795,11 @@ struct SendKey<'send, 'gc> {
     receiver: &'send Value<'gc>,
     lexical_class: Option<ClassReference<'gc>>,
     superclass: Option<ClassReference<'gc>>,
+    /// The running activation's `current_class`, for a `super` send only:
+    /// a nested-class hit takes the cached hidden slot only for a receiver
+    /// of exactly that application (`materialize`), whose chain contains
+    /// S. `None` for every other send.
+    current_class: Option<ClassReference<'gc>>,
 }
 
 impl SendKey<'_, '_> {
@@ -900,6 +913,7 @@ fn record<'gc>(
             ..
         } => Target::NestedClass {
             mixin: mixin.clone(),
+            field: nested_field(mutator, chain, key, mixin),
             level: levels_between(&mutator.heap, start?, *declaring_class)?,
             chain,
         },
@@ -910,9 +924,39 @@ fn record<'gc>(
             level: levels_between(&mutator.heap, start?, *level)?,
             chain,
         },
-        Resolved::Factory { .. } => Target::Factory { chain },
+        Resolved::Factory { code, .. } => Target::Factory {
+            code: code.clone(),
+            chain,
+        },
         Resolved::Unhandled => return None,
     })
+}
+
+/// The hidden slot a nested-class entry records: its index in the layout
+/// of the application the entry's guard names, which is the one a hit can
+/// rely on. A public or protected guard is the receiver's own dispatch id,
+/// a private one N's application, and a `super` one S's
+/// (`sends::super_start`). A hidden slot's index is the same in every
+/// application over the one that declares it, since an application's
+/// `nested_slot` extends its superclass application's, and the
+/// declaration a `super` send finds lies in S's chain: so its index is S's,
+/// which every receiver whose chain contains S shares (`materialize` checks
+/// that the receiver has the running class's application).
+fn nested_field<'gc>(
+    mutator: &Mutator<'gc>,
+    chain: Chain,
+    key: SendKey<'_, 'gc>,
+    mixin: &Rc<Mixin>,
+) -> u32 {
+    let class = match chain {
+        Chain::Private => key.lexical_class,
+        Chain::Super => key.superclass,
+        _ => Some(mutator.class_of(*key.receiver)),
+    };
+    class
+        .and_then(|class| super::nested::hidden_slot_index(mutator, class, mixin))
+        .and_then(|index| u32::try_from(index).ok())
+        .unwrap_or(super::nested::NO_CACHED_FIELD)
 }
 
 /// The guard a slot entry records: the receiver's own, for a private or
@@ -981,16 +1025,37 @@ fn materialize<'gc>(
         ),
         Target::NestedClass {
             mixin,
+            field,
             level,
             chain,
         } => {
             let start = chain_start(mutator, chain, key)?;
             let declaring_class = level_above(&mutator.heap, start, level)?;
+            // The field is the guard's application's, which is the
+            // receiver's on a public or protected site; on a private one
+            // only a receiver of exactly that application may take it, and
+            // on a `super` one only a receiver of the running class's
+            // application, whose chain contains S -- a recorded guard as
+            // the slot index's, decided without the receiver, needs. Any
+            // other takes the accessor's lookup.
+            let receiver_has = |guard: DispatchId| mutator.heap.dispatch_id(*key.receiver) == guard;
+            let field = match chain {
+                Chain::Private if !receiver_has(key.guard) => super::nested::NO_CACHED_FIELD,
+                Chain::Super
+                    if !key.current_class.is_some_and(|current_class| {
+                        receiver_has(mutator.heap.class_dispatch_ids(current_class).instances)
+                    }) =>
+                {
+                    super::nested::NO_CACHED_FIELD
+                }
+                _ => field,
+            };
             (
                 Resolved::NestedClass {
                     mixin,
                     declaring_class,
                     chain,
+                    field,
                 },
                 FeedbackBase::NOT_ASSIGNED,
             )
@@ -1017,11 +1082,13 @@ fn materialize<'gc>(
         // names the application whose own method table held the entry
         // (`resolve::resolved_for` records nothing found anywhere else). A
         // receiver with that id is a class object of that metaclass's
-        // declaration, so a hit reaches what a miss would.
-        Target::Factory { chain } => match key.receiver.as_object() {
+        // declaration, so a hit reaches what a miss would -- the entry's
+        // body too, which comes from the entry, for a hit and a miss alike.
+        Target::Factory { code, chain } => match key.receiver.as_object() {
             Some(class_object) => (
                 Resolved::Factory {
                     level: class_object,
+                    code,
                     chain,
                 },
                 FeedbackBase::NOT_ASSIGNED,
@@ -1055,6 +1122,7 @@ pub(crate) fn send_public<'gc>(
         receiver: &receiver,
         lexical_class: None,
         superclass: None,
+        current_class: None,
     };
     cached(
         mutator,
@@ -1086,45 +1154,50 @@ pub(crate) fn send_lexical<'gc>(
     family_size: u32,
     site: CallSite,
     depth: u16,
+    declaration_code: bool,
     selector: Symbol,
     arguments: &[Value<'gc>],
 ) -> Result<Step<'gc>, Signal<'gc>> {
-    let privacy = site_index(feedback_base, family_size, site).and_then(|index| {
-        mutator
-            .caches
-            .sites
-            .get(index)
-            .map(|entry| (index, entry.target.site_privacy()))
-    });
+    // A body-less declaration's own code runs once per instantiation of
+    // its class and starts its walk from the declaration's scope: it runs
+    // uncached, so that every cached send below starts at its class.
+    let privacy = site_index(feedback_base, family_size, site)
+        .filter(|_| !declaration_code)
+        .and_then(|index| {
+            mutator
+                .caches
+                .sites
+                .get(index)
+                .map(|entry| (index, entry.target.site_privacy()))
+        });
     let Some((index, privacy)) = privacy else {
-        return decide_lexical_send(mutator, activation, depth, selector, arguments);
-    };
-    // As in `decide_lexical_send`: the depth counts out from the class that
-    // defines the running method, not from the receiver's class.
-    let (self_value, defining_class) = mutator
-        .heap
-        .activation_receiver_and_current_class(activation);
-    let enclosing =
-        dispatch::kth_enclosing_object(&mutator.heap, self_value, defining_class.as_ref(), depth);
-    let Some(private) = privacy else {
-        return send_lexical_first(
+        return decide_lexical_send(
             mutator,
-            index,
-            enclosing,
-            defining_class,
+            activation,
             depth,
+            declaration_code,
             selector,
             arguments,
         );
     };
+    // As in `decide_lexical_send`: where the walk starts is decided once,
+    // by `sends::lexical_origin`, for the uncached path and this one.
+    let (self_value, origin) = super::sends::lexical_origin(&mutator.heap, activation, false);
+    let enclosing = dispatch::kth_enclosing_object(&mutator.heap, self_value, origin, depth);
+    let Some(private) = privacy else {
+        return send_lexical_first(
+            mutator, index, enclosing, origin, depth, selector, arguments,
+        );
+    };
     let key = if private {
-        let lexical_class = dispatch::kth_lexical_class(&mutator.heap, defining_class, depth);
+        let lexical_class = dispatch::kth_lexical_class(&mutator.heap, origin, depth);
         SendKey {
             guard: lexical_dispatch_id(&mutator.heap, lexical_class),
             rule: CacheRule::LexicalPrivate,
             receiver: &enclosing,
             lexical_class,
             superclass: None,
+            current_class: None,
         }
     } else {
         SendKey {
@@ -1135,6 +1208,7 @@ pub(crate) fn send_lexical<'gc>(
             receiver: &enclosing,
             lexical_class: None,
             superclass: None,
+            current_class: None,
         }
     };
     cached(
@@ -1143,12 +1217,12 @@ pub(crate) fn send_lexical<'gc>(
         key,
         selector,
         arguments,
-        |mutator| dispatch::kth_lexical_class(&mutator.heap, defining_class, depth),
+        |mutator| dispatch::kth_lexical_class(&mutator.heap, origin, depth),
         |mutator, known_lexical_class| {
             let lexical_class = match known_lexical_class {
                 LexicalClass::Known(lexical_class) => lexical_class,
                 LexicalClass::NotComputed => {
-                    dispatch::kth_lexical_class(&mutator.heap, defining_class, depth)
+                    dispatch::kth_lexical_class(&mutator.heap, origin, depth)
                 }
             };
             mutator.resolve_lexical(enclosing, lexical_class, selector)
@@ -1182,12 +1256,12 @@ fn send_lexical_first<'gc>(
     mutator: &mut Mutator<'gc>,
     index: usize,
     enclosing: Value<'gc>,
-    defining_class: Option<ClassReference<'gc>>,
+    origin: LexicalOrigin<'gc>,
     depth: u16,
     selector: Symbol,
     arguments: &[Value<'gc>],
 ) -> Result<Step<'gc>, Signal<'gc>> {
-    let lexical_class = dispatch::kth_lexical_class(&mutator.heap, defining_class, depth);
+    let lexical_class = dispatch::kth_lexical_class(&mutator.heap, origin, depth);
     let lexical_id = lexical_dispatch_id(&mutator.heap, lexical_class);
     if lexical_id != DispatchId::NONE {
         let private_key = SendKey {
@@ -1196,6 +1270,7 @@ fn send_lexical_first<'gc>(
             receiver: &enclosing,
             lexical_class,
             superclass: None,
+            current_class: None,
         };
         if let Some(step) = global_hit(mutator, index, private_key, selector, arguments) {
             return step;
@@ -1209,6 +1284,7 @@ fn send_lexical_first<'gc>(
             receiver: &enclosing,
             lexical_class: None,
             superclass: None,
+            current_class: None,
         };
         if let Some(step) = global_hit(mutator, index, public_key, selector, arguments) {
             return step;
@@ -1227,6 +1303,7 @@ fn send_lexical_first<'gc>(
         receiver: &enclosing,
         lexical_class,
         superclass: None,
+        current_class: None,
     };
     fill(mutator, index, key, selector, &resolved);
     mutator.act(resolved, enclosing, selector, arguments)
@@ -1254,10 +1331,13 @@ fn global_hit<'gc>(
     Some(mutator.act_with_base(resolved, base, *key.receiver, selector, arguments))
 }
 
-/// A `super` send (§5.10), cached, keyed by the running method's
-/// application: S, and so everything §5.10 finds from it, is a function of
-/// that application. Its two errors are raised by the uncached path, which
-/// is where a send without a `current_class` or a superclass goes.
+/// A `super` send (§5.10), cached, keyed by S's application
+/// (`sends::super_start`): everything §5.10 finds, and the step `level_above`
+/// takes from S on a hit, is a function of S alone. A body-less
+/// declaration's own code is cached like any other: its S is its class
+/// object's superclass, as every code's is. Its two errors are raised by
+/// the uncached path, which is where a send without a `current_class` or
+/// a superclass goes.
 #[inline(always)]
 pub(crate) fn send_super<'gc>(
     mutator: &mut Mutator<'gc>,
@@ -1272,7 +1352,7 @@ pub(crate) fn send_super<'gc>(
     // them itself.
     let cached_site = site_index(feedback_base, family_size, site).and_then(|index| {
         let current_class = mutator.heap.activation_current_class(activation)?;
-        let superclass = mutator.heap.class_superclass(current_class)?;
+        let superclass = super::sends::super_start(&mutator.heap, current_class)?;
         Some((index, current_class, superclass))
     });
     let Some((index, current_class, superclass)) = cached_site else {
@@ -1280,11 +1360,12 @@ pub(crate) fn send_super<'gc>(
     };
     let self_value = mutator.heap.activation_receiver(activation);
     let key = SendKey {
-        guard: mutator.heap.class_dispatch_ids(current_class).instances,
+        guard: mutator.heap.class_dispatch_ids(superclass).instances,
         rule: CacheRule::Super,
         receiver: &self_value,
         lexical_class: None,
         superclass: Some(superclass),
+        current_class: Some(current_class),
     };
     cached(
         mutator,
@@ -1447,8 +1528,12 @@ pub enum CachedTargetKind {
     Slot {
         field: u32,
     },
-    /// The nested class's name.
-    NestedClass(Symbol),
+    /// The nested class's name, and the absolute index of the hidden slot
+    /// a hit reads, `None` where a hit takes the accessor's lookup.
+    NestedClass {
+        name: Symbol,
+        field: Option<u32>,
+    },
     Primitive,
     Factory,
     /// A `doesNotUnderstand:` handler, whatever it is.
@@ -1540,12 +1625,21 @@ fn sent_selector(instruction: &Instruction) -> Option<Symbol> {
 fn cached_target(target: &Target) -> Option<CachedTarget> {
     let (kind, chain) = match target {
         Target::Vacant | Target::Polymorphic { .. } | Target::Megamorphic { .. } => return None,
-        Target::Factory { chain } => (CachedTargetKind::Factory, *chain),
+        Target::Factory { chain, .. } => (CachedTargetKind::Factory, *chain),
         Target::Method { method, chain, .. } => (CachedTargetKind::Method(method.selector), *chain),
         Target::Slot { field, chain, .. } => (CachedTargetKind::Slot { field: *field }, *chain),
-        Target::NestedClass { mixin, chain, .. } => {
-            (CachedTargetKind::NestedClass(mixin.name), *chain)
-        }
+        Target::NestedClass {
+            mixin,
+            field,
+            chain,
+            ..
+        } => (
+            CachedTargetKind::NestedClass {
+                name: mixin.name,
+                field: (*field != super::nested::NO_CACHED_FIELD).then_some(*field),
+            },
+            *chain,
+        ),
         Target::Primitive { chain, .. } => (CachedTargetKind::Primitive, *chain),
     };
     let kind = match (kind, chain) {
@@ -1566,6 +1660,15 @@ mod tests {
     use super::*;
     use crate::bytecode::{CodeKind, CompiledCode, Instruction};
     use ns_syntax::Span;
+
+    /// A factory target on `chain`, for the tests of the caches themselves,
+    /// which read only its chain.
+    fn factory_target(chain: Chain) -> Target {
+        Target::Factory {
+            code: Rc::new(crate::compiler::factory_body(0)),
+            chain,
+        }
+    }
 
     #[test]
     fn free_ranges_coalesce_and_fit_first() {
@@ -1686,7 +1789,7 @@ mod tests {
         let chain_of = |global: &mut GlobalCache, guard: DispatchId, rule: CacheRule| match global
             .get(guard, selector, rule)
         {
-            Some(Target::Factory { chain }) => Some(*chain),
+            Some(Target::Factory { chain, .. }) => Some(*chain),
             _ => None,
         };
         let chains = [Chain::Public, Chain::Super, Chain::SuperDoesNotUnderstand];
@@ -1694,13 +1797,13 @@ mod tests {
             guards[0],
             selector,
             CacheRule::Public,
-            Target::Factory { chain: chains[0] },
+            factory_target(chains[0]),
         );
         global.insert(
             guards[1],
             selector,
             CacheRule::Public,
-            Target::Factory { chain: chains[1] },
+            factory_target(chains[1]),
         );
         assert_eq!(
             chain_of(&mut global, guards[0], CacheRule::Public),
@@ -1719,7 +1822,7 @@ mod tests {
             guards[2],
             selector,
             CacheRule::Public,
-            Target::Factory { chain: chains[2] },
+            factory_target(chains[2]),
         );
         assert_eq!(
             chain_of(&mut global, guards[0], CacheRule::Public),
@@ -1756,14 +1859,13 @@ mod tests {
             guard,
             selector,
             CacheRule::Lexical(first_lexical),
-            Target::Factory {
-                chain: Chain::Protected,
-            },
+            factory_target(Chain::Protected),
         );
         assert!(matches!(
             global.get(guard, selector, CacheRule::Lexical(first_lexical)),
             Some(Target::Factory {
-                chain: Chain::Protected
+                chain: Chain::Protected,
+                ..
             })
         ));
         assert!(
@@ -1794,7 +1896,7 @@ mod tests {
             DispatchId::from_counter(4),
             DispatchId::from_counter(5),
         );
-        let target_for = |chain| Target::Factory { chain };
+        let target_for = factory_target;
         cache.insert(
             first,
             selector,
@@ -1992,5 +2094,150 @@ mod tests {
         // second payload to any rule and this catches it silently doubling
         // the cache's footprint instead of a passing test hiding it.
         assert_eq!(std::mem::size_of::<GlobalEntry>(), 32);
+    }
+
+    /// A factory entry records the body the lookup found, and a hit hands
+    /// that very body to the factory's activation: the guard -- the
+    /// metaclass's instances id -- fixes the entry, so the hit reads nothing
+    /// of the method table again.
+    #[test]
+    fn a_factory_hit_pushes_the_body_the_fill_recorded() {
+        let source = "class Plain = Object new () () : ()\n";
+        let module = ns_syntax::parse(source).expect("parse");
+        let resolved = crate::resolve(
+            module,
+            Rc::from(source),
+            crate::types::SourceOrigin::File(std::path::PathBuf::from("t.ns")),
+        )
+        .expect("resolve");
+        let mut interpreter = crate::Interpreter::bootstrap();
+        let class = interpreter.load_module(&resolved);
+        interpreter.enter(|mutator| {
+            let receiver = mutator.fetch(&class);
+            let found = mutator.resolve_public(receiver, Symbol::NEW);
+            let Resolved::Factory {
+                code: found_code, ..
+            } = &found
+            else {
+                panic!("`new` resolves to the factory entry");
+            };
+            let found_code = found_code.clone();
+            let key = SendKey {
+                guard: mutator.heap.dispatch_id(receiver),
+                rule: CacheRule::Public,
+                receiver: &receiver,
+                lexical_class: None,
+                superclass: None,
+                current_class: None,
+            };
+            let target = record(mutator, &found, key).expect("a factory is recorded");
+            let Target::Factory { code: recorded, .. } = &target else {
+                panic!("a factory is recorded as one");
+            };
+            assert!(Rc::ptr_eq(recorded, &found_code));
+            let (hit, _) = materialize(mutator, target, key).expect("a hit");
+            match mutator.act(hit, receiver, Symbol::NEW, &[]) {
+                Ok(crate::interpreter::Step::Factory { code, .. }) => {
+                    assert!(
+                        Rc::ptr_eq(&code, &found_code),
+                        "the hit pushes the recorded body"
+                    );
+                }
+                _ => panic!("a factory hit decides the factory's activation"),
+            }
+        });
+    }
+
+    fn expect_ok(result: crate::HostResult, what: &str) -> crate::Root {
+        match result {
+            Ok(root) => root,
+            Err(crate::HostSignal::Return) => panic!("{what}: a non-local return escaped"),
+            Err(crate::HostSignal::Error(error)) => {
+                panic!("{what}: unexpected Newspeak error: {}", error.message)
+            }
+        }
+    }
+
+    /// The one site `narrow Inner` fills for `Narrow`, whose hidden slot is
+    /// field 0; a forward then replaces the enclosing object with a `Wide`,
+    /// whose hidden slot is field 3. The next sends miss `Narrow`'s guard
+    /// and answer the `Wide`'s own class -- never what field 0 of the `Wide`
+    /// holds -- and the entry they leave records field 3.
+    #[test]
+    fn a_nested_class_hit_after_the_enclosing_object_was_reshaped_takes_the_slow_path() {
+        let source = indoc::indoc! {"
+            class Subject = Object new () (
+              class Narrow = Object new () (
+                public class Inner = Object new () ()
+              )
+              class Wide = Object new (
+                | first ::= 1. second ::= 2. third ::= 3. |
+              ) (
+                public class Inner = Object new () ()
+              )
+              public run: mirror = (
+                | narrow wide classes |
+                narrow:: Narrow new.
+                wide:: Wide new.
+                classes:: Array new: 3.
+                1 to: 3 do: [:index |
+                  classes at: index put: narrow Inner.
+                  index = 1 ifTrue: [
+                    mirror elementsOf: {narrow} forwardIdentityToElementsOf: {wide} ifFail: [^4].
+                  ].
+                ].
+                (classes at: 1) == (classes at: 2) ifTrue: [^1].
+                (classes at: 2) == (classes at: 3) ifFalse: [^2].
+                (classes at: 3) == wide Inner ifFalse: [^3].
+                ^0
+              )
+            ) : ()
+        "};
+        let module = ns_syntax::parse(source).expect("parse");
+        let resolved = crate::resolve(
+            module,
+            Rc::from(source),
+            crate::types::SourceOrigin::File(std::path::PathBuf::from("t.ns")),
+        )
+        .expect("resolve");
+        let mut interpreter = crate::Interpreter::bootstrap();
+        #[cfg(debug_assertions)]
+        interpreter.set_stress_caches(false);
+        let class = interpreter.load_module(&resolved);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let mirror = interpreter.enter(|mutator| {
+            let mirror = mutator.vm_mirror();
+            mutator.stash(mirror)
+        });
+        let answer = expect_ok(
+            interpreter.send(&instance, Symbol::intern("run:"), &[mirror]),
+            "run:",
+        );
+        let answer = interpreter.enter(|mutator| mutator.fetch(&answer).as_small_integer());
+        assert_eq!(answer, Some(0));
+        assert_eq!(
+            interpreter.call_site_states(
+                &class,
+                MethodSide::Instance,
+                Symbol::intern("run:"),
+                Symbol::intern("Inner"),
+            ),
+            vec![
+                CallSiteState::Monomorphic(CachedTarget {
+                    kind: CachedTargetKind::NestedClass {
+                        name: Symbol::intern("Inner"),
+                        field: Some(3),
+                    },
+                    private: false,
+                }),
+                CallSiteState::Monomorphic(CachedTarget {
+                    kind: CachedTargetKind::NestedClass {
+                        name: Symbol::intern("Inner"),
+                        field: Some(3),
+                    },
+                    private: false,
+                }),
+            ]
+        );
     }
 }

@@ -754,49 +754,11 @@ ns_runtime::for_each_lowering! {
 }
 
 ns_runtime::for_each_lowering! {
-    /// A `^` in a block of a superclass clause's message returns from the
-    /// message's own activation, which catches it (`Mutator::catches_return`):
-    /// the run loop pops the activation there and hands the value to the
-    /// instantiation's walk as the superclass's arguments, exactly as if the body
-    /// had answered it. The clause message is the one clause body a block can be
-    /// written in -- the clause receiver is a single name.
-    fn a_return_in_a_clause_messages_block_hands_its_value_to_the_walk(lowering) {
-        let source = indoc! {"
-            class Outer = Object new (
-            ) (
-                class Base x: a = Object new (
-                    | uValue = a. |
-                ) (
-                    public u = ( ^uValue )
-                ) : ()
-                class Cell = Base x: [^{3}] value (
-                    | vValue = 4. |
-                ) (
-                    public v = ( ^vValue )
-                ) : ()
-                public make = ( | c | c:: Cell new. ^c u * 10 + c v )
-            ) : ()
-        "};
-        let (mut interpreter, class) = load(source, lowering);
-        let outer = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-        let made = expect_ok(
-            at_the_floor(&mut interpreter, lowering, &outer, "make", &[]),
-            "make",
-        );
-        assert_eq!(
-            interpreter.enter(|mutator| small_integer(mutator.fetch(&made))),
-            34,
-            "{lowering:?}: Base got the returned argument list, and Cell's own slot ran too"
-        );
-    }
-}
-
-ns_runtime::for_each_lowering! {
-    /// A `^` into an initializer that has a level below it still to run -- its
-    /// activation carries the rest of the walk in its continuation -- escapes
-    /// like one into the last initializer (`a_return_into_a_running_initializer_escapes_the_run`),
-    /// and the unwind drops the walk's state with the activation: nothing is left
-    /// on either count, and the interpreter goes on.
+    /// A `^` into the initializer of a superclass, which its subclass's
+    /// initializer invoked and is waiting for, escapes like one into the
+    /// class's own initializer (`a_return_into_a_running_initializer_escapes_the_run`):
+    /// the unwind pops both initializers and the factory with them, nothing is
+    /// left on either count, and the interpreter goes on.
     fn a_return_into_an_initializer_with_a_level_below_escapes_the_run(lowering) {
         let source = indoc! {"
             class E = Object new (
@@ -829,11 +791,11 @@ ns_runtime::for_each_lowering! {
 }
 
 ns_runtime::for_each_lowering! {
-    /// An error in a superclass clause's message, while the walk of a `new` sent
-    /// from inside the run loop is still climbing: the unwind pops the message's
-    /// activation and the method that sent `new`, drops the walk's state, and
+    /// An error in a superclass clause's message, evaluated by the
+    /// initializer of a `new` sent from inside the run loop: the unwind pops
+    /// the initializer, the factory and the method that sent `new`, and
     /// leaves the run with the error.
-    fn an_error_in_a_clause_message_mid_climb_unwinds_the_run(lowering) {
+    fn an_error_in_a_clause_message_unwinds_the_run(lowering) {
         let source = indoc! {"
             class Outer = Object new (
             ) (

@@ -1,8 +1,9 @@
 //! The leaves `Kernel.ns`'s `Behavior`, `Class` and `Metaclass` forward to:
-//! a class's name, a metaclass's class, and the three parts of a class
+//! a class's name, a metaclass's class, and the four parts of a class
 //! object's state the Newspeak side of a value class object's `=` compares
 //! when `builtins::value`'s walk declines -- its application, its enclosing
-//! object and its superclass. Nothing else about a class object is answered
+//! object, its level's enclosing object and its superclass. Nothing else
+//! about a class object is answered
 //! at the base level; reflection is a mirror's
 //! (`docs/design/object-model.md`, "Class sides and metaclasses").
 
@@ -27,12 +28,10 @@ pub(crate) fn execute<'gc>(
             if mutator.heap().class_this_class(object).is_some() {
                 return None;
             }
-            let name = mutator
-                .heap()
-                .class_application(object)?
-                .mixin
-                .name
-                .to_string();
+            // Read through the metaclass (`Heap::class_name`): a body-less
+            // declaration's class object applies its last clause's mixin
+            // and is named for the declaration.
+            let name = mutator.heap().class_name(object)?.to_string();
             Some(Ok(Value::object(mutator.new_string(name))))
         }
         BehaviorPrimitive::ThisClass => mutator
@@ -46,9 +45,19 @@ pub(crate) fn execute<'gc>(
             }
             let own = mutator.heap().class_application_index(object)?;
             let others = mutator.heap().class_application_index(other)?;
-            Some(Ok(Value::boolean(own == others)))
+            // Two body-less declarations applying one mixin share one
+            // application yet are two classes, as their body versions are
+            // (`builtins::value`'s `classes_can_be_equal` decides alike).
+            let same_declaration = mutator
+                .heap()
+                .classes_share_body_less_declaration(object, other);
+            Some(Ok(Value::boolean(own == others && same_declaration)))
         }
         BehaviorPrimitive::Enclosing => Some(Ok(mutator
+            .heap()
+            .class_reflected_enclosing(object)
+            .map_or(Value::nil(), Value::object))),
+        BehaviorPrimitive::LevelEnclosing => Some(Ok(mutator
             .heap()
             .class_enclosing(object)
             .map_or(Value::nil(), Value::object))),

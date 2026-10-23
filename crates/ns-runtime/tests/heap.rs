@@ -398,7 +398,10 @@ fn activation_header<'gc>(class: ns_runtime::ClassReference<'gc>) -> ActivationH
     ActivationHeader {
         receiver: Value::nil(),
         current_class: Some(class),
-        kind: FrameKind::Initializer(class),
+        kind: FrameKind::Initializer(
+            class,
+            ns_runtime::interpreter::instantiate::InitializerBody::OwnPart,
+        ),
         feedback_base: FeedbackBase::NOT_ASSIGNED,
         code: trivial_code(),
         then: Continuation::Deliver,

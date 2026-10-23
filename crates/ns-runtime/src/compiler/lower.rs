@@ -530,6 +530,89 @@ impl<'a> Lowerer<'a> {
         self.statement_index += 1;
     }
 
+    /// An initializer's clauses (`docs/design/object-model.md`,
+    /// "Instantiation"), each run on `self` at the level the initializer was
+    /// entered at, as the levels between it and the superclass clause's
+    /// class stand above it: first §6.1's check of every `<:` clause against
+    /// the class it names, the nearest level first (the last clause, one
+    /// step up) and the topmost last, before anything runs; then
+    /// the superclass clause's message's arguments and the superclass's
+    /// initializer with them (§6.3); then, from the lowest level up, each
+    /// `<:` clause's message's arguments and its level's own part with them
+    /// (§6.2). Every argument is evaluated in the factory's scope, where the
+    /// resolver bound the factory's parameters for it.
+    ///
+    /// `has_body` says whether the declaration adds a level of its own
+    /// above the levels its `<:` clauses add, which the levels are then
+    /// counted from: the level `<:` clause `k` of `n` adds is `n - k + 1`
+    /// steps up, the superclass clause's class `n + 1`. A body-less
+    /// declaration's class is the level its last clause adds, one step
+    /// lower. A chain of more levels than a `u16` counts leaves the body
+    /// too large.
+    ///
+    /// One statement for the checks, one for the superclass and one for
+    /// each applied level, each with its own scratch registers: nothing is
+    /// live across them.
+    pub(crate) fn lower_instance_initialization_prologue(
+        &mut self,
+        superclass: Option<&ast::SuperclassClause>,
+        applied: &[ast::SuperclassClause],
+        has_body: bool,
+    ) {
+        if self.too_large {
+            return;
+        }
+        let own_level = usize::from(has_body);
+        let Some(superclass_steps) = applied
+            .len()
+            .checked_add(own_level)
+            .and_then(|steps| u16::try_from(steps).ok())
+        else {
+            self.too_large = true;
+            return;
+        };
+        // The level clause `position` (from 0) adds; below the superclass
+        // clause's, so it fits a `u16` too.
+        let steps_of = |position: usize| superclass_steps - 1 - position as u16;
+        if !applied.is_empty() {
+            let start = self.code.len();
+            for (position, clause) in applied.iter().enumerate().rev() {
+                self.emit(Instruction::CheckAppliedClause {
+                    steps: steps_of(position),
+                    selector: super::clause_selector(Some(clause)),
+                });
+            }
+            self.record_statement(start);
+        }
+        self.next_scratch = self.base;
+        let start = self.code.len();
+        let argument_registers = self.lower_operands(super::clause_arguments(superclass));
+        let destination = self.allocate_scratch();
+        self.emit(Instruction::InitializeSuperclass {
+            steps: superclass_steps,
+            selector: super::clause_selector(superclass),
+            argument_registers,
+            destination,
+        });
+        self.record_statement(start);
+        for (position, clause) in applied.iter().enumerate() {
+            if self.too_large {
+                // Nothing more is kept (`finish`): stop lowering.
+                return;
+            }
+            self.next_scratch = self.base;
+            let start = self.code.len();
+            let argument_registers = self.lower_operands(super::clause_arguments(Some(clause)));
+            let destination = self.allocate_scratch();
+            self.emit(Instruction::InitializeAppliedLevel {
+                steps: steps_of(position),
+                argument_registers,
+                destination,
+            });
+            self.record_statement(start);
+        }
+    }
+
     /// The initializer's per-slot statement: the slot's initializer expression,
     /// then `InitializeSlot`, which writes the field directly, never through a
     /// setter send. One `statement_program_counter` entry. `own_index` is the
@@ -767,16 +850,16 @@ impl<'a> Lowerer<'a> {
             (CodeKind::Initializer, true) => {
                 Some(|register| Instruction::NonLocalReturn { register })
             }
-            // Either clause body is a single synthetic `^expression` (the
-            // receiver, or the message's argument list), so its top-level
-            // `^` is what hands that value back; a `^` written inside a
-            // block of the clause's message returns from the message's own
-            // activation, which catches it (`Mutator::catches_return`),
-            // exactly as a method's activation would.
-            (CodeKind::SuperclassClause | CodeKind::SuperclassMessage, false) => {
+            // The clause body is a single synthetic `^expression` (the
+            // receiver), so its top-level `^` is what hands that value
+            // back; a `^` written inside a block of the receiver returns
+            // from the clause's own activation, which catches it
+            // (`Mutator::catches_return`), exactly as a method's activation
+            // would.
+            (CodeKind::SuperclassClause, false) => {
                 Some(|register| Instruction::Return { register })
             }
-            (CodeKind::SuperclassClause | CodeKind::SuperclassMessage, true) => {
+            (CodeKind::SuperclassClause, true) => {
                 Some(|register| Instruction::NonLocalReturn { register })
             }
         }
@@ -789,7 +872,7 @@ impl<'a> Lowerer<'a> {
     /// read, so the two cannot disagree.
     fn answers_last_value(&self) -> bool {
         match self.kind {
-            CodeKind::Block | CodeKind::SuperclassClause | CodeKind::SuperclassMessage => true,
+            CodeKind::Block | CodeKind::SuperclassClause => true,
             CodeKind::Method | CodeKind::Initializer => false,
         }
     }

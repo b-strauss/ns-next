@@ -58,8 +58,8 @@ enum Command {
     },
     /// Parse every .ns file under a directory.
     ParseCorpus { directory: PathBuf },
-    /// Print one compiled body: a method, or with --initializer the target
-    /// class's instance initializer. Takes either a .ns file, which is
+    /// Print compiled code: one method, or with --initializer the target
+    /// class's instance initializer bodies and its factory's. Takes either a .ns file, which is
     /// compiled first, or a serialized artifact, whose bodies are decoded
     /// rather than compiled. Nothing of the program is instantiated or run
     /// either way.
@@ -67,7 +67,9 @@ enum Command {
         file: PathBuf,
         /// The method selector, e.g. `main:args:`.
         selector: Option<String>,
-        /// Disassemble the target's compiled instance initializer instead.
+        /// Disassemble the target's instance initializer instead: the full
+        /// body, its own part, the standalone body when the class applies
+        /// mixins, and the factory's body.
         #[arg(long)]
         initializer: bool,
         /// A dot-separated mixin path rooted at the module's own class

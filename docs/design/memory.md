@@ -515,10 +515,11 @@ anyway.
 ### No Rust frame is live below a safepoint
 
 Rust enters the run loop only as the host, its outermost caller
-(`Interpreter::run_from_host`). `do:`, instantiation and the nested-class
-accessor, which once ran Newspeak code in nested runs of the loop, are
-trampoline steps with continuations, as `whileTrue:` is (step 2a, built;
-[execution.md](execution.md), "No re-entry from Rust"). A Rust frame below a
+(`Interpreter::run_from_host`). `do:` and the nested-class accessor, which
+once ran Newspeak code in nested runs of the loop, are trampoline steps
+with continuations, as `whileTrue:` is (step 2a, built), and instantiation,
+which did too, is compiled code that runs in the loop like a method
+([execution.md](execution.md), "No re-entry from Rust"). A Rust frame below a
 nested run would hold values across that run's safepoints, and rooting them is
 what Nova's `Scoped` values are for; ns-next removed the frames instead. So at
 every point between two instructions the Rust stack holds the host and the run
@@ -539,8 +540,8 @@ invariant (`heap.rs`'s `Brand<'gc>`, a zero-sized
 extended. A release handle is still exactly its 64-bit offset.
 
 **The step state is a `Mutator<'gc>`** (`interpreter/mod.rs`): the heap, the
-builtin classes, the application caches, the argument buffer and the spare
-instantiation boxes, and every method a step uses — heap access, allocation,
+builtin classes, the application caches and the argument buffer, and
+every method a step uses — heap access, allocation,
 the send decisions and pushes, the natives, the compiler, the image codec. At
 rest it is a `Mutator<'static>` held by a `World` (`heap/world.rs`), which the
 `Interpreter` owns beside what only the run loop needs between steps. The only
@@ -786,10 +787,10 @@ every build, since the collector runs in every build.
 A reified frame is not a root of its own: it is reached through the closure
 that captured it, or through the live entry it is married to. Two things the
 step state keeps hold no handle, on purpose, and a debug assertion before
-every move checks both: a send's argument buffer, empty between instructions
-("Where a collection can happen" above); and the spare boxes finished
-instantiations leave for the next ones, emptied of every handle when they are
-put back ([execution.md](execution.md), "No re-entry from Rust"). A nested
+every move checks it: a send's argument buffer, empty between instructions
+("Where a collection can happen" above). An instantiation keeps nothing
+outside the activation stack: its factory and initializers are activations
+like any method's ([execution.md](execution.md), "No re-entry from Rust"). A nested
 class being created is marked in its own cache slot by a primitive (`false`),
 while the enclosing object stays in the continuation of the clause's stack
 entry, where the stack is traced anyway.
@@ -974,13 +975,11 @@ was built directly rather than after it.
 
 The heap stores handles at rest and a step sees them branded. Converting each
 payload safely at the boundary — at a push, a pop, an allocation — rebuilds
-it, and a `Box<WhileLoop>`, `Box<DoLoop>`, `Box<NestedClassCreation>` or
-`Box<Instantiation>` can change its lifetime in safe Rust only by
-reallocating: at every push and pop of a stack entry that carries one, which
-is every iteration of a native `whileTrue:` or `do:` and every step of an
-instantiation. The reuse of `spare_walks`' boxes, which measured 3–13% on the
-instantiation benchmarks, could not have survived either. Rejected for that
-cost, with the user, on 2026-09-13. Nothing is converted at a push, a pop or
+it, and a `Box<WhileLoop>`, `Box<DoLoop>` or `Box<NestedClassCreation>`
+can change its lifetime in safe Rust only by reallocating: at every push
+and pop of a stack entry that carries one, which is every iteration of a
+native `whileTrue:` or `do:`. Rejected for that cost, with the user, on
+2026-09-13. Nothing is converted at a push, a pop or
 an allocation: the whole step state is handed over as it rests.
 
 ### Considered and rejected: an audited lifetime cast
@@ -1211,7 +1210,11 @@ doc comment, `image/decode.rs`, and for the text table `texts::decode`'s,
 
 The other record kinds stay below the metaclass record: a class record is at
 least 19 bytes for the same 80 (4.2x; 5.5x and 5.9x with the decoder's
-tables), a frame record at least 21 for 96 (4.6x; 5.7x and 6.5x), an
+tables), a level a `<:` clause added at least 23 for 88, its one field more
+the class its clause named (3.8x; 4.9x and 5.2x), a body-less declaration's
+class object at least 25 for 104, the level's record and two presence flags
+for its declaration's scope (4.2x; 5.1x and 5.4x), a frame record at least 21
+for 96 (4.6x; 5.7x and 6.5x), an
 instance, array, string or symbol record at least 11 for 16 (1.5x), a
 closure record at least 17 for 40 (2.4x), a byte-array record of `n` bytes
 `14 + n` for `8 × (5 + ⌈n/8⌉)`, its alignment reserve not on the wire, at
@@ -2742,9 +2745,9 @@ Cogit's `genPrimitiveNew` and `genCreateFullClosure:…` do in machine code
   row's `dispatch_ids` and `slot_count`, which never change after it (an
   edit makes a new row); `None` when the count does not fit the header.
   The class word comes from the class object at every allocation, since a
-  class object is per enclosing instance. `new` reads the header with the
-  rest of what it needs in one lookup of the application
-  (`Heap::class_instantiation_facts`) and allocates through
+  class object is per enclosing instance. The factory body's allocation
+  (`instantiate::allocate_for_factory`) reads the header beside the
+  application's refusal and slot count and allocates through
   `Heap::allocate_instance_with` ([object-model.md](object-model.md),
   "Instantiation").
 - **A closure's and a frame's guard are on the heap** (`BuiltinGuards`,

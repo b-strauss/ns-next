@@ -30,7 +30,7 @@ pub use crate::heap::{
 /// once, where the class object is created
 /// (`interpreter::value_class::check_value_class`, called from
 /// `interpreter::nested::after_clause`), and recorded on the class object rather
-/// than raised there: `decide_instantiation` is what refuses, since the
+/// than raised there: `allocate_for_factory` is what refuses, since the
 /// specification's own §2.3 example creates such a class and never
 /// instantiates it (`docs/design/object-model.md`, "A value object's four
 /// conditions"). Recorded as heap data, an `Array` of the offending object
@@ -183,7 +183,7 @@ pub enum BuiltinClass {
     /// per heap, kept in the heap's strong table so that `==` is the
     /// mixin's identity (`docs/design/liveness-and-reflection.md`, "A
     /// mixin is reified as a kernel-private object"). Kernel-private: no
-    /// program can name it, `decide_factory` refuses `new`, and only the
+    /// program can name it, `allocate_for_factory` refuses `new`, and only the
     /// mirrors read it, through leaves.
     Mixin,
 }
@@ -331,11 +331,14 @@ pub enum FrameKind<'gc> {
     /// `Initializer`); kept for the image format's frame records and a future
     /// REPL/top-level activation.
     TopLevel,
-    /// An instance-initializer activation (Class Instantiation step 2)
-    /// running `class`'s slot initializers and `initExprs` -- names the code
-    /// it executes so a bytecode `program_counter` is interpretable through the
-    /// initializer cache.
-    Initializer(ClassReference<'gc>),
+    /// An instance-initializer activation (`docs/design/object-model.md`,
+    /// "Instantiation") entered at the level `class`, running the body of
+    /// its mixin the second field names -- which is how a frame names the
+    /// code it executes, so that its `program_counter` is interpretable.
+    Initializer(
+        ClassReference<'gc>,
+        crate::interpreter::instantiate::InitializerBody,
+    ),
     /// A superclass clause's receiver expression (`newspeak-spec.pdf`
     /// §6.1's `ec`) running on the enclosing object, on behalf of the class
     /// that *declares* the clause.
@@ -347,21 +350,12 @@ pub enum FrameKind<'gc> {
     /// class's instance initializer would reconcile a frame against a body
     /// that never ran in it.
     SuperclassClause(ClassReference<'gc>),
-    /// The arguments of a superclass clause's deferred factory message,
-    /// evaluated on the instance being initialized and with `class`'s own
-    /// factory arguments (§6.2). Its body comes from
-    /// `Mixin::superclass_message_code`; see `SuperclassClause` above
-    /// for why that makes it a kind of its own.
-    SuperclassMessage(ClassReference<'gc>),
-    /// The arguments of a `<:` clause's factory message (§6.2), evaluated
-    /// like `SuperclassMessage`'s, on the instance being initialized and with
-    /// the applying class's factory arguments. It names the *level* the
-    /// clause added, not the applying class: the applying class's mixin has
-    /// one body per clause, and the level's applied clause
-    /// (`Heap::class_applied_clause`) says
-    /// which of them ran here -- a frame kind is how
-    /// `image::decode::frame_body` finds an activation's body.
-    MixinApplicationMessage(ClassReference<'gc>),
+    /// A factory activation (§6.3's primary factory) on the class object
+    /// `class`: allocate an instance, run `class`'s initializer on it,
+    /// answer it. Its body is the factory entry's
+    /// (`compiler::factory_body`), which a frame never carries: it is
+    /// derived from the class.
+    Factory(ClassReference<'gc>),
 }
 
 /// What the run loop does with an activation's value when it returns
@@ -385,11 +379,6 @@ pub enum Continuation<'gc> {
     /// superclass: build, cache and answer the class
     /// (`interpreter::nested::after_clause`).
     NestedClass(Box<NestedClassCreation<'gc>>),
-    /// A body an instantiation ran returned -- a clause message's arguments,
-    /// or the initializer of a level with another below it still to run:
-    /// carry the walk on (`Mutator::advance_instantiation`). The last
-    /// initializer's activation delivers instead (`descend_levels` says why).
-    Instantiate(Box<Instantiation<'gc>>),
     /// An `ensure:` or `ifCurtailed:` block the unwinder started returned:
     /// carry the unwind on (`interpreter::unwind`). Abandoned with its
     /// activation when a newer unwind or an error pops it first.
@@ -508,78 +497,6 @@ pub struct NestedClassCreation<'gc> {
     /// `begin_creation` writes into the slot as the in-progress marker: the
     /// end of a creation resets only the marker that is its own.
     pub(crate) serial: u64,
-}
-
-/// An instantiation in progress (`newspeak-spec.pdf` §6.2, and the six steps
-/// of `docs/design/object-model.md`, "Instantiation"): the instance, every
-/// level of the superclass chain the upward walk has reached with the factory
-/// arguments it gets, and which way the walk is going.
-///
-/// Always boxed, in a box the interpreter reuses from one instantiation to
-/// the next (`Mutator::walk_state`); while a body runs that has work left
-/// after it, the box is in that body's continuation, owned by exactly one
-/// stack entry.
-#[derive(Debug, Clone)]
-pub struct Instantiation<'gc> {
-    pub(crate) instance: Value<'gc>,
-    /// Nearest level first: the class instantiated, then its superclass, and
-    /// so on up, as the upward walk reaches them.
-    pub(crate) levels: Vec<(ClassReference<'gc>, Vec<Value<'gc>>)>,
-    /// The index in `levels` of the level whose declaration the upward walk
-    /// is climbing through: the last level reached that is no level a mixin
-    /// application added. §6.2 writes every message on the way from a
-    /// declaration up through its applied levels -- each `<:` clause's and
-    /// the superclass clause's -- in that one declaration, so each is
-    /// evaluated with its factory arguments, which `levels` still holds
-    /// while the walk climbs. Written and read only by the climb through
-    /// applied levels (`Mutator::climb_through_applied_levels`), which sets
-    /// it when it takes over; the ordinary climb, where every level is its
-    /// own, never needs it.
-    pub(crate) applying: usize,
-    /// The messages into applied levels the upward walk has passed and not
-    /// evaluated, nearest level first, so the downward walk takes the next
-    /// one off the end. §6.2 evaluates a `<:` clause's message after the
-    /// superclass's initializer has run, just before its own mixin's
-    /// (`Mutator::descend_levels`). Empty for any declaration without `<:`
-    /// clauses, and for any whose `<:` messages take no arguments.
-    pub(crate) deferred: Vec<DeferredMessage>,
-    pub(crate) phase: InstantiationPhase<'gc>,
-}
-
-/// A message into an applied level whose evaluation waits for the downward
-/// walk. It holds no handle: both levels are indices into
-/// `Instantiation::levels`, which is traced.
-#[derive(Debug, Clone)]
-pub struct DeferredMessage {
-    /// The index of the applied level the message's value is the factory
-    /// arguments of.
-    pub(crate) level: usize,
-    /// The index of the declaration the message is written in, whose factory
-    /// arguments it is evaluated with.
-    pub(crate) applying: usize,
-    pub(crate) code: Rc<crate::bytecode::CompiledCode>,
-}
-
-/// Which way an instantiation's walk is going.
-#[derive(Debug, Clone, Copy)]
-pub enum InstantiationPhase<'gc> {
-    /// Upward. A body running for this instantiation is a clause message
-    /// written in `level`'s declaration -- the message into the last level
-    /// in `levels`'s superclass, `superclass` -- and its value is the factory
-    /// arguments of `superclass`. `level` is the last level in `levels`
-    /// unless that one is a level a mixin application added, whose messages
-    /// are the applying declaration's (`Instantiation::applying`).
-    Climbing {
-        level: ClassReference<'gc>,
-        superclass: ClassReference<'gc>,
-    },
-    /// Downward. A body running for this instantiation is the initializer of
-    /// `levels[index]`, and a level below it has code still to run.
-    Descending { index: usize },
-    /// Downward. A body running for this instantiation is the message into
-    /// the applied level `levels[index]`, written in `levels[applying]`'s
-    /// declaration, and its value is `levels[index]`'s factory arguments.
-    Applying { index: usize, applying: usize },
 }
 
 // ---------- Errors ----------
@@ -737,7 +654,6 @@ mod tests {
             own_slot_base: 0,
             dispatch_ids: crate::mixin::DispatchIds::NONE,
             instance_header: None,
-            instantiates_without_code: false,
             level_facts,
         })
     }

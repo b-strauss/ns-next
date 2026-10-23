@@ -5,7 +5,7 @@
 //! (`InstantiationNode.signalExceptionsIfFaultFoundElseReturnClassObject`).
 //! Unlike SOMns, the verdict is only *recorded* here, on the class object
 //! (`Mutator::record_value_class_refusal`); `interpreter::instantiate`'s
-//! `decide_instantiation` is what refuses, where an instance would come into
+//! `allocate_for_factory` is what refuses, where an instance would come into
 //! being. `docs/design/object-model.md`, "A value object's four conditions",
 //! explains why: the specification's own §2.3 example creates a class whose
 //! enclosing object is mutable and never instantiates it. `after_clause`
@@ -34,11 +34,65 @@ pub(crate) fn check_value_class<'gc>(
             offender: enclosing,
         });
     }
+    check_levels(mutator, superclass)
+}
+
+/// §3.1.1's enclosing-object condition on a body-less declaration's class
+/// object `class` (`Mixin::has_body`), whose declaration was evaluated in
+/// `declaration_enclosing`. The class object is two classes at once: the
+/// declaration, a member class whose enclosing object §3.3 makes "the
+/// object of which C is a member", `declaration_enclosing`, and the level
+/// its last clause added, whose enclosing object §6.2 makes the named
+/// class's. An instance's enclosing objects (§3.3, "the enclosing object
+/// of o with respect to S") are those of both and of every level below,
+/// and §3.1.1 asks that "Its enclosing objects (3.3) are all value
+/// objects" -- the same objects a body version of the declaration is held
+/// to, its own class's and its levels'.
+#[cold]
+#[inline(never)]
+pub(crate) fn check_body_less_value_class<'gc>(
+    mutator: &Mutator<'gc>,
+    declaration_enclosing: ObjectReference<'gc>,
+    class: ClassReference<'gc>,
+) -> Option<ValueClassRefusal<'gc>> {
+    if !super::instantiate::is_a_value(mutator, declaration_enclosing) {
+        return Some(ValueClassRefusal::NonValueEnclosingObject {
+            level: None,
+            offender: declaration_enclosing,
+        });
+    }
+    let heap = mutator.heap();
+    if let Some(level_enclosing) = heap.class_enclosing(class) {
+        if !super::instantiate::is_a_value(mutator, level_enclosing) {
+            // The level is named for the class its clause named, as a
+            // level of a declaration with a body is: the class object's
+            // own name is the declaration's.
+            let level_name = heap
+                .class_named(class)
+                .and_then(|named| heap.class_name(named));
+            return Some(ValueClassRefusal::NonValueEnclosingObject {
+                level: level_name,
+                offender: level_enclosing,
+            });
+        }
+    }
+    heap.class_superclass(class)
+        .and_then(|superclass| check_levels(mutator, superclass))
+}
+
+/// The enclosing object of every level of the chain from `superclass` up,
+/// the walk `check_value_class` and `check_body_less_value_class` share
+/// once the class's own enclosing object has passed.
+fn check_levels<'gc>(
+    mutator: &Mutator<'gc>,
+    superclass: ClassReference<'gc>,
+) -> Option<ValueClassRefusal<'gc>> {
     // Every level's enclosing object, not only the class's own: an
     // inherited method reaches its own level's through `outer`. The walk
     // stops at a class that inherits `Value` and was created as a class of
     // its own -- by `after_clause`, as a builtin or as a module root, never
-    // a level a `<:` clause added -- because that class was checked the
+    // a level a `<:` clause added but a body-less declaration's class
+    // object, which is its declaration's class -- because that class was checked the
     // same way and everything above it holds by induction. Since the
     // redesign records a refusal rather than raising it, a class the walk
     // would stop at can itself carry one (a value class whose own
@@ -48,7 +102,9 @@ pub(crate) fn check_value_class<'gc>(
     let heap = mutator.heap();
     let mut level = Some(superclass);
     while let Some(class) = level {
-        if heap.class_inherits_value(class) && !heap.class_is_applied_level(class) {
+        let own_class = !heap.class_is_applied_level(class)
+            || heap.class_body_less_declaration(class).is_some();
+        if heap.class_inherits_value(class) && own_class {
             return match heap.class_value_refusal(class) {
                 None => None,
                 Some(ValueClassRefusal::NonValueEnclosingObject {
@@ -59,9 +115,7 @@ pub(crate) fn check_value_class<'gc>(
                     // own enclosing object, so it names the stop class; one
                     // that already names a level inherited its fault from
                     // further up, and that level is still the one at fault.
-                    let level_name = heap
-                        .class_application(class)
-                        .map(|application| application.mixin.name);
+                    let level_name = heap.class_name(class);
                     Some(ValueClassRefusal::NonValueEnclosingObject {
                         level: refused_level.or(level_name),
                         offender,
@@ -71,9 +125,7 @@ pub(crate) fn check_value_class<'gc>(
         }
         if let Some(level_enclosing) = heap.class_enclosing(class) {
             if !super::instantiate::is_a_value(mutator, level_enclosing) {
-                let level_name = heap
-                    .class_application(class)
-                    .map(|application| application.mixin.name);
+                let level_name = heap.class_name(class);
                 return Some(ValueClassRefusal::NonValueEnclosingObject {
                     level: level_name,
                     offender: level_enclosing,

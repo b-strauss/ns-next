@@ -1,0 +1,4 @@
+stdout = '''
+1000 levels initialized
+stack overflow: recursion too deep
+'''

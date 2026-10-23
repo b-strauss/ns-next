@@ -35,11 +35,9 @@ pub(crate) fn body_too_large_error<'gc>(
     let (selector, body) = match kind {
         FrameKind::Method(method) => (method.selector, "method"),
         FrameKind::Closure(_) => (Symbol::VALUE, "block"),
-        FrameKind::Initializer(_) | FrameKind::TopLevel => (Symbol::NEW, "initializer"),
+        FrameKind::Initializer(..) | FrameKind::TopLevel => (Symbol::NEW, "initializer"),
+        FrameKind::Factory(_) => (Symbol::NEW, "factory"),
         FrameKind::SuperclassClause(_) => (Symbol::NEW, "superclass clause"),
-        FrameKind::SuperclassMessage(_) | FrameKind::MixinApplicationMessage(_) => {
-            (Symbol::NEW, "inheritance clause message")
-        }
     };
     Signal::Error(NewspeakError::error(
         selector,

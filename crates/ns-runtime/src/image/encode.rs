@@ -246,14 +246,12 @@ pub fn code_kind_tag(kind: CodeKind) -> u8 {
         CodeKind::Block => 1,
         CodeKind::Initializer => 2,
         CodeKind::SuperclassClause => 3,
-        CodeKind::SuperclassMessage => 4,
     }
 }
 
 /// The code table: every `CompiledCode` reachable from `rows`
 /// (`mixins::plan`) -- every mixin's methods, every mixin's initializer,
-/// every superclass clause and clause-message body, every `<:` clause's
-/// message body, and every nested block body -- then every body of
+/// every superclass clause body, and every nested block body -- then every body of
 /// `extra`, the code of an older version the graph still runs, and the
 /// blocks nested in it, with nested block code *before* the code that
 /// creates it. Flat and unnamed: *which* body belongs to
@@ -276,16 +274,11 @@ pub fn encode_code_table(
         }
         for code in [
             &row.mixin.initializer_code,
+            &row.mixin.own_initializer_code,
+            &row.mixin.standalone_initializer_code,
             &row.mixin.superclass_clause_code,
-            &row.mixin.superclass_message_code,
         ]
         .into_iter()
-        .chain(
-            row.mixin
-                .mixin_applications
-                .iter()
-                .map(|clause| &clause.message_code),
-        )
         .flatten()
         {
             collect_code(code, &mut order, &mut ids);
@@ -634,6 +627,45 @@ fn encode_instruction(
             writer.write_u16(*right);
             writer.write_u32(*target);
         }
+        Instruction::AllocateInstance { destination } => {
+            writer.write_u8(OPCODE_ALLOCATE_INSTANCE);
+            writer.write_u16(*destination);
+        }
+        Instruction::InitializeInstance {
+            instance,
+            destination,
+        } => {
+            writer.write_u8(OPCODE_INITIALIZE_INSTANCE);
+            writer.write_u16(*instance);
+            writer.write_u16(*destination);
+        }
+        Instruction::CheckAppliedClause { steps, selector } => {
+            writer.write_u8(OPCODE_CHECK_APPLIED_CLAUSE);
+            writer.write_u16(*steps);
+            writer.write_u32(symbols.intern(selector.as_str()));
+        }
+        Instruction::InitializeSuperclass {
+            steps,
+            selector,
+            argument_registers,
+            destination,
+        } => {
+            writer.write_u8(OPCODE_INITIALIZE_SUPERCLASS);
+            writer.write_u16(*steps);
+            writer.write_u32(symbols.intern(selector.as_str()));
+            encode_registers(writer, argument_registers)?;
+            writer.write_u16(*destination);
+        }
+        Instruction::InitializeAppliedLevel {
+            steps,
+            argument_registers,
+            destination,
+        } => {
+            writer.write_u8(OPCODE_INITIALIZE_APPLIED_LEVEL);
+            writer.write_u16(*steps);
+            encode_registers(writer, argument_registers)?;
+            writer.write_u16(*destination);
+        }
     }
     Ok(())
 }
@@ -721,7 +753,10 @@ fn encode_literal(
 // ---------------------------------------------------------------------------
 
 /// A class object's graph references, in the order its record writes them:
-/// the superclass, the enclosing object, the declaring class. Traversal and
+/// the superclass, the enclosing object, the declaring class, and for a
+/// level a `<:` clause added the class its clause named, then for a
+/// body-less declaration's class object the declaration's enclosing object
+/// and declaring class (`OBJECT_BODY_LESS_CLASS`). Traversal and
 /// encoding share one definition so the two cannot drift into a reference
 /// that is written but never given an id.
 ///
@@ -742,10 +777,14 @@ fn class_references<'gc>(
     } else {
         (None, None)
     };
+    let scope = heap.class_declaration_scope(class);
     heap.class_superclass(class)
         .into_iter()
         .chain(enclosing)
         .chain(declaring_class)
+        .chain(heap.class_named(class))
+        .chain(scope.and_then(|scope| scope.enclosing))
+        .chain(scope.and_then(|scope| scope.declaring_class))
 }
 
 /// Whether `class` is a level a program's `<:` clause added over a shipped
@@ -1233,10 +1272,9 @@ fn frame_references<'gc>(
         FrameKind::Closure(closure) => Some(*closure),
         // The class-carrying kinds name a class the same way `current_class`
         // does, so the class needs an id the same way.
-        FrameKind::Initializer(class)
-        | FrameKind::SuperclassClause(class)
-        | FrameKind::SuperclassMessage(class)
-        | FrameKind::MixinApplicationMessage(class) => Some(*class),
+        FrameKind::Initializer(class, _)
+        | FrameKind::Factory(class)
+        | FrameKind::SuperclassClause(class) => Some(*class),
         FrameKind::Method(_) | FrameKind::TopLevel => None,
     };
     let frame_objects = [snapshot.sender, snapshot.home]
@@ -1542,6 +1580,9 @@ fn encode_closure_record<'gc>(
 /// enclosing object and declaring class are the shipped class's too, so
 /// they are not written at all (`class_references`). What is left is the
 /// name, the superclass and the clause, which is never absent.
+///
+/// Either shape of a level ends with the class its clause named
+/// (`encode_named_class`).
 fn encode_class_record<'gc>(
     writer: &mut Writer,
     class: ClassReference<'gc>,
@@ -1596,7 +1637,7 @@ fn encode_class_record<'gc>(
         )?;
         writer.write_u32(applied_row(applied)?);
         writer.write_u32(u32_field("mixin application clause index", applied.index));
-        return Ok(());
+        return encode_named_class(writer, class, context);
     }
     let id = heap
         .known_mixin_id(mixin)
@@ -1642,10 +1683,58 @@ fn encode_class_record<'gc>(
             writer.write_boolean(true);
             writer.write_u32(applied_row(applied)?);
             writer.write_u32(u32_field("mixin application clause index", applied.index));
+            encode_named_class(writer, class, context)
+        }
+        None => {
+            writer.write_boolean(false);
+            Ok(())
+        }
+    }
+}
+
+/// The class the `<:` clause that added the level `class` named
+/// (`Heap::class_named`), after the clause: the decoder holds the level's
+/// §6.1 check to its primary factory and rebuilds the level's metaclass
+/// from its class side, since a body-less named class's is no class side
+/// of the mixin the level applies (`object-model.md`, "Mixin application").
+fn encode_named_class<'gc>(
+    writer: &mut Writer,
+    class: ClassReference<'gc>,
+    context: &EncodeContext<'_, 'gc>,
+) -> Result<(), String> {
+    let Some(named) = context.heap.class_named(class) else {
+        unreachable!("internal: every level a `<:` clause added records the class it named")
+    };
+    encode_class_tag(writer, named, NamePosition::Superclass, context)
+}
+
+/// A body-less declaration's scope (`Heap::class_declaration_scope`), after
+/// its class object's record: the enclosing object as one `Value` and the
+/// declaring class as a class tag, each behind a presence flag, as the
+/// record's own two are written.
+fn encode_declaration_scope<'gc>(
+    writer: &mut Writer,
+    scope: crate::heap::DeclarationScope<'gc>,
+    context: &EncodeContext<'_, 'gc>,
+) -> Result<(), String> {
+    match scope.enclosing {
+        Some(enclosing) => {
+            writer.write_boolean(true);
+            encode_value(
+                writer,
+                Value::object(enclosing),
+                NamePosition::Value,
+                context,
+            )?;
         }
         None => writer.write_boolean(false),
     }
-    Ok(())
+    encode_optional_class(
+        writer,
+        scope.declaring_class.as_ref(),
+        NamePosition::FrameClass,
+        context,
+    )
 }
 
 fn encode_object<'gc>(
@@ -1744,10 +1833,24 @@ fn encode_object<'gc>(
                 writer.write_u8(OBJECT_METACLASS);
                 encode_class_tag(writer, this_class, NamePosition::Header, context)?;
             }
-            None => {
-                writer.write_u8(OBJECT_CLASS);
-                encode_class_record(writer, object, context)?;
-            }
+            // A body-less declaration's class object carries its
+            // declaration's scope after the record a level has.
+            None => match heap.class_body_less_declaration(object) {
+                Some(_) => {
+                    let Some(scope) = heap.class_declaration_scope(object) else {
+                        return Err("image encoding cannot serialize a body-less \
+                                    declaration's class object without its declaration's scope"
+                            .to_string());
+                    };
+                    writer.write_u8(OBJECT_BODY_LESS_CLASS);
+                    encode_class_record(writer, object, context)?;
+                    encode_declaration_scope(writer, scope, context)?;
+                }
+                None => {
+                    writer.write_u8(OBJECT_CLASS);
+                    encode_class_record(writer, object, context)?;
+                }
+            },
         },
         ObjectShape::Activation => {
             writer.write_u8(OBJECT_FRAME);
@@ -1910,21 +2013,17 @@ fn encode_frame<'gc>(
             writer.write_u32(context.table.object_id(context.heap, *closure));
         }
         FrameKind::TopLevel => writer.write_u8(FRAME_TOP_LEVEL),
-        FrameKind::Initializer(class) => {
-            writer.write_u8(FRAME_INITIALIZER);
+        FrameKind::Initializer(class, body) => {
+            writer.write_u8(body.frame_tag());
+            encode_class_tag(writer, *class, frame_class, context)?;
+        }
+        FrameKind::Factory(class) => {
+            writer.write_u8(FRAME_FACTORY);
             encode_class_tag(writer, *class, frame_class, context)?;
         }
         FrameKind::SuperclassClause(class) => {
             writer.write_u8(FRAME_SUPERCLASS_CLAUSE);
             encode_class_tag(writer, *class, frame_class, context)?;
-        }
-        FrameKind::SuperclassMessage(class) => {
-            writer.write_u8(FRAME_SUPERCLASS_MESSAGE);
-            encode_class_tag(writer, *class, frame_class, context)?;
-        }
-        FrameKind::MixinApplicationMessage(level) => {
-            writer.write_u8(FRAME_MIXIN_APPLICATION_MESSAGE);
-            encode_class_tag(writer, *level, frame_class, context)?;
         }
     }
     encode_frame_body(writer, frame, &snapshot, context)?;
@@ -1981,6 +2080,12 @@ fn encode_frame_body<'gc>(
         writer.write_u8(FRAME_BODY_NONE);
         return Ok(());
     }
+    // A factory's body is derived from its class on the way in, as every
+    // factory entry's is, so that no image carries one.
+    if matches!(snapshot.kind, FrameKind::Factory(_)) {
+        writer.write_u8(FRAME_BODY_DECLARED);
+        return Ok(());
+    }
     let code = context.heap.frame_code(frame).ok_or_else(refusal)?;
     let declared = super::decode::DeclaredKind::of(&snapshot.kind, snapshot.current_class);
     if let Some(declared) = declared.filter(|declared| declared.is_shipped(context.heap)) {
@@ -2031,8 +2136,11 @@ impl<'gc> WalkedGraph<'gc> {
             .iter()
             .filter_map(|object| match heap.object_shape(*object) {
                 ObjectShape::Closure => heap.closure_code(*object),
+                // A factory frame's body is derived on the way in, never
+                // carried (`encode_frame_body`).
                 ObjectShape::Activation => heap
                     .object_frame(*object)
+                    .filter(|frame| !matches!(heap.frame_kind(*frame), FrameKind::Factory(_)))
                     .and_then(|frame| heap.frame_code(frame)),
                 _ => None,
             })
@@ -2055,10 +2163,12 @@ pub fn walk_graph<'gc>(
     let heap = mutator.heap();
     let world = &mutator.shipped_world;
     for class in module_roots {
-        let Some(application) = heap.class_application(*class) else {
+        // A root without a body is the level its clause added, which
+        // applies `Value`'s mixin; its declaration is the clause's.
+        let Some(root_mixin) = heap.class_declaration(*class) else {
             return Err("image encoding's root object is not a class".to_string());
         };
-        match super::modules::root_record_defect(mutator, &application.mixin, *class) {
+        match super::modules::root_record_defect(mutator, &root_mixin, *class) {
             None => {}
             Some(super::modules::RootRecordDefect::NotItsRecord) => {
                 return Err(format!(

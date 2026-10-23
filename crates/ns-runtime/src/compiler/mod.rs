@@ -117,6 +117,123 @@ fn body_too_large(kind: CodeKind, argument_count: u16, source: Span) -> Compiled
     )
 }
 
+/// A factory's body (`newspeak-spec.pdf` §6.3: a factory message sent to a
+/// class object makes an instance and invokes the instance initializer on
+/// it): `AllocateInstance` of the class object the factory was sent to,
+/// `InitializeInstance` of it with the factory's arguments, which are this
+/// body's own, and `Return` of the instance -- never of what the initializer
+/// answers. The two registers after the arguments hold the instance and
+/// the initializer's answer. Three instructions whatever the arity:
+/// `InitializeInstance` names no argument list, so an arity read off an
+/// image's two bytes cannot make the decoder build a body that grows with
+/// it.
+///
+/// Synthesized rather than lowered: it has no source and no resolver
+/// bindings, and depends on nothing but the arity, so every factory of one
+/// arity runs the same body. Both lowerings, the embedded shipped code and
+/// the image decoder reach it through `mixin::factory_entry`, and an image
+/// never carries one, so none can be forged. A factory whose two registers
+/// do not fit after its arguments gets `body_too_large`'s body, which
+/// raises the too-large error when the factory is sent.
+pub fn factory_body(argument_count: u16) -> CompiledCode {
+    let source = Span::new(0, 0);
+    let Some(register_count) = argument_count.checked_add(2) else {
+        return body_too_large(CodeKind::Method, argument_count, source);
+    };
+    let instance = argument_count;
+    let answer = argument_count + 1;
+    CompiledCode::new(
+        CodeKind::Method,
+        vec![
+            Instruction::AllocateInstance {
+                destination: instance,
+            },
+            Instruction::InitializeInstance {
+                instance,
+                destination: answer,
+            },
+            Instruction::Return { register: instance },
+        ],
+        argument_count,
+        register_count,
+        0,
+        vec![(0, 0..3)],
+        source,
+    )
+}
+
+/// The clauses an initializer body evaluates before its own part: the
+/// superclass clause, which stands for `Object new` when a declaration
+/// writes none (§6.1), and the `<:` clauses whose levels the body
+/// initializes -- all of them for the full body, none for the standalone
+/// one.
+#[derive(Clone, Copy)]
+pub(super) struct Prologue<'a> {
+    pub(super) superclass: Option<&'a ast::SuperclassClause>,
+    pub(super) applied: &'a [ast::SuperclassClause],
+    /// Whether the declaration adds a level of its own, which the body runs
+    /// at: then its clauses' levels start one above it. A body-less
+    /// declaration's body runs at its class object, the level its last
+    /// clause adds, so they are counted from 0 (`Mixin::has_body`).
+    pub(super) has_body: bool,
+}
+
+impl<'a> Prologue<'a> {
+    /// The prologue of `mixin`'s full body, or of its standalone body when
+    /// `with_applied_clauses` is false; `None` for a mixin no declaration
+    /// was read into -- a class side -- whose full body is its own part.
+    pub(super) fn of(mixin: &'a Mixin, with_applied_clauses: bool) -> Option<Prologue<'a>> {
+        let declaration = mixin.declaration.as_deref()?;
+        Some(Prologue {
+            superclass: declaration.superclass.as_ref(),
+            applied: if with_applied_clauses {
+                &declaration.mixin_applications
+            } else {
+                &[]
+            },
+            has_body: mixin.has_body,
+        })
+    }
+
+    /// Every clause argument, in the order the prologue evaluates them:
+    /// the superclass clause's, then each `<:` clause's from the lowest
+    /// level up.
+    pub(super) fn arguments(self) -> impl Iterator<Item = &'a Expression> {
+        clause_arguments(self.superclass).iter().chain(
+            self.applied
+                .iter()
+                .flat_map(|clause| clause_arguments(Some(clause))),
+        )
+    }
+
+    /// `source` merged with the span of every clause.
+    pub(super) fn merge_spans(self, source: Option<Span>) -> Option<Span> {
+        self.superclass
+            .into_iter()
+            .chain(self.applied)
+            .fold(source, |source, clause| {
+                Some(merge_span(source, clause.span))
+            })
+    }
+}
+
+/// A clause's message's arguments, which an initializer evaluates in its
+/// factory's scope (§6.3); none for a clause without a message.
+pub(super) fn clause_arguments(clause: Option<&ast::SuperclassClause>) -> &[Expression] {
+    clause
+        .and_then(crate::interpreter::nested::superclass_clause_message)
+        .map_or(&[], |message| &message.arguments[..])
+}
+
+/// A clause's message's selector; `new` for a clause without a message, and
+/// for no clause at all (§6.1: "if the message is omitted, it defaults to
+/// `new`").
+pub(super) fn clause_selector(clause: Option<&ast::SuperclassClause>) -> Symbol {
+    clause
+        .and_then(crate::interpreter::nested::superclass_clause_message)
+        .map_or(Symbol::NEW, lower::selector_of)
+}
+
 /// A block's parameter names as its `MakeClosure` carries them: all of
 /// them, except for a block with more parameters than a `u16` counts, whose
 /// `body_too_large` body takes `u16::MAX`. Its `MakeClosure` names as many,
@@ -161,11 +278,13 @@ pub fn compile_method(
     lowerer.finish(method.span)
 }
 
-/// Compiles `mixin`'s per-mixin bodies onto it: the instance initializer
-/// always, the superclass clause and its message's arguments when the
-/// declaration has them, and each `<:` clause's message arguments. Called
-/// while the mixin is still a value, before it is wrapped in the `Rc` every
-/// application shares -- the one moment it can be written.
+/// Compiles `mixin`'s per-mixin bodies onto it: the full instance
+/// initializer and its own part always, the standalone initializer when the
+/// declaration writes `<:` clauses and a body, the superclass clause and its message's
+/// arguments when the declaration has them, and each `<:` clause's message
+/// arguments. Called while the mixin is still a value, before it is wrapped
+/// in the `Rc` every application shares -- the one moment it can be
+/// written.
 pub(crate) fn compile_mixin_bodies(
     mixin: &mut Mixin,
     bindings: &Rc<HashMap<Span, Binding>>,
@@ -173,42 +292,49 @@ pub(crate) fn compile_mixin_bodies(
 ) {
     if lowering == Lowering::Reference {
         reference::compile_mixin_bodies(mixin, bindings);
-        return;
+    } else {
+        compile_mixin_bodies_optimized(mixin, bindings);
     }
-    mixin.initializer_code = Some(Rc::new(compile_mixin_initializer(mixin, bindings)));
-    mixin.superclass_clause_code = compile_superclass_clause(mixin, bindings).map(Rc::new);
-    mixin.superclass_message_code = compile_superclass_message(mixin, bindings).map(Rc::new);
-    fill_mixin_application_messages(mixin, |mixin, clause| {
-        compile_clause_message(mixin, clause, bindings)
-    });
+    mixin.mark_declaration_code();
 }
 
-/// Fills each `<:` clause's `message_code` from the declaration it was read
-/// off, with `compile` -- one lowering's clause-message compiler. Shared by
-/// both lowerings because it only pairs a clause with its body; the bodies
-/// themselves are each lowering's own.
-pub(super) fn fill_mixin_application_messages(
-    mixin: &mut Mixin,
-    compile: impl Fn(&Mixin, &ast::SuperclassClause) -> Option<CompiledCode>,
-) {
-    let Some(declaration) = mixin.declaration.clone() else {
-        return;
-    };
-    debug_assert_eq!(
-        declaration.mixin_applications.len(),
-        mixin.mixin_applications.len(),
-        "internal: build_mixin reads one clause per `<:`"
+/// `compile_mixin_bodies` under the optimized lowering.
+fn compile_mixin_bodies_optimized(mixin: &mut Mixin, bindings: &Rc<HashMap<Span, Binding>>) {
+    let own = Rc::new(compile_mixin_initializer(mixin, bindings));
+    mixin.initializer_code = Some(
+        compile_mixin_full_initializer(mixin, bindings, true)
+            .map_or_else(|| Rc::clone(&own), Rc::new),
     );
-    for (index, clause) in declaration.mixin_applications.iter().enumerate() {
-        let code = compile(mixin, clause).map(Rc::new);
-        mixin.mixin_applications[index].message_code = code;
-    }
+    // A body-less declaration's class object is never reached outside it,
+    // so it has no standalone body (`Mixin::standalone_initializer_code`).
+    mixin.standalone_initializer_code = if mixin.mixin_applications.is_empty() || !mixin.has_body {
+        None
+    } else {
+        compile_mixin_full_initializer(mixin, bindings, false).map(Rc::new)
+    };
+    mixin.own_initializer_code = Some(own);
+    mixin.superclass_clause_code = compile_superclass_clause(mixin, bindings).map(Rc::new);
 }
 
-/// A mixin's instance initializer: each of `mixin`'s own slots with an
-/// initializer (declaration order) as `<expression>; InitializeSlot`, then each
-/// `initExpr` (a top-level `^` is evaluated and discarded), then
-/// `LoadSelf; ImplicitReturn` -- `docs/design/object-model.md`, "Instantiation".
+/// A mixin's full instance initializer, or with `with_applied_clauses`
+/// false its standalone one: the prologue
+/// (`Lowerer::lower_instance_initialization_prologue`), then the own part
+/// `compile_mixin_initializer` compiles alone. `None` for a mixin no
+/// declaration was read into, whose full body is its own part.
+fn compile_mixin_full_initializer(
+    mixin: &Mixin,
+    bindings: &Rc<HashMap<Span, Binding>>,
+    with_applied_clauses: bool,
+) -> Option<CompiledCode> {
+    let prologue = Prologue::of(mixin, with_applied_clauses)?;
+    Some(compile_initializer_body(mixin, bindings, Some(prologue)))
+}
+
+/// A mixin's own part of the instance initializer: each of `mixin`'s own
+/// slots with an initializer (declaration order) as
+/// `<expression>; InitializeSlot`, then each `initExpr` (a top-level `^` is
+/// evaluated and discarded), then `LoadSelf; ImplicitReturn` --
+/// `docs/design/object-model.md`, "Instantiation".
 /// `argument_count` is `mixin`'s own factory parameter count -- the resolver
 /// scoped this code with exactly those parameters as `Binding::Local`.
 ///
@@ -224,6 +350,16 @@ pub(super) fn fill_mixin_application_messages(
 /// to turn `own_index` into the absolute index the instance array actually
 /// needs.
 fn compile_mixin_initializer(mixin: &Mixin, bindings: &Rc<HashMap<Span, Binding>>) -> CompiledCode {
+    compile_initializer_body(mixin, bindings, None)
+}
+
+/// An initializer body: `prologue`'s clauses, when there is one, then the
+/// own part.
+fn compile_initializer_body(
+    mixin: &Mixin,
+    bindings: &Rc<HashMap<Span, Binding>>,
+    prologue: Option<Prologue<'_>>,
+) -> CompiledCode {
     let argument_count = factory_argument_count(mixin);
     // Each own slot's future block (§6.3.2), by own index, for a simultaneous
     // slot with an initializer: built once, so the capture analysis and the
@@ -234,18 +370,24 @@ fn compile_mixin_initializer(mixin: &Mixin, bindings: &Rc<HashMap<Span, Binding>
         .map(|slot| simultaneous::future_block(slot.declaration.as_ref()?))
         .collect();
     // The same expressions, in the same order, this function lowers below:
-    // a lazy slot's initializer is its getter's (`compile_lazy_slot_getter`),
-    // never this body's, and a simultaneous slot's is its future's block.
-    let slot_initializers: Vec<&Expression> = mixin
-        .slots
-        .iter()
-        .zip(&future_blocks)
-        .filter(|(slot, _)| !slot.lazy)
-        .filter_map(|(slot, future_block)| {
-            future_block
-                .as_ref()
-                .or_else(|| slot.declaration.as_ref()?.initializer.as_ref())
-        })
+    // the prologue's clause arguments, then the slots' -- a lazy slot's
+    // initializer is its getter's (`compile_lazy_slot_getter`), never this
+    // body's, and a simultaneous slot's is its future's block.
+    let slot_initializers: Vec<&Expression> = prologue
+        .into_iter()
+        .flat_map(Prologue::arguments)
+        .chain(
+            mixin
+                .slots
+                .iter()
+                .zip(&future_blocks)
+                .filter(|(slot, _)| !slot.lazy)
+                .filter_map(|(slot, future_block)| {
+                    future_block
+                        .as_ref()
+                        .or_else(|| slot.declaration.as_ref()?.initializer.as_ref())
+                }),
+        )
         .collect();
     let captures = Rc::new(capture::analyze(
         RootBody {
@@ -268,6 +410,14 @@ fn compile_mixin_initializer(mixin: &Mixin, bindings: &Rc<HashMap<Span, Binding>
         0,
     );
     let mut source: Option<Span> = None;
+    if let Some(prologue) = prologue {
+        lowerer.lower_instance_initialization_prologue(
+            prologue.superclass,
+            prologue.applied,
+            prologue.has_body,
+        );
+        source = prologue.merge_spans(source);
+    }
     for (own_index, slot) in mixin.slots.iter().enumerate() {
         if slot.lazy {
             continue;
@@ -375,67 +525,6 @@ fn compile_superclass_clause(
         CodeKind::SuperclassClause,
         BodyKey::Root,
         0,
-        &[],
-        bindings,
-        captures,
-        false,
-        Enclosing::default(),
-        0,
-    );
-    lowerer.lower_body(&statements);
-    Some(lowerer.finish(clause.span))
-}
-
-/// A mixin's superclass-clause *message arguments* as executable code: the
-/// arguments of `newspeak-spec.pdf` §6.1's deferred `message`, lowered as a
-/// single synthetic `^{argument. argument}` so the body ends in the `Return`
-/// that hands the whole argument list back at once.
-///
-/// `argument_count` is this mixin's own factory parameter count, not zero as in
-/// `compile_superclass_clause`: §6.2 evaluates the message in the
-/// instantiation's own initializer context, where the resolver scoped these
-/// expressions with exactly those parameters as `Binding::Local` (the
-/// `class M usingPlatform: p = Super usingPlatform: p (...)` idiom).
-///
-/// The expression comes from `interpreter::nested`'s
-/// `superclass_clause_message_arguments_expression`, the one definition of what
-/// the clause's arguments are -- `ClauseMessage::has_arguments` is read off
-/// it too. `None` when the clause has no message, or a message with no
-/// arguments: then there is nothing to evaluate.
-fn compile_superclass_message(
-    mixin: &Mixin,
-    bindings: &Rc<HashMap<Span, Binding>>,
-) -> Option<CompiledCode> {
-    let clause = mixin.declaration.as_ref()?.superclass.as_ref()?;
-    compile_clause_message(mixin, clause, bindings)
-}
-
-/// One inheritance clause's message arguments, compiled for `mixin`'s
-/// declaration: its superclass clause's, or one of its `<:` clauses', which
-/// §6.2 evaluates in the same instance initializer and the resolver
-/// therefore scopes the same way.
-fn compile_clause_message(
-    mixin: &Mixin,
-    clause: &ast::SuperclassClause,
-    bindings: &Rc<HashMap<Span, Binding>>,
-) -> Option<CompiledCode> {
-    let arguments =
-        crate::interpreter::nested::superclass_clause_message_arguments_expression(clause)?;
-    let argument_count = factory_argument_count(mixin);
-    let statements = vec![Statement::of_return(arguments)];
-    let captures = Rc::new(capture::analyze(
-        RootBody {
-            argument_count,
-            temporaries: &[],
-            slot_initializers: Vec::new(),
-            statements: &statements,
-        },
-        bindings,
-    ));
-    let mut lowerer = Lowerer::new(
-        CodeKind::SuperclassMessage,
-        BodyKey::Root,
-        argument_count,
         &[],
         bindings,
         captures,

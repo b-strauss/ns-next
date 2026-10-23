@@ -456,6 +456,7 @@ fn write_mixin_row_with_method_shapes(
     writer.write_boolean(false); // no initExprs
     writer.write_boolean(false); // no superclass clause
     writer.write_u32(0); // no mixin applications
+    writer.write_boolean(true); // a body
     writer.write_u32(methods.len() as u32);
     for method in methods {
         writer.write_u32(method.selector);
@@ -468,9 +469,10 @@ fn write_mixin_row_with_method_shapes(
         writer.write_u32(*id);
     }
     writer.write_boolean(false); // no class side
-    writer.write_boolean(false); // no initializer
+    writer.write_boolean(false); // no full initializer
+    writer.write_boolean(false); // no own part of the initializer
+    writer.write_boolean(false); // no standalone initializer
     writer.write_boolean(false); // no superclass clause body
-    writer.write_boolean(false); // no superclass message body
 }
 
 /// A hand-crafted mixin table of exactly one leaf row.
@@ -868,6 +870,72 @@ fn every_instruction_variant_round_trips() {
     });
 }
 
+/// The instructions of a compiled `new` in an initializer body: one of each
+/// for none, one, two and three hundred argument registers, and for `steps`
+/// 0, 1 and the most a `u16` holds.
+fn every_instantiation_instruction() -> CompiledCode {
+    let mut instructions = vec![Instruction::AllocateInstance { destination: 0 }];
+    for count in [0_u16, 1, 2, 300] {
+        let arguments: Vec<u16> = (0..count).map(|index| index * 2 + 1).collect();
+        instructions.push(Instruction::InitializeInstance {
+            instance: 0,
+            destination: 600,
+        });
+        for steps in [0, 1, u16::MAX] {
+            instructions.push(Instruction::CheckAppliedClause {
+                steps,
+                selector: Symbol::intern("with:and:"),
+            });
+            instructions.push(Instruction::InitializeSuperclass {
+                steps,
+                selector: Symbol::intern("new"),
+                argument_registers: arguments.clone(),
+                destination: 2,
+            });
+            instructions.push(Instruction::InitializeAppliedLevel {
+                steps,
+                argument_registers: arguments.clone(),
+                destination: 300,
+            });
+        }
+    }
+    instructions.push(Instruction::Return { register: 0 });
+    let count = instructions.len();
+    CompiledCode::new(
+        CodeKind::Initializer,
+        instructions,
+        2,
+        601,
+        0,
+        vec![(0, 0..count)],
+        Span::new(10, 20),
+    )
+}
+
+#[test]
+fn each_instantiation_instruction_survives_an_image_round_trip() {
+    let source = indoc! {"
+        class X = Object new (
+        ) (
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let synthetic = Rc::new(every_instantiation_instruction());
+        let doctored = Mixin {
+            initializer_code: Some(synthetic.clone()),
+            ..mixin_of(mutator.heap(), class)
+        };
+        install_mixin(mutator, class, doctored);
+        let (table, decoded_mixins, _) = round_trip_code_table(mutator.heap(), class);
+        let root = &decoded_mixins.code[0];
+        let decoded = &table.codes[root.initializer.expect("initializer id") as usize];
+        assert_eq!(**decoded, *synthetic);
+        assert_eq!(decoded.outer_reach, 0);
+    });
+}
+
 /// `Instruction::call_site` and `call_site_mut` share one macro-defined
 /// variant list (`bytecode.rs`), but the macro only proves the two *cannot*
 /// enumerate the four send variants with different tokens -- it does not by
@@ -1109,6 +1177,27 @@ fn an_invalid_code_kind_tag_is_a_decode_error_not_a_panic() {
     );
 }
 
+/// A code table naming the retired clause-message kind meets the refusal of
+/// a tag never assigned.
+#[test]
+fn a_retired_code_kind_tag_is_refused() {
+    assert_eq!(RETIRED_CODE_KIND_TAGS, [4]);
+    for tag in RETIRED_CODE_KIND_TAGS {
+        let mut writer = encode::Writer::new();
+        writer.write_u32(1);
+        writer.write_u8(tag);
+        let bytes = writer.into_bytes();
+        let mut reader = decode::Reader::new(&bytes);
+        assert_eq!(
+            decode::decode_code_table(&mut reader, &symbols::Table::empty()),
+            Err(decode::DecodeError::InvalidTag {
+                what: "code kind",
+                tag
+            })
+        );
+    }
+}
+
 #[test]
 fn an_invalid_instruction_tag_is_a_decode_error_not_a_panic() {
     let mut writer = encode::Writer::new();
@@ -1122,14 +1211,14 @@ fn an_invalid_instruction_tag_is_a_decode_error_not_a_panic() {
     writer.write_u32(0);
     writer.write_boolean(false); // not compiled uncached
     writer.write_u32(1); // one instruction ...
-    writer.write_u8(41); // ... one past the last real tag
+    writer.write_u8(46); // ... one past the last real tag
     let bytes = writer.into_bytes();
     let mut reader = decode::Reader::new(&bytes);
     assert_eq!(
         decode::decode_code_table(&mut reader, &symbols::Table::empty()),
         Err(decode::DecodeError::InvalidTag {
             what: "instruction",
-            tag: 41
+            tag: 46
         })
     );
 }
@@ -1415,6 +1504,112 @@ fn a_body_past_the_register_ceiling_round_trips_and_still_raises() {
         "answer",
     );
     assert_eq!(integer_of(&mut loaded.interpreter, &answer), 7);
+}
+
+/// An image may carry the instructions of a compiled `new`, and a crafted
+/// one can put one where no compiler does: in an ordinary method, on a
+/// receiver that is no class, in a class with no level a `<:` clause added.
+/// Each checks what it runs on, in its eight-byte form and in its wide one:
+/// the factory's two refuse a receiver that is no class and the two that
+/// name an applied level a class without one, each with an ordinary error
+/// rather than a panic, and the superclass initialization of a class whose
+/// superclass runs no code answers the receiver.
+#[test]
+fn an_instantiation_instruction_a_crafted_image_runs_raises_an_error() {
+    let source = indoc! {"
+        class X = Object new (
+        ) (
+          public run = ( ^1 )
+        ) : ()
+    "};
+    // A destination past what the eight-byte form addresses makes the wide
+    // form.
+    for destination in [0_u16, 600] {
+        let doctored_body = |instruction: Instruction| {
+            Rc::new(CompiledCode::new(
+                CodeKind::Method,
+                vec![instruction, Instruction::Return { register: 0 }],
+                0,
+                destination + 1,
+                0,
+                vec![(0, 0..2)],
+                Span::new(0, 0),
+            ))
+        };
+        let not_a_class = Some("cannot instantiate an instance of X: it is not a class");
+        let no_applied_level = Some(
+            "the initializer of class X names a level a mixin application added 1 above it, \
+             and its class has none there",
+        );
+        let instructions = [
+            (Instruction::AllocateInstance { destination }, not_a_class),
+            (
+                Instruction::InitializeInstance {
+                    instance: 0,
+                    destination,
+                },
+                not_a_class,
+            ),
+            (
+                Instruction::CheckAppliedClause {
+                    steps: 1,
+                    selector: Symbol::NEW,
+                },
+                no_applied_level,
+            ),
+            (
+                Instruction::InitializeSuperclass {
+                    steps: 1,
+                    selector: Symbol::NEW,
+                    argument_registers: vec![],
+                    destination,
+                },
+                None,
+            ),
+            (
+                Instruction::InitializeAppliedLevel {
+                    steps: 1,
+                    argument_registers: vec![],
+                    destination,
+                },
+                no_applied_level,
+            ),
+        ];
+        for (instruction, expected) in instructions {
+            let (mut interpreter, class) = load(source);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let bytes = interpreter.enter(|mutator| {
+                let class = class_reference(mutator, &class);
+                let doctored = with_method_code(
+                    mixin_of(mutator.heap(), class),
+                    "run",
+                    doctored_body(instruction.clone()),
+                );
+                install_mixin(mutator, class, doctored);
+                let instance = mutator.fetch(&instance);
+                snapshot_one(
+                    mutator,
+                    false,
+                    &Origin::File(PathBuf::from("t.ns")),
+                    class,
+                    &[instance],
+                )
+                .expect("snapshot")
+            });
+            let mut loaded = image::load(&bytes).expect("load");
+            let result = loaded
+                .interpreter
+                .send(&loaded.roots[0], Symbol::intern("run"), &[]);
+            match expected {
+                Some(expected) => {
+                    assert_eq!(expect_error(result, "run"), expected, "{instruction:?}")
+                }
+                None => {
+                    expect_ok(result, "run");
+                }
+            }
+        }
+    }
 }
 
 /// The image's error for `source`'s module: a snapshot of its class alone,
@@ -4106,10 +4301,15 @@ fn a_closure_stored_in_a_slot_round_trips_with_an_initializer_home() {
             heap.closure_home(object(held))
                 .expect("slot holds a closure"),
         );
-        let FrameKind::Initializer(home_class) = &home_kind else {
+        let FrameKind::Initializer(home_class, body) = &home_kind else {
             panic!("home is the initializer frame")
         };
         assert!(home_class.same(class));
+        assert_eq!(
+            *body,
+            ns_runtime::interpreter::instantiate::InitializerBody::Full,
+            "the class's own level runs its full initializer"
+        );
     });
 }
 
@@ -6044,9 +6244,9 @@ fn a_closure_frame_names_the_closure_object_it_runs() {
 /// assigns, for the two readers of a graph section below.
 fn unknown_frame_kind_graph() -> Vec<u8> {
     let mut writer = one_frame_prefix();
-    writer.write_u8(FRAME_MIXIN_APPLICATION_MESSAGE + 1); // one past the last frame kind
-                                                          // The rest of a well-formed record, so the kind tag itself is what the
-                                                          // reader rejects.
+    writer.write_u8(FRAME_FACTORY + 1); // one past the last frame kind
+                                        // The rest of a well-formed record, so the kind tag itself is what the
+                                        // reader rejects.
     frame_tail(&mut writer, 0, 0);
     writer.write_u32(0); // no roots
     writer.into_bytes()
@@ -6060,9 +6260,30 @@ fn an_unknown_frame_kind_tag_is_refused() {
         GraphFixture::new().decode_error(&unknown_frame_kind_graph()),
         decode::DecodeError::InvalidTag {
             what: "frame kind",
-            tag: FRAME_MIXIN_APPLICATION_MESSAGE + 1
+            tag: FRAME_FACTORY + 1
         }
     );
+}
+
+/// A frame kind retired with the clause-message bodies (5 and 6) meets the
+/// same refusal as one never assigned, so a stale image cannot be read as
+/// whichever kind took its number.
+#[test]
+fn a_retired_frame_kind_is_refused() {
+    assert_eq!(RETIRED_FRAME_KINDS, [5, 6]);
+    for tag in RETIRED_FRAME_KINDS {
+        let mut writer = one_frame_prefix();
+        writer.write_u8(tag);
+        frame_tail(&mut writer, 0, 0);
+        writer.write_u32(0); // no roots
+        assert_eq!(
+            GraphFixture::new().decode_error(&writer.into_bytes()),
+            decode::DecodeError::InvalidTag {
+                what: "frame kind",
+                tag
+            }
+        );
+    }
 }
 
 /// `inspect` walks the graph with its own reader, so it has to refuse an
@@ -6098,10 +6319,7 @@ fn inspect_refuses_an_unknown_frame_kind_tag() {
         Ok(_) => panic!("inspect accepted an unknown frame kind tag"),
         Err(error) => error,
     };
-    let expected = format!(
-        "invalid frame kind tag {}",
-        FRAME_MIXIN_APPLICATION_MESSAGE + 1
-    );
+    let expected = format!("invalid frame kind tag {}", FRAME_FACTORY + 1);
     assert_eq!(error, expected);
     assert_eq!(load_error(&bytes), expected);
 }
@@ -7057,6 +7275,25 @@ fn a_body_that_runs_past_its_last_instruction_is_refused() {
     }
 }
 
+/// An initializer body carries the instructions of a compiled `new`, so a
+/// loaded body may hold each of them.
+#[test]
+fn a_body_with_an_instantiation_instruction_is_accepted() {
+    let instructions = every_instantiation_instruction().instructions();
+    for instruction in instructions
+        .iter()
+        .filter(|instruction| !matches!(instruction, Instruction::Return { .. }))
+    {
+        let table = table_of(vec![code_with(
+            CodeKind::Initializer,
+            0,
+            601,
+            vec![instruction.clone(), Instruction::Return { register: 0 }],
+        )]);
+        assert_eq!(decode::verify_code_table(&table), Ok(()), "{instruction:?}");
+    }
+}
+
 #[test]
 fn more_arguments_than_registers_is_refused() {
     // Every activation is pushed with `register_count - argument_count`
@@ -7522,6 +7759,209 @@ fn a_method_root_naming_a_block_body_is_refused_on_load() {
     });
 }
 
+/// A declaration with two `<:` clauses, the second passing an argument,
+/// so that `C` compiles all three initializer bodies.
+const TWO_APPLIED_CLAUSES: &str = indoc! {"
+    class Outer = Object new () (
+      class S = Object new () ()
+      class M1 = Object new () ()
+      class M2 tag: value = Object new () ()
+      class C = S new <: M1 new <: M2 tag: 1 (| c = 3. |) ()
+    ) : ()
+"};
+
+/// The decoded mixin of the row named `name`.
+fn decoded_mixin<'decoded>(decoded: &'decoded mixins::Decoded, name: &str) -> &'decoded Mixin {
+    decoded
+        .mixins
+        .iter()
+        .find(|mixin| mixin.name.as_str() == name)
+        .unwrap_or_else(|| panic!("a row named {name}"))
+}
+
+#[test]
+fn all_three_initializer_bodies_survive_a_round_trip() {
+    let (mut interpreter, class) = load(TWO_APPLIED_CLAUSES);
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let applying = mutator
+            .heap()
+            .nested_mixins(&root_mixin_of(mutator.heap(), class))
+            .into_iter()
+            .find(|nested| nested.name.as_str() == "C")
+            .expect("Outer declares C");
+        let (_table, decoded_mixins, _ids) = round_trip_code_table(mutator.heap(), class);
+        let decoded = decoded_mixin(&decoded_mixins, "C");
+        for (what, original, decoded) in [
+            (
+                "full",
+                &applying.initializer_code,
+                &decoded.initializer_code,
+            ),
+            (
+                "own",
+                &applying.own_initializer_code,
+                &decoded.own_initializer_code,
+            ),
+            (
+                "standalone",
+                &applying.standalone_initializer_code,
+                &decoded.standalone_initializer_code,
+            ),
+        ] {
+            let original = original.as_ref().expect("C compiles every body");
+            let decoded = decoded.as_ref().expect("the row names every body");
+            assert_eq!(**decoded, **original, "{what}");
+        }
+        assert_eq!(decode::verify_mixins(&decoded_mixins), Ok(()));
+    });
+}
+
+/// An image never carries a factory body: the decoder gives each factory
+/// entry the one `compiler::factory_body` synthesizes for its arity.
+#[test]
+fn a_decoded_factory_entry_carries_the_synthesized_body() {
+    let source = indoc! {"
+        class Pair x: first y: second = Object new () (
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let (_table, decoded_mixins, _ids) = round_trip_code_table(mutator.heap(), class);
+        let class_side = decoded_mixins
+            .mixins
+            .iter()
+            .find(|mixin| mixin.is_class_side())
+            .expect("Pair's class side has a row");
+        match class_side.methods.get(&Symbol::intern("x:y:")) {
+            Some(ns_runtime::mixin::MethodEntry::Factory(factory)) => {
+                assert_eq!(factory.argument_count, 2);
+                assert_eq!(*factory.code, ns_runtime::compiler::factory_body(2));
+            }
+            _ => panic!("the class side carries the factory entry"),
+        }
+    });
+}
+
+/// Each initializer body runs with the factory's arguments as its own, so
+/// a body of another arity would lay its registers out from the wrong
+/// count.
+#[test]
+fn an_initializer_whose_arity_disagrees_with_the_factory_is_refused() {
+    type Body = fn(&Mixin) -> Option<Rc<CompiledCode>>;
+    type Doctor = fn(Mixin, Rc<CompiledCode>) -> Mixin;
+    let bodies: [(&str, Body, Doctor); 3] = [
+        (
+            "instance initializer",
+            |mixin| mixin.initializer_code.clone(),
+            |mixin, code| Mixin {
+                initializer_code: Some(code),
+                ..mixin
+            },
+        ),
+        (
+            "own part of the instance initializer",
+            |mixin| mixin.own_initializer_code.clone(),
+            |mixin, code| Mixin {
+                own_initializer_code: Some(code),
+                ..mixin
+            },
+        ),
+        (
+            "standalone instance initializer",
+            |mixin| mixin.standalone_initializer_code.clone(),
+            |mixin, code| Mixin {
+                standalone_initializer_code: Some(code),
+                ..mixin
+            },
+        ),
+    ];
+    for (what, body, doctor) in bodies {
+        let (mut interpreter, class) = load(TWO_APPLIED_CLAUSES);
+        interpreter.enter(|mutator| {
+            let class = class_reference(mutator, &class);
+            let doctored = with_nested(mutator.heap(), class, "C", |nested| {
+                let mut code = (*body(&nested).expect("C compiles every body")).clone();
+                code.argument_count = 1;
+                doctor(nested, Rc::new(code))
+            });
+            install_mixin(mutator, class, doctored);
+            let (_table, decoded_mixins, _ids) = round_trip_code_table(mutator.heap(), class);
+            assert_eq!(
+                decode::verify_mixins(&decoded_mixins),
+                Err(decode::DecodeError::CodeArityMismatch {
+                    what: what.to_string(),
+                    parameters: 0,
+                    argument_count: 1
+                }),
+                "{what}"
+            );
+        });
+    }
+}
+
+/// A row's `<:` clauses and its standalone initializer go together: a level
+/// of the mixin reached from outside runs the standalone body, which only a
+/// declaration with clauses has.
+#[test]
+fn a_mixin_with_clauses_but_no_standalone_initializer_is_refused() {
+    let (mut interpreter, class) = load(TWO_APPLIED_CLAUSES);
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let doctored = with_nested(mutator.heap(), class, "C", |nested| Mixin {
+            standalone_initializer_code: None,
+            ..nested
+        });
+        install_mixin(mutator, class, doctored);
+        let (_table, decoded_mixins, _ids) = round_trip_code_table(mutator.heap(), class);
+        let error = decode::verify_mixins(&decoded_mixins).expect_err("no standalone body");
+        assert_eq!(error, decode::DecodeError::MissingStandaloneInitializer);
+        assert_eq!(
+            error.to_string(),
+            "a class in the image applies mixins, and the image has no compiled code for its standalone instance initializer"
+        );
+    });
+    let (mut interpreter, class) = load(TWO_APPLIED_CLAUSES);
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let doctored = with_nested(mutator.heap(), class, "S", |nested| Mixin {
+            standalone_initializer_code: nested.initializer_code.clone(),
+            ..nested
+        });
+        install_mixin(mutator, class, doctored);
+        let (_table, decoded_mixins, _ids) = round_trip_code_table(mutator.heap(), class);
+        let error = decode::verify_mixins(&decoded_mixins).expect_err("a stray standalone body");
+        assert_eq!(error, decode::DecodeError::UnexpectedStandaloneInitializer);
+        assert_eq!(
+            error.to_string(),
+            "a class in the image applies no mixin or has no body, yet the image carries a standalone instance initializer for it"
+        );
+    });
+}
+
+/// Every row's class runs its full initializer when it is instantiated, so
+/// a row naming none is refused whatever its slots.
+#[test]
+fn a_mixin_without_a_full_initializer_is_refused() {
+    let (mut interpreter, class) = load(TWO_APPLIED_CLAUSES);
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let doctored = with_nested(mutator.heap(), class, "S", |nested| Mixin {
+            initializer_code: None,
+            ..nested
+        });
+        install_mixin(mutator, class, doctored);
+        let (_table, decoded_mixins, _ids) = round_trip_code_table(mutator.heap(), class);
+        let error = decode::verify_mixins(&decoded_mixins).expect_err("no full body");
+        assert_eq!(error, decode::DecodeError::MissingFullInitializer);
+        assert_eq!(
+            error.to_string(),
+            "a class in the image has no compiled code for its instance initializer"
+        );
+    });
+}
+
 // ---------------------------------------------------------------------------
 // `verify_graph` -- reconciling decoded frames and closures with
 // the code that runs in them.
@@ -7899,18 +8339,18 @@ fn an_image_with_no_initializer_for_a_class_that_needs_one_is_refused_on_load() 
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
         assert!(
-            mixin_of(mutator.heap(), class).initializer_code.is_some(),
+            mixin_of(mutator.heap(), class).own_initializer_code.is_some(),
             "the fixture's class really does compile an initializer"
         );
         let doctored = Mixin {
-            initializer_code: None,
+            own_initializer_code: None,
             ..mixin_of(mutator.heap(), class)
         };
         install_mixin(mutator, class, doctored);
         let (_table, decoded_mixins, _ids) = round_trip_code_table(mutator.heap(), class);
         assert!(
-            decoded_mixins.code[0].initializer.is_none(),
-            "the doctored row names no initializer"
+            decoded_mixins.code[0].own_initializer.is_none(),
+            "the doctored row names no own part"
         );
         let error = decode::verify_mixins(&decoded_mixins).expect_err("no initializer");
         assert_eq!(error, decode::DecodeError::MissingInitializer);
@@ -7936,10 +8376,11 @@ fn a_whole_image_missing_its_initializer_is_refused_by_load() {
     // Read out after the last run, for the encoder, which runs nothing.
     let bytes = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        // Only the initializer is dropped, so the refusal this asserts
-        // cannot be the superclass clause's.
+        // Only the initializer's own part, which the walk runs, is
+        // dropped, so the refusal this asserts cannot be the superclass
+        // clause's.
         let doctored = Mixin {
-            initializer_code: None,
+            own_initializer_code: None,
             ..mixin_of(mutator.heap(), class)
         };
         install_mixin(mutator, class, doctored);
@@ -8960,7 +9401,7 @@ const NESTED_SUPERCLASS_ARGUMENTS: &str = indoc! {"
 /// every instantiation, so a reloaded image is the only place its compiled
 /// body can come from -- exactly the reason the clause's *receiver* already
 /// travels in a mixin-table row. A round trip that still hands `Base` its `7`
-/// proves the message body made it across.
+/// proves the arguments made it across.
 #[test]
 fn a_reloaded_superclass_clause_message_still_passes_its_arguments() {
     let (mut interpreter, class) = load(NESTED_SUPERCLASS_ARGUMENTS);
@@ -9015,40 +9456,6 @@ fn a_reloaded_superclass_clause_message_still_passes_its_arguments() {
         });
 }
 
-/// The other direction, the same shape as the initializer's and the
-/// clause's: a mixin-table row whose clause passes arguments, in an image
-/// carrying no body for them, would panic on the first instantiation.
-/// `verify_mixins` is the only place that sees both halves, so it refuses.
-#[test]
-fn an_image_with_no_superclass_clause_message_for_a_clause_that_needs_one_is_refused() {
-    let (mut interpreter, class) = load(NESTED_SUPERCLASS_ARGUMENTS);
-    interpreter.enter(|mutator| {
-        let class = class_reference(mutator, &class);
-        let derived = mutator
-            .heap()
-            .nested_mixins(&root_mixin_of(mutator.heap(), class))
-            .into_iter()
-            .find(|nested| nested.name.as_str() == "Derived")
-            .expect("Args declares Derived");
-        assert!(
-            derived.superclass_message_code.is_some(),
-            "Derived's clause really does compile a message body"
-        );
-        let doctored = with_nested(mutator.heap(), class, "Derived", |nested| Mixin {
-            superclass_message_code: None,
-            ..nested
-        });
-        install_mixin(mutator, class, doctored);
-        let (_table, decoded_mixins, _ids) = round_trip_code_table(mutator.heap(), class);
-        let error = decode::verify_mixins(&decoded_mixins).expect_err("no message body");
-        assert_eq!(error, decode::DecodeError::MissingSuperclassMessage);
-        assert_eq!(
-            error.to_string(),
-            "the image's superclass clause passes factory arguments it has no compiled code for"
-        );
-    });
-}
-
 /// The clause's *receiver* side of the same shape: a mixin-table row that
 /// declares a superclass clause, in an image carrying no compiled code for
 /// it, would panic when the first nested-class access pushes the clause's
@@ -9084,126 +9491,35 @@ fn an_image_with_no_superclass_clause_for_a_clause_that_needs_one_is_refused() {
     });
 }
 
-/// An image is untrusted input, and `verify_mixins` reconciles a
-/// message body's kind and arity but nothing constrains what it *returns*.
-/// `instantiate` unpacks the argument list out of that value, so a body
-/// returning something that is not an argument list must raise a
-/// `NewspeakError` rather than panic on the way past.
+/// The superclass clause frame kind shares `Initializer`'s shape on the wire
+/// (a class tag) but not its tag, which is what lets `image::decode`'s
+/// `frame_body` resolve it against the code table its own body actually lives
+/// in. Nothing leaves such a frame reachable from an image's roots -- a clause
+/// body contains no `MakeClosure`, so nothing can capture one -- so only a
+/// hand-written section reaches the decoder's tag-4 branch.
 #[test]
-fn a_superclass_message_body_that_returns_no_argument_list_is_an_error_not_a_panic() {
-    let (mut interpreter, class) = load(NESTED_SUPERCLASS_ARGUMENTS);
-    let bytes = interpreter.enter(|mutator| {
-        let class = class_reference(mutator, &class);
-        // The one thing an image can present that the load-time checks let
-        // through: right kind, right arity, wrong value.
-        let doctored = Rc::new(CompiledCode::new(
-            CodeKind::SuperclassMessage,
-            vec![
-                Instruction::LoadLiteral {
-                    destination: 0,
-                    literal: Literal::SmallInteger(1),
-                },
-                Instruction::Return { register: 0 },
-            ],
-            0,
-            1,
-            0,
-            vec![(0, 0..2)],
-            Span::new(0, 0),
+fn the_superclass_clause_frame_kind_decodes() {
+    let mut writer = one_frame_prefix();
+    writer.write_u8(FRAME_SUPERCLASS_CLAUSE);
+    writer.write_shipped(OBJECT_NAME);
+    runs_body(&mut writer, 0);
+    frame_tail(&mut writer, 0, 0);
+    writer.write_u32(0); // no roots
+    let bytes = writer.into_bytes();
+    let mut fixture = GraphFixture::new();
+    fixture.codes = vec![code_with(
+        CodeKind::SuperclassClause,
+        0,
+        1,
+        vec![Instruction::Return { register: 0 }],
+    )];
+    fixture.decoded(&bytes, "a superclass clause frame", |heap, decoded| {
+        let frame = decoded.frames.first().expect("the one frame");
+        assert!(matches!(
+            heap.frame_kind(*frame),
+            FrameKind::SuperclassClause(_)
         ));
-        let doctored = with_nested(mutator.heap(), class, "Derived", |nested| {
-            assert!(
-                nested.superclass_message_code.is_some(),
-                "Derived's clause compiles a message body"
-            );
-            Mixin {
-                superclass_message_code: Some(doctored),
-                ..nested
-            }
-        });
-        install_mixin(mutator, class, doctored);
-        // An image is the only way such a body reaches an interpreter, so
-        // the tampered mixin travels through one.
-        snapshot_one(
-            mutator,
-            false,
-            &Origin::File(PathBuf::from("t.ns")),
-            class,
-            &[],
-        )
-        .expect("snapshot")
     });
-    let mut loaded = image::load(&bytes).expect("load");
-    let platform = loaded.interpreter.platform();
-    let outer = expect_ok(
-        loaded
-            .interpreter
-            .instantiate(&loaded.modules[0].class, std::slice::from_ref(&platform)),
-        "instantiate Args",
-    );
-    let derived = expect_ok(
-        loaded
-            .interpreter
-            .send(&outer, Symbol::intern("Derived"), &[]),
-        "Derived",
-    );
-    loaded.interpreter.enter(|mutator| {
-        let Some(_) = mutator.fetch(&derived).as_object() else {
-            panic!("the accessor must yield a class object")
-        };
-    });
-    match loaded.interpreter.instantiate(&derived, &[]) {
-        Err(HostSignal::Error(error)) => assert!(
-            error
-                .message
-                .contains("did not evaluate its message arguments"),
-            "unexpected error message: {}",
-            error.message
-        ),
-        Err(HostSignal::Return) => panic!("a non-local return escaped `instantiate`"),
-        Ok(_) => panic!("expected a NewspeakError, got an instance"),
-    }
-}
-
-/// The two clause frame kinds share `Initializer`'s shape on the wire (a class
-/// tag) but not its tag, which is what lets `image::decode`'s `frame_body`
-/// resolve each against the code table its own body actually lives in. Nothing
-/// leaves such a frame reachable from an image's roots --
-/// a clause body contains no `MakeClosure`, so nothing can capture one -- so
-/// only a hand-written section reaches the decoder's tag-4 and tag-5 branches.
-#[test]
-fn the_superclass_clause_frame_kinds_decode() {
-    for (tag, expect_clause) in [(4u8, true), (5u8, false)] {
-        let mut writer = one_frame_prefix();
-        writer.write_u8(tag);
-        writer.write_shipped(OBJECT_NAME);
-        runs_body(&mut writer, 0);
-        frame_tail(&mut writer, 0, 0);
-        writer.write_u32(0); // no roots
-        let bytes = writer.into_bytes();
-        let mut fixture = GraphFixture::new();
-        let kind = if expect_clause {
-            CodeKind::SuperclassClause
-        } else {
-            CodeKind::SuperclassMessage
-        };
-        fixture.codes = vec![code_with(
-            kind,
-            0,
-            1,
-            vec![Instruction::Return { register: 0 }],
-        )];
-        fixture.decoded(&bytes, "a superclass clause frame", |heap, decoded| {
-            let frame = decoded.frames.first().expect("the one frame");
-            let kind = heap.frame_kind(*frame);
-            let matched = match &kind {
-                FrameKind::SuperclassClause(_) => expect_clause,
-                FrameKind::SuperclassMessage(_) => !expect_clause,
-                _ => false,
-            };
-            assert!(matched, "frame kind tag {tag} decoded to the wrong kind");
-        });
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -10450,7 +10766,7 @@ fn a_body_the_code_table_does_not_hold_has_no_id() {
 }
 
 /// The factory selector must come from the table, not from
-/// `Mixin::declaration`: `instantiate::clause_message_body` checks the selector
+/// `Mixin::declaration`: `instantiate` checks the selector
 /// a clause names against the superclass's primary factory selector. Read off a
 /// declaration, a decoded mixin (which has none) would fall back to `new`, and
 /// every class whose superclass has a keyword factory would raise a spurious
@@ -10827,12 +11143,12 @@ fn a_send_to_a_class_heading_a_long_superclass_chain_does_not_blow_the_stack() {
 
 #[test]
 fn instantiating_a_class_heading_a_long_superclass_chain_does_not_blow_the_stack() {
-    // `climb_levels` visits every level of the chain -- arity,
+    // The instantiation loop passes every level of the chain -- arity,
     // clause message, initializer -- and none of these levels has
     // initializer code, so none pushes an activation: the depth bound would
     // not see a per-level recursion (`docs/design/execution.md`, "A
-    // superclass chain is walked iteratively"). Recursing once per level
-    // would abort here.
+    // superclass chain nests one activation per level"). Recursing once per
+    // level would abort here.
     let bytes = image_with_graph_section(&superclass_chain_graph(DEEP), 2 * DEEP);
     let mut loaded = image::load(&bytes).expect("load");
     let head = loaded.roots[0].clone();
@@ -13136,15 +13452,15 @@ fn a_root_class_applying_a_builtin_mixin_round_trips() {
     }
 }
 
-/// A `<:` clause message is evaluated in an activation of its own, and a
-/// block written in it captures that activation. The block outlives it --
-/// the applied level's initializer keeps it in a slot -- so a snapshot holds
-/// the dead activation as a frame, and loading reconciles the frame against
-/// the body that ran in it: the clause's message body, which is neither the
-/// applying class's superclass-clause message nor anything else its mixin
-/// carries.
+/// A `<:` clause's message is evaluated by the full initializer of the
+/// class whose clause it is, and a block written in it captures that
+/// initializer's activation. The block outlives it -- the applied level's
+/// own part keeps it in a slot -- so a snapshot holds the dead activation as
+/// a frame, and loading reconciles the frame against the body that ran in
+/// it: the applying class's full initializer, not its own part, which a
+/// frame of the same class could also run.
 #[test]
-fn a_frame_a_mixin_application_message_ran_in_decodes_to_that_messages_body() {
+fn a_frame_a_clause_message_ran_in_decodes_to_the_full_initializer() {
     let source = indoc! {"
         class Host usingPlatform: p = Object new () (
             public class Keeper withBlock: block = Object new (| kept = block. |) (
@@ -13175,7 +13491,7 @@ fn a_frame_a_mixin_application_message_ran_in_decodes_to_that_messages_body() {
 
     let report = image::inspect::render_full(&image::inspect::inspect(&bytes).expect("inspect"));
     assert!(
-        report.contains("mixin application message of"),
+        report.contains("frame initializer of object"),
         "inspect names the frame's kind:\n{report}"
     );
 }
@@ -13204,13 +13520,32 @@ fn row_named(fixture: &GraphFixture, name: &str) -> u32 {
 
 /// One class record describing a level a `<:` clause added: it applies row
 /// `mixin_row`'s mixin over the object-table record `superclass` (or no
-/// superclass), and was added by clause `clause` of row `applying_row`. Its
-/// metaclass is the record `metaclass_id`.
+/// superclass), and was added by clause `clause` of row `applying_row`,
+/// which named the shipped `Object`. Its metaclass is the record
+/// `metaclass_id`.
 fn applied_level_record(
     writer: &mut encode::Writer,
     (metaclass_id, mixin_row): (u32, u32),
     superclass: Option<u32>,
     (applying_row, clause): (u32, u32),
+) {
+    applied_level_record_naming(
+        writer,
+        (metaclass_id, mixin_row),
+        superclass,
+        (applying_row, clause),
+        |writer| writer.write_shipped(OBJECT_NAME),
+    );
+}
+
+/// `applied_level_record` whose clause named the class `named` writes the
+/// tag of.
+fn applied_level_record_naming(
+    writer: &mut encode::Writer,
+    (metaclass_id, mixin_row): (u32, u32),
+    superclass: Option<u32>,
+    (applying_row, clause): (u32, u32),
+    named: impl FnOnce(&mut encode::Writer),
 ) {
     writer.write_u8(CLASS_RECORD); // class tag: its metaclass record
     writer.write_u32(metaclass_id);
@@ -13231,6 +13566,7 @@ fn applied_level_record(
     writer.write_boolean(true); // an applied level
     writer.write_u32(applying_row);
     writer.write_u32(clause);
+    named(writer);
 }
 
 /// A graph section of exactly `records`, written by `write`, and no roots.
@@ -13359,6 +13695,324 @@ fn applied_levels_inheriting_from_each_other_in_a_cycle_are_refused() {
     }
 }
 
+/// Each level's metaclass is rebuilt from the class its clause named, so
+/// levels that name each other name no class side at all: the rebuild
+/// refuses them rather than walking the cycle forever.
+#[test]
+fn applied_levels_naming_each_other_in_a_cycle_are_refused() {
+    let mut fixture = GraphFixture::with_source(APPLYING_MODULE);
+    let marker = row_named(&fixture, "Marker");
+    let applied = row_named(&fixture, "Applied");
+    let record = |id: u32| {
+        move |writer: &mut encode::Writer| {
+            writer.write_u8(CLASS_RECORD);
+            writer.write_u32(id);
+        }
+    };
+    let through_another = class_records(4, |writer| {
+        applied_level_record_naming(writer, (2, marker), None, (applied, 0), record(1));
+        applied_level_record_naming(writer, (3, marker), None, (applied, 0), record(0));
+        metaclass_record(writer, 0);
+        metaclass_record(writer, 1);
+    });
+    let directly = class_records(2, |writer| {
+        applied_level_record_naming(writer, (1, marker), None, (applied, 0), record(0));
+        metaclass_record(writer, 0);
+    });
+    for bytes in [through_another, directly] {
+        assert_eq!(
+            fixture.decode_error(&bytes),
+            decode::DecodeError::NamedClassCycle
+        );
+    }
+}
+
+/// A body-less declaration's class object applies its last clause's mixin
+/// (`object-model.md`, "Mixin application"), so a class record applying a
+/// body-less row's own mixin describes a class no live world has.
+#[test]
+fn a_class_record_applying_a_body_less_rows_mixin_is_refused() {
+    let mut fixture = GraphFixture::with_source(indoc! {"
+        class Host = Object new () (
+            class Marker = Object new () ()
+            class Applied = Object new <: Marker.
+        ) : ()
+    "});
+    let applied = row_named(&fixture, "Applied");
+    let bytes = class_records(2, |writer| {
+        applied_level_record(writer, (1, applied), None, (applied, 0));
+        metaclass_record(writer, 0);
+    });
+    assert_eq!(
+        fixture.decode_error(&bytes),
+        decode::DecodeError::BodyLessMixinApplied
+    );
+}
+
+/// The smallest module whose mixin table has a body-less declaration.
+const BODY_LESS_MODULE: &str = indoc! {"
+    class Host = Object new () (
+        class Marker = Object new () ()
+        class Applied = Object new <: Marker.
+    ) : ()
+"};
+
+/// A graph section of three records: a class record with body tag `body`
+/// for the level clause 0 of row `applying_row` added, applying `Marker`'s
+/// row, which `scope` ends; its metaclass record; and an empty `Array`.
+fn body_less_class_section(
+    fixture: &GraphFixture,
+    body: u8,
+    applying_row: u32,
+    scope: impl FnOnce(&mut encode::Writer),
+) -> Vec<u8> {
+    let marker = row_named(fixture, "Marker");
+    class_records(3, |writer| {
+        writer.write_u8(CLASS_RECORD); // class tag: its metaclass record
+        writer.write_u32(1);
+        writer.write_u32(7); // identity hash
+        writer.write_u8(body);
+        writer.write_u8(MIXIN_ROW); // mixin reference: a mixin-table row
+        writer.write_u32(marker);
+        writer.write_boolean(false); // no superclass
+        writer.write_boolean(false); // no enclosing object
+        writer.write_boolean(false); // no declaring class
+        writer.write_boolean(true); // an applied level
+        writer.write_u32(applying_row);
+        writer.write_u32(0);
+        writer.write_shipped(OBJECT_NAME); // the class the clause named
+        scope(writer);
+        metaclass_record(writer, 0);
+        writer.write_shipped(ARRAY_NAME);
+        writer.write_u32(1); // identity hash
+        writer.write_u8(OBJECT_ARRAY); // object body: Array
+        writer.write_u32(0); // no elements
+    })
+}
+
+/// A body-less declaration's class object carries its declaration's scope
+/// after the level's record (`OBJECT_BODY_LESS_CLASS`), each reference
+/// checked as a class record's own are: an object id past the table, an
+/// enclosing object that is no object and a declaring class that is no
+/// class are refused, never followed. The tag must agree with the clause
+/// both ways.
+#[test]
+fn a_body_less_class_records_scope_is_checked() {
+    let mut fixture = GraphFixture::with_source(BODY_LESS_MODULE);
+    let applied = row_named(&fixture, "Applied");
+    let enclosing_array = |writer: &mut encode::Writer| {
+        writer.write_boolean(true);
+        writer.write_u8(VALUE_OBJECT_ID);
+        writer.write_u32(2);
+        writer.write_boolean(false);
+    };
+    let bytes = body_less_class_section(&fixture, OBJECT_BODY_LESS_CLASS, applied, enclosing_array);
+    fixture.decoded(&bytes, "a body-less class object", |heap, graph| {
+        let scope = heap
+            .class_declaration_scope(graph.objects[0])
+            .expect("the record's scope is on its class object");
+        assert!(scope
+            .enclosing
+            .is_some_and(|enclosing| enclosing.same(graph.objects[2])));
+        assert!(scope.declaring_class.is_none());
+    });
+    type WritesScope = Box<dyn Fn(&mut encode::Writer)>;
+    let refusals: [(WritesScope, decode::DecodeError); 4] = [
+        (
+            Box::new(|writer| {
+                writer.write_boolean(true);
+                writer.write_u8(VALUE_OBJECT_ID);
+                writer.write_u32(99);
+                writer.write_boolean(false);
+            }),
+            decode::DecodeError::BadObjectId(99),
+        ),
+        (
+            Box::new(|writer| {
+                writer.write_boolean(true);
+                writer.write_u8(VALUE_TRUE);
+                writer.write_boolean(false);
+            }),
+            decode::DecodeError::EnclosingNotAnObject,
+        ),
+        (
+            Box::new(|writer| {
+                writer.write_boolean(false);
+                writer.write_boolean(true);
+                writer.write_u8(CLASS_RECORD);
+                writer.write_u32(99);
+            }),
+            decode::DecodeError::BadObjectId(99),
+        ),
+        (
+            Box::new(|writer| {
+                writer.write_boolean(false);
+                writer.write_boolean(true);
+                writer.write_u8(CLASS_RECORD);
+                writer.write_u32(2); // the Array
+            }),
+            decode::DecodeError::NotAClassReference,
+        ),
+    ];
+    for (scope, error) in refusals {
+        let bytes = body_less_class_section(&fixture, OBJECT_BODY_LESS_CLASS, applied, scope);
+        assert_eq!(fixture.decode_error(&bytes), error);
+    }
+    // The clause decides which tag the record must have.
+    let without_scope = body_less_class_section(&fixture, OBJECT_CLASS, applied, |_| {});
+    assert_eq!(
+        fixture.decode_error(&without_scope),
+        decode::DecodeError::BodyLessClassRecordMismatch
+    );
+    let mut with_body = GraphFixture::with_source(APPLYING_MODULE);
+    let applying = row_named(&with_body, "Applied");
+    let bytes = body_less_class_section(&with_body, OBJECT_BODY_LESS_CLASS, applying, |writer| {
+        writer.write_boolean(false);
+        writer.write_boolean(false);
+    });
+    assert_eq!(
+        with_body.decode_error(&bytes),
+        decode::DecodeError::BodyLessClassRecordMismatch
+    );
+}
+
+/// A body-less declaration declares nothing a body would, nested classes
+/// included: nothing could reach them, since no class applies its mixin.
+#[test]
+fn a_body_less_row_with_nested_declarations_is_refused() {
+    let fixture = GraphFixture::with_source(BODY_LESS_MODULE);
+    let applied = fixture.mixins[row_named(&fixture, "Applied") as usize].clone();
+    let marker = fixture.mixins[row_named(&fixture, "Marker") as usize].clone();
+    let decoded = |mixin: Mixin| mixins::Decoded {
+        mixins: vec![Rc::new(mixin)],
+        ..mixins::Decoded::empty()
+    };
+    assert_eq!(decode::verify_mixins(&decoded((*applied).clone())), Ok(()));
+    let mut with_nested = (*applied).clone();
+    with_nested.nested_declarations = ns_runtime::mixin::NestedDeclarations::new(vec![marker]);
+    assert_eq!(
+        decode::verify_mixins(&decoded(with_nested)),
+        Err(decode::DecodeError::BodyLessWithMembers)
+    );
+}
+
+/// A body-less declaration's full initializer is its declaration's own
+/// code, marked so when its row is built, and its lexical sends start from
+/// the declaration's scope: a row that names it as another body -- of
+/// another row, or another of its own -- would run it there from a frame
+/// that is no frame of the declaration, which a debug build aborts on.
+/// Refused before anything runs.
+#[test]
+fn a_body_less_declarations_initializer_named_as_another_body_is_refused() {
+    let fixture = GraphFixture::with_source(BODY_LESS_MODULE);
+    let applied = fixture.mixins[row_named(&fixture, "Applied") as usize].clone();
+    let marker = fixture.mixins[row_named(&fixture, "Marker") as usize].clone();
+    let declaration_code = applied
+        .initializer_code
+        .clone()
+        .expect("a body-less declaration has a full body");
+    let decoded = |rows: Vec<Mixin>| mixins::Decoded {
+        mixins: rows.into_iter().map(Rc::new).collect(),
+        ..mixins::Decoded::empty()
+    };
+    assert_eq!(
+        decode::verify_mixins(&decoded(vec![(*applied).clone(), (*marker).clone()])),
+        Ok(())
+    );
+    let mut sharing = (*marker).clone();
+    sharing.initializer_code = Some(declaration_code.clone());
+    let error = decode::verify_mixins(&decoded(vec![(*applied).clone(), sharing]))
+        .expect_err("another row's full body is the declaration's");
+    assert_eq!(error, decode::DecodeError::SharedDeclarationCode);
+    assert_eq!(
+        error.to_string(),
+        "a body-less declaration's instance initializer is named as another body too"
+    );
+    let mut own_part = (*applied).clone();
+    own_part.own_initializer_code = Some(declaration_code);
+    assert_eq!(
+        decode::verify_mixins(&decoded(vec![own_part])),
+        Err(decode::DecodeError::SharedDeclarationCode)
+    );
+}
+
+/// A snapshot of a module whose slot `held` holds a block a body-less
+/// declaration's clause created: a block of the declaration's own code,
+/// captured by the declaration's full initializer at its class object.
+fn body_less_clause_block_snapshot() -> Vec<u8> {
+    let source = indoc! {"
+        class Module = Object new (|
+          library = Library new.
+          public held = Applied new a.
+        |) (
+          class Library = Object new () (
+            public class Marker tag: t = Object new (| public a = t. |) ()
+            public helper = ( ^'the library helper' )
+          )
+          class Applied = Object new <: libraryMarker tag: [helper].
+          libraryMarker = ( ^library Marker )
+          helper = ( ^'the module helper' )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let instance = mutator.fetch(&instance);
+        snapshot_one(
+            mutator,
+            true,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &[instance],
+        )
+        .expect("snapshot")
+    })
+}
+
+/// The block verifies, and after load it still reaches the module's
+/// `helper` from the declaration's scope, not the library's from the
+/// applied mixin's.
+#[test]
+fn a_block_from_a_body_less_clause_survives_build_and_load() {
+    let bytes = body_less_clause_block_snapshot();
+    let mut loaded = image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
+    let held = expect_ok(
+        loaded
+            .interpreter
+            .send(&loaded.roots[0], Symbol::intern("held"), &[]),
+        "held",
+    );
+    let value = expect_ok(
+        loaded.interpreter.send(&held, Symbol::intern("value"), &[]),
+        "value",
+    );
+    loaded.interpreter.enter(|mutator| {
+        assert_eq!(
+            text_or_class_name(mutator, mutator.fetch(&value)),
+            "the module helper"
+        );
+    });
+}
+
+/// The same block's captured frame recast as the own part of the
+/// initializer, which runs the same kind of body: a frame that runs the
+/// declaration's own code anywhere but as its full initializer is refused,
+/// since the code, not the frame, decides where its sends start.
+#[test]
+fn a_frame_running_a_body_less_declarations_code_elsewhere_is_refused() {
+    let mut bytes = body_less_clause_block_snapshot();
+    rewrite_in_graph(
+        &mut bytes,
+        &[OBJECT_FRAME, FRAME_INITIALIZER],
+        &[OBJECT_FRAME, FRAME_OWN_INITIALIZER],
+    );
+    assert_eq!(
+        load_error(&bytes),
+        decode::DecodeError::FrameCodeMismatch.to_string()
+    );
+}
+
 /// One past the last mixin reference, and every retired one: a stale
 /// image's builtin level names no mixin rather than whatever took the number.
 #[test]
@@ -13398,6 +14052,7 @@ fn shipped_mixin_record(name: u32, (row, index): (u32, u32)) -> Vec<u8> {
         writer.write_boolean(false); // no superclass
         writer.write_u32(row);
         writer.write_u32(index);
+        writer.write_shipped(VALUE_NAME); // the class the clause named
         metaclass_record(writer, 0);
     })
 }
@@ -14149,37 +14804,6 @@ fn the_retired_class_record_tag_is_refused() {
     );
 }
 
-/// The frame kind of a `<:` clause message names the level the clause added
-/// -- its body is that level's clause's -- and decodes back to that kind.
-#[test]
-fn the_mixin_application_message_frame_kind_decodes() {
-    let mut writer = one_frame_prefix();
-    writer.write_u8(FRAME_MIXIN_APPLICATION_MESSAGE);
-    writer.write_shipped(OBJECT_NAME);
-    runs_body(&mut writer, 0);
-    frame_tail(&mut writer, 0, 0);
-    writer.write_u32(0); // no roots
-    let bytes = writer.into_bytes();
-    let mut fixture = GraphFixture::new();
-    fixture.codes = vec![code_with(
-        CodeKind::SuperclassMessage,
-        0,
-        1,
-        vec![Instruction::Return { register: 0 }],
-    )];
-    fixture.decoded(
-        &bytes,
-        "a mixin application message frame",
-        |heap, graph| {
-            let frame = graph.frames.first().expect("the one frame");
-            assert!(matches!(
-                heap.frame_kind(*frame),
-                FrameKind::MixinApplicationMessage(_)
-            ));
-        },
-    );
-}
-
 /// The root rule (`docs/design/object-model.md`, "The root rule"), held to
 /// a root class's superclass chain as the encoder and the loader both hold
 /// it (`modules::root_record_defect`): `Object <: Value` passes, and every
@@ -14321,96 +14945,6 @@ fn verify_doctored_applied(edit: impl FnOnce(Mixin) -> Mixin) -> Result<(), deco
     })
 }
 
-/// §6.2 evaluates a `<:` clause's message with the applying declaration's
-/// factory arguments, so its body must take exactly that many. The walk
-/// re-checks it at run time as a Newspeak error; the load refuses an image
-/// that breaks it outright, before anything runs.
-#[test]
-fn a_clause_message_whose_arity_disagrees_with_the_factory_is_refused_at_load() {
-    let error = verify_doctored_applied(|applied| {
-        let mut clauses = applied.mixin_applications.clone();
-        let message = clauses[0].message_code.clone().expect("withMark: x * 10");
-        let mut doctored = (*message).clone();
-        doctored.argument_count = message.argument_count + 1;
-        doctored.register_count = message.register_count + 1;
-        clauses[0].message_code = Some(Rc::new(doctored));
-        Mixin {
-            mixin_applications: clauses,
-            ..applied
-        }
-    })
-    .expect_err("the message takes one argument too many");
-    assert_eq!(
-        error,
-        decode::DecodeError::CodeArityMismatch {
-            what: "mixin application clause 1 message".to_string(),
-            parameters: 1,
-            argument_count: 2,
-        }
-    );
-
-    let wrong_kind = verify_doctored_applied(|applied| {
-        let mut clauses = applied.mixin_applications.clone();
-        clauses[0].message_code = applied.initializer_code.clone();
-        Mixin {
-            mixin_applications: clauses,
-            ..applied
-        }
-    });
-    assert_eq!(
-        wrong_kind,
-        Err(decode::DecodeError::WrongCodeKind {
-            expected: "superclass clause message"
-        })
-    );
-}
-
-/// A clause whose message passes arguments in an image with no body for
-/// them would panic on the first instantiation; the load refuses it.
-#[test]
-fn a_clause_message_with_arguments_and_no_body_is_refused_at_load() {
-    let error = verify_doctored_applied(|applied| {
-        let mut clauses = applied.mixin_applications.clone();
-        clauses[0].message_code = None;
-        Mixin {
-            mixin_applications: clauses,
-            ..applied
-        }
-    })
-    .expect_err("no message body");
-    assert_eq!(error, decode::DecodeError::MissingMixinApplicationMessage);
-    assert_eq!(
-        error.to_string(),
-        "the image's mixin application clause passes factory arguments it has no compiled code for"
-    );
-}
-
-/// A clause whose message passes no arguments has no body to run, so one
-/// that names a body anyway -- here the other clause's, of the right kind
-/// and arity, so nothing but the mismatch is wrong -- is refused rather than
-/// carried as code the row says nothing runs.
-#[test]
-fn a_clause_message_without_arguments_that_carries_a_body_is_refused_at_load() {
-    let error = verify_doctored_applied(|applied| {
-        let mut clauses = applied.mixin_applications.clone();
-        assert!(!clauses[1].message.has_arguments, "<: Stamp sends new");
-        clauses[1].message_code = clauses[0].message_code.clone();
-        Mixin {
-            mixin_applications: clauses,
-            ..applied
-        }
-    })
-    .expect_err("a body for a message without arguments");
-    assert_eq!(
-        error,
-        decode::DecodeError::UnexpectedMixinApplicationMessage
-    );
-    assert_eq!(
-        error.to_string(),
-        "the image's mixin application clause passes no factory arguments but carries compiled code for them"
-    );
-}
-
 /// `<:` follows a superclass clause in the grammar, and it is the superclass
 /// clause's body that evaluates every `<:` receiver; a row with clauses but
 /// no superclass clause describes a declaration no source has.
@@ -14419,39 +14953,12 @@ fn a_row_applying_mixins_without_a_superclass_clause_is_refused_at_load() {
     let error = verify_doctored_applied(|applied| Mixin {
         superclass: None,
         superclass_clause_code: None,
-        superclass_message_code: None,
         ..applied
     })
     .expect_err("clauses with no superclass clause");
     assert_eq!(
         error,
         decode::DecodeError::MixinApplicationWithoutSuperclass
-    );
-}
-
-/// A row's clause names its message body by code id, checked against the
-/// code table like every other id the row names.
-#[test]
-fn a_clause_message_code_id_out_of_range_is_a_decode_error_not_a_panic() {
-    let mut writer = encode::Writer::new();
-    writer.write_u32(1); // one row
-    writer.write_u32(0); // name
-    writer.write_u8(mixins::access_tag(AccessModifier::Protected));
-    writer.write_u32(0); // span.start
-    writer.write_u32(0); // span.end
-    writer.write_u32(0); // no slots
-    writer.write_boolean(false); // no factory
-    writer.write_boolean(false); // no initExprs
-    writer.write_boolean(false); // no superclass clause
-    writer.write_u32(1); // one mixin application
-    writer.write_u32(0); // its selector
-    writer.write_boolean(true); // its message takes arguments
-    writer.write_boolean(true); // ... compiled as
-    writer.write_u32(5); // ... code 5, of an empty code table
-    let table = table_with(&["X"]);
-    assert_eq!(
-        mixins::decode(&mut decode::Reader::new(&writer.into_bytes()), &table, &[]).map(|_| ()),
-        Err(decode::DecodeError::BadCodeId(5))
     );
 }
 
@@ -14466,9 +14973,8 @@ fn inspect_prints_the_mixin_applications_an_image_describes() {
     let bytes = snapshot_world(&mut interpreter, &class, &[host]);
     let report = image::inspect::render_full(&image::inspect::inspect(&bytes).expect("inspect"));
     for expected in [
-        "mixin application 1  withMark: -> code ",
+        "mixin application 1  withMark:\n",
         "mixin application 2  new\n",
-        "Applied  mixin application clause 1 message",
         "applied by clause 0 of row ",
         "applied by clause 1 of row ",
     ] {
@@ -16278,5 +16784,319 @@ fn building_the_shipped_names_of_a_built_world_builds_nothing() {
         if let Err(error) = shipped_names::resolve_in(mutator, &names, false) {
             panic!("{error}");
         }
+    });
+}
+
+/// Decision 8 of `new` as compiled code survives a snapshot: a body-less
+/// declaration's class object is still the level its last clause adds,
+/// with the declaration's factory and name, and a level a `<:` clause
+/// naming it added still has its factory -- both read through metaclasses
+/// the loader rebuilt from the records alone.
+#[test]
+fn a_body_less_declaration_survives_build_and_load() {
+    let source = indoc! {"
+        class Holder = Object new () (
+          class Base = Object new () ()
+          class M1 tag: t = Object new (| public a = t. |) ()
+          class M3 x: x = Base new <: M1 tag: x + 1.
+          class UsesM3 = Base new <: M3 x: 5 () ()
+          class Wrong = Base new <: M3 tag: 5 () ()
+          public m3 = ( ^M3 )
+          public usesM3 = ( ^UsesM3 )
+          public wrong = ( ^Wrong )
+          public madeA = ( ^(M3 x: 1) a printString )
+          public usesA = ( ^UsesM3 new a printString )
+          public name = ( ^M3 name )
+          public refused = ( ^[Wrong new] on: Error do: [:error | error messageText] )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    for selector in ["m3", "usesM3", "wrong"] {
+        expect_ok(
+            interpreter.send(&instance, Symbol::intern(selector), &[]),
+            selector,
+        );
+    }
+    let bytes = interpreter.enter(|mutator| {
+        let instance = mutator.fetch(&instance);
+        let class = class_reference(mutator, &class);
+        snapshot_one(
+            mutator,
+            true,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
+    let mut loaded = image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
+    for (selector, expected) in [
+        ("madeA", "2"),
+        ("usesA", "5"),
+        ("name", "M3"),
+        (
+            "refused",
+            "a mixin application clause of class Wrong sends #tag:, but the primary factory \
+             of class M3 is #x:",
+        ),
+    ] {
+        let answer = expect_ok(
+            loaded
+                .interpreter
+                .send(&loaded.roots[0], Symbol::intern(selector), &[]),
+            selector,
+        );
+        loaded.interpreter.enter(|mutator| {
+            assert_eq!(
+                text_or_class_name(mutator, mutator.fetch(&answer)),
+                expected,
+                "{selector}"
+            );
+        });
+    }
+    let declared = expect_ok(
+        loaded
+            .interpreter
+            .send(&loaded.roots[0], Symbol::intern("m3"), &[]),
+        "m3",
+    );
+    let uses_m3 = expect_ok(
+        loaded
+            .interpreter
+            .send(&loaded.roots[0], Symbol::intern("usesM3"), &[]),
+        "usesM3",
+    );
+    loaded.interpreter.enter(|mutator| {
+        let heap = mutator.heap();
+        let declared = class_reference(mutator, &declared);
+        let level = heap
+            .class_superclass(class_reference(mutator, &uses_m3))
+            .expect("UsesM3 has the level its clause added below it");
+        let x_factory = Some(ns_runtime::mixin::Factory {
+            selector: Symbol::intern("x:"),
+            argument_count: 1,
+        });
+        assert_eq!(
+            heap.class_application(declared)
+                .expect("a class object")
+                .mixin
+                .name
+                .as_str(),
+            "M1"
+        );
+        assert_eq!(heap.class_name(declared), Some(Symbol::intern("M3")));
+        assert_eq!(heap.class_factory(declared), x_factory);
+        assert_eq!(heap.class_name(level), Some(Symbol::intern("M3")));
+        assert_eq!(heap.class_factory(level), x_factory);
+    });
+}
+
+/// A body-less declaration's clause argument resolves in the declaration's
+/// own scope (`newspeak-spec.pdf` 3.3, 5.9), which its class object keeps
+/// beside the named class's: built before the snapshot, the class object
+/// is an `OBJECT_BODY_LESS_CLASS` record, and after load its clause still
+/// reaches the holder's `helper`, while M1's method on its instance still
+/// reaches the library's.
+#[test]
+fn a_body_less_declarations_own_scope_survives_build_and_load() {
+    let source = indoc! {"
+        class Module = Object new (|
+          library = Library new.
+          public holder = Holder new.
+        |) (
+          class Library = Object new () (
+            public class M1 tag: t = Object new (| public a = t. |) (
+              public fromM1 = ( ^helper )
+            )
+            public helper = ( ^'the library helper' )
+          )
+          public class Holder = Object new () (
+            class M3 = Object new <: libraryM1 tag: helper , ' and ' , outer Holder identify.
+            libraryM1 = ( ^library M1 )
+            public helper = ( ^'the holder helper' )
+            public identify = ( ^'the holder' )
+            public m3 = ( ^M3 )
+            public madeA = ( ^M3 new a )
+            public fromM1 = ( ^M3 new fromM1 )
+          )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let holder = expect_ok(
+        interpreter.send(&instance, Symbol::intern("holder"), &[]),
+        "holder",
+    );
+    let declared = expect_ok(interpreter.send(&holder, Symbol::intern("m3"), &[]), "m3");
+    interpreter.enter(|mutator| {
+        let heap = mutator.heap();
+        let declared = class_reference(mutator, &declared);
+        let scope = heap
+            .class_declaration_scope(declared)
+            .expect("a body-less declaration's class object keeps its scope");
+        assert!(
+            scope
+                .enclosing
+                .zip(mutator.fetch(&holder).as_object())
+                .is_some_and(|(enclosing, holder)| enclosing.same(holder)),
+            "the declaration's enclosing object is the holder"
+        );
+        assert!(scope.declaring_class.is_some());
+    });
+    let bytes = interpreter.enter(|mutator| {
+        let instance = mutator.fetch(&instance);
+        let class = class_reference(mutator, &class);
+        snapshot_one(
+            mutator,
+            true,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
+    let mut loaded = image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
+    let holder = expect_ok(
+        loaded
+            .interpreter
+            .send(&loaded.roots[0], Symbol::intern("holder"), &[]),
+        "holder",
+    );
+    for (selector, expected) in [
+        ("madeA", "the holder helper and the holder"),
+        ("fromM1", "the library helper"),
+    ] {
+        let answer = expect_ok(
+            loaded
+                .interpreter
+                .send(&holder, Symbol::intern(selector), &[]),
+            selector,
+        );
+        loaded.interpreter.enter(|mutator| {
+            assert_eq!(
+                text_or_class_name(mutator, mutator.fetch(&answer)),
+                expected,
+                "{selector}"
+            );
+        });
+    }
+}
+
+/// A module's root without a body (`class R = Object <: Value.`) is the
+/// level its clause added, `Value`'s mixin over `Object`, named for the
+/// root; 3.3 makes a module definition's enclosing object nil, so its
+/// declaration's scope is empty. The image carries it as that level, and
+/// the loader holds it to the root rule as such.
+#[test]
+fn a_body_less_root_survives_build_and_load() {
+    let (mut interpreter, class) = load("class BodyLessRoot = Object <: Value.");
+    expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        check_body_less_root(mutator, class);
+        snapshot_one(
+            mutator,
+            false,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &[Value::object(class)],
+        )
+        .expect("snapshot")
+    });
+    let mut loaded = image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
+    let root = loaded.roots[0].clone();
+    loaded.interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &root);
+        check_body_less_root(mutator, class);
+    });
+    expect_ok(loaded.interpreter.instantiate(&root, &[]), "instantiate");
+}
+
+/// `class` is `BodyLessRoot`'s class object: the `Value` level over
+/// `Object`, enclosed where `Value` is, with an empty declaration scope.
+fn check_body_less_root<'gc>(mutator: &Mutator<'gc>, class: ClassReference<'gc>) {
+    let heap = mutator.heap();
+    let value = mutator.builtin_class(BuiltinClass::Value);
+    let object = mutator.builtin_class(BuiltinClass::Object);
+    assert_eq!(heap.class_name(class), Some(Symbol::intern("BodyLessRoot")));
+    assert!(heap
+        .class_named(class)
+        .is_some_and(|named| named.same(value)));
+    assert!(heap
+        .class_superclass(class)
+        .is_some_and(|superclass| superclass.same(object)));
+    let scope = heap
+        .class_declaration_scope(class)
+        .expect("the root's class object keeps its declaration's scope");
+    assert!(scope.enclosing.is_none() && scope.declaring_class.is_none());
+    assert!(
+        heap.class_enclosing(class).is_some(),
+        "the level's own enclosing object is Value's"
+    );
+}
+
+/// §3.1.1 is decided on a body-less value class's declaration's enclosing
+/// object as well as on its level's, when the class object is created and
+/// again when an image rebuilds it: `Valued`'s level is enclosed by the
+/// value module, its declaration by a mutable `Holder`, so it is refused
+/// before the snapshot and after the load alike.
+#[test]
+fn a_body_less_value_class_is_refused_alike_after_build_and_load() {
+    let source = indoc! {"
+        class Module = Object <: Value () (
+          public class Marker = Object new () ()
+          public class Holder = Object new (| public count ::= 0. |) (
+            public class Valued = Value new <: Marker.
+            public valued = ( ^Valued )
+            public refused = ( ^[Valued new] on: Error do: [:error | error messageText] )
+          )
+          public holder = ( ^Holder new )
+        ) : ()
+    "};
+    let expected = "cannot instantiate Valued: a value class's enclosing objects must be \
+                    values, and its enclosing object, an instance of Holder, is not one";
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let holder = expect_ok(
+        interpreter.send(&instance, Symbol::intern("holder"), &[]),
+        "holder",
+    );
+    expect_ok(
+        interpreter.send(&holder, Symbol::intern("valued"), &[]),
+        "valued",
+    );
+    let refused = expect_ok(
+        interpreter.send(&holder, Symbol::intern("refused"), &[]),
+        "refused",
+    );
+    let bytes = interpreter.enter(|mutator| {
+        assert_eq!(
+            text_or_class_name(mutator, mutator.fetch(&refused)),
+            expected
+        );
+        let class = class_reference(mutator, &class);
+        let holder = mutator.fetch(&holder);
+        snapshot_one(
+            mutator,
+            true,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &[holder],
+        )
+        .expect("snapshot")
+    });
+    let mut loaded = image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
+    let refused = expect_ok(
+        loaded
+            .interpreter
+            .send(&loaded.roots[0], Symbol::intern("refused"), &[]),
+        "refused",
+    );
+    loaded.interpreter.enter(|mutator| {
+        assert_eq!(
+            text_or_class_name(mutator, mutator.fetch(&refused)),
+            expected
+        );
     });
 }

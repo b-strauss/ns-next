@@ -1,0 +1,47 @@
+/// newspeak-spec.pdf 6.3: an instance initializer runs "the evaluation of
+/// the message clause given in the class' superclass clause in the
+/// context of i", and then the superclass's instance initializer with its
+/// arguments; 6.1: "It is a run time error if the message selector
+/// specified by the inheritance clause is not the selector of the primary
+/// factory of the class C."
+///
+/// Leaf new evaluates Leaf's clause argument first, which prints
+/// 'argument', and only then invokes Middle's initializer, whose own
+/// clause sends #new to Base, whose primary factory is #k:. So the
+/// argument's effect comes before the error, and the error names Middle's
+/// clause.
+class Spec61AClauseArgumentRunsBeforeTheMismatchFails = Object new (
+  |
+    t ::= nil.
+  |
+) (
+  class Base k: k = Object new (
+    |
+      base = k.
+    |
+  ) ()
+
+  class Middle n: n = Base new (
+    |
+      middle = n.
+    |
+  ) ()
+
+  class Leaf = Middle n: (outer Spec61AClauseArgumentRunsBeforeTheMismatchFails note: 'argument') (
+    |
+      leaf = 1.
+    |
+  ) ()
+
+  public note: text = (
+    t
+        show: text;
+        newLine.
+    ^text.
+  )
+
+  public main: platform args: arguments = (
+    t:: platform transcript.
+    Leaf new.
+  )
+)

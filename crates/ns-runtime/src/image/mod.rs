@@ -79,8 +79,7 @@ fn plan_describing<'gc>(
     // the graph section is what refuses such a root.
     let module_roots: Vec<std::rc::Rc<crate::mixin::Mixin>> = modules
         .iter()
-        .filter_map(|module| heap.class_application(module.class))
-        .map(|application| application.mixin.clone())
+        .filter_map(|module| heap.class_declaration(module.class))
         .collect();
     // A root that can never be instantiated could only fail as an artifact,
     // and refusing it here keeps the format from needing a way to say so.
@@ -196,9 +195,8 @@ fn extra_bodies(
     extra
 }
 
-/// Every body `mixin` carries -- its methods, its initializer, its
-/// superclass clause and message, its `<:` clauses' messages -- and the
-/// blocks nested in them, by address.
+/// Every body `mixin` carries -- its methods, its three initializer bodies,
+/// its superclass clause -- and the blocks nested in them, by address.
 pub(crate) fn version_bodies(mixin: &Mixin, out: &mut HashSet<usize>) {
     let mut pending: Vec<Rc<CompiledCode>> = mixin
         .compiled_methods()
@@ -206,16 +204,11 @@ pub(crate) fn version_bodies(mixin: &Mixin, out: &mut HashSet<usize>) {
         .chain(
             [
                 &mixin.initializer_code,
+                &mixin.own_initializer_code,
+                &mixin.standalone_initializer_code,
                 &mixin.superclass_clause_code,
-                &mixin.superclass_message_code,
             ]
             .into_iter()
-            .chain(
-                mixin
-                    .mixin_applications
-                    .iter()
-                    .map(|clause| &clause.message_code),
-            )
             .flatten()
             .cloned(),
         )

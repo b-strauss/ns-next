@@ -20,6 +20,7 @@
 use crate::builtins::primitive::ElementKind;
 use crate::bytecode::CompiledCode;
 use crate::hash::IdentityMap;
+use crate::interpreter::instantiate::InitializerBody;
 use crate::interpreter::FeedbackBase;
 use crate::mixin::{DispatchId, DispatchIds, Mixin, MixinApplication, MixinMethod};
 use crate::types::*;
@@ -53,7 +54,9 @@ use object::{
 };
 pub(crate) use object::{ByteArrayData, ByteArrayDataMut};
 use pending::PendingEphemerons;
-pub use records::{FrameRecord, NewClass, NewClosure, ObjectShape, PlaceholderFormat};
+pub use records::{
+    DeclarationScope, FrameRecord, NewClass, NewClosure, ObjectShape, PlaceholderFormat,
+};
 use scavenge::Scavenger;
 use space::{
     allocation_words, block_range, object_at, overflow_word, RegionName, Space, NURSERY_END,
@@ -84,17 +87,6 @@ impl InstanceHeader {
     }
 }
 
-/// What `new` reads of a class's application, copied out in one lookup.
-#[derive(Clone, Copy)]
-pub(crate) struct InstantiationFacts {
-    pub(crate) refused: bool,
-    pub(crate) inherits_value: bool,
-    pub(crate) slot_count: usize,
-    pub(crate) header: Option<InstanceHeader>,
-    pub(crate) without_code: bool,
-    pub(crate) factory_arity: Option<usize>,
-}
-
 /// The sizes `image::decode::decode_graph_section`'s first pass gives each
 /// record before it allocates anything, stated beside the payloads they
 /// must agree with: a class object's fields, a closure's and a frame's
@@ -103,6 +95,13 @@ pub(crate) struct InstantiationFacts {
 /// class word included.
 pub(crate) mod record_size {
     pub(crate) const CLASS_FIELDS: usize = super::class_field::COUNT;
+    /// A level a `<:` clause added: a class object's fields and the class
+    /// its clause named (`Heap::allocate_applied_level`).
+    pub(crate) const APPLIED_LEVEL_FIELDS: usize = super::class_field::APPLIED_LEVEL_COUNT;
+    /// A body-less declaration's class object: a level's fields and its
+    /// declaration's enclosing object and declaring class
+    /// (`Heap::class_declaration_scope`).
+    pub(crate) const BODY_LESS_CLASS_FIELDS: usize = super::class_field::BODY_LESS_CLASS_COUNT;
     /// The id of the mixin it stands for (`Heap::allocate_mixin_object`).
     pub(crate) const MIXIN_FIELDS: usize = 1;
     pub(crate) const CLOSURE_FIXED_FIELDS: usize = super::closure_field::COUNT;
@@ -518,6 +517,16 @@ struct ActivationStack<'gc> {
     counted: usize,
     #[cfg(debug_assertions)]
     next_generation: u32,
+}
+
+impl<'gc> ActivationStack<'gc> {
+    /// `Heap::push_activation`'s push where `entries` has no room left:
+    /// out of line, so that the push that has room makes no call.
+    #[cold]
+    #[inline(never)]
+    fn push_entry_growing(&mut self, entry: StackEntry<'gc>) {
+        self.entries.push(entry);
+    }
 }
 
 /// The initial value of `Heap::collection_floor`, and of `next_collection`
@@ -1671,6 +1680,51 @@ impl<'gc> Heap<'gc> {
         object
     }
 
+    /// A level a `<:` clause added (`newspeak-spec.pdf` §6.2): a class object
+    /// as `allocate_class` makes one, and one field more, the class object
+    /// `named` its clause named (`class_field::NAMED_CLASS`). The clause
+    /// itself is set after, as every class object's later fields are.
+    ///
+    /// A body-less declaration's class object (`body_less`) has two fields
+    /// more, its declaration's enclosing object and declaring class, nil
+    /// until `class_set_declaration_scope` writes them: the declaration
+    /// that becomes this class object knows them only once its superclass
+    /// clause has run.
+    pub(crate) fn allocate_applied_level(
+        &mut self,
+        metaclass: ClassReference<'gc>,
+        class: NewClass<'gc>,
+        named: ClassReference<'gc>,
+        body_less: bool,
+    ) -> ClassReference<'gc> {
+        let fixed = self.class_fixed_words(class);
+        let named = self.store(Value::object(named));
+        let field_count = if body_less {
+            class_field::BODY_LESS_CLASS_COUNT
+        } else {
+            class_field::APPLIED_LEVEL_COUNT
+        };
+        let (object, fields) =
+            self.allocate_object(metaclass, Format::Class, 0, false, field_count);
+        let words = &mut self.space.words_mut()[fields];
+        write_words(&mut words[..class_field::COUNT], fixed);
+        words[class_field::NAMED_CLASS] = named.bits();
+        object
+    }
+
+    /// A body-less declaration's scope as the two words its class object
+    /// stores, enclosing object first.
+    fn declaration_scope_words(&self, scope: DeclarationScope<'gc>) -> [Word; 2] {
+        let DeclarationScope {
+            enclosing,
+            declaring_class,
+        } = scope;
+        [
+            self.store(enclosing.map_or(Value::nil(), Value::object)),
+            self.store(declaring_class.map_or(Value::nil(), Value::object)),
+        ]
+    }
+
     /// A class object's fields from its record, stored: the one place they
     /// are laid out, for a new class object and for a placeholder filled in
     /// place (`fill_placeholder_class`). Every field set after creation
@@ -1792,23 +1846,50 @@ impl<'gc> Heap<'gc> {
     /// The object carries `NONE` in its header until `stamp_dispatch_ids`
     /// runs -- `class` may itself be a still-placeholder record with no
     /// application yet -- and must not be dispatched on before then.
+    ///
+    /// `named` is a level's named class (`allocate_applied_level`), and the
+    /// placeholder has that field exactly when it is given; `scope` is a
+    /// body-less declaration's (`class_declaration_scope`), given only with
+    /// `named`, and the placeholder has its two fields exactly when it is
+    /// given.
     pub(crate) fn fill_placeholder_class(
         &mut self,
         object: ObjectReference<'gc>,
         class: ClassReference<'gc>,
         identity_hash: u32,
         record: NewClass<'gc>,
+        named: Option<ClassReference<'gc>>,
+        scope: Option<DeclarationScope<'gc>>,
     ) -> bool {
         self.check_object_origin(object);
         let fields = self.class_fixed_words(record);
-        for word in fields {
-            self.debug_assert_tenured(word);
+        let named = named.map(|named| self.store(Value::object(named)));
+        let scope = scope.map(|scope| self.declaration_scope_words(scope));
+        for word in fields
+            .iter()
+            .chain(named.iter())
+            .chain(scope.iter().flatten())
+        {
+            self.debug_assert_tenured(*word);
         }
+        let expected = match (named, scope) {
+            (Some(_), Some(_)) => class_field::BODY_LESS_CLASS_COUNT,
+            (Some(_), None) => class_field::APPLIED_LEVEL_COUNT,
+            (None, None) => class_field::COUNT,
+            (None, Some(_)) => return false,
+        };
         let placeholder = self.fields_mut(object);
-        if placeholder.len() != class_field::COUNT {
+        if placeholder.len() != expected {
             return false;
         }
-        write_words(placeholder, fields);
+        write_words(&mut placeholder[..class_field::COUNT], fields);
+        if let Some(named) = named {
+            placeholder[class_field::NAMED_CLASS] = named.bits();
+        }
+        if let Some([enclosing, declaring_class]) = scope {
+            placeholder[class_field::DECLARATION_ENCLOSING] = enclosing.bits();
+            placeholder[class_field::DECLARATION_DECLARING_CLASS] = declaring_class.bits();
+        }
         self.rewrite_placeholder_header(object, class, identity_hash, Format::Class, 0);
         true
     }
@@ -2194,20 +2275,16 @@ impl<'gc> Heap<'gc> {
             None => Word::NIL,
         };
         use crate::image::opcodes::{
-            FRAME_CLOSURE, FRAME_INITIALIZER, FRAME_METHOD, FRAME_MIXIN_APPLICATION_MESSAGE,
-            FRAME_SUPERCLASS_CLAUSE, FRAME_SUPERCLASS_MESSAGE, FRAME_TOP_LEVEL,
+            FRAME_CLOSURE, FRAME_FACTORY, FRAME_METHOD, FRAME_SUPERCLASS_CLAUSE, FRAME_TOP_LEVEL,
         };
         let (tag, operand) = match kind {
             // The method is the code id's (`code_method`).
             FrameKind::Method(_) => (FRAME_METHOD, None),
             FrameKind::Closure(closure) => (FRAME_CLOSURE, Some(closure)),
             FrameKind::TopLevel => (FRAME_TOP_LEVEL, None),
-            FrameKind::Initializer(class) => (FRAME_INITIALIZER, Some(class)),
+            FrameKind::Initializer(class, body) => (body.frame_tag(), Some(class)),
+            FrameKind::Factory(class) => (FRAME_FACTORY, Some(class)),
             FrameKind::SuperclassClause(class) => (FRAME_SUPERCLASS_CLAUSE, Some(class)),
-            FrameKind::SuperclassMessage(class) => (FRAME_SUPERCLASS_MESSAGE, Some(class)),
-            FrameKind::MixinApplicationMessage(class) => {
-                (FRAME_MIXIN_APPLICATION_MESSAGE, Some(class))
-            }
         };
         let mut words = [Word::NIL; frame_field::COUNT];
         words[frame_field::SENDER] = frame_word(sender);
@@ -3492,10 +3569,10 @@ impl<'gc> Heap<'gc> {
                     Format::Closure => "a Closure".to_string(),
                     Format::Class => format!("the class {}", self.class_display_name(object)),
                     _ => {
-                        match self.class_application_entry(self.object_class(object)) {
-                            Some(application) => {
-                                format!("an instance of {}", application.mixin.name)
-                            }
+                        // Named as its class is (`class_name`): an instance
+                        // of a body-less declaration's class is one of it.
+                        match self.class_name(self.object_class(object)) {
+                            Some(name) => format!("an instance of {name}"),
                             // `ClassReference`'s doc: every class word
                             // names a class object by convention rather than by
                             // the type system. This arm exists only so the
@@ -3858,9 +3935,8 @@ impl<'gc> Heap<'gc> {
         application.instance_header =
             InstanceHeader::for_slots(application.dispatch_ids.instances, application.slot_count);
         // The facts come from the literal alone, which every caller computes
-        // from the same mixin; a debug build refuses one that does not, so
-        // `apply_mixin`'s `instantiates_without_code`, derived from them
-        // before this call, can never rest on facts the table then replaces.
+        // from the same mixin; a debug build refuses one that does not, so that
+        // no instantiation reads facts of another mixin than the one it runs.
         debug_assert_eq!(
             application.level_facts,
             crate::mixin::LevelFacts::of(&application.mixin),
@@ -4079,6 +4155,54 @@ impl<'gc> Heap<'gc> {
         Some((declaration, index, named_builtin))
     }
 
+    /// What instantiation asks of the class object `class` as a level --
+    /// its application, the `<:` clause that added it, its superclass --
+    /// read with one look at its words, where `class_application_entry`,
+    /// `class_applied_parts` and `class_superclass` would each look again.
+    /// Every answer is theirs; for a handle that is no class object, every
+    /// part is empty, as each of theirs is.
+    pub(crate) fn class_level(&self, class: ClassReference<'gc>) -> ClassLevel<'_, 'gc> {
+        let Some(words) = self.pointer_words(class, Format::Class) else {
+            return ClassLevel {
+                application: None,
+                applied: None,
+                superclass: None,
+            };
+        };
+        let application = self.application_in_words(words);
+        let applied = self
+            .class_word(words, class_field::APPLIED_CLAUSE)
+            .and_then(Value::as_small_integer)
+            .and_then(crate::mixin::AppliedClause::unpack)
+            .and_then(|(mixin, index, _)| Some((&self.mixin_row(mixin)?.current, index)));
+        let superclass = self
+            .class_word(words, class_field::SUPERCLASS)
+            .and_then(Value::as_object);
+        ClassLevel {
+            application,
+            applied,
+            superclass,
+        }
+    }
+
+    /// Field `index` of a class object whose words are `words`.
+    #[inline(always)]
+    fn class_word(&self, words: &[u64], index: usize) -> Option<Value<'gc>> {
+        words
+            .get(index)
+            .map(|bits| self.load(Word::from_bits(*bits)))
+    }
+
+    /// The table entry the application field of a class object whose words
+    /// are `words` names (`class_application_entry`).
+    #[inline(always)]
+    fn application_in_words(&self, words: &[u64]) -> Option<&Rc<MixinApplication>> {
+        self.class_word(words, class_field::APPLICATION)
+            .and_then(Value::as_small_integer)
+            .and_then(|index| usize::try_from(index).ok())
+            .and_then(|index| self.tables.applications.get(index)?.as_ref())
+    }
+
     /// One accessor for the behaviour half of a class object, so a
     /// construction site that needs a superclass's application never has to
     /// re-derive the borrow-and-match itself.
@@ -4089,24 +4213,7 @@ impl<'gc> Heap<'gc> {
         self.class_application_entry(class).cloned()
     }
 
-    /// What `new` needs of `class`'s application, read once and copied
-    /// out; `None` for a class object with no application.
-    pub(crate) fn class_instantiation_facts(
-        &self,
-        class: ClassReference<'gc>,
-    ) -> Option<InstantiationFacts> {
-        let application = self.class_application_entry(class)?;
-        Some(InstantiationFacts {
-            refused: application.instantiation_refusal.is_some(),
-            inherits_value: application.inherits_value,
-            slot_count: application.slot_count,
-            header: application.instance_header,
-            without_code: application.instantiates_without_code,
-            factory_arity: application.level_facts.factory_arity,
-        })
-    }
-
-    /// The instantiation walk's facts of `class`'s level, copied out of its
+    /// Instantiation's facts of `class`'s level, copied out of its
     /// application without cloning it; `None` for a class object with no
     /// application.
     pub(crate) fn class_level_facts(
@@ -4115,21 +4222,6 @@ impl<'gc> Heap<'gc> {
     ) -> Option<crate::mixin::LevelFacts> {
         self.class_application_entry(class)
             .map(|application| application.level_facts)
-    }
-
-    /// Whether any class object of `class`'s superclass chain, `class`
-    /// included, is a level a `<:` clause added: a fact of the class
-    /// objects, not of their applications, since a class object may name
-    /// another declaration's applied level as its superclass.
-    pub(crate) fn chain_has_applied_level(&self, class: ClassReference<'gc>) -> bool {
-        let mut level = Some(class);
-        while let Some(current) = level {
-            if self.class_is_applied_level(current) {
-                return true;
-            }
-            level = self.class_superclass(current);
-        }
-        false
     }
 
     /// The index of `class`'s application in the table: the identity of
@@ -4191,9 +4283,9 @@ impl<'gc> Heap<'gc> {
     }
 
     /// Whether `class` is a level a mixin application added: exactly when
-    /// `class_applied_clause` answers a clause, without copying it out. The
-    /// instantiation walk asks this of every superclass it climbs to, so an
-    /// ordinary level costs one test of an object the walk reads anyway.
+    /// `class_applied_clause` answers a clause, without copying it out.
+    /// Instantiation asks this of every level it initializes or passes, so an
+    /// ordinary level costs one test of an object it reads anyway.
     pub fn class_is_applied_level(&self, class: ClassReference<'gc>) -> bool {
         self.class_applied_parts(class)
             .is_some_and(|(declaration, index, _)| index < declaration.mixin_applications.len())
@@ -4225,7 +4317,7 @@ impl<'gc> Heap<'gc> {
     }
 
     /// Whether `class` carries a recorded `ValueClassRefusal`, without
-    /// reading it: `decide_instantiation` asks this on every instantiation
+    /// reading it: `allocate_for_factory` asks this on every instantiation
     /// of a value class, and only the cold error path reads the refusal
     /// itself (`class_value_refusal`).
     pub fn class_has_value_refusal(&self, class: ClassReference<'gc>) -> bool {
@@ -4234,7 +4326,7 @@ impl<'gc> Heap<'gc> {
     }
 
     /// §3.1.1's enclosing-object condition on a value class, decided when
-    /// `class` was created and read here by `decide_instantiation`'s cold
+    /// `class` was created and read here by `allocate_for_factory`'s cold
     /// error path and by `check_value_class`'s walk --
     /// `ValueClassRefusal`'s doc comment says why creation and refusal are
     /// two different moments. `None` for a class that is no value, for a
@@ -4299,18 +4391,254 @@ impl<'gc> Heap<'gc> {
         self.class_object_field(class, class_field::THIS_CLASS)
     }
 
-    /// The name a class object is shown by: its mixin's for a class, and
-    /// its class's followed by ` class` for a metaclass, as
+    /// The name a class object is shown by: its own (`class_name`) for a
+    /// class, and its class's followed by ` class` for a metaclass, as
     /// `Metaclass>>name` answers it (`Kernel.ns`). For the refusal texts
     /// that name what could not be instantiated.
     pub fn class_display_name(&self, class: ClassReference<'gc>) -> String {
         match self.class_this_class(class) {
             Some(this_class) => format!("{} class", self.class_display_name(this_class)),
-            None => self.class_application_entry(class).map_or_else(
-                || "a class".to_string(),
-                |application| application.mixin.name.to_string(),
-            ),
+            None => self
+                .class_name(class)
+                .map_or_else(|| "a class".to_string(), |name| name.to_string()),
         }
+    }
+
+    /// For a level a `<:` clause added, the class object the clause named
+    /// (`class_field::NAMED_CLASS`); `None` for every other class object and
+    /// for a handle that is no class object.
+    pub fn class_named(&self, class: ClassReference<'gc>) -> Option<ClassReference<'gc>> {
+        self.class_object_field(class, class_field::NAMED_CLASS)
+    }
+
+    /// The declaration `class` is the class of: a body-less declaration's
+    /// for its class object (`class_body_less_declaration`), which applies
+    /// its last clause's mixin, and its application's mixin for every
+    /// other class object. `None` for a handle that is no class object.
+    /// What a module's root is held to and described by in an image.
+    pub fn class_declaration(&self, class: ClassReference<'gc>) -> Option<Rc<Mixin>> {
+        match self.class_body_less_declaration(class) {
+            Some(declaration) => Some(declaration.clone()),
+            None => self
+                .class_application_entry(class)
+                .map(|application| application.mixin.clone()),
+        }
+    }
+
+    /// Whether `first` and `second` are the class objects of one body-less
+    /// declaration, or neither is a body-less declaration's. Two body-less
+    /// declarations applying one mixin with one superclass share one
+    /// application, yet are two classes, as their body versions, two
+    /// applications, are: what value equality and `Behavior`'s
+    /// `sharesApplicationWith:` ask beside the application.
+    pub(crate) fn classes_share_body_less_declaration(
+        &self,
+        first: ClassReference<'gc>,
+        second: ClassReference<'gc>,
+    ) -> bool {
+        // Told by size first, one header read each: only a body-less
+        // declaration's class object has the declaration's scope, and only
+        // two of them need their declarations looked up.
+        match (
+            self.class_has_declaration_scope(first),
+            self.class_has_declaration_scope(second),
+        ) {
+            (false, false) => true,
+            (true, true) => self
+                .class_body_less_declaration(first)
+                .zip(self.class_body_less_declaration(second))
+                .is_some_and(|(first_declaration, second_declaration)| {
+                    Rc::ptr_eq(first_declaration, second_declaration)
+                }),
+            _ => false,
+        }
+    }
+
+    /// The enclosing object reflection reports for `class` (a mirror's
+    /// `enclosingObject`, `Behavior`'s): §6 gives the class of a
+    /// declaration "an enclosing object which is eo", so a body-less
+    /// declaration's class object -- and its metaclass, which shares its
+    /// class's -- answers its declaration's (`class_declaration_scope`), nil
+    /// for a module's root, where `class_enclosing` answers its level's,
+    /// which the applied mixin's code walks out from. Every other class
+    /// object answers `class_enclosing`.
+    pub fn class_reflected_enclosing(
+        &self,
+        class: ClassReference<'gc>,
+    ) -> Option<ObjectReference<'gc>> {
+        let instance_side = self.class_this_class(class).unwrap_or(class);
+        match self.class_declaration_scope(instance_side) {
+            Some(scope) => scope.enclosing,
+            None => self.class_enclosing(class),
+        }
+    }
+
+    /// Whether `class` is a body-less declaration's class object, the one
+    /// class object with its declaration's scope
+    /// (`class_declaration_scope`), told by its size alone, one read of
+    /// the class object's header.
+    #[inline(always)]
+    pub(crate) fn class_has_declaration_scope(&self, class: ClassReference<'gc>) -> bool {
+        self.pointer_words(class, Format::Class)
+            .is_some_and(|words| words.len() == class_field::BODY_LESS_CLASS_COUNT)
+    }
+
+    /// For a body-less declaration's class object
+    /// (`class_body_less_declaration`), the declaration's own enclosing
+    /// object and declaring class (`class_field::DECLARATION_ENCLOSING`),
+    /// which its own code walks out from where every other code at the
+    /// class object walks out from the named class's
+    /// (`interpreter::sends::lexical_origin`); `None` for every other class
+    /// object and for a handle that is no class object.
+    pub fn class_declaration_scope(
+        &self,
+        class: ClassReference<'gc>,
+    ) -> Option<DeclarationScope<'gc>> {
+        if !self.class_has_declaration_scope(class) {
+            return None;
+        }
+        Some(DeclarationScope {
+            enclosing: self.class_object_field(class, class_field::DECLARATION_ENCLOSING),
+            declaring_class: self
+                .class_object_field(class, class_field::DECLARATION_DECLARING_CLASS),
+        })
+    }
+
+    /// Writes a body-less declaration's scope into its class object, through
+    /// the write barrier: the declaration's enclosing object and declaring
+    /// class are known only once its superclass clause has run, after the
+    /// class object was built (`nested::after_clause`). Answers whether the
+    /// write happened: `false` for a class object without the two fields
+    /// and for a handle that is no class object.
+    pub(crate) fn class_set_declaration_scope(
+        &mut self,
+        class: ClassReference<'gc>,
+        scope: DeclarationScope<'gc>,
+    ) -> bool {
+        if !self.class_has_declaration_scope(class) {
+            return false;
+        }
+        let DeclarationScope {
+            enclosing,
+            declaring_class,
+        } = scope;
+        self.set_class_field(
+            class,
+            class_field::DECLARATION_ENCLOSING,
+            enclosing.map_or(Value::nil(), Value::object),
+        ) && self.set_class_field(
+            class,
+            class_field::DECLARATION_DECLARING_CLASS,
+            declaring_class.map_or(Value::nil(), Value::object),
+        )
+    }
+
+    /// The mixin of `class`'s metaclass: its class side together with its
+    /// primary factory (§6.3), which says which factory and which name the
+    /// class object has. `None` for a class object without a metaclass --
+    /// one of the kernel phase before the bootstrap gave it one, a
+    /// metaclass -- and for a handle that is no class object.
+    fn class_side_entry(
+        &self,
+        class: ClassReference<'gc>,
+    ) -> Option<&Rc<crate::mixin::MixinApplication>> {
+        self.class_application_entry(self.class_metaclass(class)?)
+    }
+
+    /// `class`'s primary factory, as `newspeak-spec.pdf` §6.3 makes it: the
+    /// factory entry of its metaclass's class-side mixin, its selector and
+    /// arity. That is the declaration's own for a class with a body and for
+    /// a body-less declaration's class object (`object-model.md`, "Mixin
+    /// application"), and the named class's for a level a `<:` clause
+    /// added, which §6.2 gives "a primary factory method with the same
+    /// selector as m". `new` with no arguments for a builtin. A class object
+    /// with no metaclass yet has its mixin's; `None` for a metaclass and
+    /// for a handle that is no class object.
+    ///
+    /// Every instantiation's §6.1 check asks it, so each class object's
+    /// words are looked at once: `class`'s, then its header class's, which
+    /// is its metaclass when that class's `THIS_CLASS` is `class`
+    /// (`class_metaclass`).
+    pub fn class_factory(&self, class: ClassReference<'gc>) -> Option<crate::mixin::Factory> {
+        let words = self.pointer_words(class, Format::Class)?;
+        if self
+            .class_word(words, class_field::THIS_CLASS)
+            .and_then(Value::as_object)
+            .is_some()
+        {
+            return None;
+        }
+        let header = self.object_class(class);
+        let class_side = self
+            .pointer_words(header, Format::Class)
+            .filter(|header_words| {
+                self.class_word(header_words, class_field::THIS_CLASS)
+                    .and_then(Value::as_object)
+                    .is_some_and(|this_class| this_class.same(class))
+            })
+            .and_then(|header_words| self.application_in_words(header_words));
+        match class_side {
+            Some(class_side) => class_side.level_facts.metaclass_factory,
+            None => self.application_in_words(words).map(|application| {
+                application.mixin.factory.unwrap_or(crate::mixin::Factory {
+                    selector: Symbol::NEW,
+                    argument_count: 0,
+                })
+            }),
+        }
+    }
+
+    /// `class`'s name as its declaration writes it, read through its
+    /// metaclass as its factory is (`class_factory`): the instance side
+    /// the class side stands for. A level a `<:` clause added is named
+    /// for the class its clause named, and a body-less declaration's class
+    /// object for the declaration. A class object with no metaclass yet is
+    /// named for its mixin; `None` for a metaclass and for a handle that is
+    /// no class object.
+    pub fn class_name(&self, class: ClassReference<'gc>) -> Option<Symbol> {
+        if self.class_this_class(class).is_some() || !self.is_class(class) {
+            return None;
+        }
+        let instance_side = self
+            .class_side_entry(class)
+            .and_then(|class_side| self.known_mixin_id(&class_side.mixin))
+            .and_then(|id| self.enclosing_mixin_id(id))
+            .and_then(|id| self.mixin_row(id));
+        match instance_side {
+            Some(row) => Some(row.current.name),
+            None => self
+                .class_application_entry(class)
+                .map(|application| application.mixin.name),
+        }
+    }
+
+    /// The mixin that carries the initializer `body` an activation entered
+    /// at `level` runs: the body-less declaration's, for the full body of
+    /// its class object (`class_body_less_declaration`), whose mixin is the
+    /// one its last clause applies; `level`'s own mixin otherwise. `None`
+    /// for a handle that is no class object.
+    pub(crate) fn initializer_mixin(
+        &self,
+        level: ClassReference<'gc>,
+        body: InitializerBody,
+    ) -> Option<Rc<Mixin>> {
+        if body == InitializerBody::Full {
+            if let Some(declaration) = self.class_body_less_declaration(level) {
+                return Some(declaration.clone());
+            }
+        }
+        self.class_application(level)
+            .map(|application| application.mixin.clone())
+    }
+
+    /// The body-less declaration (`Mixin::has_body`) `class` is the class
+    /// object of: the declaration whose last `<:` clause added `class`.
+    /// `None` for every other class object, a level a body-less
+    /// declaration's earlier clause added included.
+    pub fn class_body_less_declaration(&self, class: ClassReference<'gc>) -> Option<&Rc<Mixin>> {
+        let (declaration, index, _) = self.class_applied_parts(class)?;
+        (!declaration.has_body && index + 1 == declaration.mixin_applications.len())
+            .then_some(declaration)
     }
 
     /// The id `dispatch_id` answers for an object of `class`: its class's
@@ -4769,12 +5097,13 @@ impl<'gc> Heap<'gc> {
         };
         match kind {
             FrameKind::Method(method) => Some(method.code.clone()),
-            FrameKind::Initializer(class) => mixin(*class)?.initializer_code.clone(),
+            FrameKind::Initializer(class, body) => {
+                body.code_of(self.initializer_mixin(*class, *body)?.as_ref())
+            }
+            FrameKind::Factory(class) => {
+                crate::interpreter::instantiate::factory_code(self, *class)
+            }
             FrameKind::SuperclassClause(class) => mixin(*class)?.superclass_clause_code.clone(),
-            FrameKind::SuperclassMessage(class) => mixin(*class)?.superclass_message_code.clone(),
-            FrameKind::MixinApplicationMessage(level) => self
-                .class_applied_clause(*level)
-                .and_then(|clause| clause.message_code),
             FrameKind::Closure(closure) => self.closure_code(*closure),
             FrameKind::TopLevel => None,
         }
@@ -4877,8 +5206,7 @@ impl<'gc> Heap<'gc> {
     /// (`check_class_references`).
     pub fn frame_kind(&self, frame: FrameReference<'gc>) -> FrameKind<'gc> {
         use crate::image::opcodes::{
-            FRAME_CLOSURE, FRAME_INITIALIZER, FRAME_METHOD, FRAME_MIXIN_APPLICATION_MESSAGE,
-            FRAME_SUPERCLASS_CLAUSE, FRAME_SUPERCLASS_MESSAGE,
+            FRAME_CLOSURE, FRAME_FACTORY, FRAME_METHOD, FRAME_SUPERCLASS_CLAUSE,
         };
         let operand = self
             .frame_field(frame, frame_field::KIND_OPERAND)
@@ -4893,12 +5221,11 @@ impl<'gc> Heap<'gc> {
                 .and_then(|id| self.code_method(id))
                 .map(FrameKind::Method),
             Some(FRAME_CLOSURE) => operand.map(FrameKind::Closure),
-            Some(FRAME_INITIALIZER) => operand.map(FrameKind::Initializer),
+            Some(FRAME_FACTORY) => operand.map(FrameKind::Factory),
+            Some(tag) if InitializerBody::of_frame_tag(tag).is_some() => operand
+                .zip(InitializerBody::of_frame_tag(tag))
+                .map(|(class, body)| FrameKind::Initializer(class, body)),
             Some(FRAME_SUPERCLASS_CLAUSE) => operand.map(FrameKind::SuperclassClause),
-            Some(FRAME_SUPERCLASS_MESSAGE) => operand.map(FrameKind::SuperclassMessage),
-            Some(FRAME_MIXIN_APPLICATION_MESSAGE) => {
-                operand.map(FrameKind::MixinApplicationMessage)
-            }
             _ => None,
         };
         // Every frame this heap built records what its kind needs: a method
@@ -5063,6 +5390,7 @@ impl<'gc> Heap<'gc> {
 
     /// Pushes an activation whose registers are `arguments` followed by
     /// `temporary_count` nils.
+    #[inline(always)]
     pub fn push_activation(
         &mut self,
         header: ActivationHeader<'gc>,
@@ -5097,8 +5425,8 @@ impl<'gc> Heap<'gc> {
         // Only code that addresses its own slots pays for these reads; a
         // send to any other method tests one flag. The receiver's guard is
         // recorded only when its chain contains the entered level: a
-        // private lexical send, a super send and the instantiation walk's
-        // next level bind their code without looking at the receiver, so a
+        // private lexical send, a super send and an initializer's superclass
+        // or applied level bind their code without looking at the receiver, so a
         // receiver the bulk forward replaced before the push would
         // otherwise be vouched for by its own guard and read or written in
         // the old layout. Without one, the first own-slot access takes the
@@ -5119,7 +5447,7 @@ impl<'gc> Heap<'gc> {
         } else {
             (DispatchId::NONE, ApplicationIndex::UNREGISTERED)
         };
-        self.stack.entries.push(StackEntry {
+        let entry = StackEntry {
             receiver: header.receiver,
             current_class: header.current_class,
             kind: header.kind,
@@ -5136,7 +5464,17 @@ impl<'gc> Heap<'gc> {
             entered_level,
             #[cfg(debug_assertions)]
             generation,
-        });
+        };
+        // Pushed where the vector has room, which is every push but the
+        // ones that grow it, without the growth's call in between: around
+        // that call the entry was assembled on the stack and copied into
+        // place, reading back in sixteen-byte pieces fields just written in
+        // smaller ones, a store-forwarding stall on every push.
+        if self.stack.entries.len() < self.stack.entries.capacity() {
+            self.stack.entries.push(entry);
+        } else {
+            self.stack.push_entry_growing(entry);
+        }
         self.activation_handle(index)
     }
 
@@ -5168,19 +5506,30 @@ impl<'gc> Heap<'gc> {
             self.stack.entries.len(),
             "only the top activation can be popped"
         );
+        // Read field by field and dropped in place, rather than the whole
+        // entry moved out and read back: the move read sixteen-byte pieces
+        // of an entry written moments before in smaller ones, a
+        // store-forwarding stall on every return.
         let entry = self
             .stack
             .entries
-            .pop()
+            .last_mut()
             .expect("internal: an activation handle names a live entry");
         let base = entry.base as usize;
-        if let Some(frame) = entry.reified {
+        let reified = entry.reified;
+        let retains_registers = entry.retains_registers;
+        let program_counter = entry.program_counter;
+        let counted = entry.counted;
+        let then = std::mem::replace(&mut entry.then, Continuation::Deliver);
+        let remaining = self.stack.entries.len() - 1;
+        self.stack.entries.truncate(remaining);
+        if let Some(frame) = reified {
             self.check_frame_origin(frame);
             let Heap { space, stack, .. } = self;
             let space_words = space.words_mut();
             let range = block_range(space_words, header_index(frame.offset));
             let words = &mut space_words[range][FIELDS..];
-            if entry.retains_registers {
+            if retains_registers {
                 for (register, word) in words[frame_field::COUNT..]
                     .iter_mut()
                     .zip(&stack.values[base..])
@@ -5188,14 +5537,14 @@ impl<'gc> Heap<'gc> {
                     *register = word.bits();
                 }
             }
-            words[frame_field::PROGRAM_COUNTER] = count_word(entry.program_counter).bits();
+            words[frame_field::PROGRAM_COUNTER] = count_word(program_counter).bits();
             words[frame_field::SENDER] = Word::NIL.bits();
             words[frame_field::UNCONTINUABLE] = Value::boolean(true).word().bits();
             words[frame_field::MARRIED] = Word::NIL.bits();
             // The divorce copied registers into an object the stack's roots
             // no longer cover: an old frame that now holds a young value is
             // remembered like any other old holder.
-            if entry.retains_registers
+            if retains_registers
                 && !space::is_young(frame.offset)
                 && self.stack.values[base..]
                     .iter()
@@ -5205,11 +5554,8 @@ impl<'gc> Heap<'gc> {
             }
         }
         self.stack.values.truncate(base);
-        self.stack.counted -= usize::from(entry.counted);
-        Popped {
-            then: entry.then,
-            counted: entry.counted,
-        }
+        self.stack.counted -= usize::from(counted);
+        Popped { then, counted }
     }
 
     /// The frame object for a live activation, created married to it on the
@@ -5608,18 +5954,70 @@ impl<'gc> Heap<'gc> {
         self.stack.entries[activation.index as usize].kind.clone()
     }
 
-    /// Whether `activation` runs a method, a superclass clause, a superclass
-    /// clause's message or a `<:` clause's message -- not a block, an
-    /// initializer or a top-level activation. Answered without cloning the
+    /// Whether `activation` runs the own code of the body-less declaration
+    /// whose class object is `class` (`class_declaration_scope`): the
+    /// declaration's full initializer entered at `class`, or a block that
+    /// body created, at any nesting. A block is followed along its captured
+    /// frames, each of which runs the body the block is lexically nested in
+    /// (`MakeClosure` captures its creator; `image::decode::verify_graph`
+    /// holds a decoded closure to the same), so the walk climbs the code's
+    /// nesting and ends at its root. Which code runs decides it, so every
+    /// activation of one body answers alike, and the sends read it off the
+    /// code (`CompiledCode::is_declaration_code`): this answer is what a
+    /// debug build holds the code's to. `false` for every other
+    /// activation.
+    pub(crate) fn activation_runs_declaration_code(
+        &self,
+        activation: ActivationReference,
+        class: ClassReference<'gc>,
+    ) -> bool {
+        self.check_activation(activation);
+        let closure = match &self.stack.entries[activation.index as usize].kind {
+            FrameKind::Initializer(level, InitializerBody::Full) => return level.same(class),
+            FrameKind::Closure(closure) => *closure,
+            _ => return false,
+        };
+        self.closure_captured_frame(closure)
+            .is_some_and(|frame| self.frame_runs_declaration_code(frame, class))
+    }
+
+    /// `activation_runs_declaration_code` for the activation `frame` is
+    /// the frame object of, read off the frame alone: what
+    /// `image::decode::verify_graph` holds a decoded frame's body to, so
+    /// that no decoded frame runs a body-less declaration's own code
+    /// anywhere else, nor other code where it would. The walk is bounded
+    /// by the static block nesting, which a decoded closure's captured
+    /// frame is held to.
+    pub(crate) fn frame_runs_declaration_code(
+        &self,
+        frame: FrameReference<'gc>,
+        class: ClassReference<'gc>,
+    ) -> bool {
+        use crate::image::opcodes::{FRAME_CLOSURE, FRAME_INITIALIZER};
+        let mut frame = Some(frame);
+        while let Some(current) = frame {
+            let operand = self
+                .frame_field(current, frame_field::KIND_OPERAND)
+                .as_object();
+            match u8::try_from(self.frame_count_field(current, frame_field::KIND)) {
+                Ok(FRAME_CLOSURE) => {
+                    frame = operand.and_then(|closure| self.closure_captured_frame(closure));
+                }
+                Ok(FRAME_INITIALIZER) => return operand.is_some_and(|level| level.same(class)),
+                _ => return false,
+            }
+        }
+        false
+    }
+
+    /// Whether `activation` runs a method or a superclass clause -- not a
+    /// block, an initializer, a factory or a top-level activation. Answered without cloning the
     /// kind, which holds an `Rc` for a method.
     pub(crate) fn activation_runs_method_or_clause(&self, activation: ActivationReference) -> bool {
         self.check_activation(activation);
         matches!(
             self.stack.entries[activation.index as usize].kind,
-            FrameKind::Method(_)
-                | FrameKind::SuperclassClause(_)
-                | FrameKind::SuperclassMessage(_)
-                | FrameKind::MixinApplicationMessage(_)
+            FrameKind::Method(_) | FrameKind::SuperclassClause(_)
         )
     }
 
@@ -6958,6 +7356,45 @@ impl<'gc> Heap<'gc> {
     }
 }
 
+/// A class object as instantiation asks of it as a level
+/// (`Heap::class_level`), borrowed from the heap's tables.
+#[derive(Clone, Copy)]
+pub(crate) struct ClassLevel<'heap, 'gc> {
+    application: Option<&'heap Rc<MixinApplication>>,
+    applied: Option<(&'heap Rc<Mixin>, usize)>,
+    superclass: Option<ClassReference<'gc>>,
+}
+
+impl<'heap, 'gc> ClassLevel<'heap, 'gc> {
+    /// `Heap::class_application`, borrowed.
+    pub(crate) fn application(&self) -> Option<&'heap Rc<MixinApplication>> {
+        self.application
+    }
+
+    /// `Heap::class_level_facts`.
+    pub(crate) fn level_facts(&self) -> Option<crate::mixin::LevelFacts> {
+        self.application.map(|application| application.level_facts)
+    }
+
+    /// `Heap::class_superclass`.
+    pub(crate) fn superclass(&self) -> Option<ClassReference<'gc>> {
+        self.superclass
+    }
+
+    /// `Heap::class_is_applied_level`.
+    pub(crate) fn is_applied_level(&self) -> bool {
+        self.applied
+            .is_some_and(|(declaration, index)| index < declaration.mixin_applications.len())
+    }
+
+    /// `Heap::class_body_less_declaration`.
+    pub(crate) fn body_less_declaration(&self) -> Option<&'heap Rc<Mixin>> {
+        let (declaration, index) = self.applied?;
+        (!declaration.has_body && index + 1 == declaration.mixin_applications.len())
+            .then_some(declaration)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7230,7 +7667,7 @@ mod tests {
                 current_class: Some(class),
                 program_counter,
                 code: Some(code),
-                kind: FrameKind::Initializer(class),
+                kind: FrameKind::Initializer(class, InitializerBody::OwnPart),
                 uncontinuable: true,
             },
             &[],
@@ -7314,7 +7751,6 @@ mod tests {
             own_slot_base: 0,
             dispatch_ids: crate::mixin::DispatchIds::NONE,
             instance_header: None,
-            instantiates_without_code: false,
             level_facts,
         });
         heap.allocate_self_referential_class(NewClass {
@@ -8573,7 +9009,7 @@ mod tests {
         let activation = heap.push_activation(
             ActivationHeader {
                 current_class: Some(class),
-                kind: FrameKind::Initializer(class),
+                kind: FrameKind::Initializer(class, InitializerBody::OwnPart),
                 code: shaped_code(1, 2),
                 ..header()
             },
@@ -8787,6 +9223,8 @@ mod tests {
                 superclass: None,
                 builtin: None,
             },
+            None,
+            None,
         );
         assert!(!filled);
         assert!(!heap.is_class(placeholder));

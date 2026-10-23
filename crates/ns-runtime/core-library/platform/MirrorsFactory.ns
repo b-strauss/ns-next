@@ -319,9 +319,22 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     )
 
     /// Answers the class's name, a new String: the name its declaration
-    /// gives it, a metaclass's that name followed by ' class'.
+    /// gives it, a metaclass's its class's name followed by ' class'. A
+    /// level a `<:` clause adds is named for the class the clause names.
+    ///
+    /// The class's own name, as `Class>>name` answers it, rather than its
+    /// mixin's: a declaration without a body is the level its last clause
+    /// adds, whose mixin is the one that clause applies and is named for
+    /// that mixin's declaration, while the class is the declaration's.
     public name = (
-      ^self mixin name.
+      |
+        class = self reflectedClass.
+      |
+      self isMeta ifTrue: [
+        ^(vmMirror className: (vmMirror metaclassThisClass: class ifFail: [nil]) ifFail: [nil])
+            , ' class'.
+      ].
+      ^vmMirror className: class ifFail: [nil].
     )
 
     /// Answers the class's name, as `name` does: a class's name is its

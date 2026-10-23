@@ -1,0 +1,52 @@
+/// newspeak-spec.pdf 6: "The class has a name, given by the class
+/// expression." A declaration without a body is the level its last clause
+/// adds (6.2), a class with the applied mixin M1, and is named M3 by its
+/// declaration, as its body version WithBody is named by its own: a class
+/// mirror answers the class's name, as `M3 name` does, for the class, an
+/// object's class and the metaclass, while the mirror on its mixin answers
+/// M1's. A level a clause adds is named for the class the clause names:
+/// M3 for UsesM3's, M1 for WithBody's.
+class ABodyLessClasssNameIsItsDeclarations = Object new () (
+  class Base = Object new () ()
+
+  class M1 tag: t = Object new (
+    |
+      public a = t.
+    |
+  ) ()
+
+  class M3 = Base new <: M1 tag: 3.
+
+  class WithBody = Base new <: M1 tag: 4 () ()
+
+  class UsesM3 = Base new <: M3 () ()
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      ObjectMirror = platform mirrors ObjectMirror.
+      m3 = ClassMirror reflecting: M3.
+    |
+    t
+        show: M3 name;
+        show: ' ';
+        show: m3 name;
+        show: ' ';
+        show: m3 simpleName;
+        show: ' ';
+        show: (ObjectMirror reflecting: M3 new) getClass name;
+        show: ' ';
+        show: (ObjectMirror reflecting: M3) getClass name;
+        show: ' ';
+        show: (ClassMirror reflecting: UsesM3) superclass name;
+        newLine.
+    t
+        show: m3 mixin name;
+        show: ' ';
+        show: (ClassMirror reflecting: WithBody) name;
+        show: ' ';
+        show: (ClassMirror reflecting: WithBody) superclass name;
+        newLine.
+  )
+)

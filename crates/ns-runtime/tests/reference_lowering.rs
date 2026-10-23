@@ -105,7 +105,7 @@ fn a_reference_initializer_initializes_each_slot_then_answers_self() {
             .expect("a class")
             .mixin
             .clone();
-        mixin.initializer_code.clone().expect("an initializer")
+        mixin.own_initializer_code.clone().expect("an initializer")
     });
     assert!(matches!(
         code.instruction(0),
@@ -151,6 +151,132 @@ fn a_reference_initializer_initializes_each_slot_then_answers_self() {
     assert_eq!(
         code.statement_program_counter,
         vec![(0, 0..2), (1, 2..4), (2, 4..6)]
+    );
+}
+
+/// The full initializer of the nested class `name` of the module whose
+/// root `class` is.
+fn full_initializer(
+    interpreter: &mut Interpreter,
+    class: &Root,
+    name: &str,
+) -> Rc<ns_runtime::bytecode::CompiledCode> {
+    interpreter.enter(|mutator| {
+        let Some(class) = mutator.fetch(class).as_object() else {
+            panic!("load_module answers a class object")
+        };
+        let root = mutator
+            .heap()
+            .class_application(class)
+            .expect("a class")
+            .mixin
+            .clone();
+        mutator
+            .heap()
+            .nested_mixins(&root)
+            .into_iter()
+            .find(|nested| nested.name.as_str() == name)
+            .unwrap_or_else(|| panic!("the module declares {name}"))
+            .initializer_code
+            .clone()
+            .expect("a full initializer")
+    })
+}
+
+/// The full initializer's prologue under the reference lowering: the
+/// optimized lowering's shapes (`compiler.rs`), each clause argument in a
+/// register nothing else writes and the parameter it reads copied first.
+#[test]
+fn the_reference_lowering_emits_the_same_prologue() {
+    let superclass_with_argument = indoc! {"
+        class Outer = Object new () (
+          class A y: value = Object new () ()
+          class B x: x = A y: x + 1 (| s = x. |) ()
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(superclass_with_argument, Lowering::Reference);
+    let full = full_initializer(&mut interpreter, &class, "B");
+    assert_eq!(
+        full.instructions(),
+        vec![
+            Instruction::Move {
+                destination: 1,
+                source: 0
+            },
+            Instruction::LoadLiteral {
+                destination: 2,
+                literal: ns_runtime::bytecode::Literal::SmallInteger(1)
+            },
+            Instruction::SendPublic {
+                receiver_register: 1,
+                selector: Symbol::intern("+"),
+                argument_registers: vec![2],
+                destination: 3,
+                call_site: CallSite::UNCACHED
+            },
+            Instruction::InitializeSuperclass {
+                steps: 1,
+                selector: Symbol::intern("y:"),
+                argument_registers: vec![3],
+                destination: 4
+            },
+            Instruction::Move {
+                destination: 5,
+                source: 0
+            },
+            Instruction::InitializeSlot {
+                source: 5,
+                own_index: 0
+            },
+            Instruction::LoadSelf { destination: 6 },
+            Instruction::ImplicitReturn { register: 6 },
+        ]
+    );
+
+    let two_applied_clauses = indoc! {"
+        class Outer = Object new () (
+          class S = Object new () ()
+          class M1 = Object new () ()
+          class M2 tag: value = Object new () ()
+          class C = S new <: M1 new <: M2 tag: 1 () ()
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(two_applied_clauses, Lowering::Reference);
+    let full = full_initializer(&mut interpreter, &class, "C");
+    assert_eq!(
+        full.instructions(),
+        vec![
+            Instruction::CheckAppliedClause {
+                steps: 1,
+                selector: Symbol::intern("tag:")
+            },
+            Instruction::CheckAppliedClause {
+                steps: 2,
+                selector: Symbol::NEW
+            },
+            Instruction::InitializeSuperclass {
+                steps: 3,
+                selector: Symbol::NEW,
+                argument_registers: vec![],
+                destination: 0
+            },
+            Instruction::InitializeAppliedLevel {
+                steps: 2,
+                argument_registers: vec![],
+                destination: 1
+            },
+            Instruction::LoadLiteral {
+                destination: 2,
+                literal: ns_runtime::bytecode::Literal::SmallInteger(1)
+            },
+            Instruction::InitializeAppliedLevel {
+                steps: 1,
+                argument_registers: vec![2],
+                destination: 3
+            },
+            Instruction::LoadSelf { destination: 4 },
+            Instruction::ImplicitReturn { register: 4 },
+        ]
     );
 }
 

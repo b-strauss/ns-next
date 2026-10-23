@@ -27,7 +27,7 @@
 // retired at 11 and reassigned to 29 for the same reason: closure
 // conversion gave it a list of copied registers, so its old bytes describe
 // a different instruction.
-// Next free number: 41.
+// Next free number: 46.
 
 /// Loads a literal into a register; a string, symbol or array
 /// literal allocates a fresh object every time it runs.
@@ -115,6 +115,21 @@ pub const OPCODE_INITIALIZE_SLOT_PROVISIONALLY: u8 = 39;
 /// An inlined loop's guard failure: signals `NonBooleanReceiver` for the
 /// condition's answer and ends its path (`Instruction::SignalNonBoolean`).
 pub const OPCODE_SIGNAL_NON_BOOLEAN: u8 = 40;
+/// A factory body's allocation of an instance of the class object the
+/// factory was sent to (`Instruction::AllocateInstance`).
+pub const OPCODE_ALLOCATE_INSTANCE: u8 = 41;
+/// A factory body's run of its class object's initializer on the new
+/// instance (`Instruction::InitializeInstance`).
+pub const OPCODE_INITIALIZE_INSTANCE: u8 = 42;
+/// §6.1's check of a `<:` clause's selector against the primary factory of
+/// the level it adds (`Instruction::CheckAppliedClause`).
+pub const OPCODE_CHECK_APPLIED_CLAUSE: u8 = 43;
+/// An initializer's run of its superclass's initializer, after §6.1's check
+/// (`Instruction::InitializeSuperclass`).
+pub const OPCODE_INITIALIZE_SUPERCLASS: u8 = 44;
+/// An initializer's run of the own part of a level a `<:` clause adds
+/// (`Instruction::InitializeAppliedLevel`).
+pub const OPCODE_INITIALIZE_APPLIED_LEVEL: u8 = 45;
 
 /// Instruction tags that no longer name anything and are never reused:
 /// 7–10 were the four sends while their call site was a `u16` instruction
@@ -229,7 +244,7 @@ pub const VALUE_SHIPPED_MODULE: u8 = 11;
 pub const RETIRED_VALUE_TAGS: [u8; 2] = [7, 8];
 
 /// An object record's body, following its class tag and identity hash.
-/// Next free number: 16.
+/// Next free number: 17.
 pub const OBJECT_INSTANCE: u8 = 0;
 pub const OBJECT_STRING: u8 = 1;
 pub const OBJECT_SYMBOL: u8 = 2;
@@ -294,6 +309,19 @@ pub const OBJECT_EPHEMERON: u8 = 13;
 /// not written: the decoder mints it afresh, and refuses a second record
 /// for one mixin, since the object is canonical as a symbol is.
 pub const OBJECT_MIXIN: u8 = 14;
+
+/// A body-less declaration's class object (`Mixin::has_body`): the level
+/// its last `<:` clause added, written as `OBJECT_CLASS` writes it -- in
+/// either shape, ending with the clause and the class it named -- then the
+/// declaration's own scope, which no other class record has: its enclosing
+/// object (a presence flag and a value, an object) and its declaring class
+/// (a presence flag and a class tag), both absent for a module's root.
+/// The applied mixin's code walks out from the level's own enclosing
+/// object and declaring class, the named class's; the declaration's own
+/// code, its clause messages and their arguments, from these. A record
+/// with this body whose clause is not a body-less declaration's last, and
+/// an `OBJECT_CLASS` record whose clause is, are refused.
+pub const OBJECT_BODY_LESS_CLASS: u8 = 16;
 
 /// Object-body tags that no longer name anything and are never reused: 4 was
 /// the closure record while it carried its parameter names and its home
@@ -383,8 +411,9 @@ pub const CLASS_SHIPPED: u8 = 8;
 /// image names a builtin by position any more, only by its shipped name.
 pub const RETIRED_CLASS_TAGS: [u8; 7] = [0, 1, 3, 4, 5, 6, 7];
 
-/// What a frame was activated for, numbered in the order `types::FrameKind`
-/// declares it.
+/// What a frame was activated for (`types::FrameKind`), numbered in the
+/// order the kinds were added; an initializer has one tag per body it can
+/// run.
 ///
 /// A method activation: the `u32` symbol id of its selector and its
 /// method's access tag (`mixins::access_tag`), which together with its
@@ -393,21 +422,34 @@ pub const FRAME_METHOD: u8 = 0;
 /// A closure activation: the object id of the closure object it runs.
 pub const FRAME_CLOSURE: u8 = 1;
 pub const FRAME_TOP_LEVEL: u8 = 2;
+/// An initializer activation running its level's full body
+/// (`InitializerBody::Full`), followed by the class tag of the level it was
+/// entered at; `FRAME_OWN_INITIALIZER` and `FRAME_STANDALONE_INITIALIZER`
+/// name the other two bodies the same way.
 pub const FRAME_INITIALIZER: u8 = 3;
 pub const FRAME_SUPERCLASS_CLAUSE: u8 = 4;
-pub const FRAME_SUPERCLASS_MESSAGE: u8 = 5;
-/// A `<:` clause's message activation, followed by the class tag of the level
-/// the clause added -- whose clause names the body that ran.
-pub const FRAME_MIXIN_APPLICATION_MESSAGE: u8 = 6;
+/// Frame kinds 5 and 6 were the activations of a superclass clause's message
+/// and of a `<:` clause's message, retired when those arguments were lowered
+/// into the initializers. A stale image naming one meets an unknown tag.
+pub const RETIRED_FRAME_KINDS: [u8; 2] = [5, 6];
+/// An initializer activation running its level's own part
+/// (`InitializerBody::OwnPart`), followed by the level's class tag.
+pub const FRAME_OWN_INITIALIZER: u8 = 7;
+/// An initializer activation running its level's standalone body
+/// (`InitializerBody::Standalone`), followed by the level's class tag.
+pub const FRAME_STANDALONE_INITIALIZER: u8 = 8;
+/// A factory activation, followed by the class tag of the class object it
+/// runs on. Its body is always `FRAME_BODY_DECLARED`: a factory body is
+/// derived from the class, never carried. Next free number: 10.
+pub const FRAME_FACTORY: u8 = 9;
 
 /// How a frame record names the body that runs in it; each frame has one
 /// spelling. A top-level frame runs none (`FRAME_BODY_NONE`), and no other
 /// frame is written so. A body of a shipped declaration is
 /// `FRAME_BODY_DECLARED`: found through the frame's kind in the declaration
 /// of the class it resolves through -- a method by selector in the current
-/// class's mixin, the initializer and the superclass clause and message in
-/// the kind's class's mixin, a `<:` clause's message in the clause that
-/// added the kind's level -- since the code table carries no shipped code,
+/// class's mixin, the initializer and the superclass clause in the
+/// kind's class's mixin -- since the code table carries no shipped code,
 /// and a shipped mixin is never edited, so the lookup finds that very
 /// body; a closure frame is never written so, its closure's code being in
 /// the table. Every other body is `FRAME_BODY_CODE`, followed by its `u32`
@@ -415,6 +457,11 @@ pub const FRAME_MIXIN_APPLICATION_MESSAGE: u8 = 6;
 pub const FRAME_BODY_NONE: u8 = 0;
 pub const FRAME_BODY_CODE: u8 = 1;
 pub const FRAME_BODY_DECLARED: u8 = 2;
+
+/// Code kind tag 4 was the body of a clause message's arguments, retired when
+/// those arguments were lowered into the initializers. The live code kind tags
+/// are written by `encode::code_kind_tag` and read by `decode`, not named here.
+pub const RETIRED_CODE_KIND_TAGS: [u8; 1] = [4];
 
 /// Which tag-named object an entry of the graph section's closing hash table
 /// names: an object of the shipped-name section, which is no record, so

@@ -18,9 +18,7 @@
 //! This lives under `interpreter/` rather than in `mixin.rs` because it is
 //! the one part of nesting that *evaluates Newspeak code*: the superclass
 //! clause. That code runs compiled, in an activation of its own -- a
-//! `Step::SuperclassClause` continuing with `Continuation::NestedClass`, as
-//! `instantiate.rs` runs a clause's deferred message as a
-//! `Step::ClauseMessage` continuing with `Continuation::Instantiate`.
+//! `Step::SuperclassClause` continuing with `Continuation::NestedClass`.
 
 use std::rc::Rc;
 
@@ -102,14 +100,11 @@ pub(crate) fn superclass_clause_message(
 }
 
 /// The clause message's argument list as one expression: `{a. b. c}`, whose
-/// value is an array of the evaluated arguments.
+/// value is an array of the evaluated arguments. `None` for a message with no
+/// arguments (`Object new`, and every clause in the corpus but a handful).
 ///
-/// One expression rather than one per argument so that a mixin has exactly
-/// one compiled message body -- `image::decode::frame_body` must be able to
-/// name the single body a frame's kind runs, and a per-argument body would
-/// leave it choosing between several. `None` for a message with no arguments
-/// (`Object new`, and every clause in the corpus but a handful): nothing is
-/// compiled, no activation is built, and nothing is allocated.
+/// Only `ClauseMessage::has_arguments` is read off it: the initializers lower
+/// the arguments inline, one by one.
 pub(crate) fn superclass_clause_message_arguments_expression(
     clause: &ast::SuperclassClause,
 ) -> Option<ast::Expression> {
@@ -123,6 +118,10 @@ pub(crate) fn superclass_clause_message_arguments_expression(
     };
     Some(ast::Expression::bare(arguments, message.span))
 }
+
+/// The `cached_field` of a send that brings no hidden slot's index: the
+/// lookup's, and a hit whose guard does not fix the receiver's application.
+pub(crate) const NO_CACHED_FIELD: u32 = u32::MAX;
 
 /// The implicit accessor for `nested` on `receiver`. `receiver` is the
 /// enclosing object `r`; `nested` is the declaration `dispatch` found on
@@ -141,12 +140,29 @@ pub(crate) fn superclass_clause_message_arguments_expression(
 /// must start its lookup at the declaring class's superclass, not at the
 /// receiver's dynamic class's superclass -- which for an inherited
 /// declaration is one or more levels too deep.
+///
+/// `cached_field` is the hidden slot's absolute index a cache hit brings,
+/// `NO_CACHED_FIELD` for every other send: the hit's guard fixed the
+/// receiver's application, and so the index, so a filled slot answers with
+/// one load and no hash lookup. An empty slot, or one whose creation is
+/// underway, takes the steps below as if nothing had been cached.
 pub(crate) fn nested_class<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
     nested: &Rc<Mixin>,
     declaring_class: ClassReference<'gc>,
+    cached_field: u32,
 ) -> Result<Step<'gc>, Signal<'gc>> {
+    if cached_field != NO_CACHED_FIELD {
+        if let Some(cached) = receiver
+            .as_object()
+            .and_then(|object| mutator.heap.instance_field(object, cached_field as usize))
+        {
+            if !cached.is_nil() && !is_creation_in_progress(cached) {
+                return Ok(Step::Value(cached));
+            }
+        }
+    }
     let Some((receiver_object, index, cached)) = cache_slot(mutator, receiver, nested) else {
         return Err(no_cache_slot_error(receiver, nested.name));
     };
@@ -271,6 +287,20 @@ pub(crate) fn after_clause<'gc>(
             declaring_class,
         ));
     };
+    // A declaration without a body is the mixin application it writes
+    // (§6; `object-model.md`, "Mixin application"): its class object is the
+    // top level `superclass_with_applied_levels` built, with no level of
+    // its own over it.
+    if !nested.has_body {
+        return Ok(Step::Value(Value::object(body_less_class(
+            mutator,
+            enclosing,
+            declaring_class,
+            &nested,
+            index,
+            superclass,
+        ))));
+    }
     // Step 3: the application cache decides whether this behaviour already
     // exists. Two enclosing instances whose clauses land on the same
     // superclass application share one application, and therefore one
@@ -278,7 +308,7 @@ pub(crate) fn after_clause<'gc>(
     let application = mutator.apply_mixin(&nested, Some(&super_application));
     // §3.1.1's enclosing-object condition, asked once, where this class
     // object comes into being; a class that is no value pays this one
-    // test. Only *decided* here -- `decide_instantiation` is what refuses,
+    // test. Only *decided* here -- `allocate_for_factory` is what refuses,
     // once the verdict is recorded on the class object below
     // (`value_class.rs`'s doc comment says why). The other class-level
     // condition, no identity method, is already folded into `application`'s
@@ -323,6 +353,54 @@ pub(crate) fn after_clause<'gc>(
     Ok(Step::Value(Value::object(class)))
 }
 
+/// Steps 4 and 5 for a body-less declaration (`Mixin::has_body`), whose
+/// class object `class` is the level its last `<:` clause added, already
+/// built: the declaration's own scope recorded on it -- `enclosing` and
+/// `declaring_class`, which the declaration's own code walks out from
+/// (`interpreter::sends::lexical_origin`) where the level's are the named
+/// class's (§6.2) -- then §3.1.1's enclosing-object condition decided on
+/// it, on the declaration's enclosing object and the level's both
+/// (`value_class::check_body_less_value_class`), then the class cached in
+/// `enclosing`'s hidden slot `index` and, for a shipped module's, named.
+#[cold]
+#[inline(never)]
+fn body_less_class<'gc>(
+    mutator: &mut Mutator<'gc>,
+    enclosing: ObjectReference<'gc>,
+    declaring_class: ClassReference<'gc>,
+    nested: &Rc<Mixin>,
+    index: usize,
+    class: ClassReference<'gc>,
+) -> ClassReference<'gc> {
+    let scope = crate::heap::DeclarationScope {
+        enclosing: Some(enclosing),
+        declaring_class: Some(declaring_class),
+    };
+    if !mutator.heap.class_set_declaration_scope(class, scope) {
+        unreachable!("internal: a body-less declaration's class object keeps its scope");
+    }
+    let value_class_refusal = if mutator.heap.class_inherits_value(class) {
+        crate::interpreter::value_class::check_body_less_value_class(mutator, enclosing, class)
+    } else {
+        None
+    };
+    if let Some(refusal) = value_class_refusal {
+        if !mutator.record_value_class_refusal(class, refusal) {
+            unreachable!("internal: a nested class is a class object");
+        }
+    }
+    crate::interpreter::locals::store_instance_field(
+        &mut mutator.heap,
+        Value::object(enclosing),
+        index,
+        Value::object(class),
+    );
+    if nested.shipped {
+        name_a_shipped_class(mutator, enclosing, nested, class);
+    }
+    class
+}
+
 /// Records `class`, which the declaration `nested` just evaluated to with
 /// `enclosing` as its enclosing object, under its shipped names when
 /// `enclosing` is a recorded shipped module's instance and `nested` one of
@@ -362,7 +440,9 @@ fn name_a_shipped_class<'gc>(
 /// The class a declaration that applies mixins builds its own class on, and
 /// that class's application: §6.2's levels, one per `<:` clause, stacked on
 /// the superclass `value` names, the declaration's own class going on top of
-/// the last. `value` is the superclass clause activation's answer.
+/// the last -- or, for a declaration without a body, the last itself, which
+/// is its class (`Mixin::has_body`). `value` is the superclass clause
+/// activation's answer.
 #[cold]
 #[inline(never)]
 fn superclass_with_applied_levels<'gc>(
@@ -420,8 +500,8 @@ fn unpack_clause_value<'gc>(
 /// built from `applied`: each `<:` clause's index into
 /// `declaration.mixin_applications` with the class its receiver evaluated to,
 /// in clause order. Answers the top level -- the superclass the
-/// declaration's own class is built on -- which is `superclass` itself when
-/// `applied` is empty. Each class travels with its application, so that
+/// declaration's own class is built on, or for a body-less declaration its
+/// class itself -- which is `superclass` itself when `applied` is empty. Each class travels with its application, so that
 /// neither the caller nor the next level looks up one already in hand.
 ///
 /// The one place a level is built, for a module's root class
@@ -474,12 +554,26 @@ pub(crate) fn build_applied_levels<'gc>(
             index,
             named_builtin: mutator.heap.class_builtin(named_class),
         };
+        // A body-less declaration's last clause adds its own class object
+        // (`object-model.md`, "Mixin application"), which has the
+        // declaration's factory and name; every other level the named
+        // class's.
+        let class_side =
+            if !declaration.has_body && index + 1 == declaration.mixin_applications.len() {
+                mutator.metaclass_mixin(declaration)
+            } else {
+                mutator.class_side_of(named_class, &named_application.mixin)
+            };
         let level = mutator.new_applied_level(
-            application.clone(),
-            enclosing,
-            declaring_class,
-            below_class,
+            super::AppliedLevel {
+                application: application.clone(),
+                enclosing,
+                declaring_class,
+                superclass: below_class,
+            },
             clause,
+            named_class,
+            class_side,
         );
         below = Some((level, application));
     }
@@ -493,7 +587,7 @@ pub(crate) fn build_applied_levels<'gc>(
 /// know the declaration (an internal inconsistency) or because its payload
 /// is not an `Instance` at all, which a user class inheriting `Array`'s
 /// representation really is:
-/// `decide_factory` gives those an `ObjectShape::Array` payload with no
+/// `allocate_for_factory` gives those an `ObjectShape::Array` payload with no
 /// fields to cache into. Handing back the handle, not just the index,
 /// means every caller downstream already holds proof that `receiver` is an
 /// object instead of re-deriving it from `receiver` a second time --
@@ -508,14 +602,7 @@ fn cache_slot<'gc>(
     receiver: Value<'gc>,
     nested: &Rc<Mixin>,
 ) -> Option<(ObjectReference<'gc>, usize, Value<'gc>)> {
-    let class = mutator.class_of(receiver);
-    let id = mutator.heap.known_mixin_id(nested)?;
-    let index = mutator
-        .heap
-        .class_application(class)?
-        .nested_slot
-        .get(&id)
-        .copied()?;
+    let index = hidden_slot_index(mutator, mutator.class_of(receiver), nested)?;
     match receiver.as_object() {
         Some(object) => mutator
             .heap
@@ -523,6 +610,24 @@ fn cache_slot<'gc>(
             .map(|cached| (object, index, cached)),
         _ => None,
     }
+}
+
+/// The absolute index of `nested`'s hidden slot in the layout of `class`'s
+/// application, or `None` when that application reserves none for it: the
+/// one place the index is decided, for the accessor's lookup and for the
+/// cache entry that records it (`inline_cache::record`).
+pub(crate) fn hidden_slot_index<'gc>(
+    mutator: &Mutator<'gc>,
+    class: ClassReference<'gc>,
+    nested: &Rc<Mixin>,
+) -> Option<usize> {
+    let id = mutator.heap.known_mixin_id(nested)?;
+    mutator
+        .heap
+        .class_application(class)?
+        .nested_slot
+        .get(&id)
+        .copied()
 }
 
 /// The absolute index of `nested`'s cache slot in `enclosing`'s current

@@ -99,6 +99,7 @@ fn write_mixin(out: &mut Out, mixin: &Mixin) {
         superclass,
         superclass_receiver,
         mixin_applications,
+        has_body,
         has_initializer_expressions,
         // Read only by the compiler, which has run.
         initializer_expressions: _,
@@ -109,8 +110,9 @@ fn write_mixin(out: &mut Out, mixin: &Mixin) {
         // Read only by the compiler and the source path's checks.
         declaration: _,
         initializer_code,
+        own_initializer_code,
+        standalone_initializer_code,
         superclass_clause_code,
-        superclass_message_code,
         root_clause_defect,
         root_shape,
         shipped,
@@ -164,15 +166,11 @@ fn write_mixin(out: &mut Out, mixin: &Mixin) {
     });
     out.length(mixin_applications.len());
     for clause in mixin_applications {
-        let MixinApplicationClause {
-            message,
-            receiver,
-            message_code,
-        } = clause;
+        let MixinApplicationClause { message, receiver } = clause;
         out.clause_message(*message);
         out.option(receiver.as_ref(), |out, receiver| out.symbol(*receiver));
-        out.option(message_code.as_ref(), |out, code| out.code(code));
     }
+    out.boolean(*has_body);
     out.boolean(*has_initializer_expressions);
     let nested = mixin.declared_nested();
     out.length(nested.len());
@@ -184,8 +182,11 @@ fn write_mixin(out: &mut Out, mixin: &Mixin) {
     });
     out.span(*span);
     out.option(initializer_code.as_ref(), |out, code| out.code(code));
+    out.option(own_initializer_code.as_ref(), |out, code| out.code(code));
+    out.option(standalone_initializer_code.as_ref(), |out, code| {
+        out.code(code);
+    });
     out.option(superclass_clause_code.as_ref(), |out, code| out.code(code));
-    out.option(superclass_message_code.as_ref(), |out, code| out.code(code));
     out.option(root_shape.as_ref(), |out, shape| {
         let RootShape {
             over_value,
@@ -310,12 +311,14 @@ impl Out {
             MethodEntry::Factory(FactoryMethod {
                 selector,
                 argument_count,
-                access,
+                // Always public, and the body is `compiler::factory_body`
+                // of the arity: `mixin::factory_entry` gives both back.
+                access: _,
+                code: _,
             }) => {
                 self.u8(2);
                 self.symbol(*selector);
                 self.length(*argument_count);
-                self.access(*access);
             }
             MethodEntry::Primitive(_) => {
                 panic!("internal: only the mirror's class holds a primitive, and Rust builds it")
@@ -388,13 +391,15 @@ impl Out {
             // A heap's answer, valid only in that heap; the decoded body
             // starts with none.
             code_id_cache: _,
+            // Derived from the mixin the body is attached to, as the
+            // decoder attaches it (`Mixin::mark_declaration_code`).
+            declaration_code: _,
         } = code.fields();
         self.u8(match kind {
             CodeKind::Method => 0,
             CodeKind::Block => 1,
             CodeKind::Initializer => 2,
             CodeKind::SuperclassClause => 3,
-            CodeKind::SuperclassMessage => 4,
         });
         self.u16(*argument_count);
         self.u16(*register_count);
@@ -726,6 +731,45 @@ impl Out {
                 self.u16(*left);
                 self.u16(*right);
                 self.u32(*target);
+            }
+            Instruction::AllocateInstance { destination } => {
+                self.u8(32);
+                self.u16(*destination);
+            }
+            Instruction::InitializeInstance {
+                instance,
+                destination,
+            } => {
+                self.u8(33);
+                self.u16(*instance);
+                self.u16(*destination);
+            }
+            Instruction::CheckAppliedClause { steps, selector } => {
+                self.u8(34);
+                self.u16(*steps);
+                self.symbol(*selector);
+            }
+            Instruction::InitializeSuperclass {
+                steps,
+                selector,
+                argument_registers,
+                destination,
+            } => {
+                self.u8(35);
+                self.u16(*steps);
+                self.symbol(*selector);
+                self.registers(argument_registers);
+                self.u16(*destination);
+            }
+            Instruction::InitializeAppliedLevel {
+                steps,
+                argument_registers,
+                destination,
+            } => {
+                self.u8(36);
+                self.u16(*steps);
+                self.registers(argument_registers);
+                self.u16(*destination);
             }
         }
     }

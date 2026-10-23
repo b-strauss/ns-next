@@ -18,7 +18,7 @@
 //! `Mixin::initializer_expressions`, `Mixin::declaration`) are read only by the
 //! compiler, which runs while a mixin is built from source; a decoded mixin
 //! leaves them empty rather than inventing nodes for them. The compiled bodies
-//! themselves live on the mixin (`Mixin::initializer_code` and the two
+//! themselves live on the mixin (its three initializer bodies and the two
 //! superclass-clause bodies) and on its methods (`MixinMethod::code`), for a
 //! built mixin and a decoded one alike.
 
@@ -335,10 +335,9 @@ pub struct PrimitiveMethod {
 
 /// The primary factory as a member of the metaclass mixin
 /// (`newspeak-spec.pdf` §6.3: "The class side, together with the primary
-/// factory method, defines the mixin for the metaclass"). It carries no
-/// body: what it does is instantiate the class object the send was addressed
-/// to, which `interpreter::resolve::act` runs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// factory method, defines the mixin for the metaclass"). Built only by
+/// `factory_entry`, which gives it its body.
+#[derive(Debug, Clone)]
 pub struct FactoryMethod {
     pub selector: Symbol,
     /// The primary factory signature's parameter count (§6's unnumbered
@@ -347,6 +346,12 @@ pub struct FactoryMethod {
     /// back to the declaration -- a decoded mixin has none.
     pub argument_count: usize,
     pub access: ast::AccessModifier,
+    /// The factory's body, `compiler::factory_body` of `argument_count`:
+    /// allocate an instance of the class object the send was addressed to,
+    /// run its initializer on it with the factory's arguments, answer it.
+    /// Synthesized, never lowered and never read off an image, so that no
+    /// image can carry a factory body of its own.
+    pub code: Rc<CompiledCode>,
 }
 
 /// One entry of a mixin's method table (§3.5): a compiled method, one of the
@@ -401,16 +406,34 @@ impl MethodEntry {
 /// protected: a factory that could not be sent from outside would leave no
 /// class instantiable, and the specification's own examples send one across
 /// module boundaries.
+///
+/// The entry's body is `compiler::factory_body` of the factory's arity, so
+/// every factory of one arity runs the same instructions, whoever built
+/// the entry -- a declaration from source, the embedded shipped code or
+/// the image decoder, which never reads a factory body off the wire. An
+/// arity past what a `u16` counts saturates, and the body it gets raises
+/// the too-large error (`compiler::factory_body`).
 pub fn factory_entry(factory: Option<Factory>) -> (Symbol, MethodEntry) {
-    let selector = factory.map_or(Symbol::NEW, |factory| factory.selector);
+    let selector = factory_entry_selector(factory);
+    let argument_count = factory.map_or(0, |factory| factory.argument_count);
     (
         selector,
         MethodEntry::Factory(FactoryMethod {
             selector,
-            argument_count: factory.map_or(0, |factory| factory.argument_count),
+            argument_count,
             access: ast::AccessModifier::Public,
+            code: Rc::new(crate::compiler::factory_body(
+                u16::try_from(argument_count).unwrap_or(u16::MAX),
+            )),
         }),
     )
+}
+
+/// The selector `factory_entry` files the entry of `factory` under: the
+/// declared factory's, or `new` for none. For a reader that needs the
+/// selector alone, so that it builds no body.
+pub fn factory_entry_selector(factory: Option<Factory>) -> Symbol {
+    factory.map_or(Symbol::NEW, |factory| factory.selector)
 }
 
 /// The accessor entries `slots` define, in declaration order (§6.3.2): each
@@ -470,11 +493,10 @@ pub struct Factory {
 /// §6.1's `inheritanceClause`, so the two carry the same message and read
 /// it the same way.
 ///
-/// The message's *arguments* are Newspeak code, compiled per mixin into
-/// `Mixin::superclass_message_code` or `MixinApplicationClause::message_code`;
-/// what is left here is the part the orchestration around those bodies needs,
-/// which it consults before any body runs. Storing it is what keeps
-/// `instantiate::clause_message_body` from having to read `Mixin::declaration`:
+/// The message's *arguments* are Newspeak code, lowered inline into the
+/// mixin's initializer bodies; what is kept here is the part the orchestration
+/// around those bodies needs, which it consults before any body runs. Storing
+/// it is what keeps `instantiate` from having to read `Mixin::declaration`:
 /// without it, a mixin decoded from an image would fall back to `new` and every
 /// class whose superclass has a keyword factory would raise a spurious "not the
 /// primary factory message" error.
@@ -483,9 +505,9 @@ pub struct ClauseMessage {
     /// The factory selector the message names; `new` when it is omitted
     /// (§6.1: "if the message is omitted, it defaults to `new`").
     pub selector: Symbol,
-    /// Whether the message carries argument expressions, and therefore a
-    /// compiled body. The overwhelmingly common `= Object new` shape has none
-    /// and runs no code.
+    /// Whether the message carries argument expressions, which the
+    /// initializers lower inline. The overwhelmingly common `= Object new`
+    /// shape has none and runs no code.
     pub has_arguments: bool,
 }
 
@@ -505,12 +527,6 @@ pub struct MixinApplicationClause {
     /// which reads the class a kernel class applies without running the
     /// clause. `None` for a clause decoded from an image.
     pub receiver: Option<Symbol>,
-    /// The message's arguments as one body, compiled exactly as
-    /// `Mixin::superclass_message_code` is -- with the applying declaration's
-    /// own factory parameters in scope, since §6.2 evaluates the message in
-    /// the same instance initializer as the superclass clause's. Filled by
-    /// the compiler; `None` when the message takes no arguments.
-    pub message_code: Option<Rc<CompiledCode>>,
 }
 
 /// Which `<:` clause added a level (`Heap::class_applied_origin`): the
@@ -621,6 +637,16 @@ pub struct Mixin {
     /// for a builtin's mixin and a class side. A decoded mixin carries its
     /// row's clauses (`image::mixins`).
     pub mixin_applications: Vec<MixinApplicationClause>,
+    /// Whether the declaration writes a class body. `false` exactly for a
+    /// declaration that ends in a dot after its `<:` clauses (§6: "the
+    /// mixin can be specified along with the superclass via a mixin
+    /// application"): such a declaration is the mixin application itself,
+    /// so its class object is the level its last clause adds, named for it
+    /// and with its factory, and no level of its own is ever built over
+    /// it (`docs/design/object-model.md`, "Mixin application"). `true` for
+    /// every other mixin, a builtin's and a class side included. A decoded
+    /// mixin carries its row's.
+    pub has_body: bool,
     /// Whether the declaration wrote any `initExpr`s. Stored because
     /// `instantiate::mixin_needs_initializer_code` asks the question of a
     /// decoded mixin too, where `initializer_expressions` below is empty by
@@ -642,21 +668,42 @@ pub struct Mixin {
     /// `ClassBody` is not an `ast::ClassDeclaration`), and for a mixin decoded
     /// from an image.
     pub declaration: Option<Rc<ast::ClassDeclaration>>,
-    /// The instance initializer: this mixin's own slot initializers, then its
-    /// own `initExpr`s. Every mixin built from source has one, a class side
-    /// included. `None` for a builtin's mixin, which runs no code, and for a
-    /// decoded row that names none -- `image::decode::verify_mixins` refuses
-    /// that when the mixin needs one.
+    /// The full instance initializer, run on an instance of the level its
+    /// declaration's class object is: each `<:` clause's selector checked
+    /// against the class it names, the superclass clause's message
+    /// evaluated and the superclass's initializer run with it, each `<:`
+    /// clause's message evaluated and its level's own part run with it,
+    /// then this mixin's own part (`own_initializer_code`), then `self`
+    /// (`docs/design/object-model.md`, "Instantiation"). A body-less
+    /// declaration's (`has_body`) runs at its class object, the level its
+    /// last clause adds, so its levels are counted from 0, and its own part
+    /// is empty. Every mixin built
+    /// from source has one, a class side included, whose full body is its
+    /// own part. `None` for a builtin's mixin, which runs no code;
+    /// `image::decode::verify_mixins` refuses a decoded row without one.
     pub initializer_code: Option<Rc<CompiledCode>>,
+    /// The own part: this mixin's own slot initializers, then its own
+    /// `initExpr`s, then `self`, and nothing of its clauses -- what a level
+    /// a `<:` clause added runs for the mixin it applies. Every mixin built
+    /// from source has one. `None` for a builtin's mixin, and for a decoded
+    /// row that names none -- `image::decode::verify_mixins` refuses that
+    /// when the mixin needs one (`instantiate::mixin_needs_initializer_code`).
+    pub own_initializer_code: Option<Rc<CompiledCode>>,
+    /// The standalone initializer, for a class object of this mixin that
+    /// no declaration applies it in -- a level a `<:` clause added, reached
+    /// from outside: the superclass clause's message and the superclass's
+    /// initializer, then the own part, without this declaration's own `<:`
+    /// clauses, which do not apply to such a level. `Some` exactly when the
+    /// declaration writes `<:` clauses and a body: without clauses it would
+    /// be the full body, and a body-less declaration's class object is
+    /// never reached outside its declaration (`has_body`).
+    pub standalone_initializer_code: Option<Rc<CompiledCode>>,
     /// The superclass clause's receiver expression (§6.1's `ec`), which the
     /// nested-class accessor runs once per enclosing object -- together with
     /// every `<:` clause's receiver when the declaration applies mixins, as
     /// one array (`interpreter::nested::superclass_clause_expression`).
     /// `None` when the declaration has no clause.
     pub superclass_clause_code: Option<Rc<CompiledCode>>,
-    /// The arguments of the clause's factory message, run on every
-    /// instantiation (§6.2). `None` when the message takes none.
-    pub superclass_message_code: Option<Rc<CompiledCode>>,
     /// Why this mixin, as a module's root, can never be instantiated (the
     /// root rule, `resolver::root_clause_defect`). Only a module's root
     /// mixin built from a `ResolvedModule` a host assembled past `resolve`,
@@ -1020,6 +1067,21 @@ pub fn source_text(text: &str, span: Span) -> Option<&str> {
 }
 
 impl Mixin {
+    /// Marks a body-less declaration's own code -- its full initializer
+    /// and every block created in it -- as such
+    /// (`CompiledCode::is_declaration_code`), so that where its lexical
+    /// sends start is read off the code. Nothing for a mixin with a body.
+    /// Called wherever a mixin's bodies are attached: by the compiler, the
+    /// image's mixin table and the embedded shipped code's decoder.
+    pub(crate) fn mark_declaration_code(&self) {
+        if self.has_body {
+            return;
+        }
+        if let Some(code) = &self.initializer_code {
+            code.mark_declaration_code();
+        }
+    }
+
     /// A mixin with a name and nothing else: the shape every synthesized
     /// mixin starts from -- a builtin's -- and the base the image decoder
     /// fills in field by field. One definition, so adding a field to `Mixin`
@@ -1034,6 +1096,7 @@ impl Mixin {
             superclass: None,
             superclass_receiver: None,
             mixin_applications: Vec::new(),
+            has_body: true,
             has_initializer_expressions: false,
             initializer_expressions: Vec::new(),
             nested_declarations: NestedDeclarations::default(),
@@ -1041,8 +1104,9 @@ impl Mixin {
             span: Span::new(0, 0),
             declaration: None,
             initializer_code: None,
+            own_initializer_code: None,
+            standalone_initializer_code: None,
             superclass_clause_code: None,
-            superclass_message_code: None,
             root_clause_defect: None,
             root_shape: None,
             shipped: false,
@@ -1218,7 +1282,7 @@ impl RootClauseDefect {
     }
 }
 
-/// What `decide_instantiation` refuses before it allocates anything.
+/// What `allocate_for_factory` refuses before it allocates anything.
 #[derive(Debug, Clone)]
 pub enum InstantiationRefusal {
     RootClause(RootClauseDefect),
@@ -1351,31 +1415,37 @@ pub struct MixinApplication {
     /// `None` for one whose word count does not fit in the header; set by
     /// `Heap::register_application`.
     pub instance_header: Option<crate::heap::InstanceHeader>,
-    /// Whether instantiating this application runs no code at any level of
-    /// its chain, so that `new` can allocate and answer the instance
-    /// without the walk; computed by `Mutator::apply_mixin`
-    /// (`instantiates_without_code`).
-    pub instantiates_without_code: bool,
-    /// What the instantiation walk asks of this level's own mixin
-    /// (`LevelFacts::of`), computed where the application is built; a debug
-    /// build's `Heap::register_application` checks it against `mixin`.
+    /// What instantiation asks of this level's own mixin (`LevelFacts::of`),
+    /// computed where the application is built; a debug build's
+    /// `Heap::register_application` checks it against `mixin`.
     pub level_facts: LevelFacts,
 }
 
-/// What the instantiation walk asks of one level, read off the level's own
-/// mixin when its application is built, so the walk copies it out
-/// instead of cloning the application: whether the level needs initializer
-/// code, its superclass clause's selector and whether that clause passes
-/// arguments, and its primary factory's selector and arity. Nothing here
-/// depends on the superclass: the walk compares a level's clause selector
-/// with its superclass's factory selector itself, from both levels' facts.
+/// What instantiation asks of one level, read off the level's own mixin
+/// when its application is built, so that it is copied out instead of the
+/// application cloned: whether the level needs initializer code, its
+/// superclass clause's selector and whether that clause passes arguments,
+/// how many `<:` clauses its declaration writes and whether any of them
+/// passes arguments, the arity of its mixin's own factory, which its
+/// initializer bodies are laid out for, and -- for a metaclass mixin -- the
+/// factory entry its method table holds. Nothing here depends on the
+/// superclass, and a level whose initializer would do nothing but §6.1's
+/// checks is passed over without an activation (`Mutator::enter_or_pass`).
+///
+/// Which factory a *class object* has is not an application fact: it is
+/// read through the class object's metaclass (`Heap::class_factory`), whose
+/// class side may be another declaration's than the mixin it applies -- a
+/// level a `<:` clause added has the factory of the class the clause named,
+/// and a body-less declaration's class object its declaration's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LevelFacts {
     pub needs_initializer_code: bool,
     pub clause_selector: Symbol,
     pub clause_has_arguments: bool,
-    pub factory_selector: Symbol,
+    pub applied_clause_count: usize,
+    pub applied_clauses_pass_arguments: bool,
     pub factory_arity: Option<usize>,
+    pub metaclass_factory: Option<Factory>,
 }
 
 impl LevelFacts {
@@ -1388,36 +1458,21 @@ impl LevelFacts {
                 .superclass
                 .map_or(Symbol::NEW, |clause| clause.selector),
             clause_has_arguments: mixin.superclass.is_some_and(|clause| clause.has_arguments),
-            factory_selector: mixin
-                .factory
-                .map_or(Symbol::NEW, |factory| factory.selector),
+            applied_clause_count: mixin.mixin_applications.len(),
+            applied_clauses_pass_arguments: mixin
+                .mixin_applications
+                .iter()
+                .any(|clause| clause.message.has_arguments),
             factory_arity: mixin.factory.map(|factory| factory.argument_count),
+            metaclass_factory: mixin.methods.values().find_map(|entry| match entry {
+                MethodEntry::Factory(factory) => Some(Factory {
+                    selector: factory.selector,
+                    argument_count: factory.argument_count,
+                }),
+                _ => None,
+            }),
         }
     }
-}
-
-/// Whether instantiating an application of a mixin whose own facts are
-/// `level` over `superclass` runs no code: no level of the chain needs
-/// initializer code, every level's superclass clause names its
-/// superclass's primary factory selector and passes it no arguments, and
-/// every level above the first takes no factory arguments. A fact of the
-/// application chain alone; whether a class object's chain has a `<:`
-/// level is asked of the class objects (`Heap::chain_has_applied_level`).
-pub(crate) fn instantiates_without_code(
-    level: &LevelFacts,
-    superclass: Option<&Rc<MixinApplication>>,
-) -> bool {
-    if level.needs_initializer_code {
-        return false;
-    }
-    let Some(superclass) = superclass else {
-        return true;
-    };
-    let above = &superclass.level_facts;
-    level.clause_selector == above.factory_selector
-        && !level.clause_has_arguments
-        && above.factory_arity.is_none_or(|arity| arity == 0)
-        && superclass.instantiates_without_code
 }
 
 /// `MixinApplication::declared_slots` for a level being built: the

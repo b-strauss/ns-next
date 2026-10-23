@@ -1,0 +1,4 @@
+stdout = '''
+true
+cannot instantiate Valued: a value class's enclosing objects must be values, and its enclosing object, an instance of Holder, is not one
+'''

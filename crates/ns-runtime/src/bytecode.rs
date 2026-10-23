@@ -16,7 +16,7 @@ mod compact;
 pub(crate) use compact::CreatedBlock;
 pub use compact::{
     BlockSite, CodeBuilder, CompactInstruction, Emitted, EncodedBody, MirrorSite, SendSite,
-    WideSend,
+    SuperclassSite, WideSend,
 };
 
 /// A compiled instruction-set literal -- a lowered form of `ast::Literal` that
@@ -363,6 +363,61 @@ pub enum Instruction {
         right: u16,
         target: u32,
     },
+    /// A factory body's allocation: a new instance of `self`, the class
+    /// object the factory was sent to, into `destination`, after every
+    /// check that refuses such an instance.
+    ///
+    /// Reads and writes only registers of the activation executing it, so
+    /// its `outer_reach_of` reach is 0.
+    AllocateInstance {
+        destination: u16,
+    },
+    /// A factory body's initialization: runs the initializer of `self`'s
+    /// level, the class object the factory was sent to, on the instance in
+    /// `instance`, with the factory's arguments -- the executing
+    /// activation's own argument registers, `0..argument_count` of its
+    /// body, which it names by no list, so that a factory body's size does
+    /// not grow with its arity; `destination` takes what it answers.
+    ///
+    /// Reads and writes only registers of the activation executing it, so
+    /// its `outer_reach_of` reach is 0.
+    InitializeInstance {
+        instance: u16,
+        destination: u16,
+    },
+    /// §6.1's check for a `<:` clause: the level the clause adds, `steps`
+    /// above the activation's class, has a primary factory of `selector`.
+    /// Writes no register.
+    CheckAppliedClause {
+        steps: u16,
+        selector: Symbol,
+    },
+    /// An initializer's superclass initialization (§6.3): §6.1's check that
+    /// the class `steps` above the activation's class has a primary
+    /// factory of `selector`, then that class's initializer on `self`, with
+    /// the clause's arguments in `argument_registers`; `destination` takes
+    /// what it answers.
+    ///
+    /// Reads and writes only registers of the activation executing it, so
+    /// its `outer_reach_of` reach is 0.
+    InitializeSuperclass {
+        steps: u16,
+        selector: Symbol,
+        argument_registers: Vec<u16>,
+        destination: u16,
+    },
+    /// An initializer's initialization of a level a `<:` clause adds
+    /// (§6.2): the own part of the level `steps` above the activation's
+    /// class, on `self`, with the arguments in `argument_registers`;
+    /// `destination` takes what it answers.
+    ///
+    /// Reads and writes only registers of the activation executing it, so
+    /// its `outer_reach_of` reach is 0.
+    InitializeAppliedLevel {
+        steps: u16,
+        argument_registers: Vec<u16>,
+        destination: u16,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -379,18 +434,6 @@ pub enum CodeKind {
     /// body against what it is attached to by kind, so the two must not be
     /// confusable there.
     SuperclassClause,
-    /// The arguments of a class declaration's superclass clause's deferred
-    /// factory message (`7` in `= Base withValue: 7`), compiled as a body
-    /// whose `argument_count` is the *declaring* class's own factory parameter
-    /// count and whose value is the argument list as a dynamic array.
-    /// `newspeak-spec.pdf` §6.2 evaluates that message fresh on every
-    /// instantiation, in that instantiation's own initializer context, so
-    /// -- unlike `SuperclassClause`, which runs once per enclosing object
-    /// and on the enclosing object -- this body sees the subclass's own
-    /// factory arguments. A kind of its own for the same reason
-    /// `SuperclassClause` is one: `image::decode` tells a decoded body's
-    /// purpose by its kind, so the two must not be confusable there.
-    SuperclassMessage,
 }
 
 #[derive(Debug, Clone)]
@@ -470,6 +513,18 @@ pub struct CompiledCode {
     /// closure or frame made of it finds its id without the heap's map.
     /// Never on any wire; a copy starts empty.
     pub(crate) code_id_cache: crate::heap::CodeIdCache,
+    /// Whether this body is a body-less declaration's own code: its full
+    /// initializer (`Mixin::has_body`), or a block created in it at any
+    /// depth. Such code runs only at the declaration's class object, and
+    /// its lexical sends and `outer` start from the declaration's scope
+    /// instead of the class object's (`interpreter::sends::lexical_origin`),
+    /// so where they start is decided here, once, from the code -- never
+    /// per send from the class object. Derived from the mixin the body is
+    /// attached to (`Mixin::mark_declaration_code`) whenever a body-less
+    /// mixin is built -- compiled, decoded from an image or from the
+    /// embedded shipped code -- and never on any wire. A `Cell` because the
+    /// decoders attach a body after it was shared.
+    declaration_code: std::cell::Cell<bool>,
 }
 
 /// Every field of a `CompiledCode`, borrowed (`CompiledCode::fields`).
@@ -494,6 +549,8 @@ pub(crate) struct CompiledCodeFields<'code> {
     pub(crate) source: &'code Span,
     #[expect(dead_code, reason = "named so that a writer decides to leave it out")]
     pub(crate) code_id_cache: &'code crate::heap::CodeIdCache,
+    #[expect(dead_code, reason = "named so that a writer decides to leave it out")]
+    pub(crate) declaration_code: &'code std::cell::Cell<bool>,
 }
 
 impl CompiledCode {
@@ -553,6 +610,7 @@ impl CompiledCode {
             unwind_marker: None,
             source,
             code_id_cache: crate::heap::CodeIdCache::default(),
+            declaration_code: std::cell::Cell::new(false),
         }
     }
 
@@ -574,6 +632,7 @@ impl CompiledCode {
             unwind_marker,
             source,
             code_id_cache,
+            declaration_code,
         } = self;
         CompiledCodeFields {
             kind,
@@ -588,6 +647,30 @@ impl CompiledCode {
             unwind_marker,
             source,
             code_id_cache,
+            declaration_code,
+        }
+    }
+
+    /// Whether this body is a body-less declaration's own code
+    /// (`declaration_code`): what a lexical send and `outer` in it read to
+    /// decide where they start.
+    #[inline(always)]
+    pub(crate) fn is_declaration_code(&self) -> bool {
+        self.declaration_code.get()
+    }
+
+    /// Marks this body and every block created in it, at any depth, as a
+    /// body-less declaration's own code (`declaration_code`). Walks with a
+    /// worklist, so a deep nest of blocks recurses nowhere, and passes over
+    /// a body already marked, so a block an image names twice is walked
+    /// once.
+    pub(crate) fn mark_declaration_code(&self) {
+        let mut pending: Vec<&CompiledCode> = vec![self];
+        while let Some(code) = pending.pop() {
+            if code.declaration_code.replace(true) {
+                continue;
+            }
+            pending.extend(code.body.created_blocks().map(|block| &**block.code));
         }
     }
 
@@ -686,6 +769,10 @@ impl PartialEq for CompiledCode {
             unwind_marker,
             source,
             code_id_cache: _,
+            // Derived from the mixin the body is attached to, not from the
+            // body: a body compiled alone and the same body attached to a
+            // body-less mixin mean the same instructions.
+            declaration_code: _,
         } = self;
         *kind == other.kind
             && *argument_count == other.argument_count
@@ -912,7 +999,12 @@ pub(crate) fn outer_reach_of(instructions: &[Instruction]) -> u16 {
             | Instruction::JumpIfNotBoolean { .. }
             | Instruction::BranchIfFalse { .. }
             | Instruction::BranchIfTrue { .. }
-            | Instruction::IntegerBinary { .. } => 0,
+            | Instruction::IntegerBinary { .. }
+            | Instruction::AllocateInstance { .. }
+            | Instruction::InitializeInstance { .. }
+            | Instruction::CheckAppliedClause { .. }
+            | Instruction::InitializeSuperclass { .. }
+            | Instruction::InitializeAppliedLevel { .. } => 0,
         })
         .max()
         .unwrap_or(0)
@@ -963,7 +1055,12 @@ pub(crate) fn addresses_own_slots_of(instructions: &[Instruction]) -> bool {
         | Instruction::JumpIfNotBoolean { .. }
         | Instruction::BranchIfFalse { .. }
         | Instruction::BranchIfTrue { .. }
-        | Instruction::IntegerBinary { .. } => false,
+        | Instruction::IntegerBinary { .. }
+        | Instruction::AllocateInstance { .. }
+        | Instruction::InitializeInstance { .. }
+        | Instruction::CheckAppliedClause { .. }
+        | Instruction::InitializeSuperclass { .. }
+        | Instruction::InitializeAppliedLevel { .. } => false,
     })
 }
 
@@ -983,7 +1080,6 @@ fn write_code(out: &mut String, code: &CompiledCode, name: &str, indent: usize) 
         CodeKind::Block => "block",
         CodeKind::Initializer => "initializer",
         CodeKind::SuperclassClause => "superclass clause",
-        CodeKind::SuperclassMessage => "superclass clause message",
     };
     writeln!(
         out,
@@ -1206,6 +1302,33 @@ fn format_instruction(instruction: &Instruction) -> String {
         } => format!(
             "IntegerBinary {operation:?} r{destination} <- r{left}, r{right} else -> {target}"
         ),
+        Instruction::AllocateInstance { destination } => {
+            format!("AllocateInstance r{destination}")
+        }
+        Instruction::InitializeInstance {
+            instance,
+            destination,
+        } => format!("InitializeInstance r{destination} <- r{instance} (arguments)"),
+        Instruction::CheckAppliedClause { steps, selector } => {
+            format!("CheckAppliedClause steps {steps} #{selector}")
+        }
+        Instruction::InitializeSuperclass {
+            steps,
+            selector,
+            argument_registers,
+            destination,
+        } => format!(
+            "InitializeSuperclass r{destination} <- steps {steps} #{selector} ({})",
+            registers(argument_registers)
+        ),
+        Instruction::InitializeAppliedLevel {
+            steps,
+            argument_registers,
+            destination,
+        } => format!(
+            "InitializeAppliedLevel r{destination} <- steps {steps} ({})",
+            registers(argument_registers)
+        ),
     }
 }
 
@@ -1415,6 +1538,53 @@ mod tests {
         );
         assert_eq!(instruction.call_site(), None);
         assert_eq!(outer_reach_of(&[instruction]), 0);
+    }
+
+    /// The instructions of a compiled `new` disassemble as their names and
+    /// operands, and carry no call site.
+    #[test]
+    fn the_instantiation_instructions_disassemble_with_their_operands() {
+        let cases = [
+            (
+                Instruction::AllocateInstance { destination: 2 },
+                "AllocateInstance r2",
+            ),
+            (
+                Instruction::InitializeInstance {
+                    instance: 2,
+                    destination: 3,
+                },
+                "InitializeInstance r3 <- r2 (arguments)",
+            ),
+            (
+                Instruction::CheckAppliedClause {
+                    steps: 1,
+                    selector: Symbol::intern("x:"),
+                },
+                "CheckAppliedClause steps 1 #x:",
+            ),
+            (
+                Instruction::InitializeSuperclass {
+                    steps: 2,
+                    selector: Symbol::intern("with:"),
+                    argument_registers: vec![4],
+                    destination: 5,
+                },
+                "InitializeSuperclass r5 <- steps 2 #with: (r4)",
+            ),
+            (
+                Instruction::InitializeAppliedLevel {
+                    steps: 3,
+                    argument_registers: vec![],
+                    destination: 6,
+                },
+                "InitializeAppliedLevel r6 <- steps 3 ()",
+            ),
+        ];
+        for (instruction, text) in cases {
+            assert_eq!(format_instruction(&instruction), text);
+            assert_eq!(instruction.call_site(), None);
+        }
     }
 
     #[test]
