@@ -184,8 +184,8 @@ eight fixed fields, [object-model.md](object-model.md), "The object
 layout"), and their
 leaves are in `builtins/behavior.rs`: a class's name
 (`className:ifFail:`), a metaclass's class (`metaclassThisClass:ifFail:`),
-and the three parts of a class object's state `Behavior>>=`'s fallback
-compares. `Object` declares no accessor for any of the three, and nothing
+and the four parts of a class object's state `Behavior>>=`'s fallback
+compares. `Object` declares no accessor for any of the four, and nothing
 below `Behavior` can be instantiated
 ([object-model.md](object-model.md), "Class sides and metaclasses").
 

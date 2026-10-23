@@ -1,8 +1,9 @@
 //! The leaves `Kernel.ns`'s `Behavior`, `Class` and `Metaclass` forward to:
-//! a class's name, a metaclass's class, and the three parts of a class
+//! a class's name, a metaclass's class, and the four parts of a class
 //! object's state the Newspeak side of a value class object's `=` compares
 //! when `builtins::value`'s walk declines -- its application, its enclosing
-//! object and its superclass. Nothing else about a class object is answered
+//! object, its level's enclosing object and its superclass. Nothing else
+//! about a class object is answered
 //! at the base level; reflection is a mirror's
 //! (`docs/design/object-model.md`, "Class sides and metaclasses").
 

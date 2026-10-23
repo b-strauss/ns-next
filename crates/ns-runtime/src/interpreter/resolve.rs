@@ -488,8 +488,8 @@ impl<'gc> Mutator<'gc> {
                 // method with the slot's accessibility would; `super x`
                 // reaches the superclass's accessor even where the
                 // receiver's own class overrides it (§5.10). A private
-                // site is guarded by N's application and a super site by
-                // `current_class`'s, never by the receiver's, so their
+                // site is guarded by N's application and a super site by S's
+                // (`sends::super_start`), never by the receiver's, so their
                 // field was decided without looking at the receiver, which
                 // must still have the level's slots
                 // (`docs/design/object-model.md`, "what a slot access

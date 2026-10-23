@@ -1293,8 +1293,9 @@ selector is no longer among them: §6.3 makes it the selector the entry is
 filed under in the metaclass's method table, which the guard covers.
 
 A nested-class entry's hidden-slot index is no such read either: it is a
-function of the application the guard names, and a private or `super` hit
-whose receiver has another application compares that before it uses it.
+function of the application the guard names, and a private hit uses it only
+for a receiver of the guard's application, a `super` hit only for one of the
+running class's, whose chain contains S -- which each compares first.
 What the slot holds is read afresh on every send.
 
 A class object's own `class` field is not such a read: it is the metaclass

@@ -1539,7 +1539,7 @@ mod tests {
 
     /// `Tag` brings its own `=`, so the walk declines on a pair of `Tag`s
     /// and the Newspeak side of `Behavior>>=` compares two `Tag`s' `Inner`s
-    /// instead, reading their state through the three leaves it has for
+    /// instead, reading their state through the four leaves it has for
     /// it. The two agree with what the leaf decides where it can: two
     /// `Inner`s of two equal `Tag`s are equal, and hash alike, while an
     /// `Inner` and an `Outer`'s `Inner` share no application.
@@ -1583,6 +1583,86 @@ mod tests {
         assert!(
             !answered_flag(&mut interpreter, &equal, "a Tag's Inner and an Outer's"),
             "two declarations are two classes"
+        );
+    }
+
+    /// The Newspeak side of `Behavior>>=` compares a body-less declaration's
+    /// class objects by both their enclosing objects, as the walk does: two
+    /// `D`s of two equal `Tag`s -- `Tag` brings its own `=`, so the leaf
+    /// declines -- whose clauses applied the `Inner` of two unequal `Lib`s
+    /// share one application and one declaration, and their declarations'
+    /// enclosing objects are equal, but their levels' are not.
+    #[test]
+    fn the_newspeak_side_compares_a_body_less_class_objects_level_enclosing_object() {
+        let source = indoc! {"
+            class LevelFixture = Object <: Value () (
+                class Lib n: number = Value new (| public n = number. |) (
+                    public = other = ( ^n = other n )
+                    public hash = ( ^n )
+                    public class Inner = Value new () ()
+                )
+                class Tag key: aKey other: aLib = Value new (
+                    | public key = aKey. public lib = aLib. |
+                ) (
+                    public = other = ( ^key = other key )
+                    public hash = ( ^key )
+                    public class D = Value new <: libInner.
+                    libInner = ( ^lib Inner )
+                )
+                public tagOver: number = ( ^Tag key: 1 other: (Lib n: number) )
+            ) : ()
+        "};
+        let module = ns_syntax::parse(source).expect("the level fixture parses");
+        let resolved = match crate::resolve(
+            module,
+            std::rc::Rc::from(source),
+            crate::SourceOrigin::File(std::path::PathBuf::from("level_fixture.ns")),
+        ) {
+            Ok(resolved) => resolved,
+            Err(_) => panic!("the level fixture resolves"),
+        };
+        let mut interpreter = Interpreter::bootstrap();
+        let class = interpreter.load_module(&resolved);
+        let fixture = expect_ok(interpreter.instantiate(&class, &[]), "LevelFixture new");
+        let classes: Vec<Root> = [1, 1, 2]
+            .into_iter()
+            .map(|number| {
+                let argument =
+                    interpreter.enter(|mutator| mutator.stash(Value::small_integer(number)));
+                let tag = send(&mut interpreter, &fixture, "tagOver:", &[argument]);
+                send(&mut interpreter, &tag, "D", &[])
+            })
+            .collect();
+        let compared = leaf(
+            &mut interpreter,
+            "value:sameAs:ifFail:",
+            &classes[0],
+            std::slice::from_ref(&classes[2]),
+        );
+        assert_eq!(
+            answered_boolean(&mut interpreter, compared, "two Tags' Ds"),
+            None,
+            "a Tag's own `=` takes the leaf out of the decision"
+        );
+        let equal = send(
+            &mut interpreter,
+            &classes[0],
+            "=",
+            std::slice::from_ref(&classes[1]),
+        );
+        assert!(
+            answered_flag(&mut interpreter, &equal, "over equal Libs"),
+            "two Ds over equal Libs are equal"
+        );
+        let equal = send(
+            &mut interpreter,
+            &classes[0],
+            "=",
+            std::slice::from_ref(&classes[2]),
+        );
+        assert!(
+            !answered_flag(&mut interpreter, &equal, "over unequal Libs"),
+            "two Ds over unequal Libs are not"
         );
     }
 

@@ -371,13 +371,14 @@ pub enum BehaviorPrimitive {
     /// A metaclass's class; declines for anything else.
     ThisClass,
     /// Whether two class objects apply one mixin application; declines
-    /// when either is no class object. The first of the three leaves the
+    /// when either is no class object. The first of the four leaves the
     /// Newspeak side of a value class object's `=` reads its state through.
     SharesApplication,
     /// A class object's enclosing object, `nil` for a module definition.
     Enclosing,
     /// A class object's own enclosing object, the one its level's code
-    /// walks out from: a body-less declaration's class object's is its
+    /// walks out from: a body-less declaration's class object's, and its
+    /// metaclass's, is its
     /// level's, the named class's, where `Enclosing` answers its
     /// declaration's; the same as `Enclosing` for every other class object.
     LevelEnclosing,

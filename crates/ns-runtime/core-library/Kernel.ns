@@ -419,9 +419,10 @@ class Kernel vmMirror: mirror = Value (
 
     /// Answers the enclosing object `subject`'s own level reaches: the
     /// one the class its last clause named has, for the class object of a
-    /// declaration without a body, whose `enclosingOf:` is its
-    /// declaration's; `enclosingOf:`'s for every other class object, and
-    /// nil for a `subject` that is no class object.
+    /// declaration without a body and for its metaclass, whose
+    /// `enclosingOf:` is the declaration's; `enclosingOf:`'s for every
+    /// other class object and metaclass, and nil for a `subject` that is
+    /// no class object.
     ///
     /// subject: as `enclosingOf:`'s.
     private levelEnclosingOf: subject = (
