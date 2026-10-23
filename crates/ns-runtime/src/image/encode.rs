@@ -754,7 +754,9 @@ fn encode_literal(
 
 /// A class object's graph references, in the order its record writes them:
 /// the superclass, the enclosing object, the declaring class, and for a
-/// level a `<:` clause added the class its clause named. Traversal and
+/// level a `<:` clause added the class its clause named, then for a
+/// body-less declaration's class object the declaration's enclosing object
+/// and declaring class (`OBJECT_BODY_LESS_CLASS`). Traversal and
 /// encoding share one definition so the two cannot drift into a reference
 /// that is written but never given an id.
 ///
@@ -775,11 +777,14 @@ fn class_references<'gc>(
     } else {
         (None, None)
     };
+    let scope = heap.class_declaration_scope(class);
     heap.class_superclass(class)
         .into_iter()
         .chain(enclosing)
         .chain(declaring_class)
         .chain(heap.class_named(class))
+        .chain(scope.and_then(|scope| scope.enclosing))
+        .chain(scope.and_then(|scope| scope.declaring_class))
 }
 
 /// Whether `class` is a level a program's `<:` clause added over a shipped
@@ -1703,6 +1708,35 @@ fn encode_named_class<'gc>(
     encode_class_tag(writer, named, NamePosition::Superclass, context)
 }
 
+/// A body-less declaration's scope (`Heap::class_declaration_scope`), after
+/// its class object's record: the enclosing object as one `Value` and the
+/// declaring class as a class tag, each behind a presence flag, as the
+/// record's own two are written.
+fn encode_declaration_scope<'gc>(
+    writer: &mut Writer,
+    scope: crate::heap::DeclarationScope<'gc>,
+    context: &EncodeContext<'_, 'gc>,
+) -> Result<(), String> {
+    match scope.enclosing {
+        Some(enclosing) => {
+            writer.write_boolean(true);
+            encode_value(
+                writer,
+                Value::object(enclosing),
+                NamePosition::Value,
+                context,
+            )?;
+        }
+        None => writer.write_boolean(false),
+    }
+    encode_optional_class(
+        writer,
+        scope.declaring_class.as_ref(),
+        NamePosition::FrameClass,
+        context,
+    )
+}
+
 fn encode_object<'gc>(
     writer: &mut Writer,
     object: ObjectReference<'gc>,
@@ -1799,10 +1833,24 @@ fn encode_object<'gc>(
                 writer.write_u8(OBJECT_METACLASS);
                 encode_class_tag(writer, this_class, NamePosition::Header, context)?;
             }
-            None => {
-                writer.write_u8(OBJECT_CLASS);
-                encode_class_record(writer, object, context)?;
-            }
+            // A body-less declaration's class object carries its
+            // declaration's scope after the record a level has.
+            None => match heap.class_body_less_declaration(object) {
+                Some(_) => {
+                    let Some(scope) = heap.class_declaration_scope(object) else {
+                        return Err("image encoding cannot serialize a body-less \
+                                    declaration's class object without its declaration's scope"
+                            .to_string());
+                    };
+                    writer.write_u8(OBJECT_BODY_LESS_CLASS);
+                    encode_class_record(writer, object, context)?;
+                    encode_declaration_scope(writer, scope, context)?;
+                }
+                None => {
+                    writer.write_u8(OBJECT_CLASS);
+                    encode_class_record(writer, object, context)?;
+                }
+            },
         },
         ObjectShape::Activation => {
             writer.write_u8(OBJECT_FRAME);
@@ -2115,10 +2163,12 @@ pub fn walk_graph<'gc>(
     let heap = mutator.heap();
     let world = &mutator.shipped_world;
     for class in module_roots {
-        let Some(application) = heap.class_application(*class) else {
+        // A root without a body is the level its clause added, which
+        // applies `Value`'s mixin; its declaration is the clause's.
+        let Some(root_mixin) = heap.class_declaration(*class) else {
             return Err("image encoding's root object is not a class".to_string());
         };
-        match super::modules::root_record_defect(mutator, &application.mixin, *class) {
+        match super::modules::root_record_defect(mutator, &root_mixin, *class) {
             None => {}
             Some(super::modules::RootRecordDefect::NotItsRecord) => {
                 return Err(format!(

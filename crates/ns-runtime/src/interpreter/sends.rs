@@ -4,12 +4,57 @@
 //! uncached; an ordinary send's uncached counterpart is
 //! `Mutator::decide_send`.
 
-use crate::dispatch;
-use crate::heap::ActivationReference;
+use crate::dispatch::{self, LexicalOrigin};
+use crate::heap::{ActivationReference, Heap};
 use crate::types::*;
 use crate::Symbol;
 
 use super::{Mutator, Signal, Step};
+
+/// `activation`'s receiver and where its lexical walk starts: the one
+/// place that decides it, for the uncached sends here and the cached ones
+/// in `inline_cache`. The lexical depth counts levels out from the class
+/// that *defines* the running code, so the walk starts at the
+/// activation's `current_class`, not the receiver's own class -- see
+/// `dispatch::kth_enclosing_object` -- except where that class object is
+/// a body-less declaration's and the activation runs the declaration's
+/// own code (`Heap::activation_runs_declaration_code`): that code was
+/// written in the declaration, whose scope the class object records
+/// (`Heap::class_declaration_scope`), while the class object's own
+/// enclosing object and declaring class are the named class's, which
+/// that class's methods walk out from (§6.2; `newspeak-spec.pdf` §3.3,
+/// §5.9). Every other activation pays one read of its class object's
+/// header.
+#[inline(always)]
+pub(crate) fn lexical_origin<'gc>(
+    heap: &Heap<'gc>,
+    activation: ActivationReference,
+) -> (Value<'gc>, LexicalOrigin<'gc>) {
+    let (self_value, defining_class) = heap.activation_receiver_and_current_class(activation);
+    match defining_class {
+        Some(class) if heap.class_has_declaration_scope(class) => {
+            (self_value, declaration_origin(heap, activation, class))
+        }
+        _ => (self_value, LexicalOrigin::Class(defining_class)),
+    }
+}
+
+/// `lexical_origin` for an activation at a body-less declaration's class
+/// object `class`, out of line: only such an activation comes here.
+#[cold]
+#[inline(never)]
+fn declaration_origin<'gc>(
+    heap: &Heap<'gc>,
+    activation: ActivationReference,
+    class: ClassReference<'gc>,
+) -> LexicalOrigin<'gc> {
+    match heap.class_declaration_scope(class) {
+        Some(scope) if heap.activation_runs_declaration_code(activation, class) => {
+            LexicalOrigin::Declaration(scope)
+        }
+        _ => LexicalOrigin::Class(Some(class)),
+    }
+}
 
 /// `newspeak-spec.pdf` §5.7-§5.9: an implicit receiver send whose declaring
 /// class N is at lexical depth `k` is `outer N m`. `enclosing` is the kth
@@ -30,15 +75,9 @@ pub(crate) fn decide_lexical_send<'gc>(
     selector: Symbol,
     arguments: &[Value<'gc>],
 ) -> Result<Step<'gc>, Signal<'gc>> {
-    // The lexical depth counts levels out from the class that *defines* this
-    // method, so the walk needs this activation's `current_class`, not the
-    // receiver's own class -- see `dispatch::kth_enclosing_object`.
-    let (self_value, defining_class) = mutator
-        .heap
-        .activation_receiver_and_current_class(activation);
-    let enclosing =
-        dispatch::kth_enclosing_object(&mutator.heap, self_value, defining_class.as_ref(), depth);
-    let lexical_class = dispatch::kth_lexical_class(&mutator.heap, defining_class, depth);
+    let (self_value, origin) = lexical_origin(&mutator.heap, activation);
+    let enclosing = dispatch::kth_enclosing_object(&mutator.heap, self_value, origin, depth);
+    let lexical_class = dispatch::kth_lexical_class(&mutator.heap, origin, depth);
     let resolved = mutator.resolve_lexical(enclosing, lexical_class, selector);
     mutator.act(resolved, enclosing, selector, arguments)
 }
@@ -50,10 +89,8 @@ pub(crate) fn enclosing_object<'gc>(
     activation: ActivationReference,
     depth: u16,
 ) -> Value<'gc> {
-    let (self_value, defining_class) = mutator
-        .heap
-        .activation_receiver_and_current_class(activation);
-    dispatch::kth_enclosing_object(&mutator.heap, self_value, defining_class.as_ref(), depth)
+    let (self_value, origin) = lexical_origin(&mutator.heap, activation);
+    dispatch::kth_enclosing_object(&mutator.heap, self_value, origin, depth)
 }
 
 /// `newspeak-spec.pdf` §5.10: starts at S, the superclass of the *current

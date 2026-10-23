@@ -571,6 +571,19 @@ fn walk_graph(
             }
             opcodes::OBJECT_CLOSURE => format!("closure {}", read_closure_record(reader, targets)?),
             opcodes::OBJECT_CLASS => read_class_record(reader, targets)?,
+            opcodes::OBJECT_BODY_LESS_CLASS => {
+                let record = read_class_record(reader, targets)?;
+                let enclosing = if reader.read_boolean()? {
+                    read_value(reader, targets)?
+                } else {
+                    "-".to_string()
+                };
+                let declaring = read_optional_class(reader, targets)?;
+                format!(
+                    "body-less {record}, declaration enclosing {enclosing}, \
+                     declaration declaring {declaring}"
+                )
+            }
             opcodes::OBJECT_METACLASS => {
                 format!("metaclass of {}", read_class_tag(reader, targets)?)
             }

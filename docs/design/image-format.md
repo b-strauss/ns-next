@@ -645,6 +645,29 @@ class-record tag 5 is retired (`opcodes::RETIRED_OBJECT_BODIES`); mixin
 reference 1, `MIXIN_BUILTIN`, which named a builtin's mixin by builtin class
 tag, is retired too (`RETIRED_MIXIN_TAGS`).
 
+**A body-less declaration's class object is a record of its own**,
+`OBJECT_BODY_LESS_CLASS` (body tag 16): the level record above, in either
+shape, followed by the declaration's own scope, `{declaration enclosing
+object?, declaration declaring class?}`, each behind a presence flag as the
+record's own two are, both absent for a module's root
+(`Heap::class_declaration_scope`; [object-model.md](object-model.md),
+"Mixin application"). The declaration's own code -- its clause messages and
+their arguments -- walks out from these, where the applied mixin's code
+walks out from the level's, the named class's, so an image that dropped
+them would resolve the clause arguments in the named class's scope. The
+tag follows from the clause: a record whose clause is a body-less
+declaration's last must carry it, and every other class record must not
+(`BodyLessClassRecordMismatch`). The first pass sizes the record at the
+eleven fields the class object has; the enclosing object must be an object
+(`EnclosingNotAnObject`), an id past the table is refused, and the
+declaring class is held to being a class object by
+`check_class_references` with every other class reference. `inspect`
+prints the record as `body-less class …, declaration enclosing …,
+declaration declaring …`. A body-less module root is such a record, the
+`Value` level over `Object` with an empty scope, which the root rule
+(`modules::root_record_defect`) accepts as exactly that; the module's row
+is its declaration's, not `Value`'s.
+
 **A class record's header names its metaclass record** (object body tag 8,
 `OBJECT_METACLASS`): every class object's class is its metaclass (§3.2), so a
 class record's class tag is `CLASS_RECORD` with the id of a record whose own

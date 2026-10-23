@@ -1211,20 +1211,17 @@ classes and a class from source with no predecessor are not edited
   close it. The editor's hint B stays conservative regardless, never making
   such a local `=` ([editor-support.md](design/editor-support.md), "Hints").
   Noted 2026-10-14.
-- **A body-less declaration's clause argument resolves `outer` from the
-  named class's declaration, not its own.** Decision 8 of `new` as compiled
-  code makes `class M3 = Object new <: M1 tag: helper.` the level `M1`'s
-  clause adds, with `M1`'s enclosing object and declaring class, and `M3`'s
-  full initializer runs at that level. So an implicit-receiver or `outer`
-  send in `M3`'s own clause arguments walks `M1`'s lexical chain: where `M1`
-  is declared elsewhere than `M3` -- a slot of `M3`'s enclosing class
-  holding another module's class -- `helper` reaches that module's object,
-  and answers its `helper` at exit status 0, where §6 puts the factory's
-  parameters, and so the clause, in `M3`'s scope. A declaration with a body,
-  and `M3` when `M1` is declared beside it, are right. Closing it needs
-  `M3`'s own enclosing object and declaring class reachable from that frame
-  -- a field more on the body-less declaration's class object, or a frame
-  kind whose lexical walk starts there -- which is a design decision.
+- **`super` in a body-less declaration's clause argument looks up from the
+  wrong level.** `class M3 = Object new <: M1 tag: super foo.` runs its
+  clause at its class object, the level `M1`'s clause added, so `super foo`
+  starts at that level's superclass and misses `M1`'s `foo`, which the body
+  version `… tag: super foo () ()` finds, since its own level's superclass
+  is `M1`'s level: `doesNotUnderstand:` where the body version answers. The
+  lexical walk already tells the declaration's own code from `M1`'s
+  (`interpreter::sends::lexical_origin`); `super` needs the same, starting
+  at the class object itself for that code. The super cache keys a row by
+  the running class's dispatch id alone, which both kinds of code at one
+  class object share, so the fix needs a key that tells them apart too.
   [object-model.md](design/object-model.md), "Mixin application". Noted
   2026-10-23.
 

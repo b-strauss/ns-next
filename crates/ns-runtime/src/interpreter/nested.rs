@@ -293,7 +293,12 @@ pub(crate) fn after_clause<'gc>(
     // its own over it.
     if !nested.has_body {
         return Ok(Step::Value(Value::object(body_less_class(
-            mutator, enclosing, &nested, index, superclass,
+            mutator,
+            enclosing,
+            declaring_class,
+            &nested,
+            index,
+            superclass,
         ))));
     }
     // Step 3: the application cache decides whether this behaviour already
@@ -350,28 +355,34 @@ pub(crate) fn after_clause<'gc>(
 
 /// Steps 4 and 5 for a body-less declaration (`Mixin::has_body`), whose
 /// class object `class` is the level its last `<:` clause added, already
-/// built: §3.1.1's enclosing-object condition decided on it, as on a
-/// declaration's own class -- with the level's own enclosing object, the
-/// named class's (§6.2) -- then the class cached in `enclosing`'s hidden
-/// slot `index` and, for a shipped module's, named.
+/// built: the declaration's own scope recorded on it -- `enclosing` and
+/// `declaring_class`, which the declaration's own code walks out from
+/// (`interpreter::sends::lexical_origin`) where the level's are the named
+/// class's (§6.2) -- then §3.1.1's enclosing-object condition decided on
+/// it, on the declaration's enclosing object and the level's both
+/// (`value_class::check_body_less_value_class`), then the class cached in
+/// `enclosing`'s hidden slot `index` and, for a shipped module's, named.
 #[cold]
 #[inline(never)]
 fn body_less_class<'gc>(
     mutator: &mut Mutator<'gc>,
     enclosing: ObjectReference<'gc>,
+    declaring_class: ClassReference<'gc>,
     nested: &Rc<Mixin>,
     index: usize,
     class: ClassReference<'gc>,
 ) -> ClassReference<'gc> {
-    let value_class_refusal = match (
-        mutator.heap.class_inherits_value(class),
-        mutator.heap.class_enclosing(class),
-        mutator.heap.class_superclass(class),
-    ) {
-        (true, Some(own_enclosing), Some(superclass)) => {
-            crate::interpreter::value_class::check_value_class(mutator, own_enclosing, superclass)
-        }
-        _ => None,
+    let scope = crate::heap::DeclarationScope {
+        enclosing: Some(enclosing),
+        declaring_class: Some(declaring_class),
+    };
+    if !mutator.heap.class_set_declaration_scope(class, scope) {
+        unreachable!("internal: a body-less declaration's class object keeps its scope");
+    }
+    let value_class_refusal = if mutator.heap.class_inherits_value(class) {
+        crate::interpreter::value_class::check_body_less_value_class(mutator, enclosing, class)
+    } else {
+        None
     };
     if let Some(refusal) = value_class_refusal {
         if !mutator.record_value_class_refusal(class, refusal) {

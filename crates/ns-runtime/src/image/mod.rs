@@ -79,8 +79,7 @@ fn plan_describing<'gc>(
     // the graph section is what refuses such a root.
     let module_roots: Vec<std::rc::Rc<crate::mixin::Mixin>> = modules
         .iter()
-        .filter_map(|module| heap.class_application(module.class))
-        .map(|application| application.mixin.clone())
+        .filter_map(|module| heap.class_declaration(module.class))
         .collect();
     // A root that can never be instantiated could only fail as an artifact,
     // and refusing it here keeps the format from needing a way to say so.

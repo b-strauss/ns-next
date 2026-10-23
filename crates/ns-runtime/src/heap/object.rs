@@ -778,16 +778,36 @@ pub(in crate::heap) mod class_field {
     pub(in crate::heap) const NAMED_CLASS: usize = COUNT;
     /// How many fields a level a `<:` clause added has.
     pub(in crate::heap) const APPLIED_LEVEL_COUNT: usize = COUNT + 1;
+    /// For a body-less declaration's class object (`Mixin::has_body`), and
+    /// only there, two fields past `NAMED_CLASS`: the enclosing object the
+    /// declaration was evaluated in, nil for a module's root -- §3.3's
+    /// "object of which C is a member", which a body version of the
+    /// declaration would have as its own -- and the class object of the
+    /// level whose declaration lexically contains it, nil for a root. The
+    /// class object's `ENCLOSING` and `DECLARING_CLASS` are the named
+    /// class's, which the applied mixin's code walks out from (§6.2); only
+    /// the declaration's own code -- its full initializer, which is the
+    /// clause messages and their arguments, and the blocks in it -- walks
+    /// out from these (`Heap::class_declaration_scope`,
+    /// `interpreter::sends::lexical_origin`).
+    pub(in crate::heap) const DECLARATION_ENCLOSING: usize = APPLIED_LEVEL_COUNT;
+    /// See `DECLARATION_ENCLOSING`.
+    pub(in crate::heap) const DECLARATION_DECLARING_CLASS: usize = APPLIED_LEVEL_COUNT + 1;
+    /// How many fields a body-less declaration's class object has.
+    pub(in crate::heap) const BODY_LESS_CLASS_COUNT: usize = APPLIED_LEVEL_COUNT + 2;
     /// The fields that hold an object or nil; the others are numbers.
-    /// `NAMED_CLASS` lies past an ordinary class object's fields, where
-    /// `pointer_ranges` clamps its range to nothing.
-    pub(in crate::heap) const POINTERS: [usize; 6] = [
+    /// `NAMED_CLASS` and the two declaration fields lie past an ordinary
+    /// class object's fields, and the declaration fields past a level's,
+    /// where `pointer_ranges` clamps their ranges to nothing.
+    pub(in crate::heap) const POINTERS: [usize; 8] = [
         ENCLOSING,
         DECLARING_CLASS,
         SUPERCLASS,
         THIS_CLASS,
         VALUE_CLASS_REFUSAL,
         NAMED_CLASS,
+        DECLARATION_ENCLOSING,
+        DECLARATION_DECLARING_CLASS,
     ];
 }
 
@@ -835,8 +855,19 @@ mod tests {
         assert_eq!(covered(&class), expected);
         let level = block(Format::Class, class_field::APPLIED_LEVEL_COUNT);
         let mut expected = vec![CLASS];
-        expected.extend(class_field::POINTERS.iter().map(|field| FIELDS + field));
+        expected.extend(
+            class_field::POINTERS
+                .iter()
+                .filter(|field| **field < class_field::APPLIED_LEVEL_COUNT)
+                .map(|field| FIELDS + field),
+        );
         assert_eq!(covered(&level), expected);
+        // A body-less declaration's class object has its declaration's
+        // enclosing object and declaring class besides.
+        let body_less = block(Format::Class, class_field::BODY_LESS_CLASS_COUNT);
+        let mut expected = vec![CLASS];
+        expected.extend(class_field::POINTERS.iter().map(|field| FIELDS + field));
+        assert_eq!(covered(&body_less), expected);
         // A frame's registers count only once it is no longer married.
         let mut frame = block(Format::Frame, frame_field::COUNT + 2);
         assert_eq!(covered(&frame).len(), 1 + frame_field::COUNT + 2);

@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 use crate::builtins::primitive::Primitive;
 use crate::bytecode::{CallSite, CompiledCode, Instruction};
-use crate::dispatch;
+use crate::dispatch::{self, LexicalOrigin};
 use crate::hash::IdentityMap;
 use crate::heap::reclaim::FreedIds;
 use crate::heap::{ActivationReference, ApplicationIndex, Heap};
@@ -1150,26 +1150,17 @@ pub(crate) fn send_lexical<'gc>(
     let Some((index, privacy)) = privacy else {
         return decide_lexical_send(mutator, activation, depth, selector, arguments);
     };
-    // As in `decide_lexical_send`: the depth counts out from the class that
-    // defines the running method, not from the receiver's class.
-    let (self_value, defining_class) = mutator
-        .heap
-        .activation_receiver_and_current_class(activation);
-    let enclosing =
-        dispatch::kth_enclosing_object(&mutator.heap, self_value, defining_class.as_ref(), depth);
+    // As in `decide_lexical_send`: where the walk starts is decided once,
+    // by `sends::lexical_origin`, for the uncached path and this one.
+    let (self_value, origin) = super::sends::lexical_origin(&mutator.heap, activation);
+    let enclosing = dispatch::kth_enclosing_object(&mutator.heap, self_value, origin, depth);
     let Some(private) = privacy else {
         return send_lexical_first(
-            mutator,
-            index,
-            enclosing,
-            defining_class,
-            depth,
-            selector,
-            arguments,
+            mutator, index, enclosing, origin, depth, selector, arguments,
         );
     };
     let key = if private {
-        let lexical_class = dispatch::kth_lexical_class(&mutator.heap, defining_class, depth);
+        let lexical_class = dispatch::kth_lexical_class(&mutator.heap, origin, depth);
         SendKey {
             guard: lexical_dispatch_id(&mutator.heap, lexical_class),
             rule: CacheRule::LexicalPrivate,
@@ -1194,12 +1185,12 @@ pub(crate) fn send_lexical<'gc>(
         key,
         selector,
         arguments,
-        |mutator| dispatch::kth_lexical_class(&mutator.heap, defining_class, depth),
+        |mutator| dispatch::kth_lexical_class(&mutator.heap, origin, depth),
         |mutator, known_lexical_class| {
             let lexical_class = match known_lexical_class {
                 LexicalClass::Known(lexical_class) => lexical_class,
                 LexicalClass::NotComputed => {
-                    dispatch::kth_lexical_class(&mutator.heap, defining_class, depth)
+                    dispatch::kth_lexical_class(&mutator.heap, origin, depth)
                 }
             };
             mutator.resolve_lexical(enclosing, lexical_class, selector)
@@ -1233,12 +1224,12 @@ fn send_lexical_first<'gc>(
     mutator: &mut Mutator<'gc>,
     index: usize,
     enclosing: Value<'gc>,
-    defining_class: Option<ClassReference<'gc>>,
+    origin: LexicalOrigin<'gc>,
     depth: u16,
     selector: Symbol,
     arguments: &[Value<'gc>],
 ) -> Result<Step<'gc>, Signal<'gc>> {
-    let lexical_class = dispatch::kth_lexical_class(&mutator.heap, defining_class, depth);
+    let lexical_class = dispatch::kth_lexical_class(&mutator.heap, origin, depth);
     let lexical_id = lexical_dispatch_id(&mutator.heap, lexical_class);
     if lexical_id != DispatchId::NONE {
         let private_key = SendKey {

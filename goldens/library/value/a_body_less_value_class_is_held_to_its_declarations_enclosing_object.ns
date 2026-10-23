@@ -1,0 +1,34 @@
+/// newspeak-spec.pdf 3.1.1: an object is a value only if "Its enclosing
+/// objects (3.3) are all value objects". A declaration without a body is
+/// the level its last clause adds (6, 6.2), whose enclosing object is the
+/// named class's, and it is also a member class, whose enclosing object
+/// 3.3 makes "the object of which C is a member": an instance's enclosing
+/// objects are both, as a body version's are its own class's and its
+/// level's.
+///
+/// Marker is declared in this value module, so the level its mixin adds is
+/// enclosed by a value. Fine is declared here too and is accepted. Valued
+/// is declared in a Holder, whose mutable slot makes it no value, so
+/// Valued is refused where an instance would be made.
+class ABodyLessValueClassIsHeldToItsDeclarationsEnclosingObject = Object <: Value () (
+  public class Marker = Object new () ()
+
+  public class Fine = Value new <: Marker.
+
+  public class Holder = Object new (
+    |
+      public count ::= 0.
+    |
+  ) (
+    public class Valued = Value new <: Marker.
+  )
+
+  public main: platform args: arguments = (
+    platform transcript
+        show: (Fine new = Fine new) printString;
+        newLine.
+    platform transcript
+        show: ([Holder new Valued new] on: Error do: [:error | error messageText]);
+        newLine.
+  )
+)

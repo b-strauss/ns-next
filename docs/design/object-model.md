@@ -320,7 +320,8 @@ struct MixinApplication {         // (mixin, super application) -> behaviour
 
 a class object                    // one per enclosing instance, per level;
                                   // an object of the class format, eight fields,
-                                  // nine for a level a `<:` clause added:
+                                  // nine for a level a `<:` clause added,
+                                  // eleven for a body-less declaration's class object:
     0 enclosing                   // object or nil
     1 declaring class             // the declaration chain `outer` walks
     2 superclass                  // parallel to the application chain
@@ -330,6 +331,8 @@ a class object                    // one per enclosing instance, per level;
     6 applied clause              // the `<:` clause that added this level, packed, or nil
     7 application                 // SmallInteger ApplicationIndex
     8 named class                 // a level a `<:` clause added only: the class it named
+    9 declaration enclosing       // a body-less declaration's class object only: its declaration's
+   10 declaration declaring class //   enclosing object and declaring class, nil for a root
 ```
 
 The layout and its reasons are "The object layout" below; `heap/object.rs`'s
@@ -1241,6 +1244,46 @@ runs `M1`'s own part with `5`, its arity checked against `M1`'s factory;
 (`goldens/language/class/mixin/spec_6_a_body_less_declaration_is_the_mixin_application.ns`).
 A passed level (`Mutator::passes`) counts a body-less declaration's levels
 the same way. The image never applies a body-less row's mixin.
+
+**A body-less declaration's own code resolves in the declaration's scope.**
+The class object is two classes at once: the level, whose enclosing object
+and declaring class are `M1`'s so that `M1`'s methods walk `M1`'s lexical
+chain, and the declaration `M3`, a member class of the class it is written
+in, whose clause messages and arguments were written in `M3`'s scope (§6:
+the factory's parameters "are in scope throughout the mixin
+application"). So the class object keeps two fields more, `M3`'s own
+enclosing object and declaring class (`class_field::DECLARATION_ENCLOSING`,
+`Heap::class_declaration_scope`), written by `nested::body_less_class`
+once the superclass clause has run and nil for a module's root, which §3.3
+gives no enclosing object. A frame running `M3`'s own code -- its full
+initializer entered at that class object, or a block created in it, found
+along the captured frames (`Heap::activation_runs_declaration_code`) --
+starts its lexical walk there (`interpreter::sends::lexical_origin`,
+`dispatch::LexicalOrigin::Declaration`): depth 1 is `M3`'s enclosing
+object, deeper levels step out from `M3`'s declaring class, and depth 0 has
+no N, since `M3` declares no member and §5.8 makes a self send `outer M3 m`.
+Every other frame at that class object -- `M1`'s methods and initializer
+bodies -- walks `M1`'s chain, as before. SOMns decides the same per running
+method (`OuterObjectRead`'s `lookupClassWithMixinApplied`). Which walk a
+frame takes is a function of the code it runs, so a lexical send's site,
+which belongs to that code, is only ever filled and hit by one kind of
+frame, and a global row is keyed by the enclosing object's class and N's
+application, both of which the walk decides
+(`goldens/language/class/mixin/spec_6_a_body_less_declarations_clause_resolves_in_its_own_scope.ns`).
+`super` in a clause argument still looks up from the class object's
+superclass, not from `M1`'s level as a body version's would (`OPEN-WORK.md`).
+
+§3.1.1's enclosing-object condition is decided on both: an instance's
+enclosing objects (§3.3, "with respect to S") are `M3`'s, `M1`'s level's
+and every level's below, as a body version's are, so a body-less value
+class is refused when `M3`'s enclosing object is no value as well as when a
+level's is (`value_class::check_body_less_value_class`;
+`goldens/library/value/a_body_less_value_class_is_held_to_its_declarations_enclosing_object.ns`). A body-less
+module root, `class R = Object <: Value.`, is the `Value` level over
+`Object`, named `R`, with `Value`'s enclosing object and an empty
+declaration scope; the image's root rule holds it to exactly that
+(`modules::body_less_root_record_defect`;
+`goldens/language/module/spec_6_a_body_less_root_is_the_value_level_its_clause_adds.ns`).
 
 **The levels are built in one place, `interpreter/nested.rs`'s
 `build_applied_levels`**, called by `Mutator::load_root_class` for a module's

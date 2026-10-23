@@ -1,0 +1,126 @@
+/// newspeak-spec.pdf 6: in a mixin application "the formal parameters named
+/// in the primary factory signature are in scope throughout the mixin
+/// application", so the clause of a declaration without a body is written,
+/// and resolves, in that declaration's own scope, as the clause of one with
+/// a body is. 5.9 resolves `outer N` -- and 5.7 an implicit receiver send,
+/// which is one -- from "the kth enclosing object (3.3) of self with respect
+/// to C'", C' "the current class of the current activation": for the
+/// declaration's own code, the declaration's class, a member class of
+/// Holder, whose enclosing object 3.3 makes "the object of which C is a
+/// member", the holder. 5.8 makes a self send `outer C m` with C the
+/// declaration, which declares no private member.
+///
+/// M1 is declared in a Library on a Shelf; Holder's declarations apply it.
+/// Each answers its clause argument as `a`:
+///
+/// 1. Implicit, `tag: helper`: the holder's helper, not the library's.
+/// 2. Factory parameter and implicit send together, `tag: x , helper`.
+/// 3. `outer Holder identify`: the holder.
+/// 4. `outer Spec6...Scope identify`, two levels out: the module, where
+///    M1's own chain would reach the shelf.
+/// 5. A block in the clause, `[helper] value`: the holder's helper.
+/// 6. `self secret`, M1's private method: M3's declaration declares no
+///    private `secret`, so 5.9's lookupProtected passes M1's over and the
+///    send is not understood.
+/// 7. The same declaration with a body: the holder's helper.
+/// 8. A method of M1 on a body-less declaration's instance still resolves
+///    in M1's scope (6.2: "the enclosing object of I is the enclosing
+///    object of C"): the library's helper.
+class Spec6ABodyLessDeclarationsClauseResolvesInItsOwnScope = Object new (
+  |
+    library = Shelf new Library new.
+  |
+) (
+  class Shelf = Object new () (
+    public class Library = Object new () (
+      public class M1 tag: t = Object new (
+        |
+          public a = t.
+        |
+      ) (
+        public fromM1 = (
+          ^helper.
+        )
+
+        private secret = (
+          ^'M1''s secret'.
+        )
+      )
+
+      public helper = (
+        ^'the library helper'.
+      )
+    )
+
+    public identify = (
+      ^'the shelf'.
+    )
+  )
+
+  class Holder = Object new () (
+    public class Implicit = Object new <: libraryM1 tag: helper.
+
+    public class WithParameter x: x = Object new <: libraryM1 tag: x , helper.
+
+    public class OuterHolder = Object new <: libraryM1 tag: outer Holder identify.
+
+    public class OuterModule
+        = Object new
+        <: libraryM1 tag: outer Spec6ABodyLessDeclarationsClauseResolvesInItsOwnScope identify.
+
+    public class InBlock = Object new <: libraryM1 tag: [helper] value.
+
+    public class Secret
+        = Object new
+        <: libraryM1 tag: ([self secret] on: Error do: [:error | 'secret is not understood']).
+
+    public class WithBody = Object new <: libraryM1 tag: helper () ()
+
+    libraryM1 = (
+      ^library M1.
+    )
+
+    public helper = (
+      ^'the holder helper'.
+    )
+
+    public identify = (
+      ^'the holder'.
+    )
+  )
+
+  public identify = (
+    ^'the module'.
+  )
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+      holder = Holder new.
+    |
+    t
+        show: holder Implicit new a;
+        newLine.
+    t
+        show: (holder WithParameter x: 'x and ') a;
+        newLine.
+    t
+        show: holder OuterHolder new a;
+        newLine.
+    t
+        show: holder OuterModule new a;
+        newLine.
+    t
+        show: holder InBlock new a;
+        newLine.
+    t
+        show: holder Secret new a;
+        newLine.
+    t
+        show: holder WithBody new a;
+        newLine.
+    t
+        show: holder Implicit new fromM1;
+        newLine.
+  )
+)

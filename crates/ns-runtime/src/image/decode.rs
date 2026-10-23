@@ -311,6 +311,14 @@ pub enum DecodeError {
     /// 8 of `new` as compiled code), so no live class has one, and its full
     /// body counts its levels from a class object of another mixin.
     BodyLessMixinApplied,
+    /// A class record's body tag disagrees with its clause: an
+    /// `OBJECT_BODY_LESS_CLASS` record is a body-less declaration's class
+    /// object, the level its last clause added, and carries that
+    /// declaration's scope; an `OBJECT_CLASS` record is any other class
+    /// object and carries none. A record written with the other's tag would
+    /// give a level a scope it has not got, or take one away from the
+    /// declaration's own code.
+    BodyLessClassRecordMismatch,
     /// The classes the `<:` clauses of levels named form a cycle: each
     /// level's metaclass is rebuilt from the class its clause named, so a
     /// cycle names no class side at all. A live clause names a class that
@@ -817,6 +825,12 @@ impl std::fmt::Display for DecodeError {
             DecodeError::BodyLessMixinApplied => write!(
                 f,
                 "a class object in the image applies the mixin of a class without a body"
+            ),
+            DecodeError::BodyLessClassRecordMismatch => write!(
+                f,
+                "a class record in the image is written as the class of a declaration \
+                 without a body, or as any other class, and its mixin application clause \
+                 says otherwise"
             ),
             DecodeError::NamedClassCycle => write!(
                 f,
@@ -2722,7 +2736,10 @@ fn read_shipped_module<'gc>(
 ///   a `<:` clause added at least 23 (a `MIXIN_SHIPPED` one: the two-byte
 ///   header, the hash, the body tag, the mixin reference's 5, the
 ///   superclass's flag, the clause's 8 and the named class's two-byte tag)
-///   for the 11 words, 88 bytes, of a level, 3.8x; a frame record at
+///   for the 11 words, 88 bytes, of a level, 3.8x; a body-less
+///   declaration's class object (`OBJECT_BODY_LESS_CLASS`) at least 25, a
+///   level's 23 and the presence flags of its declaration's enclosing
+///   object and declaring class, for 13 words, 104 bytes, 4.2x; a frame record at
 ///   least 21 (the two-byte header, the hash, the body tag, a `TopLevel`
 ///   kind, the program counter's 4, four one-byte flags and fields and the
 ///   register count's 4) for 12 words, 96 bytes, 4.6x; an instance, array,
@@ -2741,7 +2758,8 @@ fn read_shipped_module<'gc>(
 ///   records then holds 80 + 8 + 8 = 96 bytes for 9, **10.7x** in a
 ///   release build, and 80 + 16 + 8 = 104, **11.6x** in a debug one; every
 ///   other record stays below (a class record 104 or 112 for 19, 5.5x or
-///   5.9x; a level's 112 or 120 for 23, 4.9x or 5.2x; a frame record 120 or
+///   5.9x; a level's 112 or 120 for 23, 4.9x or 5.2x; a body-less
+///   declaration's class object's 128 or 136 for 25, 5.1x or 5.4x; a frame record 120 or
 ///   136 for 21, 5.7x or 6.5x).
 /// - Per value, the word it occupies against the bytes that encode it: a
 ///   one-byte `VALUE_NIL` field, element, copied value or register becomes
@@ -3707,7 +3725,8 @@ fn metaclass_rows(mixins: &[Rc<crate::mixin::Mixin>]) -> HashSet<usize> {
 /// stream forces that record to have been a class record -- which is only
 /// knowable once every record has been read, so it is checked here rather
 /// than where each tag is decoded. These positions, a level's named class
-/// (`Heap::class_named`) among them, are the complete set: a class tag appears nowhere else in the graph section, and a plain
+/// (`Heap::class_named`) and a body-less declaration's declaring class
+/// (`Heap::class_declaration_scope`) among them, are the complete set: a class tag appears nowhere else in the graph section, and a plain
 /// object value pointing at a class object is legitimate (that is what a
 /// cached nested class in a slot *is*).
 ///
@@ -3769,10 +3788,14 @@ fn check_class_references<'gc>(
             let superclass = heap.class_superclass(*object);
             let declaring_class = heap.class_declaring(*object);
             let named = heap.class_named(*object);
+            let declaration_declaring = heap
+                .class_declaration_scope(*object)
+                .and_then(|scope| scope.declaring_class);
             for class in superclass
                 .iter()
                 .chain(declaring_class.iter())
                 .chain(named.iter())
+                .chain(declaration_declaring.iter())
             {
                 if !heap.is_class(*class) {
                     return Err(DecodeError::NotAClassReference);
@@ -4148,6 +4171,19 @@ impl Sizing<'_, '_, '_> {
                 (record_size::CLOSURE_FIXED_FIELDS + count, false)
             }
             OBJECT_CLASS => (self.class_record(reader)?, false),
+            // A level's record and the declaration's scope; whether the
+            // clause is a body-less declaration's last is the second pass's
+            // to check, which the placeholder's size then agrees with.
+            OBJECT_BODY_LESS_CLASS => {
+                if self.class_record(reader)? != record_size::APPLIED_LEVEL_FIELDS {
+                    return Err(DecodeError::BodyLessClassRecordMismatch);
+                }
+                if reader.read_boolean()? {
+                    self.value(reader, NamePosition::Value)?;
+                }
+                self.optional_class(reader, NamePosition::FrameClass)?;
+                (record_size::BODY_LESS_CLASS_FIELDS, false)
+            }
             OBJECT_METACLASS => {
                 self.class_tag(reader, NamePosition::Header)?;
                 (record_size::CLASS_FIELDS, false)
@@ -4489,6 +4525,7 @@ pub fn decode_graph_section<'gc>(
         // metaclass record, each written once the record is filled.
         let mut applied_clause = None;
         let mut this_class = None;
+        let mut declaration_scope = None;
         // `class` may name a record later in this same table -- decoding
         // fills records in table order, not dependency order -- so that
         // class may not have an application yet. The record's header id is
@@ -4654,9 +4691,21 @@ pub fn decode_graph_section<'gc>(
                 heap.record_mixin_object(id, *object);
                 None
             }
-            OBJECT_CLASS => {
+            body @ (OBJECT_CLASS | OBJECT_BODY_LESS_CLASS) => {
                 let (class_record, applied, mixin) =
                     decode_class_record(reader, context, &tables, &placeholder_application)?;
+                // The tag says whether the record carries a declaration's
+                // scope, the clause whether the class object has one.
+                let body_less = applied.as_ref().is_some_and(|(clause, _)| {
+                    !clause.declaration.has_body
+                        && clause.index + 1 == clause.declaration.mixin_applications.len()
+                });
+                if body_less != (body == OBJECT_BODY_LESS_CLASS) {
+                    return Err(DecodeError::BodyLessClassRecordMismatch);
+                }
+                if body_less {
+                    declaration_scope = Some(decode_declaration_scope(reader, context, &tables)?);
+                }
                 if metaclass_rows.contains(&crate::mixin::mixin_key(&mixin)) {
                     return Err(DecodeError::ClassRecordAppliesAClassSide);
                 }
@@ -4704,7 +4753,14 @@ pub fn decode_graph_section<'gc>(
             // refused, as a string's of the wrong size is: the space cannot
             // resize it.
             let named = applied_clause.as_ref().map(|(_, named)| *named);
-            if !heap.fill_placeholder_class(*object, class, identity_hash, record, named) {
+            if !heap.fill_placeholder_class(
+                *object,
+                class,
+                identity_hash,
+                record,
+                named,
+                declaration_scope,
+            ) {
                 return Err(DecodeError::UnexpectedEndOfFile);
             }
         }
@@ -4959,6 +5015,33 @@ fn decode_shipped_level<'gc>(
         builtin: None,
     };
     Ok((class, Some((applied_clause, named_class)), mixin))
+}
+
+/// The scope an `OBJECT_BODY_LESS_CLASS` record carries after its clause:
+/// the declaration's enclosing object, a value that must be an object, and
+/// its declaring class, a class tag; each behind a presence flag, both
+/// absent for a module's root. Read as the record's own enclosing object
+/// and declaring class are: a reference past the table is refused here, and
+/// a declaring class that is no class object by `check_class_references`
+/// once every record is read.
+fn decode_declaration_scope<'gc>(
+    reader: &mut Reader,
+    context: &mut DecodeContext<'_, 'gc>,
+    tables: &Tables<'_, 'gc>,
+) -> Result<crate::heap::DeclarationScope<'gc>, DecodeError> {
+    let enclosing = if reader.read_boolean()? {
+        match decode_value(reader, context, tables, NamePosition::Value)?.as_object() {
+            Some(object) => Some(object),
+            _ => return Err(DecodeError::EnclosingNotAnObject),
+        }
+    } else {
+        None
+    };
+    let declaring_class = decode_optional_class(reader, context, tables, NamePosition::FrameClass)?;
+    Ok(crate::heap::DeclarationScope {
+        enclosing,
+        declaring_class,
+    })
 }
 
 /// The clause that added a level: the applying declaration's row id and the

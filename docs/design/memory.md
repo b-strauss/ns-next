@@ -1212,7 +1212,10 @@ doc comment, `image/decode.rs`, and for the text table `texts::decode`'s,
 The other record kinds stay below the metaclass record: a class record is at
 least 19 bytes for the same 80 (4.2x; 5.5x and 5.9x with the decoder's
 tables), a level a `<:` clause added at least 23 for 88, its one field more
-the class its clause named (3.8x; 4.9x and 5.2x), a frame record at least 21 for 96 (4.6x; 5.7x and 6.5x), an
+the class its clause named (3.8x; 4.9x and 5.2x), a body-less declaration's
+class object at least 25 for 104, the level's record and two presence flags
+for its declaration's scope (4.2x; 5.1x and 5.4x), a frame record at least 21
+for 96 (4.6x; 5.7x and 6.5x), an
 instance, array, string or symbol record at least 11 for 16 (1.5x), a
 closure record at least 17 for 40 (2.4x), a byte-array record of `n` bytes
 `14 + n` for `8 × (5 + ⌈n/8⌉)`, its alignment reserve not on the wire, at

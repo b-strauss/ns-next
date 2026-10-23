@@ -13749,6 +13749,133 @@ fn a_class_record_applying_a_body_less_rows_mixin_is_refused() {
     );
 }
 
+/// The smallest module whose mixin table has a body-less declaration.
+const BODY_LESS_MODULE: &str = indoc! {"
+    class Host = Object new () (
+        class Marker = Object new () ()
+        class Applied = Object new <: Marker.
+    ) : ()
+"};
+
+/// A graph section of three records: a class record with body tag `body`
+/// for the level clause 0 of row `applying_row` added, applying `Marker`'s
+/// row, which `scope` ends; its metaclass record; and an empty `Array`.
+fn body_less_class_section(
+    fixture: &GraphFixture,
+    body: u8,
+    applying_row: u32,
+    scope: impl FnOnce(&mut encode::Writer),
+) -> Vec<u8> {
+    let marker = row_named(fixture, "Marker");
+    class_records(3, |writer| {
+        writer.write_u8(CLASS_RECORD); // class tag: its metaclass record
+        writer.write_u32(1);
+        writer.write_u32(7); // identity hash
+        writer.write_u8(body);
+        writer.write_u8(MIXIN_ROW); // mixin reference: a mixin-table row
+        writer.write_u32(marker);
+        writer.write_boolean(false); // no superclass
+        writer.write_boolean(false); // no enclosing object
+        writer.write_boolean(false); // no declaring class
+        writer.write_boolean(true); // an applied level
+        writer.write_u32(applying_row);
+        writer.write_u32(0);
+        writer.write_shipped(OBJECT_NAME); // the class the clause named
+        scope(writer);
+        metaclass_record(writer, 0);
+        writer.write_shipped(ARRAY_NAME);
+        writer.write_u32(1); // identity hash
+        writer.write_u8(OBJECT_ARRAY); // object body: Array
+        writer.write_u32(0); // no elements
+    })
+}
+
+/// A body-less declaration's class object carries its declaration's scope
+/// after the level's record (`OBJECT_BODY_LESS_CLASS`), each reference
+/// checked as a class record's own are: an object id past the table, an
+/// enclosing object that is no object and a declaring class that is no
+/// class are refused, never followed. The tag must agree with the clause
+/// both ways.
+#[test]
+fn a_body_less_class_records_scope_is_checked() {
+    let mut fixture = GraphFixture::with_source(BODY_LESS_MODULE);
+    let applied = row_named(&fixture, "Applied");
+    let enclosing_array = |writer: &mut encode::Writer| {
+        writer.write_boolean(true);
+        writer.write_u8(VALUE_OBJECT_ID);
+        writer.write_u32(2);
+        writer.write_boolean(false);
+    };
+    let bytes = body_less_class_section(&fixture, OBJECT_BODY_LESS_CLASS, applied, enclosing_array);
+    fixture.decoded(&bytes, "a body-less class object", |heap, graph| {
+        let scope = heap
+            .class_declaration_scope(graph.objects[0])
+            .expect("the record's scope is on its class object");
+        assert!(scope
+            .enclosing
+            .is_some_and(|enclosing| enclosing.same(graph.objects[2])));
+        assert!(scope.declaring_class.is_none());
+    });
+    type WritesScope = Box<dyn Fn(&mut encode::Writer)>;
+    let refusals: [(WritesScope, decode::DecodeError); 4] = [
+        (
+            Box::new(|writer| {
+                writer.write_boolean(true);
+                writer.write_u8(VALUE_OBJECT_ID);
+                writer.write_u32(99);
+                writer.write_boolean(false);
+            }),
+            decode::DecodeError::BadObjectId(99),
+        ),
+        (
+            Box::new(|writer| {
+                writer.write_boolean(true);
+                writer.write_u8(VALUE_TRUE);
+                writer.write_boolean(false);
+            }),
+            decode::DecodeError::EnclosingNotAnObject,
+        ),
+        (
+            Box::new(|writer| {
+                writer.write_boolean(false);
+                writer.write_boolean(true);
+                writer.write_u8(CLASS_RECORD);
+                writer.write_u32(99);
+            }),
+            decode::DecodeError::BadObjectId(99),
+        ),
+        (
+            Box::new(|writer| {
+                writer.write_boolean(false);
+                writer.write_boolean(true);
+                writer.write_u8(CLASS_RECORD);
+                writer.write_u32(2); // the Array
+            }),
+            decode::DecodeError::NotAClassReference,
+        ),
+    ];
+    for (scope, error) in refusals {
+        let bytes = body_less_class_section(&fixture, OBJECT_BODY_LESS_CLASS, applied, scope);
+        assert_eq!(fixture.decode_error(&bytes), error);
+    }
+    // The clause decides which tag the record must have.
+    let without_scope = body_less_class_section(&fixture, OBJECT_CLASS, applied, |_| {});
+    assert_eq!(
+        fixture.decode_error(&without_scope),
+        decode::DecodeError::BodyLessClassRecordMismatch
+    );
+    let mut with_body = GraphFixture::with_source(APPLYING_MODULE);
+    let applying = row_named(&with_body, "Applied");
+    let bytes = body_less_class_section(&with_body, OBJECT_BODY_LESS_CLASS, applying, |writer| {
+        writer.write_boolean(false);
+        writer.write_boolean(false);
+    });
+    assert_eq!(
+        with_body.decode_error(&bytes),
+        decode::DecodeError::BodyLessClassRecordMismatch
+    );
+}
+
 /// One past the last mixin reference, and every retired one: a stale
 /// image's builtin level names no mixin rather than whatever took the number.
 #[test]
@@ -16626,4 +16753,148 @@ fn a_body_less_declaration_survives_build_and_load() {
         assert_eq!(heap.class_name(level), Some(Symbol::intern("M3")));
         assert_eq!(heap.class_factory(level), x_factory);
     });
+}
+
+/// A body-less declaration's clause argument resolves in the declaration's
+/// own scope (`newspeak-spec.pdf` 3.3, 5.9), which its class object keeps
+/// beside the named class's: built before the snapshot, the class object
+/// is an `OBJECT_BODY_LESS_CLASS` record, and after load its clause still
+/// reaches the holder's `helper`, while M1's method on its instance still
+/// reaches the library's.
+#[test]
+fn a_body_less_declarations_own_scope_survives_build_and_load() {
+    let source = indoc! {"
+        class Module = Object new (|
+          library = Library new.
+          public holder = Holder new.
+        |) (
+          class Library = Object new () (
+            public class M1 tag: t = Object new (| public a = t. |) (
+              public fromM1 = ( ^helper )
+            )
+            public helper = ( ^'the library helper' )
+          )
+          public class Holder = Object new () (
+            class M3 = Object new <: libraryM1 tag: helper , ' and ' , outer Holder identify.
+            libraryM1 = ( ^library M1 )
+            public helper = ( ^'the holder helper' )
+            public identify = ( ^'the holder' )
+            public m3 = ( ^M3 )
+            public madeA = ( ^M3 new a )
+            public fromM1 = ( ^M3 new fromM1 )
+          )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let holder = expect_ok(
+        interpreter.send(&instance, Symbol::intern("holder"), &[]),
+        "holder",
+    );
+    let declared = expect_ok(interpreter.send(&holder, Symbol::intern("m3"), &[]), "m3");
+    interpreter.enter(|mutator| {
+        let heap = mutator.heap();
+        let declared = class_reference(mutator, &declared);
+        let scope = heap
+            .class_declaration_scope(declared)
+            .expect("a body-less declaration's class object keeps its scope");
+        assert!(
+            scope
+                .enclosing
+                .zip(mutator.fetch(&holder).as_object())
+                .is_some_and(|(enclosing, holder)| enclosing.same(holder)),
+            "the declaration's enclosing object is the holder"
+        );
+        assert!(scope.declaring_class.is_some());
+    });
+    let bytes = interpreter.enter(|mutator| {
+        let instance = mutator.fetch(&instance);
+        let class = class_reference(mutator, &class);
+        snapshot_one(
+            mutator,
+            true,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
+    let mut loaded = image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
+    let holder = expect_ok(
+        loaded
+            .interpreter
+            .send(&loaded.roots[0], Symbol::intern("holder"), &[]),
+        "holder",
+    );
+    for (selector, expected) in [
+        ("madeA", "the holder helper and the holder"),
+        ("fromM1", "the library helper"),
+    ] {
+        let answer = expect_ok(
+            loaded
+                .interpreter
+                .send(&holder, Symbol::intern(selector), &[]),
+            selector,
+        );
+        loaded.interpreter.enter(|mutator| {
+            assert_eq!(
+                text_or_class_name(mutator, mutator.fetch(&answer)),
+                expected,
+                "{selector}"
+            );
+        });
+    }
+}
+
+/// A module's root without a body (`class R = Object <: Value.`) is the
+/// level its clause added, `Value`'s mixin over `Object`, named for the
+/// root; 3.3 makes a module definition's enclosing object nil, so its
+/// declaration's scope is empty. The image carries it as that level, and
+/// the loader holds it to the root rule as such.
+#[test]
+fn a_body_less_root_survives_build_and_load() {
+    let (mut interpreter, class) = load("class BodyLessRoot = Object <: Value.");
+    expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        check_body_less_root(mutator, class);
+        snapshot_one(
+            mutator,
+            false,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &[Value::object(class)],
+        )
+        .expect("snapshot")
+    });
+    let mut loaded = image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
+    let root = loaded.roots[0].clone();
+    loaded.interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &root);
+        check_body_less_root(mutator, class);
+    });
+    expect_ok(loaded.interpreter.instantiate(&root, &[]), "instantiate");
+}
+
+/// `class` is `BodyLessRoot`'s class object: the `Value` level over
+/// `Object`, enclosed where `Value` is, with an empty declaration scope.
+fn check_body_less_root<'gc>(mutator: &Mutator<'gc>, class: ClassReference<'gc>) {
+    let heap = mutator.heap();
+    let value = mutator.builtin_class(BuiltinClass::Value);
+    let object = mutator.builtin_class(BuiltinClass::Object);
+    assert_eq!(heap.class_name(class), Some(Symbol::intern("BodyLessRoot")));
+    assert!(heap
+        .class_named(class)
+        .is_some_and(|named| named.same(value)));
+    assert!(heap
+        .class_superclass(class)
+        .is_some_and(|superclass| superclass.same(object)));
+    let scope = heap
+        .class_declaration_scope(class)
+        .expect("the root's class object keeps its declaration's scope");
+    assert!(scope.enclosing.is_none() && scope.declaring_class.is_none());
+    assert!(
+        heap.class_enclosing(class).is_some(),
+        "the level's own enclosing object is Value's"
+    );
 }

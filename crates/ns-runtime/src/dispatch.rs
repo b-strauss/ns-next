@@ -7,7 +7,7 @@ use std::rc::Rc;
 use ns_syntax::ast;
 
 use crate::builtins::primitive::Primitive;
-use crate::heap::Heap;
+use crate::heap::{DeclarationScope, Heap};
 use crate::mixin::{MethodEntry, Mixin, MixinApplication, MixinMethod, SlotAccessor};
 use crate::types::*;
 use crate::Symbol;
@@ -60,8 +60,30 @@ pub fn nested_access(mixin: &Mixin) -> ast::AccessModifier {
     mixin.access
 }
 
-/// §3.3: the enclosing object at lexical `depth` for an activation of a
-/// method defined in `defining_class` and running on `self_value`.
+/// Where a running activation's lexical walk starts: §5.9's C', "the
+/// current class of the current activation", as the code that runs sees
+/// it (`interpreter::sends::lexical_origin` decides which).
+#[derive(Clone, Copy)]
+pub enum LexicalOrigin<'gc> {
+    /// The class that defines the running code, the activation's
+    /// `current_class`, `None` for a top-level activation: depth 0's N,
+    /// and the level whose enclosing object and declaring class the walk
+    /// reads at depth 1.
+    Class(Option<ClassReference<'gc>>),
+    /// The own code of a body-less declaration -- its full initializer,
+    /// which is its clause messages and their arguments, and the blocks in
+    /// them -- running at its class object. That class object is the level
+    /// the declaration's last clause added (§6.2), whose mixin, enclosing
+    /// object and declaring class are the named class's; C' is the
+    /// declaration, the class a body version of it would have been, which
+    /// declares no member. So depth 0 has no N, and depth 1 is the
+    /// declaration's own enclosing object and declaring class
+    /// (`Heap::class_declaration_scope`).
+    Declaration(DeclarationScope<'gc>),
+}
+
+/// §3.3: the enclosing object at lexical `depth` for an activation whose
+/// walk starts at `origin` and running on `self_value`.
 ///
 /// `depth` is *lexical*: the resolver fixed it against the chain of class
 /// declarations open at the place the code was written, so it counts levels
@@ -73,31 +95,41 @@ pub fn nested_access(mixin: &Mixin) -> ast::AccessModifier {
 /// unrelated class (or `nil`) for an inherited one.
 ///
 /// So depth 0 is `self`, and depth k > 0 is reached by walking k levels of
-/// the *declaration* chain out from `defining_class`, taking each level's
+/// the *declaration* chain out from the defining class, taking each level's
 /// own enclosing object -- §3.3's "the object that received the message
 /// that created the class object". `Heap::class_declaring` is that
 /// chain; the receiver's class chain is not, for the same reason the seed
-/// is not.
+/// is not. A body-less declaration's own code takes its first step from
+/// the declaration's scope instead (`LexicalOrigin::Declaration`).
 ///
 /// A chain shorter than `depth` yields `nil` rather than the nearest
 /// object it did reach, which would be dispatched against silently. Only
 /// the outermost level ends a chain: a module root class, which no
-/// declaration encloses, and a `None` `defining_class`, a top-level
+/// declaration encloses, and a `None` defining class, a top-level
 /// activation. Both have a lexical chain of exactly one level, so no
 /// positive depth is resolvable in either.
 pub fn kth_enclosing_object<'gc>(
     heap: &Heap<'gc>,
     self_value: Value<'gc>,
-    defining_class: Option<&ClassReference<'gc>>,
+    origin: LexicalOrigin<'gc>,
     depth: u16,
 ) -> Value<'gc> {
     if depth == 0 {
         return self_value;
     }
-    let Some(mut level) = defining_class.copied() else {
-        return Value::nil();
+    let (mut level, mut remaining) = match origin {
+        LexicalOrigin::Class(Some(level)) => (level, depth),
+        LexicalOrigin::Class(None) => return Value::nil(),
+        LexicalOrigin::Declaration(scope) => {
+            if depth == 1 {
+                return scope.enclosing.map_or(Value::nil(), Value::object);
+            }
+            let Some(level) = scope.declaring_class else {
+                return Value::nil();
+            };
+            (level, depth - 1)
+        }
     };
-    let mut remaining = depth;
     loop {
         let Some(enclosing) = heap.class_enclosing(level) else {
             return Value::nil();
@@ -153,20 +185,26 @@ impl Rule {
     }
 }
 
-/// The class declaration at lexical depth `depth` from `defining_class` --
-/// §5.9's `N`, "a class whose declaration D lexically encloses the outer
-/// send", at the depth the resolver fixed. Depth 0 is `defining_class`
-/// itself, the class that declares the running method; each further level
-/// is one step out along the declaration chain, the chain
-/// `kth_enclosing_object` walks. `None` where the chain is shorter than
-/// `depth`, and for a top-level activation (no `defining_class`).
+/// The class declaration at lexical depth `depth` from `origin` -- §5.9's
+/// `N`, "a class whose declaration D lexically encloses the outer send", at
+/// the depth the resolver fixed. Depth 0 is the defining class itself, the
+/// class that declares the running method; each further level is one step
+/// out along the declaration chain, the chain `kth_enclosing_object` walks.
+/// `None` where the chain is shorter than `depth`, for a top-level
+/// activation (no defining class), and at depth 0 for a body-less
+/// declaration's own code: the declaration declares no member, so there is
+/// no private one for §5.9 to find, where its class object's mixin, the
+/// named class's, would offer that class's.
 pub fn kth_lexical_class<'gc>(
     heap: &Heap<'gc>,
-    defining_class: Option<ClassReference<'gc>>,
+    origin: LexicalOrigin<'gc>,
     depth: u16,
 ) -> Option<ClassReference<'gc>> {
-    let mut level = defining_class?;
-    for _ in 0..depth {
+    let (mut level, steps) = match origin {
+        LexicalOrigin::Class(defining_class) => (defining_class?, depth),
+        LexicalOrigin::Declaration(scope) => (scope.declaring_class?, depth.checked_sub(1)?),
+    };
+    for _ in 0..steps {
         level = heap.class_declaring(level)?;
     }
     Some(level)

@@ -1903,7 +1903,10 @@ impl<'gc> Mutator<'gc> {
     /// the named class's for a level like any other (§6.2: "a primary
     /// factory method with the same selector as m"), and a body-less
     /// declaration's own for its class object, the level its last clause
-    /// adds (decision 8 of `new` as compiled code).
+    /// adds (decision 8 of `new` as compiled code). That class object also
+    /// has room for the declaration's own scope, nil until
+    /// `nested::body_less_class` writes it -- and nil for good for a
+    /// module's root, which no object encloses.
     pub(crate) fn new_applied_level(
         &mut self,
         level: AppliedLevel<'gc>,
@@ -1918,6 +1921,11 @@ impl<'gc> Mutator<'gc> {
             superclass,
         } = level;
         let object = self.builtin_class(BuiltinClass::Object);
+        // The level a body-less declaration's last clause adds is the
+        // declaration's class object, which also keeps the declaration's
+        // scope (`Heap::class_declaration_scope`).
+        let body_less = !clause.declaration.has_body
+            && clause.index + 1 == clause.declaration.mixin_applications.len();
         let class = self.heap.allocate_applied_level(
             object,
             crate::heap::NewClass {
@@ -1928,6 +1936,7 @@ impl<'gc> Mutator<'gc> {
                 builtin: None,
             },
             named,
+            body_less,
         );
         if !self.heap.class_set_applied_clause(class, clause) {
             unreachable!("internal: a level is a class object");

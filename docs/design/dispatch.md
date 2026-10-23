@@ -407,7 +407,12 @@ it.
 ## Resolving a lexical send at run time
 
 Compute `o`, the `k`th enclosing object of `self` with respect to the current
-class (§3.3). Then §5.9: "If N declares a private method f named s then the
+class (§3.3). Where the walk starts is decided in one place,
+`interpreter::sends::lexical_origin`: at the activation's current class,
+except for a body-less declaration's own code, which starts at the
+declaration's scope its class object keeps
+([object-model.md](object-model.md), "Mixin application";
+`dispatch::LexicalOrigin`). Then §5.9: "If N declares a private method f named s then the
 value of the send is the result of invoking f in response to (3.5) message µ on
 o. Otherwise, Let f = lookupProtected(s, R) where R is the class of o".
 

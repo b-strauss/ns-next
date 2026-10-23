@@ -244,7 +244,7 @@ pub const VALUE_SHIPPED_MODULE: u8 = 11;
 pub const RETIRED_VALUE_TAGS: [u8; 2] = [7, 8];
 
 /// An object record's body, following its class tag and identity hash.
-/// Next free number: 16.
+/// Next free number: 17.
 pub const OBJECT_INSTANCE: u8 = 0;
 pub const OBJECT_STRING: u8 = 1;
 pub const OBJECT_SYMBOL: u8 = 2;
@@ -309,6 +309,19 @@ pub const OBJECT_EPHEMERON: u8 = 13;
 /// not written: the decoder mints it afresh, and refuses a second record
 /// for one mixin, since the object is canonical as a symbol is.
 pub const OBJECT_MIXIN: u8 = 14;
+
+/// A body-less declaration's class object (`Mixin::has_body`): the level
+/// its last `<:` clause added, written as `OBJECT_CLASS` writes it -- in
+/// either shape, ending with the clause and the class it named -- then the
+/// declaration's own scope, which no other class record has: its enclosing
+/// object (a presence flag and a value, an object) and its declaring class
+/// (a presence flag and a class tag), both absent for a module's root.
+/// The applied mixin's code walks out from the level's own enclosing
+/// object and declaring class, the named class's; the declaration's own
+/// code, its clause messages and their arguments, from these. A record
+/// with this body whose clause is not a body-less declaration's last, and
+/// an `OBJECT_CLASS` record whose clause is, are refused.
+pub const OBJECT_BODY_LESS_CLASS: u8 = 16;
 
 /// Object-body tags that no longer name anything and are never reused: 4 was
 /// the closure record while it carried its parameter names and its home

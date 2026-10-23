@@ -54,7 +54,9 @@ use object::{
 };
 pub(crate) use object::{ByteArrayData, ByteArrayDataMut};
 use pending::PendingEphemerons;
-pub use records::{FrameRecord, NewClass, NewClosure, ObjectShape, PlaceholderFormat};
+pub use records::{
+    DeclarationScope, FrameRecord, NewClass, NewClosure, ObjectShape, PlaceholderFormat,
+};
 use scavenge::Scavenger;
 use space::{
     allocation_words, block_range, object_at, overflow_word, RegionName, Space, NURSERY_END,
@@ -96,6 +98,10 @@ pub(crate) mod record_size {
     /// A level a `<:` clause added: a class object's fields and the class
     /// its clause named (`Heap::allocate_applied_level`).
     pub(crate) const APPLIED_LEVEL_FIELDS: usize = super::class_field::APPLIED_LEVEL_COUNT;
+    /// A body-less declaration's class object: a level's fields and its
+    /// declaration's enclosing object and declaring class
+    /// (`Heap::class_declaration_scope`).
+    pub(crate) const BODY_LESS_CLASS_FIELDS: usize = super::class_field::BODY_LESS_CLASS_COUNT;
     /// The id of the mixin it stands for (`Heap::allocate_mixin_object`).
     pub(crate) const MIXIN_FIELDS: usize = 1;
     pub(crate) const CLOSURE_FIXED_FIELDS: usize = super::closure_field::COUNT;
@@ -1668,25 +1674,45 @@ impl<'gc> Heap<'gc> {
     /// as `allocate_class` makes one, and one field more, the class object
     /// `named` its clause named (`class_field::NAMED_CLASS`). The clause
     /// itself is set after, as every class object's later fields are.
+    ///
+    /// A body-less declaration's class object (`body_less`) has two fields
+    /// more, its declaration's enclosing object and declaring class, nil
+    /// until `class_set_declaration_scope` writes them: the declaration
+    /// that becomes this class object knows them only once its superclass
+    /// clause has run.
     pub(crate) fn allocate_applied_level(
         &mut self,
         metaclass: ClassReference<'gc>,
         class: NewClass<'gc>,
         named: ClassReference<'gc>,
+        body_less: bool,
     ) -> ClassReference<'gc> {
         let fixed = self.class_fixed_words(class);
         let named = self.store(Value::object(named));
-        let (object, fields) = self.allocate_object(
-            metaclass,
-            Format::Class,
-            0,
-            false,
-            class_field::APPLIED_LEVEL_COUNT,
-        );
+        let field_count = if body_less {
+            class_field::BODY_LESS_CLASS_COUNT
+        } else {
+            class_field::APPLIED_LEVEL_COUNT
+        };
+        let (object, fields) =
+            self.allocate_object(metaclass, Format::Class, 0, false, field_count);
         let words = &mut self.space.words_mut()[fields];
         write_words(&mut words[..class_field::COUNT], fixed);
         words[class_field::NAMED_CLASS] = named.bits();
         object
+    }
+
+    /// A body-less declaration's scope as the two words its class object
+    /// stores, enclosing object first.
+    fn declaration_scope_words(&self, scope: DeclarationScope<'gc>) -> [Word; 2] {
+        let DeclarationScope {
+            enclosing,
+            declaring_class,
+        } = scope;
+        [
+            self.store(enclosing.map_or(Value::nil(), Value::object)),
+            self.store(declaring_class.map_or(Value::nil(), Value::object)),
+        ]
     }
 
     /// A class object's fields from its record, stored: the one place they
@@ -1812,7 +1838,10 @@ impl<'gc> Heap<'gc> {
     /// application yet -- and must not be dispatched on before then.
     ///
     /// `named` is a level's named class (`allocate_applied_level`), and the
-    /// placeholder has that field exactly when it is given.
+    /// placeholder has that field exactly when it is given; `scope` is a
+    /// body-less declaration's (`class_declaration_scope`), given only with
+    /// `named`, and the placeholder has its two fields exactly when it is
+    /// given.
     pub(crate) fn fill_placeholder_class(
         &mut self,
         object: ObjectReference<'gc>,
@@ -1820,16 +1849,24 @@ impl<'gc> Heap<'gc> {
         identity_hash: u32,
         record: NewClass<'gc>,
         named: Option<ClassReference<'gc>>,
+        scope: Option<DeclarationScope<'gc>>,
     ) -> bool {
         self.check_object_origin(object);
         let fields = self.class_fixed_words(record);
         let named = named.map(|named| self.store(Value::object(named)));
-        for word in fields.iter().chain(named.iter()) {
+        let scope = scope.map(|scope| self.declaration_scope_words(scope));
+        for word in fields
+            .iter()
+            .chain(named.iter())
+            .chain(scope.iter().flatten())
+        {
             self.debug_assert_tenured(*word);
         }
-        let expected = match named {
-            Some(_) => class_field::APPLIED_LEVEL_COUNT,
-            None => class_field::COUNT,
+        let expected = match (named, scope) {
+            (Some(_), Some(_)) => class_field::BODY_LESS_CLASS_COUNT,
+            (Some(_), None) => class_field::APPLIED_LEVEL_COUNT,
+            (None, None) => class_field::COUNT,
+            (None, Some(_)) => return false,
         };
         let placeholder = self.fields_mut(object);
         if placeholder.len() != expected {
@@ -1838,6 +1875,10 @@ impl<'gc> Heap<'gc> {
         write_words(&mut placeholder[..class_field::COUNT], fields);
         if let Some(named) = named {
             placeholder[class_field::NAMED_CLASS] = named.bits();
+        }
+        if let Some([enclosing, declaring_class]) = scope {
+            placeholder[class_field::DECLARATION_ENCLOSING] = enclosing.bits();
+            placeholder[class_field::DECLARATION_DECLARING_CLASS] = declaring_class.bits();
         }
         self.rewrite_placeholder_header(object, class, identity_hash, Format::Class, 0);
         true
@@ -4312,6 +4353,81 @@ impl<'gc> Heap<'gc> {
         self.class_object_field(class, class_field::NAMED_CLASS)
     }
 
+    /// The declaration `class` is the class of: a body-less declaration's
+    /// for its class object (`class_body_less_declaration`), which applies
+    /// its last clause's mixin, and its application's mixin for every
+    /// other class object. `None` for a handle that is no class object.
+    /// What a module's root is held to and described by in an image.
+    pub fn class_declaration(&self, class: ClassReference<'gc>) -> Option<Rc<Mixin>> {
+        match self.class_body_less_declaration(class) {
+            Some(declaration) => Some(declaration.clone()),
+            None => self
+                .class_application_entry(class)
+                .map(|application| application.mixin.clone()),
+        }
+    }
+
+    /// Whether `class` is a body-less declaration's class object, the one
+    /// class object with its declaration's scope
+    /// (`class_declaration_scope`), told by its size alone: what the
+    /// lexical walk asks of every running activation's class, one read of
+    /// the class object's header.
+    #[inline(always)]
+    pub(crate) fn class_has_declaration_scope(&self, class: ClassReference<'gc>) -> bool {
+        self.pointer_words(class, Format::Class)
+            .is_some_and(|words| words.len() == class_field::BODY_LESS_CLASS_COUNT)
+    }
+
+    /// For a body-less declaration's class object
+    /// (`class_body_less_declaration`), the declaration's own enclosing
+    /// object and declaring class (`class_field::DECLARATION_ENCLOSING`),
+    /// which its own code walks out from where every other code at the
+    /// class object walks out from the named class's
+    /// (`interpreter::sends::lexical_origin`); `None` for every other class
+    /// object and for a handle that is no class object.
+    pub fn class_declaration_scope(
+        &self,
+        class: ClassReference<'gc>,
+    ) -> Option<DeclarationScope<'gc>> {
+        if !self.class_has_declaration_scope(class) {
+            return None;
+        }
+        Some(DeclarationScope {
+            enclosing: self.class_object_field(class, class_field::DECLARATION_ENCLOSING),
+            declaring_class: self
+                .class_object_field(class, class_field::DECLARATION_DECLARING_CLASS),
+        })
+    }
+
+    /// Writes a body-less declaration's scope into its class object, through
+    /// the write barrier: the declaration's enclosing object and declaring
+    /// class are known only once its superclass clause has run, after the
+    /// class object was built (`nested::after_clause`). Answers whether the
+    /// write happened: `false` for a class object without the two fields
+    /// and for a handle that is no class object.
+    pub(crate) fn class_set_declaration_scope(
+        &mut self,
+        class: ClassReference<'gc>,
+        scope: DeclarationScope<'gc>,
+    ) -> bool {
+        if !self.class_has_declaration_scope(class) {
+            return false;
+        }
+        let DeclarationScope {
+            enclosing,
+            declaring_class,
+        } = scope;
+        self.set_class_field(
+            class,
+            class_field::DECLARATION_ENCLOSING,
+            enclosing.map_or(Value::nil(), Value::object),
+        ) && self.set_class_field(
+            class,
+            class_field::DECLARATION_DECLARING_CLASS,
+            declaring_class.map_or(Value::nil(), Value::object),
+        )
+    }
+
     /// The mixin of `class`'s metaclass: its class side together with its
     /// primary factory (§6.3), which says which factory and which name the
     /// class object has. `None` for a class object without a metaclass --
@@ -5693,6 +5809,44 @@ impl<'gc> Heap<'gc> {
     pub fn activation_kind(&self, activation: ActivationReference) -> FrameKind<'gc> {
         self.check_activation(activation);
         self.stack.entries[activation.index as usize].kind.clone()
+    }
+
+    /// Whether `activation` runs the own code of the body-less declaration
+    /// whose class object is `class` (`class_declaration_scope`): the
+    /// declaration's full initializer entered at `class`, or a block that
+    /// body created, at any nesting. A block is followed along its captured
+    /// frames, each of which runs the body the block is lexically nested in
+    /// (`MakeClosure` captures its creator; `image::decode::verify_graph`
+    /// holds a decoded closure to the same), so the walk climbs the code's
+    /// nesting and ends at its root. Which code runs decides it, so every
+    /// activation of one body answers alike. `false` for every other
+    /// activation.
+    pub(crate) fn activation_runs_declaration_code(
+        &self,
+        activation: ActivationReference,
+        class: ClassReference<'gc>,
+    ) -> bool {
+        use crate::image::opcodes::{FRAME_CLOSURE, FRAME_INITIALIZER};
+        self.check_activation(activation);
+        let closure = match &self.stack.entries[activation.index as usize].kind {
+            FrameKind::Initializer(level, InitializerBody::Full) => return level.same(class),
+            FrameKind::Closure(closure) => *closure,
+            _ => return false,
+        };
+        let mut frame = self.closure_captured_frame(closure);
+        while let Some(current) = frame {
+            let operand = self
+                .frame_field(current, frame_field::KIND_OPERAND)
+                .as_object();
+            match u8::try_from(self.frame_count_field(current, frame_field::KIND)) {
+                Ok(FRAME_CLOSURE) => {
+                    frame = operand.and_then(|closure| self.closure_captured_frame(closure));
+                }
+                Ok(FRAME_INITIALIZER) => return operand.is_some_and(|level| level.same(class)),
+                _ => return false,
+            }
+        }
+        false
     }
 
     /// Whether `activation` runs a method or a superclass clause -- not a
@@ -8869,6 +9023,7 @@ mod tests {
                 superclass: None,
                 builtin: None,
             },
+            None,
             None,
         );
         assert!(!filled);
