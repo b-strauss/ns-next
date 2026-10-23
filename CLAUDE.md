@@ -397,10 +397,12 @@ every one runs on 18 threads.
 | `caches` | every golden with a two-entry global cache, profile `caches` | a commit touching the caches (`crates/ns-runtime/src/interpreter/inline_cache.rs`); the end of a batch that changed the runtime |
 | `memory` | `ns-memory`'s clippy for `x86_64-unknown-linux-gnu` and `aarch64-apple-darwin` | a commit touching `crates/ns-memory` |
 | `benchmarks` | the benchmark programs verified at full size, and their Java counterparts; needs a JDK (`JAVA_HOME` or `PATH`); profile `benchmarks-verify`; it measures nothing and never runs under a stress mode (`execution.md`, "The Are We Fast Yet benchmarks") | when benchmarking; the end of a batch that changed the runtime |
+| `release-checks` | the suite built without debug assertions, profile `release-checks` of `Cargo.toml` (release without its fat LTO), which runs the size tests (below) | when a change touches a type a size test pins; the end of a batch that changed the runtime |
 | `stress` | the suite under the five stress modes at once, each into `.temp/stress-<MODE>.log`, then `run-corpus` plain and under each (`docs/design/README.md`, "Gates") | the end of a batch that changed the runtime |
 | `plugin-verification` | `gradlew --no-daemon verifyPlugin buildPlugin`, which downloads several IDEs | the end of a batch that changed `editors/jetbrains/` |
 
-`end-of-batch` is `images`, `caches`, `benchmarks` and `stress` together.
+`end-of-batch` is `images`, `caches`, `benchmarks`, `release-checks` and `stress`
+together.
 "The runtime" is `crates/ns-runtime`, `ns-syntax`, `ns-tooling`, `ns-cli` or
 `ns-memory`; a batch that changed only `crates/ns-analyzer`, the plugin or
 Markdown runs no stress mode, no `run-corpus` and no benchmark programs, since
@@ -414,10 +416,14 @@ A change to `crates/ns-syntax/src/lexer.rs` is mirrored in
 in the same commit. Nothing under `crates/ns-syntax` should change for runtime work.
 
 Never judge performance from a debug build (the `measuring-performance` skill).
-Only a release build runs the size tests (`a_handle_and_an_optional_handle_are_one_word`,
-`a_resolution_stays_the_size_the_hot_path_was_measured_at` and
-`a_signal_fits_in_the_niche_of_its_one_unboxed_error`):
-`cargo nextest run --workspace --release`.
+Only a build without debug assertions runs the size tests
+(`a_handle_and_an_optional_handle_are_one_word`,
+`a_resolution_stays_the_size_the_hot_path_was_measured_at`,
+`a_signal_fits_in_the_niche_of_its_one_unboxed_error` and their
+neighbours): `cargo xtask gates release-checks`, which builds the profile
+`release-checks` in well under a minute where `--release`'s fat LTO takes
+minutes. A type's size does not depend on LTO, so the profile is never
+used to measure.
 
 Every corpus module must parse; there is no list of exceptions. A module that
 runs end to end belongs in `corpus/runnable.toml` with the unary selector its

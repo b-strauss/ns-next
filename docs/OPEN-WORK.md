@@ -1723,10 +1723,6 @@ that only answers `isKindOfArray` or `isKindOfString`, the error of a
   against run; several `ns-runtime` integration test files
   (`tests/value_conditions.rs`, `tests/image.rs`, others) run under one
   lowering only.
-- **The release-only size tests** (`a_handle_and_an_optional_handle_are_one_word`,
-  `a_resolution_stays_the_size_the_hot_path_was_measured_at`,
-  `a_signal_fits_in_the_niche_of_its_one_unboxed_error`) run in no gate
-  `CLAUDE.md` lists; `cargo nextest run --workspace --release` runs them.
 - Editor: the IDE path has no automated test (checked by hand under
   `runIde`: folding, with the `(...)` placeholder in the editor's font, and
   the structure view's tree, navigation, breadcrumbs, sticky lines, its icons

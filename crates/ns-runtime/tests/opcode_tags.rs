@@ -79,12 +79,12 @@ fn the_instantiation_instructions_keep_their_numbers() {
 /// instruction takes its tag from, so it moves with every new one.
 #[test]
 fn the_next_free_instruction_tag_is_forty_six() {
+    // Line by line, so a checkout with CRLF line endings reads it too.
     let source = include_str!("../src/image/opcodes.rs");
     assert!(
-        source.contains(
-            "// Next free number: 46.
-"
-        ),
+        source
+            .lines()
+            .any(|line| line == "// Next free number: 46."),
         "image/opcodes.rs names 46 as the next free instruction tag"
     );
 }

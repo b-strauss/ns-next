@@ -418,7 +418,12 @@ is the one to measure, and every binary a measurement compares — the current
 tree included — is built with the same explicit `RUSTFLAGS`, which pin
 function alignment so that code placement cannot confound the comparison;
 the shipped build is unpinned ([execution.md](execution.md), "What removing
-the re-entries moved", the protocol).
+the re-entries moved", the protocol). The suite's tests that hold a type to
+the size the hot path was measured at run only without debug assertions;
+`cargo xtask gates release-checks` runs the suite so, in the profile
+`release-checks`, which is `release` without its fat LTO and single codegen
+unit -- a type's size does not depend on either, and the build takes well
+under a minute instead of minutes. Nothing is measured with it.
 
 ## Deviations from the language specification
 
