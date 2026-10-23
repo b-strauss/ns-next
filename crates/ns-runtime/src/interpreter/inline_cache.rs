@@ -795,6 +795,11 @@ struct SendKey<'send, 'gc> {
     receiver: &'send Value<'gc>,
     lexical_class: Option<ClassReference<'gc>>,
     superclass: Option<ClassReference<'gc>>,
+    /// The running activation's `current_class`, for a `super` send only:
+    /// a nested-class hit takes the cached hidden slot only for a receiver
+    /// of exactly that application (`materialize`), whose chain contains
+    /// S. `None` for every other send.
+    current_class: Option<ClassReference<'gc>>,
 }
 
 impl SendKey<'_, '_> {
@@ -930,9 +935,13 @@ fn record<'gc>(
 /// The hidden slot a nested-class entry records: its index in the layout
 /// of the application the entry's guard names, which is the one a hit can
 /// rely on. A public or protected guard is the receiver's own dispatch id,
-/// a private one N's application, and a `super` one S's (`sends::super_start`),
-/// which the key does not carry: there the index is the receiver's when
-/// its own dispatch id is the guard, and none otherwise.
+/// a private one N's application, and a `super` one S's
+/// (`sends::super_start`). A hidden slot's index is the same in every
+/// application over the one that declares it, since an application's
+/// `nested_slot` extends its superclass application's, and the
+/// declaration a `super` send finds lies in S's chain: so its index is S's,
+/// which every receiver whose chain contains S shares (`materialize` checks
+/// that the receiver has the running class's application).
 fn nested_field<'gc>(
     mutator: &Mutator<'gc>,
     chain: Chain,
@@ -941,7 +950,7 @@ fn nested_field<'gc>(
 ) -> u32 {
     let class = match chain {
         Chain::Private => key.lexical_class,
-        Chain::Super if mutator.heap.dispatch_id(*key.receiver) != key.guard => None,
+        Chain::Super => key.superclass,
         _ => Some(mutator.class_of(*key.receiver)),
     };
     class
@@ -1023,12 +1032,19 @@ fn materialize<'gc>(
             let start = chain_start(mutator, chain, key)?;
             let declaring_class = level_above(&mutator.heap, start, level)?;
             // The field is the guard's application's, which is the
-            // receiver's on a public or protected site; on a private or
-            // `super` one only a receiver of exactly that application may
-            // take it, and any other takes the accessor's lookup.
+            // receiver's on a public or protected site; on a private one
+            // only a receiver of exactly that application may take it, and
+            // on a `super` one only a receiver of the running class's
+            // application, whose chain contains S -- a recorded guard as
+            // the slot index's, decided without the receiver, needs. Any
+            // other takes the accessor's lookup.
+            let receiver_has = |guard: DispatchId| mutator.heap.dispatch_id(*key.receiver) == guard;
             let field = match chain {
-                Chain::Private | Chain::Super
-                    if mutator.heap.dispatch_id(*key.receiver) != key.guard =>
+                Chain::Private if !receiver_has(key.guard) => super::nested::NO_CACHED_FIELD,
+                Chain::Super
+                    if !key.current_class.is_some_and(|current_class| {
+                        receiver_has(mutator.heap.class_dispatch_ids(current_class).instances)
+                    }) =>
                 {
                     super::nested::NO_CACHED_FIELD
                 }
@@ -1106,6 +1122,7 @@ pub(crate) fn send_public<'gc>(
         receiver: &receiver,
         lexical_class: None,
         superclass: None,
+        current_class: None,
     };
     cached(
         mutator,
@@ -1167,6 +1184,7 @@ pub(crate) fn send_lexical<'gc>(
             receiver: &enclosing,
             lexical_class,
             superclass: None,
+            current_class: None,
         }
     } else {
         SendKey {
@@ -1177,6 +1195,7 @@ pub(crate) fn send_lexical<'gc>(
             receiver: &enclosing,
             lexical_class: None,
             superclass: None,
+            current_class: None,
         }
     };
     cached(
@@ -1238,6 +1257,7 @@ fn send_lexical_first<'gc>(
             receiver: &enclosing,
             lexical_class,
             superclass: None,
+            current_class: None,
         };
         if let Some(step) = global_hit(mutator, index, private_key, selector, arguments) {
             return step;
@@ -1251,6 +1271,7 @@ fn send_lexical_first<'gc>(
             receiver: &enclosing,
             lexical_class: None,
             superclass: None,
+            current_class: None,
         };
         if let Some(step) = global_hit(mutator, index, public_key, selector, arguments) {
             return step;
@@ -1269,6 +1290,7 @@ fn send_lexical_first<'gc>(
         receiver: &enclosing,
         lexical_class,
         superclass: None,
+        current_class: None,
     };
     fill(mutator, index, key, selector, &resolved);
     mutator.act(resolved, enclosing, selector, arguments)
@@ -1319,9 +1341,9 @@ pub(crate) fn send_super<'gc>(
     let cached_site = site_index(feedback_base, family_size, site).and_then(|index| {
         let current_class = mutator.heap.activation_current_class(activation)?;
         let superclass = super::sends::super_start(&mutator.heap, activation, current_class)?;
-        Some((index, superclass))
+        Some((index, current_class, superclass))
     });
-    let Some((index, superclass)) = cached_site else {
+    let Some((index, current_class, superclass)) = cached_site else {
         return decide_super_send(mutator, activation, selector, arguments);
     };
     let self_value = mutator.heap.activation_receiver(activation);
@@ -1331,6 +1353,7 @@ pub(crate) fn send_super<'gc>(
         receiver: &self_value,
         lexical_class: None,
         superclass: Some(superclass),
+        current_class: Some(current_class),
     };
     cached(
         mutator,
@@ -2093,6 +2116,7 @@ mod tests {
                 receiver: &receiver,
                 lexical_class: None,
                 superclass: None,
+                current_class: None,
             };
             let target = record(mutator, &found, key).expect("a factory is recorded");
             let Target::Factory { code: recorded, .. } = &target else {

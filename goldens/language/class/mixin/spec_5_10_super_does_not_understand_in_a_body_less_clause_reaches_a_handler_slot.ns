@@ -1,0 +1,52 @@
+/// newspeak-spec.pdf 5.10: "Otherwise, the #doesNotUnderstand: method
+/// defined for S is invoked", and 6.3.2 makes a mutable slot named
+/// doesNotUnderstand define that method, its setter. For a declaration
+/// without a body, S of its own code is its class object, the level its
+/// last clause added, whose mixin M1 has such a slot: `super zork` in the
+/// clause stores the message there and answers the receiver, as in the
+/// body version. A method of M1 starts below M1, at Base, whose own
+/// handler slot answers the same way; Plain has no handler, so the send
+/// is not understood.
+class Spec510SuperDoesNotUnderstandInABodyLessClauseReachesAHandlerSlot = Object new () (
+  class Base = Object new (
+    |
+      public doesNotUnderstand ::= nil.
+    |
+  ) ()
+
+  class Plain = Object new () ()
+
+  class M1 tag: t = Object new (
+    |
+      public a = t.
+      public doesNotUnderstand ::= nil.
+    |
+  ) (
+    public superZork = (
+      ^super zork == self.
+    )
+  )
+
+  class Applied = Base new <: M1 tag: super zork == self.
+
+  class WithBody = Base new <: M1 tag: super zork == self () ()
+
+  class OnPlain = Plain new <: M1 tag: 0.
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+    |
+    1 to: 2 do: [:each |
+      t
+          print: Applied new a;
+          show: ' ';
+          print: WithBody new a;
+          show: ' ';
+          print: Applied new superZork;
+          show: ' ';
+          show: ([OnPlain new superZork] on: Error do: [:error | error messageText]);
+          newLine.
+    ].
+  )
+)

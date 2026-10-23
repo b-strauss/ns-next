@@ -56,6 +56,10 @@ pub(crate) fn execute<'gc>(
             .heap()
             .class_reflected_enclosing(object)
             .map_or(Value::nil(), Value::object))),
+        BehaviorPrimitive::LevelEnclosing => Some(Ok(mutator
+            .heap()
+            .class_enclosing(object)
+            .map_or(Value::nil(), Value::object))),
         BehaviorPrimitive::Superclass => Some(Ok(mutator
             .heap()
             .class_superclass(object)

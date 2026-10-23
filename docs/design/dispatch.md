@@ -1051,9 +1051,10 @@ records with every handle taken out:
 - `NestedClass` — the mixin, its level, its chain and the absolute index of
   the hidden slot its class is cached in, in the layout of the application
   the entry's guard names (`nested_field`): the receiver's for a public or
-  protected site, N's for a private one, and for a `super` one the
-  receiver's when the receiver's own id is the guard -- the key does not
-  carry `current_class` -- and none otherwise;
+  protected site, N's for a private one, and S's for a `super` one, whose
+  guard is S's application: a hidden slot's index is the same in every
+  application over the one that declares it, since an application's
+  `nested_slot` extends its superclass application's;
 - `Primitive` — the primitive, its level and its chain;
 - `Factory` — its chain, and nothing else: §6.3 instantiates the receiver,
   which the guard already names, so there is no level to count;
@@ -1255,9 +1256,11 @@ the arity. `Slot`
 reads or writes the field without an activation (`decide_slot_accessor`).
 `NestedClass` calls `nested::nested_class` with the declaring class and the
 entry's index, which a hit brings only when the guard fixes the receiver's
-application -- always on a public or protected site, and on a private or
-`super` one only for a receiver whose own id is the guard, which
-`materialize` compares. A filled slot at that index is the answer, one load
+application -- always on a public or protected site, on a private one only
+for a receiver whose own id is the guard, and on a `super` one only for a
+receiver of the running class's application, which the key carries as
+`current_class` and whose chain contains S -- which `materialize` compares.
+A filled slot at that index is the answer, one load
 without the accessor's two hash lookups (`Heap::known_mixin_id`,
 `MixinApplication::nested_slot`); an empty one, one whose creation is
 underway, or a send without an index takes the accessor's own path, which

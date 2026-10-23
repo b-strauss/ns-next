@@ -1184,12 +1184,13 @@ mod tests {
         ("Metaclass", "name"),
         ("Metaclass", "printString"),
         // The Newspeak side of a value class object's equality, which runs
-        // when the leaf declines: it sends `=` to an enclosing object and a
+        // when the leaf declines: it sends `=` to the enclosing objects and a
         // superclass, which a leaf may not.
         ("Behavior", "behaviorEquals:"),
         // Forwarders in shape, but of their subject rather than of `self`,
         // for the reason `Value`'s slot readers above are.
         ("Behavior", "enclosingOf:"),
+        ("Behavior", "levelEnclosingOf:"),
         ("Behavior", "superclassOf:"),
         ("Metaclass", "thisClassOf:"),
         // The marked methods (`UNWIND_MARKERS`): each keeps a local the

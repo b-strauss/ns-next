@@ -1686,12 +1686,20 @@ pub(crate) fn class_object_is_a_value<'gc>(
     };
     // A body-less declaration's class object has two enclosing objects,
     // its declaration's and its level's (§3.3, §6), and is a value only
-    // when both are; its metaclass shares its verdict.
+    // when both are; its metaclass shares its verdict. The level's own is
+    // asked first, and the scope only of a class object that has one.
     let heap = mutator.heap();
-    let declaration_enclosing = heap
-        .class_declaration_scope(heap.class_this_class(class).unwrap_or(class))
-        .and_then(|scope| scope.enclosing);
-    is_a_value(mutator.heap().class_enclosing(class)) && is_a_value(declaration_enclosing)
+    if !is_a_value(heap.class_enclosing(class)) {
+        return false;
+    }
+    let instance_side = heap.class_this_class(class).unwrap_or(class);
+    if !heap.class_has_declaration_scope(instance_side) {
+        return true;
+    }
+    is_a_value(
+        heap.class_declaration_scope(instance_side)
+            .and_then(|scope| scope.enclosing),
+    )
 }
 
 /// The refusal itself, off the checking path so that the check stays a

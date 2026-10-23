@@ -529,20 +529,8 @@ fn classes_can_be_equal<'gc>(
     first: ClassReference<'gc>,
     second: ClassReference<'gc>,
 ) -> bool {
-    if !class_object_is_a_value(mutator, first) || !class_object_is_a_value(mutator, second) {
-        return false;
-    }
-    // Two body-less declarations applying one mixin share one application
-    // (the application cache keys it by mixin and superclass application),
-    // yet are two classes, as their body versions, two applications, are:
-    // each is its own declaration's.
-    if !mutator
-        .heap()
-        .classes_share_body_less_declaration(first, second)
-    {
-        return false;
-    }
-    match (
+    // The cheapest test first: the two applications.
+    let same_application = match (
         mutator.heap().class_application_index(first),
         mutator.heap().class_application_index(second),
     ) {
@@ -550,7 +538,17 @@ fn classes_can_be_equal<'gc>(
             first_application == second_application
         }
         _ => false,
-    }
+    };
+    // Two body-less declarations applying one mixin share one application
+    // (the application cache keys it by mixin and superclass application),
+    // yet are two classes, as their body versions, two applications, are:
+    // each is its own declaration's.
+    same_application
+        && class_object_is_a_value(mutator, first)
+        && class_object_is_a_value(mutator, second)
+        && mutator
+            .heap()
+            .classes_share_body_less_declaration(first, second)
 }
 
 /// The pairs two distinct class objects are equal by, or `None` when they

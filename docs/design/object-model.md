@@ -1297,7 +1297,11 @@ and two body-less class objects are equal only when they are one
 declaration's with equal declaration enclosing objects -- two declarations
 applying one mixin share an application, yet are two classes, as their
 body versions are (`Heap::classes_share_body_less_declaration`;
-`goldens/library/value/two_body_less_value_classes_are_two_classes.ns`). A body-less
+`goldens/library/value/two_body_less_value_classes_are_two_classes.ns`). The
+Kernel's fallback for a declining leaf, `Behavior>>behaviorEquals:`, compares
+the same state: `sharesApplicationWith:` also asks for one declaration, and
+both enclosing objects are compared, the declaration's through
+`behaviorEnclosing:` and the level's through `behaviorLevelEnclosing:`. A body-less
 module root, `class R = Object <: Value.`, is the `Value` level over
 `Object`, named `R`, with `Value`'s enclosing object and an empty
 declaration scope; the image's root rule holds it to exactly that

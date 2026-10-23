@@ -4378,14 +4378,20 @@ impl<'gc> Heap<'gc> {
         first: ClassReference<'gc>,
         second: ClassReference<'gc>,
     ) -> bool {
+        // Told by size first, one header read each: only a body-less
+        // declaration's class object has the declaration's scope, and only
+        // two of them need their declarations looked up.
         match (
-            self.class_body_less_declaration(first),
-            self.class_body_less_declaration(second),
+            self.class_has_declaration_scope(first),
+            self.class_has_declaration_scope(second),
         ) {
-            (None, None) => true,
-            (Some(first_declaration), Some(second_declaration)) => {
-                Rc::ptr_eq(first_declaration, second_declaration)
-            }
+            (false, false) => true,
+            (true, true) => self
+                .class_body_less_declaration(first)
+                .zip(self.class_body_less_declaration(second))
+                .is_some_and(|(first_declaration, second_declaration)| {
+                    Rc::ptr_eq(first_declaration, second_declaration)
+                }),
             _ => false,
         }
     }

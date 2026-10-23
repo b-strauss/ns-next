@@ -391,13 +391,17 @@ class Kernel vmMirror: mirror = Value (
     )
 
     /// The equality the leaf of `=` leaves to Newspeak: whether `other`
-    /// is a class object of the receiver's mixin application whose
-    /// enclosing object and superclass equal the receiver's, sending
-    /// `=` to each. Answers false for an `other` that is no class
-    /// object.
+    /// is a class object of the receiver's mixin application -- and of
+    /// its declaration, for the class object of a declaration without a
+    /// body -- whose enclosing objects and superclass equal the
+    /// receiver's, sending `=` to each: the leaf's state, the enclosing
+    /// object reflection reports and the one its level's code reaches,
+    /// which differ only for the class object of a declaration without a
+    /// body. Answers false for an `other` that is no class object.
     private behaviorEquals: other = (
       (vmMirror behavior: self sharesApplicationWith: other ifFail: [^false]) ifFalse: [^false].
       ((self enclosingOf: self) = (self enclosingOf: other)) ifFalse: [^false].
+      ((self levelEnclosingOf: self) = (self levelEnclosingOf: other)) ifFalse: [^false].
       ^(self superclassOf: self) = (self superclassOf: other).
     )
 
@@ -411,6 +415,17 @@ class Kernel vmMirror: mirror = Value (
     /// side's.
     private enclosingOf: subject = (
       ^vmMirror behaviorEnclosing: subject ifFail: [^nil].
+    )
+
+    /// Answers the enclosing object `subject`'s own level reaches: the
+    /// one the class its last clause named has, for the class object of a
+    /// declaration without a body, whose `enclosingOf:` is its
+    /// declaration's; `enclosingOf:`'s for every other class object, and
+    /// nil for a `subject` that is no class object.
+    ///
+    /// subject: as `enclosingOf:`'s.
+    private levelEnclosingOf: subject = (
+      ^vmMirror behaviorLevelEnclosing: subject ifFail: [^nil].
     )
 
     /// Answers `subject`'s superclass, a class object: nil for `Top`
