@@ -7551,7 +7551,32 @@ Each step gets its own design when it comes up.
   frame can be turned back into interpreted ones. Deoptimization serves the
   debugger as much as the optimizer: inspecting, stepping and editing a
   compiled activation goes through it, as it does in Strongtalk and
-  HotSpot.
+  HotSpot. Decided with the user on 2026-10-24, in four parts and this
+  order. **7b** resumes an activation from its divorced frame, as Primordial
+  Soup's `CreateBaseFrame` and Cog's `makeBaseFrameFor` do, its senders
+  staying frames until something returns into them; that is the landing
+  point of every later deoptimization, and a stress mode that divorces
+  every frame at safepoints and runs on from the frames tests it under
+  every golden. A resumed activation takes the level it was entered at
+  from a new frame field, gathered by the full collection and carried by
+  the image, verified, and starts with no recorded guard
+  ([object-model.md](object-model.md), "What a slot access checks");
+  `retry` keeps popping down to its `on:do:` activation, which is never
+  skipped ("Planned: tail calls, skipped but kept") and so always on the
+  stack, and the unwinder resumes a target only when it is divorced; the
+  decoder refuses every frame not marked uncontinuable
+  ([image-format.md](image-format.md), "Planned: suspend and resume").
+  **7a** lays frames out as words with a fixed header, every word tagged
+  or known to the collector as header, so no stack map is needed, as in
+  Cog, Strongtalk and Primordial Soup; one contiguous reservation of
+  `ns-memory` holds them, as HotSpot's, V8's and Strongtalk's native
+  stacks are contiguous, with the depth limit kept as the bound the
+  goldens pin and a byte bound added only as a net. It is taken only if
+  the interpreter measures no slower in release, and otherwise moves to
+  step 8. **7a′** overlaps the register windows, the caller's outgoing
+  arguments being the callee's first registers, behind its own
+  measurement. **7c** writes the deoptimization contract and the protocol
+  between interpreted and compiled frames into this document.
 - **Step 8, a baseline JIT**, Cog's class: every method compiled without
   speculation, the inline caches and the allocation fast path emitted into
   the code, values kept in registers, for x64 and arm64, since images are

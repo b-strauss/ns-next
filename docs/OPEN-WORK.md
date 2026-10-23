@@ -244,11 +244,28 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
 - **Step 7, an execution model for compiled code**: frames interpreted and
   compiled code share, a calling convention, GC maps for compiled frames, and
   deoptimization metadata, which the debugger needs as much as the optimizer.
-  An activation resumed from a frame starts with no recorded guard, and
-  where it takes the level it was entered at from -- a reified frame has
-  no field for it -- is the step's to decide
+  Decided with the user on 2026-10-24, in four parts and this order:
+  **7b**, resuming an activation from its divorced frame (Primordial Soup's
+  `CreateBaseFrame`, Cog's `makeBaseFrameFor`), tested by a stress mode
+  that divorces every frame at safepoints and runs on from the frames;
+  **7a**, frames as words with a fixed header in one contiguous
+  reservation of `ns-memory`, the depth limit kept and a byte bound added
+  only as a net, taken only if the interpreter measures no slower in
+  release and otherwise moved to road step 8; **7a′**, register windows
+  that overlap, the caller's outgoing arguments being the callee's first
+  registers, behind its own measurement; **7c**, the deoptimization
+  contract and the protocol between interpreted and compiled frames,
+  written into [execution.md](design/execution.md). A resumed activation
+  takes the level it was entered at from a new frame field, which the
+  full collection gathers ids from and the image carries, verified
+  (packed into the kind field instead should `bench_block.ns` measure the
+  extra word); it starts with no recorded guard
   ([object-model.md](design/object-model.md), "What a slot access
-  checks").
+  checks"). `retry` keeps popping down to its `on:do:` activation, which
+  is never skipped and so always on the stack; the unwinder resumes a
+  target only when it is divorced. The decoder refuses every frame not
+  marked uncontinuable ([image-format.md](design/image-format.md),
+  "Planned: suspend and resume").
 - **Between steps 7 and 8, real Newspeak bodies for `whileTrue:`, `whileFalse:` and
   `do:`.** Making them Newspeak loops keeps what their leaves settle --
   `do:` reads each element as it goes and sends `value:` to a non-block,
@@ -674,10 +691,15 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 - **Suspend and resume.** Needs a yield path out of `vm::run`, a re-entry
   that continues a decoded frame, whole-stack reify and divorce, and an
   encoding for every `Continuation` variant (`WhileLoop`, `DoLoop`,
-  `NestedClassCreation`, `Instantiation`, `Unwind`, `VmErrorSignalled`,
-  `Future`) and for `depth_reserve`. A dormant decoder gap must be closed
-  first: `verify_graph` never cross-checks a frame's `home` against its `kind`
-  (`image/decode.rs`). [image-format.md](design/image-format.md), "Planned:
+  `NestedClassCreation`, `Unwind`, `VmErrorSignalled`, `Future`) and for
+  `depth_reserve`. A dormant decoder gap must be closed first:
+  `verify_graph` never cross-checks a frame's `home` against its `kind`
+  (`image/decode.rs`). Road step 7b's resume makes the decoder refuse every
+  frame not marked uncontinuable (decided with the user on 2026-10-24), so
+  suspend and resume has to lift that refusal, and verify everything a
+  resumable frame carries before it does: `home` against `kind`, the
+  program counter against the body, the entered level against its
+  application. [image-format.md](design/image-format.md), "Planned:
   suspend and resume".
 - **A running world's image is trusted** (2026-10-12): a snapshot may hold
   frames of shipped code whose registers hold the kernel, a module instance

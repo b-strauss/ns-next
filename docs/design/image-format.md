@@ -2357,6 +2357,22 @@ load-bearing, and whoever wires up re-entry has to decide, deliberately,
 whether `verify_graph` gains the cross-check or the re-entry path treats a
 mismatched `home` as its own untrusted-input case.
 
+**Road step 7 decides it for the frames an image carries today** (decided
+with the user on 2026-10-24; [execution.md](execution.md), "Planned: JIT
+tiers"). Step 7b resumes a divorced frame that is not marked
+uncontinuable, so a `^` or an unwind into one continues it where it
+stopped. An image is written only when no activation runs, so every frame
+in one belongs to an activation that has returned and is marked
+uncontinuable; a frame that is not can only come from a crafted image, and
+resuming it would run the image's code from a program counter the image
+chose. Step 7b's decoder therefore refuses every frame not marked
+uncontinuable, and `verify_graph` gains the `home`-against-`kind`
+cross-check in the same step. Suspend and resume is what writes a
+continuable frame, so it has to lift that refusal, and before it does,
+verify everything a resumable frame carries: `home` against `kind`, the
+program counter against the body, and the entered level against its
+application.
+
 ## Edited programs in the image
 
 A program a MirrorBuilder edited is written to an image and loads back
