@@ -246,8 +246,10 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
   deoptimization metadata, which the debugger needs as much as the optimizer.
   Decided with the user on 2026-10-24, in four parts and this order:
   **7b**, resuming an activation from its divorced frame (Primordial Soup's
-  `CreateBaseFrame`, Cog's `makeBaseFrameFor`), tested by a stress mode
-  that divorces every frame at safepoints and runs on from the frames;
+  `CreateBaseFrame`, Cog's `makeBaseFrameFor`), lazily: only the top
+  comes back onto the stack and each sender when something returns into
+  it; tested by a stress mode that suspends every frame at safepoints and
+  runs on from the frames;
   **7a**, frames as words with a fixed header in one contiguous
   reservation of `ns-memory`, the depth limit kept and a byte bound added
   only as a net, taken only if the interpreter measures no slower in
@@ -255,11 +257,12 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
   that overlap, the caller's outgoing arguments being the callee's first
   registers, behind its own measurement; **7c**, the deoptimization
   contract and the protocol between interpreted and compiled frames,
-  written into [execution.md](design/execution.md). A resumed activation
-  takes the level it was entered at from a new frame field, which the
-  full collection gathers ids from and the image carries, verified
-  (packed into the kind field instead should `bench_block.ns` measure the
-  extra word); it starts with no recorded guard
+  written into [execution.md](design/execution.md). What a suspended frame
+  cannot hold -- its continuation, whether it counts against the depth
+  limit, the level it was entered at -- lives in a side table of the heap
+  beside it, which the full collection gathers ids from; suspended
+  activations still count against the depth limit. A resumed activation
+  starts with no recorded guard
   ([object-model.md](design/object-model.md), "What a slot access
   checks"). `retry` keeps popping down to its `on:do:` activation, which
   is never skipped and so always on the stack; the unwinder resumes a

@@ -7557,9 +7557,13 @@ Each step gets its own design when it comes up.
   staying frames until something returns into them; that is the landing
   point of every later deoptimization, and a stress mode that divorces
   every frame at safepoints and runs on from the frames tests it under
-  every golden. A resumed activation takes the level it was entered at
-  from a new frame field, gathered by the full collection and carried by
-  the image, verified, and starts with no recorded guard
+  every golden. Only the top comes back onto the stack; each sender is
+  resumed when something returns into it, so a resume costs what is
+  returned into and nothing more. What a suspended frame cannot hold --
+  its continuation, whether it counts against the depth limit, which
+  suspended activations still do, and the level it was entered at -- lives
+  in a side table of the heap beside it, so a reified frame grows by
+  nothing; a resumed activation starts with no recorded guard
   ([object-model.md](object-model.md), "What a slot access checks");
   `retry` keeps popping down to its `on:do:` activation, which is never
   skipped ("Planned: tail calls, skipped but kept") and so always on the
