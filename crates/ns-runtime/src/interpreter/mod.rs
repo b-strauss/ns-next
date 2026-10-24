@@ -3244,6 +3244,11 @@ mod tests {
             .expect("resolve");
             let mut interpreter =
                 crate::heap::with_stack_reservation(1 << 20, || Interpreter::bootstrap_with(lowering));
+            // The suspend stress mode moves the running activations off the
+            // stack into their frame objects, so the reservation would never
+            // fill and the depth limit would refuse the recursion instead.
+            #[cfg(debug_assertions)]
+            interpreter.set_stress_suspend(false);
             let class = interpreter.load_module(&resolved);
             let deep = expect_ok(interpreter.instantiate(&class, &[]), "Deep new");
             let text = expect_ok(
