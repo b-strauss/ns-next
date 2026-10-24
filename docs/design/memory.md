@@ -726,18 +726,24 @@ check").
   but a root of their own keeps both alive and forwarded whatever those
   links are.
 - The activation stack: each entry's receiver, `current_class`, the
-  `ClassReference` or closure object its `ActivationKind` names, the frame it is married
-  to, and the state its continuation carries — a `WhileLoop`'s condition and
+  `ClassReference` or closure object its `ActivationKind` names and the frame it is married
+  to; and every register.
+  `StackEntry`'s impl is in `heap.rs`, where its fields are private.
+- The side table of continuations (`Heap`'s `continuations`): each running
+  activation's continuation other than `Deliver`, which its stack entry
+  names by row (an entry that delivers names none), and the state it
+  carries — a `WhileLoop`'s condition and
   body, a `DoLoop`'s receiver and action, a `NestedClassCreation`'s
   enclosing object and declaring class, an `Instantiation`'s instance, levels
   with their arguments, and phase, an `Unwind`'s target frame and the value or error it carries,
   a `VmErrorSignalled` error's receiver, and a `Future` forcing's future and
   that of every forcing chained behind it, and a `ReturnToSuspended`'s
-  suspended sender with the continuation it wraps; and every register.
-  `StackEntry`'s impl is in `heap.rs`, where its fields are private.
+  suspended sender with the continuation it wraps
+  ([execution.md](execution.md), "Representation"). It is a root of
+  marking, of every move and of the scavenge, as the stack is.
 - The side table of suspended activations (`Heap`'s `suspensions`): each
-  row's frame and the state its continuation carries, as a stack entry's
-  ([execution.md](execution.md), "Suspending and resuming"). It is a root
+  row's frame and the state its continuation carries, as a running
+  activation's ([execution.md](execution.md), "Suspending and resuming"). It is a root
   of marking, of every move and of the scavenge, because a suspended frame
   belongs to a run that has not finished, whether or not anything else
   still reaches it: a suspended chain nothing else names would otherwise
@@ -1707,7 +1713,9 @@ index, not an object.
 The activation stack is a root, and nothing there is reclaimed: an entry is
 popped when its activation returns, so the stack is bounded by the deepest the
 program has been. Marking walks every `StackEntry` — receiver, `current_class`,
-`kind`, the continuation and `reified` — and every register in `stack.values`.
+`kind` and `reified` — every register in `stack.values`, and every row of
+the side table of continuations, which an entry whose continuation is not
+`Deliver` names by row.
 
 A frame object is collected exactly as every other object is, with the same
 mark bit and the same forwarding table: there is no separate store for

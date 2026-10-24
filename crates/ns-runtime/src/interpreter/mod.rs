@@ -712,6 +712,13 @@ impl Interpreter {
             0,
             "internal: a suspended activation outlived its run"
         );
+        // No activation outlives its run, so neither does a continuation
+        // its stack entry named.
+        debug_assert_eq!(
+            self.world.continuation_count(),
+            0,
+            "internal: a continuation outlived its run"
+        );
         #[cfg(debug_assertions)]
         assert_eq!(
             self.world.creations_in_progress(),

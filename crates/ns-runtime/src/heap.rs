@@ -482,7 +482,11 @@ struct StackEntry<'gc> {
     /// collection's code reclaim keeps every running entry's row
     /// (`StackRoots::codes`).
     code: CodeId,
-    then: Continuation<'gc>,
+    /// The row of `Heap::continuations` holding what the run loop does
+    /// with the activation's value when it returns
+    /// (`ActivationHeader::then`); `None` for `Continuation::Deliver`,
+    /// which is never stored.
+    continuation: Option<ContinuationRow>,
     /// See `ActivationHeader::counted`.
     counted: bool,
     /// The frame `Heap::reify` created for this activation, married to it
@@ -540,7 +544,8 @@ struct Suspension<'gc> {
     /// part of a run that has not finished, whether or not anything else
     /// still reaches it.
     frame: FrameReference<'gc>,
-    /// See `StackEntry::then`; never a `Continuation::ReturnToSuspended`,
+    /// The continuation `StackEntry::continuation` named, taken out of
+    /// `Heap::continuations`; never a `Continuation::ReturnToSuspended`,
     /// whose sender the frame's `SENDER` holds instead.
     then: Continuation<'gc>,
     /// See `StackEntry::counted`.
@@ -579,6 +584,101 @@ impl crate::trace::Trace for Suspensions<'_> {
         let Suspensions { rows, free: _ } = self;
         for suspension in rows.iter_mut().flatten() {
             suspension.trace(tracer);
+        }
+    }
+}
+
+/// The row of `Continuations` that holds a stack entry's continuation. An
+/// entry that delivers has none, so that a send's return tests one
+/// `Option` and reaches no table.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ContinuationRow(u32);
+
+/// The heap's side table of the continuations of running activations other
+/// than `Continuation::Deliver`, a row per activation, minted smallest free
+/// row first as `Suspensions` mints its rows. A continuation is kept here
+/// rather than in its stack entry so that the entry names it by a number,
+/// which a frame of words can hold as one word (`docs/design/execution.md`,
+/// "Planned: frames as words in one reservation"). A root, as the stack
+/// is: a continuation holds the handles of a native's or an unwind's state.
+#[derive(Default)]
+struct Continuations<'gc> {
+    rows: Vec<Option<Continuation<'gc>>>,
+    free: ids::FreeIndices,
+}
+
+impl<'gc> Continuations<'gc> {
+    /// The row a new entry names for `continuation`: none for a
+    /// `Continuation::Deliver`, which is never stored.
+    #[inline(always)]
+    fn store(&mut self, continuation: Continuation<'gc>) -> Option<ContinuationRow> {
+        match continuation {
+            // `Deliver` owns nothing, so forgetting it is dropping it,
+            // without the call into `Continuation`'s out-of-line drop glue
+            // that the end of the function would make (`vm::finish`'s
+            // `apply_continuation` forgets it for the same reason).
+            deliver @ Continuation::Deliver => {
+                std::mem::forget(deliver);
+                None
+            }
+            continuation => Some(self.insert(continuation)),
+        }
+    }
+
+    /// Stores `continuation`, never a `Deliver`, in the smallest free row.
+    /// Out of line: only a native's step, an unwind's block, a future or a
+    /// resumed activation takes a row.
+    #[cold]
+    #[inline(never)]
+    fn insert(&mut self, continuation: Continuation<'gc>) -> ContinuationRow {
+        debug_assert!(
+            !matches!(continuation, Continuation::Deliver),
+            "internal: a delivering activation takes no row"
+        );
+        let row = match self.free.take_smallest() {
+            Some(free) => free as usize,
+            None => {
+                self.rows.push(None);
+                self.rows.len() - 1
+            }
+        };
+        self.rows[row] = Some(continuation);
+        ContinuationRow(u32::try_from(row).expect("more than u32::MAX continuations live at once"))
+    }
+
+    /// Takes the continuation out of `row` and frees the row.
+    #[cold]
+    #[inline(never)]
+    fn take(&mut self, row: ContinuationRow) -> Continuation<'gc> {
+        let continuation = self.rows[row.0 as usize]
+            .take()
+            .expect("internal: a stack entry names a live continuation row");
+        self.free.free(row.0);
+        ids::truncate_trailing(&mut self.rows, &mut self.free);
+        continuation
+    }
+
+    /// The continuation an entry naming `row` applies: `Deliver` for none.
+    fn get(&self, row: Option<ContinuationRow>) -> &Continuation<'gc> {
+        match row {
+            Some(row) => self.rows[row.0 as usize]
+                .as_ref()
+                .expect("internal: a stack entry names a live continuation row"),
+            None => &Continuation::Deliver,
+        }
+    }
+
+    /// How many rows hold a continuation.
+    fn count(&self) -> usize {
+        self.rows.iter().flatten().count()
+    }
+}
+
+impl crate::trace::Trace for Continuations<'_> {
+    fn trace<T: crate::trace::Tracer>(&mut self, tracer: &mut T) {
+        let Continuations { rows, free: _ } = self;
+        for continuation in rows.iter_mut().flatten() {
+            continuation.trace(tracer);
         }
     }
 }
@@ -707,6 +807,9 @@ pub struct Heap<'gc> {
     /// cannot hold, until `resume_activation` pushes it again. Empty
     /// outside a run.
     suspensions: Suspensions<'gc>,
+    /// The continuations of the running activations other than
+    /// `Continuation::Deliver`, which their stack entries name by row.
+    continuations: Continuations<'gc>,
     /// Every object, at the byte offset an `ObjectReference` holds -- and
     /// every *reified* activation, as an object of the frame format at a
     /// `FrameReference`'s: one `Heap::reify` created because a block
@@ -1037,7 +1140,7 @@ impl crate::trace::Trace for StackEntry<'_> {
             program_counter: _,
             feedback_base: _, // not a handle
             code: _,          // not a handle
-            then,
+            continuation: _,  // a row of `Heap::continuations`, traced there
             counted: _,
             reified,
             retains_registers: _, // not a handle
@@ -1051,7 +1154,6 @@ impl crate::trace::Trace for StackEntry<'_> {
             tracer.object(class);
         }
         kind.trace(tracer);
-        then.trace(tracer);
         if let Some(frame) = reified {
             tracer.frame(frame);
         }
@@ -1188,6 +1290,7 @@ impl<'gc> Heap<'gc> {
             next_identity_hash: 1,
             stack: ActivationStack::default(),
             suspensions: Suspensions::default(),
+            continuations: Continuations::default(),
             space: Space::new(space::DEFAULT_RESERVATION)
                 .unwrap_or_else(|_| out_of_memory(space::DEFAULT_RESERVATION)),
             object_count: 0,
@@ -5582,7 +5685,7 @@ impl<'gc> Heap<'gc> {
             program_counter: 0,
             feedback_base: header.feedback_base,
             code,
-            then: header.then,
+            continuation: self.continuations.store(header.then),
             counted: header.counted,
             reified: None,
             retains_registers: false,
@@ -5646,7 +5749,7 @@ impl<'gc> Heap<'gc> {
         let retains_registers = entry.retains_registers;
         let program_counter = entry.program_counter;
         let counted = entry.counted;
-        let then = std::mem::replace(&mut entry.then, Continuation::Deliver);
+        let continuation = entry.continuation;
         let remaining = self.stack.entries.len() - 1;
         self.stack.entries.truncate(remaining);
         if let Some(frame) = reified {
@@ -5681,6 +5784,12 @@ impl<'gc> Heap<'gc> {
         }
         self.stack.values.truncate(base);
         self.stack.counted -= usize::from(counted);
+        // A delivering entry names no row, so a send's return reaches no
+        // table; every other continuation is taken out of line.
+        let then = match continuation {
+            None => Continuation::Deliver,
+            Some(row) => self.continuations.take(row),
+        };
         Popped { then, counted }
     }
 
@@ -5787,7 +5896,11 @@ impl<'gc> Heap<'gc> {
                 .reified
                 .expect("internal: every suspended activation was reified first");
             self.check_frame_origin(frame);
-            let (then, sender) = match entry.then {
+            let then = match entry.continuation {
+                None => Continuation::Deliver,
+                Some(row) => self.continuations.take(row),
+            };
+            let (then, sender) = match then {
                 Continuation::ReturnToSuspended(suspended) => {
                     // Its sender is the suspended frame, so its frame names
                     // that one rather than the entry below.
@@ -5897,6 +6010,7 @@ impl<'gc> Heap<'gc> {
             })),
             None => suspension.then,
         };
+        let continuation = self.continuations.store(then);
         let base = u32::try_from(self.stack.values.len())
             .expect("more than u32::MAX registers live at once in one heap");
         let index = u32::try_from(self.stack.entries.len())
@@ -5927,7 +6041,7 @@ impl<'gc> Heap<'gc> {
             program_counter,
             feedback_base,
             code,
-            then,
+            continuation,
             counted: suspension.counted,
             reified: Some(frame),
             retains_registers: suspension.retains_registers,
@@ -6007,7 +6121,8 @@ impl<'gc> Heap<'gc> {
         activation: ActivationReference,
     ) -> Option<FrameReference<'gc>> {
         self.check_activation(activation);
-        match &self.stack.entries[activation.index as usize].then {
+        let row = self.stack.entries[activation.index as usize].continuation;
+        match self.continuations.get(row) {
             Continuation::ReturnToSuspended(suspended) => Some(suspended.sender),
             _ => None,
         }
@@ -6041,6 +6156,23 @@ impl<'gc> Heap<'gc> {
             Continuation::VmErrorSignalled(error) => Some((**error).clone()),
             _ => None,
         }
+    }
+
+    /// How many running activations hold a continuation other than
+    /// `Continuation::Deliver`; zero outside a run.
+    pub fn continuation_count(&self) -> usize {
+        self.continuations.count()
+    }
+
+    /// Which rows of the continuation table hold a continuation, free ones
+    /// included, in row order.
+    #[cfg(test)]
+    pub(crate) fn continuation_rows(&self) -> Vec<bool> {
+        self.continuations
+            .rows
+            .iter()
+            .map(Option::is_some)
+            .collect()
     }
 
     /// How many activations are suspended; zero outside a run.
@@ -6317,9 +6449,16 @@ impl<'gc> Heap<'gc> {
         then: Continuation<'gc>,
     ) {
         self.check_activation(activation);
-        match &mut self.stack.entries[activation.index as usize].then {
-            Continuation::ReturnToSuspended(suspended) => suspended.then = then,
-            own => *own = then,
+        let entry = &mut self.stack.entries[activation.index as usize];
+        match entry.continuation {
+            Some(row) => match self.continuations.rows[row.0 as usize].as_mut() {
+                Some(Continuation::ReturnToSuspended(suspended)) => suspended.then = then,
+                _ => {
+                    self.continuations.take(row);
+                    entry.continuation = self.continuations.store(then);
+                }
+            },
+            None => entry.continuation = self.continuations.store(then),
         }
     }
 
@@ -6330,7 +6469,8 @@ impl<'gc> Heap<'gc> {
     /// its sender is on the stack or suspended.
     fn activation_own_continuation(&self, activation: ActivationReference) -> &Continuation<'gc> {
         self.check_activation(activation);
-        match &self.stack.entries[activation.index as usize].then {
+        let row = self.stack.entries[activation.index as usize].continuation;
+        match self.continuations.get(row) {
             Continuation::ReturnToSuspended(suspended) => &suspended.then,
             own => own,
         }
@@ -6755,6 +6895,7 @@ impl<'gc> Heap<'gc> {
             space,
             stack,
             suspensions,
+            continuations,
             activation_class,
             mixin_objects,
             host_roots,
@@ -6787,6 +6928,7 @@ impl<'gc> Heap<'gc> {
             scavenger.word(word);
         }
         suspensions.trace(&mut scavenger);
+        continuations.trace(&mut scavenger);
         let roots = host_roots.get_mut();
         roots.sweep();
         for slot in &roots.slots {
@@ -6886,14 +7028,16 @@ impl<'gc> Heap<'gc> {
     }
 
     /// How much a move has to rewrite: the objects, the activation stack's
-    /// entries and registers, the suspended activations, the reified-mixin
-    /// and canonical symbol tables, and the host roots. The stress mode paces its moves by it.
+    /// entries and registers, the suspended activations, the continuations,
+    /// the reified-mixin and canonical symbol tables, and the host roots. The
+    /// stress mode paces its moves by it.
     #[cfg(debug_assertions)]
     pub(crate) fn traced_size(&self) -> usize {
         self.object_count
             + self.stack.entries.len()
             + self.stack.values.len()
             + self.suspensions.rows.len()
+            + self.continuations.rows.len()
             + self.mixin_objects.len()
             + self.canonical_symbols.len()
             + self.host_roots.borrow().slots.len()
@@ -7247,6 +7391,7 @@ impl<'gc> Heap<'gc> {
             forwarder.word(word);
         }
         self.suspensions.trace(forwarder);
+        self.continuations.trace(forwarder);
         // The table is weak -- `begin_marking` deliberately does not walk it
         // (see its doc comment) -- but by the time a caller reaches
         // `compact`, `prune_canonical_symbols` has already run against the
@@ -7457,6 +7602,7 @@ impl<'gc> Heap<'gc> {
             marker.word(word);
         }
         self.suspensions.trace(&mut marker);
+        self.continuations.trace(&mut marker);
         let roots = self.host_roots.get_mut();
         roots.sweep();
         for slot in &roots.slots {
@@ -13516,6 +13662,39 @@ mod tests {
     }
 
     #[test]
+    fn a_popped_continuation_frees_its_row() {
+        let mut heap = Heap::new();
+        let unwinding = || ActivationHeader {
+            then: Continuation::Unwind(Box::new(PendingUnwind {
+                target: None,
+                action: UnwindAction::Restart,
+            })),
+            ..header()
+        };
+        let activations: Vec<_> = (0..3)
+            .map(|_| heap.push_activation(unwinding(), &[], 0))
+            .collect();
+        assert_eq!(heap.continuation_rows(), vec![true, true, true]);
+        for activation in activations.into_iter().rev() {
+            let popped = heap.pop_activation(activation);
+            assert!(matches!(popped.then, Continuation::Unwind(_)));
+        }
+
+        heap.push_activation(unwinding(), &[], 0);
+
+        assert_eq!(heap.continuation_rows(), vec![true]);
+    }
+
+    #[test]
+    fn a_delivering_activation_takes_no_row() {
+        let mut heap = Heap::new();
+        let activation = heap.push_activation(header(), &[], 0);
+        assert!(heap.continuation_rows().is_empty());
+        let popped = heap.pop_activation(activation);
+        assert!(matches!(popped.then, Continuation::Deliver));
+    }
+
+    #[test]
     fn a_resumed_activation_returns_to_its_suspended_sender() {
         let mut heap = frame_heap();
         let class = named_class(&mut heap, "Suspended");
@@ -13537,7 +13716,10 @@ mod tests {
 
         let resumed_top = heap.resume_activation(top_frame, FeedbackBase::NOT_ASSIGNED);
 
-        match &heap.stack.entries[resumed_top.index as usize].then {
+        match heap
+            .continuations
+            .get(heap.stack.entries[resumed_top.index as usize].continuation)
+        {
             Continuation::ReturnToSuspended(suspended) => {
                 assert!(suspended.sender.same(bottom_frame));
                 assert!(matches!(suspended.then, Continuation::Deliver));
@@ -13554,7 +13736,8 @@ mod tests {
         let resumed_bottom = heap.resume_activation(suspended.sender, FeedbackBase::NOT_ASSIGNED);
 
         assert!(matches!(
-            &heap.stack.entries[resumed_bottom.index as usize].then,
+            heap.continuations
+                .get(heap.stack.entries[resumed_bottom.index as usize].continuation),
             Continuation::Unwind(pending)
                 if pending.target.is_none() && matches!(pending.action, UnwindAction::Restart)
         ));

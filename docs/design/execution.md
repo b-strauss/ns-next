@@ -136,7 +136,9 @@ struct StackEntry {
     code: CodeId,              // the code table's row of the body it runs, which
                                // the loop resumes it in; a method's registered
                                // with its method
-    then: Continuation,        // what the loop does with its value
+    continuation: Option<ContinuationRow>, // the row of the heap's side table
+                               // of continuations holding what the loop does
+                               // with its value; None for Deliver, never stored
     counted: bool,             // whether it counts against the depth limit
     reified: Option<FrameReference>, // set once the activation is married
     retains_registers: bool,   // whether the divorce copies the registers out
@@ -349,8 +351,16 @@ initializer activation must be
 able to name the code it is executing so that `program_counter` is interpretable, since the
 statement→program-counter table is reached through its kind. A stack entry also holds its
 `code` directly, because the loop resumes a caller in it after a callee returns;
-`then`, the `Continuation` the loop applies to its value when it is popped; and
-`counted`, whether it counts against the depth limit ("The depth limit" below).
+`continuation`, which names the `Continuation` the loop applies to its value
+when it is popped; and `counted`, whether it counts against the depth limit
+("The depth limit" below). A `Continuation::Deliver`, every send's, is never
+stored: the entry's `None`, so a send's return tests one `Option` and reaches
+no table. Every other continuation lives in a row of the heap's side table
+of continuations (`Heap`'s `continuations`), minted smallest free row first,
+taken out and freed by the pop, out of line; the table is a root
+([memory.md](memory.md), "What the collector traces"). A suspension takes its
+activation's continuation out of the table into its suspension row, and a
+resume puts it back.
 
 `program_counter` is an instruction index into the activation's compiled body.
 
