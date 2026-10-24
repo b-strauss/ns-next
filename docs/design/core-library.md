@@ -3685,7 +3685,7 @@ with an argument that is no `Message` fails inside the handler, on
   would cost several sends per frame on exception-heavy code.
 - **An unwind target is a `FrameReference`, never an `ActivationReference`.**
   Once code runs while an unwind is in progress, a pushed activation can
-  reuse a target's stack index, and a release build does not check an
+  reuse a target's stack offset, and a release build does not check an
   activation's generation. A reified frame keeps its identity; whether it
   is still running, married to a stack frame or suspended into the frame,
   is `Heap::frame_is_running`, in every build, and the leaves read and
@@ -3767,9 +3767,9 @@ with an argument that is no `Message` fails inside the handler, on
   caught. While the reserve is held, counted pushes may go 1,000 past the
   limit. It is held by the frame of the activation the error arose in,
   while that activation runs and directly above it is the error's `signal`
-  or the kernel's `doesNotUnderstand:`: a frame, not a stack index, because
+  or the kernel's `doesNotUnderstand:`: a frame, not a stack offset, because
   a frame is divorced on its activation's pop and never married again,
-  where a later signal at the same index would inherit an index. It is
+  where a later signal at the same offset would inherit an offset. It is
   given back once that activation above is gone, and released whenever a
   host's run ends. A push past the reserve ends the run at once and
   uncatchably — as a termination, so pending `ensure:` blocks still run.

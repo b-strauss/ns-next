@@ -50,7 +50,7 @@ pub use inline_cache::{
 pub(crate) enum Signal<'gc> {
     /// A non-local return: its home's frame, never its activation, since the
     /// unwind that carries it runs `ensure:` blocks on its way, and an
-    /// activation they push can reuse a popped activation's stack index
+    /// activation they push can reuse a popped activation's stack offset
     /// (`docs/design/execution.md`, "Unwinding").
     Return(FrameReference<'gc>, Value<'gc>),
     Error(NewspeakError<'gc>),
@@ -389,7 +389,7 @@ pub struct Mutator<'gc> {
     /// frame of the activation a VM error arose in, whose `signal` -- or,
     /// for a message nothing understood, whose `Object>>doesNotUnderstand:`
     /// -- sits directly above it (`Mutator::depth_reserve_held`). A frame
-    /// and not a stack index, because a frame is divorced when its
+    /// and not a stack offset, because a frame is divorced when its
     /// activation is popped and married to nothing again, where an index is
     /// reused -- by another error's `signal`, possibly far from the limit,
     /// which must not inherit the reserve. Released when a host's run ends,

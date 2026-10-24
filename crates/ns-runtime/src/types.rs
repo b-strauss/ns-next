@@ -462,7 +462,7 @@ pub struct ReturnToSuspended<'gc> {
 pub struct PendingUnwind<'gc> {
     /// The frame the unwind ends at, never the activation: code runs while
     /// the unwind is in progress, and an activation pushed meanwhile can
-    /// reuse a popped activation's stack index, where a reified frame keeps
+    /// reuse a popped activation's stack offset, where a reified frame keeps
     /// its identity and says whether it still runs
     /// (`Heap::frame_activation`). `None` is the floor of the run.
     pub(crate) target: Option<FrameReference<'gc>>,

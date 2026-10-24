@@ -694,7 +694,7 @@ mod tests {
     }
 
     /// A return aimed at a frame whose activation has been popped must not
-    /// land in the activation that took its stack index since: the frame
+    /// land in the activation that took its stack offset since: the frame
     /// was divorced on the pop and is married to nothing, so the unwind
     /// goes on to the floor. A release build has no generation to tell the
     /// two activations apart by, which is why the target is a frame.
@@ -825,8 +825,8 @@ mod tests {
     }
 
     /// The depth limit's reserve belongs to the activation it was taken
-    /// for, not to a stack index: once that activation and its `signal`
-    /// are gone, another error whose `signal` lands at the very same index
+    /// for, not to a stack offset: once that activation and its `signal`
+    /// are gone, another error whose `signal` lands at the very same offset
     /// -- which exempt block activations make possible far from the limit
     /// -- does not find the reserve held.
     #[test]

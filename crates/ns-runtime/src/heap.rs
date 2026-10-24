@@ -320,7 +320,7 @@ impl std::fmt::Debug for FrameReference<'_> {
 /// panics instead of answering for whichever activation reuses the offset.
 #[derive(Clone, Copy)]
 pub struct ActivationReference {
-    index: u32,
+    offset: u32,
     #[cfg(debug_assertions)]
     origin: u32,
     #[cfg(debug_assertions)]
@@ -329,7 +329,7 @@ pub struct ActivationReference {
 
 impl ActivationReference {
     /// Activation identity: the unwinder stops at its target by it
-    /// (`interpreter::unwind`). Two handles at the same index are the same
+    /// (`interpreter::unwind`). Two handles at the same offset are the same
     /// activation only while neither has been popped, which is why the
     /// unwinder compares against a handle it has just asked the target's
     /// frame for (`Heap::frame_activation`) and never keeps one across the
@@ -343,11 +343,11 @@ impl ActivationReference {
                 self.origin, other.origin
             );
             debug_assert!(
-                self.index != other.index || self.generation == other.generation,
+                self.offset != other.offset || self.generation == other.generation,
                 "stale activation handle: compared against a later activation at the same depth"
             );
         }
-        self.index == other.index
+        self.offset == other.offset
     }
 }
 
@@ -355,7 +355,7 @@ impl ActivationReference {
 /// `FrameReference`'s does.
 impl std::fmt::Debug for ActivationReference {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ActivationReference(#{})", self.index)
+        write!(f, "ActivationReference(#{})", self.offset)
     }
 }
 
@@ -1402,7 +1402,7 @@ fn out_of_memory(bytes: usize) -> ! {
 
 /// A count or an index as the `SmallInteger` word a frame field stores.
 /// Every one a frame stores -- a program counter, a code id, a kind tag, a
-/// stack index -- is far inside 61 bits; saturating keeps a count past
+/// stack offset -- is far inside 61 bits; saturating keeps a count past
 /// them from panicking.
 fn count_word(count: usize) -> Word {
     count_value(count).word()
@@ -2835,7 +2835,7 @@ impl<'gc> Heap<'gc> {
                 activation.origin, self.heap_id
             );
             assert_eq!(
-                self.frame_generation(activation.index),
+                self.frame_generation(activation.offset),
                 Some(activation.generation),
                 "stale activation handle: its activation has returned"
             );
@@ -2879,7 +2879,7 @@ impl<'gc> Heap<'gc> {
     #[inline(always)]
     fn activation_handle(&self, offset: u32) -> ActivationReference {
         ActivationReference {
-            index: offset,
+            offset,
             #[cfg(debug_assertions)]
             origin: self.heap_id,
             #[cfg(debug_assertions)]
@@ -3812,13 +3812,13 @@ impl<'gc> Heap<'gc> {
             return;
         }
         let copied = &words[closure_field::COUNT..];
-        let flags = stack.flags(activation.index);
-        let registers = activation.index as usize + frame_header::COUNT;
+        let flags = stack.flags(activation.offset);
+        let registers = activation.offset as usize + frame_header::COUNT;
         let first = registers + flags.argument_count as usize;
         // The activation's own window, so a list longer than its register
         // file stops at the end of it rather than writing into whatever
         // sits above.
-        let end = stack.window_end(activation.index);
+        let end = stack.window_end(activation.offset);
         let stack_words = stack.frames.words_mut();
         for (position, bits) in copied.iter().enumerate() {
             let slot = first + position;
@@ -6034,10 +6034,10 @@ impl<'gc> Heap<'gc> {
         self.check_activation(activation);
         let flags = FrameFlags {
             retains_registers: true,
-            ..self.stack.flags(activation.index)
+            ..self.stack.flags(activation.offset)
         };
         self.stack
-            .set_header_word(activation.index, frame_header::FLAGS, flags.word());
+            .set_header_word(activation.offset, frame_header::FLAGS, flags.word());
     }
 
     /// Pops the top activation. If it was reified, its frame is divorced:
@@ -6055,10 +6055,10 @@ impl<'gc> Heap<'gc> {
     pub fn pop_activation(&mut self, activation: ActivationReference) -> Popped<'gc> {
         self.check_activation(activation);
         debug_assert_eq!(
-            activation.index, self.stack.innermost,
+            activation.offset, self.stack.innermost,
             "only the top activation can be popped"
         );
-        let offset = activation.index as usize;
+        let offset = activation.offset as usize;
         let header = self.stack.frames.header(offset);
         let reified = Word::from_bits(header[frame_header::REIFIED]).object_offset();
         let flags = FrameFlags::of(Word::from_bits(header[frame_header::FLAGS]));
@@ -6139,7 +6139,7 @@ impl<'gc> Heap<'gc> {
     /// object ever grows, and the divorce copies the registers in place.
     pub fn reify(&mut self, activation: ActivationReference) -> FrameReference<'gc> {
         self.check_activation(activation);
-        let offset = activation.index;
+        let offset = activation.offset;
         if let Some(frame) = self
             .stack
             .header_word(offset, frame_header::REIFIED)
@@ -6513,7 +6513,7 @@ impl<'gc> Heap<'gc> {
         activation: ActivationReference,
     ) -> Option<FrameReference<'gc>> {
         self.check_activation(activation);
-        let row = self.stack.continuation(activation.index);
+        let row = self.stack.continuation(activation.offset);
         match self.continuations.get(row) {
             Continuation::ReturnToSuspended(suspended) => Some(suspended.sender),
             _ => None,
@@ -6579,7 +6579,7 @@ impl<'gc> Heap<'gc> {
     ) -> Option<FrameReference<'gc>> {
         self.check_activation(activation);
         self.stack
-            .header_word(activation.index, frame_header::REIFIED)
+            .header_word(activation.offset, frame_header::REIFIED)
             .object_offset()
             .map(|frame| self.frame_handle(frame))
     }
@@ -6589,7 +6589,7 @@ impl<'gc> Heap<'gc> {
         self.load(Word::from_bits(
             self.stack
                 .frames
-                .word(self.register_slot(activation.index, index)),
+                .word(self.register_slot(activation.offset, index)),
         ))
     }
 
@@ -6597,7 +6597,7 @@ impl<'gc> Heap<'gc> {
     pub fn activation_register_base(&self, activation: ActivationReference) -> RegisterBase {
         self.check_activation(activation);
         RegisterBase {
-            index: activation.index + frame_header::COUNT as u32,
+            index: activation.offset + frame_header::COUNT as u32,
             #[cfg(debug_assertions)]
             activation,
         }
@@ -6628,7 +6628,7 @@ impl<'gc> Heap<'gc> {
     #[cfg(debug_assertions)]
     fn check_register(&self, base: RegisterBase, index: u16) {
         self.check_activation(base.activation);
-        let _ = self.register_slot(base.activation.index, index);
+        let _ = self.register_slot(base.activation.offset, index);
     }
 
     pub fn activation_set_local(
@@ -6638,7 +6638,7 @@ impl<'gc> Heap<'gc> {
         value: Value<'gc>,
     ) {
         self.check_activation(activation);
-        let slot = self.register_slot(activation.index, index);
+        let slot = self.register_slot(activation.offset, index);
         let word = self.store(value);
         self.stack.frames.set_word(slot, word.bits());
     }
@@ -6647,7 +6647,7 @@ impl<'gc> Heap<'gc> {
         self.check_activation(activation);
         self.load(
             self.stack
-                .header_word(activation.index, frame_header::RECEIVER),
+                .header_word(activation.offset, frame_header::RECEIVER),
         )
     }
 
@@ -6661,7 +6661,7 @@ impl<'gc> Heap<'gc> {
         activation: ActivationReference,
     ) -> (Value<'gc>, Option<ClassReference<'gc>>) {
         self.check_activation(activation);
-        let header = self.stack.frames.header(activation.index as usize);
+        let header = self.stack.frames.header(activation.offset as usize);
         let receiver = Word::from_bits(header[frame_header::RECEIVER]);
         let current_class = Word::from_bits(header[frame_header::CURRENT_CLASS]);
         (
@@ -6678,7 +6678,7 @@ impl<'gc> Heap<'gc> {
     ) -> Option<ClassReference<'gc>> {
         self.check_activation(activation);
         self.stack
-            .header_word(activation.index, frame_header::CURRENT_CLASS)
+            .header_word(activation.offset, frame_header::CURRENT_CLASS)
             .object_offset()
             .map(|class| self.object_handle(class))
     }
@@ -6692,7 +6692,7 @@ impl<'gc> Heap<'gc> {
         activation: ActivationReference,
     ) -> (Value<'gc>, DispatchId) {
         self.check_activation(activation);
-        let header = self.stack.frames.header(activation.index as usize);
+        let header = self.stack.frames.header(activation.offset as usize);
         let receiver = Word::from_bits(header[frame_header::RECEIVER]);
         let guard = frames::number_of(Word::from_bits(header[frame_header::GUARD]));
         // A guard is a 22-bit id, so the conversion is exact.
@@ -6707,7 +6707,7 @@ impl<'gc> Heap<'gc> {
         activation: ActivationReference,
     ) -> ApplicationIndex {
         self.check_activation(activation);
-        self.activation_entered_level_of(activation.index)
+        self.activation_entered_level_of(activation.offset)
     }
 
     /// Records `guard` as the one `activation`'s own-slot instructions
@@ -6721,7 +6721,7 @@ impl<'gc> Heap<'gc> {
     ) {
         self.check_activation(activation);
         self.stack.set_header_word(
-            activation.index,
+            activation.offset,
             frame_header::GUARD,
             frames::number_word(u64::from(guard.bits())),
         );
@@ -6782,7 +6782,7 @@ impl<'gc> Heap<'gc> {
         self.check_activation(activation);
         self.tables
             .applications
-            .get(self.activation_entered_level_of(activation.index).index())
+            .get(self.activation_entered_level_of(activation.offset).index())
             .and_then(Option::as_ref)
             .map_or(0, |application| application.own_slot_base)
     }
@@ -6793,7 +6793,7 @@ impl<'gc> Heap<'gc> {
         // A feedback base is a `u32`, so the conversion is exact.
         FeedbackBase::from_raw(frames::number_of(
             self.stack
-                .header_word(activation.index, frame_header::FEEDBACK_BASE),
+                .header_word(activation.offset, frame_header::FEEDBACK_BASE),
         ) as u32)
     }
 
@@ -6804,7 +6804,7 @@ impl<'gc> Heap<'gc> {
     ) {
         self.check_activation(activation);
         self.stack.set_header_word(
-            activation.index,
+            activation.offset,
             frame_header::PROGRAM_COUNTER,
             frames::number_word(program_counter as u64),
         );
@@ -6848,7 +6848,8 @@ impl<'gc> Heap<'gc> {
     fn activation_code_id(&self, activation: ActivationReference) -> CodeId {
         // A code id is a `u32`, so the conversion is exact.
         CodeId::from_raw(frames::number_of(
-            self.stack.header_word(activation.index, frame_header::CODE),
+            self.stack
+                .header_word(activation.offset, frame_header::CODE),
         ) as u32)
     }
 
@@ -6896,7 +6897,7 @@ impl<'gc> Heap<'gc> {
         then: Continuation<'gc>,
     ) {
         self.check_activation(activation);
-        let offset = activation.index;
+        let offset = activation.offset;
         match self.stack.continuation(offset) {
             Some(row) => match self.continuations.rows[row.0 as usize].as_mut() {
                 Some(Continuation::ReturnToSuspended(suspended)) => suspended.then = then,
@@ -6920,7 +6921,7 @@ impl<'gc> Heap<'gc> {
     /// its sender is on the stack or suspended.
     fn activation_own_continuation(&self, activation: ActivationReference) -> &Continuation<'gc> {
         self.check_activation(activation);
-        let row = self.stack.continuation(activation.index);
+        let row = self.stack.continuation(activation.offset);
         match self.continuations.get(row) {
             Continuation::ReturnToSuspended(suspended) => &suspended.then,
             own => own,
@@ -6954,7 +6955,7 @@ impl<'gc> Heap<'gc> {
     /// the one it sent to, while it waits for it.
     pub fn activation_above(&self, activation: ActivationReference) -> Option<ActivationReference> {
         self.check_activation(activation);
-        let above = self.stack.window_end(activation.index);
+        let above = self.stack.window_end(activation.offset);
         // An offset below the top is below 2^31, so the conversion is exact.
         (above < self.stack.frames.top()).then(|| self.activation_handle(above as u32))
     }
@@ -6966,7 +6967,7 @@ impl<'gc> Heap<'gc> {
         self.check_activation(activation);
         frames::number_of(
             self.stack
-                .header_word(activation.index, frame_header::PROGRAM_COUNTER),
+                .header_word(activation.offset, frame_header::PROGRAM_COUNTER),
         ) as usize
     }
 
@@ -6985,7 +6986,7 @@ impl<'gc> Heap<'gc> {
     /// whether its base has returned.
     pub fn activation_position(&self, activation: ActivationReference) -> usize {
         self.check_activation(activation);
-        activation.index as usize
+        activation.offset as usize
     }
 
     /// The activation `activation` returns to: the frame below it, since a
@@ -6998,14 +6999,14 @@ impl<'gc> Heap<'gc> {
     ) -> Option<ActivationReference> {
         self.check_activation(activation);
         self.stack
-            .caller(activation.index)
+            .caller(activation.offset)
             .map(|caller| self.activation_handle(caller))
     }
 
     /// What `activation` was activated for.
     pub fn activation_kind(&self, activation: ActivationReference) -> ActivationKind<'gc> {
         self.check_activation(activation);
-        let offset = activation.index;
+        let offset = activation.offset;
         let tag = self.stack.flags(offset).kind_tag;
         let operand = self.stack.header_word(offset, frame_header::OPERAND);
         let object = || {
@@ -7115,7 +7116,7 @@ impl<'gc> Heap<'gc> {
     pub(crate) fn activation_runs_method_or_clause(&self, activation: ActivationReference) -> bool {
         self.check_activation(activation);
         matches!(
-            self.stack.flags(activation.index).kind_tag,
+            self.stack.flags(activation.offset).kind_tag,
             kind_tag::METHOD | kind_tag::SUPERCLASS_CLAUSE
         )
     }
@@ -10697,7 +10698,7 @@ mod tests {
     }
 
     /// An `ActivationReference` kept past its pop names whatever activation
-    /// reuses the index next -- a different, valid activation, so the read
+    /// reuses the offset next -- a different, valid activation, so the read
     /// would silently answer the wrong thing. Debug builds refuse it.
     #[test]
     #[cfg(debug_assertions)]
@@ -11234,7 +11235,7 @@ mod tests {
     /// which is what makes "a running activation's frame is never collected"
     /// fall out of the root set instead of needing a rule of its own.
     #[test]
-    fn marking_reaches_a_married_frame_through_its_entry() {
+    fn marking_reaches_a_married_frame_through_its_stack_frame() {
         let mut heap = frame_heap();
         let activation = heap
             .push_activation(header(), &[], 1)
@@ -14490,11 +14491,11 @@ mod tests {
 
         assert_eq!(heap.continuation_rows(), vec![true, true]);
         assert!(matches!(
-            heap.continuations.get(heap.stack.continuation(below.index)),
+            heap.continuations.get(heap.stack.continuation(below.offset)),
             Continuation::Unwind(pending) if matches!(pending.action, UnwindAction::Return(_))
         ));
         assert_eq!(
-            heap.stack.continuation(below.index),
+            heap.stack.continuation(below.offset),
             Some(ContinuationRow(0))
         );
     }
@@ -14538,7 +14539,7 @@ mod tests {
 
         match heap
             .continuations
-            .get(heap.stack.continuation(resumed_top.index))
+            .get(heap.stack.continuation(resumed_top.offset))
         {
             Continuation::ReturnToSuspended(suspended) => {
                 assert!(suspended.sender.same(bottom_frame));
@@ -14557,7 +14558,7 @@ mod tests {
 
         assert!(matches!(
             heap.continuations
-                .get(heap.stack.continuation(resumed_bottom.index)),
+                .get(heap.stack.continuation(resumed_bottom.offset)),
             Continuation::Unwind(pending)
                 if pending.target.is_none() && matches!(pending.action, UnwindAction::Restart)
         ));
@@ -14816,7 +14817,7 @@ mod tests {
             // Entered at `Local`'s level, though the frame names no class
             // that keeps the level's application: only the side table can.
             mutator.heap.stack.set_header_word(
-                activation.index,
+                activation.offset,
                 frame_header::ENTERED_LEVEL,
                 frames::number_word(level.index() as u64),
             );
