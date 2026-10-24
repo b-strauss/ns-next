@@ -413,6 +413,27 @@ impl FrameStack {
         self.reservation.accessible()[index]
     }
 
+    /// The header of the live frame at `offset`: one bounds check, against
+    /// the committed end, for all of its words, as `word` makes one for a
+    /// single word. That the frame is live is the caller's, which a debug
+    /// build checks here.
+    #[inline(always)]
+    pub(super) fn header(&self, offset: usize) -> &[u64; frame_header::COUNT] {
+        debug_assert!(
+            offset + frame_header::COUNT <= self.top,
+            "internal: a frame's header lies below the top"
+        );
+        match self
+            .reservation
+            .accessible()
+            .get(offset..offset + frame_header::COUNT)
+            .and_then(|header| header.try_into().ok())
+        {
+            Some(header) => header,
+            None => unreachable!("internal: a live frame's header lies inside the committed stack"),
+        }
+    }
+
     /// Writes word `index` of a live frame, as `word` reads it.
     #[inline(always)]
     pub(super) fn set_word(&mut self, index: usize, bits: u64) {

@@ -2074,9 +2074,11 @@ and an interpreter, which holds `Rc`s throughout, is not `Send` either.
   as a field, refreshed whenever its page map changes, so lending it is one
   comparison rather than a walk of the map. `accessible` and
   `accessible_mut` lend that whole range with no check at all, its end
-  being the field, so what indexes the slice makes the access's one bounds
-  check, against the committed end: the activation stack's register
-  access, which the run loop makes on nearly every instruction. Dropping
+  being the field -- kept in words beside the byte end, so that lending
+  it takes no shift either -- so what indexes the slice makes the
+  access's one bounds check, against the committed end: the activation
+  stack's register access, which the run loop makes on nearly every
+  instruction, where the shift cost `bench_loop.ns` about 2%. Dropping
   the reservation releases it. Ranges are byte offsets from the
   base: commit, decommit and protect take page-aligned, non-empty ranges
   inside the reservation, the slices 8-byte-aligned ones that are committed

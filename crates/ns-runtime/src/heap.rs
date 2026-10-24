@@ -6059,7 +6059,7 @@ impl<'gc> Heap<'gc> {
             "only the top activation can be popped"
         );
         let offset = activation.index as usize;
-        let header = &self.stack.frames.words()[offset..offset + frame_header::COUNT];
+        let header = self.stack.frames.header(offset);
         let reified = Word::from_bits(header[frame_header::REIFIED]).object_offset();
         let flags = FrameFlags::of(Word::from_bits(header[frame_header::FLAGS]));
         let program_counter = header[frame_header::PROGRAM_COUNTER];
@@ -6661,8 +6661,7 @@ impl<'gc> Heap<'gc> {
         activation: ActivationReference,
     ) -> (Value<'gc>, Option<ClassReference<'gc>>) {
         self.check_activation(activation);
-        let header = &self.stack.frames.words()
-            [activation.index as usize..activation.index as usize + frame_header::COUNT];
+        let header = self.stack.frames.header(activation.index as usize);
         let receiver = Word::from_bits(header[frame_header::RECEIVER]);
         let current_class = Word::from_bits(header[frame_header::CURRENT_CLASS]);
         (
@@ -6693,8 +6692,7 @@ impl<'gc> Heap<'gc> {
         activation: ActivationReference,
     ) -> (Value<'gc>, DispatchId) {
         self.check_activation(activation);
-        let header = &self.stack.frames.words()
-            [activation.index as usize..activation.index as usize + frame_header::COUNT];
+        let header = self.stack.frames.header(activation.index as usize);
         let receiver = Word::from_bits(header[frame_header::RECEIVER]);
         let guard = frames::number_of(Word::from_bits(header[frame_header::GUARD]));
         // A guard is a 22-bit id, so the conversion is exact.

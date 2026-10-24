@@ -105,6 +105,10 @@ pub struct Reservation {
     size: usize,
     pages: PageMap,
     accessible_prefix: usize,
+    /// `accessible_prefix` in words, kept beside it so that `accessible`,
+    /// which the activation stack's every register access goes through,
+    /// lends its slice without a shift.
+    accessible_words: usize,
     bump: BumpCursor,
 }
 
@@ -140,6 +144,7 @@ impl Reservation {
             size,
             pages: PageMap::new(),
             accessible_prefix: 0,
+            accessible_words: 0,
             bump: BumpCursor { top: 0, limit: 0 },
         })
     }
@@ -290,6 +295,7 @@ impl Reservation {
     fn record(&mut self, range: Range<usize>, state: Option<Protection>) {
         self.pages.set(range, state);
         self.accessible_prefix = self.pages.accessible_prefix();
+        self.accessible_words = self.accessible_prefix / 8;
         // A shrunken prefix takes the cursor's limit with it, so no bump
         // lends memory that is no longer committed.
         self.bump.limit = self.bump.limit.min(self.accessible_prefix);
@@ -429,7 +435,7 @@ impl Reservation {
         // its length is a multiple of the page size; `&self` keeps
         // `protect` and `decommit` away while the slice lives.
         unsafe {
-            std::slice::from_raw_parts(self.base.as_ptr().cast::<u64>(), self.accessible_prefix / 8)
+            std::slice::from_raw_parts(self.base.as_ptr().cast::<u64>(), self.accessible_words)
         }
     }
 
@@ -439,10 +445,7 @@ impl Reservation {
         // SAFETY: as for `accessible`, and `&mut self` makes the slice
         // unique.
         unsafe {
-            std::slice::from_raw_parts_mut(
-                self.base.as_ptr().cast::<u64>(),
-                self.accessible_prefix / 8,
-            )
+            std::slice::from_raw_parts_mut(self.base.as_ptr().cast::<u64>(), self.accessible_words)
         }
     }
 
