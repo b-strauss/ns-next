@@ -275,7 +275,8 @@ impl<'gc> StepArguments<'gc> {
 #[derive(Clone, Copy)]
 pub enum Arguments<'values, 'gc> {
     /// The `count` slots from `argument_base` in the window `register_base`
-    /// names.
+    /// names, which must lie in a live activation's registers, as
+    /// `Heap::register` requires of every register it reads.
     Slots {
         register_base: RegisterBase,
         argument_base: u16,
@@ -341,7 +342,7 @@ impl<'values, 'gc> Arguments<'values, 'gc> {
     pub(crate) fn slice(self, range: std::ops::Range<usize>) -> Arguments<'values, 'gc> {
         assert!(
             range.start <= range.end && range.end <= self.len(),
-            "internal: a part of a send's arguments lies inside them"
+            "internal: the range lies outside the send's arguments"
         );
         match self {
             Arguments::Slots {
@@ -374,10 +375,9 @@ impl<'values, 'gc> Arguments<'values, 'gc> {
     }
 }
 
-/// Everything a step of the interpreter works on -- the heap and the
-/// bootstrap's builtin classes, the caches of behaviour and the argument
-/// buffer -- and every decision, native
-/// and continuation that runs one. A host reaches it only through
+/// Everything a step of the interpreter works on -- the heap, the
+/// bootstrap's builtin classes and the caches of behaviour -- and every
+/// decision, native and continuation that runs one. A host reaches it only through
 /// `Interpreter::enter`, and nothing here reaches back: no method takes or
 /// answers the `Interpreter`, so no step can run the loop, reach its
 /// safepoint, or start a host's send (`docs/design/memory.md`, "The
