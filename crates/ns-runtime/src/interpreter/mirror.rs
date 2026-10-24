@@ -9,7 +9,9 @@
 //! kernel method (`execute_method`, `docs/design/dispatch.md`, "Primitive
 //! methods").
 
+use super::Arguments;
 use crate::builtins::primitive::{mirror_entry, MirrorEntry, MirrorPrimitive, MIRROR};
+use crate::heap::Heap;
 use crate::interpreter::{Signal, Step, StepArguments};
 use crate::types::*;
 use crate::{Mutator, Symbol};
@@ -33,33 +35,33 @@ pub(crate) fn reported_selector(row: MirrorPrimitive) -> Symbol {
 pub(crate) fn execute_sent<'gc>(
     mutator: &mut Mutator<'gc>,
     row: MirrorPrimitive,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Result<Step<'gc>, Signal<'gc>> {
     let entry = mirror_entry(row);
     // The lookup matched the selector, whose arity fixes the argument count
     // for any send a compiler emitted; the check is for a decoded send that
     // names the selector with the wrong count, which must fail as an error,
     // never as a slice index.
-    let [subject, rest @ .., block] = arguments else {
-        return Err(arity_error(entry, arguments.len()));
-    };
-    if rest.len() != entry.leaf_arity() {
+    if arguments.len() < 2 || arguments.len() - 2 != entry.leaf_arity() {
         return Err(arity_error(entry, arguments.len()));
     }
-    let answer = match run_leaf(mutator, row, *subject, rest) {
-        Some(Ok(step)) => return Ok(owning_its_arguments(step, rest)),
+    let subject = arguments.get(&mutator.heap, 0);
+    let block = arguments.get(&mutator.heap, arguments.len() - 1);
+    let rest = arguments.slice(1..arguments.len() - 1);
+    let answer = match run_leaf(mutator, row, subject, rest) {
+        Some(Ok(step)) => return Ok(owning_its_arguments(&mutator.heap, step, rest)),
         failed => crate::interpreter::future::after_a_failed_leaf(
             mutator,
             entry.primitive,
-            *subject,
+            subject,
             reported_selector(row),
             rest,
             failed,
         ),
     };
     match answer {
-        Some(result) => result.map(|step| owning_its_arguments(step, rest)),
-        None => Ok(failure_step(mutator, *block)),
+        Some(result) => result.map(|step| owning_its_arguments(&mutator.heap, step, rest)),
+        None => Ok(failure_step(mutator, block)),
     }
 }
 
@@ -75,7 +77,7 @@ pub(crate) fn send_inlined<'gc>(
     primitive: MirrorPrimitive,
     mirror: Value<'gc>,
     subject: Value<'gc>,
-    leaf_arguments: &[Value<'gc>],
+    leaf_arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Step<'gc>, Signal<'gc>>> {
     if !mutator.is_vm_mirror(mirror) {
         return Some(Err(not_the_mirror(primitive, mirror)));
@@ -98,7 +100,7 @@ fn see_through_a_failed_row<'gc>(
     mutator: &mut Mutator<'gc>,
     row: MirrorPrimitive,
     subject: Value<'gc>,
-    leaf_arguments: &[Value<'gc>],
+    leaf_arguments: Arguments<'_, 'gc>,
     failed: Option<Result<Step<'gc>, Signal<'gc>>>,
 ) -> Option<Result<Step<'gc>, Signal<'gc>>> {
     crate::interpreter::future::after_a_failed_leaf(
@@ -136,7 +138,7 @@ pub(crate) fn run_leaf<'gc>(
     mutator: &mut Mutator<'gc>,
     row: MirrorPrimitive,
     subject: Value<'gc>,
-    leaf_arguments: &[Value<'gc>],
+    leaf_arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Step<'gc>, Signal<'gc>>> {
     let entry = mirror_entry(row);
     crate::builtins::execute(
@@ -161,7 +163,7 @@ pub(crate) fn execute_method<'gc>(
     primitive: MirrorPrimitive,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Step<'gc>, Signal<'gc>>> {
     let leaf = mirror_entry(primitive).primitive;
     match crate::builtins::execute(mutator, leaf, receiver, selector, arguments) {
@@ -175,7 +177,11 @@ pub(crate) fn execute_method<'gc>(
 /// A leaf that activates a block with "the send's own arguments" means the
 /// kernel send's -- the leaf's arguments -- not the mirror send's, which
 /// also carry the subject and the failure block.
-fn owning_its_arguments<'gc>(step: Step<'gc>, leaf_arguments: &[Value<'gc>]) -> Step<'gc> {
+fn owning_its_arguments<'gc>(
+    heap: &Heap<'gc>,
+    step: Step<'gc>,
+    leaf_arguments: Arguments<'_, 'gc>,
+) -> Step<'gc> {
     match step {
         Step::Block {
             closure,
@@ -183,7 +189,7 @@ fn owning_its_arguments<'gc>(step: Step<'gc>, leaf_arguments: &[Value<'gc>]) -> 
             then,
         } => Step::Block {
             closure,
-            arguments: StepArguments::Owned(leaf_arguments.to_vec()),
+            arguments: StepArguments::Owned(leaf_arguments.to_vec(heap)),
             then,
         },
         other => other,
@@ -224,6 +230,7 @@ fn arity_error<'gc>(entry: &MirrorEntry, given: usize) -> Signal<'gc> {
 #[cfg(test)]
 mod tests {
     use crate::builtins::primitive::{mirror_primitive_named, MIRROR};
+    use crate::interpreter::Arguments;
     use crate::{HostResult, HostSignal, Interpreter, Root, Symbol, Value};
 
     fn expect_ok(result: HostResult, what: &str) -> Root {
@@ -575,7 +582,7 @@ mod tests {
                 crate::interpreter::inline_cache::FeedbackBase::NOT_ASSIGNED,
                 receiver,
                 Symbol::intern("same:"),
-                &[receiver],
+                Arguments::Values(&[receiver]),
             );
             assert!(matches!(
                 accepted,
@@ -590,7 +597,7 @@ mod tests {
                 crate::interpreter::inline_cache::FeedbackBase::NOT_ASSIGNED,
                 receiver,
                 Symbol::intern("size"),
-                &[],
+                Arguments::Values(&[]),
             );
             assert!(matches!(
                 declined,

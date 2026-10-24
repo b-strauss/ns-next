@@ -5,6 +5,7 @@
 //! `act` on a `Resolved` rebuilt from an entry. So there is one place that
 //! executes a target, and a hit cannot do anything a miss would not.
 
+use super::Arguments;
 use std::rc::Rc;
 
 use crate::builtins::primitive::Primitive;
@@ -344,7 +345,7 @@ impl<'gc> Mutator<'gc> {
         resolved: Resolved<'gc>,
         receiver: Value<'gc>,
         selector: Symbol,
-        arguments: &[Value<'gc>],
+        arguments: Arguments<'_, 'gc>,
     ) -> Result<Step<'gc>, Signal<'gc>> {
         self.act_with_base(
             resolved,
@@ -365,7 +366,7 @@ impl<'gc> Mutator<'gc> {
         feedback_base: FeedbackBase,
         receiver: Value<'gc>,
         selector: Symbol,
-        arguments: &[Value<'gc>],
+        arguments: Arguments<'_, 'gc>,
     ) -> Result<Step<'gc>, Signal<'gc>> {
         match resolved {
             Resolved::Method {
@@ -395,15 +396,17 @@ impl<'gc> Mutator<'gc> {
                             return Ok(Step::Value(constant.value()));
                         }
                         Some(MethodFastPath::Receiver) => return Ok(Step::Value(receiver)),
-                        // Read with `get` rather than indexed: a send the
+                        // Read with `try_get` rather than `get`: a send the
                         // compiler emitted matches its selector's count,
                         // but `Message>>sendTo:` delivers whatever
                         // arguments a program put in the message, so a
                         // missing one activates the method -- whose arity
                         // check refuses the count -- rather than panicking.
                         Some(MethodFastPath::Parameter(position)) => {
-                            if let Some(argument) = arguments.get(usize::from(position)) {
-                                return Ok(Step::Value(*argument));
+                            if let Some(argument) =
+                                arguments.try_get(&self.heap, usize::from(position))
+                            {
+                                return Ok(Step::Value(argument));
                             }
                         }
                         // The step a Boolean leaf used to answer: the block
@@ -419,7 +422,7 @@ impl<'gc> Mutator<'gc> {
                         // what any other send of `value` to it would.
                         Some(MethodFastPath::ValueOfParameter(position)) => {
                             if let Some(object) = arguments
-                                .get(usize::from(position))
+                                .try_get(&self.heap, usize::from(position))
                                 .and_then(|value| value.as_object())
                             {
                                 if self.heap().is_closure(object) {
@@ -444,7 +447,7 @@ impl<'gc> Mutator<'gc> {
                         // inlines these sends, so both count the block.
                         Some(MethodFastPath::CullParameter(position)) => {
                             if let Some(object) = arguments
-                                .get(usize::from(position))
+                                .try_get(&self.heap, usize::from(position))
                                 .and_then(|value| value.as_object())
                             {
                                 if let Some(parameter_count) =
@@ -562,7 +565,7 @@ impl<'gc> Mutator<'gc> {
         defining_class: ClassReference<'gc>,
         receiver: Value<'gc>,
         selector: Symbol,
-        arguments: &[Value<'gc>],
+        arguments: Arguments<'_, 'gc>,
     ) -> Result<Step<'gc>, Signal<'gc>> {
         let message = self.handler_message(selector, arguments);
         // §5.5 makes a message nothing understood the VM's error, so the
@@ -593,7 +596,7 @@ impl<'gc> Mutator<'gc> {
         field: usize,
         receiver: Value<'gc>,
         selector: Symbol,
-        arguments: &[Value<'gc>],
+        arguments: Arguments<'_, 'gc>,
     ) -> Result<Step<'gc>, Signal<'gc>> {
         let message = self.handler_message(selector, arguments);
         self.decide_slot_accessor(
@@ -601,7 +604,7 @@ impl<'gc> Mutator<'gc> {
             kind,
             Symbol::DOES_NOT_UNDERSTAND,
             field,
-            &[message],
+            Arguments::Values(&[message]),
         )
     }
 
@@ -620,9 +623,9 @@ impl<'gc> Mutator<'gc> {
     /// (`docs/design/core-library.md`, "Exceptions"). It is built
     /// once the handler is found; allocation order is unobservable, identity
     /// hashes being drawn lazily.
-    fn handler_message(&mut self, selector: Symbol, arguments: &[Value<'gc>]) -> Value<'gc> {
+    fn handler_message(&mut self, selector: Symbol, arguments: Arguments<'_, 'gc>) -> Value<'gc> {
         let selector_value = self.new_symbol(selector);
-        let arguments_value = Value::object(self.new_array(arguments.to_vec()));
+        let arguments_value = Value::object(self.new_array(arguments.to_vec(&self.heap)));
         Value::object(
             self.new_kernel_instance(BuiltinClass::Message, |name| match name {
                 "selector" => selector_value,
@@ -726,7 +729,7 @@ mod tests {
                 FeedbackBase::NOT_ASSIGNED,
                 receiver,
                 selector,
-                &[],
+                Arguments::Values(&[]),
             ) {
                 Ok(Step::Value(answer)) => {
                     assert!(
@@ -872,7 +875,7 @@ mod tests {
                 resolved,
                 Value::small_integer(3),
                 Symbol::intern("+"),
-                &[Value::small_integer(4)],
+                Arguments::Values(&[Value::small_integer(4)]),
             ) {
                 Ok(Step::Value(answer)) if answer.as_small_integer() == Some(7) => {}
                 _ => panic!("3 + 4 is 7"),

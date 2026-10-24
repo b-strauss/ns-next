@@ -433,11 +433,10 @@ instructions between two safepoints is an entry of its own, and the
 safepoint is outside every one, so the compiler refuses anything else ("The
 brand" below); every live value is in a register
 on the activation stack or in one of the places "What the collector traces"
-below lists. The step state's reusable argument buffer is empty there — a
-send gathers into it, decides and pushes within one instruction, and it is
-cleared when it is given back — so it is not a root, and a debug assertion
-before every move, collection and scavenge says so
-(`World::check_quiescent_state`).
+below lists. A send's arguments are read in its slots, on the activation
+stack, while it is decided and pushed ([execution.md](execution.md), "No
+re-entry from Rust"), so the step state keeps no argument buffer that
+would have to be empty there.
 
 The one other place a collection is sound is between entries, where only
 roots hold values and no step is running: `Interpreter::collect_now`
@@ -540,7 +539,7 @@ invariant (`heap.rs`'s `Brand<'gc>`, a zero-sized
 extended. A release handle is still exactly its 64-bit offset.
 
 **The step state is a `Mutator<'gc>`** (`interpreter/mod.rs`): the heap, the
-builtin classes, the application caches and the argument buffer, and
+builtin classes and the application caches, and
 every method a step uses — heap access, allocation,
 the send decisions and pushes, the natives, the compiler, the image codec. At
 rest it is a `Mutator<'static>` held by a `World` (`heap/world.rs`), which the
@@ -810,10 +809,9 @@ every build, since the collector runs in every build.
 
 A reified frame is not a root of its own: it is reached through the closure
 that captured it, through the stack frame it is married to, or through the
-side-table row of its suspension. Two things the
-step state keeps hold no handle, on purpose, and a debug assertion before
-every move checks it: a send's argument buffer, empty between instructions
-("Where a collection can happen" above). An instantiation keeps nothing
+side-table row of its suspension. A send's arguments are read in its
+slots, so nothing beside the stack holds them ("Where a collection can
+happen" above). An instantiation keeps nothing
 outside the activation stack: its factory and initializers are activations
 like any method's ([execution.md](execution.md), "No re-entry from Rust"). A nested
 class being created is marked in its own cache slot by a primitive (`false`),
@@ -2525,8 +2523,7 @@ A Cheney copy of the nursery's survivors (`heap/scavenge.rs`), as Spur's
   collection's work ("A resolved future is traced as its value"; chosen by
   the plan).
 
-`World::scavenge` checks that the step state holds no handle outside its
-roots (`World::check_quiescent_state`), lends the heap and `StepRoots` side
+`World::scavenge` lends the heap and `StepRoots` side
 by side, and times the scavenge as `World::collect` times a collection;
 `--collector-statistics` reports the scavenges and their pauses beside the
 full collections ("The gates the collector needs").

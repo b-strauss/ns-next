@@ -3,6 +3,7 @@
 //! `MessageNotUnderstood`.
 
 use crate::builtins::primitive::{ObjectPrimitive, Primitive};
+use crate::interpreter::Arguments;
 use crate::types::*;
 use crate::{Heap, Mutator};
 
@@ -10,7 +11,7 @@ pub(crate) fn execute<'gc>(
     mutator: &mut Mutator<'gc>,
     primitive: ObjectPrimitive,
     receiver: Value<'gc>,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     match primitive {
         ObjectPrimitive::Class => Some(Ok(Value::object(mutator.class_of(receiver)))),
@@ -20,7 +21,7 @@ pub(crate) fn execute<'gc>(
             crate::interpreter::future::declines_for_a_future(
                 mutator,
                 Primitive::Object(primitive),
-                identical(&mutator.heap, receiver, arguments[0]),
+                identical(&mutator.heap, receiver, arguments.get(&mutator.heap, 0)),
                 receiver,
                 arguments,
             )

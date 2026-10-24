@@ -3,6 +3,7 @@
 //! whole-image `snapshot`/`load`, and the two verification passes.
 
 use indoc::{formatdoc, indoc};
+use ns_runtime::interpreter::Arguments;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -11844,7 +11845,7 @@ fn a_snapshot_taken_while_an_activation_is_running_is_refused() {
                     then: ns_runtime::Continuation::Deliver,
                     counted: true,
                 },
-                &[],
+                Arguments::Values(&[]),
                 0,
             )
             .expect("the stack holds the frame");

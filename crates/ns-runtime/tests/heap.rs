@@ -4,6 +4,7 @@
 
 use indoc::indoc;
 use ns_runtime::bytecode::{CodeKind, CompiledCode, Instruction};
+use ns_runtime::interpreter::Arguments;
 use ns_runtime::interpreter::FeedbackBase;
 use ns_runtime::types::{ActivationKind, Continuation, Value};
 use ns_runtime::Interpreter;
@@ -423,7 +424,11 @@ fn a_returning_activation_keeps_its_registers_only_when_it_was_marked() {
         let heap = mutator.heap_mut();
 
         let unmarked = heap
-            .push_activation(activation_header(class), &[Value::small_integer(1)], 1)
+            .push_activation(
+                activation_header(class),
+                Arguments::Values(&[Value::small_integer(1)]),
+                1,
+            )
             .expect("the stack holds the frame");
         heap.activation_set_program_counter(unmarked, 0);
         let forgetful = heap.reify(unmarked);
@@ -446,7 +451,11 @@ fn a_returning_activation_keeps_its_registers_only_when_it_was_marked() {
         assert!(heap.frame_local(forgetful, 2).is_nil());
 
         let marked = heap
-            .push_activation(activation_header(class), &[Value::small_integer(1)], 1)
+            .push_activation(
+                activation_header(class),
+                Arguments::Values(&[Value::small_integer(1)]),
+                1,
+            )
             .expect("the stack holds the frame");
         heap.activation_set_program_counter(marked, 0);
         let kept = heap.reify(marked);

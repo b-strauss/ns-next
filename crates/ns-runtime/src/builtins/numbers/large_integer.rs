@@ -5,6 +5,7 @@
 use super::tower::{self, Arithmetic, Comparison};
 use super::{integer_operand, shift_left, type_mismatch, Accepted};
 use crate::builtins::primitive::{LargeIntegerPrimitive, Primitive};
+use crate::interpreter::Arguments;
 use crate::types::*;
 use crate::{Mutator, Symbol};
 
@@ -12,7 +13,7 @@ pub(crate) fn execute_large_integer<'gc>(
     mutator: &mut Mutator<'gc>,
     primitive: LargeIntegerPrimitive,
     receiver: Value<'gc>,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     // The payload, never the class: a user subclass's instance, or a
     // `LargeInteger new`, is no number and declines to `Object`'s methods
@@ -43,7 +44,8 @@ pub(crate) fn execute_large_integer<'gc>(
         // Never an error: anything that is no number is unequal.
         LargeIntegerPrimitive::Equal => {
             tower::operand(&mutator.heap, receiver)?;
-            let equal = tower::values_equal(&mutator.heap, receiver, arguments.first().copied());
+            let equal =
+                tower::values_equal(&mutator.heap, receiver, arguments.first(&mutator.heap));
             return crate::interpreter::future::declines_for_a_future(
                 mutator,
                 Primitive::LargeInteger(primitive),
@@ -59,14 +61,14 @@ pub(crate) fn execute_large_integer<'gc>(
     let receiver_integer = mutator.heap.large_integer(object)?;
     // Either integer class as the argument; anything else is the leaf's
     // type mismatch.
-    let argument = || integer_operand(&mutator.heap, arguments.first().copied());
+    let argument = || integer_operand(&mutator.heap, arguments.first(&mutator.heap));
     let mismatch = |operator: &str, accepted: Accepted| {
         type_mismatch(
             &mutator.heap,
             receiver,
             Symbol::intern(operator),
             accepted,
-            arguments.first().copied(),
+            arguments.first(&mutator.heap),
         )
     };
     match primitive {

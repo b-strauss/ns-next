@@ -7,6 +7,7 @@
 //! Cog's quick methods and SOMns's `CachedSlotRead`
 //! (`docs/design/dispatch.md`, "Slot accessors").
 
+use super::Arguments;
 use crate::heap::ApplicationIndex;
 use crate::mixin::{AccessorKind, DispatchId};
 use crate::types::*;
@@ -38,7 +39,7 @@ impl<'gc> Mutator<'gc> {
         kind: AccessorKind,
         selector: Symbol,
         field: usize,
-        arguments: &[Value<'gc>],
+        arguments: Arguments<'_, 'gc>,
     ) -> Result<Step<'gc>, Signal<'gc>> {
         if let Some(object) = receiver.as_object() {
             match kind {
@@ -48,8 +49,8 @@ impl<'gc> Mutator<'gc> {
                     }
                 }
                 AccessorKind::Setter => {
-                    if let Some(value) = arguments.first() {
-                        if self.heap.instance_set_field(object, field, *value) {
+                    if let Some(value) = arguments.first(&self.heap) {
+                        if self.heap.instance_set_field(object, field, value) {
                             return Ok(Step::Value(receiver));
                         }
                     }

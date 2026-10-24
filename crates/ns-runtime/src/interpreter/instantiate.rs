@@ -2,6 +2,7 @@
 //! `docs/design/object-model.md`, "Instantiation", for the six numbered
 //! steps the factory body and the initializers' instructions decide here.
 
+use super::Arguments;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -224,7 +225,7 @@ impl Interpreter {
                 .map(|argument| mutator.fetch(argument))
                 .collect();
             let decided = mutator.decide_instantiation(class, factory_arguments.len());
-            mutator.start(Ok(decided), &factory_arguments)
+            mutator.start(Ok(decided), Arguments::Values(&factory_arguments))
         });
         self.run_from_host(start, depth)
     }
@@ -614,7 +615,7 @@ impl<'gc> Mutator<'gc> {
         factory: ActivationReference,
         class: ClassReference<'gc>,
         registers: FactoryRegisters,
-        arguments: &[Value<'gc>],
+        arguments: Arguments<'_, 'gc>,
     ) -> Result<(ActivationReference, usize), Signal<'gc>> {
         let decided = self.decide_instance_initializer(class, Value::nil(), arguments);
         // Read where the decision left it rather than moved out whole: a
@@ -648,7 +649,7 @@ impl<'gc> Mutator<'gc> {
                 .set_register(register_base, registers.answer, instance);
             return Ok((factory, FACTORY_INITIALIZE + 1));
         };
-        let initializer_arguments = initializer_arguments.slice(arguments);
+        let initializer_arguments = initializer_arguments.window(arguments);
         let pushed = self.push_initializer(
             instance,
             *level,
@@ -837,7 +838,7 @@ impl<'gc> Mutator<'gc> {
         &mut self,
         activation: ActivationReference,
         instance: Value<'gc>,
-        arguments: &[Value<'gc>],
+        arguments: Arguments<'_, 'gc>,
     ) -> Result<Step<'gc>, Signal<'gc>> {
         let receiver = self.heap.activation_receiver(activation);
         let class = self.class_receiver(receiver)?;
@@ -853,7 +854,7 @@ impl<'gc> Mutator<'gc> {
         &mut self,
         class: ClassReference<'gc>,
         instance: Value<'gc>,
-        arguments: &[Value<'gc>],
+        arguments: Arguments<'_, 'gc>,
     ) -> Result<Step<'gc>, Signal<'gc>> {
         let level = self.heap.class_level(class);
         check_arity(class, declared_factory_arity(level), arguments)?;
@@ -876,7 +877,7 @@ impl<'gc> Mutator<'gc> {
         activation: ActivationReference,
         steps: u16,
         selector: Symbol,
-        arguments: &[Value<'gc>],
+        arguments: Arguments<'_, 'gc>,
     ) -> Result<Step<'gc>, Signal<'gc>> {
         let (instance, applying) = self.heap.activation_receiver_and_current_class(activation);
         let Some(applying) = applying else {
@@ -964,7 +965,7 @@ impl<'gc> Mutator<'gc> {
         &mut self,
         activation: ActivationReference,
         steps: u16,
-        arguments: &[Value<'gc>],
+        arguments: Arguments<'_, 'gc>,
     ) -> Result<Step<'gc>, Signal<'gc>> {
         let (instance, applying) = self.heap.activation_receiver_and_current_class(activation);
         let (_, level) = self.applied_level(instance, applying, steps)?;
@@ -1104,7 +1105,11 @@ impl<'gc> Mutator<'gc> {
                 ));
             }
             let superclass_view = self.heap.class_level(superclass);
-            check_arity(superclass, declared_factory_arity(superclass_view), &[])?;
+            check_arity(
+                superclass,
+                declared_factory_arity(superclass_view),
+                Arguments::Values(&[]),
+            )?;
             level = superclass;
             view = superclass_view;
             arguments = StepArguments::Owned(Vec::new());
@@ -1330,7 +1335,7 @@ struct Pass {
 fn check_arity<'gc>(
     class: ClassReference<'gc>,
     declared_arity: Option<usize>,
-    factory_arguments: &[Value<'gc>],
+    factory_arguments: Arguments<'_, 'gc>,
 ) -> Result<(), Signal<'gc>> {
     if let Some(declared_arity) = declared_arity {
         if factory_arguments.len() != declared_arity {

@@ -7,6 +7,7 @@
 //! case here, as `Number`'s rows -- which `Fraction` inherits -- send all
 //! of theirs (`docs/design/core-library.md`, "The numeric tower").
 
+use crate::interpreter::Arguments;
 use std::cmp::Ordering;
 
 use crate::builtins::primitive::{NumberPrimitive, Primitive};
@@ -336,10 +337,10 @@ pub(crate) fn arithmetic<'gc>(
     mutator: &mut Mutator<'gc>,
     operation: Arithmetic,
     receiver: Value<'gc>,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let left = operand(&mutator.heap, receiver)?;
-    let argument = arguments.first().copied();
+    let argument = arguments.first(&mutator.heap);
     let Some(right) = argument.and_then(|value| operand(&mutator.heap, value)) else {
         return Some(Err(type_mismatch(
             &mutator.heap,
@@ -403,10 +404,10 @@ pub(crate) fn compare<'gc>(
     heap: &Heap<'gc>,
     comparison: Comparison,
     receiver: Value<'gc>,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let left = operand(heap, receiver)?;
-    let argument = arguments.first().copied();
+    let argument = arguments.first(heap);
     let Some(right) = argument.and_then(|value| operand(heap, value)) else {
         return Some(Err(type_mismatch(
             heap,
@@ -446,7 +447,7 @@ pub(crate) fn execute_number<'gc>(
     mutator: &mut Mutator<'gc>,
     primitive: NumberPrimitive,
     receiver: Value<'gc>,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let comparison = |comparison| compare(&mutator.heap, comparison, receiver, arguments);
     match primitive {
@@ -456,7 +457,7 @@ pub(crate) fn execute_number<'gc>(
         NumberPrimitive::GreaterOrEqual => comparison(Comparison::GreaterOrEqual),
         NumberPrimitive::Equal => {
             operand(&mutator.heap, receiver)?;
-            let equal = values_equal(&mutator.heap, receiver, arguments.first().copied());
+            let equal = values_equal(&mutator.heap, receiver, arguments.first(&mutator.heap));
             crate::interpreter::future::declines_for_a_future(
                 mutator,
                 Primitive::Number(primitive),

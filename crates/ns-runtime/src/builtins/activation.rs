@@ -7,6 +7,7 @@
 //! unwinder carries out (`interpreter::unwind`); no leaf here unwinds
 //! anything itself.
 
+use crate::interpreter::Arguments;
 use std::rc::Rc;
 
 use crate::builtins::primitive::{ActivationPrimitive, Primitive};
@@ -22,7 +23,7 @@ pub(crate) fn execute<'gc>(
     mutator: &mut Mutator<'gc>,
     primitive: ActivationPrimitive,
     subject: Value<'gc>,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Step<'gc>, Signal<'gc>>> {
     match primitive {
         // The top activation is the kernel method making the mirror send:
@@ -59,10 +60,13 @@ pub(crate) fn execute<'gc>(
         // unhandled, ends the run through a termination whose arguments hold
         // no future.
         ActivationPrimitive::Terminate
-            if [arguments.first(), arguments.get(2)]
-                .into_iter()
-                .flatten()
-                .any(|argument| mutator.as_future(*argument).is_some()) =>
+            if [
+                arguments.first(&mutator.heap),
+                arguments.try_get(&mutator.heap, 2),
+            ]
+            .into_iter()
+            .flatten()
+            .any(|argument| mutator.as_future(argument).is_some()) =>
         {
             None
         }
@@ -127,7 +131,7 @@ fn activation_leaf<'gc>(
     mutator: &mut Mutator<'gc>,
     leaf: SubjectLeaf,
     subject: Value<'gc>,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Step<'gc>, Signal<'gc>>> {
     let object = subject.as_object()?;
     let frame = mutator.heap.object_frame(object)?;
@@ -175,7 +179,9 @@ fn activation_leaf<'gc>(
                 return None;
             }
             let (_, _, active_register) = handler_registers(mutator, frame)?;
-            let active = arguments.first().and_then(|value| value.as_boolean())?;
+            let active = arguments
+                .first(&mutator.heap)
+                .and_then(|value| value.as_boolean())?;
             mutator
                 .heap
                 .frame_set_local(frame, active_register, Value::boolean(active));
@@ -186,7 +192,7 @@ fn activation_leaf<'gc>(
         // is; a returned one is §7.2's `cannotReturn`, raised here, as
         // `raise_return` raises it for a block's `^`.
         SubjectLeaf::ReturnValue => {
-            let value = *arguments.first()?;
+            let value = arguments.first(&mutator.heap)?;
             return Some(Err(if running {
                 Signal::Return(frame, value)
             } else {
@@ -274,7 +280,8 @@ fn handler_registers<'gc>(
 }
 
 /// Whether `subject`'s class, or a superclass of it, is a class of the
-/// declaration of the class object `arguments[0]` (`Heap::class_declaration`).
+/// declaration of the class object that is the first argument
+/// (`Heap::class_declaration`).
 /// Declarations rather than class objects, as Primordial Soup's
 /// `is:interestedIn:` compares mixins: a nested exception class is a class
 /// object per enclosing instance, and a handler for one must catch an
@@ -288,9 +295,11 @@ fn handler_registers<'gc>(
 fn inherits_mixin_of<'gc>(
     mutator: &Mutator<'gc>,
     subject: Value<'gc>,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<bool> {
-    let class = arguments.first().and_then(|value| value.as_object())?;
+    let class = arguments
+        .first(&mutator.heap)
+        .and_then(|value| value.as_object())?;
     if !mutator.heap.is_class(class) {
         return None;
     }
@@ -326,8 +335,12 @@ fn inherits_mixin_of<'gc>(
 /// `description` may answer anything, which is rendered -- a String's or a
 /// Symbol's text as it is, anything else as `Heap::describe` names it --
 /// and a selector that is no Symbol is reported as `signal`'s.
-fn terminate<'gc>(mutator: &Mutator<'gc>, arguments: &[Value<'gc>]) -> Signal<'gc> {
-    let argument = |position: usize| arguments.get(position).copied().unwrap_or(Value::nil());
+fn terminate<'gc>(mutator: &Mutator<'gc>, arguments: Arguments<'_, 'gc>) -> Signal<'gc> {
+    let argument = |position: usize| {
+        arguments
+            .try_get(&mutator.heap, position)
+            .unwrap_or(Value::nil())
+    };
     let selector = argument(0)
         .as_object()
         .and_then(|object| mutator.heap.symbol_value(object))
@@ -416,7 +429,10 @@ mod tests {
             for (subject, class) in [(&old_instance, &new_class), (&new_instance, &old_class)] {
                 let subject = mutator.fetch(subject);
                 let arguments = [mutator.fetch(class)];
-                assert_eq!(inherits_mixin_of(mutator, subject, &arguments), Some(true));
+                assert_eq!(
+                    inherits_mixin_of(mutator, subject, Arguments::Values(&arguments)),
+                    Some(true)
+                );
             }
         });
     }

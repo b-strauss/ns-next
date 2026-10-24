@@ -4,6 +4,7 @@
 //! a step; the loops continue through `Continuation`s.
 
 use crate::builtins::primitive::BlockPrimitive;
+use crate::interpreter::Arguments;
 use crate::interpreter::{Signal, Step, StepArguments};
 use crate::types::*;
 use crate::Mutator;
@@ -12,7 +13,7 @@ pub(crate) fn execute<'gc>(
     mutator: &mut Mutator<'gc>,
     primitive: BlockPrimitive,
     receiver: Value<'gc>,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Step<'gc>, Signal<'gc>>> {
     let closure = receiver.as_object()?;
     let parameters = mutator.heap().closure_parameter_count(closure)?;
@@ -43,8 +44,11 @@ pub(crate) fn execute<'gc>(
 /// the caller's failure path, which sees through it. Whether it is a future
 /// is asked only of a body that is no block, as `do:` asks it, so a block
 /// body pays nothing for it.
-fn loop_body<'gc>(mutator: &Mutator<'gc>, arguments: &[Value<'gc>]) -> Option<LoopAction<'gc>> {
-    let body = LoopAction::of(mutator.heap(), *arguments.first()?);
+fn loop_body<'gc>(
+    mutator: &Mutator<'gc>,
+    arguments: Arguments<'_, 'gc>,
+) -> Option<LoopAction<'gc>> {
+    let body = LoopAction::of(mutator.heap(), arguments.first(&mutator.heap)?);
     match body {
         LoopAction::Sent(sent) if mutator.as_future(sent).is_some() => None,
         _ => Some(body),

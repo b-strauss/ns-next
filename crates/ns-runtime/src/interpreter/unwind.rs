@@ -13,6 +13,7 @@
 //! scheduling steps, not Rust calling back into Newspeak. An activation with
 //! no marker costs one test.
 
+use super::Arguments;
 use crate::bytecode::UnwindMarker;
 use crate::heap::{ActivationHeader, ActivationReference, FrameReference, Heap};
 use crate::types::*;
@@ -420,7 +421,7 @@ fn start_signalling<'gc>(
         mutator.depth_reserve = Some(mutator.heap.reify(top));
         mutator.taking_depth_reserve = true;
     }
-    let pushed = mutator.push_step(step, &[], sender, false);
+    let pushed = mutator.push_step(step, Arguments::Values(&[]), sender, false);
     mutator.taking_depth_reserve = false;
     match pushed {
         Ok(activation) => {
@@ -479,7 +480,11 @@ impl<'gc> Mutator<'gc> {
             other if subject_slot == Some(other) => subject,
             other => panic!("internal: Kernel.ns's {other} slot is one the VM does not fill"),
         });
-        self.decide_send(Value::object(exception), Symbol::SIGNAL, &[])
+        self.decide_send(
+            Value::object(exception),
+            Symbol::SIGNAL,
+            Arguments::Values(&[]),
+        )
     }
 
     /// What the run ends with when a push overruns the depth limit's
@@ -614,7 +619,7 @@ impl<'gc> Mutator<'gc> {
                         arguments: StepArguments::Owned(Vec::new()),
                         then: Continuation::Unwind(then),
                     },
-                    &[],
+                    Arguments::Values(&[]),
                     None,
                     false,
                 );
@@ -644,7 +649,7 @@ impl<'gc> Mutator<'gc> {
                 arguments: StepArguments::Owned(vec![block]),
                 feedback_base: super::FeedbackBase::NOT_ASSIGNED,
             },
-            &[],
+            Arguments::Values(&[]),
             None,
             false,
         )?;
@@ -656,6 +661,7 @@ impl<'gc> Mutator<'gc> {
 
 #[cfg(test)]
 mod tests {
+    use crate::interpreter::Arguments;
     use std::rc::Rc;
 
     use super::{unwind, UnwindOutcome};
@@ -706,13 +712,13 @@ mod tests {
             let floor = mutator.heap.activation_stack_top();
             let target = mutator
                 .heap
-                .push_activation(header(class), &[], 1)
+                .push_activation(header(class), Arguments::Values(&[]), 1)
                 .expect("the stack holds the frame");
             let frame = mutator.heap.reify(target);
             mutator.heap.pop_activation(target);
             let successor = mutator
                 .heap
-                .push_activation(header(class), &[], 1)
+                .push_activation(header(class), Arguments::Values(&[]), 1)
                 .expect("the stack holds the frame");
             assert_eq!(
                 mutator.heap.activation_position(successor),
@@ -745,12 +751,12 @@ mod tests {
             let floor = mutator.heap.activation_stack_top();
             let target = mutator
                 .heap
-                .push_activation(header(class), &[], 1)
+                .push_activation(header(class), Arguments::Values(&[]), 1)
                 .expect("the stack holds the frame");
             let frame = mutator.heap.reify(target);
             mutator
                 .heap
-                .push_activation(header(class), &[], 1)
+                .push_activation(header(class), Arguments::Values(&[]), 1)
                 .expect("the stack holds the frame");
             let outcome = unwind(
                 mutator,
@@ -783,13 +789,13 @@ mod tests {
             let floor = mutator.heap.activation_stack_top();
             let target = mutator
                 .heap
-                .push_activation(header(class), &[], 1)
+                .push_activation(header(class), Arguments::Values(&[]), 1)
                 .expect("the stack holds the frame");
             mutator.heap.activation_set_program_counter(target, 5);
             let frame = mutator.heap.reify(target);
             mutator
                 .heap
-                .push_activation(header(class), &[], 1)
+                .push_activation(header(class), Arguments::Values(&[]), 1)
                 .expect("the stack holds the frame");
             let outcome = unwind(
                 mutator,
@@ -844,12 +850,12 @@ mod tests {
             };
             let raised = mutator
                 .heap
-                .push_activation(header(class), &[], 1)
+                .push_activation(header(class), Arguments::Values(&[]), 1)
                 .expect("the stack holds the frame");
             mutator.depth_reserve = Some(mutator.heap.reify(raised));
             let signal = mutator
                 .heap
-                .push_activation(signalling(class), &[], 1)
+                .push_activation(signalling(class), Arguments::Values(&[]), 1)
                 .expect("the stack holds the frame");
             assert!(mutator.depth_reserve_held(), "held while its signal runs");
             let signal_position = mutator.heap.activation_position(signal);
@@ -857,11 +863,11 @@ mod tests {
             mutator.heap.pop_activation(raised);
             let other = mutator
                 .heap
-                .push_activation(header(class), &[], 1)
+                .push_activation(header(class), Arguments::Values(&[]), 1)
                 .expect("the stack holds the frame");
             let other_signal = mutator
                 .heap
-                .push_activation(signalling(class), &[], 1)
+                .push_activation(signalling(class), Arguments::Values(&[]), 1)
                 .expect("the stack holds the frame");
             assert_eq!(
                 mutator.heap.activation_position(other_signal),
@@ -892,7 +898,7 @@ mod tests {
             let floor = mutator.heap.activation_stack_top();
             let raised = mutator
                 .heap
-                .push_activation(header(class), &[], 1)
+                .push_activation(header(class), Arguments::Values(&[]), 1)
                 .expect("the stack holds the frame");
             let raised_frame = mutator.heap.reify(raised);
             mutator.depth_reserve = Some(raised_frame);
@@ -902,7 +908,7 @@ mod tests {
             };
             mutator
                 .heap
-                .push_activation(signalling, &[], 1)
+                .push_activation(signalling, Arguments::Values(&[]), 1)
                 .expect("the stack holds the frame");
             assert!(mutator.depth_reserve_held(), "held before the suspension");
             let top = mutator

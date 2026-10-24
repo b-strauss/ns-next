@@ -11,6 +11,7 @@
 //! own live here -- dispatch lives in one place, which the reference lowering
 //! and a JIT share. See `docs/design/execution.md`, "The VM".
 
+use crate::interpreter::Arguments;
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -1786,37 +1787,36 @@ fn send_mirror(
     let mirror = mutator.heap.register(register_base, mirror_register);
     let subject = mutator.heap.register(register_base, subject_register);
     let slots = place_arguments(mutator, register_base, argument_base, argument_sources);
-    let mut arguments = mutator.take_argument_buffer();
-    arguments.extend(slots.map(|slot| mutator.heap.register(register_base, slot)));
+    let arguments = Arguments::Slots {
+        register_base,
+        argument_base: slots.start,
+        count: slots.end - slots.start,
+    };
     mutator
         .heap
         .activation_set_program_counter(activation, program_counter);
-    // `None`, the leaf declined: the jump to the failure target waits until
-    // the buffer is handed back. The closure is forced inline: once the arm
-    // moved into this function, LLVM left it out of line, a call on every
-    // mirror send that the arm written in `vm::run` did not pay.
-    let transfer =
-        crate::interpreter::mirror::send_inlined(mutator, primitive, mirror, subject, &arguments)
-            .map(
-                #[inline(always)]
-                |decided| {
-                    deliver(
-                        mutator,
-                        Sender {
-                            activation,
-                            register_base,
-                            destination,
-                            inlinable: false,
-                        },
-                        decided,
-                        &arguments,
-                        floor,
-                        handoff,
-                    )
+    // `None`, the leaf declined, and the caller jumps to the failure
+    // target. The closure is forced inline: once the arm moved into this
+    // function, LLVM left it out of line, a call on every mirror send that
+    // the arm written in `vm::run` did not pay.
+    crate::interpreter::mirror::send_inlined(mutator, primitive, mirror, subject, arguments).map(
+        #[inline(always)]
+        |decided| {
+            deliver(
+                mutator,
+                Sender {
+                    activation,
+                    register_base,
+                    destination,
+                    inlinable: false,
                 },
-            );
-    mutator.return_argument_buffer(arguments);
-    transfer
+                decided,
+                arguments,
+                floor,
+                handoff,
+            )
+        },
+    )
 }
 
 #[inline(always)]
@@ -2044,13 +2044,12 @@ fn place_arguments(
     argument_base..slot
 }
 
-/// A send: the arguments, already in their slots (`place_arguments`),
-/// gathered from the caller's registers into the interpreter's reusable
-/// buffer, `program_counter` stored, the decision asked for, and what was
-/// decided run -- a value written to the sender's `destination`, or an
+/// A send: the arguments, already in their slots (`place_arguments`) and
+/// read there, `program_counter` stored, the decision asked for, and what
+/// was decided run -- a value written to the sender's `destination`, or an
 /// activation pushed and switched to, its window filled straight from the
-/// buffer. No vector is allocated once the buffer has grown to the widest
-/// send. The instructions that invoke a factory's or an initializer's
+/// slots. Nothing is gathered in between (`interpreter::Arguments`). The
+/// instructions that invoke a factory's or an initializer's
 /// initializer go the same way: their decision is the body to run on the
 /// instance, or the instance itself when nothing runs.
 fn send<'gc>(
@@ -2060,29 +2059,30 @@ fn send<'gc>(
     slots: Range<u16>,
     floor: usize,
     handoff: &mut Handoff,
-    decide: impl FnOnce(&mut Mutator<'gc>, &[Value<'gc>]) -> Result<Step<'gc>, Signal<'gc>>,
+    decide: impl FnOnce(&mut Mutator<'gc>, Arguments<'_, 'gc>) -> Result<Step<'gc>, Signal<'gc>>,
 ) -> Transfer {
-    let mut arguments = mutator.take_argument_buffer();
-    arguments.extend(slots.map(|slot| mutator.heap.register(sender.register_base, slot)));
+    let arguments = Arguments::Slots {
+        register_base: sender.register_base,
+        argument_base: slots.start,
+        count: slots.end - slots.start,
+    };
     mutator
         .heap
         .activation_set_program_counter(sender.activation, program_counter);
-    let decided = decide(mutator, &arguments);
-    let transfer = deliver(mutator, sender, decided, &arguments, floor, handoff);
-    mutator.return_argument_buffer(arguments);
-    transfer
+    let decided = decide(mutator, arguments);
+    deliver(mutator, sender, decided, arguments, floor, handoff)
 }
 
 /// What a send decided, run: a value written to the sender's `destination`,
 /// or an activation pushed and switched to, its window filled from
-/// `send_arguments`. Shared by `send` and `SendMirror`, so a mirror leaf's
+/// `send_arguments`, the send's slots. Shared by `send` and `SendMirror`, so a mirror leaf's
 /// decision is delivered exactly as any send's is.
 #[inline(always)]
 fn deliver<'gc>(
     mutator: &mut Mutator<'gc>,
     sender: Sender,
     decided: Result<Step<'gc>, Signal<'gc>>,
-    send_arguments: &[Value<'gc>],
+    send_arguments: Arguments<'_, 'gc>,
     floor: usize,
     handoff: &mut Handoff,
 ) -> Transfer {
@@ -2594,7 +2594,7 @@ fn force_and_reexecute<'gc>(
     mutator
         .heap
         .activation_set_program_counter(activation, program_counter);
-    match mutator.push_step(step, &[], Some(activation), false) {
+    match mutator.push_step(step, Arguments::Values(&[]), Some(activation), false) {
         Ok(callee) => handoff.switch_to(mutator, callee, 0),
         Err(signal) => unwind(mutator, signal, floor, handoff),
     }

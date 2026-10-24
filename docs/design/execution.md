@@ -206,8 +206,10 @@ pub struct ActivationReference {
   its method, so `reify` rebuilds `FrameKind::Method` from the code row.
 - **A push** (`Heap::push_activation`) takes a frame of the header's size
   plus its window from the frame stack, writes every word of the header,
-  copies the arguments into the first registers and fills the temporaries
-  with nil; the frame names its body by its code id, found through the
+  copies the arguments into the first registers -- a send's out of its
+  slots in the frame below, with one `copy_within` of the stack's words,
+  other arguments from the values a decision or the host built
+  (`interpreter::Arguments`) -- and fills the temporaries with nil; the frame names its body by its code id, found through the
   body's one-entry cache ([memory.md](memory.md), "A closure's code id
   without the map") and kept by a full collection while the activation
   runs ([object-model.md](object-model.md), "An application has two ids");
@@ -731,8 +733,8 @@ a register or an operand when an instruction needs it and written back before
 the next, so at a safepoint every handle is in a word of a stack frame,
 in the heap's side table of continuations or of suspended
 activations, in a heap object or in a root, where
-the tracer rewrites it. The reusable argument buffer, which a send fills and
-empties within one instruction, is empty at every safepoint.
+the tracer rewrites it. A send's arguments are read in its slots, so nothing
+outside the stack holds them while it is decided.
 
 **The VM has no dispatch logic, no `doesNotUnderstand:` construction, no native
 dispatch and no error text of its own.** It pushes, pops, switches, writes
@@ -7007,10 +7009,16 @@ which the debug assertion only confirms: a decision, a native or a
 continuation is handed only a `&mut Mutator`, which offers no way back to the
 `Interpreter` and so no `run` at all ([memory.md](memory.md), "The brand").
 
-`vm::send` still takes the step state's reusable argument buffer and gives it
-back, because the decision needs `&mut Mutator` while it reads the
-arguments. No decision runs code any more, so none takes a second, fresh
-buffer of its own. `Interpreter::reenter`, `invoke_closure`,
+A decision reads a send's arguments where they are, in the sender's slots,
+while it holds `&mut Mutator`: it is handed an argument window,
+`interpreter::Arguments`, which names the slots by the sender's
+`RegisterBase` and reads each one through the heap it is handed, or names
+values a decision or the host built (`Message>>sendTo:`'s, a host's send,
+a `doesNotUnderstand:` handler's message). Nothing gathers the arguments
+anywhere first, so the step state keeps no argument buffer. The slots
+stay put from the send's start to its push: no collection runs inside a
+decision, only at safepoints, and nothing pops the sender meanwhile.
+`Interpreter::reenter`, `invoke_closure`,
 `builtins::call_block`, the count of re-entries and its bound, and that
 bound's error, `stack overflow: too many nested native calls`, are gone with
 the re-entries.
@@ -8012,19 +8020,20 @@ Would change: a send's arguments are no longer copied into the callee's
 window; the caller's outgoing argument registers *are* the callee's first
 registers.
 
-**What a send copies today.** Each argument up to three times. A send
+**What a send copies today.** Each argument up to twice. A send
 names its arguments' contiguous slots, allocated after its receiver, and
 each argument's source, and copies a source that is not its slot into it
 -- a named local passed as an argument, and an argument whose value the
 optimized lowering leaves in the register an inlined conditional,
 `and:`/`or:`, loop or mirror send, an assignment or a cascade answered; a
 send's value, an inlined integer operation's, a literal or a closure is
-produced in its slot and not copied ([compiler.md](compiler.md), "Sends"). `vm::send` then gathers the slots into
-the step state's reusable buffer, because the decision reads them as a
-`&[Value]` while it holds `&mut Mutator` ("No re-entry from Rust"), and
-`Heap::push_activation_in` copies the buffer into the callee's first
-registers ("Representation" above). Nothing has measured what the copies
-cost; "What a send costs" found the argument count immaterial, but on the
+produced in its slot and not copied ([compiler.md](compiler.md), "Sends").
+The decision, the native and the push then read the slots where they are,
+through an argument window (`interpreter::Arguments`, "No re-entry from
+Rust"), and `Heap::push_activation_in` copies them into the callee's
+first registers with one `copy_within` of the stack's words
+("Representation" above). Nothing has measured what the copies cost yet;
+"What a send costs" found the argument count immaterial, but on the
 retired `Rc<RefCell<_>>` representation.
 
 **The prior art overlaps them, and puts the header between the arguments

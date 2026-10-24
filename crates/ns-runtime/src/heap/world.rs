@@ -134,7 +134,6 @@ impl World {
                 creations_in_progress: 0,
                 lowering,
                 shipped_code_path,
-                argument_buffer: Vec::new(),
                 dispatch_ids: crate::heap::DispatchIdAllocator::new(),
                 next_creation_serial: 1,
                 caches: crate::interpreter::inline_cache::InlineCaches::new(),
@@ -242,7 +241,6 @@ impl World {
     /// beside the heap (`StepRoots`).
     #[cfg(debug_assertions)]
     pub(crate) fn move_everything(&mut self) {
-        self.check_quiescent_state();
         let mut forwarder: crate::heap::Forwarder<crate::heap::compaction::Shift> =
             self.mutator.heap.move_everything();
         self.forward_step_state(&mut forwarder);
@@ -266,7 +264,6 @@ impl World {
     /// beside the heap's, timed like a collection.
     pub(crate) fn scavenge(&mut self, tenure_all: bool) {
         let start = std::time::Instant::now();
-        self.check_quiescent_state();
         let futures = crate::interpreter::future::resolved_futures(&self.mutator);
         let (heap, mut roots) = split(&mut self.mutator);
         heap.scavenge(tenure_all, futures, |scavenger| {
@@ -313,7 +310,6 @@ impl World {
     /// nothing towards it.
     pub(crate) fn collect(&mut self) {
         let start = std::time::Instant::now();
-        self.check_quiescent_state();
         // Before marking, so that a resolved future nothing but object
         // fields reached is garbage by the time the marker looks; a program
         // that never made a future pays nothing for it. `move_everything`
@@ -356,19 +352,6 @@ impl World {
         use crate::trace::Trace;
         let (_, mut roots) = split(&mut self.mutator);
         roots.trace(forwarder);
-    }
-
-    /// What must hold no handle when everything moves, because nothing
-    /// traces it: the argument buffer, which a send fills and empties within
-    /// one instruction (`docs/design/memory.md`, "What the collector
-    /// traces"). As true a requirement for a release collection as for a
-    /// debug-build move, so unlike `move_everything` this is not gated to
-    /// debug builds.
-    fn check_quiescent_state(&self) {
-        assert!(
-            self.mutator.argument_buffer.is_empty(),
-            "internal: the argument buffer holds values between instructions"
-        );
     }
 }
 

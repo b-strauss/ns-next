@@ -8,6 +8,7 @@ use super::{
 };
 use crate::builtins::first_argument;
 use crate::builtins::primitive::{AnyIntegerPrimitive, IntegerPrimitive, Primitive};
+use crate::interpreter::Arguments;
 use crate::types::*;
 use crate::{ArbitraryInteger, Mutator, Symbol};
 use std::cmp::Ordering;
@@ -16,28 +17,32 @@ pub(crate) fn execute_integer<'gc>(
     mutator: &mut Mutator<'gc>,
     primitive: IntegerPrimitive,
     receiver: Value<'gc>,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let receiver_integer = receiver.as_small_integer()?;
-    let argument_integer = || arguments.first().and_then(|value| value.as_small_integer());
+    let argument_integer = || {
+        arguments
+            .first(&mutator.heap)
+            .and_then(|value| value.as_small_integer())
+    };
     let mismatch = |operator: &str, accepted: Accepted| {
         type_mismatch(
             &mutator.heap,
             receiver,
             Symbol::intern(operator),
             accepted,
-            arguments.first().copied(),
+            arguments.first(&mutator.heap),
         )
     };
     // A `LargeInteger` argument, read only once the argument is known to be
     // no `SmallInteger`, so the common case never touches the heap.
-    let large_argument = || integer_operand(&mutator.heap, arguments.first().copied());
+    let large_argument = || integer_operand(&mutator.heap, arguments.first(&mutator.heap));
     // Ordering comparisons: two `SmallInteger`s compare here; every other
     // argument -- a number of another class, or the type mismatch of one
     // that is none -- is the tower's.
     let compare = |comparison: Comparison, operation: fn(Ordering) -> bool| match arguments
-        .first()
-        .and_then(|argument| receiver.small_integer_order(*argument))
+        .first(&mutator.heap)
+        .and_then(|argument| receiver.small_integer_order(argument))
     {
         Some(order) => Ok(Value::boolean(operation(order))),
         None => tower::compare(&mutator.heap, comparison, receiver, arguments)
@@ -72,7 +77,11 @@ pub(crate) fn execute_integer<'gc>(
         // of another class, or the type mismatch of one that is none -- is
         // the tower's.
         IntegerPrimitive::FloorDivide => match argument_integer() {
-            Some(0) => Some(Err(division_by_zero(receiver, "//", arguments[0]))),
+            Some(0) => Some(Err(division_by_zero(
+                receiver,
+                "//",
+                arguments.get(&mutator.heap, 0),
+            ))),
             // With the zero divisor refused above, the one quotient that
             // does not fit is `SMALL_INTEGER_MIN // -1`'s, which is
             // `-SMALL_INTEGER_MIN`.
@@ -87,7 +96,11 @@ pub(crate) fn execute_integer<'gc>(
             None => tower::arithmetic(mutator, Arithmetic::FloorDivide, receiver, arguments),
         },
         IntegerPrimitive::Modulo => match argument_integer() {
-            Some(0) => Some(Err(division_by_zero(receiver, "\\\\", arguments[0]))),
+            Some(0) => Some(Err(division_by_zero(
+                receiver,
+                "\\\\",
+                arguments.get(&mutator.heap, 0),
+            ))),
             Some(divisor) => Some(Ok(Value::small_integer(floor_modulo(
                 receiver_integer,
                 divisor,
@@ -149,7 +162,9 @@ pub(crate) fn execute_integer<'gc>(
         IntegerPrimitive::Equal => {
             let equal = match argument_integer() {
                 Some(argument) => argument == receiver_integer,
-                None => tower::values_equal(&mutator.heap, receiver, arguments.first().copied()),
+                None => {
+                    tower::values_equal(&mutator.heap, receiver, arguments.first(&mutator.heap))
+                }
             };
             crate::interpreter::future::declines_for_a_future(
                 mutator,
@@ -200,14 +215,14 @@ fn small_arithmetic<'gc>(
     mutator: &mut Mutator<'gc>,
     operation: Arithmetic,
     receiver: Value<'gc>,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
     tagged: fn(Value<'gc>, Value<'gc>) -> Option<Value<'gc>>,
     wide: fn(i128, i128) -> i128,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let receiver_integer = receiver.as_small_integer()?;
     let small_argument = arguments
-        .first()
-        .and_then(|argument| Some((*argument, argument.as_small_integer()?)));
+        .first(&mutator.heap)
+        .and_then(|argument| Some((argument, argument.as_small_integer()?)));
     let Some((argument, argument_integer)) = small_argument else {
         return tower::arithmetic(mutator, operation, receiver, arguments);
     };
@@ -228,7 +243,7 @@ pub(crate) fn execute_any_integer<'gc>(
     mutator: &mut Mutator<'gc>,
     primitive: AnyIntegerPrimitive,
     receiver: Value<'gc>,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     if let AnyIntegerPrimitive::Parse = primitive {
         return parse(mutator, receiver, arguments);
@@ -270,13 +285,13 @@ fn gcd<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
     integer: &ArbitraryInteger,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Result<Value<'gc>, NewspeakError<'gc>> {
     let other = integer_argument(
         mutator,
         receiver,
         Symbol::intern("gcd:"),
-        arguments.first().copied(),
+        arguments.first(&mutator.heap),
     )?;
     Ok(mutator.new_integer(integer.gcd(&other)))
 }
@@ -286,15 +301,15 @@ fn shift_right<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
     integer: &ArbitraryInteger,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Result<Value<'gc>, NewspeakError<'gc>> {
     let selector = Symbol::intern(">>");
-    let count = integer_argument(mutator, receiver, selector, arguments.first().copied())?;
+    let count = integer_argument(mutator, receiver, selector, arguments.first(&mutator.heap))?;
     if count.is_negative() {
         return Err(NewspeakError::argument_error(
             selector,
             receiver,
-            first_argument(arguments),
+            first_argument(&mutator.heap, arguments),
             format!(
                 ">> takes a non-negative shift count, got {}",
                 count.to_bounded_text()
@@ -309,10 +324,10 @@ fn digit_at<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
     integer: &ArbitraryInteger,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Result<Value<'gc>, NewspeakError<'gc>> {
     let selector = Symbol::intern("digitAt:");
-    let index = integer_argument(mutator, receiver, selector, arguments.first().copied())?;
+    let index = integer_argument(mutator, receiver, selector, arguments.first(&mutator.heap))?;
     let length = integer.base_256_length();
     let digit = index
         .to_u64()
@@ -324,7 +339,7 @@ fn digit_at<'gc>(
         None => Err(NewspeakError::argument_error(
             selector,
             receiver,
-            first_argument(arguments),
+            first_argument(&mutator.heap, arguments),
             format!(
                 "digitAt: index {} out of range: valid indices are 1..{length} (digitLength {length})",
                 index.to_bounded_text()
@@ -361,13 +376,13 @@ fn radix_text<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
     integer: &ArbitraryInteger,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Result<Value<'gc>, NewspeakError<'gc>> {
     let radix = radix_argument(
         mutator,
         receiver,
         Symbol::intern("asStringRadix:"),
-        first_argument(arguments),
+        first_argument(&mutator.heap, arguments),
     )?;
     Ok(Value::object(
         mutator.new_string(integer.to_radix_string(radix)),
@@ -381,15 +396,15 @@ fn radix_text<'gc>(
 fn parse<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let class = receiver.as_object()?;
     if mutator.heap.class_builtin(class) != Some(BuiltinClass::Integer) {
         return None;
     }
     let selector = Symbol::intern("parse:radix:");
-    let text_value = first_argument(arguments);
-    let radix_value = arguments.get(1).copied().unwrap_or(Value::nil());
+    let text_value = first_argument(&mutator.heap, arguments);
+    let radix_value = arguments.try_get(&mutator.heap, 1).unwrap_or(Value::nil());
     let radix = match radix_argument(mutator, receiver, selector, radix_value) {
         Ok(radix) => radix,
         Err(error) => return Some(Err(error)),

@@ -22,6 +22,7 @@
 //! Newspeak method beside it, is the message that writes any object's
 //! `printString` (`docs/design/core-library.md`, "The platform").
 
+use crate::interpreter::Arguments;
 use std::io::Write;
 
 use crate::builtins::first_argument;
@@ -37,7 +38,7 @@ pub fn execute<'gc>(
     primitive: PlatformPrimitive,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     Some(stream(mutator, primitive, receiver, selector, arguments))
 }
@@ -51,22 +52,24 @@ fn stream<'gc>(
     primitive: PlatformPrimitive,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Result<Value<'gc>, NewspeakError<'gc>> {
     match primitive {
         PlatformPrimitive::Show => {
             let text = arguments
-                .first()
+                .first(&mutator.heap)
                 .and_then(|value| value.as_object())
                 .and_then(|string| mutator.heap().str_value(string));
             let Some(text) = text else {
                 return Err(NewspeakError::argument_error(
                     selector,
                     receiver,
-                    first_argument(arguments),
+                    first_argument(&mutator.heap, arguments),
                     format!(
                         "{selector} requires a String, got {}",
-                        mutator.heap().describe_argument(arguments.first().copied())
+                        mutator
+                            .heap()
+                            .describe_argument(arguments.first(&mutator.heap))
                     ),
                 ));
             };

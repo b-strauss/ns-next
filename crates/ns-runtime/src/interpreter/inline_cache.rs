@@ -8,6 +8,7 @@
 //! on a `Resolved` rebuilt from an entry, so it can do nothing a miss would
 //! not (`resolve.rs`).
 
+use super::Arguments;
 use std::collections::BTreeSet;
 use std::hash::BuildHasher;
 use std::rc::Rc;
@@ -1111,7 +1112,7 @@ pub(crate) fn send_public<'gc>(
     site: CallSite,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Result<Step<'gc>, Signal<'gc>> {
     let Some(index) = site_index(feedback_base, family_size, site) else {
         return mutator.decide_send(receiver, selector, arguments);
@@ -1156,7 +1157,7 @@ pub(crate) fn send_lexical<'gc>(
     depth: u16,
     declaration_code: bool,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Result<Step<'gc>, Signal<'gc>> {
     // A body-less declaration's own code runs once per instantiation of
     // its class and starts its walk from the declaration's scope: it runs
@@ -1259,7 +1260,7 @@ fn send_lexical_first<'gc>(
     origin: LexicalOrigin<'gc>,
     depth: u16,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Result<Step<'gc>, Signal<'gc>> {
     let lexical_class = dispatch::kth_lexical_class(&mutator.heap, origin, depth);
     let lexical_id = lexical_dispatch_id(&mutator.heap, lexical_class);
@@ -1317,7 +1318,7 @@ fn global_hit<'gc>(
     index: usize,
     key: SendKey<'_, 'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Step<'gc>, Signal<'gc>>> {
     let target = mutator
         .caches
@@ -1346,7 +1347,7 @@ pub(crate) fn send_super<'gc>(
     family_size: u32,
     site: CallSite,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Result<Step<'gc>, Signal<'gc>> {
     // The classes are read only for a cached site; the uncached path reads
     // them itself.
@@ -1401,7 +1402,7 @@ fn cached<'gc>(
     index: usize,
     key: SendKey<'_, 'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
     lexical_of: impl FnOnce(&Mutator<'gc>) -> Option<ClassReference<'gc>>,
     resolve: impl FnOnce(&mut Mutator<'gc>, LexicalClass<'gc>) -> Resolved<'gc>,
 ) -> Result<Step<'gc>, Signal<'gc>> {
@@ -1433,7 +1434,7 @@ fn miss<'gc>(
     index: usize,
     mut key: SendKey<'_, 'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
     lexical_of: impl FnOnce(&Mutator<'gc>) -> Option<ClassReference<'gc>>,
     resolve: impl FnOnce(&mut Mutator<'gc>, LexicalClass<'gc>) -> Resolved<'gc>,
 ) -> Result<Step<'gc>, Signal<'gc>> {
@@ -2136,7 +2137,7 @@ mod tests {
             };
             assert!(Rc::ptr_eq(recorded, &found_code));
             let (hit, _) = materialize(mutator, target, key).expect("a hit");
-            match mutator.act(hit, receiver, Symbol::NEW, &[]) {
+            match mutator.act(hit, receiver, Symbol::NEW, Arguments::Values(&[])) {
                 Ok(crate::interpreter::Step::Factory { code, .. }) => {
                     assert!(
                         Rc::ptr_eq(&code, &found_code),

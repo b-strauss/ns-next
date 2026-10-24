@@ -4,6 +4,7 @@
 //! normal form (`docs/design/core-library.md`, "The numeric tower").
 
 use crate::builtins::primitive::FractionPrimitive;
+use crate::interpreter::Arguments;
 use crate::numeric::Rational;
 use crate::types::*;
 use crate::{ArbitraryInteger, Mutator, Symbol};
@@ -14,7 +15,7 @@ pub(crate) fn execute_fraction<'gc>(
     mutator: &mut Mutator<'gc>,
     primitive: FractionPrimitive,
     receiver: Value<'gc>,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     match primitive {
         FractionPrimitive::Numerator => {
@@ -50,10 +51,10 @@ fn integer_pair<'gc>(
     mutator: &Mutator<'gc>,
     receiver: Value<'gc>,
     selector: &str,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Result<(ArbitraryInteger, ArbitraryInteger), NewspeakError<'gc>> {
     let part = |index: usize| {
-        let argument = arguments.get(index).copied();
+        let argument = arguments.try_get(&mutator.heap, index);
         integer_operand(&mutator.heap, argument).ok_or_else(|| {
             NewspeakError::argument_error(
                 Symbol::intern(selector),
@@ -74,7 +75,7 @@ fn integer_pair<'gc>(
 fn make<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Result<Value<'gc>, NewspeakError<'gc>> {
     let selector = "numerator:denominator:";
     let (numerator, denominator) = integer_pair(mutator, receiver, selector, arguments)?;
@@ -83,7 +84,7 @@ fn make<'gc>(
         None => Err(NewspeakError::argument_error(
             Symbol::intern(selector),
             receiver,
-            arguments.get(1).copied().unwrap_or(Value::nil()),
+            arguments.try_get(&mutator.heap, 1).unwrap_or(Value::nil()),
             "numerator:denominator: requires a non-zero denominator",
         )),
     }
@@ -95,7 +96,7 @@ fn make<'gc>(
 fn make_reduced<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Result<Value<'gc>, NewspeakError<'gc>> {
     let selector = "reducedNumerator:denominator:";
     let (numerator, denominator) = integer_pair(mutator, receiver, selector, arguments)?;
@@ -103,7 +104,7 @@ fn make_reduced<'gc>(
         return Err(NewspeakError::argument_error(
             Symbol::intern(selector),
             receiver,
-            arguments.get(1).copied().unwrap_or(Value::nil()),
+            arguments.try_get(&mutator.heap, 1).unwrap_or(Value::nil()),
             format!(
                 "{selector} requires a fraction in normal form, got {}/{}",
                 numerator.to_bounded_text(),

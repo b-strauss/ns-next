@@ -339,6 +339,7 @@ mod tests {
     use super::*;
     use crate::heap::{ActivationHeader, ApplicationIndex};
     use crate::interpreter::edit::MemberEdit;
+    use crate::interpreter::Arguments;
     use crate::interpreter::{HostResult, HostSignal, Interpreter};
     use crate::mixin::Mixin;
     use crate::types::{ActivationKind, BuiltinClass, Continuation, SourceOrigin, Value};
@@ -1271,7 +1272,7 @@ mod tests {
                         then: Continuation::Deliver,
                         counted: true,
                     },
-                    &[receiver],
+                    Arguments::Values(&[receiver]),
                     0,
                 )
                 .expect("the stack holds the frame");
@@ -1502,7 +1503,7 @@ mod tests {
                         then: Continuation::Deliver,
                         counted: true,
                     },
-                    &[],
+                    Arguments::Values(&[]),
                     0,
                 )
                 .expect("the stack holds the frame");
