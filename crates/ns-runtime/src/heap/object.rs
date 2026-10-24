@@ -113,11 +113,13 @@ pub(in crate::heap) fn pointer_ranges_of(
         | Format::Ephemeron => ranges[1] = clamped(FIELDS, length),
         // A married frame's registers are its stack entry's, traced with
         // the stack; its own stay nil until the divorce copies them in, so
-        // they are skipped rather than walked for nothing.
+        // they are skipped rather than walked for nothing. A suspended
+        // frame's are the only copy of its values, and a returned one's
+        // all it kept, so both are traced.
         Format::Frame => {
             let married = block
                 .get(FIELDS + frame_field::MARRIED)
-                .is_some_and(|bits| *bits != Word::NIL.bits());
+                .is_some_and(|bits| Word::from_bits(*bits).is_non_negative_small_integer());
             let end = if married {
                 FIELDS + frame_field::COUNT
             } else {
@@ -691,7 +693,8 @@ pub(in crate::heap) mod closure_field {
 pub(in crate::heap) mod frame_field {
     /// The frame object of the activation this one returns to, or nil: a
     /// live activation's sender is the stack entry below it, and a returned
-    /// one has none, so only a decoded frame carries one.
+    /// one has none, so only a suspended frame whose activation returns to
+    /// another suspended one, and a decoded frame, carry one.
     pub(in crate::heap) const SENDER: usize = 0;
     /// A closure activation's home frame object; nil for every other kind.
     pub(in crate::heap) const HOME: usize = 1;
@@ -710,8 +713,11 @@ pub(in crate::heap) mod frame_field {
     pub(in crate::heap) const KIND_OPERAND: usize = 7;
     /// `true` once the activation has returned.
     pub(in crate::heap) const UNCONTINUABLE: usize = 8;
-    /// A `SmallInteger`, the stack entry index of the activation the frame
-    /// is married to, while it runs; nil once it has returned.
+    /// The frame's state: a `SmallInteger` ≥ 0, the stack entry index of
+    /// the activation the frame is married to, while it runs; a
+    /// `SmallInteger` < 0, `-(row + 1)`, naming its row in the heap's side
+    /// table of suspensions, while its activation is suspended into it
+    /// (`Heap::suspend_activations`); nil once it has returned.
     pub(in crate::heap) const MARRIED: usize = 9;
     /// How many fixed fields there are: register `index` is word
     /// `COUNT + index`.
@@ -873,6 +879,9 @@ mod tests {
         assert_eq!(covered(&frame).len(), 1 + frame_field::COUNT + 2);
         frame[FIELDS + frame_field::MARRIED] = 0b1001; // a SmallInteger
         assert_eq!(covered(&frame).len(), 1 + frame_field::COUNT);
+        // A suspended frame's registers count: they are its only copy.
+        frame[FIELDS + frame_field::MARRIED] = (-1i64 << 3 | 0b001).cast_unsigned();
+        assert_eq!(covered(&frame).len(), 1 + frame_field::COUNT + 2);
     }
 
     #[test]

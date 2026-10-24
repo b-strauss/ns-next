@@ -394,6 +394,25 @@ pub enum Continuation<'gc> {
     /// value, then deliver it or run the instruction that forced it again.
     /// Boxed, as every continuation that carries state is.
     Future(Box<crate::interpreter::future::FutureForcing<'gc>>),
+    /// The activation was resumed from a suspended frame whose sender is
+    /// suspended too (`Heap::resume_activation`): its own continuation is
+    /// applied as before, and control then goes to the sender, resumed in
+    /// turn. Boxed, as every continuation that carries state is.
+    ReturnToSuspended(Box<ReturnToSuspended<'gc>>),
+}
+
+/// What a resumed activation returns to when its sender is suspended
+/// (`Continuation::ReturnToSuspended`). Owned by exactly one stack entry.
+#[derive(Debug, Clone)]
+pub struct ReturnToSuspended<'gc> {
+    /// The suspended frame the activation returns to, resumed when the
+    /// activation is popped. A frame, never an activation: the sender has
+    /// no stack entry until then.
+    pub(crate) sender: FrameReference<'gc>,
+    /// The activation's own continuation, applied before the sender is
+    /// resumed. Never a `ReturnToSuspended` itself: suspending the
+    /// activation again stores the sender in its frame and keeps only this.
+    pub(crate) then: Continuation<'gc>,
 }
 
 /// An unwind in progress (`interpreter::unwind`): where it is going and what

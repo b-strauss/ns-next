@@ -1498,6 +1498,9 @@ impl<'gc> Mutator<'gc> {
             Continuation::Future(_) => {
                 unreachable!("internal: vm::finish handles a future's continuation itself")
             }
+            Continuation::ReturnToSuspended(_) => unreachable!(
+                "internal: the run loop resumes a suspended sender before it applies the continuation"
+            ),
         }
     }
 
@@ -1507,13 +1510,17 @@ impl<'gc> Mutator<'gc> {
     /// activation it refuses. Only a nested class's creation and a future's
     /// forcing have begun anything -- the creation's cache slot is marked as
     /// in progress, the future as resolving -- so only they have anything to
-    /// undo; every other continuation is simply dropped, a
+    /// undo, and a return to a suspended sender undoes what the
+    /// continuation it wraps began; every other continuation is simply dropped, a
     /// `Continuation::Unwind` included: a newer unwind, or an error, has
     /// replaced the one it would have carried on.
     pub(crate) fn abandon(&mut self, then: Continuation<'gc>) {
         match then {
             Continuation::NestedClass(creation) => nested::end_creation(self, &creation),
             Continuation::Future(forcing) => self.future_abandoned(*forcing),
+            // The sender stays suspended: whoever throws this activation
+            // away decides whether it resumes it.
+            Continuation::ReturnToSuspended(suspended) => self.abandon(suspended.then),
             _ => {}
         }
     }

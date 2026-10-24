@@ -103,6 +103,12 @@ impl Word {
     pub(super) fn bits(self) -> u64 {
         self.0
     }
+
+    /// Whether the word is a `SmallInteger` of zero or more: the collector's
+    /// test for a frame married to a stack entry, whose registers it skips.
+    pub(super) fn is_non_negative_small_integer(self) -> bool {
+        self.0 & SMALL_INTEGER_TAG == SMALL_INTEGER_TAG && self.0.cast_signed() >= 0
+    }
 }
 
 /// Never `{:?}` a `Word` in Newspeak-facing text; this exists so that the

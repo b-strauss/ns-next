@@ -67,7 +67,16 @@ impl Trace for Continuation<'_> {
                 tracer.value(&mut error.subject);
             }
             Continuation::Future(forcing) => forcing.trace(tracer),
+            Continuation::ReturnToSuspended(suspended) => suspended.trace(tracer),
         }
+    }
+}
+
+impl Trace for ReturnToSuspended<'_> {
+    fn trace<T: Tracer>(&mut self, tracer: &mut T) {
+        let ReturnToSuspended { sender, then } = self;
+        tracer.frame(sender);
+        then.trace(tracer);
     }
 }
 

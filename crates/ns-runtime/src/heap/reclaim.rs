@@ -142,9 +142,11 @@ impl FreedIds {
 }
 
 /// What the live activations name outside the heap's objects: no
-/// marking reaches these, since a stack entry holds them as numbers.
+/// marking reaches these, since a stack entry holds them as numbers, and
+/// a suspended activation's row of the side table as well.
 pub(crate) struct StackRoots {
-    /// Every activation's `entered_level`, `UNREGISTERED` included.
+    /// Every activation's `entered_level`, a suspended one's included,
+    /// `UNREGISTERED` included.
     pub(crate) entered_levels: Vec<ApplicationIndex>,
     /// Every activation's `recorded_guard`, `NONE` included.
     pub(crate) recorded_guards: Vec<DispatchId>,
@@ -170,11 +172,18 @@ impl Heap<'_> {
         }
     }
 
-    /// The ids every live activation names (`StackRoots`).
+    /// The ids every live activation names (`StackRoots`). A suspended
+    /// one records no guard and keeps no feedback base: it resumes with
+    /// none and with its base derived again.
     pub(crate) fn stack_roots(&self) -> StackRoots {
         let entries = &self.stack.entries;
+        let suspended = self.suspensions.rows.iter().flatten();
         StackRoots {
-            entered_levels: entries.iter().map(|entry| entry.entered_level).collect(),
+            entered_levels: entries
+                .iter()
+                .map(|entry| entry.entered_level)
+                .chain(suspended.map(|suspension| suspension.entered_level))
+                .collect(),
             recorded_guards: entries.iter().map(|entry| entry.recorded_guard).collect(),
             feedback_bases: entries.iter().map(|entry| entry.feedback_base).collect(),
         }
