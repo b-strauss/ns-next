@@ -398,7 +398,7 @@ every one runs on 18 threads.
 | `memory` | `ns-memory`'s clippy for `x86_64-unknown-linux-gnu` and `aarch64-apple-darwin` | a commit touching `crates/ns-memory` |
 | `benchmarks` | the benchmark programs verified at full size, and their Java counterparts; needs a JDK (`JAVA_HOME` or `PATH`); profile `benchmarks-verify`; it measures nothing and never runs under a stress mode (`execution.md`, "The Are We Fast Yet benchmarks") | when benchmarking; the end of a batch that changed the runtime |
 | `release-checks` | the suite built without debug assertions, profile `release-checks` of `Cargo.toml` (release without its fat LTO), which runs the size tests (below) | when a change touches a type a size test pins; the end of a batch that changed the runtime |
-| `stress` | the suite under the five stress modes at once, each into `.temp/stress-<MODE>.log`, then `run-corpus` plain and under each (`docs/design/README.md`, "Gates") | the end of a batch that changed the runtime |
+| `stress` | the suite under the six stress modes at once, each into `.temp/stress-<MODE>.log`, then `run-corpus` plain and under each (`docs/design/README.md`, "Gates") | the end of a batch that changed the runtime |
 | `plugin-verification` | `gradlew --no-daemon verifyPlugin buildPlugin`, which downloads several IDEs | the end of a batch that changed `editors/jetbrains/` |
 
 `end-of-batch` is `images`, `caches`, `benchmarks`, `release-checks` and `stress`

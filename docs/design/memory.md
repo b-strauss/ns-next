@@ -68,8 +68,8 @@
 > traces, marking, forwarding and scavenging alike, in every build),
 > `interpreter/safepoint.rs`
 > (the safepoint, `Interpreter::tenure_now`, `Interpreter::collect_now` and
-> the switches of the five stress modes: moves, caches, collection,
-> scavenges, and every instruction wide),
+> the switches of the six stress modes: moves, caches, collection,
+> scavenges, every instruction wide, and suspensions),
 > `vm.rs` (one entry per stretch between two safepoints, and the poll),
 > `heap/value.rs` (`Value`, and `Word`, what a heap object stores),
 > `mixin.rs` (layout, and the one remaining iterative
@@ -732,8 +732,19 @@ check").
   enclosing object and declaring class, an `Instantiation`'s instance, levels
   with their arguments, and phase, an `Unwind`'s target frame and the value or error it carries,
   a `VmErrorSignalled` error's receiver, and a `Future` forcing's future and
-  that of every forcing chained behind it; and every register. `StackEntry`'s impl is
-  in `heap.rs`, where its fields are private.
+  that of every forcing chained behind it, and a `ReturnToSuspended`'s
+  suspended sender with the continuation it wraps; and every register.
+  `StackEntry`'s impl is in `heap.rs`, where its fields are private.
+- The side table of suspended activations (`Heap`'s `suspensions`): each
+  row's frame and the state its continuation carries, as a stack entry's
+  ([execution.md](execution.md), "Suspending and resuming"). It is a root
+  of marking, of every move and of the scavenge, because a suspended frame
+  belongs to a run that has not finished, whether or not anything else
+  still reaches it: a suspended chain nothing else names would otherwise
+  be collected while its rows remained. The full collection's reclaim
+  takes each row's entered level beside the stack's (`Heap::stack_roots`),
+  so an application stays alive while an activation entered at it is
+  suspended, as it does while one runs.
 - Every object in the space, by its format: its class word; an instance's
   or an array's fields; a `WeakArray`'s slots and an `Ephemeron`'s fields,
   every one forwarded but traced for liveness only as "Weak references"
@@ -745,7 +756,9 @@ check").
   sender, home, receiver, current class, the kind's operand among them, the
   rest numbers or constants the tracer passes over -- and its registers. A
   married frame's registers are its entry's, traced with the stack, so its
-  own are skipped. The digits of a `LargeInteger`, a boxed `Float`'s bits,
+  own are skipped; the `Format::Frame` arm skips them only for a married
+  word of 0 or more, a stack index. A suspended frame's registers are the
+  only copy of its values, so they are traced like a returned frame's. The digits of a `LargeInteger`, a boxed `Float`'s bits,
   a string's code points and a `ByteArray`'s reserve and bytes are never
   handed to the tracer, since they would read as handles.
 - The host root table.
@@ -785,7 +798,8 @@ the heap module can mint a handle. `trace.rs` exists in
 every build, since the collector runs in every build.
 
 A reified frame is not a root of its own: it is reached through the closure
-that captured it, or through the live entry it is married to. Two things the
+that captured it, through the live entry it is married to, or through the
+side-table row of its suspension. Two things the
 step state keeps hold no handle, on purpose, and a debug assertion before
 every move checks it: a send's argument buffer, empty between instructions
 ("Where a collection can happen" above). An instantiation keeps nothing
@@ -796,8 +810,8 @@ while the enclosing object stays in the continuation of the clause's stack
 entry, where the stack is traced anyway.
 
 **A handle lives only where the tracer can rewrite it in place**: in an
-object's words, in a stack entry, in a continuation that one stack entry owns, or in
-the step state's own roots — never behind a shared `Rc`, which the tracer could reach
+object's words, in a stack entry, in a continuation that one stack entry or
+side-table row owns, or in the step state's own roots — never behind a shared `Rc`, which the tracer could reach
 only through a shared reference. So a closure's handles live in the
 closure object's own words, and its code, which holds no handle, is named by
 a code id into the heap's table of compiled code, shared with the
@@ -1729,6 +1743,25 @@ Pinned across a move and a collection by `heap.rs`'s unit tests
 (`a_married_frame_survives_a_move_and_is_divorced_into_its_moved_object`,
 `a_frame_divorced_after_a_collection_holds_its_registers_only_when_retained`).
 
+**A suspended frame is a frame in a third state**, its married word a
+negative `SmallInteger` naming its row in the heap's side table
+([execution.md](execution.md), "Suspending and resuming"). The side table is
+a root and each row holds its frame, so a suspended frame is marked,
+forwarded and scavenged whatever else reaches it, and its registers, the
+only copy of its values, are traced. The suspension is a store into an
+existing object and takes the barrier's rule as the divorce does: it copies
+every register and the sender into the frame and remembers an old frame
+that now names a young object (`Heap::suspend_activations`); the resume
+copies the registers back onto the stack and nils the frame's own, so a
+married frame's registers are skipped again. A `frame_set_local` into a
+suspended frame, a handler leaf's write, goes through the barrier like any
+other. Suspended activations still count against the depth limit, in the
+heap's one running count, which suspending and resuming leave alone.
+Pinned by `heap.rs`'s
+`a_suspended_frame_survives_a_move_a_scavenge_and_a_collection_with_its_registers`,
+`a_young_value_written_into_a_suspended_old_frame_is_remembered` and
+`the_reclaim_keeps_the_entered_level_of_a_suspended_activation`.
+
 What keeps a frame alive past its return is a closure's captured frame, or
 another reified frame's `sender`/`home`. Closure conversion shrank what a
 frame retains -- a body nothing reaches by reference keeps its registers nil
@@ -1746,15 +1779,15 @@ are different: **premature reclamation** — a missed root, a reachable object
 gone, silent wrong output at exit status 0 — and **false retention**, which no
 test sees at all and only a measurement shows.
 
-There are five stress modes, each a gate of its own at the end of a batch,
+There are six stress modes, each a gate of its own at the end of a batch,
 each set by an environment variable to anything but empty or `0`, all of
 them debug builds only: `NS_NEXT_STRESS_MOVES` ("The move stress mode"),
 `NS_NEXT_STRESS_CACHES` ([dispatch.md](dispatch.md), "Invalidation"),
 `NS_NEXT_STRESS_COLLECT`, `NS_NEXT_STRESS_SCAVENGE` ("Finding a missed
-barrier: the scavenge stress mode"), each of these four keeping the
-safepoint flag set while it is on, and `NS_NEXT_STRESS_WIDE`, which emits
-every instruction in a wide form ([execution.md](execution.md), "The
-compact instruction encoding").
+barrier: the scavenge stress mode"), `NS_NEXT_STRESS_SUSPEND`, each of
+these five keeping the safepoint flag set while it is on, and
+`NS_NEXT_STRESS_WIDE`, which emits every instruction in a wide form
+([execution.md](execution.md), "The compact instruction encoding").
 
 `NS_NEXT_STRESS_COLLECT=1` runs a full collection at every safepoint rather
 than at a limit, paced by heap size like `STRESS_MOVE_BUDGET`
@@ -1765,6 +1798,16 @@ is, so a missed root kills its object at the earliest possible moment and the
 recorded outputs catch the difference. `NS_NEXT_STRESS_SCAVENGE=1` does the
 same with a scavenge, after a check of the remembered set, and is what finds
 a store that missed the write barrier.
+
+`NS_NEXT_STRESS_SUSPEND=1` suspends every activation of the run into its
+frame at the safepoints its own schedule picks, paced the same way, and
+resumes the top one, so every program runs on from suspended frames, the
+path a deoptimized frame will take ([execution.md](execution.md),
+"Suspending and resuming"). For the collector it moves the run's values
+off the stack into frame objects, where every scavenge and collection the
+run makes finds them only because the side table is a root and a
+suspended frame's registers are traced; beyond the collector, it checks
+everything that walks from an activation to its sender.
 
 False retention is caught by counting rather than by observing: a
 `debug_assertions`-only `collect_now`, beside `move_now`, and a
@@ -2235,7 +2278,7 @@ objects lie end to end from the region's start up to its top.
   region** by `8 * (2 + epoch % 31)` bytes, `epoch` the new move epoch, up
   from the region's first offset, and back down to it at the next move, so
   every handle changes at every move and young stays young ("The move
-  stress mode"). The other four stress modes are in "The gates the
+  stress mode"). The other five stress modes are in "The gates the
   collector needs".
 - **Running out of memory aborts the process.** A commit the operating
   system refuses, or a reservation used up, ends in
@@ -2272,7 +2315,7 @@ after the last tenure, and never polls a safepoint, so the peak argument
 stands; the handle paragraphs describe a 64-bit byte offset and name no
 frame arena; "A cache records what the lookup decided" reads the builtin
 tag as a field of the class object, which `act` still reads afresh on every
-send; the end-of-batch gates name five stress modes, `SCAVENGE` among them;
+send; the end-of-batch gates name six stress modes, `SCAVENGE` among them;
 and "Every store into an existing object goes through `heap.rs`'s store
 accessors and their write barrier" is an invariant of its own; and "The
 VM mirror is a capability" says that the MirrorBuilder refuses every edit

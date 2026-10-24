@@ -2488,9 +2488,9 @@ the rule in [memory.md](memory.md), "Generations" -- the VM
 rewriting every reference to the old frame by a walk of every root the
 collector traces (`trace.rs`) and every heap object, the same walk as the
 bulk forward ("`become:` is an eager bulk forward"
-below); execution continues from the divorced frame, which needs a
-divorced frame put back on the stack, the piece suspend and resume need too
-([execution.md](execution.md), "How this meets the liveness requirements").
+below); execution continues from the new frame as from any suspended one
+([execution.md](execution.md), "Suspending and resuming", "How this meets
+the liveness requirements").
 The cost is a few more words per reified frame, and `bench_block.ns`, which
 reifies a frame per iteration, is the workload that shows it. While a frame
 is married its registers live on the stack and the trace skips the object's

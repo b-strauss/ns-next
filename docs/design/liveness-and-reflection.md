@@ -164,8 +164,9 @@ caches after it.
    divorced into a newly allocated, larger frame object, the VM rewrites every
    reference to the old frame by a walk of every root the collector traces
    (`trace.rs`) and every heap object, the new frame allocated old and born
-   remembered, and execution continues from the divorced frame, which needs a
-   divorced frame put back on the stack ([execution.md](execution.md), "How
+   remembered, and execution continues from the new frame as from any
+   suspended one, resumed onto the stack when something returns into it
+   ([execution.md](execution.md), "Suspending and resuming", "How
    this meets the liveness requirements"; [object-model.md](object-model.md),
    "The object layout"). That is the same move as forcing a frame out
    of JIT-optimized form before debugging it, one level down, so the
@@ -185,9 +186,11 @@ walkable independently of the Rust stack — the activation stack — on which t
 trampoline runs every send without recursing through the Rust stack
 ([execution.md](execution.md), "The trampoline"), and with no Rust frame
 between the host and the loop, since nothing re-enters it from Rust ([execution.md](execution.md),
-"No re-entry from Rust"). Two things still block it. Nothing can suspend an
-activation yet: there is no yield path out of the run loop
-([image-format.md](image-format.md), "Planned: suspend and resume"). And an
+"No re-entry from Rust"). Two things still block it. A running activation
+can be suspended into its frame and resumed from it within a run
+([execution.md](execution.md), "Suspending and resuming"), but there is no
+yield path out of the run loop ([image-format.md](image-format.md),
+"Planned: suspend and resume"). And an
 activation's `program_counter` is currently stored only at observable points, which the
 debugger milestone may need to revisit.
 

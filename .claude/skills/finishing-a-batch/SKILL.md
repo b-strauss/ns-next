@@ -26,7 +26,8 @@ Create a todo for each item.
    at the run loop's safepoints, CACHES vacates every inline cache at every
    safepoint, COLLECT collects at every safepoint, SCAVENGE verifies the
    remembered set and scavenges at every safepoint, WIDE encodes every
-   instruction in its wide form. `stress` runs the five suites at once,
+   instruction in its wide form, SUSPEND suspends every activation into its
+   frame and runs on from the frames. `stress` runs the six suites at once,
    because each ends in a long tail of a few depth-limit tests that leaves
    most cores idle and the tails overlap (measured 2026-10-01 for the first
    three: 277 s, MOVES the longest, against 703 s, the sum of the three

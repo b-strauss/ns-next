@@ -15,19 +15,23 @@ when they were written.
 
 ## Next
 
-**Road step 7, an execution model for compiled code** ("The road to a
+**Road step 7a, frames as words in one reservation** ("The road to a
 high-performance VM" below; [execution.md](design/execution.md), "Planned:
-JIT tiers"): frames that interpreted and compiled code share, a calling
-convention, GC maps for compiled frames and deoptimization metadata. Road
-step 6 and `new` as compiled code after it are built, so a factory and the
-initializers are compiled code the JIT tiers will compile like any other.
+JIT tiers"), the next part of road step 7, an execution model for compiled
+code. Its first part, 7b, is built: a running activation is suspended into
+its frame and resumed from it lazily, the landing point of every later
+deoptimization, and a sixth stress mode runs every golden on from
+suspended frames ([execution.md](design/execution.md), "Suspending and
+resuming"). Road step 6 and `new` as compiled code are built, so a factory
+and the initializers are compiled code the JIT tiers will compile like any
+other.
 
 **What 5b1 cost.** Measured in release, three pinned builds a side, against
 master (`733c15bd`) and task by task: every program within noise, but
 `bench_megamorphic.ns`, +1.3-2.1% after the private and super accessor
 check, at the edge of build noise and not diagnosed ("Planned: performance
 and representation" below). Everything up to road step 6 on the road
-is built, and `new` as compiled code after it; each step has its entry in
+is built, and `new` as compiled code and road step 7b after it; each step has its entry in
 [PROGRESS.md](PROGRESS.md), and the whole road is below.
 
 **Measuring.** The protocol is [execution.md](design/execution.md)'s "What
@@ -244,12 +248,17 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
 - **Step 7, an execution model for compiled code**: frames interpreted and
   compiled code share, a calling convention, GC maps for compiled frames, and
   deoptimization metadata, which the debugger needs as much as the optimizer.
-  Decided with the user on 2026-10-24, in four parts and this order:
-  **7b**, resuming an activation from its divorced frame (Primordial Soup's
-  `CreateBaseFrame`, Cog's `makeBaseFrameFor`), lazily: only the top
-  comes back onto the stack and each sender when something returns into
-  it; tested by a stress mode that suspends every frame at safepoints and
-  runs on from the frames;
+  Decided with the user on 2026-10-24, in four parts and this order.
+  **7b is built**: a running activation is suspended into its frame
+  object, what the frame cannot hold kept in a side table of the heap, and
+  resumed lazily, only the top coming back onto the stack and each sender
+  when something returns or unwinds into it (Primordial Soup's
+  `CreateBaseFrame`, Cog's `makeBaseFrameFor`); `NS_NEXT_STRESS_SUSPEND`,
+  the sixth stress mode, runs every golden on from suspended frames, and
+  the decoder refuses every frame not marked uncontinuable
+  ([execution.md](design/execution.md), "Suspending and resuming";
+  [image-format.md](design/image-format.md), "Planned: suspend and
+  resume"). What remains of step 7:
   **7a**, frames as words with a fixed header in one contiguous
   reservation of `ns-memory`, the depth limit kept and a byte bound added
   only as a net, taken only if the interpreter measures no slower in
@@ -257,18 +266,7 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
   that overlap, the caller's outgoing arguments being the callee's first
   registers, behind its own measurement; **7c**, the deoptimization
   contract and the protocol between interpreted and compiled frames,
-  written into [execution.md](design/execution.md). What a suspended frame
-  cannot hold -- its continuation, whether it counts against the depth
-  limit, the level it was entered at -- lives in a side table of the heap
-  beside it, which the full collection gathers ids from; suspended
-  activations still count against the depth limit. A resumed activation
-  starts with no recorded guard
-  ([object-model.md](design/object-model.md), "What a slot access
-  checks"). `retry` keeps popping down to its `on:do:` activation, which
-  is never skipped and so always on the stack; the unwinder resumes a
-  target only when it is divorced. The decoder refuses every frame not
-  marked uncontinuable ([image-format.md](design/image-format.md),
-  "Planned: suspend and resume").
+  written into [execution.md](design/execution.md).
 - **Between steps 7 and 8, real Newspeak bodies for `whileTrue:`, `whileFalse:` and
   `do:`.** Making them Newspeak loops keeps what their leaves settle --
   `do:` reads each element as it goes and sends `value:` to a non-block,
@@ -692,17 +690,17 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 ## Planned: images, liveness and reflection
 
 - **Suspend and resume.** Needs a yield path out of `vm::run`, a re-entry
-  that continues a decoded frame, whole-stack reify and divorce, and an
-  encoding for every `Continuation` variant (`WhileLoop`, `DoLoop`,
-  `NestedClassCreation`, `Unwind`, `VmErrorSignalled`, `Future`) and for
-  `depth_reserve`. A dormant decoder gap must be closed first:
-  `verify_graph` never cross-checks a frame's `home` against its `kind`
-  (`image/decode.rs`). Road step 7b's resume makes the decoder refuse every
-  frame not marked uncontinuable (decided with the user on 2026-10-24), so
-  suspend and resume has to lift that refusal, and verify everything a
-  resumable frame carries before it does: `home` against `kind`, the
-  program counter against the body, the entered level against its
-  application. [image-format.md](design/image-format.md), "Planned:
+  that continues a decoded frame, and an encoding for the side table of
+  suspended activations -- every `Continuation` variant (`WhileLoop`,
+  `DoLoop`, `NestedClassCreation`, `Unwind`, `VmErrorSignalled`, `Future`,
+  `ReturnToSuspended`), the counting, the entered level -- and for
+  `depth_reserve`; suspending the whole stack into its frames exists
+  (`Heap::suspend_activations`). The decoder refuses every frame not
+  marked uncontinuable (decided with the user on 2026-10-24), so suspend
+  and resume has to lift that refusal, and verify everything a resumable
+  frame carries before it does: the program counter against the body, the
+  entered level against its application; `home` against `kind` is
+  checked already. [image-format.md](design/image-format.md), "Planned:
   suspend and resume".
 - **A running world's image is trusted** (2026-10-12): a snapshot may hold
   frames of shipped code whose registers hold the kernel, a module instance
@@ -1796,6 +1794,14 @@ that only answers `isKindOfArray` or `isKindOfString`, the error of a
 ## Code quality follow-ups
 
 Small, deliberately left, none affecting an outcome.
+
+- Leftover of road step 7b (noted 2026-10-24): the format- and test-level
+  frame accessors `Heap::frame_set_program_counter`, `frame_register_shape`,
+  `frame_record` and `frame_set_uncontinuable` debug-assert only that the
+  frame is not married (`frame_activation` is none), which a suspended frame
+  passes; their callers are the encoder, which debug-asserts separately
+  that no frame it writes is suspended, and tests, so asserting that the
+  frame has returned (`!frame_is_running`) would say what they mean.
 
 - Leftovers of `new` as compiled code's reviews (noted 2026-10-22): the
   reference lowering's `Body::prologue` (`compiler/reference.rs`) does not

@@ -2332,48 +2332,38 @@ signalled, would have to travel with the stack as well
 ([execution.md](execution.md), "The depth limit"). Every reified frame has
 room for its registers, since a frame object is allocated with its code's
 full register count ([object-model.md](object-model.md), "The object
-layout"). Suspending
-then means reifying and divorcing the whole stack, which is the same operation a
-debugger performs on the frames it touches — and the same operation upstream
-performs, since Cog flushes its stack zone to contexts (`divorceAllFrames`)
-before taking a snapshot. An activation's `program_counter` being stored only at
-sends, `MakeClosure` and `NonLocalReturn` is *not* an obstacle: those are
-exactly the safepoints, and a suspension could only happen at a send boundary.
+layout"). Suspending the whole stack into its frames exists
+(`Heap::suspend_activations`, [execution.md](execution.md), "Suspending and
+resuming"), which is the same operation a debugger performs on the frames it
+touches — and the same operation upstream performs, since Cog flushes its
+stack zone to contexts (`divorceAllFrames`) before taking a snapshot — but
+what a suspended frame cannot hold lives in the heap's side table of
+suspensions, and an image carries nothing of it. An activation's
+`program_counter` being stored only at sends, `MakeClosure`,
+`NonLocalReturn` and as the run loop leaves for a safepoint is *not* an
+obstacle: a suspension happens only at a safepoint, where it is current.
 
-Whoever builds this must first close a decoder gap that today is inert only
-because nothing reactivates a decoded frame. `decode::verify_graph` checks a
-frame's `program_counter` and register-file size against the compiled body it reconciles
-each frame against, but it never cross-checks `home` against `kind`: a
-crafted image can pair a method-kind frame (`home` meaningful only for
-`FrameKind::Closure`) with a non-nil `home`. Nothing observes the
-mismatch today, because the VM never runs a frame loaded from an image
--- only ever an activation `Mutator::push` built.
-A decoded home is only ever consulted as a return target, and a decoded
-frame is never married to a live activation, so a `^` into one is
-`cannotReturn` whatever its record says.
-Suspend-and-resume and live debugging are exactly what would start running
-a decoded frame — at which point this dormant assumption becomes
-load-bearing, and whoever wires up re-entry has to decide, deliberately,
-whether `verify_graph` gains the cross-check or the re-entry path treats a
-mismatched `home` as its own untrusted-input case.
-
-**Road step 7 decides it for the frames an image carries today** (decided
-with the user on 2026-10-24; [execution.md](execution.md), "Planned: JIT
-tiers"). Step 7b resumes a divorced frame that is not marked
-uncontinuable, so a `^` or an unwind into one continues it where it
-stopped. An image is written only when no activation runs, so every frame
-in one belongs to an activation that has returned and is marked
-uncontinuable; a frame that is not can only come from a crafted image, and
-resuming it would run the image's code from a program counter the image
-chose. The decoder therefore refuses every frame not marked
-uncontinuable (`DecodeError::ContinuableFrame`), and `verify_graph` holds
-a frame's `home` to its `kind` (`DecodeError::FrameHomeMismatch`: a home
-exactly for a closure's activation). The encoder debug-asserts that no
-frame it writes is suspended. Suspend and resume is what writes a
+**Every frame an image carries has returned, and the decoder holds it to
+that** (decided with the user on 2026-10-24; [execution.md](execution.md),
+"Planned: JIT tiers"). The runtime resumes a frame only while it is
+suspended, which its married word records and the decoder never writes, so
+a decoded frame is never married or resumed, and a `^` into a decoded home
+is `cannotReturn` whatever its record says (`tests/image.rs`,
+`a_return_into_a_decoded_home_is_cannot_return`). An image is written only
+when no activation runs -- no run outlives its suspended frames, and the
+encoder debug-asserts that no frame it writes is suspended -- so every
+frame in one belongs to an activation that has returned and is marked
+uncontinuable; a frame that is not can only come from a crafted image.
+The decoder refuses one (`DecodeError::ContinuableFrame`) in both passes,
+the sizing pass before it allocates any placeholder, so every frame a
+load builds is marked uncontinuable. `verify_graph`
+holds a frame's `home` to its `kind` (`DecodeError::FrameHomeMismatch`: a
+home exactly for a closure's activation), since a decoded home is
+consulted as a return target. Suspend and resume is what writes a
 continuable frame, so it has to lift that refusal, and before it does,
-verify everything a resumable frame carries: `home` against `kind`, the
-program counter against the body, and the entered level against its
-application.
+verify everything a resumable frame carries -- the program counter against
+the body, the entered level against its application -- and encode the side
+table's rows.
 
 ## Edited programs in the image
 
