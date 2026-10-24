@@ -440,6 +440,15 @@ pub struct Interpreter {
     /// space. Debug builds only.
     #[cfg(debug_assertions)]
     stress_scavenge: Option<safepoint::StressSchedule>,
+    /// The suspend stress mode's schedule, when it is on
+    /// (`NS_NEXT_STRESS_SUSPEND`, or `set_stress_suspend`): every
+    /// activation of the run suspended into its frame and the top one
+    /// resumed at the safepoints its schedule picks, so that every program
+    /// runs on from frames as a deoptimized one will. Paced like the
+    /// collect stress mode, since suspending walks the whole run's stack.
+    /// Debug builds only.
+    #[cfg(debug_assertions)]
+    stress_suspend: Option<safepoint::StressSchedule>,
     /// How many times the cache stress mode has invalidated the caches since
     /// it was turned on, for a test to pin that it actually ran
     /// (`cache_invalidations`). Debug builds only.
@@ -489,6 +498,8 @@ impl Interpreter {
             stress_collect: safepoint::StressSchedule::from_env("NS_NEXT_STRESS_COLLECT"),
             #[cfg(debug_assertions)]
             stress_scavenge: safepoint::StressSchedule::from_env("NS_NEXT_STRESS_SCAVENGE"),
+            #[cfg(debug_assertions)]
+            stress_suspend: safepoint::StressSchedule::from_env("NS_NEXT_STRESS_SUSPEND"),
             #[cfg(debug_assertions)]
             cache_invalidations: 0,
         };
@@ -692,6 +703,13 @@ impl Interpreter {
             self.world.activation_depth(),
             depth,
             "a host's send or instantiation must leave the activation stack as it found it"
+        );
+        // Every path out of a run pops through the suspended senders,
+        // resuming each in turn, so none outlives the run that suspended it.
+        debug_assert_eq!(
+            self.world.suspension_count(),
+            0,
+            "internal: a suspended activation outlived its run"
         );
         #[cfg(debug_assertions)]
         assert_eq!(
@@ -1160,6 +1178,38 @@ impl<'gc> Mutator<'gc> {
         if let Some(top) = self.heap.top_activation() {
             self.depth_reserve = Some(self.heap.reify(top));
         }
+    }
+
+    /// Resumes the suspended activation of `frame`
+    /// (`Heap::resume_activation`) and answers it. Its feedback base is
+    /// derived again by `push_step`'s rule for its kind -- a closure's
+    /// from the closure object, minted when it has none; every other
+    /// body's, the root of its family, from `InlineCaches::base_for` --
+    /// so the side table holds no base a full collection could free while
+    /// the activation is suspended.
+    pub(crate) fn resume_frame(&mut self, frame: FrameReference<'gc>) -> ActivationReference {
+        let feedback_base = match self.heap.frame_kind(frame) {
+            FrameKind::Closure(closure) => {
+                let (code, _, closure_feedback_base) = self
+                    .heap
+                    .closure_activation(closure)
+                    .expect("internal: a closure frame names a closure object");
+                if closure_feedback_base == FeedbackBase::NOT_ASSIGNED {
+                    let fresh = self.caches.fresh_range(code.family_size);
+                    self.heap.closure_set_feedback_base(closure, fresh);
+                    fresh
+                } else {
+                    closure_feedback_base
+                }
+            }
+            _ => {
+                let code = self.heap.frame_code(frame).expect(
+                    "internal: the frame of an activation the runtime pushed names its code",
+                );
+                self.caches.base_for(&code)
+            }
+        };
+        self.heap.resume_activation(frame, feedback_base)
     }
 
     /// Pushes the activation `step` describes. `send_arguments` are the

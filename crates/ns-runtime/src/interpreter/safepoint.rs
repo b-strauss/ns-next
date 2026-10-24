@@ -7,9 +7,12 @@
 //! does not know about, since the move stress mode alone treats everything
 //! as live -- and a scavenge at the safepoints a third schedule picks, each
 //! after a check of the remembered set, the mode that catches a store that
-//! missed the write barrier. The step state's side of a move -- its own
-//! roots, forwarded after the heap's, and the state that must hold no handle
-//! when one happens -- is `World::move_everything` and
+//! missed the write barrier -- and the suspension of every activation of
+//! the run into its frame at the safepoints a fourth schedule picks, the
+//! mode that runs every program on from frames as a deoptimized one will
+//! (`docs/design/execution.md`, "Activations"). The step state's side of a
+//! move -- its own roots, forwarded after the heap's, and the state that
+//! must hold no handle when one happens -- is `World::move_everything` and
 //! `World::check_quiescent_state`, in `heap/world.rs`; a collection's is
 //! `World::collect`, in the same file.
 
@@ -22,9 +25,11 @@ impl Interpreter {
     /// every safepoint (`docs/design/dispatch.md`, "Invalidation"), and the
     /// collect stress mode runs a full collection when its own schedule says
     /// one is due (`docs/design/memory.md`, "The gates the collector
-    /// needs"), and the scavenge stress mode verifies the remembered set and
-    /// scavenges when its schedule says one is due; any one of the four
-    /// keeps the request set, so that every safepoint comes here.
+    /// needs"), the scavenge stress mode verifies the remembered set and
+    /// scavenges when its schedule says one is due, and the suspend stress
+    /// mode suspends every activation of the run into its frame and
+    /// resumes the top one when its own schedule says so; any one of the
+    /// five keeps the request set, so that every safepoint comes here.
     ///
     /// A pending collection is served after the stress modes have had their
     /// turn: `World::collect` is sound only where nothing outside the heap
@@ -42,11 +47,22 @@ impl Interpreter {
     /// empty slow path would let the optimizer prove the call does nothing
     /// and delete it, and the flag's load and branch with it, and the
     /// release binary that is measured would carry no poll at all.
+    ///
+    /// Answers whether the suspend stress mode rebuilt the activation stack
+    /// above `floor`, the floor of the run `vm::run` is in: every
+    /// activation there suspended into its frame and the top one resumed,
+    /// so that the running activation is a different stack entry and the
+    /// loop must read its state again. Always `false` in a release build.
     #[cold]
     #[inline(never)]
-    pub(crate) fn safepoint(&mut self) {
+    pub(crate) fn safepoint(&mut self, floor: usize) -> bool {
+        #[cfg(not(debug_assertions))]
+        let _ = floor;
         #[cfg(debug_assertions)]
         let mut stressed = false;
+        // Only the debug build's suspend stress mode rebuilds the stack.
+        #[cfg_attr(not(debug_assertions), allow(unused_mut))]
+        let mut rebuilt = false;
         #[cfg(debug_assertions)]
         {
             if self.stress_caches {
@@ -73,6 +89,26 @@ impl Interpreter {
                 }
                 stressed = true;
             }
+            // After the other four, which leave the stack as they find it:
+            // whatever this rebuilds is what the loop reads back, so the
+            // floor it suspends from is the run's and nothing below it.
+            let traced_size = self.world.traced_size();
+            if let Some(due) = self
+                .stress_suspend
+                .as_mut()
+                .map(|stress| stress.due(traced_size))
+            {
+                if due {
+                    rebuilt = self.enter(|mutator| match mutator.heap.suspend_activations(floor) {
+                        Some(top) => {
+                            mutator.resume_frame(top);
+                            true
+                        }
+                        None => false,
+                    });
+                }
+                stressed = true;
+            }
         }
         if self.world.collection_requested() {
             self.world.collect();
@@ -84,7 +120,7 @@ impl Interpreter {
             // `safepoint_requested` there instead. Harmless -- one
             // extra call to a `#[cold]` function per collection -- and
             // simpler than threading a second clear through this branch.
-            return;
+            return rebuilt;
         }
         // After the collection branch: a full collection empties the
         // nursery as well, and clears a pending scavenge's flags with it.
@@ -93,13 +129,14 @@ impl Interpreter {
             self.world.scavenge(tenure_all);
             // As after a collection: the next poll finds nothing pending and
             // clears the safepoint request there.
-            return;
+            return rebuilt;
         }
         #[cfg(debug_assertions)]
         if stressed {
-            return;
+            return rebuilt;
         }
         self.world.clear_safepoint_request();
+        rebuilt
     }
 }
 
@@ -191,7 +228,8 @@ impl StressMoves {
     }
 }
 
-/// The schedule of the collect and the scavenge stress modes: their work
+/// The schedule of the collect, the scavenge and the suspend stress
+/// modes: their work
 /// at every safepoint while the traced size is within
 /// `STRESS_MOVE_BUDGET`, and above it once per size-over-budget safepoints
 /// -- the pacing `StressMoves` uses, for the same reason.
@@ -293,7 +331,8 @@ impl Interpreter {
         let enabled = self.stress.is_some()
             || self.stress_caches
             || self.stress_collect.is_some()
-            || self.stress_scavenge.is_some();
+            || self.stress_scavenge.is_some()
+            || self.stress_suspend.is_some();
         self.world.set_safepoint_requested(enabled);
     }
 
@@ -320,6 +359,15 @@ impl Interpreter {
     /// (`hold_safepoints_for_stress`).
     pub fn set_stress_scavenge(&mut self, enabled: bool) {
         self.stress_scavenge = enabled.then(StressSchedule::default);
+        self.hold_safepoints_for_stress();
+    }
+
+    /// Turns the suspend stress mode on or off for this interpreter,
+    /// whatever `NS_NEXT_STRESS_SUSPEND` says. For tests. Keeps the
+    /// safepoint request set while any other stress mode is on
+    /// (`hold_safepoints_for_stress`).
+    pub fn set_stress_suspend(&mut self, enabled: bool) {
+        self.stress_suspend = enabled.then(StressSchedule::default);
         self.hold_safepoints_for_stress();
     }
 
@@ -365,6 +413,15 @@ impl Interpreter {
     /// while it is off. An ordinary scavenge never advances this.
     pub fn stress_scavenges(&self) -> usize {
         self.stress_scavenge
+            .as_ref()
+            .map_or(0, |stress| stress.fired)
+    }
+
+    /// How many times the suspend stress mode has suspended every
+    /// activation of the run and resumed the top one since it was turned
+    /// on; 0 while it is off.
+    pub fn stress_suspensions(&self) -> usize {
+        self.stress_suspend
             .as_ref()
             .map_or(0, |stress| stress.fired)
     }

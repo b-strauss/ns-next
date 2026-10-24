@@ -5,7 +5,7 @@
 #![cfg(debug_assertions)]
 
 use indoc::indoc;
-use ns_runtime::{HostResult, HostSignal, Interpreter, Root, Symbol, ValueKind};
+use ns_runtime::{HostResult, HostSignal, Interpreter, Lowering, Root, Symbol, ValueKind};
 
 fn load(source: &str) -> (Interpreter, Root) {
     let module = ns_syntax::parse(source).expect("parse");
@@ -176,4 +176,175 @@ fn the_cache_stress_mode_invalidates_at_every_safepoint_and_changes_no_answer() 
         interpreter.cache_invalidations() > 10,
         "an invalidation at every safepoint of the run"
     );
+}
+
+// ---------- The suspend stress mode ----------
+//
+// Each program runs twice, plain and with every activation of the run
+// suspended into its frame at the safepoints the mode's schedule picks,
+// and must end the same way both times (`docs/design/execution.md`,
+// "Activations").
+
+/// How a run of `source`'s `run` ended, as text -- its answer, or the
+/// error it ended in -- and how often the suspend stress mode fired.
+fn run_suspended(source: &str, lowering: Lowering, suspend: bool) -> (String, usize) {
+    let module = ns_syntax::parse(source).expect("parse");
+    let resolved = ns_runtime::resolve(
+        module,
+        source.into(),
+        ns_runtime::SourceOrigin::File("test.ns".into()),
+    )
+    .expect("resolve");
+    let mut interpreter = Interpreter::bootstrap_with(lowering);
+    let class = interpreter.load_module(&resolved);
+    interpreter.set_stress_suspend(suspend);
+    // Counted from here, as `run_every_continuation` counts its moves.
+    let suspensions_before = interpreter.stress_suspensions();
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let outcome = match interpreter.send(&instance, Symbol::intern("run"), &[]) {
+        Ok(answer) => interpreter.enter(|mutator| match mutator.fetch(&answer).kind() {
+            ValueKind::SmallInteger(answer) => format!("answered {answer}"),
+            _ => "answered something other than a small integer".to_string(),
+        }),
+        Err(HostSignal::Return) => "a non-local return escaped".to_string(),
+        Err(HostSignal::Error(error)) => format!("failed: {}", error.message),
+    };
+    (
+        outcome,
+        interpreter.stress_suspensions() - suspensions_before,
+    )
+}
+
+/// Runs `source` plain and under the suspend stress mode, and checks that
+/// both runs end in `expected` and that the mode fired.
+fn assert_runs_on_from_suspended_frames(source: &str, lowering: Lowering, expected: &str) {
+    let (plain, plain_suspensions) = run_suspended(source, lowering, false);
+    assert_eq!(plain, expected, "the control");
+    assert_eq!(plain_suspensions, 0);
+    let (suspended, suspensions) = run_suspended(source, lowering, true);
+    assert_eq!(suspended, plain);
+    assert!(suspensions > 0, "the suspend stress mode never suspended");
+}
+
+/// Two thousand activations deep, every one of them suspended and resumed
+/// on the way down and summing on the way back up.
+const DEEP_RECURSION: &str = indoc! {"
+    class Deep = Object new (
+    ) (
+      sumTo: count = (
+        ^count = 0 ifTrue: [0] ifFalse: [count + (self sumTo: count - 1)]
+      )
+      public run = (
+        ^self sumTo: 2000
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    fn a_deep_recursion_runs_on_from_suspended_frames(lowering) {
+        assert_runs_on_from_suspended_frames(DEEP_RECURSION, lowering, "answered 2001000");
+    }
+}
+
+/// Blocks that capture and write a variable of their method, a native
+/// `whileTrue:` over blocks no lowering inlines, `do:` with a block and
+/// `do:` with an object that is no block: each continuation is taken
+/// through a suspended sender.
+const BLOCKS_AND_LOOPS: &str = indoc! {"
+    class Loops = Object new (
+    ) (
+      class Collector = Object new (
+        | public total ::= 0. |
+      ) (
+        public value: element = (
+          total:: total + element.
+        )
+      ) : ()
+      public run = (
+        | sum count condition body adder elements collector |
+        sum:: 0.
+        adder:: [:each | sum:: sum + each].
+        1 to: 1000 do: adder.
+        count:: 0.
+        condition:: [count < 1000].
+        body:: [count:: count + 1. sum:: sum + count].
+        condition whileTrue: body.
+        elements:: Array new: 1000.
+        1 to: 1000 do: [:index | elements at: index put: index].
+        elements do: [:each | sum:: sum + each].
+        collector:: Collector new.
+        elements do: collector.
+        ^sum + collector total
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    fn blocks_loops_and_do_run_on_from_suspended_frames(lowering) {
+        assert_runs_on_from_suspended_frames(BLOCKS_AND_LOOPS, lowering, "answered 2002000");
+    }
+}
+
+/// A superclass clause that runs long enough to pass several safepoints,
+/// so that its activation -- whose continuation creates the class -- is
+/// suspended and resumed while the creation is in progress; the class is
+/// still created once, and a second access answers the same class.
+const SLOW_SUPERCLASS_CLAUSE: &str = indoc! {"
+    class Outer = Object new (
+    ) (
+      public class Local = self slowSuperclass (
+      ) (
+        public answer = ( ^7 )
+      ) : ()
+      slowSuperclass = (
+        | sum |
+        sum:: 0.
+        1 to: 3000 do: [:each | sum:: sum + each].
+        ^Object
+      )
+      public run = (
+        | first second |
+        first:: Local.
+        second:: Local.
+        ^first == second ifTrue: [first new answer] ifFalse: [0]
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    fn a_nested_class_created_across_a_suspension_is_cached_once(lowering) {
+        assert_runs_on_from_suspended_frames(SLOW_SUPERCLASS_CLAUSE, lowering, "answered 7");
+    }
+}
+
+/// Simultaneous slots whose first initializer forces the second's future,
+/// whose computation loops past several safepoints: the instruction that
+/// forced it is run again in a sender that was suspended meanwhile.
+const SLOW_FUTURE: &str = indoc! {"
+    class Holder = Object new (
+    ) (
+      class Probe = Object new (
+        ||
+          first = second + 1.
+          second = self slowSum.
+        ||
+      ) (
+        slowSum = (
+          | sum |
+          sum:: 0.
+          1 to: 3000 do: [:each | sum:: sum + each].
+          ^sum
+        )
+        public answer = ( ^first + second )
+      ) : ()
+      public run = (
+        ^Probe new answer
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    fn a_future_forced_across_a_suspension_runs_its_instruction_again(lowering) {
+        assert_runs_on_from_suspended_frames(SLOW_FUTURE, lowering, "answered 9003001");
+    }
 }

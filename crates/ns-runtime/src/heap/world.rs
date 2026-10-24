@@ -169,6 +169,12 @@ impl World {
         self.mutator.heap.activation_depth()
     }
 
+    /// How many activations are suspended into their frames;
+    /// `Interpreter::run_from_host` checks none outlives its run.
+    pub(crate) fn suspension_count(&self) -> usize {
+        self.mutator.heap.suspension_count()
+    }
+
     pub(crate) fn clear_safepoint_request(&mut self) {
         self.mutator.heap.clear_safepoint_request();
     }

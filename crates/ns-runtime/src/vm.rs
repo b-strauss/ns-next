@@ -46,6 +46,23 @@ struct FrameRegisters {
     register_base: RegisterBase,
 }
 
+impl FrameRegisters {
+    /// The state of `activation`, to run from `program_counter`.
+    fn of(
+        mutator: &Mutator<'_>,
+        activation: ActivationReference,
+        program_counter: usize,
+    ) -> FrameRegisters {
+        FrameRegisters {
+            activation,
+            code: mutator.heap.activation_code(activation),
+            program_counter,
+            feedback_base: mutator.heap.activation_feedback_base(activation),
+            register_base: mutator.heap.activation_register_base(activation),
+        }
+    }
+}
+
 /// Why a stretch ended.
 enum Leave {
     /// A safepoint is requested; the frame is written back.
@@ -146,13 +163,7 @@ pub(crate) fn run(interpreter: &mut Interpreter, base: ActivationReference) -> H
     let (floor, mut frame) = interpreter.enter(|mutator| {
         (
             mutator.heap.activation_position(base),
-            FrameRegisters {
-                activation: base,
-                code: mutator.heap.activation_code(base),
-                program_counter: 0,
-                feedback_base: mutator.heap.activation_feedback_base(base),
-                register_base: mutator.heap.activation_register_base(base),
-            },
+            FrameRegisters::of(mutator, base, 0),
         )
     });
     loop {
@@ -174,7 +185,24 @@ pub(crate) fn run(interpreter: &mut Interpreter, base: ActivationReference) -> H
             #[inline(always)]
             |mutator| run_stretch(mutator, &mut frame, floor),
         ) {
-            Leave::Safepoint => interpreter.safepoint(),
+            Leave::Safepoint => {
+                // The suspend stress mode put a different entry on top --
+                // the running activation, suspended and resumed -- whose
+                // state the stretch wrote back before it left.
+                if interpreter.safepoint(floor) {
+                    frame = interpreter.enter(|mutator| {
+                        let top = mutator
+                            .heap
+                            .top_activation()
+                            .expect("internal: the safepoint resumed the running activation");
+                        FrameRegisters::of(
+                            mutator,
+                            top,
+                            mutator.heap.activation_program_counter(top),
+                        )
+                    });
+                }
+            }
             Leave::Exit(result) => return result,
         }
     }
@@ -1138,7 +1166,12 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
         }
     }
     // A safepoint is requested, at a switch or a backward jump: the frame
-    // the stretch stands at, written back for the next one.
+    // the stretch stands at, written back for the next one -- its program
+    // counter into its stack entry too, where the safepoint finds it when
+    // it suspends the activation into its frame.
+    mutator
+        .heap
+        .activation_set_program_counter(activation, program_counter);
     *frame = FrameRegisters {
         activation,
         code,
@@ -1982,7 +2015,8 @@ fn deliver<'gc>(
 /// `Mutator::push_continuation` pushes what it decided, depth count included;
 /// the loop only forwards the popped entry's flag. A future's forcing
 /// (`Mutator::future_computed`) may also run the caller's stopped
-/// instruction again (`reexecute`) rather than resume after it.
+/// instruction again (`reexecute`) rather than resume after it. A caller
+/// suspended into its frame is resumed first (`return_to_suspended`).
 fn finish<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
@@ -1991,10 +2025,25 @@ fn finish<'gc>(
     handoff: &mut Handoff,
 ) -> Transfer {
     let popped = mutator.heap.pop_activation(activation);
-    let value = match popped.then {
+    apply_continuation(mutator, popped.then, popped.counted, value, floor, handoff)
+}
+
+/// What `finish` does once the entry is popped: `then`, the popped entry's
+/// continuation, applied to `value`, and `counted`, its flag, handed on to
+/// whatever the continuation pushes.
+#[inline(always)]
+fn apply_continuation<'gc>(
+    mutator: &mut Mutator<'gc>,
+    then: Continuation<'gc>,
+    counted: bool,
+    value: Value<'gc>,
+    floor: usize,
+    handoff: &mut Handoff,
+) -> Transfer {
+    let value = match then {
         // `Deliver` owns nothing, so forgetting it is dropping it. Written
-        // out because otherwise the continuation, left in `popped`, is
-        // dropped at the end of the function through `Continuation`'s drop
+        // out because otherwise the continuation is dropped at the end of
+        // the function through `Continuation`'s drop
         // glue, which the boxed variants made large enough to stay out of
         // line: a call on every return, where the tag check used to be
         // inline. Forgetting it here measured about 1% faster on the
@@ -2003,13 +2052,18 @@ fn finish<'gc>(
             std::mem::forget(deliver);
             value
         }
+        // The caller is suspended into its frame: out of line, since only
+        // a run that was suspended ever returns this way.
+        Continuation::ReturnToSuspended(suspended) => {
+            return return_to_suspended(mutator, *suspended, counted, value, floor, handoff);
+        }
         // A future's computation returned: what happens next is
         // `interpreter::future`'s to decide, and the loop carries it out.
         Continuation::Future(forcing) => match mutator.future_computed(*forcing, value) {
             Ok(FutureOutcome::Deliver(value)) => value,
             Ok(FutureOutcome::Reexecute) => return reexecute(mutator, floor, handoff),
             Ok(FutureOutcome::Force(step)) => {
-                return match mutator.push_continuation(step, popped.counted) {
+                return match mutator.push_continuation(step, counted) {
                     Ok(next) => handoff.switch_to(mutator, next, 0),
                     Err(signal) => unwind(mutator, signal, floor, handoff),
                 };
@@ -2019,7 +2073,7 @@ fn finish<'gc>(
         then => match mutator.resume(then, value) {
             Ok(Step::Value(value)) => value,
             Ok(step) => {
-                return match mutator.push_continuation(step, popped.counted) {
+                return match mutator.push_continuation(step, counted) {
                     Ok(next) => handoff.switch_to(mutator, next, 0),
                     Err(signal) => unwind(mutator, signal, floor, handoff),
                 };
@@ -2035,6 +2089,28 @@ fn finish<'gc>(
         .top_activation()
         .expect("internal: an activation above the run's floor has a caller");
     resume_caller(mutator, caller, value, handoff)
+}
+
+/// The popped activation returns to a sender suspended into its frame
+/// (`Heap::suspend_activations`): the sender is resumed onto the stack,
+/// and the continuation the popped entry carried inside the wrapper is
+/// applied as any popped one is, so that from here on everything proceeds
+/// as if the sender had been on the stack all along -- the caller a value
+/// is delivered to, the activation a continuation pushes above, the
+/// instruction `reexecute` runs again.
+#[cold]
+#[inline(never)]
+fn return_to_suspended<'gc>(
+    mutator: &mut Mutator<'gc>,
+    suspended: ReturnToSuspended<'gc>,
+    counted: bool,
+    value: Value<'gc>,
+    floor: usize,
+    handoff: &mut Handoff,
+) -> Transfer {
+    let ReturnToSuspended { sender, then } = suspended;
+    mutator.resume_frame(sender);
+    apply_continuation(mutator, then, counted, value, floor, handoff)
 }
 
 /// Writes a callee's value into the send `caller` is stopped at, and resumes
