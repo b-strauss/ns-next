@@ -131,8 +131,8 @@ fn a_reference_initializer_initializes_each_slot_then_answers_self() {
     );
     assert!(matches!(
         &code.instruction(4),
-        Instruction::SendLexical { selector, argument_registers, destination: 2, .. }
-            if *selector == Symbol::intern("a") && argument_registers.is_empty()
+        Instruction::SendLexical { selector, argument_sources, destination: 2, .. }
+            if *selector == Symbol::intern("a") && argument_sources.is_empty()
     ));
     assert!(matches!(
         &code.instruction(5),
@@ -200,36 +200,46 @@ fn the_reference_lowering_emits_the_same_prologue() {
         full.instructions(),
         vec![
             Instruction::Move {
-                destination: 1,
+                destination: 2,
                 source: 0
             },
             Instruction::LoadLiteral {
-                destination: 2,
+                destination: 4,
                 literal: ns_runtime::bytecode::Literal::SmallInteger(1)
             },
-            Instruction::SendPublic {
-                receiver_register: 1,
-                selector: Symbol::intern("+"),
-                argument_registers: vec![2],
+            Instruction::Move {
                 destination: 3,
+                source: 4
+            },
+            Instruction::SendPublic {
+                receiver_register: 2,
+                selector: Symbol::intern("+"),
+                argument_base: 3,
+                argument_sources: vec![3],
+                destination: 5,
                 call_site: CallSite::UNCACHED
+            },
+            Instruction::Move {
+                destination: 1,
+                source: 5
             },
             Instruction::InitializeSuperclass {
                 steps: 1,
                 selector: Symbol::intern("y:"),
-                argument_registers: vec![3],
-                destination: 4
+                argument_base: 1,
+                argument_sources: vec![1],
+                destination: 6
             },
             Instruction::Move {
-                destination: 5,
+                destination: 7,
                 source: 0
             },
             Instruction::InitializeSlot {
-                source: 5,
+                source: 7,
                 own_index: 0
             },
-            Instruction::LoadSelf { destination: 6 },
-            Instruction::ImplicitReturn { register: 6 },
+            Instruction::LoadSelf { destination: 8 },
+            Instruction::ImplicitReturn { register: 8 },
         ]
     );
 
@@ -257,25 +267,32 @@ fn the_reference_lowering_emits_the_same_prologue() {
             Instruction::InitializeSuperclass {
                 steps: 3,
                 selector: Symbol::NEW,
-                argument_registers: vec![],
+                argument_base: 0,
+                argument_sources: vec![],
                 destination: 0
             },
             Instruction::InitializeAppliedLevel {
                 steps: 2,
-                argument_registers: vec![],
+                argument_base: 1,
+                argument_sources: vec![],
                 destination: 1
             },
             Instruction::LoadLiteral {
-                destination: 2,
+                destination: 3,
                 literal: ns_runtime::bytecode::Literal::SmallInteger(1)
+            },
+            Instruction::Move {
+                destination: 2,
+                source: 3
             },
             Instruction::InitializeAppliedLevel {
                 steps: 1,
-                argument_registers: vec![2],
-                destination: 3
+                argument_base: 2,
+                argument_sources: vec![2],
+                destination: 4
             },
-            Instruction::LoadSelf { destination: 4 },
-            Instruction::ImplicitReturn { register: 4 },
+            Instruction::LoadSelf { destination: 5 },
+            Instruction::ImplicitReturn { register: 5 },
         ]
     );
 }

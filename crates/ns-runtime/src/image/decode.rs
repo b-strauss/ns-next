@@ -405,6 +405,14 @@ pub enum DecodeError {
         register: u16,
         register_count: u16,
     },
+    /// A send's argument slots running past its own body's register file:
+    /// the slots `argument_base .. argument_base + argument_count`, whose
+    /// last is out of range even when the base is not.
+    ArgumentSlotsOutOfRange {
+        argument_base: u16,
+        argument_count: usize,
+        register_count: u16,
+    },
     /// An outer-local operand outside the register file of the body it
     /// addresses -- the one `depth` closure hops out.
     OuterLocalOutOfRange {
@@ -877,6 +885,14 @@ impl std::fmt::Display for DecodeError {
             } => write!(
                 f,
                 "register r{register} is outside a body with {register_count} register(s)"
+            ),
+            DecodeError::ArgumentSlotsOutOfRange {
+                argument_base,
+                argument_count,
+                register_count,
+            } => write!(
+                f,
+                "{argument_count} argument slot(s) from r{argument_base} run past a body with {register_count} register(s)"
             ),
             DecodeError::OuterLocalOutOfRange {
                 depth,
@@ -1799,6 +1815,19 @@ fn verify_body(code: &CompiledCode, instructions: &[Instruction]) -> Result<(), 
                 });
             }
         }
+        // The base and every source are among `own_registers`; the slots
+        // past the base are not, and the send writes each one it copies a
+        // source into.
+        if let Some((argument_base, argument_sources)) = instruction.argument_slots() {
+            let end = usize::from(argument_base) + argument_sources.len();
+            if end > usize::from(code.register_count) {
+                return Err(DecodeError::ArgumentSlotsOutOfRange {
+                    argument_base,
+                    argument_count: argument_sources.len(),
+                    register_count: code.register_count,
+                });
+            }
+        }
         if let Some(target) = jump_target(instruction) {
             if target as usize >= instructions.len() {
                 return Err(DecodeError::JumpTargetOutOfRange {
@@ -1842,32 +1871,38 @@ fn own_registers(instruction: &Instruction) -> Vec<u16> {
         Instruction::LoadOuterLocal { destination, .. } => vec![*destination],
         Instruction::StoreOuterLocal { source, .. } => vec![*source],
         Instruction::SendLexical {
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
             ..
         }
         | Instruction::SendSuper {
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
             ..
         } => {
-            let mut registers = argument_registers.clone();
+            let mut registers = argument_sources.clone();
+            registers.push(*argument_base);
             registers.push(*destination);
             registers
         }
         Instruction::SendPublic {
             receiver_register,
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
             ..
         }
         | Instruction::SendInlinable {
             receiver_register,
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
             ..
         } => {
-            let mut registers = argument_registers.clone();
+            let mut registers = argument_sources.clone();
+            registers.push(*argument_base);
             registers.push(*receiver_register);
             registers.push(*destination);
             registers
@@ -1877,11 +1912,13 @@ fn own_registers(instruction: &Instruction) -> Vec<u16> {
         Instruction::SendMirror {
             mirror_register,
             subject_register,
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
             ..
         } => {
-            let mut registers = argument_registers.clone();
+            let mut registers = argument_sources.clone();
+            registers.push(*argument_base);
             registers.push(*mirror_register);
             registers.push(*subject_register);
             registers.push(*destination);
@@ -1940,16 +1977,19 @@ fn own_registers(instruction: &Instruction) -> Vec<u16> {
         } => vec![*instance, *destination],
         Instruction::CheckAppliedClause { .. } => vec![],
         Instruction::InitializeSuperclass {
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
             ..
         }
         | Instruction::InitializeAppliedLevel {
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
             ..
         } => {
-            let mut registers = argument_registers.clone();
+            let mut registers = argument_sources.clone();
+            registers.push(*argument_base);
             registers.push(*destination);
             registers
         }
@@ -2223,12 +2263,14 @@ fn decode_instruction(
         OPCODE_SEND_LEXICAL => {
             let depth = reader.read_u16()?;
             let selector = decode_symbol(reader, symbols)?;
-            let argument_registers = decode_registers(reader)?;
+            let argument_base = reader.read_u16()?;
+            let argument_sources = decode_registers(reader)?;
             let destination = reader.read_u16()?;
             Instruction::SendLexical {
                 depth,
                 selector,
-                argument_registers,
+                argument_base,
+                argument_sources,
                 destination,
                 call_site,
             }
@@ -2236,12 +2278,14 @@ fn decode_instruction(
         OPCODE_SEND_PUBLIC => {
             let selector = decode_symbol(reader, symbols)?;
             let receiver_register = reader.read_u16()?;
-            let argument_registers = decode_registers(reader)?;
+            let argument_base = reader.read_u16()?;
+            let argument_sources = decode_registers(reader)?;
             let destination = reader.read_u16()?;
             Instruction::SendPublic {
                 selector,
                 receiver_register,
-                argument_registers,
+                argument_base,
+                argument_sources,
                 destination,
                 call_site,
             }
@@ -2249,23 +2293,27 @@ fn decode_instruction(
         OPCODE_SEND_INLINABLE => {
             let selector = decode_symbol(reader, symbols)?;
             let receiver_register = reader.read_u16()?;
-            let argument_registers = decode_registers(reader)?;
+            let argument_base = reader.read_u16()?;
+            let argument_sources = decode_registers(reader)?;
             let destination = reader.read_u16()?;
             Instruction::SendInlinable {
                 selector,
                 receiver_register,
-                argument_registers,
+                argument_base,
+                argument_sources,
                 destination,
                 call_site,
             }
         }
         OPCODE_SEND_SUPER => {
             let selector = decode_symbol(reader, symbols)?;
-            let argument_registers = decode_registers(reader)?;
+            let argument_base = reader.read_u16()?;
+            let argument_sources = decode_registers(reader)?;
             let destination = reader.read_u16()?;
             Instruction::SendSuper {
                 selector,
-                argument_registers,
+                argument_base,
+                argument_sources,
                 destination,
                 call_site,
             }
@@ -2428,20 +2476,24 @@ fn decode_instruction(
         OPCODE_INITIALIZE_SUPERCLASS => {
             let steps = reader.read_u16()?;
             let selector = decode_symbol(reader, symbols)?;
-            let argument_registers = decode_registers(reader)?;
+            let argument_base = reader.read_u16()?;
+            let argument_sources = decode_registers(reader)?;
             Instruction::InitializeSuperclass {
                 steps,
                 selector,
-                argument_registers,
+                argument_base,
+                argument_sources,
                 destination: reader.read_u16()?,
             }
         }
         OPCODE_INITIALIZE_APPLIED_LEVEL => {
             let steps = reader.read_u16()?;
-            let argument_registers = decode_registers(reader)?;
+            let argument_base = reader.read_u16()?;
+            let argument_sources = decode_registers(reader)?;
             Instruction::InitializeAppliedLevel {
                 steps,
-                argument_registers,
+                argument_base,
+                argument_sources,
                 destination: reader.read_u16()?,
             }
         }

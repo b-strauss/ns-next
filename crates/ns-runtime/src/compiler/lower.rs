@@ -586,12 +586,14 @@ impl<'a> Lowerer<'a> {
         }
         self.next_scratch = self.base;
         let start = self.code.len();
-        let argument_registers = self.lower_operands(super::clause_arguments(superclass));
+        let (argument_base, argument_sources) =
+            self.lower_arguments(&[], super::clause_arguments(superclass));
         let destination = self.allocate_scratch();
         self.emit(Instruction::InitializeSuperclass {
             steps: superclass_steps,
             selector: super::clause_selector(superclass),
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
         });
         self.record_statement(start);
@@ -602,11 +604,13 @@ impl<'a> Lowerer<'a> {
             }
             self.next_scratch = self.base;
             let start = self.code.len();
-            let argument_registers = self.lower_operands(super::clause_arguments(Some(clause)));
+            let (argument_base, argument_sources) =
+                self.lower_arguments(&[], super::clause_arguments(Some(clause)));
             let destination = self.allocate_scratch();
             self.emit(Instruction::InitializeAppliedLevel {
                 steps: steps_of(position),
-                argument_registers,
+                argument_base,
+                argument_sources,
                 destination,
             });
             self.record_statement(start);
@@ -1000,7 +1004,7 @@ impl<'a> Lowerer<'a> {
     /// lowered afterwards can write, because the resolver binds no assignment
     /// to one (§3.6).
     fn materialize(&mut self, register: u16, clobbered: bool) -> u16 {
-        if !clobbered || register >= self.base || self.read_only_locals[register as usize] {
+        if !self.needs_copy(register, clobbered) {
             return register;
         }
         let destination = self.allocate_scratch();
@@ -1011,20 +1015,53 @@ impl<'a> Lowerer<'a> {
         destination
     }
 
+    /// `materialize`, the copy going into `slot`, a send's argument slot,
+    /// rather than into a fresh scratch register: the slot is then the
+    /// argument's source, and the send copies nothing.
+    fn materialize_into(&mut self, register: u16, clobbered: bool, slot: u16) -> u16 {
+        if !self.needs_copy(register, clobbered) {
+            return register;
+        }
+        self.emit(Instruction::Move {
+            destination: slot,
+            source: register,
+        });
+        slot
+    }
+
+    /// Whether `materialize` copies `register`: a writable named local
+    /// something lowered before its consumer can write.
+    fn needs_copy(&self, register: u16, clobbered: bool) -> bool {
+        clobbered && register < self.base && !self.read_only_locals[register as usize]
+    }
+
     /// Lowers one operand of a multi-operand instruction. `rest` is
     /// everything lowered after this operand but before that instruction
     /// executes -- the arguments still to come, for instance.
     fn lower_operand(&mut self, expression: &Expression, rest: &[Expression]) -> u16 {
         let register = self.lower_expression(expression);
-        // Only a writable named local can be clobbered (`materialize`), so
-        // nothing else walks `rest`: a long argument list or tuple of one
-        // parameter would otherwise cost a walk per operand, quadratic.
+        let clobbered = self.clobbered_by(register, rest);
+        self.materialize(register, clobbered)
+    }
+
+    /// `lower_operand` for a send's argument, whose protective copy goes
+    /// into its slot.
+    fn lower_argument(&mut self, expression: &Expression, rest: &[Expression], slot: u16) -> u16 {
+        let register = self.lower_expression(expression);
+        let clobbered = self.clobbered_by(register, rest);
+        self.materialize_into(register, clobbered, slot)
+    }
+
+    /// Whether anything in `rest` can write `register`. Only a writable
+    /// named local can be clobbered (`materialize`), so nothing else walks
+    /// `rest`: a long argument list or tuple of one parameter would
+    /// otherwise cost a walk per operand, quadratic.
+    fn clobbered_by(&self, register: u16, rest: &[Expression]) -> bool {
         let writable_local = register < self.base && !self.read_only_locals[usize::from(register)];
-        let clobbered = writable_local
+        writable_local
             && rest
                 .iter()
-                .any(|later| self.writes_register(later, register, 0));
-        self.materialize(register, clobbered)
+                .any(|later| self.writes_register(later, register, 0))
     }
 
     /// Lowers `expression` in a position whose caller states whether anything
@@ -1430,7 +1467,13 @@ impl<'a> Lowerer<'a> {
             }
             Some(Binding::LexicalSend { depth }) => {
                 let depth = *depth;
-                self.emit_lexical_send(depth, crate::Symbol::intern(&id.name), vec![])
+                let (argument_base, argument_sources) = self.lower_arguments(&[], &[]);
+                self.emit_lexical_send(
+                    depth,
+                    crate::Symbol::intern(&id.name),
+                    argument_base,
+                    argument_sources,
+                )
             }
             // The resolver attaches `SuperSend` to a bare identifier in one
             // place: a `super`-prefixed inheritance-clause receiver, `super
@@ -1439,9 +1482,11 @@ impl<'a> Lowerer<'a> {
             // `Foo`, whose lookup starts above the clause activation's
             // `current_class` -- the class that declares the clause.
             Some(Binding::SuperSend) => {
+                let (argument_base, argument_sources) = self.lower_arguments(&[], &[]);
                 self.emit_send(|destination, call_site| Instruction::SendSuper {
                     selector: crate::Symbol::intern(&id.name),
-                    argument_registers: vec![],
+                    argument_base,
+                    argument_sources,
                     destination,
                     call_site,
                 })
@@ -1503,24 +1548,6 @@ impl<'a> Lowerer<'a> {
         use_: ValueUse,
     ) -> u16 {
         let mut value_register = self.lower_expression(value);
-        // A setter send runs user code before anything reads this expression's
-        // own value, so a named local's register may no longer hold what was
-        // assigned by then -- but only where that code can reach the register
-        // at all, which after conversion is a fallback closure's locals alone
-        // (`a_send_can_write`). (The `StoreLocal`/`StoreOuterLocal` cases below
-        // need no copy: the only named local a `StoreLocal` can write while
-        // `value_register` is live is `value_register` itself -- `t:: t` --
-        // which leaves it unchanged, and a `StoreOuterLocal` writes a different
-        // frame.)
-        if use_ == ValueUse::Read
-            && matches!(
-                self.bindings.get(&target.span),
-                Some(Binding::LexicalSend { .. })
-            )
-            && self.a_send_can_write(value_register)
-        {
-            value_register = self.materialize(value_register, true);
-        }
         match self.bindings.get(&target.span) {
             Some(Binding::Local(slot)) => {
                 let access = self.resolve_variable(0, *slot);
@@ -1535,7 +1562,23 @@ impl<'a> Lowerer<'a> {
             Some(Binding::LexicalSend { depth }) => {
                 let depth = *depth;
                 let setter = crate::Symbol::intern(&format!("{}:", target.name));
-                self.emit_lexical_send(depth, setter, vec![value_register]);
+                // The setter's one argument slot, after the value.
+                let argument_base = self.allocate_argument_slots(&[value_register], 1);
+                // A setter send runs user code before anything reads this
+                // expression's own value, so a named local's register may no
+                // longer hold what was assigned by then -- but only where that
+                // code can reach the register at all, which after conversion
+                // is a fallback closure's locals alone (`a_send_can_write`).
+                // The copy goes into the slot, which is then the setter's
+                // argument and the assignment's value. (The
+                // `StoreLocal`/`StoreOuterLocal` cases above need no copy: the
+                // only named local a `StoreLocal` can write while
+                // `value_register` is live is `value_register` itself -- `t::
+                // t` -- which leaves it unchanged, and a `StoreOuterLocal`
+                // writes a different frame.)
+                let clobbered = use_ == ValueUse::Read && self.a_send_can_write(value_register);
+                value_register = self.materialize_into(value_register, clobbered, argument_base);
+                self.emit_lexical_send(depth, setter, argument_base, vec![value_register]);
             }
             Some(Binding::SuperSend | Binding::MirrorSend | Binding::EnclosingObject { .. })
             | None => panic!(
@@ -1573,12 +1616,14 @@ impl<'a> Lowerer<'a> {
         &mut self,
         depth: u16,
         selector: crate::Symbol,
-        argument_registers: Vec<u16>,
+        argument_base: u16,
+        argument_sources: Vec<u16>,
     ) -> u16 {
         self.emit_send(|destination, call_site| Instruction::SendLexical {
             depth,
             selector,
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
             call_site,
         })
@@ -1590,11 +1635,13 @@ impl<'a> Lowerer<'a> {
         message: &ast::MessageSend,
     ) -> u16 {
         let selector = selector_of(message);
-        let argument_registers = self.lower_arguments(message);
+        let (argument_base, argument_sources) =
+            self.lower_arguments(&[receiver_register], &message.arguments);
         self.emit_send(|destination, call_site| Instruction::SendPublic {
             selector,
             receiver_register,
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
             call_site,
         })
@@ -1612,18 +1659,52 @@ impl<'a> Lowerer<'a> {
         result
     }
 
-    /// Every argument is live until the send instruction reads it, so each
-    /// one has to survive whatever the arguments after it emit.
-    fn lower_arguments(&mut self, message: &ast::MessageSend) -> Vec<u16> {
-        self.lower_operands(&message.arguments)
+    /// A send's `count` contiguous argument slots, allocated at once, after
+    /// every register in `receivers` the send also reads -- a receiver, a
+    /// mirror send's subject, a setter's value -- so that the slots are
+    /// the top of the registers live at the send
+    /// (`docs/design/execution.md`, "Planned: overlapping register
+    /// windows"). Answers the first slot; for no argument, where the first
+    /// would be.
+    fn allocate_argument_slots(&mut self, receivers: &[u16], count: usize) -> u16 {
+        let argument_base = self.next_scratch;
+        for _ in 0..count {
+            self.allocate_scratch();
+        }
+        debug_assert!(
+            argument_base >= self.base,
+            "internal: argument slots from r{argument_base} below the first scratch register r{}",
+            self.base
+        );
+        debug_assert!(
+            self.too_large
+                || receivers
+                    .iter()
+                    .all(|receiver| *receiver < self.base || *receiver < argument_base),
+            "internal: argument slots from r{argument_base} not above the send's scratch operands {receivers:?}"
+        );
+        argument_base
     }
 
-    /// `lower_operand` over a run of operands one instruction reads: each is
-    /// protected against every operand lowered after it.
-    fn lower_operands(&mut self, operands: &[Expression]) -> Vec<u16> {
-        (0..operands.len())
-            .map(|index| self.lower_operand(&operands[index], &operands[index + 1..]))
-            .collect()
+    /// A send's arguments: their slots allocated first
+    /// (`allocate_argument_slots`), then each argument lowered as
+    /// `lower_operand` lowers an operand, the register it answers recorded
+    /// as its source -- every argument is live until the send reads it, so
+    /// each has to survive whatever the arguments after it emit, and a
+    /// protective copy goes into its own slot. The send copies each source
+    /// that is not its slot. Answers the first slot and the sources.
+    fn lower_arguments(&mut self, receivers: &[u16], arguments: &[Expression]) -> (u16, Vec<u16>) {
+        let argument_base = self.allocate_argument_slots(receivers, arguments.len());
+        let argument_sources = (0..arguments.len())
+            .map(|index| {
+                // Past `u16::MAX` the body is too large and nothing emitted
+                // is kept (`finish`), so a saturated slot is never run.
+                let offset = u16::try_from(index).unwrap_or(u16::MAX);
+                let slot = argument_base.saturating_add(offset);
+                self.lower_argument(&arguments[index], &arguments[index + 1..], slot)
+            })
+            .collect();
+        (argument_base, argument_sources)
     }
 
     /// `use_` is what reads the send's value. Only an inlined form passes it
@@ -1685,18 +1766,21 @@ impl<'a> Lowerer<'a> {
             }
             Some(Binding::LexicalSend { depth }) => {
                 let depth = *depth;
-                let argument_registers = self.lower_arguments(&send.message);
-                self.emit_lexical_send(depth, selector, argument_registers)
+                let (argument_base, argument_sources) =
+                    self.lower_arguments(&[], &send.message.arguments);
+                self.emit_lexical_send(depth, selector, argument_base, argument_sources)
             }
             binding => {
                 debug_assert!(
                     matches!(binding, Some(Binding::SuperSend)),
                     "internal: is_ordinary_send rejected a send that is neither super nor lexical"
                 );
-                let argument_registers = self.lower_arguments(&send.message);
+                let (argument_base, argument_sources) =
+                    self.lower_arguments(&[], &send.message.arguments);
                 self.emit_send(|destination, call_site| Instruction::SendSuper {
                     selector,
-                    argument_registers,
+                    argument_base,
+                    argument_sources,
                     destination,
                     call_site,
                 })
@@ -1879,9 +1963,9 @@ impl<'a> Lowerer<'a> {
     /// The fallback reads the two registers the guard already filled instead
     /// of lowering the message a second time: re-lowering it would evaluate
     /// the argument's own side effects twice whenever the guard fails. What
-    /// it emits is therefore exactly the `SendPublic` the ordinary lowering
-    /// would have emitted for this send, over exactly the same registers --
-    /// which is what makes the inlining a pure optimization, with every
+    /// it emits is therefore the `SendPublic` the ordinary lowering would
+    /// have emitted for this send, over the same receiver and argument
+    /// values -- which is what makes the inlining a pure optimization, with every
     /// error and its text still coming from that send's primitive. It lands
     /// its result in the same `destination` the fast path writes, rather
     /// than in a scratch register of its own that a `Move` then copies: the
@@ -1900,6 +1984,15 @@ impl<'a> Lowerer<'a> {
         let argument = &send.message.arguments[0];
         let left_register = self.lower_operand(&send.receiver, std::slice::from_ref(argument));
         let right_register = self.lower_expression(argument);
+        // The fallback's one argument slot: the argument's own register when
+        // it is a scratch register above the receiver, where the slot would
+        // stand, and otherwise -- a named local -- a slot of its own, which
+        // the send copies the argument into.
+        let argument_base = if right_register >= self.base && right_register > left_register {
+            right_register
+        } else {
+            self.allocate_argument_slots(&[left_register, right_register], 1)
+        };
         let destination = self.allocate_scratch();
         let fallback_jump = self.emit(Instruction::IntegerBinary {
             operation,
@@ -1915,7 +2008,8 @@ impl<'a> Lowerer<'a> {
         self.emit(Instruction::SendPublic {
             selector: selector_of(&send.message),
             receiver_register: left_register,
-            argument_registers: vec![right_register],
+            argument_base,
+            argument_sources: vec![right_register],
             destination,
             call_site,
         });
@@ -1956,13 +2050,15 @@ impl<'a> Lowerer<'a> {
             unreachable!("internal: every mirror selector takes a subject");
         };
         let subject_register = self.lower_operand(subject, rest);
-        let argument_registers = self.lower_operands(rest);
+        let (argument_base, argument_sources) =
+            self.lower_arguments(&[mirror_register, subject_register], rest);
         let destination = self.allocate_scratch();
         let failure_jump = self.emit(Instruction::SendMirror {
             primitive,
             mirror_register,
             subject_register,
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
             failure: 0,
         });
@@ -2303,7 +2399,7 @@ mod tests {
         // An explicit `self` receiver is a depth-0 lexical send.
         let instructions = code.instructions();
         let Some(Instruction::SendLexical {
-            argument_registers, ..
+            argument_sources, ..
         }) = instructions
             .iter()
             .find(|instruction| matches!(instruction, Instruction::SendLexical { .. }))
@@ -2311,12 +2407,12 @@ mod tests {
             panic!("expected the keyword send");
         };
         assert_ne!(
-            argument_registers[0], 0,
+            argument_sources[0], 0,
             "`t` is register 0; the first argument must not be its live register"
         );
         assert!(
             code.instructions().contains(&Instruction::Move {
-                destination: argument_registers[0],
+                destination: argument_sources[0],
                 source: 0
             }),
             "the copy out of `t` is a Move emitted before the assignment"
@@ -2353,14 +2449,14 @@ mod tests {
                 .filter_map(|instruction| match instruction {
                     Instruction::SendPublic {
                         receiver_register,
-                        argument_registers,
+                        argument_sources,
                         ..
-                    } => Some((*receiver_register, argument_registers.clone())),
+                    } => Some((*receiver_register, argument_sources.clone())),
                     _ => None,
                 })
                 .collect::<Vec<_>>(),
-            vec![(0, vec![1, 2])],
-            "receiver and first argument are read straight out of their own registers"
+            vec![(0, vec![1, 4])],
+            "receiver and first argument are read straight out of their own registers, the literal out of the register after the slots"
         );
     }
 
@@ -2498,17 +2594,17 @@ mod tests {
                                                   // An explicit `self` receiver is a depth-0 lexical send.
         let instructions = code.instructions();
         let Some(Instruction::SendLexical {
-            argument_registers, ..
+            argument_sources, ..
         }) = instructions
             .iter()
             .find(|instruction| matches!(instruction, Instruction::SendLexical { .. }))
         else {
             panic!("expected the keyword send: {:?}", code.instructions());
         };
-        assert_ne!(argument_registers[0], 0, "`t` is register 0");
+        assert_ne!(argument_sources[0], 0, "`t` is register 0");
         assert!(
             code.instructions().contains(&Instruction::Move {
-                destination: argument_registers[0],
+                destination: argument_sources[0],
                 source: 0
             }),
             "the copy out of `t` is a Move: {:?}",
@@ -2744,14 +2840,15 @@ mod tests {
                 Instruction::SendPublic {
                     selector: crate::Symbol::intern("~="),
                     receiver_register: 1,
-                    argument_registers: vec![0],
-                    destination: 2,
+                    argument_base: 2,
+                    argument_sources: vec![0],
+                    destination: 3,
                     call_site: CallSite { number: 0 },
                 },
             ]
         );
-        assert_eq!(destination, 2);
-        assert_eq!(code.register_count, 3);
+        assert_eq!(destination, 3);
+        assert_eq!(code.register_count, 4);
         assert_eq!(code.family_size, 1);
     }
 
@@ -2775,7 +2872,8 @@ mod tests {
             vec![Instruction::SendLexical {
                 depth: 0,
                 selector: crate::Symbol::intern("bar"),
-                argument_registers: vec![],
+                argument_base: 0,
+                argument_sources: vec![],
                 destination: 0,
                 call_site: CallSite { number: 0 },
             }]
@@ -2798,8 +2896,8 @@ mod tests {
         let code = lowerer.finish(foo.span);
         assert!(matches!(
             &code.instruction(2),
-            Instruction::SendLexical { depth: 0, selector, argument_registers, .. }
-                if selector.as_str() == "at:put:" && argument_registers.len() == 2
+            Instruction::SendLexical { depth: 0, selector, argument_sources, .. }
+                if selector.as_str() == "at:put:" && argument_sources.len() == 2
         ));
         let (foo, bindings) = resolve_method(source, 1);
         let mut lowerer = method_lowerer(&foo, &bindings);
@@ -2810,8 +2908,8 @@ mod tests {
         let code = lowerer.finish(foo.span);
         assert!(matches!(
             &code.instruction(0),
-            Instruction::SendSuper { selector, argument_registers, destination: 0, .. }
-                if selector.as_str() == "printString" && argument_registers.is_empty()
+            Instruction::SendSuper { selector, argument_sources, destination: 0, .. }
+                if selector.as_str() == "printString" && argument_sources.is_empty()
         ));
     }
 
@@ -2830,8 +2928,8 @@ mod tests {
         let code = lowerer.finish(bump.span);
         assert!(matches!(
             code.instructions().last(),
-            Some(Instruction::SendLexical { depth: 0, selector, argument_registers, .. })
-                if selector.as_str() == "n:" && argument_registers.len() == 1
+            Some(Instruction::SendLexical { depth: 0, selector, argument_sources, .. })
+                if selector.as_str() == "n:" && argument_sources.len() == 1
         ));
     }
 
@@ -2842,9 +2940,9 @@ mod tests {
             .filter_map(|instruction| match instruction {
                 Instruction::SendLexical {
                     selector,
-                    argument_registers,
+                    argument_sources,
                     ..
-                } if selector.as_str() == "n:" => Some(argument_registers[0]),
+                } if selector.as_str() == "n:" => Some(argument_sources[0]),
                 _ => None,
             })
             .collect()
@@ -3019,8 +3117,9 @@ mod tests {
                 Instruction::SendLexical {
                     depth: 0,
                     selector: crate::Symbol::intern("n:"),
-                    argument_registers: vec![0],
-                    destination: 1,
+                    argument_base: 1,
+                    argument_sources: vec![0],
+                    destination: 2,
                     call_site: CallSite { number: 0 },
                 },
                 Instruction::InitializeSlot {
@@ -3159,7 +3258,7 @@ mod tests {
         let [Instruction::SendLexical {
             depth: 0,
             selector,
-            argument_registers,
+            argument_sources,
             destination: send_destination,
             ..
         }] = &code.instructions()[..]
@@ -3170,7 +3269,7 @@ mod tests {
             );
         };
         assert_eq!(selector.as_str(), "Array");
-        assert!(argument_registers.is_empty());
+        assert!(argument_sources.is_empty());
         assert_eq!(*send_destination, destination);
     }
 
@@ -3930,34 +4029,38 @@ mod tests {
             Instruction::SendLexical {
                 depth: 1,
                 selector: crate::Symbol::intern("vmMirror"),
-                argument_registers: vec![],
+                argument_base: 1,
+                argument_sources: vec![],
                 destination: 1,
                 call_site: CallSite { number: 0 },
             },
             Instruction::LoadSelf { destination: 2 },
+            // The leaf's argument is the parameter, which the send copies
+            // into its slot, r3.
             Instruction::SendMirror {
                 primitive,
                 mirror_register: 1,
                 subject_register: 2,
-                argument_registers: vec![0],
-                destination: 3,
+                argument_base: 3,
+                argument_sources: vec![0],
+                destination: 4,
                 failure: 4,
             },
             Instruction::Jump { target: 8 },
             Instruction::LoadLiteral {
-                destination: 4,
-                literal: BytecodeLiteral::Nil,
-            },
-            Instruction::Return { register: 4 },
-            Instruction::LoadLiteral {
                 destination: 5,
                 literal: BytecodeLiteral::Nil,
             },
-            Instruction::Move {
-                destination: 3,
-                source: 5,
+            Instruction::Return { register: 5 },
+            Instruction::LoadLiteral {
+                destination: 6,
+                literal: BytecodeLiteral::Nil,
             },
-            Instruction::Return { register: 3 },
+            Instruction::Move {
+                destination: 4,
+                source: 6,
+            },
+            Instruction::Return { register: 4 },
         ];
         assert_eq!(code.instructions(), expected, "{:#?}", code.instructions());
         // The one call site is `vmMirror`'s lexical send: `SendMirror`
@@ -4143,7 +4246,7 @@ mod tests {
         let instructions = code.instructions();
         let Some(Instruction::SendPublic {
             receiver_register,
-            argument_registers,
+            argument_sources,
             ..
         }) = instructions.iter().find(
             |instruction| matches!(instruction, Instruction::SendPublic { selector, .. } if selector.as_str() == "+"),
@@ -4151,7 +4254,7 @@ mod tests {
             panic!("expected the fallback send: {:#?}", code.instructions())
         };
         assert_eq!(*receiver_register, *left);
-        assert_eq!(*argument_registers, vec![*right]);
+        assert_eq!(*argument_sources, vec![*right]);
         assert_eq!(
             code.instructions()
                 .iter()
@@ -4389,7 +4492,7 @@ mod tests {
         assert_ne!(bar_destination, baz_destination);
         let instructions = code.instructions();
         let Some(Instruction::SendPublic {
-            selector, argument_registers, ..
+            selector, argument_sources, ..
         }) = instructions.iter().rev().find(
             |instruction| matches!(instruction, Instruction::SendPublic { selector, .. } if selector.as_str() == "foo:with:"),
         )
@@ -4397,7 +4500,7 @@ mod tests {
             panic!("expected a foo:with: send")
         };
         assert_eq!(selector.as_str(), "foo:with:");
-        assert_eq!(argument_registers[0], bar_destination);
+        assert_eq!(argument_sources[0], bar_destination);
     }
 
     /// The evaluated arm moves the block's value into the result as it is:
@@ -4601,6 +4704,147 @@ mod tests {
                     register: u16::MAX - 1
                 },
             ]
+        );
+    }
+
+    /// The methods the argument-slot tests send from: a keyword send to
+    /// `self`, a send to a scratch receiver of a parameter, a super send of
+    /// a send's value, and an implicit-receiver keyword send.
+    const ARGUMENT_SLOT_SENDS: &str = indoc! {"
+        class X = Object new (
+        ) (
+          foo: first bar: second = ( ^first )
+          foo: first = ( ^first )
+          a = ( ^self )
+          b = ( ^self )
+          toSelf = ( ^self foo: 1 bar: 2 )
+          toScratch: x = ( ^self a foo: x )
+          toSuper = ( ^super foo: (b bar) )
+          implicit = ( ^foo: 3 )
+        ) : ()
+    "};
+
+    /// The receiver register, the argument base and the argument sources of
+    /// the one send of `selector` in `code`; no receiver for a lexical or a
+    /// super send.
+    fn argument_slots_of(code: &CompiledCode, selector: &str) -> (Option<u16>, u16, Vec<u16>) {
+        code.instructions()
+            .into_iter()
+            .find_map(|instruction| match instruction {
+                Instruction::SendPublic {
+                    selector: sent,
+                    receiver_register,
+                    argument_base,
+                    argument_sources,
+                    ..
+                }
+                | Instruction::SendInlinable {
+                    selector: sent,
+                    receiver_register,
+                    argument_base,
+                    argument_sources,
+                    ..
+                } if sent.as_str() == selector => {
+                    Some((Some(receiver_register), argument_base, argument_sources))
+                }
+                Instruction::SendLexical {
+                    selector: sent,
+                    argument_base,
+                    argument_sources,
+                    ..
+                }
+                | Instruction::SendSuper {
+                    selector: sent,
+                    argument_base,
+                    argument_sources,
+                    ..
+                } if sent.as_str() == selector => Some((None, argument_base, argument_sources)),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("expected a `{selector}` send: {:?}", code.instructions()))
+    }
+
+    /// A send of `selector` in `code` names `arity` contiguous slots, at or
+    /// above `first_scratch` and above a scratch receiver, inside the body's
+    /// registers; answers its base and its sources.
+    fn assert_contiguous_slots(
+        code: &CompiledCode,
+        selector: &str,
+        arity: usize,
+        first_scratch: u16,
+    ) -> (u16, Vec<u16>) {
+        let (receiver, argument_base, argument_sources) = argument_slots_of(code, selector);
+        assert_eq!(argument_sources.len(), arity, "{:?}", code.instructions());
+        assert!(
+            argument_base >= first_scratch,
+            "the slots of `{selector}` start at r{argument_base}, below the first scratch register r{first_scratch}"
+        );
+        if let Some(receiver) = receiver.filter(|receiver| *receiver >= first_scratch) {
+            assert!(
+                argument_base > receiver,
+                "the slots of `{selector}` start at r{argument_base}, not after its receiver r{receiver}"
+            );
+        }
+        assert!(
+            u32::from(argument_base) + arity as u32 <= u32::from(code.register_count),
+            "the slots of `{selector}` run past the body's {} registers",
+            code.register_count
+        );
+        (argument_base, argument_sources)
+    }
+
+    #[test]
+    fn a_send_to_self_names_contiguous_argument_slots() {
+        let code = lower_whole_method(ARGUMENT_SLOT_SENDS, 4);
+        assert_contiguous_slots(&code, "foo:bar:", 2, 0);
+    }
+
+    /// A parameter is never copied: it is the argument's source, and the
+    /// send itself copies it into its slot.
+    #[test]
+    fn a_send_to_a_scratch_receiver_names_its_slots_after_the_receiver() {
+        let code = lower_whole_method(ARGUMENT_SLOT_SENDS, 5);
+        let (_, sources) = assert_contiguous_slots(&code, "foo:", 1, 1);
+        assert_eq!(sources, vec![0], "`x` is register 0, passed as it is");
+    }
+
+    #[test]
+    fn a_super_send_names_contiguous_argument_slots() {
+        let code = lower_whole_method(ARGUMENT_SLOT_SENDS, 6);
+        assert_contiguous_slots(&code, "foo:", 1, 0);
+    }
+
+    #[test]
+    fn an_implicit_receiver_send_names_contiguous_argument_slots() {
+        let code = lower_whole_method(ARGUMENT_SLOT_SENDS, 7);
+        assert_contiguous_slots(&code, "foo:", 1, 0);
+    }
+
+    /// The value `x` had when the first argument was evaluated, not 3: the
+    /// protective copy goes into the first slot, which is then its source.
+    #[test]
+    fn a_local_a_later_argument_assigns_is_copied_into_its_slot() {
+        let source = indoc! {"
+            class X = Object new (
+            ) (
+              foo: first bar: second = ( ^first )
+              m = ( | x ::= 1. | ^self foo: x bar: (x:: 3) )
+            ) : ()
+        "};
+        let code = lower_whole_method(source, 1); // `x` is register 0
+        let (argument_base, sources) = assert_contiguous_slots(&code, "foo:bar:", 2, 1);
+        assert_ne!(
+            sources[0], 0,
+            "`x` is register 0, which the second argument writes"
+        );
+        assert_eq!(sources[0], argument_base, "the copy is the first slot");
+        assert!(
+            code.instructions().contains(&Instruction::Move {
+                destination: argument_base,
+                source: 0
+            }),
+            "the copy out of `x` is a Move into the slot: {:?}",
+            code.instructions()
         );
     }
 }

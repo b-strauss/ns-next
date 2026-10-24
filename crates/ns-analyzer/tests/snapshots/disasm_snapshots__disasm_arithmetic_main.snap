@@ -2,11 +2,11 @@
 source: crates/ns-analyzer/tests/disasm_snapshots.rs
 expression: "disasm(\"arithmetic.ns\", &[\"main:args:\"])"
 ---
-method main:args: (args 2, registers 8)
+method main:args: (args 2, registers 9)
    0   stmt 0  SendPublic r2 <- r0 #transcript () @0
-   1   stmt 0  SendLexical r3 <- depth 0 #result () @1
-   2   stmt 0  SendPublic r4 <- r3 #printString () @2
-   3   stmt 0  SendPublic r5 <- r2 #show: (r4) @3
-   4   stmt 0  SendPublic r6 <- r2 #newLine () @4
-   5        -  LoadSelf r7
-   6        -  ImplicitReturn r7
+   1   stmt 0  SendLexical r4 <- depth 0 #result () @1
+   2   stmt 0  SendPublic r5 <- r4 #printString () @2
+   3   stmt 0  SendPublic r6 <- r2 #show: (r3 <- r5) @3
+   4   stmt 0  SendPublic r7 <- r2 #newLine () @4
+   5        -  LoadSelf r8
+   6        -  ImplicitReturn r8

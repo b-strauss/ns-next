@@ -309,27 +309,43 @@ fn a_clause_message_past_the_register_ceiling_raises_when_it_runs() {
 
 /// A factory of 65,536 parameters: its body, whose arity saturates at
 /// 65,535, is handed all 65,536 arguments and raises the too-large error,
-/// not an arity mismatch, before its initializer runs. Under the optimized lowering
-/// `build:` passes one parameter's register 65,536 times; the reference
-/// lowering copies each argument into a register of its own, so there
-/// `build:` itself is past the ceiling.
+/// not an arity mismatch, before its initializer runs. No send instruction
+/// can hand it them: a send names its arguments' contiguous slots, so
+/// `build:`, which sends the factory 65,536 arguments, is itself past the
+/// ceiling under both lowerings. The host sends them instead.
 #[test]
 fn a_factory_of_more_parameters_than_registers_raises_the_too_large_error() {
     let pattern: String = (0..=usize::from(u16::MAX))
         .map(|index| format!("k: p{index} "))
         .collect();
+    let selector: String = (0..=usize::from(u16::MAX)).map(|_| "k:").collect();
     let arguments: String = (0..=usize::from(u16::MAX)).map(|_| "k: x ").collect();
     let nested = format!(
         "    class Marker y: value = Object new () () : ()
     class Wide {pattern}= Object <: Marker y: p0 () () : ()
     build: x = ( ^Wide {arguments})"
     );
-    assert_eq!(
-        make_error(&nested, "^build: 1", Lowering::Optimized),
-        "factory too large: it needs more than 65535 registers"
-    );
-    assert_eq!(
-        make_error(&nested, "^build: 1", Lowering::Reference),
-        METHOD_TOO_LARGE
-    );
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        assert_eq!(make_error(&nested, "^build: 1", lowering), METHOD_TOO_LARGE);
+        let source = format!(
+            "class Generated = Object new () (
+{nested}
+    public make = ( ^Wide )
+) : ()
+"
+        );
+        let (mut interpreter, class) = load(&source, lowering);
+        let instance = new_instance(&mut interpreter, &class);
+        let wide = expect_ok(send(&mut interpreter, &instance, "make", &[]), "make");
+        let arguments: Vec<Root> = (0..=usize::from(u16::MAX))
+            .map(|_| interpreter.stash(Value::small_integer(1)))
+            .collect();
+        assert_eq!(
+            expect_error(
+                send(&mut interpreter, &wide, &selector, &arguments),
+                "the factory"
+            ),
+            "factory too large: it needs more than 65535 registers"
+        );
+    }
 }

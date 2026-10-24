@@ -7866,18 +7866,18 @@ unchanged:
   `BodyTooLarge`;
 - `send_sites`, one `SendSite` per send: its selector, its `CallSite`, the
   lexical depth for a `SendLexical`, and, for a wide send, its destination,
-  receiver and argument registers;
+  receiver, argument base and argument sources;
 - `blocks`, one per `MakeClosure`: the block's `Rc<CompiledCode>`, its
   parameters and its copied registers;
-- `mirror_sites`, one per `SendMirror`: its argument registers and its
-  failure target;
+- `mirror_sites`, one per `SendMirror`: its argument base and sources and
+  its failure target;
 - `superclass_sites`, one per `InitializeSuperclass`: its steps, its
-  selector and its argument registers, since the selector does not fit
+  selector and its argument base and sources, since the selector does not fit
   the slot beside the steps;
 - `register_lists`, the element registers of a `MakeArray`, and the
-  argument registers of an `InitializeAppliedLevel`, whose slots hold the
-  rest (an `InitializeInstance` passes its body's own arguments and names
-  no list);
+  argument sources of an `InitializeAppliedLevel`, whose eight bytes hold
+  its destination, its argument base and its steps (an `InitializeInstance`
+  passes its body's own arguments and names no list);
 - `wide`, the full `Instruction` of every instruction other than a send
   that has no eight-byte form here.
 
@@ -7892,8 +7892,11 @@ the image decoder alike, so the wire format is unchanged.
 `SendInlinable` each come in four forms, for no argument, one, two, and a `Wide`
 form that reads everything from its `SendSite` -- three arguments or more, or a
 register above 255. The two-argument `SendPublic` is `{ destination, receiver,
-arguments: [u8; 2], site: u16 }`, eight bytes, and an eight-byte form's argument
-registers reach `send` by value, from the slot, with no allocation to chase.
+argument_base, sources: [u8; 2], site: u16 }`, eight bytes -- a send names
+its arguments' contiguous slots by their base and each argument's source,
+and copies a source that is not its slot into it before it decides
+([compiler.md](compiler.md), "Sends") -- and an eight-byte form's argument
+sources reach `send` by value, from the slot, with no allocation to chase.
 `SendMirror` has one eight-byte form, its arguments and failure target in its
 `MirrorSite`; like every other instruction it takes `Wide` when its operands do
 not fit (a register above 255, or the mirror-site table full). Every send arm
@@ -8009,16 +8012,18 @@ Would change: a send's arguments are no longer copied into the callee's
 window; the caller's outgoing argument registers *are* the callee's first
 registers.
 
-**What a send copies today.** Twice each argument: `vm::send` gathers the
-argument registers into the step state's reusable buffer, because the
-decision reads them as a `&[Value]` while it holds `&mut Mutator` ("No
-re-entry from Rust"), and `Heap::push_activation_in` copies the buffer into
-the callee's first registers ("Representation" above). The argument
-registers are an arbitrary list: a named local is passed in its own
-register, the same register may be passed twice, and the reference
-lowering interleaves arguments with the scratch of later ones. Nothing has
-measured what the two copies cost; "What a send costs" found the argument
-count immaterial, but on the retired `Rc<RefCell<_>>` representation.
+**What a send copies today.** Each argument up to three times. A send
+names its arguments' contiguous slots, allocated after its receiver, and
+each argument's source, and copies a source that is not its slot into it
+-- a named local passed as an argument, and every argument the optimized
+lowering evaluated into a register above the slots
+([compiler.md](compiler.md), "Sends"). `vm::send` then gathers the slots into
+the step state's reusable buffer, because the decision reads them as a
+`&[Value]` while it holds `&mut Mutator` ("No re-entry from Rust"), and
+`Heap::push_activation_in` copies the buffer into the callee's first
+registers ("Representation" above). Nothing has measured what the copies
+cost; "What a send costs" found the argument count immaterial, but on the
+retired `Rc<RefCell<_>>` representation.
 
 **The prior art overlaps them, and puts the header between the arguments
 and the temporaries.** Cog's stack frame is the caller's pushed receiver

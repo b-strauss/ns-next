@@ -19,15 +19,17 @@
 //! said.
 
 // Instructions, numbered in the order `bytecode::Instruction` declares them,
-// except the four sends: retired at 7-10 (see `RETIRED_OPCODES`) once their
-// call site widened from a `u16` instruction index to a `u32` family number,
-// reassigned to 21-24, then retired a second time and reassigned below at
-// 25-28 once the number itself stopped being part of the artifact at all --
-// a property the decoder now derives instead of reading. `MakeClosure` is
-// retired at 11 and reassigned to 29 for the same reason: closure
-// conversion gave it a list of copied registers, so its old bytes describe
-// a different instruction.
-// Next free number: 46.
+// except the four sends and the two initializer invocations. The sends were
+// retired at 7-10 (see `RETIRED_OPCODES`) once their call site widened from
+// a `u16` instruction index to a `u32` family number, reassigned to 21-24, then retired a second time and reassigned at 25-28
+// once the number itself stopped being part of the artifact at all -- a
+// property the decoder now derives instead of reading -- and retired a
+// third time, with the two initializer invocations at 44 and 45, when a
+// send came to name its argument slots' base beside each argument's source
+// (46-51). `MakeClosure` is retired at 11 and reassigned to 29 for the same
+// reason: closure conversion gave it a list of copied registers, so its old
+// bytes describe a different instruction.
+// Next free number: 52.
 
 /// Loads a literal into a register; a string, symbol or array
 /// literal allocates a fresh object every time it runs.
@@ -71,17 +73,20 @@ pub const OPCODE_BRANCH_IF_FALSE: u8 = 19;
 /// else.
 pub const OPCODE_BRANCH_IF_TRUE: u8 = 20;
 /// Sends a message with an implicit receiver, the enclosing object at the
-/// lexical depth the resolver fixed, by the rules of §5.7–§5.9.
-pub const OPCODE_SEND_LEXICAL: u8 = 25;
+/// lexical depth the resolver fixed, by the rules of §5.7–§5.9. Like every
+/// send and initializer invocation below, it names its arguments as the
+/// base of their contiguous slots and the register each slot is copied
+/// from (`bytecode::Instruction`).
+pub const OPCODE_SEND_LEXICAL: u8 = 46;
 /// Sends a message to an explicit receiver, found by `lookupPublic` (§5.5).
-pub const OPCODE_SEND_PUBLIC: u8 = 26;
+pub const OPCODE_SEND_PUBLIC: u8 = 47;
 /// Exactly a `SendPublic`, emitted only by the reference lowering for a
 /// control-flow send the optimized lowering inlines, so that both lowerings
 /// count recursion depth alike.
-pub const OPCODE_SEND_INLINABLE: u8 = 27;
+pub const OPCODE_SEND_INLINABLE: u8 = 48;
 /// Sends a message to `self`, looked up from the superclass of the running
 /// method's defining class (§5.10).
-pub const OPCODE_SEND_SUPER: u8 = 28;
+pub const OPCODE_SEND_SUPER: u8 = 49;
 /// Creates a block closure over a compiled block body, capturing the running
 /// activation and copying the values of a list of registers into it.
 pub const OPCODE_MAKE_CLOSURE: u8 = 29;
@@ -126,17 +131,22 @@ pub const OPCODE_INITIALIZE_INSTANCE: u8 = 42;
 pub const OPCODE_CHECK_APPLIED_CLAUSE: u8 = 43;
 /// An initializer's run of its superclass's initializer, after §6.1's check
 /// (`Instruction::InitializeSuperclass`).
-pub const OPCODE_INITIALIZE_SUPERCLASS: u8 = 44;
+pub const OPCODE_INITIALIZE_SUPERCLASS: u8 = 50;
 /// An initializer's run of the own part of a level a `<:` clause adds
 /// (`Instruction::InitializeAppliedLevel`).
-pub const OPCODE_INITIALIZE_APPLIED_LEVEL: u8 = 45;
+pub const OPCODE_INITIALIZE_APPLIED_LEVEL: u8 = 51;
 
 /// Instruction tags that no longer name anything and are never reused:
 /// 7–10 were the four sends while their call site was a `u16` instruction
 /// index; widening it to a `u32` family number moved them to 21–24. Retiring
 /// those in turn and moving to 25–28 is what makes a stale artifact from
 /// before call-site numbers stopped being serialized at all meet an unknown
-/// tag instead of decoding into a different, perfectly valid program. 11 was
+/// tag instead of decoding into a different, perfectly valid program. 25–28
+/// were the four sends, and 44 and 45 `InitializeSuperclass` and
+/// `InitializeAppliedLevel`, while they named an arbitrary list of argument
+/// registers; naming the slots' base beside the sources moved them to
+/// 46–51, since a stale artifact's list would otherwise be read as the base
+/// and the bytes after it. 11 was
 /// `MakeClosure` before it carried a list of copied registers; a stale
 /// artifact's tag-11 bytes would otherwise decode as a `MakeClosure` whose
 /// block is handed nothing, which is a different, perfectly valid program.
@@ -145,7 +155,7 @@ pub const OPCODE_INITIALIZE_APPLIED_LEVEL: u8 = 45;
 /// (`newspeak-spec.pdf` §3.2): no lowering emits it any more, and retiring
 /// the number keeps a stale artifact's tag-2 bytes from ever being read as
 /// whatever instruction takes the next free number instead.
-pub const RETIRED_OPCODES: [u8; 10] = [2, 7, 8, 9, 10, 11, 21, 22, 23, 24];
+pub const RETIRED_OPCODES: [u8; 16] = [2, 7, 8, 9, 10, 11, 21, 22, 23, 24, 25, 26, 27, 28, 44, 45];
 
 // Literals, carried by `OPCODE_LOAD_LITERAL`.
 // Next free number: 12.

@@ -309,12 +309,15 @@ Instructions:
   steps out along the chain of captured frames.
 - 6 `StoreOuterLocal`: writes a local variable of an enclosing activation,
   reached the same way.
-- 7–11 and 21–24: retired. 7–10 were the sends while a call site was a `u16`
-  instruction index; 21–24 were the sends while the number was serialized as
-  a `u32` (see the call-site paragraph below); 11 was `MakeClosure` before
-  closure conversion gave it a list of copied registers. The sends are 25–28
-  and `MakeClosure` is 29; bytes written under any retired number meet an
-  unknown tag and are refused (`opcodes::RETIRED_OPCODES`).
+- 7–11, 21–28, 44 and 45: retired. 7–10 were the sends while a call site was a
+  `u16` instruction index; 21–24 were the sends while the number was
+  serialized as a `u32` (see the call-site paragraph below); 25–28 were the
+  sends, and 44 and 45 `InitializeSuperclass` and `InitializeAppliedLevel`,
+  while they named an arbitrary list of argument registers; 11 was
+  `MakeClosure` before closure conversion gave it a list of copied registers.
+  The sends are 46–49, the two initializer invocations 50 and 51, and
+  `MakeClosure` is 29; bytes written under any retired number meet an unknown
+  tag and are refused (`opcodes::RETIRED_OPCODES`).
 - 12 `MakeArray`: creates an array from the values of a list of registers, for a
   `{ ... }` expression.
 - 13 `InitializeSlot`: writes the initial value of one of the running mixin's
@@ -335,15 +338,6 @@ Instructions:
   through for anything else.
 - 20 `BranchIfTrue`: jumps when a register holds exactly `true`, and falls
   through for anything else.
-- 25 `SendLexical`: sends a message with an implicit receiver, the enclosing
-  object at the lexical depth the resolver fixed, by the rules of §5.7–§5.9.
-- 26 `SendPublic`: sends a message to an explicit receiver, found by
-  `lookupPublic` (§5.5).
-- 27 `SendInlinable`: exactly a `SendPublic`, emitted only by the reference
-  lowering for a control-flow send the optimized lowering inlines, so that both
-  lowerings count recursion depth alike.
-- 28 `SendSuper`: sends a message to `self`, looked up from the superclass of
-  the running method's defining class (§5.10).
 - 29 `MakeClosure`: creates a block closure over a compiled block body,
   capturing the running activation, and carries the registers whose values the
   closure is handed ([execution.md](execution.md), "Closure conversion").
@@ -390,14 +384,29 @@ Instructions:
   no list, and a factory body is three instructions whatever its arity.
 - 43 `CheckAppliedClause`: §6.1's check of a `<:` clause, `steps` a `u16`
   and the selector as a send writes it.
-- 44 `InitializeSuperclass`: §6.1's check, then the initializer of the class
-  `steps` above, `steps` a `u16`, the selector and the argument registers as
-  a send writes them, and `destination` a `u16`.
-- 45 `InitializeAppliedLevel`: the own part of the level a `<:` clause adds
-  `steps` above, `steps` a `u16`, the argument registers as a send writes
-  them, and `destination` a `u16`.
+- 46 `SendLexical`: sends a message with an implicit receiver, the enclosing
+  object at the lexical depth the resolver fixed, by the rules of §5.7–§5.9.
+- 47 `SendPublic`: sends a message to an explicit receiver, found by
+  `lookupPublic` (§5.5).
+- 48 `SendInlinable`: exactly a `SendPublic`, emitted only by the reference
+  lowering for a control-flow send the optimized lowering inlines, so that both
+  lowerings count recursion depth alike.
+- 49 `SendSuper`: sends a message to `self`, looked up from the superclass of
+  the running method's defining class (§5.10).
 
-An initializer body carries 43 to 45 and a factory body 41 and 42, and
+  Each send, and 50 and 51 below, names its arguments as contiguous slots: a
+  `u16` argument base, then the register list of the sources, one per
+  argument. The arguments are the registers from the base on, and the
+  instruction copies each source that is not its slot into the slot before
+  it decides.
+- 50 `InitializeSuperclass`: §6.1's check, then the initializer of the class
+  `steps` above, `steps` a `u16`, the selector and the argument slots as a
+  send writes them, and `destination` a `u16`.
+- 51 `InitializeAppliedLevel`: the own part of the level a `<:` clause adds
+  `steps` above, `steps` a `u16`, the argument slots as a send writes them,
+  and `destination` a `u16`.
+
+An initializer body carries 43, 50 and 51 and a factory body 41 and 42, and
 the loader accepts all five in any body: a factory body never travels
 (below), and what a crafted body can make disagree -- a receiver that is no
 class object, a level that is not there, an arity -- each instruction
@@ -1237,7 +1246,11 @@ count (checked in `decode_closure_record`, before any of them is read), and
 a `MakeClosure` copies, and every register operand of `MakeVector`,
 `LoadVector` and `StoreVector`, is inside its own body's register file, like
 every other register operand; a vector slot is not a register and is checked at
-run time, since a vector's size is a run-time value.
+run time, since a vector's size is a run-time value. A send's argument base
+and each of its sources are register operands too, and so is every slot from
+the base on, since the send writes a source into its slot: a body whose last
+slot runs past its register file is refused (`ArgumentSlotsOutOfRange`) even
+when the base and the sources are inside it.
 
 **A frame record's register file matches its body.** Every reified frame is
 allocated with its code's full register file ([object-model.md](object-model.md),
@@ -2609,6 +2622,12 @@ shipped world.
   meet an unknown tag instead of decoding as whatever instruction took the
   number next. A kernel method's fast path is never carried, so the format
   needed nothing new.
+- **A send naming its argument slots retired six tags** (2026-10-24): the
+  four sends' 25–28 and the initializer invocations' 44 and 45, taken by
+  46–51, which write the slots' base before the sources. A stale artifact's
+  register list read as a base and a shorter list would be a different,
+  valid program; under the retired numbers it meets an unknown tag
+  ([execution.md](execution.md), "Planned: overlapping register windows").
 - **`FORMAT_VERSION` is not bumped**, because there are no external users and the
   safety property does not depend on it.
 - **Artifacts are readable but not writable as text.** A dump serves inspection;

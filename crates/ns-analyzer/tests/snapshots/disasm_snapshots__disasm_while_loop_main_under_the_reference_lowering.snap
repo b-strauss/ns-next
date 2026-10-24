@@ -2,49 +2,62 @@
 source: crates/ns-analyzer/tests/disasm_snapshots.rs
 expression: "disasm(\"while_loop.ns\", &[\"main:args:\", \"--lowering\", \"reference\"])"
 ---
-method main:args: (args 2, registers 20)
+method main:args: (args 2, registers 25)
    0   stmt 0  MakeClosure r2, [] ->
-        block block (args 0, registers 3)
+        block block (args 0, registers 4)
            0   stmt 0  SendLexical r0 <- depth 0 #n () @-
-           1   stmt 0  LoadLiteral r1, 5
-           2   stmt 0  SendPublic r2 <- r0 #< (r1) @-
-           3        -  ImplicitReturn r2
-   1   stmt 0  MakeClosure r3, [] ->
-        block block (args 0, registers 8)
+           1   stmt 0  LoadLiteral r2, 5
+           2   stmt 0  Move r1, r2
+           3   stmt 0  SendPublic r3 <- r0 #< (r1) @-
+           4        -  ImplicitReturn r3
+   1   stmt 0  MakeClosure r4, [] ->
+        block block (args 0, registers 12)
            0   stmt 0  SendLexical r0 <- depth 0 #sum () @-
-           1   stmt 0  SendLexical r1 <- depth 0 #n () @-
-           2   stmt 0  SendPublic r2 <- r0 #+ (r1) @-
-           3   stmt 0  SendLexical r3 <- depth 0 #sum: (r2) @-
-           4   stmt 1  SendLexical r4 <- depth 0 #n () @-
-           5   stmt 1  LoadLiteral r5, 1
-           6   stmt 1  SendPublic r6 <- r4 #+ (r5) @-
-           7   stmt 1  SendLexical r7 <- depth 0 #n: (r6) @-
-           8        -  ImplicitReturn r6
-   2   stmt 0  SendInlinable r4 <- r2 #whileTrue: (r3) @-
-   3   stmt 1  MakeClosure r5, [] ->
-        block block (args 0, registers 3)
-           0   stmt 0  SendLexical r0 <- depth 0 #n () @-
-           1   stmt 0  LoadLiteral r1, 0
-           2   stmt 0  SendPublic r2 <- r0 #= (r1) @-
-           3        -  ImplicitReturn r2
+           1   stmt 0  SendLexical r2 <- depth 0 #n () @-
+           2   stmt 0  Move r1, r2
+           3   stmt 0  SendPublic r3 <- r0 #+ (r1) @-
+           4   stmt 0  Move r4, r3
+           5   stmt 0  SendLexical r5 <- depth 0 #sum: (r4) @-
+           6   stmt 1  SendLexical r6 <- depth 0 #n () @-
+           7   stmt 1  LoadLiteral r8, 1
+           8   stmt 1  Move r7, r8
+           9   stmt 1  SendPublic r9 <- r6 #+ (r7) @-
+          10   stmt 1  Move r10, r9
+          11   stmt 1  SendLexical r11 <- depth 0 #n: (r10) @-
+          12        -  ImplicitReturn r9
+   2   stmt 0  Move r3, r4
+   3   stmt 0  SendInlinable r5 <- r2 #whileTrue: (r3) @-
    4   stmt 1  MakeClosure r6, [] ->
         block block (args 0, registers 4)
            0   stmt 0  SendLexical r0 <- depth 0 #n () @-
-           1   stmt 0  LoadLiteral r1, 1
-           2   stmt 0  SendPublic r2 <- r0 #- (r1) @-
-           3   stmt 0  SendLexical r3 <- depth 0 #n: (r2) @-
-           4        -  ImplicitReturn r2
-   5   stmt 1  SendInlinable r7 <- r5 #whileFalse: (r6) @-
-   6   stmt 2  Move r8, r0
-   7   stmt 2  SendPublic r9 <- r8 #transcript () @-
-   8   stmt 2  SendLexical r10 <- depth 0 #sum () @-
-   9   stmt 2  SendPublic r11 <- r10 #printString () @-
-  10   stmt 2  SendPublic r12 <- r9 #show: (r11) @-
-  11   stmt 2  LoadLiteral r13, ' '
-  12   stmt 2  SendPublic r14 <- r9 #show: (r13) @-
-  13   stmt 2  SendLexical r15 <- depth 0 #n () @-
-  14   stmt 2  SendPublic r16 <- r15 #printString () @-
-  15   stmt 2  SendPublic r17 <- r9 #show: (r16) @-
-  16   stmt 2  SendPublic r18 <- r9 #newLine () @-
-  17        -  LoadSelf r19
-  18        -  ImplicitReturn r19
+           1   stmt 0  LoadLiteral r2, 0
+           2   stmt 0  Move r1, r2
+           3   stmt 0  SendPublic r3 <- r0 #= (r1) @-
+           4        -  ImplicitReturn r3
+   5   stmt 1  MakeClosure r8, [] ->
+        block block (args 0, registers 6)
+           0   stmt 0  SendLexical r0 <- depth 0 #n () @-
+           1   stmt 0  LoadLiteral r2, 1
+           2   stmt 0  Move r1, r2
+           3   stmt 0  SendPublic r3 <- r0 #- (r1) @-
+           4   stmt 0  Move r4, r3
+           5   stmt 0  SendLexical r5 <- depth 0 #n: (r4) @-
+           6        -  ImplicitReturn r3
+   6   stmt 1  Move r7, r8
+   7   stmt 1  SendInlinable r9 <- r6 #whileFalse: (r7) @-
+   8   stmt 2  Move r10, r0
+   9   stmt 2  SendPublic r11 <- r10 #transcript () @-
+  10   stmt 2  SendLexical r13 <- depth 0 #sum () @-
+  11   stmt 2  SendPublic r14 <- r13 #printString () @-
+  12   stmt 2  Move r12, r14
+  13   stmt 2  SendPublic r15 <- r11 #show: (r12) @-
+  14   stmt 2  LoadLiteral r17, ' '
+  15   stmt 2  Move r16, r17
+  16   stmt 2  SendPublic r18 <- r11 #show: (r16) @-
+  17   stmt 2  SendLexical r20 <- depth 0 #n () @-
+  18   stmt 2  SendPublic r21 <- r20 #printString () @-
+  19   stmt 2  Move r19, r21
+  20   stmt 2  SendPublic r22 <- r11 #show: (r19) @-
+  21   stmt 2  SendPublic r23 <- r11 #newLine () @-
+  22        -  LoadSelf r24
+  23        -  ImplicitReturn r24

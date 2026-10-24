@@ -93,6 +93,17 @@ pub enum IntegerOperation {
 /// Every register operand is a `u16` index into the frame's unified
 /// arguments-then-temporaries register file; every jump target is an instruction
 /// index into the owning `CompiledCode`'s instructions.
+///
+/// **A send's arguments are contiguous slots.** Every send and every
+/// initializer invocation but `InitializeInstance` names its arguments by
+/// `argument_base` and `argument_sources`: the arguments are the registers
+/// `argument_base .. argument_base + argument_sources.len()`, and before it
+/// decides, the instruction copies `argument_sources[index]` into
+/// `argument_base + index` wherever the two differ -- a named local passed
+/// as an argument is copied by the send itself
+/// (`docs/design/execution.md`, "Planned: overlapping register windows").
+/// `InitializeInstance` names `0 .. argument_count`, its body's own
+/// arguments.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Instruction {
     LoadLiteral {
@@ -135,7 +146,8 @@ pub enum Instruction {
     SendLexical {
         depth: u16,
         selector: Symbol,
-        argument_registers: Vec<u16>,
+        argument_base: u16,
+        argument_sources: Vec<u16>,
         destination: u16,
         call_site: CallSite,
     },
@@ -143,7 +155,8 @@ pub enum Instruction {
     SendPublic {
         selector: Symbol,
         receiver_register: u16,
-        argument_registers: Vec<u16>,
+        argument_base: u16,
+        argument_sources: Vec<u16>,
         destination: u16,
         call_site: CallSite,
     },
@@ -156,7 +169,8 @@ pub enum Instruction {
     SendInlinable {
         selector: Symbol,
         receiver_register: u16,
-        argument_registers: Vec<u16>,
+        argument_base: u16,
+        argument_sources: Vec<u16>,
         destination: u16,
         call_site: CallSite,
     },
@@ -164,7 +178,8 @@ pub enum Instruction {
     /// current activation's `current_class`'s superclass.
     SendSuper {
         selector: Symbol,
-        argument_registers: Vec<u16>,
+        argument_base: u16,
+        argument_sources: Vec<u16>,
         destination: u16,
         call_site: CallSite,
     },
@@ -178,9 +193,9 @@ pub enum Instruction {
     /// table, and nothing can add to or override them. The run-time check
     /// that `mirror_register` holds the mirror is what stands for the
     /// lookup (`interpreter::mirror::send_inlined`). `subject_register` is
-    /// the kernel method's `self`, `argument_registers` the leaf's own
-    /// arguments; the failure block is not an argument, because it is code
-    /// here, not a value.
+    /// the kernel method's `self`, the slots at `argument_base` the leaf's
+    /// own arguments; the failure block is not an argument, because it is
+    /// code here, not a value.
     ///
     /// Reads and writes only registers of the activation executing it, so
     /// its `outer_reach_of` reach is 0.
@@ -188,7 +203,8 @@ pub enum Instruction {
         primitive: crate::builtins::primitive::MirrorPrimitive,
         mirror_register: u16,
         subject_register: u16,
-        argument_registers: Vec<u16>,
+        argument_base: u16,
+        argument_sources: Vec<u16>,
         destination: u16,
         failure: u32,
     },
@@ -395,27 +411,29 @@ pub enum Instruction {
     /// An initializer's superclass initialization (§6.3): §6.1's check that
     /// the class `steps` above the activation's class has a primary
     /// factory of `selector`, then that class's initializer on `self`, with
-    /// the clause's arguments in `argument_registers`; `destination` takes
-    /// what it answers.
+    /// the clause's arguments in the slots at `argument_base`;
+    /// `destination` takes what it answers.
     ///
     /// Reads and writes only registers of the activation executing it, so
     /// its `outer_reach_of` reach is 0.
     InitializeSuperclass {
         steps: u16,
         selector: Symbol,
-        argument_registers: Vec<u16>,
+        argument_base: u16,
+        argument_sources: Vec<u16>,
         destination: u16,
     },
     /// An initializer's initialization of a level a `<:` clause adds
     /// (§6.2): the own part of the level `steps` above the activation's
-    /// class, on `self`, with the arguments in `argument_registers`;
-    /// `destination` takes what it answers.
+    /// class, on `self`, with the arguments in the slots at
+    /// `argument_base`; `destination` takes what it answers.
     ///
     /// Reads and writes only registers of the activation executing it, so
     /// its `outer_reach_of` reach is 0.
     InitializeAppliedLevel {
         steps: u16,
-        argument_registers: Vec<u16>,
+        argument_base: u16,
+        argument_sources: Vec<u16>,
         destination: u16,
     },
 }
@@ -870,6 +888,81 @@ impl Instruction {
         }
     }
 
+    /// The argument base and the argument sources of a send or an
+    /// initializer invocation that names its argument slots; `None` for
+    /// every other instruction, `InitializeInstance` among them, whose
+    /// arguments are its body's own. No `_` arm, so that a new instruction
+    /// must decide.
+    pub fn argument_slots(&self) -> Option<(u16, &[u16])> {
+        match self {
+            Instruction::SendLexical {
+                argument_base,
+                argument_sources,
+                ..
+            }
+            | Instruction::SendPublic {
+                argument_base,
+                argument_sources,
+                ..
+            }
+            | Instruction::SendInlinable {
+                argument_base,
+                argument_sources,
+                ..
+            }
+            | Instruction::SendSuper {
+                argument_base,
+                argument_sources,
+                ..
+            }
+            | Instruction::SendMirror {
+                argument_base,
+                argument_sources,
+                ..
+            }
+            | Instruction::InitializeSuperclass {
+                argument_base,
+                argument_sources,
+                ..
+            }
+            | Instruction::InitializeAppliedLevel {
+                argument_base,
+                argument_sources,
+                ..
+            } => Some((*argument_base, argument_sources)),
+            Instruction::LoadLiteral { .. }
+            | Instruction::LoadSelf { .. }
+            | Instruction::LoadEnclosingObject { .. }
+            | Instruction::Move { .. }
+            | Instruction::StoreLocal { .. }
+            | Instruction::LoadOuterLocal { .. }
+            | Instruction::StoreOuterLocal { .. }
+            | Instruction::MakeClosure { .. }
+            | Instruction::MakeArray { .. }
+            | Instruction::MakeVector { .. }
+            | Instruction::LoadVector { .. }
+            | Instruction::StoreVector { .. }
+            | Instruction::InitializeSlot { .. }
+            | Instruction::ReturnSlotIfFilled { .. }
+            | Instruction::MakeFuture { .. }
+            | Instruction::ResolveFuture { .. }
+            | Instruction::LoadOwnSlot { .. }
+            | Instruction::InitializeSlotProvisionally { .. }
+            | Instruction::Return { .. }
+            | Instruction::ImplicitReturn { .. }
+            | Instruction::NonLocalReturn { .. }
+            | Instruction::SignalNonBoolean { .. }
+            | Instruction::Jump { .. }
+            | Instruction::JumpIfNotBoolean { .. }
+            | Instruction::BranchIfFalse { .. }
+            | Instruction::BranchIfTrue { .. }
+            | Instruction::IntegerBinary { .. }
+            | Instruction::AllocateInstance { .. }
+            | Instruction::InitializeInstance { .. }
+            | Instruction::CheckAppliedClause { .. } => None,
+        }
+    }
+
     /// Whether `self` and `other` are the same instruction: `==`, except
     /// that a `Float` literal compares by its bits, so that a NaN's payload
     /// and a zero's sign count (`CompiledCode`'s `PartialEq`).
@@ -1114,6 +1207,24 @@ fn registers(registers: &[u16]) -> String {
         .join(", ")
 }
 
+/// A send's argument slots as `disasm` prints them: each slot, and where
+/// its source differs, the register the send copies into it.
+fn argument_slots(argument_base: u16, argument_sources: &[u16]) -> String {
+    argument_sources
+        .iter()
+        .enumerate()
+        .map(|(offset, source)| {
+            let slot = u32::from(argument_base) + offset as u32;
+            if u32::from(*source) == slot {
+                format!("r{slot}")
+            } else {
+                format!("r{slot} <- r{source}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn format_instruction(instruction: &Instruction) -> String {
     match instruction {
         Instruction::LoadLiteral {
@@ -1148,63 +1259,70 @@ fn format_instruction(instruction: &Instruction) -> String {
         Instruction::SendLexical {
             depth,
             selector,
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
             call_site,
         } => format!(
             "SendLexical r{destination} <- depth {depth} #{selector} ({}) {}",
-            registers(argument_registers),
+            argument_slots(*argument_base, argument_sources),
             format_call_site(*call_site)
         ),
         Instruction::SendPublic {
             selector,
             receiver_register,
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
             call_site,
         } => format!(
             "SendPublic r{destination} <- r{receiver_register} #{selector} ({}) {}",
-            registers(argument_registers),
+            argument_slots(*argument_base, argument_sources),
             format_call_site(*call_site)
         ),
         Instruction::SendInlinable {
             selector,
             receiver_register,
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
             call_site,
         } => format!(
             "SendInlinable r{destination} <- r{receiver_register} #{selector} ({}) {}",
-            registers(argument_registers),
+            argument_slots(*argument_base, argument_sources),
             format_call_site(*call_site)
         ),
         Instruction::SendSuper {
             selector,
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
             call_site,
         } => format!(
             "SendSuper r{destination} <- #{selector} ({}) {}",
-            registers(argument_registers),
+            argument_slots(*argument_base, argument_sources),
             format_call_site(*call_site)
         ),
         Instruction::SendMirror {
             primitive,
             mirror_register,
             subject_register,
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
             failure,
         } => {
             // The subject leads the list, as it leads the mirror selector's
             // arguments; the failure block is the target, not an operand.
-            let operands: Vec<u16> = std::iter::once(*subject_register)
-                .chain(argument_registers.iter().copied())
-                .collect();
+            let slots = argument_slots(*argument_base, argument_sources);
+            let operands = if slots.is_empty() {
+                format!("r{subject_register}")
+            } else {
+                format!("r{subject_register}, {slots}")
+            };
             format!(
-                "SendMirror r{destination} <- r{mirror_register} #{} ({}) else -> {failure}",
+                "SendMirror r{destination} <- r{mirror_register} #{} ({operands}) else -> {failure}",
                 crate::builtins::primitive::mirror_entry(*primitive).selector,
-                registers(&operands),
             )
         }
         Instruction::MakeClosure {
@@ -1315,19 +1433,21 @@ fn format_instruction(instruction: &Instruction) -> String {
         Instruction::InitializeSuperclass {
             steps,
             selector,
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
         } => format!(
             "InitializeSuperclass r{destination} <- steps {steps} #{selector} ({})",
-            registers(argument_registers)
+            argument_slots(*argument_base, argument_sources)
         ),
         Instruction::InitializeAppliedLevel {
             steps,
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
         } => format!(
             "InitializeAppliedLevel r{destination} <- steps {steps} ({})",
-            registers(argument_registers)
+            argument_slots(*argument_base, argument_sources)
         ),
     }
 }
@@ -1528,13 +1648,14 @@ mod tests {
             primitive,
             mirror_register: 1,
             subject_register: 2,
-            argument_registers: vec![0],
+            argument_base: 4,
+            argument_sources: vec![0],
             destination: 3,
             failure: 4,
         };
         assert_eq!(
             format_instruction(&instruction),
-            "SendMirror r3 <- r1 #string:concatenate:ifFail: (r2, r0) else -> 4"
+            "SendMirror r3 <- r1 #string:concatenate:ifFail: (r2, r4 <- r0) else -> 4"
         );
         assert_eq!(instruction.call_site(), None);
         assert_eq!(outer_reach_of(&[instruction]), 0);
@@ -1567,7 +1688,8 @@ mod tests {
                 Instruction::InitializeSuperclass {
                     steps: 2,
                     selector: Symbol::intern("with:"),
-                    argument_registers: vec![4],
+                    argument_base: 4,
+                    argument_sources: vec![4],
                     destination: 5,
                 },
                 "InitializeSuperclass r5 <- steps 2 #with: (r4)",
@@ -1575,7 +1697,8 @@ mod tests {
             (
                 Instruction::InitializeAppliedLevel {
                     steps: 3,
-                    argument_registers: vec![],
+                    argument_base: 6,
+                    argument_sources: vec![],
                     destination: 6,
                 },
                 "InitializeAppliedLevel r6 <- steps 3 ()",
@@ -1599,7 +1722,8 @@ mod tests {
         let send = Instruction::SendPublic {
             selector: Symbol::intern("foo:"),
             receiver_register: 0,
-            argument_registers: vec![1],
+            argument_base: 1,
+            argument_sources: vec![1],
             destination: 2,
             call_site: CallSite { number: 0 },
         };
@@ -1666,7 +1790,8 @@ mod tests {
                 Instruction::SendPublic {
                     selector: Symbol::intern("value"),
                     receiver_register: 1,
-                    argument_registers: vec![],
+                    argument_base: 2,
+                    argument_sources: vec![],
                     destination: 2,
                     call_site: CallSite { number: 1 },
                 },
@@ -1810,7 +1935,8 @@ method foo: (args 1, registers 4)
             Instruction::SendPublic {
                 selector: Symbol::intern("at:put:"),
                 receiver_register: 1,
-                argument_registers: vec![2, 3],
+                argument_base: 2,
+                argument_sources: vec![2, 3],
                 destination: 4,
                 call_site: CallSite { number: 0 },
             },

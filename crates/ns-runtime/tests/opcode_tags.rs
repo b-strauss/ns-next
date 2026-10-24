@@ -34,10 +34,10 @@ fn instruction_tags_are_fixed() {
     assert_eq!(OPCODE_JUMP_IF_NOT_BOOLEAN, 18);
     assert_eq!(OPCODE_BRANCH_IF_FALSE, 19);
     assert_eq!(OPCODE_BRANCH_IF_TRUE, 20);
-    assert_eq!(OPCODE_SEND_LEXICAL, 25);
-    assert_eq!(OPCODE_SEND_PUBLIC, 26);
-    assert_eq!(OPCODE_SEND_INLINABLE, 27);
-    assert_eq!(OPCODE_SEND_SUPER, 28);
+    assert_eq!(OPCODE_SEND_LEXICAL, 46);
+    assert_eq!(OPCODE_SEND_PUBLIC, 47);
+    assert_eq!(OPCODE_SEND_INLINABLE, 48);
+    assert_eq!(OPCODE_SEND_SUPER, 49);
     assert_eq!(OPCODE_MAKE_CLOSURE, 29);
     assert_eq!(OPCODE_MAKE_VECTOR, 30);
     assert_eq!(OPCODE_LOAD_VECTOR, 31);
@@ -71,21 +71,21 @@ fn the_instantiation_instructions_keep_their_numbers() {
     assert_eq!(OPCODE_ALLOCATE_INSTANCE, 41);
     assert_eq!(OPCODE_INITIALIZE_INSTANCE, 42);
     assert_eq!(OPCODE_CHECK_APPLIED_CLAUSE, 43);
-    assert_eq!(OPCODE_INITIALIZE_SUPERCLASS, 44);
-    assert_eq!(OPCODE_INITIALIZE_APPLIED_LEVEL, 45);
+    assert_eq!(OPCODE_INITIALIZE_SUPERCLASS, 50);
+    assert_eq!(OPCODE_INITIALIZE_APPLIED_LEVEL, 51);
 }
 
 /// The instruction section's "next free number" comment is where the next
 /// instruction takes its tag from, so it moves with every new one.
 #[test]
-fn the_next_free_instruction_tag_is_forty_six() {
+fn the_next_free_instruction_tag_is_fifty_two() {
     // Line by line, so a checkout with CRLF line endings reads it too.
     let source = include_str!("../src/image/opcodes.rs");
     assert!(
         source
             .lines()
-            .any(|line| line == "// Next free number: 46."),
-        "image/opcodes.rs names 46 as the next free instruction tag"
+            .any(|line| line == "// Next free number: 52."),
+        "image/opcodes.rs names 52 as the next free instruction tag"
     );
 }
 
@@ -193,7 +193,10 @@ fn no_two_tags_share_a_number() {
 /// (`image/opcodes.rs`).
 #[test]
 fn retired_instruction_tags_are_never_reused() {
-    assert_eq!(RETIRED_OPCODES, [2, 7, 8, 9, 10, 11, 21, 22, 23, 24]);
+    assert_eq!(
+        RETIRED_OPCODES,
+        [2, 7, 8, 9, 10, 11, 21, 22, 23, 24, 25, 26, 27, 28, 44, 45]
+    );
     let live = [
         OPCODE_LOAD_LITERAL,
         OPCODE_LOAD_SELF,

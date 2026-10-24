@@ -70,18 +70,21 @@ pub enum CompactInstruction {
     SendPublic0 {
         destination: u8,
         receiver: u8,
+        argument_base: u8,
         site: u16,
     },
     SendPublic1 {
         destination: u8,
         receiver: u8,
-        argument: u8,
+        argument_base: u8,
+        source: u8,
         site: u16,
     },
     SendPublic2 {
         destination: u8,
         receiver: u8,
-        arguments: [u8; 2],
+        argument_base: u8,
+        sources: [u8; 2],
         site: u16,
     },
     SendPublicWide {
@@ -90,18 +93,21 @@ pub enum CompactInstruction {
     SendInlinable0 {
         destination: u8,
         receiver: u8,
+        argument_base: u8,
         site: u16,
     },
     SendInlinable1 {
         destination: u8,
         receiver: u8,
-        argument: u8,
+        argument_base: u8,
+        source: u8,
         site: u16,
     },
     SendInlinable2 {
         destination: u8,
         receiver: u8,
-        arguments: [u8; 2],
+        argument_base: u8,
+        sources: [u8; 2],
         site: u16,
     },
     SendInlinableWide {
@@ -109,16 +115,19 @@ pub enum CompactInstruction {
     },
     SendLexical0 {
         destination: u8,
+        argument_base: u8,
         site: u16,
     },
     SendLexical1 {
         destination: u8,
-        argument: u8,
+        argument_base: u8,
+        source: u8,
         site: u16,
     },
     SendLexical2 {
         destination: u8,
-        arguments: [u8; 2],
+        argument_base: u8,
+        sources: [u8; 2],
         site: u16,
     },
     SendLexicalWide {
@@ -126,16 +135,19 @@ pub enum CompactInstruction {
     },
     SendSuper0 {
         destination: u8,
+        argument_base: u8,
         site: u16,
     },
     SendSuper1 {
         destination: u8,
-        argument: u8,
+        argument_base: u8,
+        source: u8,
         site: u16,
     },
     SendSuper2 {
         destination: u8,
-        arguments: [u8; 2],
+        argument_base: u8,
+        sources: [u8; 2],
         site: u16,
     },
     SendSuperWide {
@@ -291,6 +303,7 @@ pub enum CompactInstruction {
     },
     InitializeAppliedLevel {
         destination: u8,
+        argument_base: u8,
         steps: u16,
         arguments: u16,
     },
@@ -346,11 +359,13 @@ impl SendSite {
     }
 }
 
-/// The registers of a send that has no eight-byte form.
+/// The registers of a send that has no eight-byte form: its argument slots
+/// start at `argument_base`, and `arguments` are their sources.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WideSend {
     destination: u16,
     receiver: u16,
+    argument_base: u16,
     arguments: Box<[u16]>,
 }
 
@@ -366,6 +381,13 @@ impl WideSend {
         self.receiver
     }
 
+    /// The first argument slot.
+    #[inline(always)]
+    pub fn argument_base(&self) -> u16 {
+        self.argument_base
+    }
+
+    /// The register each argument slot is copied from.
     #[inline(always)]
     pub fn arguments(&self) -> &[u16] {
         &self.arguments
@@ -398,14 +420,22 @@ impl BlockSite {
     }
 }
 
-/// A narrow `SendMirror`'s argument registers and failure target.
+/// A narrow `SendMirror`'s argument slots and failure target.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MirrorSite {
+    argument_base: u16,
     arguments: Box<[u16]>,
     failure: u32,
 }
 
 impl MirrorSite {
+    /// The first argument slot.
+    #[inline(always)]
+    pub fn argument_base(&self) -> u16 {
+        self.argument_base
+    }
+
+    /// The register each argument slot is copied from.
     #[inline(always)]
     pub fn arguments(&self) -> &[u16] {
         &self.arguments
@@ -424,6 +454,7 @@ impl MirrorSite {
 pub struct SuperclassSite {
     steps: u16,
     selector: Symbol,
+    argument_base: u16,
     arguments: Box<[u16]>,
 }
 
@@ -441,6 +472,13 @@ impl SuperclassSite {
         self.selector
     }
 
+    /// The first argument slot.
+    #[inline(always)]
+    pub fn argument_base(&self) -> u16 {
+        self.argument_base
+    }
+
+    /// The register each argument slot is copied from.
     #[inline(always)]
     pub fn arguments(&self) -> &[u16] {
         &self.arguments
@@ -646,37 +684,43 @@ impl CodeBuilder {
                 ..
             } => fits(*register) && fits(*index),
             Instruction::SendLexical {
-                argument_registers,
+                argument_base,
+                argument_sources,
                 destination,
                 ..
             }
             | Instruction::SendSuper {
-                argument_registers,
+                argument_base,
+                argument_sources,
                 destination,
                 ..
             } => {
                 sends
                     && fits(*destination)
-                    && argument_registers.len() <= 2
-                    && argument_registers.iter().all(|register| fits(*register))
+                    && fits(*argument_base)
+                    && argument_sources.len() <= 2
+                    && argument_sources.iter().all(|register| fits(*register))
             }
             Instruction::SendPublic {
                 receiver_register,
-                argument_registers,
+                argument_base,
+                argument_sources,
                 destination,
                 ..
             }
             | Instruction::SendInlinable {
                 receiver_register,
-                argument_registers,
+                argument_base,
+                argument_sources,
                 destination,
                 ..
             } => {
                 sends
                     && fits(*destination)
                     && fits(*receiver_register)
-                    && argument_registers.len() <= 2
-                    && argument_registers.iter().all(|register| fits(*register))
+                    && fits(*argument_base)
+                    && argument_sources.len() <= 2
+                    && argument_sources.iter().all(|register| fits(*register))
             }
             Instruction::SendMirror {
                 mirror_register,
@@ -692,9 +736,17 @@ impl CodeBuilder {
             Instruction::MakeClosure { destination, .. } => {
                 self.blocks.len() < TABLE_LIMIT && fits(*destination)
             }
-            Instruction::MakeArray { destination, .. }
-            | Instruction::InitializeAppliedLevel { destination, .. } => {
+            Instruction::MakeArray { destination, .. } => {
                 self.register_lists.len() < TABLE_LIMIT && fits(*destination)
+            }
+            Instruction::InitializeAppliedLevel {
+                argument_base,
+                destination,
+                ..
+            } => {
+                self.register_lists.len() < TABLE_LIMIT
+                    && fits(*destination)
+                    && fits(*argument_base)
             }
             Instruction::InitializeInstance {
                 instance,
@@ -742,7 +794,8 @@ impl CodeBuilder {
             Instruction::SendPublic {
                 selector,
                 receiver_register,
-                argument_registers,
+                argument_base,
+                argument_sources,
                 destination,
                 call_site,
             } => self.encode_send(
@@ -753,14 +806,16 @@ impl CodeBuilder {
                 WideSend {
                     destination,
                     receiver: receiver_register,
-                    arguments: argument_registers.into_boxed_slice(),
+                    argument_base,
+                    arguments: argument_sources.into_boxed_slice(),
                 },
                 narrow,
             ),
             Instruction::SendInlinable {
                 selector,
                 receiver_register,
-                argument_registers,
+                argument_base,
+                argument_sources,
                 destination,
                 call_site,
             } => self.encode_send(
@@ -771,14 +826,16 @@ impl CodeBuilder {
                 WideSend {
                     destination,
                     receiver: receiver_register,
-                    arguments: argument_registers.into_boxed_slice(),
+                    argument_base,
+                    arguments: argument_sources.into_boxed_slice(),
                 },
                 narrow,
             ),
             Instruction::SendLexical {
                 depth,
                 selector,
-                argument_registers,
+                argument_base,
+                argument_sources,
                 destination,
                 call_site,
             } => self.encode_send(
@@ -789,13 +846,15 @@ impl CodeBuilder {
                 WideSend {
                     destination,
                     receiver: 0,
-                    arguments: argument_registers.into_boxed_slice(),
+                    argument_base,
+                    arguments: argument_sources.into_boxed_slice(),
                 },
                 narrow,
             ),
             Instruction::SendSuper {
                 selector,
-                argument_registers,
+                argument_base,
+                argument_sources,
                 destination,
                 call_site,
             } => self.encode_send(
@@ -806,7 +865,8 @@ impl CodeBuilder {
                 WideSend {
                     destination,
                     receiver: 0,
-                    arguments: argument_registers.into_boxed_slice(),
+                    argument_base,
+                    arguments: argument_sources.into_boxed_slice(),
                 },
                 narrow,
             ),
@@ -851,72 +911,85 @@ impl CodeBuilder {
         self.send_sites.push(site);
         let destination = registers.destination as u8;
         let receiver = registers.receiver as u8;
-        let arguments: Vec<u8> = registers
+        let argument_base = registers.argument_base as u8;
+        let sources: Vec<u8> = registers
             .arguments
             .iter()
             .map(|register| *register as u8)
             .collect();
-        match (kind, &arguments[..]) {
+        match (kind, &sources[..]) {
             (SendKind::Public, []) => CompactInstruction::SendPublic0 {
                 destination,
                 receiver,
+                argument_base,
                 site: index,
             },
-            (SendKind::Public, [argument]) => CompactInstruction::SendPublic1 {
+            (SendKind::Public, [source]) => CompactInstruction::SendPublic1 {
                 destination,
                 receiver,
-                argument: *argument,
+                argument_base,
+                source: *source,
                 site: index,
             },
             (SendKind::Public, [first, second]) => CompactInstruction::SendPublic2 {
                 destination,
                 receiver,
-                arguments: [*first, *second],
+                argument_base,
+                sources: [*first, *second],
                 site: index,
             },
             (SendKind::Inlinable, []) => CompactInstruction::SendInlinable0 {
                 destination,
                 receiver,
+                argument_base,
                 site: index,
             },
-            (SendKind::Inlinable, [argument]) => CompactInstruction::SendInlinable1 {
+            (SendKind::Inlinable, [source]) => CompactInstruction::SendInlinable1 {
                 destination,
                 receiver,
-                argument: *argument,
+                argument_base,
+                source: *source,
                 site: index,
             },
             (SendKind::Inlinable, [first, second]) => CompactInstruction::SendInlinable2 {
                 destination,
                 receiver,
-                arguments: [*first, *second],
+                argument_base,
+                sources: [*first, *second],
                 site: index,
             },
             (SendKind::Lexical, []) => CompactInstruction::SendLexical0 {
                 destination,
+                argument_base,
                 site: index,
             },
-            (SendKind::Lexical, [argument]) => CompactInstruction::SendLexical1 {
+            (SendKind::Lexical, [source]) => CompactInstruction::SendLexical1 {
                 destination,
-                argument: *argument,
+                argument_base,
+                source: *source,
                 site: index,
             },
             (SendKind::Lexical, [first, second]) => CompactInstruction::SendLexical2 {
                 destination,
-                arguments: [*first, *second],
+                argument_base,
+                sources: [*first, *second],
                 site: index,
             },
             (SendKind::Super, []) => CompactInstruction::SendSuper0 {
                 destination,
+                argument_base,
                 site: index,
             },
-            (SendKind::Super, [argument]) => CompactInstruction::SendSuper1 {
+            (SendKind::Super, [source]) => CompactInstruction::SendSuper1 {
                 destination,
-                argument: *argument,
+                argument_base,
+                source: *source,
                 site: index,
             },
             (SendKind::Super, [first, second]) => CompactInstruction::SendSuper2 {
                 destination,
-                arguments: [*first, *second],
+                argument_base,
+                sources: [*first, *second],
                 site: index,
             },
             _ => unreachable!("internal: fits_narrow admits a send of at most two arguments"),
@@ -998,13 +1071,15 @@ impl CodeBuilder {
                 primitive,
                 mirror_register,
                 subject_register,
-                argument_registers,
+                argument_base,
+                argument_sources,
                 destination,
                 failure,
             } => {
                 let site = self.mirror_sites.len() as u16;
                 self.mirror_sites.push(MirrorSite {
-                    arguments: argument_registers.into_boxed_slice(),
+                    argument_base,
+                    arguments: argument_sources.into_boxed_slice(),
                     failure,
                 });
                 CompactInstruction::SendMirror {
@@ -1207,14 +1282,16 @@ impl CodeBuilder {
             Instruction::InitializeSuperclass {
                 steps,
                 selector,
-                argument_registers,
+                argument_base,
+                argument_sources,
                 destination,
             } => {
                 let site = self.superclass_sites.len() as u16;
                 self.superclass_sites.push(SuperclassSite {
                     steps,
                     selector,
-                    arguments: argument_registers.into_boxed_slice(),
+                    argument_base,
+                    arguments: argument_sources.into_boxed_slice(),
                 });
                 CompactInstruction::InitializeSuperclass {
                     destination: destination as u8,
@@ -1223,12 +1300,14 @@ impl CodeBuilder {
             }
             Instruction::InitializeAppliedLevel {
                 steps,
-                argument_registers,
+                argument_base,
+                argument_sources,
                 destination,
             } => CompactInstruction::InitializeAppliedLevel {
                 destination: destination as u8,
+                argument_base: argument_base as u8,
                 steps,
-                arguments: self.push_register_list(argument_registers),
+                arguments: self.push_register_list(argument_sources),
             },
             Instruction::SendPublic { .. }
             | Instruction::SendInlinable { .. }
@@ -1902,74 +1981,152 @@ impl Tables<'_> {
             CompactInstruction::SendPublic0 {
                 destination,
                 receiver,
+                argument_base,
                 site,
-            } => self.send(SendKind::Public, site, destination, receiver, &[]),
+            } => self.send(
+                SendKind::Public,
+                site,
+                destination,
+                receiver,
+                argument_base,
+                &[],
+            ),
             CompactInstruction::SendPublic1 {
                 destination,
                 receiver,
-                argument,
+                argument_base,
+                source,
                 site,
-            } => self.send(SendKind::Public, site, destination, receiver, &[argument]),
+            } => self.send(
+                SendKind::Public,
+                site,
+                destination,
+                receiver,
+                argument_base,
+                &[source],
+            ),
             CompactInstruction::SendPublic2 {
                 destination,
                 receiver,
-                arguments,
+                argument_base,
+                sources,
                 site,
-            } => self.send(SendKind::Public, site, destination, receiver, &arguments),
+            } => self.send(
+                SendKind::Public,
+                site,
+                destination,
+                receiver,
+                argument_base,
+                &sources,
+            ),
             CompactInstruction::SendPublicWide { site } => self.wide_send(SendKind::Public, site),
             CompactInstruction::SendInlinable0 {
                 destination,
                 receiver,
-                site,
-            } => self.send(SendKind::Inlinable, site, destination, receiver, &[]),
-            CompactInstruction::SendInlinable1 {
-                destination,
-                receiver,
-                argument,
+                argument_base,
                 site,
             } => self.send(
                 SendKind::Inlinable,
                 site,
                 destination,
                 receiver,
-                &[argument],
+                argument_base,
+                &[],
+            ),
+            CompactInstruction::SendInlinable1 {
+                destination,
+                receiver,
+                argument_base,
+                source,
+                site,
+            } => self.send(
+                SendKind::Inlinable,
+                site,
+                destination,
+                receiver,
+                argument_base,
+                &[source],
             ),
             CompactInstruction::SendInlinable2 {
                 destination,
                 receiver,
-                arguments,
+                argument_base,
+                sources,
                 site,
-            } => self.send(SendKind::Inlinable, site, destination, receiver, &arguments),
+            } => self.send(
+                SendKind::Inlinable,
+                site,
+                destination,
+                receiver,
+                argument_base,
+                &sources,
+            ),
             CompactInstruction::SendInlinableWide { site } => {
                 self.wide_send(SendKind::Inlinable, site)
             }
-            CompactInstruction::SendLexical0 { destination, site } => {
-                self.send(SendKind::Lexical, site, destination, 0, &[])
-            }
+            CompactInstruction::SendLexical0 {
+                destination,
+                argument_base,
+                site,
+            } => self.send(SendKind::Lexical, site, destination, 0, argument_base, &[]),
             CompactInstruction::SendLexical1 {
                 destination,
-                argument,
+                argument_base,
+                source,
                 site,
-            } => self.send(SendKind::Lexical, site, destination, 0, &[argument]),
+            } => self.send(
+                SendKind::Lexical,
+                site,
+                destination,
+                0,
+                argument_base,
+                &[source],
+            ),
             CompactInstruction::SendLexical2 {
                 destination,
-                arguments,
+                argument_base,
+                sources,
                 site,
-            } => self.send(SendKind::Lexical, site, destination, 0, &arguments),
+            } => self.send(
+                SendKind::Lexical,
+                site,
+                destination,
+                0,
+                argument_base,
+                &sources,
+            ),
             CompactInstruction::SendLexicalWide { site } => self.wide_send(SendKind::Lexical, site),
-            CompactInstruction::SendSuper0 { destination, site } => {
-                self.send(SendKind::Super, site, destination, 0, &[])
-            }
+            CompactInstruction::SendSuper0 {
+                destination,
+                argument_base,
+                site,
+            } => self.send(SendKind::Super, site, destination, 0, argument_base, &[]),
             CompactInstruction::SendSuper1 {
                 destination,
-                argument,
+                argument_base,
+                source,
                 site,
-            } => self.send(SendKind::Super, site, destination, 0, &[argument]),
+            } => self.send(
+                SendKind::Super,
+                site,
+                destination,
+                0,
+                argument_base,
+                &[source],
+            ),
             CompactInstruction::SendSuper2 {
                 destination,
-                arguments,
+                argument_base,
+                sources,
                 site,
-            } => self.send(SendKind::Super, site, destination, 0, &arguments),
+            } => self.send(
+                SendKind::Super,
+                site,
+                destination,
+                0,
+                argument_base,
+                &sources,
+            ),
             CompactInstruction::SendSuperWide { site } => self.wide_send(SendKind::Super, site),
             CompactInstruction::SendMirror {
                 destination,
@@ -1983,7 +2140,8 @@ impl Tables<'_> {
                     primitive,
                     mirror_register: register(mirror),
                     subject_register: register(subject),
-                    argument_registers: site.arguments.to_vec(),
+                    argument_base: site.argument_base,
+                    argument_sources: site.arguments.to_vec(),
                     destination: register(destination),
                     failure: site.failure,
                 }
@@ -2188,17 +2346,20 @@ impl Tables<'_> {
                 Instruction::InitializeSuperclass {
                     steps: site.steps,
                     selector: site.selector,
-                    argument_registers: site.arguments.to_vec(),
+                    argument_base: site.argument_base,
+                    argument_sources: site.arguments.to_vec(),
                     destination: register(destination),
                 }
             }
             CompactInstruction::InitializeAppliedLevel {
                 destination,
+                argument_base,
                 steps,
                 arguments,
             } => Instruction::InitializeAppliedLevel {
                 steps,
-                argument_registers: self.register_lists[usize::from(arguments)].to_vec(),
+                argument_base: register(argument_base),
+                argument_sources: self.register_lists[usize::from(arguments)].to_vec(),
                 destination: register(destination),
             },
             CompactInstruction::Wide { index } => self.wide[index as usize].clone(),
@@ -2212,14 +2373,16 @@ impl Tables<'_> {
         site: u16,
         destination: u8,
         receiver: u8,
-        arguments: &[u8],
+        argument_base: u8,
+        sources: &[u8],
     ) -> Instruction {
         assemble_send(
             kind,
             &self.send_sites[usize::from(site)],
             u16::from(destination),
             u16::from(receiver),
-            arguments.iter().copied().map(u16::from).collect(),
+            u16::from(argument_base),
+            sources.iter().copied().map(u16::from).collect(),
         )
     }
 
@@ -2235,6 +2398,7 @@ impl Tables<'_> {
             site,
             registers.destination,
             registers.receiver,
+            registers.argument_base,
             registers.arguments.to_vec(),
         )
     }
@@ -2246,33 +2410,38 @@ fn assemble_send(
     site: &SendSite,
     destination: u16,
     receiver: u16,
-    arguments: Vec<u16>,
+    argument_base: u16,
+    argument_sources: Vec<u16>,
 ) -> Instruction {
     match kind {
         SendKind::Public => Instruction::SendPublic {
             selector: site.selector,
             receiver_register: receiver,
-            argument_registers: arguments,
+            argument_base,
+            argument_sources,
             destination,
             call_site: site.call_site,
         },
         SendKind::Inlinable => Instruction::SendInlinable {
             selector: site.selector,
             receiver_register: receiver,
-            argument_registers: arguments,
+            argument_base,
+            argument_sources,
             destination,
             call_site: site.call_site,
         },
         SendKind::Lexical => Instruction::SendLexical {
             depth: site.depth,
             selector: site.selector,
-            argument_registers: arguments,
+            argument_base,
+            argument_sources,
             destination,
             call_site: site.call_site,
         },
         SendKind::Super => Instruction::SendSuper {
             selector: site.selector,
-            argument_registers: arguments,
+            argument_base,
+            argument_sources,
             destination,
             call_site: site.call_site,
         },
@@ -2362,7 +2531,8 @@ mod tests {
         let numbered = |number| Instruction::SendPublic {
             selector: Symbol::intern("a"),
             receiver_register: 1,
-            argument_registers: vec![],
+            argument_base: 3,
+            argument_sources: vec![],
             destination: 2,
             call_site: CallSite { number },
         };
@@ -2379,7 +2549,8 @@ mod tests {
             vec![
                 Instruction::SendSuper {
                     selector: Symbol::intern("b"),
-                    argument_registers: vec![],
+                    argument_base: 3,
+                    argument_sources: vec![],
                     destination: 2,
                     call_site: CallSite::UNCACHED,
                 },
@@ -2413,11 +2584,24 @@ mod tests {
         }
     }
 
-    fn send(selector: &str, receiver: u16, arguments: &[u16], destination: u16) -> Instruction {
+    /// A public send whose argument slots start at r3, each copied from
+    /// the register `sources` names.
+    fn send(selector: &str, receiver: u16, sources: &[u16], destination: u16) -> Instruction {
+        send_at(selector, receiver, 3, sources, destination)
+    }
+
+    fn send_at(
+        selector: &str,
+        receiver: u16,
+        argument_base: u16,
+        sources: &[u16],
+        destination: u16,
+    ) -> Instruction {
         Instruction::SendPublic {
             selector: Symbol::intern(selector),
             receiver_register: receiver,
-            argument_registers: arguments.to_vec(),
+            argument_base,
+            argument_sources: sources.to_vec(),
             destination,
             call_site: CallSite { number: 3 },
         }
@@ -2520,27 +2704,38 @@ mod tests {
         builder.emit(send("c:d:", 1, &[3, 4], 2));
         builder.emit(send("e:f:g:", 1, &[3, 4, 5], 2));
         builder.emit(send("h:", 256, &[3], 2));
+        builder.emit(send_at("i:", 1, 256, &[3], 2));
+        builder.emit(send_at("j:", 1, 255, &[256], 2));
         let body = builder.finish();
         assert!(matches!(
             body.slot(0),
-            CompactInstruction::SendPublic0 { .. }
+            CompactInstruction::SendPublic0 {
+                argument_base: 3,
+                ..
+            }
         ));
         assert!(matches!(
             body.slot(1),
-            CompactInstruction::SendPublic1 { .. }
+            CompactInstruction::SendPublic1 {
+                argument_base: 3,
+                source: 3,
+                ..
+            }
         ));
         assert!(matches!(
             body.slot(2),
-            CompactInstruction::SendPublic2 { .. }
+            CompactInstruction::SendPublic2 {
+                argument_base: 3,
+                sources: [3, 4],
+                ..
+            }
         ));
-        assert!(matches!(
-            body.slot(3),
-            CompactInstruction::SendPublicWide { .. }
-        ));
-        assert!(matches!(
-            body.slot(4),
-            CompactInstruction::SendPublicWide { .. }
-        ));
+        for wide in 3..=6 {
+            assert!(
+                matches!(body.slot(wide), CompactInstruction::SendPublicWide { .. }),
+                "slot {wide} names a register past a byte or a third argument"
+            );
+        }
     }
 
     #[test]
@@ -2557,23 +2752,26 @@ mod tests {
         let mirror =
             crate::builtins::primitive::mirror_primitive_named("string:concatenate:ifFail:")
                 .expect("the mirror has string:concatenate:ifFail:");
-        let lexical = |arguments: &[u16]| Instruction::SendLexical {
+        let lexical = |argument_base: u16, arguments: &[u16]| Instruction::SendLexical {
             depth: 2,
             selector: Symbol::intern("lexical"),
-            argument_registers: arguments.to_vec(),
+            argument_base,
+            argument_sources: arguments.to_vec(),
             destination: 7,
             call_site: CallSite { number: 1 },
         };
-        let superclass = |arguments: &[u16]| Instruction::SendSuper {
+        let superclass = |argument_base: u16, arguments: &[u16]| Instruction::SendSuper {
             selector: Symbol::intern("super"),
-            argument_registers: arguments.to_vec(),
+            argument_base,
+            argument_sources: arguments.to_vec(),
             destination: 7,
             call_site: CallSite::UNCACHED,
         };
-        let inlinable = |arguments: &[u16]| Instruction::SendInlinable {
+        let inlinable = |argument_base: u16, arguments: &[u16]| Instruction::SendInlinable {
             selector: Symbol::intern("ifTrue:"),
             receiver_register: 4,
-            argument_registers: arguments.to_vec(),
+            argument_base,
+            argument_sources: arguments.to_vec(),
             destination: 7,
             call_site: CallSite::UNCACHED,
         };
@@ -2602,7 +2800,8 @@ mod tests {
                 primitive: mirror,
                 mirror_register: 1,
                 subject_register: 2,
-                argument_registers: vec![3, 4],
+                argument_base: 6,
+                argument_sources: vec![3, 4],
                 destination: 5,
                 failure: 9,
             },
@@ -2704,17 +2903,24 @@ mod tests {
             right: 999,
             target: 6,
         });
-        for arguments in [
-            &[][..],
-            &[1][..],
-            &[1, 2][..],
-            &[1, 2, 3][..],
-            &[1, 2, 3, 4, 5, 6, 7, 8][..],
+        // Sources that are their slots and sources that are not, a base
+        // and a source past a byte, and every argument count's form.
+        for (argument_base, arguments) in [
+            (0, &[][..]),
+            (9, &[][..]),
+            (9, &[1][..]),
+            (9, &[9][..]),
+            (9, &[1, 2][..]),
+            (9, &[9, 10][..]),
+            (300, &[1][..]),
+            (9, &[1, 400][..]),
+            (9, &[1, 2, 3][..]),
+            (9, &[1, 2, 3, 4, 5, 6, 7, 8][..]),
         ] {
-            instructions.push(send("public", 4, arguments, 7));
-            instructions.push(lexical(arguments));
-            instructions.push(superclass(arguments));
-            instructions.push(inlinable(arguments));
+            instructions.push(send_at("public", 4, argument_base, arguments, 7));
+            instructions.push(lexical(argument_base, arguments));
+            instructions.push(superclass(argument_base, arguments));
+            instructions.push(inlinable(argument_base, arguments));
         }
         round_trip(instructions);
     }
@@ -2741,12 +2947,14 @@ mod tests {
                     instructions.push(Instruction::InitializeSuperclass {
                         steps,
                         selector: Symbol::intern("new"),
-                        argument_registers: arguments.clone(),
+                        argument_base: destination - 2,
+                        argument_sources: arguments.clone(),
                         destination,
                     });
                     instructions.push(Instruction::InitializeAppliedLevel {
                         steps,
-                        argument_registers: arguments.clone(),
+                        argument_base: destination - 2,
+                        argument_sources: arguments.clone(),
                         destination,
                     });
                 }
@@ -2787,8 +2995,12 @@ mod tests {
         for (index, instruction) in instructions.iter().enumerate() {
             let fits_a_byte = match instruction {
                 Instruction::AllocateInstance { destination }
-                | Instruction::InitializeSuperclass { destination, .. }
-                | Instruction::InitializeAppliedLevel { destination, .. } => *destination <= 255,
+                | Instruction::InitializeSuperclass { destination, .. } => *destination <= 255,
+                Instruction::InitializeAppliedLevel {
+                    argument_base,
+                    destination,
+                    ..
+                } => *argument_base <= 255 && *destination <= 255,
                 Instruction::InitializeInstance {
                     instance,
                     destination,
@@ -2830,7 +3042,8 @@ mod tests {
                 primitive,
                 mirror_register: 1,
                 subject_register: 2,
-                argument_registers: vec![3, 4],
+                argument_base: 6,
+                argument_sources: vec![3, 4],
                 destination: 5,
                 failure: 0,
             });
@@ -2953,7 +3166,8 @@ mod tests {
                 primitive,
                 mirror_register: 1,
                 subject_register: 2,
-                argument_registers: vec![3, 4],
+                argument_base: 6,
+                argument_sources: vec![3, 4],
                 destination: 5,
                 failure: 0,
             },
@@ -2965,12 +3179,14 @@ mod tests {
             Instruction::InitializeSuperclass {
                 steps: 1,
                 selector: Symbol::intern("with:and:"),
-                argument_registers: vec![2, 3],
+                argument_base: 2,
+                argument_sources: vec![2, 3],
                 destination: 4,
             },
             Instruction::InitializeAppliedLevel {
                 steps: 2,
-                argument_registers: vec![2, 3],
+                argument_base: 2,
+                argument_sources: vec![2, 3],
                 destination: 4,
             },
         ];

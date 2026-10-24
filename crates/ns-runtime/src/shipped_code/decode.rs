@@ -430,13 +430,15 @@ impl Decoder<'_> {
             7 => {
                 let depth = self.reader.u16();
                 let selector = self.symbol();
-                let argument_registers = self.registers();
+                let argument_base = self.reader.u16();
+                let argument_sources = self.registers();
                 let destination = self.reader.u16();
                 let call_site = self.call_site();
                 Instruction::SendLexical {
                     depth,
                     selector,
-                    argument_registers,
+                    argument_base,
+                    argument_sources,
                     destination,
                     call_site,
                 }
@@ -444,13 +446,15 @@ impl Decoder<'_> {
             8 => {
                 let selector = self.symbol();
                 let receiver_register = self.reader.u16();
-                let argument_registers = self.registers();
+                let argument_base = self.reader.u16();
+                let argument_sources = self.registers();
                 let destination = self.reader.u16();
                 let call_site = self.call_site();
                 Instruction::SendPublic {
                     selector,
                     receiver_register,
-                    argument_registers,
+                    argument_base,
+                    argument_sources,
                     destination,
                     call_site,
                 }
@@ -458,25 +462,29 @@ impl Decoder<'_> {
             9 => {
                 let selector = self.symbol();
                 let receiver_register = self.reader.u16();
-                let argument_registers = self.registers();
+                let argument_base = self.reader.u16();
+                let argument_sources = self.registers();
                 let destination = self.reader.u16();
                 let call_site = self.call_site();
                 Instruction::SendInlinable {
                     selector,
                     receiver_register,
-                    argument_registers,
+                    argument_base,
+                    argument_sources,
                     destination,
                     call_site,
                 }
             }
             10 => {
                 let selector = self.symbol();
-                let argument_registers = self.registers();
+                let argument_base = self.reader.u16();
+                let argument_sources = self.registers();
                 let destination = self.reader.u16();
                 let call_site = self.call_site();
                 Instruction::SendSuper {
                     selector,
-                    argument_registers,
+                    argument_base,
+                    argument_sources,
                     destination,
                     call_site,
                 }
@@ -485,14 +493,16 @@ impl Decoder<'_> {
                 let primitive = self.mirror_primitive();
                 let mirror_register = self.reader.u16();
                 let subject_register = self.reader.u16();
-                let argument_registers = self.registers();
+                let argument_base = self.reader.u16();
+                let argument_sources = self.registers();
                 let destination = self.reader.u16();
                 let failure = self.reader.u32();
                 Instruction::SendMirror {
                     primitive,
                     mirror_register,
                     subject_register,
-                    argument_registers,
+                    argument_base,
+                    argument_sources,
                     destination,
                     failure,
                 }
@@ -653,22 +663,26 @@ impl Decoder<'_> {
             35 => {
                 let steps = self.reader.u16();
                 let selector = self.symbol();
-                let argument_registers = self.registers();
+                let argument_base = self.reader.u16();
+                let argument_sources = self.registers();
                 let destination = self.reader.u16();
                 Instruction::InitializeSuperclass {
                     steps,
                     selector,
-                    argument_registers,
+                    argument_base,
+                    argument_sources,
                     destination,
                 }
             }
             36 => {
                 let steps = self.reader.u16();
-                let argument_registers = self.registers();
+                let argument_base = self.reader.u16();
+                let argument_sources = self.registers();
                 let destination = self.reader.u16();
                 Instruction::InitializeAppliedLevel {
                     steps,
-                    argument_registers,
+                    argument_base,
+                    argument_sources,
                     destination,
                 }
             }

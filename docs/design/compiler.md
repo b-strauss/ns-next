@@ -72,23 +72,36 @@ ignored a member of that name, is retired, and so is its wire tag 2
 ([image-format.md](image-format.md)).
 
 **Sends** — each carries a `call_site`; see "Safepoints and call-site
-identity".
+identity". Each names its arguments as contiguous slots: `argument_base` and
+`argument_sources`, the arguments being the registers `argument_base ..
+argument_base + argument_sources.len()`. Before it decides, the send copies
+each source that is not its slot into the slot, so a named local passed as
+an argument is copied by the send itself. Both lowerings allocate the slots
+after everything else the send reads -- its receiver, a mirror send's
+subject, a setter's value -- so they are the top of the registers live at
+the send; the optimized lowering records each argument's register as its
+source and puts a protective copy into the slot, and the reference lowering
+moves every argument into its slot, so each of its sources is its slot
+(`check_shape`) ([execution.md](execution.md), "Planned: overlapping
+register windows").
 
-- `SendPublic { selector, receiver_register, argument_registers, destination,
-  call_site }` — an ordinary explicit-receiver send, resolved with
-  `lookupPublic`.
-- `SendInlinable { selector, receiver_register, argument_registers, destination, call_site }` — the
-  same send, decided exactly as `SendPublic` is, marking one the optimized
-  lowering would have inlined. Only the reference lowering emits it, and only
-  the depth count reads the mark; see "How the limit counts".
-- `SendLexical { depth, selector, argument_registers, destination, call_site
-  }` — `Binding::LexicalSend`. **No receiver register**: the receiver is
-  `self` by construction, and the kth-enclosing object is computed at run
-  time.
-- `SendSuper { selector, argument_registers, destination, call_site }` — receiver is `self`, lookup
-  starts at the current activation's `current_class`'s superclass.
-- `SendMirror { primitive, mirror_register, subject_register,
-  argument_registers, destination, failure }` — a send to the VM mirror whose
+- `SendPublic { selector, receiver_register, argument_base, argument_sources,
+  destination, call_site }` — an ordinary explicit-receiver send, resolved
+  with `lookupPublic`.
+- `SendInlinable { selector, receiver_register, argument_base,
+  argument_sources, destination, call_site }` — the same send, decided
+  exactly as `SendPublic` is, marking one the optimized lowering would have
+  inlined. Only the reference lowering emits it, and only the depth count
+  reads the mark; see "How the limit counts".
+- `SendLexical { depth, selector, argument_base, argument_sources,
+  destination, call_site }` — `Binding::LexicalSend`. **No receiver
+  register**: the receiver is `self` by construction, and the kth-enclosing
+  object is computed at run time.
+- `SendSuper { selector, argument_base, argument_sources, destination,
+  call_site }` — receiver is `self`, lookup starts at the current
+  activation's `current_class`'s superclass.
+- `SendMirror { primitive, mirror_register, subject_register, argument_base,
+  argument_sources, destination, failure }` — a send to the VM mirror whose
   failure block is lowered inline at `failure`: it runs the mirror row
   `primitive`, bound at compile time, with no lookup and no call site, and
   jumps to `failure` when the leaf declines. Emitted only into `Kernel.ns`,
@@ -133,11 +146,13 @@ identity".
 - `CheckAppliedClause { steps, selector }` — §6.1's check of a `<:` clause
   against the primary factory of the class it named, whose level is
   `steps` above the running initializer's.
-- `InitializeSuperclass { steps, selector, argument_registers, destination }`
-  — §6.1's check of the superclass clause, the arity check, then the
-  initializer of the class `steps` above, on `self`.
-- `InitializeAppliedLevel { steps, argument_registers, destination }` — the
-  own part of the level a `<:` clause added `steps` above, on `self`.
+- `InitializeSuperclass { steps, selector, argument_base, argument_sources,
+  destination }` — §6.1's check of the superclass clause, the arity check,
+  then the initializer of the class `steps` above, on `self`, its arguments
+  in slots as a send's are.
+- `InitializeAppliedLevel { steps, argument_base, argument_sources,
+  destination }` — the own part of the level a `<:` clause added `steps`
+  above, on `self`, its arguments in slots as a send's are.
 
 Each reads another level of `self`'s class chain, never another frame's
 registers, so each answers 0 in `bytecode::outer_reach_of` and
@@ -1001,9 +1016,14 @@ against code nothing had checked.
    `recognize_mirror_send` accepts — is a `SendInlinable`, and every other
    explicit-receiver send a `SendPublic` ("How the limit counts" below). A
    mirror send is therefore an ordinary send to the mirror object here, its
-   failure block a real closure ("Mirror sends").
+   failure block a real closure ("Mirror sends"). A send's argument slots
+   are allocated after its receiver, and each argument is evaluated into a
+   fresh register and `Move`d into its slot, so every source is its slot and
+   the send copies nothing: the optimized lowering's copy inside the send is
+   what the two are compared on.
 5. An assignment evaluates its value into a fresh register, then stores it or
-   sends the setter. The assignment's value is that register, never the local.
+   sends the setter, the value `Move`d into the setter's slot. The
+   assignment's value is that register, never the local.
 6. A cascade evaluates its receiver once into a fresh register and sends every
    message to it; its value is the last send's.
 7. A block literal is a `MakeClosure` whose body the reference lowering
@@ -1027,12 +1047,13 @@ runs (`check_shape`): no branch instruction, since only inlining emits one;
 every scratch register written by exactly one instruction; a named local
 written only by `StoreLocal`; and a named local read only by `Move`, every other
 operand being a scratch register — rule 3, the property that keeps a value from
-changing under its consumer. The register ceiling is checked in every
-build (`Body::new`, `fresh`), as it is in `lower.rs`, and a body past it
-compiles to the raising body of "Compilation cannot fail"; the shape check
-does not run on a body it replaced. (The optimized lowering's call-site
-counter is checked in every build too; see "Safepoints and call-site
-identity".)
+changing under its consumer; and a send's sources are its own slots, each
+written by the one `Move` that reads a scratch register. The register
+ceiling is checked in every build (`Body::new`, `fresh`), as it is in
+`lower.rs`, and a body past it compiles to the raising body of "Compilation
+cannot fail"; the shape check does not run on a body it replaced. (The
+optimized lowering's call-site counter is checked in every build too; see
+"Safepoints and call-site identity".)
 
 ### Selecting it
 

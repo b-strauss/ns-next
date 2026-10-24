@@ -441,51 +441,59 @@ fn encode_instruction(
         Instruction::SendLexical {
             depth,
             selector,
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
             ..
         } => {
             writer.write_u8(OPCODE_SEND_LEXICAL);
             writer.write_u16(*depth);
             writer.write_u32(symbols.intern(selector.as_str()));
-            encode_registers(writer, argument_registers)?;
+            writer.write_u16(*argument_base);
+            encode_registers(writer, argument_sources)?;
             writer.write_u16(*destination);
         }
         Instruction::SendPublic {
             selector,
             receiver_register,
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
             ..
         } => {
             writer.write_u8(OPCODE_SEND_PUBLIC);
             writer.write_u32(symbols.intern(selector.as_str()));
             writer.write_u16(*receiver_register);
-            encode_registers(writer, argument_registers)?;
+            writer.write_u16(*argument_base);
+            encode_registers(writer, argument_sources)?;
             writer.write_u16(*destination);
         }
         Instruction::SendInlinable {
             selector,
             receiver_register,
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
             ..
         } => {
             writer.write_u8(OPCODE_SEND_INLINABLE);
             writer.write_u32(symbols.intern(selector.as_str()));
             writer.write_u16(*receiver_register);
-            encode_registers(writer, argument_registers)?;
+            writer.write_u16(*argument_base);
+            encode_registers(writer, argument_sources)?;
             writer.write_u16(*destination);
         }
         Instruction::SendSuper {
             selector,
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
             ..
         } => {
             writer.write_u8(OPCODE_SEND_SUPER);
             writer.write_u32(symbols.intern(selector.as_str()));
-            encode_registers(writer, argument_registers)?;
+            writer.write_u16(*argument_base);
+            encode_registers(writer, argument_sources)?;
             writer.write_u16(*destination);
         }
         Instruction::MakeClosure {
@@ -647,23 +655,27 @@ fn encode_instruction(
         Instruction::InitializeSuperclass {
             steps,
             selector,
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
         } => {
             writer.write_u8(OPCODE_INITIALIZE_SUPERCLASS);
             writer.write_u16(*steps);
             writer.write_u32(symbols.intern(selector.as_str()));
-            encode_registers(writer, argument_registers)?;
+            writer.write_u16(*argument_base);
+            encode_registers(writer, argument_sources)?;
             writer.write_u16(*destination);
         }
         Instruction::InitializeAppliedLevel {
             steps,
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
         } => {
             writer.write_u8(OPCODE_INITIALIZE_APPLIED_LEVEL);
             writer.write_u16(*steps);
-            encode_registers(writer, argument_registers)?;
+            writer.write_u16(*argument_base);
+            encode_registers(writer, argument_sources)?;
             writer.write_u16(*destination);
         }
     }

@@ -139,26 +139,28 @@ fn the_initializer_lowers_slots_then_initializer_expressions_with_own_slot_indic
             Instruction::SendLexical {
                 depth: 0,
                 selector: Symbol::intern("p"),
-                argument_registers: vec![],
+                argument_base: 1,
+                argument_sources: vec![],
                 destination: 1,
                 call_site: CallSite { number: 0 },
             },
             Instruction::SendLexical {
                 depth: 0,
                 selector: Symbol::intern("q:"),
-                argument_registers: vec![1],
-                destination: 2,
+                argument_base: 2,
+                argument_sources: vec![1],
+                destination: 3,
                 call_site: CallSite { number: 1 },
             },
-            Instruction::LoadSelf { destination: 3 },
-            Instruction::ImplicitReturn { register: 3 },
+            Instruction::LoadSelf { destination: 4 },
+            Instruction::ImplicitReturn { register: 4 },
         ]
     );
     assert_eq!(
         initializer.statement_program_counter,
         vec![(0, 0..1), (1, 1..3), (2, 3..5)]
     );
-    assert_eq!(initializer.register_count, 4);
+    assert_eq!(initializer.register_count, 5);
 }
 
 #[test]
@@ -342,8 +344,8 @@ fn a_full_initializer_initializes_its_superclass_before_its_own_slots() {
     assert!(sum < superclass);
     assert!(matches!(
         &instructions[superclass],
-        Instruction::InitializeSuperclass { steps: 1, selector, argument_registers, .. }
-            if *selector == Symbol::intern("y:") && *argument_registers == vec![sum_register]
+        Instruction::InitializeSuperclass { steps: 1, selector, argument_sources, .. }
+            if *selector == Symbol::intern("y:") && *argument_sources == vec![sum_register]
     ));
     let slot = instructions
         .iter()
@@ -399,13 +401,13 @@ fn a_full_initializer_checks_every_applied_clause_before_the_superclass_message(
     );
     assert!(matches!(
         &instructions[2],
-        Instruction::InitializeSuperclass { steps: 3, selector, argument_registers, .. }
-            if *selector == Symbol::NEW && argument_registers.is_empty()
+        Instruction::InitializeSuperclass { steps: 3, selector, argument_sources, .. }
+            if *selector == Symbol::NEW && argument_sources.is_empty()
     ));
     assert!(matches!(
         &instructions[3],
-        Instruction::InitializeAppliedLevel { steps: 2, argument_registers, .. }
-            if argument_registers.is_empty()
+        Instruction::InitializeAppliedLevel { steps: 2, argument_sources, .. }
+            if argument_sources.is_empty()
     ));
     let Instruction::LoadLiteral {
         destination: tag,
@@ -416,8 +418,8 @@ fn a_full_initializer_checks_every_applied_clause_before_the_superclass_message(
     };
     assert!(matches!(
         &instructions[5],
-        Instruction::InitializeAppliedLevel { steps: 1, argument_registers, .. }
-            if *argument_registers == vec![tag]
+        Instruction::InitializeAppliedLevel { steps: 1, argument_sources, .. }
+            if *argument_sources == vec![tag]
     ));
     assert!(matches!(instructions[6], Instruction::LoadSelf { .. }));
     assert!(matches!(
@@ -500,8 +502,8 @@ fn a_standalone_initializer_exists_only_for_a_declaration_with_clauses() {
     )));
     assert!(matches!(
         &instructions[0],
-        Instruction::InitializeSuperclass { steps: 1, selector, argument_registers, .. }
-            if *selector == Symbol::NEW && argument_registers.is_empty()
+        Instruction::InitializeSuperclass { steps: 1, selector, argument_sources, .. }
+            if *selector == Symbol::NEW && argument_sources.is_empty()
     ));
     for name in ["S", "M1", "M2"] {
         let mixin = nested_mixin(&mut interpreter, &class, name);

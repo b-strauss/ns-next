@@ -549,27 +549,31 @@ fn every_instruction_once() -> CompiledCode {
             Instruction::SendLexical {
                 depth: 1,
                 selector: Symbol::intern("foo:"),
-                argument_registers: vec![1, 2],
+                argument_base: 1,
+                argument_sources: vec![1, 2],
                 destination: 5,
                 call_site: CallSite { number: 0 },
             },
             Instruction::SendPublic {
                 selector: Symbol::intern("+"),
                 receiver_register: 1,
-                argument_registers: vec![2],
+                argument_base: 2,
+                argument_sources: vec![2],
                 destination: 6,
                 call_site: CallSite { number: 1 },
             },
             Instruction::SendInlinable {
                 selector: Symbol::intern("+"),
                 receiver_register: 1,
-                argument_registers: vec![2],
+                argument_base: 2,
+                argument_sources: vec![2],
                 destination: 6,
                 call_site: CallSite { number: 2 },
             },
             Instruction::SendSuper {
                 selector: Symbol::intern("bar"),
-                argument_registers: vec![],
+                argument_base: 7,
+                argument_sources: vec![],
                 destination: 7,
                 call_site: CallSite { number: 3 },
             },
@@ -889,12 +893,14 @@ fn every_instantiation_instruction() -> CompiledCode {
             instructions.push(Instruction::InitializeSuperclass {
                 steps,
                 selector: Symbol::intern("new"),
-                argument_registers: arguments.clone(),
+                argument_base: 1,
+                argument_sources: arguments.clone(),
                 destination: 2,
             });
             instructions.push(Instruction::InitializeAppliedLevel {
                 steps,
-                argument_registers: arguments.clone(),
+                argument_base: 1,
+                argument_sources: arguments.clone(),
                 destination: 300,
             });
         }
@@ -1211,14 +1217,14 @@ fn an_invalid_instruction_tag_is_a_decode_error_not_a_panic() {
     writer.write_u32(0);
     writer.write_boolean(false); // not compiled uncached
     writer.write_u32(1); // one instruction ...
-    writer.write_u8(46); // ... one past the last real tag
+    writer.write_u8(52); // ... one past the last real tag
     let bytes = writer.into_bytes();
     let mut reader = decode::Reader::new(&bytes);
     assert_eq!(
         decode::decode_code_table(&mut reader, &symbols::Table::empty()),
         Err(decode::DecodeError::InvalidTag {
             what: "instruction",
-            tag: 46
+            tag: 52
         })
     );
 }
@@ -1561,7 +1567,8 @@ fn an_instantiation_instruction_a_crafted_image_runs_raises_an_error() {
                 Instruction::InitializeSuperclass {
                     steps: 1,
                     selector: Symbol::NEW,
-                    argument_registers: vec![],
+                    argument_base: destination,
+                    argument_sources: vec![],
                     destination,
                 },
                 None,
@@ -1569,7 +1576,8 @@ fn an_instantiation_instruction_a_crafted_image_runs_raises_an_error() {
             (
                 Instruction::InitializeAppliedLevel {
                     steps: 1,
-                    argument_registers: vec![],
+                    argument_base: destination,
+                    argument_sources: vec![],
                     destination,
                 },
                 no_applied_level,
@@ -7205,7 +7213,8 @@ fn a_register_in_a_send_argument_list_is_checked_too() {
             Instruction::SendPublic {
                 selector: Symbol::intern("foo:"),
                 receiver_register: 0,
-                argument_registers: vec![0, 4],
+                argument_base: 0,
+                argument_sources: vec![0, 4],
                 destination: 0,
                 call_site: CallSite { number: 0 },
             },
@@ -7231,7 +7240,8 @@ fn a_register_in_a_send_inlinable_is_checked_too() {
             Instruction::SendInlinable {
                 selector: Symbol::intern("ifTrue:"),
                 receiver_register: 0,
-                argument_registers: vec![4],
+                argument_base: 0,
+                argument_sources: vec![4],
                 destination: 0,
                 call_site: CallSite { number: 0 },
             },
@@ -7245,6 +7255,53 @@ fn a_register_in_a_send_inlinable_is_checked_too() {
             register_count: 1
         })
     );
+}
+
+/// A send copies each source into its slot and reads its slots, so a base
+/// past the body's registers is refused even with no argument, and so are
+/// slots whose last runs past them though base and sources are in range.
+#[test]
+fn a_send_whose_argument_slots_leave_the_body_is_refused() {
+    let send = |argument_base, argument_sources: Vec<u16>| {
+        table_of(vec![code_with(
+            CodeKind::Method,
+            0,
+            2,
+            vec![
+                Instruction::SendLexical {
+                    depth: 0,
+                    selector: Symbol::intern("foo:bar:"),
+                    argument_base,
+                    argument_sources,
+                    destination: 0,
+                    call_site: CallSite { number: 0 },
+                },
+                Instruction::Return { register: 0 },
+            ],
+        )])
+    };
+    assert_eq!(
+        decode::verify_code_table(&send(2, vec![])),
+        Err(decode::DecodeError::RegisterOutOfRange {
+            register: 2,
+            register_count: 2
+        })
+    );
+    let error = decode::verify_code_table(&send(1, vec![0, 1]))
+        .expect_err("the second slot is r2, past two registers");
+    assert_eq!(
+        error,
+        decode::DecodeError::ArgumentSlotsOutOfRange {
+            argument_base: 1,
+            argument_count: 2,
+            register_count: 2
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "2 argument slot(s) from r1 run past a body with 2 register(s)"
+    );
+    assert_eq!(decode::verify_code_table(&send(0, vec![1, 0])), Ok(()));
 }
 
 /// The loop's signal reads its register like any other operand, so a
@@ -7535,7 +7592,8 @@ fn number_call_site_families_leaves_the_table_untouched_when_it_fails() {
             Instruction::SendPublic {
                 selector: Symbol::intern("foo"),
                 receiver_register: 0,
-                argument_registers: vec![],
+                argument_base: 1,
+                argument_sources: vec![],
                 destination: 1,
                 call_site: CallSite { number: 0 },
             },
