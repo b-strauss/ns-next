@@ -6058,6 +6058,59 @@ niche -- are the input of "The compact instruction encoding" below, which
 replaced the stored enum with eight-byte slots; what that moved is "What
 the compact instruction encoding moved".
 
+### What suspending and resuming moved
+
+Road step 7b ("Suspending and resuming" above) was measured whole against
+`master` (`637db0bb`, the tree before it) at `b454d37c` on 2026-10-24, by
+the protocol of "What `new` as compiled code moved" below: `master` checked
+out under the git-ignored `.temp/`, `cargo xtask shipped-code` in each tree
+before its builds, three release builds a side with the pinned `RUSTFLAGS`,
+each in its own `--target-dir`, all six binaries distinct and none
+importing `VCRUNTIME140.dll`; the seven micro sources at `--iterations 30`,
+five rounds a sitting, and the sixteen Are We Fast Yet programs, three
+rounds a sitting, the six binaries rotating by one position from round to
+round; two sittings, every run printing its recorded answer or
+`<Name>: ok`. The branch's binary has no `vm::run::closure` and no
+`run_stretch` of its own, and `vm::return_to_suspended` is a function of
+its own, out of the return path.
+
+Means of each build's medians, pooled over both sittings, in ms:
+
+| Source | `master` | 7b | change | `master` per build | 7b per build |
+|---|---|---|---|---|---|
+| `bench_block.ns` | 7.634 | 7.688 | +0.7% | 7.649, 7.597, 7.655 | 7.693, 7.736, 7.635 |
+| `bench_loop.ns` | 2.373 | 2.354 | -0.8% | 2.372, 2.378, 2.368 | 2.355, 2.351, 2.356 |
+| `bench_megamorphic.ns` | 5.162 | 5.153 | -0.2% | 5.168, 5.141, 5.175 | 5.153, 5.166, 5.139 |
+| `bench_send.ns` | 3.577 | 3.582 | +0.1% | 3.597, 3.572, 3.563 | 3.579, 3.593, 3.575 |
+| `bench_new.ns` | 2.940 | 2.947 | +0.2% | 2.958, 2.949, 2.913 | 2.941, 2.961, 2.939 |
+| `bench_new2.ns` | 3.837 | 3.846 | +0.3% | 3.866, 3.822, 3.822 | 3.849, 3.847, 3.843 |
+| `bench_newarg.ns` | 3.825 | 3.864 | +1.0% | 3.843, 3.840, 3.791 | 3.849, 3.862, 3.883 |
+| Bounce | 0.957 | 0.957 | 0.0% | 0.954, 0.961, 0.956 | 0.955, 0.957, 0.959 |
+| CD | 3571.7 | 3551.1 | -0.6% | 3565.8, 3575.6, 3573.7 | 3556.6, 3549.3, 3547.6 |
+| DeltaBlue | 645.67 | 646.43 | +0.1% | 645.92, 645.98, 645.10 | 643.67, 648.63, 646.98 |
+| DeltaBlueTon80 | 7.200 | 7.222 | +0.3% | 7.193, 7.167, 7.240 | 7.190, 7.242, 7.233 |
+| Havlak | 3404.8 | 3382.8 | -0.6% | 3401.1, 3386.3, 3427.0 | 3377.5, 3373.8, 3397.0 |
+| Json | 10.421 | 10.491 | +0.7% | 10.431, 10.374, 10.457 | 10.501, 10.433, 10.540 |
+| List | 1.009 | 0.995 | -1.4% | 1.007, 1.010, 1.009 | 0.994, 0.994, 0.997 |
+| Mandelbrot | 2958.8 | 2978.9 | +0.7% | 2969.1, 2943.1, 2964.2 | 2989.0, 2966.9, 2980.9 |
+| NBody | 2196.6 | 2201.9 | +0.2% | 2197.9, 2198.7, 2193.2 | 2207.4, 2191.9, 2206.5 |
+| Permute | 2.476 | 2.477 | +0.1% | 2.475, 2.469, 2.483 | 2.476, 2.475, 2.481 |
+| Queens | 2.104 | 2.102 | -0.1% | 2.105, 2.097, 2.112 | 2.100, 2.109, 2.098 |
+| Richards | 66.108 | 66.366 | +0.4% | 66.292, 66.025, 66.006 | 66.613, 66.230, 66.254 |
+| RichardsTon80 | 4.501 | 4.547 | +1.0% | 4.488, 4.529, 4.487 | 4.499, 4.569, 4.573 |
+| Sieve | 1.376 | 1.377 | +0.1% | 1.369, 1.396, 1.363 | 1.381, 1.383, 1.368 |
+| Storage | 1.480 | 1.489 | +0.6% | 1.479, 1.487, 1.474 | 1.482, 1.487, 1.499 |
+| Towers | 3.337 | 3.362 | +0.8% | 3.343, 3.372, 3.297 | 3.325, 3.381, 3.382 |
+
+Every program is within -1.4% to +1.0% of `master`, and every group's
+builds overlap the other side's but List's and `bench_loop.ns`'s, both
+faster. The changes 7b makes to paths that run without a suspension -- a
+cold arm in `vm::finish` after `Deliver`, the program counter stored when
+a stretch leaves for a safepoint, the handler leaves reading through the
+frame, the unwinder deciding its destination before every pop -- cost
+nothing measurable; the measurement does not cover a program that signals
+exceptions in its inner loop, since none of the twenty-three does.
+
 ### What `new` as compiled code moved
 
 "`new` as compiled code" (a synthesized factory body, three initializer

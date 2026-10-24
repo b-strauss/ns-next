@@ -50,7 +50,8 @@ first.
 | Road step 6 — inline allocation in the interpreter: a bump cursor in the reservation, one comparison before the cold `allocate_block`, precomputed headers, a code-id cache per body, arrays without a `Vec`, and `new` of a class that runs no code as a bump | Complete | 2026-10-22 | [inline-allocation](superpowers/plans/2026-10-22-0008-inline-allocation.md) |
 | Java counterparts of the Are We Fast Yet benchmarks, verified in the `benchmarks` gate; `--warm-up` and `--measure` in both harnesses | Complete | 2026-10-22 | [java-benchmarks](superpowers/plans/2026-10-22-1522-java-benchmarks.md) |
 | After road step 6 — `new` as compiled code: a synthesized factory body, three initializer bodies per mixin with the clause messages lowered inline, a level reached through a mirror an ordinary class of its mixin, a declaration without a body the mixin application it writes, and a nested-class accessor's hit one field load | Complete | 2026-10-23 | [compiled-new](superpowers/plans/2026-10-22-2051-compiled-new.md) |
-| Road step 7 — an execution model for compiled code | Not started | — | — |
+| Road step 7b — resuming an activation from its frame: suspended frames and a side table, the lazy resume, unwinding and the sender walks through suspended frames, a sixth stress mode, the decoder refusing a continuable frame | Complete | 2026-10-24 | [resuming-frames](superpowers/plans/2026-10-24-0140-resuming-frames.md) |
+| Road step 7 — an execution model for compiled code: 7a, 7a′ and 7c | Not started | — | — |
 | Between road steps 7 and 8 — real Newspeak bodies for `whileTrue:`, `whileFalse:` and `do:` | Not started | — | — |
 | Road step 8 (M5) — a baseline JIT | Not started | — | — |
 | Road step 9 (M6) — an optimizing JIT | Not started | — | — |
@@ -5938,3 +5939,67 @@ What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): road step
 scalar replacement of values, at road step 9; instantiation's `u16`
 ceilings; a private nested class's cached field for a subclass instance;
 `SendKey`'s word for the running class; and the reviews' leftovers.
+
+## Resuming an activation from its frame, road step 7b (2026-10-24)
+
+Plan: [resuming-frames](superpowers/plans/2026-10-24-0140-resuming-frames.md);
+[execution.md](design/execution.md), "Suspending and resuming",
+"Unwinding", "Planned: JIT tiers"; [memory.md](design/memory.md), "Frames,
+the activation stack and the marriage", "What the collector traces";
+[image-format.md](design/image-format.md), "Planned: suspend and resume".
+
+Decided with the user on 2026-10-24: road step 7 is cut into four parts,
+7b, 7a, 7a′ and 7c, in that order, 7a (frames as words in one contiguous
+reservation of `ns-memory`, the depth limit kept and a byte bound added as
+a net) taken only if the interpreter measures no slower and otherwise
+moved to road step 8. 7b is the landing point of every later
+deoptimization, built after Primordial Soup's `CreateBaseFrame` and Cog's
+`makeBaseFrameFor`: `Heap::suspend_activations` turns every activation of
+the run into its frame object, each holding all its registers and naming
+its sender's frame, and `Heap::resume_activation` puts one back on the
+stack, lazily -- only the top comes back, and each sender when something
+returns or unwinds into it, through `Continuation::ReturnToSuspended`, so a
+resume costs what is returned into. A frame's `MARRIED` word tells its
+three states: a stack index while it runs, a negative row of the heap's
+side table while it is suspended, nil once it has returned. The side table
+holds what a frame object cannot -- the continuation, whether it counts
+against the depth limit, the entered level -- so a reified frame grows by
+nothing; it is a root of every collector, the reclaim gathers its entered
+levels, and the depth count is one running total that suspension leaves
+alone. The unwinder decides its destination before every pop, `^` reaches
+a suspended home, and the activation leaves, `sender` among them, and the
+depth reserve's walks go on into suspended frames; `retry` keeps popping to
+its `on:do:` activation, which is never skipped. `NS_NEXT_STRESS_SUSPEND`,
+the sixth stress mode, suspends every activation at the safepoints its
+schedule picks and runs on from the frames, so every golden passes through
+the path. The decoder refuses a frame not marked uncontinuable, in both
+passes, and cross-checks `home` against `kind`; the image carries nothing
+of the side table, which suspend and resume will.
+
+No golden's outcome changed. Measured against `master`, every one of the
+seven micro sources and sixteen Are We Fast Yet programs is within -1.4%
+to +1.0%, List and `bench_loop.ns` faster: execution.md, "What suspending
+and resuming moved". The end-of-batch gates passed, the suite under all six
+stress modes and `run-corpus` under each. New tests in `heap.rs`,
+`interpreter/unwind.rs`, `tests/stress.rs`, `tests/exceptions.rs` and
+`tests/image.rs`.
+
+- `cc8dfd6f`, `c7b14070`, `49f329ce` -- the decisions and the plan.
+- `33eb0d96`, `684a9951` -- suspended frames and the side table in the
+  heap, and one running depth count.
+- `793d8105` -- the stress mode and the return into a suspended sender.
+- `8b826b19`, `b8207b9e` -- unwinding and the sender walks through
+  suspended frames, and every reader and writer of an entry's continuation
+  looking through its sender's link.
+- `1085ce62`, `76631f97` -- the decoder refuses a frame that could be
+  resumed.
+- `14fc7138`, `fc77b591` -- the sixth stress mode in the gate, and the
+  documents.
+- `b454d37c` -- the release guard of `image::package` refuses a suspended
+  run.
+- This commit -- the measurement and this entry.
+
+What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): road step
+7a, next, then 7a′ and 7c; suspend and resume of images, which has to
+carry the side table and lift the decoder's refusal; a top-level frame,
+which cannot be resumed.

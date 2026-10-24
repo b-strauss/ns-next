@@ -700,8 +700,11 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   and resume has to lift that refusal, and verify everything a resumable
   frame carries before it does: the program counter against the body, the
   entered level against its application; `home` against `kind` is
-  checked already. [image-format.md](design/image-format.md), "Planned:
-  suspend and resume".
+  checked already. A top-level frame names no code and so cannot be
+  resumed (`Heap::resume_activation` takes the body from the frame); the
+  runtime never pushes one today, but a REPL's top-level activation
+  would. [image-format.md](design/image-format.md), "Planned: suspend and
+  resume".
 - **A running world's image is trusted** (2026-10-12): a snapshot may hold
   frames of shipped code whose registers hold the kernel, a module instance
   or an `Activation`, and a crafted frame could pass one to the program's
