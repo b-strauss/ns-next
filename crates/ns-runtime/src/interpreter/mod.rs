@@ -257,8 +257,9 @@ impl<'gc> StepArguments<'gc> {
 
     /// The arguments the activation is pushed with: `send`'s own for
     /// `Send`, none for `ControlFlow`, the decision's for `Owned`, which
-    /// `owned` is `self.owned()`, held by the caller so that the window
-    /// can name it by a thin reference (`Arguments::Values`).
+    /// `owned` must be: `self.owned()`, held by the caller so that the
+    /// window can name it by a thin reference (`Arguments::Values`). A
+    /// debug build checks that it is the same slice.
     pub(crate) fn window<'values>(
         &self,
         send: Arguments<'values, 'gc>,
@@ -267,7 +268,13 @@ impl<'gc> StepArguments<'gc> {
         match self {
             StepArguments::Send => send,
             StepArguments::ControlFlow => Arguments::NONE,
-            StepArguments::Owned(_) => Arguments::Values(owned),
+            StepArguments::Owned(arguments) => {
+                debug_assert!(
+                    std::ptr::eq(*owned, arguments.as_slice()),
+                    "internal: the window's owned arguments are not the decision's own"
+                );
+                Arguments::Values(owned)
+            }
         }
     }
 }

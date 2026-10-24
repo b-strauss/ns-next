@@ -7,8 +7,9 @@
 /// method, which runs; and a name nothing declares, which
 /// `doesNotUnderstand:` answers -- each with a parameter, an immutable local
 /// and a mutable local as `e`, in a statement, as an operand of `+` and
-/// under `^`. Each method answers its argument, -1 when the sum was wrong and
-/// -2 when the slot was. Three rounds, so every send is cached; then the
+/// under `^`. Each of the nine test methods answers its argument, through
+/// `^id:: b` -- `recorded:` and `doesNotUnderstand:` themselves answer
+/// `self` -- and -1 when the sum was wrong and -2 when the slot was. Three rounds, so every send is cached; then the
 /// slot's last value, and the sums of the arguments the method and the
 /// handler were sent, 216 each: three rounds of three sends of 7, 8 and 9.
 class ASetterAssignmentAnswersItsValueAfterTheSend = Object new (

@@ -1298,13 +1298,14 @@ impl<'a> Lowerer<'a> {
     /// their `destination` into the slot, and a literal, `self`, a read of
     /// another frame's local or of a vector, a closure and an array are
     /// loaded into it, so the send copies none of them. A named local
-    /// answers its own register, which the send copies -- or, when an
-    /// argument after it can write that local, the protective `Move` into
-    /// the slot, which the send then does not copy. Every other expression
-    /// answers the register its value is in -- the result register of an
-    /// inlined conditional, `and:`/`or:`, loop or mirror send, an
-    /// assignment's value, a cascade's last send -- and the send copies it
-    /// into the slot.
+    /// answers its own register, which the send reads in place when the
+    /// send's sources are consecutive and otherwise copies into the slot --
+    /// or, when an argument after it can write that local, the protective
+    /// `Move` into the slot, which the send then reads there. Every other
+    /// expression answers the register its value is in -- the result
+    /// register of an inlined conditional, `and:`/`or:`, loop or mirror
+    /// send, an assignment's value, a cascade's last send -- which the send
+    /// likewise reads in place, or copies into the slot when it cannot.
     ///
     /// Writing the slot this early is sound because the slots were
     /// allocated before any argument was lowered (`lower_arguments`):
@@ -1728,18 +1729,18 @@ impl<'a> Lowerer<'a> {
 
     /// A send's `count` contiguous argument slots, allocated at once, after
     /// every scratch register in `receivers` the send also reads -- a
-    /// receiver, a mirror send's subject, a setter's value -- and before
-    /// any of its arguments is lowered. Answers the first slot; for no
-    /// argument, where the first would be.
+    /// receiver, a mirror send's subject, an inlined operation's operands --
+    /// and before any of its arguments is lowered. Answers the first slot;
+    /// for no argument, where the first would be.
     ///
     /// The slots are not always the top of what is live at the send:
     /// whatever an argument is evaluated with lands above them, and an
-    /// argument the send copies (`lower_expression_into`) -- the result
+    /// argument the send may copy (`lower_expression_into`) -- the result
     /// register of an inlined conditional, `and:`/`or:`, loop or mirror
-    /// send, an assignment's value or a cascade's last send, unless that is a named local below the slots -- is read by the
-    /// send from a register above them. Every other register above the
-    /// slots is dead by the time the send executes
-    /// (`docs/design/compiler.md`, "Sends").
+    /// send, an assignment's value or a cascade's last send, unless that is
+    /// a named local below the slots -- is read by the send from a register
+    /// above them. Every other register above the slots is dead by the time
+    /// the send executes (`docs/design/compiler.md`, "Sends").
     fn allocate_argument_slots(&mut self, receivers: &[u16], count: usize) -> u16 {
         let argument_base = self.next_scratch;
         for _ in 0..count {
@@ -1766,8 +1767,10 @@ impl<'a> Lowerer<'a> {
     /// its source -- every argument is live until the send reads it, so
     /// each has to survive whatever the arguments after it emit, which is
     /// why a named local a later argument can write is copied, into its
-    /// slot, as `lower_operand` copies an operand. The send copies each
-    /// source that is not its slot. Answers the first slot and the sources.
+    /// slot, as `lower_operand` copies an operand. The send reads its
+    /// sources in place when they are consecutive and otherwise copies each
+    /// one that is not its slot into it. Answers the first slot and the
+    /// sources.
     fn lower_arguments(&mut self, receivers: &[u16], arguments: &[Expression]) -> (u16, Vec<u16>) {
         let argument_base = self.allocate_argument_slots(receivers, arguments.len());
         let argument_sources = (0..arguments.len())
@@ -2070,7 +2073,7 @@ impl<'a> Lowerer<'a> {
         // The fallback's one argument slot: the argument's own register when
         // it is a scratch register above the receiver, where the slot would
         // stand, and otherwise -- a named local -- a slot of its own, which
-        // the send copies the argument into.
+        // stays unwritten: a send of one argument reads its source in place.
         let argument_base = if right_register >= self.base && right_register > left_register {
             right_register
         } else {
