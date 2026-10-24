@@ -1586,7 +1586,10 @@ impl<'a> Lowerer<'a> {
         value: &Expression,
         use_: ValueUse,
     ) -> u16 {
-        let mut value_register = self.lower_expression(value);
+        if let Some(Binding::LexicalSend { depth }) = self.bindings.get(&target.span) {
+            return self.lower_setter_assign(*depth, target, value, use_);
+        }
+        let value_register = self.lower_expression(value);
         match self.bindings.get(&target.span) {
             Some(Binding::Local(slot)) => {
                 let access = self.resolve_variable(0, *slot);
@@ -1598,28 +1601,12 @@ impl<'a> Lowerer<'a> {
                 self.check_writable(access);
                 self.emit_store(access, value_register);
             }
-            Some(Binding::LexicalSend { depth }) => {
-                let depth = *depth;
-                let setter = crate::Symbol::intern(&format!("{}:", target.name));
-                // The setter's one argument slot, after the value.
-                let argument_base = self.allocate_argument_slots(&[value_register], 1);
-                // A setter send runs user code before anything reads this
-                // expression's own value, so a named local's register may no
-                // longer hold what was assigned by then -- but only where that
-                // code can reach the register at all, which after conversion
-                // is a fallback closure's locals alone (`a_send_can_write`).
-                // The copy goes into the slot, which is then the setter's
-                // argument and the assignment's value. (The
-                // `StoreLocal`/`StoreOuterLocal` cases above need no copy: the
-                // only named local a `StoreLocal` can write while
-                // `value_register` is live is `value_register` itself -- `t::
-                // t` -- which leaves it unchanged, and a `StoreOuterLocal`
-                // writes a different frame.)
-                let clobbered = use_ == ValueUse::Read && self.a_send_can_write(value_register);
-                value_register = self.materialize_into(value_register, clobbered, argument_base);
-                self.emit_lexical_send(depth, setter, argument_base, vec![value_register], None);
-            }
-            Some(Binding::SuperSend | Binding::MirrorSend | Binding::EnclosingObject { .. })
+            Some(
+                Binding::LexicalSend { .. }
+                | Binding::SuperSend
+                | Binding::MirrorSend
+                | Binding::EnclosingObject { .. },
+            )
             | None => panic!(
                 "internal: unresolved setter target `{}` (the resolver should have rejected this)",
                 target.name
@@ -1628,6 +1615,39 @@ impl<'a> Lowerer<'a> {
         // An assignment's own value is `value`'s value
         // (`docs/design/dispatch.md`, "Setter sends") -- already sitting in
         // register `value_register`.
+        value_register
+    }
+
+    /// An assignment through a setter send: its one argument slot allocated
+    /// first and the value lowered into it, as a send's arguments are
+    /// (`lower_arguments`), so that a value produced there is not copied.
+    /// The register the value is in -- the slot, or the register a named
+    /// local or an inlined form left it in -- is the setter's argument and
+    /// the assignment's value (`docs/design/dispatch.md`, "Setter sends").
+    fn lower_setter_assign(
+        &mut self,
+        depth: u16,
+        target: &ast::Identifier,
+        value: &Expression,
+        use_: ValueUse,
+    ) -> u16 {
+        let setter = crate::Symbol::intern(&format!("{}:", target.name));
+        let argument_base = self.allocate_argument_slots(&[], 1);
+        let value_register = self.lower_expression_to(value, Some(argument_base));
+        // A setter send runs user code before anything reads this
+        // expression's own value, so a named local's register may no longer
+        // hold what was assigned by then -- but only where that code can
+        // reach the register at all, which after conversion is a fallback
+        // closure's locals alone (`a_send_can_write`). The copy goes into
+        // the slot, which is then the setter's argument and the
+        // assignment's value. (The `StoreLocal`/`StoreOuterLocal` cases of
+        // `lower_assign` need no copy: the only named local a `StoreLocal`
+        // can write while `value_register` is live is `value_register`
+        // itself -- `t:: t` -- which leaves it unchanged, and a
+        // `StoreOuterLocal` writes a different frame.)
+        let clobbered = use_ == ValueUse::Read && self.a_send_can_write(value_register);
+        let value_register = self.materialize_into(value_register, clobbered, argument_base);
+        self.emit_lexical_send(depth, setter, argument_base, vec![value_register], None);
         value_register
     }
 
@@ -3011,7 +3031,7 @@ mod tests {
             .collect()
     }
 
-    /// The copy `lower_assign` makes for a setter send protects the
+    /// The copy `lower_setter_assign` makes for a setter send protects the
     /// assignment's *value* from the user code that setter runs, which can
     /// write the local before anything reads the value -- even a consumer
     /// that is the very next instruction. Only where nothing reads the value
@@ -4992,6 +5012,53 @@ mod tests {
             )),
             "nothing is moved into the slot: {:?}",
             code.instructions()
+        );
+    }
+
+    /// A setter's value is lowered into its one slot, which is then its
+    /// source and the assignment's value: the inlined operation's fast path
+    /// and its fallback send write the slot, and nothing is moved into it,
+    /// whether the assignment's value is discarded or answered.
+    #[test]
+    fn a_setter_value_is_lowered_into_its_slot() {
+        let source = indoc! {"
+            class X = Object new (
+              | sum ::= 0. |
+            ) (
+              add: n = ( sum:: sum + n )
+              answer: n = ( ^sum:: sum + n )
+            ) : ()
+        "};
+        for index in 0..2 {
+            let code = lower_whole_method(source, index);
+            let (argument_base, sources) = assert_contiguous_slots(&code, "sum:", 1, 1);
+            assert_eq!(sources, vec![argument_base], "{:?}", code.instructions());
+            assert!(
+                has(&code, |instruction| matches!(
+                    instruction,
+                    Instruction::IntegerBinary { destination, .. } if *destination == argument_base
+                )),
+                "the fast path writes the slot: {:?}",
+                code.instructions()
+            );
+            assert!(
+                !has(&code, |instruction| matches!(
+                    instruction,
+                    Instruction::Move { destination, .. } if *destination == argument_base
+                )),
+                "nothing is moved into the slot: {:?}",
+                code.instructions()
+            );
+        }
+        let answered = lower_whole_method(source, 1);
+        let (_, argument_base, _) = argument_slots_of(&answered, "sum:");
+        assert!(
+            has(&answered, |instruction| matches!(
+                instruction,
+                Instruction::Return { register } if *register == argument_base
+            )),
+            "the assignment's value is the slot: {:?}",
+            answered.instructions()
         );
     }
 }

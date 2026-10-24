@@ -8034,7 +8034,8 @@ each argument's source, and copies a source that is not its slot into it
 optimized lowering leaves in the register an inlined conditional,
 `and:`/`or:`, loop or mirror send, an assignment or a cascade answered; a
 send's value, an inlined integer operation's, a literal or a closure is
-produced in its slot and not copied ([compiler.md](compiler.md), "Sends").
+produced in its slot and not copied, a setter's value as any argument
+([compiler.md](compiler.md), "Sends").
 The decision, the native and the push then read the slots where they are,
 through an argument window (`interpreter::Arguments`, a tag and one word,
 "No re-entry from Rust"), and `Heap::push_activation_in` copies them into

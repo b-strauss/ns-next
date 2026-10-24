@@ -11,18 +11,18 @@ method main:args: (args 2, registers 13)
    5   stmt 0  SendPublic r5 <- r3 #< (r4) @1
    6   stmt 0  JumpIfNotBoolean r5 -> 21
    7   stmt 0  BranchIfFalse r5 -> 22
-   8   stmt 0  SendLexical r6 <- depth 0 #sum () @2
-   9   stmt 0  SendLexical r7 <- depth 0 #n () @3
-  10   stmt 0  IntegerBinary Add r8 <- r6, r7 else -> 12
+   8   stmt 0  SendLexical r7 <- depth 0 #sum () @2
+   9   stmt 0  SendLexical r8 <- depth 0 #n () @3
+  10   stmt 0  IntegerBinary Add r6 <- r7, r8 else -> 12
   11   stmt 0  Jump -> 13
-  12   stmt 0  SendPublic r8 <- r6 #+ (r7) @4
-  13   stmt 0  SendLexical r10 <- depth 0 #sum: (r9 <- r8) @5
-  14   stmt 0  SendLexical r6 <- depth 0 #n () @6
-  15   stmt 0  LoadLiteral r7, 1
-  16   stmt 0  IntegerBinary Add r8 <- r6, r7 else -> 18
+  12   stmt 0  SendPublic r6 <- r7 #+ (r8) @4
+  13   stmt 0  SendLexical r9 <- depth 0 #sum: (r6) @5
+  14   stmt 0  SendLexical r7 <- depth 0 #n () @6
+  15   stmt 0  LoadLiteral r8, 1
+  16   stmt 0  IntegerBinary Add r6 <- r7, r8 else -> 18
   17   stmt 0  Jump -> 19
-  18   stmt 0  SendPublic r8 <- r6 #+ (r7) @7
-  19   stmt 0  SendLexical r10 <- depth 0 #n: (r9 <- r8) @8
+  18   stmt 0  SendPublic r6 <- r7 #+ (r8) @7
+  19   stmt 0  SendLexical r9 <- depth 0 #n: (r6) @8
   20   stmt 0  Jump -> 1
   21   stmt 0  SignalNonBoolean r5
   22   stmt 1  LoadLiteral r2, nil
@@ -33,12 +33,12 @@ method main:args: (args 2, registers 13)
   27   stmt 1  SendPublic r5 <- r3 #= (r4) @10
   28   stmt 1  JumpIfNotBoolean r5 -> 37
   29   stmt 1  BranchIfTrue r5 -> 38
-  30   stmt 1  SendLexical r6 <- depth 0 #n () @11
-  31   stmt 1  LoadLiteral r7, 1
-  32   stmt 1  IntegerBinary Subtract r8 <- r6, r7 else -> 34
+  30   stmt 1  SendLexical r7 <- depth 0 #n () @11
+  31   stmt 1  LoadLiteral r8, 1
+  32   stmt 1  IntegerBinary Subtract r6 <- r7, r8 else -> 34
   33   stmt 1  Jump -> 35
-  34   stmt 1  SendPublic r8 <- r6 #- (r7) @12
-  35   stmt 1  SendLexical r10 <- depth 0 #n: (r9 <- r8) @13
+  34   stmt 1  SendPublic r6 <- r7 #- (r8) @12
+  35   stmt 1  SendLexical r9 <- depth 0 #n: (r6) @13
   36   stmt 1  Jump -> 23
   37   stmt 1  SignalNonBoolean r5
   38   stmt 2  SendPublic r2 <- r0 #transcript () @14

@@ -78,9 +78,13 @@ argument_base + argument_sources.len()`. Before it decides, the send copies
 each source that is not its slot into the slot, so a named local passed as
 an argument is copied by the send itself. Both lowerings allocate the slots
 after every scratch register the send also reads -- its receiver, a mirror
-send's subject, a setter's value -- and before they lower any argument,
-then lower each argument into its slot ([execution.md](execution.md),
-"Planned: overlapping register windows").
+send's subject -- and before they lower any argument, then lower each
+argument into its slot ([execution.md](execution.md), "Planned:
+overlapping register windows"). An assignment through a setter is a send
+of one argument like any other: its slot is allocated before its value,
+which is lowered into it, so `sum:: sum + n` writes the sum into the slot,
+and the register the value is in is both the setter's source and the
+assignment's value.
 
 - **The optimized lowering** (`Lowerer::lower_expression_into`) produces
   in its slot a send it does not inline, whose `destination` is the slot;

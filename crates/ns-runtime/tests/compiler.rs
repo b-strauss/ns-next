@@ -135,11 +135,12 @@ fn the_initializer_lowers_slots_then_initializer_expressions_with_own_slot_indic
                 source: 1,
                 own_index: 1
             },
-            // `q:: p.` -- slot reads/writes are lexical sends.
+            // `q:: p.` -- slot reads/writes are lexical sends, and the
+            // value is lowered into the setter's slot, register 1.
             Instruction::SendLexical {
                 depth: 0,
                 selector: Symbol::intern("p"),
-                argument_base: 1,
+                argument_base: 2,
                 argument_sources: vec![],
                 destination: 1,
                 call_site: CallSite { number: 0 },
@@ -147,20 +148,20 @@ fn the_initializer_lowers_slots_then_initializer_expressions_with_own_slot_indic
             Instruction::SendLexical {
                 depth: 0,
                 selector: Symbol::intern("q:"),
-                argument_base: 2,
+                argument_base: 1,
                 argument_sources: vec![1],
-                destination: 3,
+                destination: 2,
                 call_site: CallSite { number: 1 },
             },
-            Instruction::LoadSelf { destination: 4 },
-            Instruction::ImplicitReturn { register: 4 },
+            Instruction::LoadSelf { destination: 3 },
+            Instruction::ImplicitReturn { register: 3 },
         ]
     );
     assert_eq!(
         initializer.statement_program_counter,
         vec![(0, 0..1), (1, 1..3), (2, 3..5)]
     );
-    assert_eq!(initializer.register_count, 5);
+    assert_eq!(initializer.register_count, 4);
 }
 
 #[test]
