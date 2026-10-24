@@ -12,7 +12,6 @@
 //! and a JIT share. See `docs/design/execution.md`, "The VM".
 
 use crate::interpreter::Arguments;
-use std::ops::Range;
 use std::rc::Rc;
 
 use crate::builtins::primitive::MirrorPrimitive;
@@ -292,12 +291,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                 let call_site = site.call_site();
                 let family_size = code.family_size;
                 let receiver = mutator.heap.register(register_base, $pending.receiver);
-                let slots = place_arguments(
-                    mutator,
-                    register_base,
-                    $pending.argument_base,
-                    $pending.arguments.as_slice(),
-                );
+                let window = ArgumentSlots::new(register_base, $pending.window, $pending.count);
                 send(
                     mutator,
                     Sender {
@@ -307,7 +301,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                         inlinable: false,
                     },
                     program_counter,
-                    slots,
+                    window,
                     floor,
                     &mut handoff,
                     |mutator, arguments| {
@@ -327,12 +321,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                 let site = code.body().send_site($pending.site as usize);
                 let selector = site.selector();
                 let receiver = mutator.heap.register(register_base, $pending.receiver);
-                let slots = place_arguments(
-                    mutator,
-                    register_base,
-                    $pending.argument_base,
-                    $pending.arguments.as_slice(),
-                );
+                let window = ArgumentSlots::new(register_base, $pending.window, $pending.count);
                 send(
                     mutator,
                     Sender {
@@ -342,7 +331,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                         inlinable: true,
                     },
                     program_counter,
-                    slots,
+                    window,
                     floor,
                     &mut handoff,
                     |mutator, arguments| mutator.decide_send(receiver, selector, arguments),
@@ -355,12 +344,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                 let depth = site.depth();
                 let declaration_code = code.is_declaration_code();
                 let family_size = code.family_size;
-                let slots = place_arguments(
-                    mutator,
-                    register_base,
-                    $pending.argument_base,
-                    $pending.arguments.as_slice(),
-                );
+                let window = ArgumentSlots::new(register_base, $pending.window, $pending.count);
                 send(
                     mutator,
                     Sender {
@@ -370,7 +354,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                         inlinable: false,
                     },
                     program_counter,
-                    slots,
+                    window,
                     floor,
                     &mut handoff,
                     |mutator, arguments| {
@@ -393,12 +377,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                 let selector = site.selector();
                 let call_site = site.call_site();
                 let family_size = code.family_size;
-                let slots = place_arguments(
-                    mutator,
-                    register_base,
-                    $pending.argument_base,
-                    $pending.arguments.as_slice(),
-                );
+                let window = ArgumentSlots::new(register_base, $pending.window, $pending.count);
                 send(
                     mutator,
                     Sender {
@@ -408,7 +387,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                         inlinable: false,
                     },
                     program_counter,
-                    slots,
+                    window,
                     floor,
                     &mut handoff,
                     |mutator, arguments| {
@@ -569,6 +548,8 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                     site,
                                 } => {
                                     break 'public PendingSend::inline(
+                                        mutator,
+                                        register_base,
                                         destination,
                                         receiver,
                                         argument_base,
@@ -584,6 +565,8 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                     site,
                                 } => {
                                     break 'public PendingSend::inline(
+                                        mutator,
+                                        register_base,
                                         destination,
                                         receiver,
                                         argument_base,
@@ -599,6 +582,8 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                     site,
                                 } => {
                                     break 'public PendingSend::inline(
+                                        mutator,
+                                        register_base,
                                         destination,
                                         receiver,
                                         argument_base,
@@ -607,7 +592,12 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                     )
                                 }
                                 CompactInstruction::SendPublicWide { site } => {
-                                    break 'public PendingSend::wide(&code, site)
+                                    break 'public PendingSend::wide(
+                                        mutator,
+                                        register_base,
+                                        &code,
+                                        site,
+                                    )
                                 }
                                 // Decided as `SendPublic` is, but uncached: only the
                                 // reference lowering emits it. Only the depth count treats a
@@ -620,6 +610,8 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                     site,
                                 } => {
                                     break 'inlinable PendingSend::inline(
+                                        mutator,
+                                        register_base,
                                         destination,
                                         receiver,
                                         argument_base,
@@ -635,6 +627,8 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                     site,
                                 } => {
                                     break 'inlinable PendingSend::inline(
+                                        mutator,
+                                        register_base,
                                         destination,
                                         receiver,
                                         argument_base,
@@ -650,6 +644,8 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                     site,
                                 } => {
                                     break 'inlinable PendingSend::inline(
+                                        mutator,
+                                        register_base,
                                         destination,
                                         receiver,
                                         argument_base,
@@ -658,7 +654,12 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                     )
                                 }
                                 CompactInstruction::SendInlinableWide { site } => {
-                                    break 'inlinable PendingSend::wide(&code, site)
+                                    break 'inlinable PendingSend::wide(
+                                        mutator,
+                                        register_base,
+                                        &code,
+                                        site,
+                                    )
                                 }
                                 CompactInstruction::SendLexical0 {
                                     destination,
@@ -666,6 +667,8 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                     site,
                                 } => {
                                     break 'lexical PendingSend::inline(
+                                        mutator,
+                                        register_base,
                                         destination,
                                         0,
                                         argument_base,
@@ -680,6 +683,8 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                     site,
                                 } => {
                                     break 'lexical PendingSend::inline(
+                                        mutator,
+                                        register_base,
                                         destination,
                                         0,
                                         argument_base,
@@ -694,6 +699,8 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                     site,
                                 } => {
                                     break 'lexical PendingSend::inline(
+                                        mutator,
+                                        register_base,
                                         destination,
                                         0,
                                         argument_base,
@@ -702,7 +709,12 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                     )
                                 }
                                 CompactInstruction::SendLexicalWide { site } => {
-                                    break 'lexical PendingSend::wide(&code, site)
+                                    break 'lexical PendingSend::wide(
+                                        mutator,
+                                        register_base,
+                                        &code,
+                                        site,
+                                    )
                                 }
                                 CompactInstruction::SendSuper0 {
                                     destination,
@@ -710,6 +722,8 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                     site,
                                 } => {
                                     break 'super_send PendingSend::inline(
+                                        mutator,
+                                        register_base,
                                         destination,
                                         0,
                                         argument_base,
@@ -724,6 +738,8 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                     site,
                                 } => {
                                     break 'super_send PendingSend::inline(
+                                        mutator,
+                                        register_base,
                                         destination,
                                         0,
                                         argument_base,
@@ -738,6 +754,8 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                     site,
                                 } => {
                                     break 'super_send PendingSend::inline(
+                                        mutator,
+                                        register_base,
                                         destination,
                                         0,
                                         argument_base,
@@ -746,7 +764,12 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                     )
                                 }
                                 CompactInstruction::SendSuperWide { site } => {
-                                    break 'super_send PendingSend::wide(&code, site)
+                                    break 'super_send PendingSend::wide(
+                                        mutator,
+                                        register_base,
+                                        &code,
+                                        site,
+                                    )
                                 }
                                 CompactInstruction::SendMirror {
                                     destination,
@@ -1249,72 +1272,68 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
 
 const WIDE_SEND: &str = "internal: a wide send's site holds its registers";
 
-/// A send an arm gathered: what to send and where its value goes. The arms
-/// of one kind differ only in where their argument registers are; they
-/// break out of the kind's labelled block to its one path, so that each
-/// kind's cache hit path is inlined into `vm::run` once. It carries no kind:
-/// a single join for all four would need one, and compiles to a stack
-/// aggregate and a second jump table on it.
-struct PendingSend<'code> {
+/// A send an arm gathered: what to send, the window its arguments are read
+/// from and where its value goes. The arms of one kind differ only in where
+/// their argument registers are; they break out of the kind's labelled
+/// block to its one path, so that each kind's cache hit path is inlined
+/// into `vm::run` once. It carries no kind: a single join for all four
+/// would need one, and compiles to a stack aggregate and a second jump
+/// table on it.
+struct PendingSend {
     destination: u16,
     /// `SendPublic`'s and `SendInlinable`'s receiver register.
     receiver: u16,
     site: u32,
-    /// The first argument slot.
-    argument_base: u16,
-    /// The register each argument slot is copied from.
-    arguments: ArgumentRegisters<'code>,
+    /// The first register of the arguments' window (`argument_window`).
+    window: u16,
+    /// How many arguments.
+    count: u16,
 }
 
-/// A send's argument sources, handed to `send` by value so that an
-/// eight-byte form's never reach memory.
-#[derive(Clone, Copy)]
-enum ArgumentRegisters<'code> {
-    /// Up to two, from the slot.
-    Inline { count: u8, registers: [u16; 2] },
-    /// From the site's `WideSend`.
-    Listed(&'code [u16]),
-}
-
-impl<'code> ArgumentRegisters<'code> {
+impl PendingSend {
+    /// A send whose registers are all in its slot. A second argument whose
+    /// source does not follow the first's is the one case that places
+    /// anything, out of line.
     #[inline(always)]
-    fn as_slice(&self) -> &[u16] {
-        match self {
-            ArgumentRegisters::Inline { count, registers } => &registers[..usize::from(*count)],
-            ArgumentRegisters::Listed(listed) => listed,
-        }
-    }
-}
-
-impl<'code> PendingSend<'code> {
-    /// A send whose registers are all in its slot.
-    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
     fn inline(
+        mutator: &mut Mutator<'_>,
+        register_base: RegisterBase,
         destination: u8,
         receiver: u8,
         argument_base: u8,
         site: u16,
-        arguments: &[u8],
-    ) -> PendingSend<'code> {
-        let mut registers = [0; 2];
-        for (register, argument) in registers.iter_mut().zip(arguments) {
-            *register = u16::from(*argument);
-        }
+        sources: &[u8],
+    ) -> PendingSend {
+        let window = match *sources {
+            [] => u16::from(argument_base),
+            [only] => u16::from(only),
+            [first, second] if u16::from(second) == u16::from(first) + 1 => u16::from(first),
+            [first, second] => place_arguments(
+                mutator,
+                register_base,
+                u16::from(argument_base),
+                &[u16::from(first), u16::from(second)],
+            ),
+            _ => unreachable!("internal: an eight-byte send holds at most two sources"),
+        };
         PendingSend {
             destination: u16::from(destination),
             receiver: u16::from(receiver),
             site: u32::from(site),
-            argument_base: u16::from(argument_base),
-            arguments: ArgumentRegisters::Inline {
-                count: arguments.len() as u8,
-                registers,
-            },
+            window,
+            count: sources.len() as u16,
         }
     }
 
     /// A send whose registers are in its site's `WideSend`.
     #[inline(always)]
-    fn wide(code: &'code CompiledCode, site: u32) -> PendingSend<'code> {
+    fn wide(
+        mutator: &mut Mutator<'_>,
+        register_base: RegisterBase,
+        code: &CompiledCode,
+        site: u32,
+    ) -> PendingSend {
         let wide = code
             .body()
             .send_site(site as usize)
@@ -1324,8 +1343,13 @@ impl<'code> PendingSend<'code> {
             destination: wide.destination(),
             receiver: wide.receiver(),
             site,
-            argument_base: wide.argument_base(),
-            arguments: ArgumentRegisters::Listed(wide.arguments()),
+            window: argument_window(
+                mutator,
+                register_base,
+                wide.argument_base(),
+                wide.arguments(),
+            ),
+            count: argument_count(wide.arguments()),
         }
     }
 }
@@ -1786,11 +1810,11 @@ fn send_mirror(
 ) -> Option<Transfer> {
     let mirror = mutator.heap.register(register_base, mirror_register);
     let subject = mutator.heap.register(register_base, subject_register);
-    let slots = place_arguments(mutator, register_base, argument_base, argument_sources);
+    let window = argument_window(mutator, register_base, argument_base, argument_sources);
     let arguments = Arguments::Slots(ArgumentSlots::new(
         register_base,
-        slots.start,
-        slots.end - slots.start,
+        window,
+        argument_count(argument_sources),
     ));
     mutator
         .heap
@@ -2019,53 +2043,95 @@ struct Sender {
     inlinable: bool,
 }
 
-/// A send's arguments put in their slots: every source that is not already
-/// its slot copied into it, in order; answers the slots. A named local
-/// passed as an argument is copied here, by the send itself, rather than by
-/// a `Move` before it (`docs/design/execution.md`, "Planned: overlapping
-/// register windows"). Running it again, as a send re-run after forcing a
-/// future is, reads the sources afresh, as the send read its arguments
-/// before; neither lowering makes a source another argument's slot, so the
-/// order of the copies never matters.
+/// The first register of the window a send's arguments are read from:
+/// their sources themselves where those are consecutive registers -- none
+/// or one always are -- or else the slots, the sources placed there
+/// (`place_arguments`).
+///
+/// A window that names the sources leaves the slots unwritten, so it is
+/// only sound because nothing reads a slot after its send but the send
+/// itself: a setter assignment's value is the register its argument came
+/// from, which is the slot only where the value was produced there
+/// (`compiler::lower`'s `lower_setter_assign`), and the push copies the
+/// window into the callee's registers from wherever it is
+/// (`docs/design/execution.md`, "Planned: overlapping register windows").
 #[inline(always)]
+fn argument_window(
+    mutator: &mut Mutator<'_>,
+    register_base: RegisterBase,
+    argument_base: u16,
+    argument_sources: &[u16],
+) -> u16 {
+    match argument_sources {
+        [] => argument_base,
+        [only] => *only,
+        _ => place_arguments(mutator, register_base, argument_base, argument_sources),
+    }
+}
+
+/// How many arguments `argument_sources` names: within the body's
+/// registers, a `u16` count, as the decoder verifies of every send.
+#[inline(always)]
+fn argument_count(argument_sources: &[u16]) -> u16 {
+    argument_sources.len() as u16
+}
+
+/// `argument_window` for sources no test inline found consecutive: out of
+/// line, so that the send paths `vm::run` inlines carry no loop. Answers
+/// the first source when the sources are consecutive after all, and
+/// otherwise copies every source that is not already its slot into it, in
+/// order, and answers the first slot. A named local passed as an argument
+/// is copied here, by the send itself, rather than by a `Move` before it
+/// (`docs/design/execution.md`, "Planned: overlapping register windows").
+/// Running it again, as a send re-run after forcing a future is, reads the
+/// sources afresh, as the send read its arguments before; neither lowering
+/// makes a source another argument's slot, so the order of the copies
+/// never matters.
+#[inline(never)]
 fn place_arguments(
     mutator: &mut Mutator<'_>,
     register_base: RegisterBase,
     argument_base: u16,
     argument_sources: &[u16],
-) -> Range<u16> {
-    let mut slot = argument_base;
-    for source in argument_sources {
+) -> u16 {
+    if let Some(first) = argument_sources.first().copied() {
+        let consecutive = argument_sources
+            .iter()
+            .enumerate()
+            .all(|(offset, source)| u32::from(*source) == u32::from(first) + offset as u32);
+        if consecutive {
+            return first;
+        }
+    }
+    for (offset, source) in argument_sources.iter().enumerate() {
+        // Below the body's register count, a `u16`.
+        let slot = argument_base + offset as u16;
         if *source != slot {
             copy_register(mutator, register_base, slot, *source);
         }
-        slot += 1;
     }
-    argument_base..slot
+    argument_base
 }
 
-/// A send: the arguments, already in their slots (`place_arguments`) and
-/// read there, `program_counter` stored, the decision asked for, and what
-/// was decided run -- a value written to the sender's `destination`, or an
-/// activation pushed and switched to, its window filled straight from the
-/// slots. Nothing is gathered in between (`interpreter::Arguments`). The
-/// instructions that invoke a factory's or an initializer's
-/// initializer go the same way: their decision is the body to run on the
-/// instance, or the instance itself when nothing runs.
+/// A send: its arguments read where `window` names them
+/// (`argument_window`), `program_counter` stored, the decision asked for,
+/// and what was decided run -- a value written to the sender's
+/// `destination`, or an activation pushed and switched to, its window
+/// filled straight from the sender's registers. Nothing is gathered in
+/// between (`interpreter::Arguments`). The instructions that invoke a
+/// factory's or an initializer's initializer go the same way: their
+/// decision is the body to run on the instance, or the instance itself
+/// when nothing runs.
 fn send<'gc>(
     mutator: &mut Mutator<'gc>,
     sender: Sender,
     program_counter: usize,
-    slots: Range<u16>,
+    window: ArgumentSlots,
     floor: usize,
     handoff: &mut Handoff,
     decide: impl FnOnce(&mut Mutator<'gc>, Arguments<'_, 'gc>) -> Result<Step<'gc>, Signal<'gc>>,
 ) -> Transfer {
-    let arguments = Arguments::Slots(ArgumentSlots::new(
-        sender.register_base,
-        slots.start,
-        slots.end - slots.start,
-    ));
+    let arguments = Arguments::Slots(window);
     mutator
         .heap
         .activation_set_program_counter(sender.activation, program_counter);
@@ -2075,7 +2141,7 @@ fn send<'gc>(
 
 /// What a send decided, run: a value written to the sender's `destination`,
 /// or an activation pushed and switched to, its window filled from
-/// `send_arguments`, the send's slots. Shared by `send` and `SendMirror`, so a mirror leaf's
+/// `send_arguments`, the send's window. Shared by `send` and `SendMirror`, so a mirror leaf's
 /// decision is delivered exactly as any send's is.
 #[inline(always)]
 fn deliver<'gc>(
@@ -2292,7 +2358,7 @@ fn initialize_instance(
         mutator,
         sender,
         program_counter,
-        0..argument_count,
+        ArgumentSlots::new(sender.register_base, 0, argument_count),
         floor,
         handoff,
         |mutator, arguments| mutator.initialize_instance(sender.activation, instance, arguments),
@@ -2313,17 +2379,21 @@ fn initialize_superclass(
     floor: usize,
     handoff: &mut Handoff,
 ) -> Transfer {
-    let slots = place_arguments(
-        mutator,
+    let window = ArgumentSlots::new(
         sender.register_base,
-        argument_base,
-        argument_sources,
+        argument_window(
+            mutator,
+            sender.register_base,
+            argument_base,
+            argument_sources,
+        ),
+        argument_count(argument_sources),
     );
     send(
         mutator,
         sender,
         program_counter,
-        slots,
+        window,
         floor,
         handoff,
         |mutator, arguments| {
@@ -2345,17 +2415,21 @@ fn initialize_applied_level(
     floor: usize,
     handoff: &mut Handoff,
 ) -> Transfer {
-    let slots = place_arguments(
-        mutator,
+    let window = ArgumentSlots::new(
         sender.register_base,
-        argument_base,
-        argument_sources,
+        argument_window(
+            mutator,
+            sender.register_base,
+            argument_base,
+            argument_sources,
+        ),
+        argument_count(argument_sources),
     );
     send(
         mutator,
         sender,
         program_counter,
-        slots,
+        window,
         floor,
         handoff,
         |mutator, arguments| {

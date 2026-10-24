@@ -7009,20 +7009,20 @@ which the debug assertion only confirms: a decision, a native or a
 continuation is handed only a `&mut Mutator`, which offers no way back to the
 `Interpreter` and so no `run` at all ([memory.md](memory.md), "The brand").
 
-A decision reads a send's arguments where they are, in the sender's slots,
-while it holds `&mut Mutator`: it is handed an argument window,
-`interpreter::Arguments`, which names the slots by the sender's
+A decision reads a send's arguments where they are, in the sender's
+registers, while it holds `&mut Mutator`: it is handed an argument window,
+`interpreter::Arguments`, which names them by the sender's
 `RegisterBase` and reads each one through the heap it is handed, or names
 values a decision or the host built (`Message>>sendTo:`'s, a host's send,
 a `doesNotUnderstand:` handler's message). Each case is one word -- the
-register base's index, the first slot and the count packed into a `u64`
+register base's index, the first register and the count packed into a `u64`
 by arithmetic (`heap::ArgumentSlots`), or a reference to the values'
 slice -- so the window is a tag and a word, built in registers and passed
 in two: as three narrow fields beside a fat slice it was a sixteen-byte
 aggregate, built by narrow stores and copied or read back wider, and every
 such read waited for the stores to retire: +24% on Mandelbrot, measured
 by bisecting the first stage. Nothing gathers the arguments
-anywhere first, so the step state keeps no argument buffer. The slots
+anywhere first, so the step state keeps no argument buffer. The registers
 stay put from the send's start to its push: no collection runs inside a
 decision, only at safepoints, and nothing pops the sender meanwhile.
 `Interpreter::reenter`, `invoke_closure`,
@@ -7909,13 +7909,17 @@ form that reads everything from its `SendSite` -- three arguments or more, or a
 register above 255. The two-argument `SendPublic` is `{ destination, receiver,
 argument_base, sources: [u8; 2], site: u16 }`, eight bytes -- a send names
 its arguments' contiguous slots by their base and each argument's source,
-and copies a source that is not its slot into it before it decides
-([compiler.md](compiler.md), "Sends") -- and an eight-byte form's argument
-sources reach `send` by value, from the slot, with no allocation to chase.
+and reads its arguments in place when the sources are consecutive, else
+copies a source that is not its slot into it before it decides
+([compiler.md](compiler.md), "Sends") -- and an eight-byte form's arm
+turns its sources into the window's first register in registers: none
+reads the base, one its source, two their first source after one compare,
+and only two that do not follow each other call the placement, out of
+line, with no allocation to chase.
 `SendMirror` has one eight-byte form, its arguments and failure target in its
 `MirrorSite`; like every other instruction it takes `Wide` when its operands do
 not fit (a register above 255, or the mirror-site table full). Every send arm
-only gathers its receiver, its arguments and its site into a `PendingSend` and
+only gathers its receiver, its argument window and its site into a `PendingSend` and
 leaves the match through its kind's labelled block; **one send path per kind**
 follows that block, so each kind's cache hit path is inlined into `vm::run`
 once, not once per form. The pending send carries no kind: a single join for all
@@ -8027,22 +8031,34 @@ Would change: a send's arguments are no longer copied into the callee's
 window; the caller's outgoing argument registers *are* the callee's first
 registers.
 
-**What a send copies today.** Each argument up to twice. A send
-names its arguments' contiguous slots, allocated after its receiver, and
-each argument's source, and copies a source that is not its slot into it
--- a named local passed as an argument, and an argument whose value the
-optimized lowering leaves in the register an inlined conditional,
-`and:`/`or:`, loop or mirror send, an assignment or a cascade answered; a
-send's value, an inlined integer operation's, a literal or a closure is
-produced in its slot and not copied, a setter's value as any argument
-([compiler.md](compiler.md), "Sends").
-The decision, the native and the push then read the slots where they are,
+**What a send copies today.** Each argument at most twice, most of them
+once. A send names its arguments' contiguous slots, allocated after its
+receiver, and each argument's source. A send's value, an inlined integer
+operation's, a literal or a closure is produced in its slot, a setter's
+value as any argument; a named local passed as an argument, and an
+argument whose value the optimized lowering leaves in the register an
+inlined conditional, `and:`/`or:`, loop or mirror send, an assignment or a
+cascade answered, is not ([compiler.md](compiler.md), "Sends"). The send
+reads its arguments where they are whenever its sources are consecutive
+registers -- none or one always are, and so are sources that all are their
+slots -- and only otherwise copies each source that is not its slot into
+it first, out of line (`vm::argument_window`, `vm::place_arguments`). A
+copy into a slot nothing reads would be pure cost, and nothing but the
+send reads a slot: a setter assignment's value is the register its
+argument came from, the slot only where the value was produced there. The
+decision, the native and the push then read the arguments where they are,
 through an argument window (`interpreter::Arguments`, a tag and one word,
-"No re-entry from Rust"), and `Heap::push_activation_in` copies them into
+"No re-entry from Rust"), and `Heap::push_activation_in` copies it into
 the callee's first registers, one or two word by word and more with one
-`copy_within` of the stack's words ("Representation" above). Nothing has measured what the copies cost yet;
-"What a send costs" found the argument count immaterial, but on the
-retired `Rc<RefCell<_>>` representation.
+`copy_within` of the stack's words ("Representation" above). So
+placement happens before the decision only for a send whose sources are
+not consecutive; the second stage, whose push lays the callee's frame on
+the slots, places every argument whose source is not its slot on the push
+path, after the decision and before the push, where the push's copy is
+now. The first stage measured what the copies cost: the window built in
+memory up to +24% (Mandelbrot), the placement inlined into every send
+path and its eager copies +2% to +9% on every send-heavy program, before
+both went.
 
 **The prior art overlaps them, and puts the header between the arguments
 and the temporaries.** Cog's stack frame is the caller's pushed receiver

@@ -293,7 +293,8 @@ impl<'gc> StepArguments<'gc> {
 pub enum Arguments<'values, 'gc> {
     /// Consecutive registers of a window, which must lie in a live
     /// activation's registers, as `Heap::register` requires of every
-    /// register it reads: a send's argument slots.
+    /// register it reads: a send's sources where they are consecutive, its
+    /// slots otherwise (`vm::argument_window`).
     Slots(ArgumentSlots),
     /// Values built apart from any window: `Message>>sendTo:`'s, a host's,
     /// a decision's own -- named through a reference to the slice, which

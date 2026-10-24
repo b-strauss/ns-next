@@ -74,9 +74,13 @@ ignored a member of that name, is retired, and so is its wire tag 2
 **Sends** — each carries a `call_site`; see "Safepoints and call-site
 identity". Each names its arguments as contiguous slots: `argument_base` and
 `argument_sources`, the arguments being the registers `argument_base ..
-argument_base + argument_sources.len()`. Before it decides, the send copies
-each source that is not its slot into the slot, so a named local passed as
-an argument is copied by the send itself. Both lowerings allocate the slots
+argument_base + argument_sources.len()`. The send reads its arguments
+where they are when its sources are consecutive registers -- one argument
+always is -- and otherwise, before it decides, copies each source that is
+not its slot into the slot, so a named local passed as an argument is
+copied by the send itself, and only where the send cannot read it in
+place. Nothing but the send reads a slot: a setter assignment's value is
+the register its argument came from. Both lowerings allocate the slots
 after every scratch register the send also reads -- its receiver, a mirror
 send's subject -- and before they lower any argument, then lower each
 argument into its slot ([execution.md](execution.md), "Planned:
@@ -92,15 +96,15 @@ assignment's value.
   write their destination, the slot; and a literal, `self`, a read of
   another frame's local or of a vector, a closure and an array, each
   loaded into the slot. The send copies none of them. A named local's
-  source is its own register, below the slots, which the send copies --
-  or, when an argument after it can write that local, the protective
-  `Move` into the slot, which the send then does not copy ("The
+  source is its own register, below the slots, which the send reads there
+  or copies -- or, when an argument after it can write that local, the
+  protective `Move` into the slot, which the send then does not copy ("The
   value-register invariant"). Every other argument's source is the
-  register its value is in, and the send copies it: the result register of
+  register its value is in, which the send reads there or copies: the result register of
   an inlined conditional, `and:`/`or:`, loop or mirror send, and an
   assignment's or a cascade's value, which are above the slots unless the
   value is a named local's register. So the slots are not always the top of
-  what is live at the send: a source the send copies from above them is
+  what is live at the send: a source the send reads from above them is
   live until it does. Every other register above the slots -- whatever
   an argument was evaluated with -- is dead by then.
 - **The reference lowering** produces every argument in its slot, a named
