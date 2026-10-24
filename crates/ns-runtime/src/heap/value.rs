@@ -109,6 +109,12 @@ impl Word {
     pub(super) fn is_non_negative_small_integer(self) -> bool {
         self.0 & SMALL_INTEGER_TAG == SMALL_INTEGER_TAG && self.0.cast_signed() >= 0
     }
+
+    /// Whether the word is a `SmallInteger`.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(super) fn is_small_integer(self) -> bool {
+        self.0 & SMALL_INTEGER_TAG == SMALL_INTEGER_TAG
+    }
 }
 
 /// Never `{:?}` a `Word` in Newspeak-facing text; this exists so that the

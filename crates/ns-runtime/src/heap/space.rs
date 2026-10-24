@@ -442,7 +442,7 @@ fn young_offset(start: usize) -> NonZeroU64 {
 /// `MINIMUM_RESERVATION` (a request already below it is tried alone). The
 /// last refusal is the answer. Only a refusal is retried: any other error
 /// would recur at every size.
-fn reserve_falling_back<T>(
+pub(in crate::heap) fn reserve_falling_back<T>(
     requested: usize,
     mut reserve: impl FnMut(usize) -> Result<T, MemoryError>,
 ) -> Result<T, MemoryError> {

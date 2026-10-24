@@ -30,6 +30,8 @@ use std::ops::Range;
 use std::rc::Rc;
 
 mod compaction;
+#[cfg_attr(not(test), allow(dead_code))]
+mod frames;
 mod header;
 mod ids;
 pub(crate) mod mark;
