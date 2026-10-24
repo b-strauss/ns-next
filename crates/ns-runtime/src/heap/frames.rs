@@ -19,6 +19,18 @@ pub(super) const STACK_RESERVATION: usize = 16 << 30;
 #[cfg(not(target_pointer_width = "64"))]
 pub(super) const STACK_RESERVATION: usize = 256 << 20;
 
+/// The most words a stack may hold: a frame's offset is stored in 32 bits
+/// -- an `ActivationReference`, a `RegisterBase`, a caller word read back
+/// -- and `u32::MAX` is the empty stack's `NO_FRAME`, so a larger
+/// reservation would truncate an offset into another frame's at exit
+/// status 0.
+const MAXIMUM_STACK_WORDS: usize = 1 << 31;
+
+const _: () = assert!(
+    STACK_RESERVATION / 8 <= MAXIMUM_STACK_WORDS,
+    "the stack's reservation must keep every frame offset inside 32 bits"
+);
+
 #[cfg(test)]
 thread_local! {
     /// The reservation, in bytes, the next `ActivationStack` of this thread
@@ -29,13 +41,19 @@ thread_local! {
 }
 
 /// Runs `body` with every stack this thread builds reserving `bytes`, for a
-/// test of the stack's bound. The override ends with `body`.
+/// test of the stack's bound. The override ends with `body`, a panic in it
+/// included, so that no later test on the thread inherits the small stack.
 #[cfg(test)]
 pub(crate) fn with_stack_reservation<T>(bytes: usize, body: impl FnOnce() -> T) -> T {
+    struct ResetOverride;
+    impl Drop for ResetOverride {
+        fn drop(&mut self) {
+            STACK_RESERVATION_OVERRIDE.with(|cell| cell.set(None));
+        }
+    }
     STACK_RESERVATION_OVERRIDE.with(|cell| cell.set(Some(bytes)));
-    let answer = body();
-    STACK_RESERVATION_OVERRIDE.with(|cell| cell.set(None));
-    answer
+    let _reset = ResetOverride;
+    body()
 }
 
 /// The reservation a new stack takes.
@@ -259,6 +277,10 @@ impl FrameStack {
     pub(super) fn new(reservation_bytes: usize) -> Result<FrameStack, MemoryError> {
         let reservation = reserve_falling_back(reservation_bytes, Reservation::reserve)?;
         let limit = reservation.size() / 8;
+        debug_assert!(
+            limit <= MAXIMUM_STACK_WORDS,
+            "internal: a stack's reservation keeps every frame offset inside 32 bits"
+        );
         Ok(FrameStack {
             reservation,
             top: 0,
@@ -333,14 +355,14 @@ impl FrameStack {
     /// `top + words`: double what is committed, at least `MINIMUM_GROWTH`
     /// and at most `MAXIMUM_GROWTH` more, within the reservation, or just
     /// what the push needs when the operating system refuses that much.
-    /// Refuses, committing nothing, past `cap` words. A commit the
+    /// Refuses, committing nothing, past `ceiling` words. A commit the
     /// operating system refuses outright is running out of memory, as the
     /// object space's is.
     #[cold]
     #[inline(never)]
-    fn grow(&mut self, words: usize, cap: usize) -> Result<(), ReservationExhausted> {
+    fn grow(&mut self, words: usize, ceiling: usize) -> Result<(), ReservationExhausted> {
         let needed = match self.top.checked_add(words) {
-            Some(end) if end <= cap => end,
+            Some(end) if end <= ceiling => end,
             _ => return Err(ReservationExhausted),
         };
         let page = Reservation::page_size();
@@ -351,7 +373,7 @@ impl FrameStack {
         let needed_bytes = (needed * 8).div_ceil(page) * page;
         let growth = committed_bytes.clamp(MINIMUM_GROWTH, MAXIMUM_GROWTH);
         let generous = (committed_bytes + growth)
-            .min(cap * 8)
+            .min(ceiling * 8)
             .div_ceil(page)
             .saturating_mul(page)
             .min(size);
@@ -398,7 +420,8 @@ impl FrameStack {
     }
 
     /// Word `index` of a live frame. The register access of the run loop,
-    /// so it makes one bounds check, against the committed end; that
+    /// so it makes one bounds check, against the committed end (the
+    /// reservation's accessible words); that
     /// `index` lies below the top -- inside a live frame's window -- is the
     /// caller's, which a debug build checks here and the heap's
     /// `register_slot` against the frame's own window. A release build
@@ -414,8 +437,9 @@ impl FrameStack {
     }
 
     /// The header of the live frame at `offset`: one bounds check, against
-    /// the committed end, for all of its words, as `word` makes one for a
-    /// single word. That the frame is live is the caller's, which a debug
+    /// the reservation's accessible words -- its committed read-write
+    /// prefix, which is `committed` -- for all of its words, as `word`
+    /// makes one for a single word. That the frame is live is the caller's, which a debug
     /// build checks here.
     #[inline(always)]
     pub(super) fn header(&self, offset: usize) -> &[u64; frame_header::COUNT] {

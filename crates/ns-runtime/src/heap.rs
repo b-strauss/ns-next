@@ -5965,8 +5965,8 @@ impl<'gc> Heap<'gc> {
             *register = argument.word().bits();
         }
         temporaries.fill(Word::NIL.bits());
-        // The reservation holds at most 2^31 words, so an offset is exact
-        // in 32 bits.
+        // The reservation holds at most `MAXIMUM_STACK_WORDS`, 2^31 words,
+        // so an offset is exact in 32 bits.
         let offset = start as u32;
         stack.innermost = offset;
         stack.live += 1;
@@ -6386,8 +6386,8 @@ impl<'gc> Heap<'gc> {
         let register_count = self.frame_words(frame).len() - frame_field::COUNT;
         let words = frame_header::COUNT + register_count;
         let start = self.stack.frames.top();
-        // The reservation holds at most 2^31 words, so an offset is exact
-        // in 32 bits.
+        // The reservation holds at most `MAXIMUM_STACK_WORDS`, 2^31 words,
+        // so an offset is exact in 32 bits.
         let offset = start as u32;
         let header_words = FrameHeaderWords {
             receiver,

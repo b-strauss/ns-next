@@ -1,14 +1,18 @@
-//! Reserved, committed and protected memory for the object space.
+//! Reserved, committed and protected memory for the object space and the
+//! activation stack.
 //!
 //! One `Reservation` is one contiguous address range, reserved once and
 //! committed as a space grows, so that a handle can be a byte offset from a
 //! fixed base (docs/design/memory.md, "The memory layer"). This is
 //! the only crate in the workspace with `unsafe` code: every operating-system
 //! call is in `platform`, and everything this crate hands out is safe to use.
-//! The heap reads through `Reservation::prefix`, the committed read-write
-//! range at the base, which is lent in O(1). The heap's young allocations
-//! bump a cursor the reservation holds (`Reservation::bump`), one
-//! comparison against a limit inside that prefix.
+//! The heap reads its objects through `Reservation::prefix`, the committed
+//! read-write range at the base, which is lent in O(1), and its activation
+//! stack through `Reservation::accessible`/`accessible_mut`, that whole
+//! range lent with no check at all, so that the one bounds check of a
+//! stack access is the index's. The heap's young allocations bump a cursor
+//! the reservation holds (`Reservation::bump`), one comparison against a
+//! limit inside that prefix.
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(clippy::undocumented_unsafe_blocks)]
 
@@ -272,11 +276,10 @@ impl Reservation {
     /// read-write throughout.
     fn check_words(&self, range: &Range<usize>) -> Option<()> {
         let aligned = range.start.is_multiple_of(8) && range.end.is_multiple_of(8);
+        // Inside the reservation, which `reserve` bounds by `isize::MAX`, is
+        // also the byte length `from_raw_parts` allows.
         let inside = range.start < range.end && range.end <= self.size;
-        // `from_raw_parts` requires a byte length of at most `isize::MAX`,
-        // which a reservation on a 32-bit target can exceed.
-        let lendable = range.len() <= isize::MAX as usize;
-        (aligned && lendable && inside && self.pages.is_accessible(range.clone())).then_some(())
+        (aligned && inside && self.pages.is_accessible(range.clone())).then_some(())
     }
 
     /// Records the state of `range` after a system call on it failed. The rule:
@@ -432,8 +435,10 @@ impl Reservation {
     pub fn accessible(&self) -> &[u64] {
         // SAFETY: `0..accessible_prefix` is committed read-write from the
         // page-aligned base, so it is 8-byte aligned and initialized, and
-        // its length is a multiple of the page size; `&self` keeps
-        // `protect` and `decommit` away while the slice lives.
+        // its length is a multiple of the page size; it lies inside the
+        // reservation, which `reserve` bounds by `isize::MAX` bytes, so its
+        // length is one `from_raw_parts` allows on every target; `&self`
+        // keeps `protect` and `decommit` away while the slice lives.
         unsafe {
             std::slice::from_raw_parts(self.base.as_ptr().cast::<u64>(), self.accessible_words)
         }
