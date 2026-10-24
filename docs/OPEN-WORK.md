@@ -1695,6 +1695,18 @@ that only answers `isKindOfArray` or `isKindOfString`, the error of a
   body, and builds that body afresh on every call rather than reading the
   class's factory entry, a cold path. Only a host reaches it.
   [object-model.md](design/object-model.md), "Instantiation".
+- **A code row records the first `MixinMethod` that registered its body**
+  (2026-10-24): `Heap::register_code` fills a row's `method` only while it
+  is `None`, and `reify` rebuilds a method frame's `FrameKind::Method` from
+  that row (`Heap::code_method`). Were two methods ever to share one
+  `Rc<CompiledCode>`, a frame of the second would reify naming the first,
+  and a mirror or an image would see the wrong method. Nothing shows that
+  no two do: the image decoder builds a superseded version's method around
+  the decoded body (`image/decode.rs`), and a lazy slot's getter takes the
+  code it is handed (`MixinMethod::lazy_slot_getter`). Either show in
+  [object-model.md](design/object-model.md), "An application has two ids",
+  that every `MixinMethod` owns its body, or key the row by method.
+  [execution.md](design/execution.md), "Representation".
 
 ## Missing tests
 
@@ -1805,6 +1817,11 @@ that only answers `isKindOfArray` or `isKindOfString`, the error of a
   `a_nested_class_hit_after_the_enclosing_object_was_reshaped_takes_the_slow_path`)
   never runs a hit on a stale guard, since every forward and every edit
   invalidates the caches before the next send.
+- Frames as words' (noted 2026-10-24): no test of `ns-memory` checks the
+  accessible words' end after `Reservation::record_failure`, which no
+  portable test can provoke; `record` refreshes it with the byte end on
+  every change to the page map, so only the commit and decommit test
+  (`the_accessible_words_are_the_committed_read_write_prefix`) pins it.
 
 ## Code quality follow-ups
 

@@ -130,7 +130,7 @@ Value  = one tagged word: a handle, a SmallInteger, a SmallFloat64 or a constant
 Word   = the bare word a heap object stores, 8 bytes in every build
 ObjectReference     { offset: NonZeroU64 }   // private to the heap module; 8 bytes in a release build
 FrameReference      { offset: NonZeroU64 }   // likewise, a frame object's; ClassReference is an alias for ObjectReference
-ActivationReference { index: u32 }           // likewise, into the activation stack
+ActivationReference { offset: u32 }          // likewise, a frame's word offset on the activation stack
 
 Heap { space: Space,                  // every object end to end: header, class word, fields
        stack: ActivationStack, tables: Tables,   // mixins, applications, code
@@ -931,8 +931,8 @@ also comes first: the tracing and forwarding the collector will need are built,
 and held to the whole suite, before the collector is.
 
 **The schedule is budgeted, not every safepoint.** A move costs work
-proportional to what it traces — the objects, the activation stack's entries
-and registers, the canonical symbol table and the host roots
+proportional to what it traces — the objects, the activation stack's words,
+the canonical symbol table and the host roots
 (`Heap::traced_size`) — so moving at every
 safepoint is quadratic in a deep recursion: the tests and goldens that recurse
 to 100,000 activations, and the `bench_*` fixtures, would take hours per suite
@@ -1449,7 +1449,7 @@ second walk of the heap would cost what the marking already reads.
 
 The roots are the ones a move forwards -- the heap's own, which
 `Heap::begin_marking` pushes (the `Activation` class, the activation
-stack's entries and registers, the host roots), and the step state's,
+stack's words, the host roots), and the step state's,
 `StepRoots` (the builtin classes, the `platform` singleton, the VM mirror,
 the kernel, the shipped world and the depth limit's reserve) -- with the canonical symbol
 table and the table of reified mixins removed, since those are weak. The remembered set is not a root here:

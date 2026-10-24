@@ -23,8 +23,9 @@
 > fixed fields of a frame object and a closure, `frame_field` and
 > `closure_field`), `heap/world.rs` (the step state
 > at rest, and its entry),
-> `types.rs` (`FrameKind`, `Continuation` and the state its variants
-> carry), `bytecode/compact.rs` (the eight-byte encoding the loop runs),
+> `types.rs` (`ActivationKind`, `FrameKind`, `Continuation` and the state
+> its variants carry), `bytecode/compact.rs` (the eight-byte encoding the
+> loop runs),
 > `vm.rs` (the run loop and its safepoint poll), `interpreter/` (the
 > inline caches, the send decisions, `Step`, every push, the depth limit, the host entry, the
 > safepoint's slow path, the indirection vector's reads and writes in
@@ -153,7 +154,7 @@ a frame object                 // heap/object.rs's frame_field; an object of the
     10.. the registers         // the code's whole register file
 
 pub struct ActivationReference {
-    index: u32,                // the frame's word offset on the stack
+    offset: u32,               // the frame's word offset on the stack
     #[cfg(debug_assertions)] origin: u32,
     #[cfg(debug_assertions)] generation: u32,
 }
@@ -412,8 +413,14 @@ requirements" below, which is not built.
 `kind` distinguishes a method, closure, factory, initializer,
 superclass-clause and top-level activation; an initializer's names the
 level it was entered at and which of its mixin's three bodies it runs
-(`FrameKind::Initializer(level, body)`), and a factory's the class object
-it runs on, whose metaclass's factory entry holds its body. An
+(`Initializer(level, body)`), and a factory's the class object it runs
+on, whose metaclass's factory entry holds its body. A stack frame's kind
+is an `ActivationKind` (`types.rs`, `Heap::activation_kind`), which names
+a method by its selector alone and so holds no `Rc`: the flags word's
+kind tag says which kind, and the operand word holds its closure, class
+or selector. A frame object and an image hold a `FrameKind`, whose
+`Method` holds the `MixinMethod`; `reify` rebuilds it from the tag, the
+operand and the method the frame's code row recorded at the push. An
 initializer activation must be
 able to name the code it is executing so that `program_counter` is interpretable, since the
 statement→program-counter table is reached through its kind. A stack frame
@@ -713,11 +720,12 @@ stress mode rebuilt the stack, and `run` then reads its `FrameRegisters`
 afresh from the top frame ("Suspending and resuming" above). That is sound
 because of what `run` carries across the safepoint, which the compiler holds
 it to, since the stretch's entry has ended before it: `FrameRegisters` — the
-running `ActivationReference`, which indexes the stack, and no stack frame
-moves (a rebuilt stack is read again, above); its `Rc<CompiledCode>`, which
-holds no handle; its `program_counter`; its `FeedbackBase`, a number; and its
-`RegisterBase`, an index into the register file, which a move does not touch —
-and the run's floor, a stack depth. Every value the loop works on is read from
+running `ActivationReference`, the word offset of its frame on the stack, and
+no stack frame moves (a rebuilt stack is read again, above); its
+`Rc<CompiledCode>`, which holds no handle; its `program_counter`; its
+`FeedbackBase`, a number; and its `RegisterBase`, the word offset of its first
+register, which a move does not touch — and the run's floor, a word offset on
+the stack. Every value the loop works on is read from
 a register or an operand when an instruction needs it and written back before
 the next, so at a safepoint every handle is in a word of a stack frame,
 in the heap's side table of continuations or of suspended
@@ -6591,10 +6599,12 @@ Three things the trampoline settles on its own:
   `Continuation::WhileBody` activates the condition again. A body that is no
   block is sent `value` instead, through `Closure`'s private `valueOf:`
   pushed with the loop's continuation, as `do:` sends `value:` ("No
-  re-entry from Rust" below); its answer is dropped. The continuation
-  rides on the block activation's stack entry and `vm::finish` applies it,
-  through `Mutator::resume`, when it pops the activation, so a loop's
-  condition and body replace each other on the stack instead of nesting. This
+  re-entry from Rust" below); its answer is dropped. The continuation is a
+  row of the heap's side table of continuations that the block
+  activation's frame names in its continuation word, and `vm::finish`
+  applies it, through `Mutator::resume`, when it pops the activation, so a
+  loop's condition and body replace each other on the stack instead of
+  nesting. This
   is Primordial Soup's model with one activation
   fewer: there `True>>ifTrue: then = (^then value)` is a Newspeak method whose
   `value` is primitive 156, `ActivateClosure`, which pushes a frame and returns
@@ -6711,9 +6721,9 @@ could only end the run as L, uncatchable and under the wrong name.
   (`Mutator::holds_the_depth_reserve`): above a married frame
   `Heap::activation_above`, above a suspended one the activation a walk down
   from the top finds returning to it (`WalkedActivation`, "Suspending and
-  resuming" above). A frame and not a stack index: a
+  resuming" above). A frame and not a stack offset: a
   frame is divorced on its activation's pop and married to nothing again,
-  where an index is reused, and a later signal at the same index — possibly
+  where an offset is reused, and a later signal at the same offset — possibly
   far from L — must not inherit the reserve
   (`interpreter::unwind`'s `a_later_signal_at_the_same_index_does_not_inherit_the_reserve`).
   `depth_reserve_held` forgets a reserve it finds no longer held, so the pop
@@ -6884,10 +6894,11 @@ safepoint"): between two instructions no Rust frame between the host and the
 loop holds a value.
 
 The first two follow the pattern `whileTrue:` set: a decision answers an
-activation together with a `Continuation`, the continuation rides on the
-activation's stack entry, and `Mutator::resume` applies it when the
-activation returns. The semantics and the order of every observable effect
-are what they were when these paths ran in nested runs of the loop.
+activation together with a `Continuation`, the continuation is a row of the
+side table of continuations the activation's frame names, and
+`Mutator::resume` applies it when the activation returns. The semantics and
+the order of every observable effect are what they were when these paths ran
+in nested runs of the loop.
 
 - **`do:`** (`builtins/collections.rs`) reads the size once, when the walk
   starts, and each element when it reaches it, so a store the action makes
@@ -7564,10 +7575,11 @@ program counter and a `FeedbackBase`, its `Exit` a whole `HostResult` -- so
 every send wrote it to the stack and the loop read it back and tested it,
 and how fast that test was depended on how LLVM laid out `vm::run`: one more
 instruction arm that called anything reordered it and cost
-`bench_megamorphic.ns` 4%. And every register access loaded the
-activation's window base (`stack.entries[activation].base`, bounds-checked)
-before the register itself (`stack.values[base + index]`, bounds-checked
-again) (`Heap::register_slot`, `Heap::activation_local`).
+`bench_megamorphic.ns` 4%. And every register access found the
+activation's window on the stack, bounds-checked, before it read the register
+itself, bounds-checked again (`Heap::register_slot`,
+`Heap::activation_local`, the path every access outside the loop still
+takes).
 
 **Prior art.** Primordial Soup's `Interpreter::Interpret` keeps `ip_`, `sp_`
 and `fp_` as fields of the interpreter object; a send is a call that rewrites
@@ -7634,8 +7646,8 @@ carries its activation and every access checks the activation's generation,
 as `check_activation` does; in a release build it is a `u32`, which a
 release-build test pins. `LoadOuterLocal`, `StoreOuterLocal`, the
 indirection vectors and married frames are unchanged: a married frame's
-registers are its stack entry's, so a write through the base is the write
-it always was. `read_local` and `write_local` remain for every caller
+registers are its stack frame's words, so a write through the base is the
+write it always was. `read_local` and `write_local` remain for every caller
 outside the loop, the out-of-line arms among them. No `unsafe`.
 
 **What pins it.** The semantics are the suite's: every golden under both
