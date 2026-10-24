@@ -96,6 +96,7 @@ impl<'gc> WalkedActivation<'gc> {
         }
     }
 
+    /// The activation's receiver.
     pub(crate) fn receiver(self, heap: &Heap<'gc>) -> Value<'gc> {
         match self {
             WalkedActivation::Live(activation) => heap.activation_receiver(activation),
@@ -103,6 +104,7 @@ impl<'gc> WalkedActivation<'gc> {
         }
     }
 
+    /// What the activation was activated for.
     pub(crate) fn kind(self, heap: &Heap<'gc>) -> FrameKind<'gc> {
         match self {
             WalkedActivation::Live(activation) => heap.activation_kind(activation),
@@ -110,6 +112,7 @@ impl<'gc> WalkedActivation<'gc> {
         }
     }
 
+    /// The class whose code the activation runs, if any.
     pub(crate) fn current_class(self, heap: &Heap<'gc>) -> Option<ClassReference<'gc>> {
         match self {
             WalkedActivation::Live(activation) => heap.activation_current_class(activation),
@@ -198,8 +201,10 @@ pub(crate) fn unwind_signal<'gc>(
 }
 
 /// Carries `pending` on from the top of the stack. A target that is still
-/// running (`Heap::frame_activation`), sits at or above the run's floor and
-/// catches a return (`Mutator::catches_return`: a method, or a superclass
+/// running (`Heap::frame_is_running`: on the stack, or suspended into its
+/// frame until the pops resume it), that the pops reach as the top
+/// (`Heap::frame_activation`, asked again before every pop), at or above
+/// the run's floor, and that catches a return (`Mutator::catches_return`: a method, or a superclass
 /// clause or its message) ends the unwind: everything above it is popped,
 /// and it returns the value through the ordinary return path, or runs
 /// again from its start for a restart. Any other target -- a home that has
@@ -838,6 +843,68 @@ mod tests {
             assert!(mutator.depth_reserve.is_none(), "and it is released");
             mutator.heap.pop_activation(other_signal);
             mutator.heap.pop_activation(other);
+        });
+    }
+
+    /// A `signal` resumed over the suspended activation that took the
+    /// reserve returns to it through `Continuation::ReturnToSuspended`,
+    /// which wraps its `VmErrorSignalled`: the reserve is still held, the
+    /// walk finds the `signal` above the suspended frame, and replacing the
+    /// `signal`'s continuation keeps the return to the suspended sender.
+    #[test]
+    fn a_resumed_signal_over_a_suspended_reserve_still_holds_it() {
+        let mut interpreter = Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let class = mutator.builtin_class(BuiltinClass::Object);
+            let error = || NewspeakError::error(crate::Symbol::SIGNAL, Value::nil(), "boom");
+            let floor = mutator.heap.activation_depth();
+            let raised = mutator.heap.push_activation(header(class), &[], 1);
+            let raised_frame = mutator.heap.reify(raised);
+            mutator.depth_reserve = Some(raised_frame);
+            let signalling = ActivationHeader {
+                then: Continuation::VmErrorSignalled(Box::new(error())),
+                ..header(class)
+            };
+            mutator.heap.push_activation(signalling, &[], 1);
+            assert!(mutator.depth_reserve_held(), "held before the suspension");
+            let top = mutator
+                .heap
+                .suspend_activations(floor)
+                .expect("two activations to suspend");
+            let signal = mutator.resume_frame(top);
+            assert!(mutator.heap.frame_is_suspended(raised_frame));
+            assert!(
+                mutator.heap.activation_signals_a_vm_error(signal),
+                "the signal's continuation is read through the wrapper"
+            );
+            assert!(
+                mutator.heap.activation_signalled_vm_error(signal).is_some(),
+                "and its error"
+            );
+            assert!(
+                mutator.depth_reserve_held(),
+                "held while the signal runs over the suspended frame"
+            );
+            mutator.heap.activation_set_continuation(
+                signal,
+                Continuation::VmErrorSignalled(Box::new(error())),
+            );
+            assert!(
+                mutator
+                    .heap
+                    .activation_suspended_sender(signal)
+                    .is_some_and(|sender| sender.same(raised_frame)),
+                "replacing the continuation keeps the return to the suspended sender"
+            );
+            assert!(mutator.heap.activation_signals_a_vm_error(signal));
+            mutator.pop_for_unwind(signal);
+            let resumed = mutator
+                .heap
+                .frame_activation(raised_frame)
+                .expect("the pop resumed the sender");
+            mutator.heap.pop_activation(resumed);
+            assert_eq!(mutator.heap.activation_depth(), floor);
+            assert_eq!(mutator.heap.suspension_count(), 0);
         });
     }
 

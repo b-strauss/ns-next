@@ -6238,14 +6238,33 @@ impl<'gc> Heap<'gc> {
     /// Replaces what `activation` does with its value when it returns. The
     /// unwinder's one use: the activation it pushes to run an `ensure:`
     /// argument that is no block is pushed as a method, which delivers, and
-    /// its return has to carry the unwind on instead.
+    /// its return has to carry the unwind on instead. The return to a
+    /// suspended sender (`Continuation::ReturnToSuspended`) stays: only
+    /// the continuation inside it is replaced, so the sender is still
+    /// resumed when the activation returns.
     pub(crate) fn activation_set_continuation(
         &mut self,
         activation: ActivationReference,
         then: Continuation<'gc>,
     ) {
         self.check_activation(activation);
-        self.stack.entries[activation.index as usize].then = then;
+        match &mut self.stack.entries[activation.index as usize].then {
+            Continuation::ReturnToSuspended(suspended) => suspended.then = then,
+            own => *own = then,
+        }
+    }
+
+    /// The continuation `activation` applies to its value when it returns,
+    /// looked through a return to a suspended sender
+    /// (`Continuation::ReturnToSuspended`), which wraps it once the
+    /// activation is resumed: what the activation was pushed to do, whether
+    /// its sender is on the stack or suspended.
+    fn activation_own_continuation(&self, activation: ActivationReference) -> &Continuation<'gc> {
+        self.check_activation(activation);
+        match &self.stack.entries[activation.index as usize].then {
+            Continuation::ReturnToSuspended(suspended) => &suspended.then,
+            own => own,
+        }
     }
 
     /// Whether the unwinder pushed `activation` to signal a VM error
@@ -6253,9 +6272,8 @@ impl<'gc> Heap<'gc> {
     /// asks, without cloning the error `activation_signalled_vm_error`
     /// answers.
     pub(crate) fn activation_signals_a_vm_error(&self, activation: ActivationReference) -> bool {
-        self.check_activation(activation);
         matches!(
-            self.stack.entries[activation.index as usize].then,
+            self.activation_own_continuation(activation),
             Continuation::VmErrorSignalled(_)
         )
     }
@@ -6266,8 +6284,7 @@ impl<'gc> Heap<'gc> {
         &self,
         activation: ActivationReference,
     ) -> Option<NewspeakError<'gc>> {
-        self.check_activation(activation);
-        match &self.stack.entries[activation.index as usize].then {
+        match self.activation_own_continuation(activation) {
             Continuation::VmErrorSignalled(error) => Some((**error).clone()),
             _ => None,
         }
