@@ -70,10 +70,11 @@ impl ApplicationIndex {
 /// A body's code id in the last heap that asked for it, with that heap's
 /// code-table epoch (`Heap::code_table_epoch`): a one-entry cache in front of
 /// `Heap::register_code`'s map, read by every activation's push, every
-/// `MakeClosure` and every frame reified. The epoch is unique per heap of the process and renewed
-/// whenever a full collection frees code rows, so an id from another heap,
-/// or one since freed, is never answered. A copy of a body is another body
-/// to the map, keyed by its address, so a copy starts empty.
+/// `MakeClosure` and every frame the image decoder fills. The epoch is
+/// unique per heap of the process and renewed whenever a full collection
+/// frees code rows, so an id from another heap, or one since freed, is
+/// never answered. A copy of a body is another body to the map, keyed by
+/// its address, so a copy starts empty.
 #[derive(Default)]
 pub(crate) struct CodeIdCache(std::cell::Cell<Option<(u64, CodeId)>>);
 

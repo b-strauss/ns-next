@@ -51,7 +51,7 @@ impl Interpreter {
     /// Answers whether the suspend stress mode rebuilt the activation stack
     /// above `floor`, the floor of the run `vm::run` is in: every
     /// activation there suspended into its frame and the top one resumed,
-    /// so that the running activation is a different stack entry and the
+    /// so that the running activation is a different stack frame and the
     /// loop must read its state again. Always `false` in a release build.
     #[cold]
     #[inline(never)]

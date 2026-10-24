@@ -2292,8 +2292,8 @@ one nothing reaches is dropped, since nothing can compare it any more.
    (`Heap::free_unnamed_codes`), and the heap's code-table epoch is
    renewed, so no body's cached id names a freed row
    ([memory.md](memory.md), "A closure's code id without the map"). A
-   running activation names its body by id in its stack entry, which no
-   marking reaches, so `Heap::stack_roots` lists them (`StackRoots::codes`);
+   running activation names its body by id in its stack frame's code word,
+   a number no marking follows, so `Heap::stack_roots` lists them (`StackRoots::codes`);
    a suspended one's frame names it, and the side table of suspensions is
    a root. The body lives on with whoever else holds it, and a later push,
    closure or frame registers it again.
@@ -2476,12 +2476,12 @@ closure of a block frame, or the class of an initializer, superclass-clause,
 superclass-message or mixin-application-message frame, a handle the trace
 sees -- `uncontinuable`, and its married word; its registers follow
 inline. The married word tells the frame's three states: a `SmallInteger`
-of 0 or more is the index of the stack entry it is married to, a negative
+of 0 or more is the offset of the stack frame it is married to, a negative
 one, `-(row + 1)`, names the side-table row of its suspended activation,
 and `nil` means it has returned ([execution.md](execution.md), "Suspending
 and resuming"). The `Activation` object the exception machinery holds is
 this frame object itself, so the same activation answers the same object
-every time; a running activation is a stack entry, or is suspended into
+every time; a running activation is a stack frame, or is suspended into
 its frame until something returns into it. A frame object is allocated at
 `reify` with its code's full register count, whatever the code; whether the
 divorce copies the registers into it is decided per activation from the
@@ -2688,9 +2688,9 @@ that frees a guard vacates every cache entry and the verified pair that
 name it ("An application has two ids" above).
 
 **A reified frame has no field for it.** The recorded guard and the
-entered level live in the activation's stack entry; while the activation
+entered level live in the activation's stack frame; while the activation
 is suspended, its entered level lives in its row of the heap's side table
-and goes back into the entry when it is resumed
+and goes back into its stack frame when it is resumed
 ([execution.md](execution.md), "Suspending and resuming"). A resumed
 activation starts with `NONE` (`Heap::resume_activation`), so its first
 own-slot access takes the cold check, and a passing cold check records the

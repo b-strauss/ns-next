@@ -442,12 +442,12 @@ pub enum Continuation<'gc> {
 }
 
 /// What a resumed activation returns to when its sender is suspended
-/// (`Continuation::ReturnToSuspended`). Owned by exactly one stack entry.
+/// (`Continuation::ReturnToSuspended`). Owned by exactly one activation.
 #[derive(Debug, Clone)]
 pub struct ReturnToSuspended<'gc> {
     /// The suspended frame the activation returns to, resumed when the
     /// activation is popped. A frame, never an activation: the sender has
-    /// no stack entry until then.
+    /// no stack frame until then.
     pub(crate) sender: FrameReference<'gc>,
     /// The activation's own continuation, applied before the sender is
     /// resumed. Never a `ReturnToSuspended` itself: suspending the
@@ -457,7 +457,7 @@ pub struct ReturnToSuspended<'gc> {
 
 /// An unwind in progress (`interpreter::unwind`): where it is going and what
 /// happens there. Boxed in a `Continuation::Unwind` while one of the blocks
-/// it runs on its way is running, and owned by exactly one stack entry.
+/// it runs on its way is running, and owned by exactly one activation.
 #[derive(Debug, Clone)]
 pub struct PendingUnwind<'gc> {
     /// The frame the unwind ends at, never the activation: code runs while
@@ -507,7 +507,7 @@ impl<'gc> LoopAction<'gc> {
 /// what it runs as the body -- a closure it activates, or any other object,
 /// which it sends `value` -- and the condition value that keeps it going.
 ///
-/// Boxed in its continuation, and owned by exactly one stack entry.
+/// Boxed in its continuation, and owned by exactly one activation.
 #[derive(Debug, Clone)]
 pub struct WhileLoop<'gc> {
     /// The condition's closure object.
@@ -522,7 +522,7 @@ pub struct WhileLoop<'gc> {
 /// index of the next element, which is read from the array only when the
 /// walk reaches it, so a store the action makes to a later index is seen.
 ///
-/// Boxed in its continuation, and owned by exactly one stack entry.
+/// Boxed in its continuation, and owned by exactly one activation.
 #[derive(Debug, Clone)]
 pub struct DoLoop<'gc> {
     pub(crate) receiver: ObjectReference<'gc>,
@@ -535,7 +535,7 @@ pub struct DoLoop<'gc> {
 /// (`interpreter::nested`): what the accessor needs once the declaration's
 /// superclass clause has been evaluated.
 ///
-/// Boxed in its continuation, and owned by exactly one stack entry.
+/// Boxed in its continuation, and owned by exactly one activation.
 #[derive(Debug, Clone)]
 pub struct NestedClassCreation<'gc> {
     /// The enclosing object `r` of `newspeak-spec.pdf` §6, which caches the

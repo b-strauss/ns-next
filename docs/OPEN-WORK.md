@@ -15,10 +15,20 @@ when they were written.
 
 ## Next
 
-**Road step 7a, frames as words in one reservation** ("The road to a
+**Road step 7a's measurement, then road step 7a′** ("The road to a
 high-performance VM" below; [execution.md](design/execution.md), "Planned:
-JIT tiers"), the next part of road step 7, an execution model for compiled
-code. Its first part, 7b, is built: a running activation is suspended into
+JIT tiers"), the next parts of road step 7, an execution model for compiled
+code. 7a is built: every running activation is a frame of tagged words in
+one reservation of the heap's, traced as one linear range
+([execution.md](design/execution.md), "Representation"). It stays only if
+the interpreter measures no slower in release, by the protocol of "What
+suspending and resuming moved" (three builds a side, the seven micro
+sources and the sixteen Are We Fast Yet programs, two sittings): no
+program may be slower with its builds not overlapping `master`'s;
+otherwise it moves to road step 8, where compiled frames need the layout
+anyway. 7a′ then overlaps the register windows, behind its own
+measurement. The first part of road step 7, 7b, is built too: a running
+activation is suspended into
 its frame and resumed from it lazily, the landing point of every later
 deoptimization, and a sixth stress mode runs every golden on from
 suspended frames ([execution.md](design/execution.md), "Suspending and
@@ -31,7 +41,8 @@ master (`733c15bd`) and task by task: every program within noise, but
 `bench_megamorphic.ns`, +1.3-2.1% after the private and super accessor
 check, at the edge of build noise and not diagnosed ("Planned: performance
 and representation" below). Everything up to road step 6 on the road
-is built, and `new` as compiled code and road step 7b after it; each step
+is built, and `new` as compiled code and road step 7b after it, and 7a
+awaits its measurement; each step
 has its entry in [PROGRESS.md](PROGRESS.md), and the whole road is below.
 
 **Measuring.** The protocol is [execution.md](design/execution.md)'s "What
@@ -258,12 +269,14 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
   the decoder refuses every frame not marked uncontinuable
   ([execution.md](design/execution.md), "Suspending and resuming";
   [image-format.md](design/image-format.md), "Planned: suspend and
-  resume"). What remains of step 7:
-  **7a**, frames as words with a fixed header in one contiguous
+  resume"). **7a is built, its measurement still to be taken**: frames
+  as words with a fixed header, every word tagged, in one contiguous
   reservation of `ns-memory`, the depth limit kept and a byte bound added
-  only as a net, designed in [execution.md](design/execution.md),
-  "Planned: frames as words in one reservation", taken only if the interpreter measures no slower in
-  release and otherwise moved to road step 8; **7a′**, register windows
+  only as a net ([execution.md](design/execution.md), "Representation",
+  "The depth limit"); it stays only if the interpreter measures no slower
+  in release, no program slower with its builds not overlapping
+  `master`'s, and otherwise moves to road step 8. What remains of step 7:
+  **7a′**, register windows
   that overlap, the caller's outgoing arguments being the callee's first
   registers, behind its own measurement; **7c**, the deoptimization
   contract and the protocol between interpreted and compiled frames,
@@ -1405,7 +1418,7 @@ that only answers `isKindOfArray` or `isKindOfString`, the error of a
   object space").
   [image-format.md](design/image-format.md), "Verification".
 - **The memory bound under a crafted artifact** is proportional but large,
-  about 129 × (limit + reserve) stack entries: `MAX_BLOCK_NESTING` is 128
+  about 129 × (limit + reserve) stack frames: `MAX_BLOCK_NESTING` is 128
   (`image/decode.rs`), and the encoder does not refuse deeper nesting.
 - **A list's reservation in the decoder is capped in elements, not bytes.**
   `reserve_for` (`image/decode.rs`) caps a capacity at the bytes remaining,

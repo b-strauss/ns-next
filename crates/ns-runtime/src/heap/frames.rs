@@ -1,10 +1,10 @@
 //! The stack of running activations as frames of tagged words in one
-//! reservation (`docs/design/execution.md`, "Planned: frames as words in
-//! one reservation"). Frames lie back to back, innermost highest; each is
-//! a header of `frame_header::COUNT` words followed by its registers, and
-//! every word of it is a valid tagged `Word` -- a number a `SmallInteger`,
-//! an absent handle nil -- so that the collector can trace `[0, top)` as
-//! one linear range of values, with no stack map and no walk of frames.
+//! reservation (`docs/design/execution.md`, "Representation"). Frames lie
+//! back to back, innermost highest; each is a header of
+//! `frame_header::COUNT` words followed by its registers, and every word
+//! of it is a valid tagged `Word` -- a number a `SmallInteger`, an absent
+//! handle nil -- so that the collector can trace `[0, top)` as one linear
+//! range of values, with no stack map and no walk of frames.
 
 use super::space::reserve_falling_back;
 use super::{out_of_memory, Word};
@@ -146,7 +146,9 @@ pub(super) mod kind_tag {
 /// Where each field of `FrameFlags` sits in the flags word's
 /// `SmallInteger`: the kind tag in bits 0-7, the argument count in bits
 /// 8-39, then the two booleans; 42 bits, far inside 61.
+const KIND_TAG_MASK: u64 = 0xFF;
 const ARGUMENT_COUNT_SHIFT: u32 = 8;
+const ARGUMENT_COUNT_MASK: u64 = 0xFFFF_FFFF;
 const COUNTED_BIT: u64 = 1 << 40;
 const RETAINS_REGISTERS_BIT: u64 = 1 << 41;
 /// The bits below a `SmallInteger`'s payload.
@@ -190,8 +192,8 @@ impl FrameFlags {
     pub(super) fn of(word: Word) -> FrameFlags {
         let payload = number_of(word);
         FrameFlags {
-            kind_tag: (payload & 0xFF) as u8,
-            argument_count: ((payload >> ARGUMENT_COUNT_SHIFT) & 0xFFFF_FFFF) as u32,
+            kind_tag: (payload & KIND_TAG_MASK) as u8,
+            argument_count: ((payload >> ARGUMENT_COUNT_SHIFT) & ARGUMENT_COUNT_MASK) as u32,
             counted: payload & COUNTED_BIT != 0,
             retains_registers: payload & RETAINS_REGISTERS_BIT != 0,
         }

@@ -111,7 +111,7 @@ pub struct HostError {
 /// above it (`DEPTH_RESERVE`). It bounds memory, not the native stack, which
 /// the trampoline no longer recurses on: with the exempt block activations,
 /// at most one per level of block nesting above each counted one, the stack
-/// holds at most 129 x (L + `DEPTH_RESERVE`) entries -- 128 being the
+/// holds at most 129 x (L + `DEPTH_RESERVE`) frames -- 128 being the
 /// parser's nesting ceiling, which `image::decode` holds an artifact to as
 /// well (`docs/design/execution.md`, "The depth limit").
 pub const MAX_ACTIVATION_DEPTH: usize = 100_000;
@@ -678,7 +678,7 @@ impl Interpreter {
     /// Five things are checked in a debug build, because each is otherwise
     /// silent. The loop is never entered while it is running -- nothing it
     /// calls can reach here. The stack is left as deep as it was found: a
-    /// leaked entry would put a later activation on top of a dead one's
+    /// leaked frame would put a later activation on top of a dead one's
     /// registers (a leak inside a run is caught too, by
     /// `Heap::pop_activation`'s check that it pops the top). No suspended
     /// activation outlives the run that suspended it, and no continuation
@@ -716,7 +716,7 @@ impl Interpreter {
             "internal: a suspended activation outlived its run"
         );
         // No activation outlives its run, so neither does a continuation
-        // its stack entry named.
+        // its stack frame named.
         debug_assert_eq!(
             self.world.continuation_count(),
             0,
@@ -1181,7 +1181,7 @@ impl<'gc> Mutator<'gc> {
     }
 
     /// The activation directly above the running activation of `frame`,
-    /// the one it sent to: the next stack entry while the frame is married;
+    /// the one it sent to: the next stack frame while the frame is married;
     /// while it is suspended, the one a walk from the top of the stack meets
     /// just before it (`WalkedActivation::sender`), which reifies nothing.
     fn activation_above_frame(&self, frame: FrameReference<'gc>) -> Option<WalkedActivation<'gc>> {
@@ -1398,7 +1398,7 @@ impl<'gc> Mutator<'gc> {
                 // passes to one is, and which keeps a crafted artifact from
                 // recursing uncounted (`docs/design/compiler.md`, "How the
                 // limit counts"). Asked in this order so that an ordinary
-                // `value` never reads the sender's entry.
+                // `value` never reads the sender's frame.
                 let created_by_sender = |heap: &Heap<'gc>| {
                     sender
                         .and_then(|sender| heap.activation_reified(sender))
@@ -1766,7 +1766,7 @@ impl<'gc> Mutator<'gc> {
     /// Where a `^` in `activation` returns to. A block returns from its home --
     /// the method or initializer that lexically encloses it -- and only
     /// while that activation is still running: its reified frame is married
-    /// to a live stack entry, or suspended into the frame, exactly until the
+    /// to a live stack frame, or suspended into the frame, exactly until the
     /// activation returns (`Heap::frame_is_running`), and a frame the image
     /// decoder built never is. A suspended home is unwound to, resumed when
     /// the unwind's pops reach it. A returned home is §7.2's
@@ -1978,7 +1978,7 @@ impl<'gc> Mutator<'gc> {
     /// The activation object of `frame`, which the caller has already
     /// reified (`Heap::reify`): the frame object itself, an instance of the
     /// kernel-private `Activation` class. It is a frame, never a running
-    /// activation's stack entry, since only a reified frame survives its
+    /// activation's stack frame, since only a reified frame survives its
     /// activation's pop.
     pub fn new_activation_object(&mut self, frame: FrameReference<'gc>) -> ObjectReference<'gc> {
         self.heap.frame_object(frame)

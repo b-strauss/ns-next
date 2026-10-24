@@ -152,7 +152,7 @@ impl FreedIds {
 }
 
 /// What the live activations name outside the heap's objects: no
-/// marking reaches these, since a stack entry holds them as numbers, and
+/// marking reaches these, since a stack frame holds them as numbers, and
 /// a suspended activation's row of the side table as well.
 pub(crate) struct StackRoots {
     /// Every activation's `entered_level`, a suspended one's included,

@@ -2319,7 +2319,7 @@ call stack ([execution.md](execution.md), "The trampoline") and nothing
 re-enters the run loop from Rust ([execution.md](execution.md), "No re-entry
 from Rust"). What is missing is a yield path out of `vm::run`, a re-entry point
 that would continue a decoded frame at its `program_counter`, and an encoding
-for what each stack entry's `Continuation` carries in Rust: a native loop's
+for what each activation's `Continuation` carries in Rust: a native loop's
 `WhileLoop` or `DoLoop`, a nested class's `NestedClassCreation`, the unwind an `ensure:` block's return carries
 on (`Unwind`, holding a `PendingUnwind`: its target frame and whether it returns
 a value, restarts or terminates), the end of the run a VM error's `signal`

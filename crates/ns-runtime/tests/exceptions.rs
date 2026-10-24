@@ -379,7 +379,7 @@ const ESCAPER: &str = indoc! {"
 
 ns_runtime::for_each_lowering! {
     /// A block's `^` whose home has returned -- its frame no longer married
-    /// to a stack entry, nor suspended -- is still §7.2's `cannotReturn`:
+    /// to a stack frame, nor suspended -- is still §7.2's `cannotReturn`:
     /// only a running home, live or suspended, is unwound to.
     fn a_return_into_a_returned_home_is_still_cannot_return(lowering) {
         let module = ns_syntax::parse(ESCAPER).expect("parse");

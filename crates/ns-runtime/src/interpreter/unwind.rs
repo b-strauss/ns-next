@@ -52,11 +52,11 @@ pub(crate) enum UnwindOutcome<'gc> {
 }
 
 /// An activation a walk from the top of the stack towards the run's base
-/// meets: the live entries first, then -- past an entry whose sender is
+/// meets: the live frames first, then -- past a frame whose sender is
 /// suspended (`Continuation::ReturnToSuspended`) -- the frames the
 /// suspended activations live in, each naming its sender. The depth
 /// limit's reserve walks it (`Mutator::overrun_of_the_reserve`,
-/// `Mutator::depth_reserve_held`) without reifying a live entry; neither
+/// `Mutator::depth_reserve_held`) without reifying a live frame; neither
 /// is on a hot path.
 #[derive(Clone, Copy)]
 pub(crate) enum WalkedActivation<'gc> {
@@ -68,7 +68,7 @@ pub(crate) enum WalkedActivation<'gc> {
 
 impl<'gc> WalkedActivation<'gc> {
     /// The activation this one returns to: the suspended sender of a live
-    /// entry that has one, else the entry below; a suspended one's sender
+    /// frame that has one, else the frame below; a suspended one's sender
     /// frame. `None` for the run's base and the bottom of the stack.
     pub(crate) fn sender(self, heap: &Heap<'gc>) -> Option<WalkedActivation<'gc>> {
         match self {
@@ -137,7 +137,7 @@ impl<'gc> WalkedActivation<'gc> {
         }
     }
 
-    /// `signalled_vm_error` without cloning the error of a live entry.
+    /// `signalled_vm_error` without cloning the error of a live frame.
     pub(crate) fn signals_a_vm_error(self, heap: &Heap<'gc>) -> bool {
         match self {
             WalkedActivation::Live(activation) => heap.activation_signals_a_vm_error(activation),
@@ -219,7 +219,7 @@ pub(crate) fn unwind_signal<'gc>(
 /// one of them can sit at the index a popped target used, which a frame --
 /// divorced when its activation was popped -- cannot be mistaken for. And
 /// a target suspended into its frame (`Heap::frame_is_suspended`) becomes
-/// a stack entry only once the pops reach it, each pop resuming the
+/// a stack frame only once the pops reach it, each pop resuming the
 /// suspended sender of what it pops (`Mutator::pop_for_unwind`); so the
 /// destination is decided again from the frame before every pop.
 ///

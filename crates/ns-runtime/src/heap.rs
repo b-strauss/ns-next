@@ -4,10 +4,11 @@
 //! an object of the frame format -- live end to end in one object space
 //! (`space.rs`), named by typed handles that hold their byte offsets
 //! (`ObjectReference`, `FrameReference`); see `docs/design/memory.md`. A
-//! running activation lives on the activation stack, also owned here, and
-//! is named by an `ActivationReference` that nothing may store; a frame
+//! running activation lives on the activation stack, also owned here, as a
+//! frame of tagged words in a reservation of its own (`frames.rs`), and is
+//! named by an `ActivationReference` that nothing may store; a frame object
 //! exists for it only once `reify` creates one. The accessor prefix says
-//! which handle an accessor takes: `activation_*` a live stack entry,
+//! which handle an accessor takes: `activation_*` a live stack frame,
 //! `frame_*` a reified frame. See `docs/design/execution.md`,
 //! "Activations".
 //!
@@ -755,13 +756,13 @@ impl crate::trace::Trace for Suspensions<'_> {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct ContinuationRow(u32);
 
-/// The heap's side table of the continuations of running activations other
-/// than `Continuation::Deliver`, a row per activation, minted smallest free
-/// row first as `Suspensions` mints its rows. A continuation is kept here
-/// rather than in its stack frame so that the frame names it by a number,
-/// which a frame of words holds as one word (`docs/design/execution.md`,
-/// "Planned: frames as words in one reservation"). A root, as the stack
-/// is: a continuation holds the handles of a native's or an unwind's state.
+/// The heap's side table of the continuations of running activations other than
+/// `Continuation::Deliver`, a row per activation, minted smallest free row
+/// first as `Suspensions` mints its rows. A continuation is kept here rather
+/// than in its stack frame so that the frame names it by a number, which a
+/// frame of words holds as one word (`docs/design/execution.md`,
+/// "Representation"). A root, as the stack is: a continuation holds the handles
+/// of a native's or an unwind's state.
 #[derive(Default)]
 struct Continuations<'gc> {
     rows: Vec<Option<Continuation<'gc>>>,
@@ -769,7 +770,7 @@ struct Continuations<'gc> {
 }
 
 impl<'gc> Continuations<'gc> {
-    /// The row a new entry names for `continuation`: none for a
+    /// The row a new frame names for `continuation`: none for a
     /// `Continuation::Deliver`, which is never stored.
     #[inline(always)]
     fn store(&mut self, continuation: Continuation<'gc>) -> Option<ContinuationRow> {
@@ -838,7 +839,7 @@ impl<'gc> Continuations<'gc> {
             .rows
             .pop()
             .flatten()
-            .expect("internal: a stack entry names a live continuation row");
+            .expect("internal: a stack frame names a live continuation row");
         if matches!(self.rows.last(), Some(None)) {
             self.truncate_trailing();
         }
@@ -851,7 +852,7 @@ impl<'gc> Continuations<'gc> {
     fn take_below_the_last(&mut self, index: usize) -> Continuation<'gc> {
         let continuation = self.rows[index]
             .take()
-            .expect("internal: a stack entry names a live continuation row");
+            .expect("internal: a stack frame names a live continuation row");
         self.free.free(index as u32);
         continuation
     }
@@ -865,6 +866,7 @@ impl<'gc> Continuations<'gc> {
 
     /// Replaces the continuation in `row` with `continuation`, never a
     /// `Deliver`, keeping the row.
+    #[inline]
     fn replace(&mut self, row: ContinuationRow, continuation: Continuation<'gc>) {
         debug_assert!(
             !matches!(continuation, Continuation::Deliver),
@@ -872,16 +874,16 @@ impl<'gc> Continuations<'gc> {
         );
         let slot = self.rows[row.0 as usize]
             .as_mut()
-            .expect("internal: a stack entry names a live continuation row");
+            .expect("internal: a stack frame names a live continuation row");
         *slot = continuation;
     }
 
-    /// The continuation an entry naming `row` applies: `Deliver` for none.
+    /// The continuation a frame naming `row` applies: `Deliver` for none.
     fn get(&self, row: Option<ContinuationRow>) -> &Continuation<'gc> {
         match row {
             Some(row) => self.rows[row.0 as usize]
                 .as_ref()
-                .expect("internal: a stack entry names a live continuation row"),
+                .expect("internal: a stack frame names a live continuation row"),
             None => &Continuation::Deliver,
         }
     }
@@ -1016,7 +1018,7 @@ pub struct Heap<'gc> {
     /// outside a run.
     suspensions: Suspensions<'gc>,
     /// The continuations of the running activations other than
-    /// `Continuation::Deliver`, which their stack entries name by row.
+    /// `Continuation::Deliver`, which their stack frames name by row.
     continuations: Continuations<'gc>,
     /// Every object, at the byte offset an `ObjectReference` holds -- and
     /// every *reified* activation, as an object of the frame format at a
@@ -2548,17 +2550,16 @@ impl<'gc> Heap<'gc> {
     /// nils up to `register_count`. Every `FrameReference` in the workspace
     /// is minted here or by `object_frame`, from a frame object's offset.
     ///
-    /// `home` is what `closure_home` reads back for a closure created in
-    /// this frame, and the image records it, so it must be populated
-    /// exactly for a `FrameKind::Closure` activation. `reify` upholds that
-    /// by building `home` from the entry's `kind`, but nothing in the type
-    /// system ties the two fields together, so a new constructor added
-    /// later would record a return target that disagrees with the frame's
-    /// own closure silently rather than fail loudly. Checked here, once,
-    /// rather than at every constructor. Not checked in `fill_frame_fields`:
-    /// the decoder fills a placeholder through that path with fields read off
-    /// the wire, and nothing reactivates a decoded frame, so it need not
-    /// satisfy this.
+    /// `home` is what `closure_home` reads back for a closure created in this
+    /// frame, and the image records it, so it must be populated exactly for a
+    /// `FrameKind::Closure` activation. `reify` upholds that by building `home`
+    /// from the activation's `kind`, but nothing in the type system ties the
+    /// two fields together, so a new constructor added later would record a
+    /// return target that disagrees with the frame's own closure silently
+    /// rather than fail loudly. Checked here, once, rather than at every
+    /// constructor. Not checked in `fill_frame_fields`: the decoder fills a
+    /// placeholder through that path with fields read off the wire, and nothing
+    /// reactivates a decoded frame, so it need not satisfy this.
     fn allocate_frame(
         &mut self,
         fields: FrameFields<'gc>,
@@ -5410,7 +5411,7 @@ impl<'gc> Heap<'gc> {
     //
     // A `FrameReference` names a *reified* activation. Its receiver, class and
     // kind are fixed when it is created, so they read the same whether or not
-    // the frame is still married to a live stack entry. Its program counter and
+    // the frame is still married to a live stack frame. Its program counter and
     // registers are not: while it is married they live on the activation stack,
     // so the accessors that read or write the frame's own copy assert it is
     // dead. `frame_local`/`frame_set_local` (with the activation stack, below)
@@ -5467,10 +5468,10 @@ impl<'gc> Heap<'gc> {
     /// The stack offset of the frame `words`' frame object is married to, or
     /// `None` while its activation is suspended into it and once it has
     /// returned.
-    fn married_entry(&self, words: &[u64]) -> Option<u32> {
+    fn married_offset(&self, words: &[u64]) -> Option<u32> {
         self.load(Word::from_bits(words[frame_field::MARRIED]))
             .as_small_integer()
-            .and_then(|entry| u32::try_from(entry).ok())
+            .and_then(|offset| u32::try_from(offset).ok())
     }
 
     /// Whether `frame` is a closure activation's.
@@ -5558,7 +5559,7 @@ impl<'gc> Heap<'gc> {
 
     /// Test and format level: the image tests use it to give a dead frame a
     /// synthetic paused `program_counter` before a snapshot. The runtime stores
-    /// a running activation's `program_counter` on its stack entry
+    /// a running activation's `program_counter` in its stack frame
     /// (`activation_set_program_counter`), and the divorce copies it here.
     pub fn frame_set_program_counter(
         &mut self,
@@ -5581,7 +5582,7 @@ impl<'gc> Heap<'gc> {
     /// A reified frame's recorded sender: the frame a suspended activation
     /// returns to, when that one is suspended too
     /// (`suspend_activations`), or what a decoded record carried. `None` for
-    /// every other frame -- a live activation's sender is the stack entry
+    /// every other frame -- a live activation's sender is the stack frame
     /// below it, and a returned activation has none.
     pub fn frame_sender(&self, frame: FrameReference<'gc>) -> Option<FrameReference<'gc>> {
         self.frame_frame_field(frame, frame_field::SENDER)
@@ -5852,9 +5853,11 @@ impl<'gc> Heap<'gc> {
             u32::try_from(arguments.len()).expect("more than u32::MAX arguments to one activation");
         let words = frame_header::COUNT + register_count;
         // Every word is computed before the frame is pushed, and the push is
-        // the last thing that can refuse: nothing runs while the stack's top
-        // covers words not yet written, and a refused push has changed
-        // nothing -- no count, no continuation row.
+        // the last thing that can refuse, so a refused push has changed
+        // nothing -- no count, no continuation row. Between the push and the
+        // frame's writes only the continuation goes into its table, which
+        // reads no word of the stack, so nothing reads the words the top
+        // covers before they are written.
         // `store`'s check, made apart from the copy so that a release build,
         // which has no check, copies the arguments' words straight in.
         #[cfg(debug_assertions)]
@@ -6363,6 +6366,13 @@ impl<'gc> Heap<'gc> {
         let code = self
             .frame_code_id_field(frame)
             .expect("internal: the frame of an activation the runtime pushed names its code");
+        // A full collection keeps a suspended frame's code row through the
+        // frame, which the table of suspensions roots; a freed row here
+        // would leave the resumed activation running no body.
+        debug_assert!(
+            self.code(code).is_some(),
+            "internal: a suspended frame's code row is live"
+        );
         let argument_count = self.frame_argument_count(frame);
         let program_counter = self.frame_count_field(frame, frame_field::PROGRAM_COUNTER);
         let then = match self.frame_frame_field(frame, frame_field::SENDER) {
@@ -6450,7 +6460,7 @@ impl<'gc> Heap<'gc> {
     }
 
     /// Whether `frame`'s activation has not returned yet: it is married to
-    /// a stack entry or suspended into the frame.
+    /// a stack frame or suspended into the frame.
     pub fn frame_is_running(&self, frame: FrameReference<'gc>) -> bool {
         self.frame_field(frame, frame_field::MARRIED)
             .as_small_integer()
@@ -6473,8 +6483,8 @@ impl<'gc> Heap<'gc> {
     }
 
     /// The frame of the activation `frame`'s activation returns to: for a
-    /// married frame, the suspended sender its entry returns to
-    /// (`Continuation::ReturnToSuspended`), or else the entry below,
+    /// married frame, the suspended sender its stack frame returns to
+    /// (`Continuation::ReturnToSuspended`), or else the frame below,
     /// reified; for a suspended one, the sender its frame names. `None`
     /// for a returned frame and for the run's base, which returns to the
     /// host. The `sender` leaf the kernel's handler search walks.
@@ -6497,7 +6507,7 @@ impl<'gc> Heap<'gc> {
 
     /// The suspended frame `activation` returns to, when its sender is
     /// suspended (`Continuation::ReturnToSuspended`); `None` when its
-    /// sender is the entry below it, or the host.
+    /// sender is the frame below it, or the host.
     pub(crate) fn activation_suspended_sender(
         &self,
         activation: ActivationReference,
@@ -6511,8 +6521,8 @@ impl<'gc> Heap<'gc> {
     }
 
     /// The unwind marker of the code `frame`'s activation runs, as
-    /// `activation_unwind_marker` reads a stack entry's: the entry's own
-    /// while the frame is married, the frame's recorded code otherwise.
+    /// `activation_unwind_marker` reads a stack frame's: its code's while the
+    /// frame is married, the frame's recorded code otherwise.
     pub(crate) fn frame_unwind_marker(
         &self,
         frame: FrameReference<'gc>,
@@ -6524,8 +6534,8 @@ impl<'gc> Heap<'gc> {
     }
 
     /// The VM error `frame`'s activation is the `signal` of, as
-    /// `activation_signalled_vm_error` answers it for a stack entry: read
-    /// from the entry while the frame is married, from its side-table row
+    /// `activation_signalled_vm_error` answers it for a stack frame: read from
+    /// the stack frame while the frame is married, from its side-table row
     /// while it is suspended; `None` once it has returned.
     pub(crate) fn frame_signalled_vm_error(
         &self,
@@ -6980,7 +6990,7 @@ impl<'gc> Heap<'gc> {
         activation.index as usize
     }
 
-    /// The activation `activation` returns to: the entry below it, since a
+    /// The activation `activation` returns to: the frame below it, since a
     /// callee -- a method, a block a leaf activated, an `ensure:` block the
     /// unwinder runs -- is always pushed above the activation it answers
     /// to. `None` for the bottom of the stack.
@@ -7128,7 +7138,7 @@ impl<'gc> Heap<'gc> {
     /// process.
     pub fn frame_local(&self, frame: FrameReference<'gc>, index: u16) -> Value<'gc> {
         let words = self.frame_words(frame);
-        let word = match self.married_entry(words) {
+        let word = match self.married_offset(words) {
             Some(offset) => {
                 Word::from_bits(self.stack.frames.word(self.register_slot(offset, index)))
             }
@@ -7144,7 +7154,7 @@ impl<'gc> Heap<'gc> {
     pub fn frame_set_local(&mut self, frame: FrameReference<'gc>, index: u16, value: Value<'gc>) {
         // Copied out first, so neither arm below holds a borrow of the
         // space while it writes.
-        let live = self.married_entry(self.frame_words(frame));
+        let live = self.married_offset(self.frame_words(frame));
         let word = self.store(value);
         match live {
             Some(offset) => {
@@ -7170,8 +7180,8 @@ impl<'gc> Heap<'gc> {
     /// whether its target is the top; whether a frame's activation is
     /// running at all is `frame_is_running`.
     pub fn frame_activation(&self, frame: FrameReference<'gc>) -> Option<ActivationReference> {
-        self.married_entry(self.frame_words(frame))
-            .map(|entry| self.activation_handle(entry))
+        self.married_offset(self.frame_words(frame))
+            .map(|offset| self.activation_handle(offset))
     }
 
     // ---------- The safepoint ----------
@@ -7503,9 +7513,9 @@ impl<'gc> Heap<'gc> {
     }
 
     /// How much a move has to rewrite: the objects, the activation stack's
-    /// entries and registers, the suspended activations, the continuations,
-    /// the reified-mixin and canonical symbol tables, and the host roots. The
-    /// stress mode paces its moves by it.
+    /// words, the suspended activations, the continuations, the reified-mixin
+    /// and canonical symbol tables, and the host roots. The stress mode paces
+    /// its moves by it.
     #[cfg(debug_assertions)]
     pub(crate) fn traced_size(&self) -> usize {
         self.object_count
@@ -7529,14 +7539,13 @@ impl<'gc> Heap<'gc> {
         self.epoch
     }
 
-    /// Moves every object, every reified frame among them, to a new offset
-    /// and rewrites every handle the heap itself holds -- in every object,
-    /// in every stack entry, every suspended activation and every
-    /// continuation, in every register, and in every host root -- into the
-    /// next epoch. What the heap does not
-    /// hold, the caller forwards with the answer: the interpreter's own
-    /// roots (`World::move_everything`). A compacting collection that
-    /// treats everything as live; the stress mode runs one at the run loop's
+    /// Moves every object, every reified frame among them, to a new offset and
+    /// rewrites every handle the heap itself holds -- in every object, in every
+    /// word of the stack, every suspended activation and every continuation,
+    /// and in every host root -- into the next epoch. What the heap does not
+    /// hold, the caller forwards with the answer: the interpreter's own roots
+    /// (`World::move_everything`). A compacting collection that treats
+    /// everything as live; the stress mode runs one at the run loop's
     /// safepoints. Every object shifts by one distance, up from the first
     /// offset and back down to it, so every offset changes at every move
     /// (`docs/design/memory.md`, "The move stress mode").
@@ -7815,21 +7824,20 @@ impl<'gc> Heap<'gc> {
     }
 
     /// Forwards every handle the heap itself holds through `forwarder`:
-    /// every object, the `Activation` class, every stack entry, every
-    /// register, every row of the tables of suspended activations and of
-    /// continuations, every surviving canonical symbol table entry, and
-    /// every host root. Shared by `move_everything`,
-    /// `compact` and `forward_identity` -- each builds its own `Forwarder`
-    /// first, over its own `Relocation`, and then walks the same roots
-    /// through it -- so that a field any of them must reach is named here
-    /// once, rather than in copies a later change can update in one and
-    /// miss in another (`trace.rs`'s
-    /// reason for existing, one level up).
+    /// every object, the `Activation` class, every word of the stack, every
+    /// row of the tables of suspended activations and of continuations,
+    /// every surviving canonical symbol table entry, and every host root.
+    /// Shared by `move_everything`, `compact` and `forward_identity` -- each
+    /// builds its own `Forwarder` first, over its own `Relocation`, and then
+    /// walks the same roots through it -- so that a field any of them must
+    /// reach is named here once, rather than in copies a later change can
+    /// update in one and miss in another (`trace.rs`'s reason for existing,
+    /// one level up).
     fn forward_everything<M: Relocation>(&mut self, forwarder: &mut Forwarder<M>) {
         use crate::trace::{Trace, Tracer};
-        // A married frame's registers are its entry's, traced below with
-        // the stack; its married field is a stack index, and no stack entry
-        // moves. Walks the objects where they lie now, after the move.
+        // A married frame's registers are its stack frame's, traced below
+        // with the stack; its married field is a stack offset, and no stack
+        // frame moves. Walks the objects where they lie now, after the move.
         let ranges = self.space.occupied();
         let words = self.space.words_mut();
         let mut holders = Vec::new();
@@ -8027,10 +8035,9 @@ impl<'gc> Heap<'gc> {
     }
 
     /// Pushes the heap's own roots -- the `Activation` class, the activation
-    /// stack's entries and its registers, and the host roots -- onto a new
-    /// marker and answers it without draining it, so that the caller can add
-    /// the step state's roots (`World::mark_everything_reachable`) before
-    /// the traversal runs.
+    /// stack's words, and the host roots -- onto a new marker and answers it
+    /// without draining it, so that the caller can add the step state's roots
+    /// (`World::mark_everything_reachable`) before the traversal runs.
     ///
     /// The canonical symbol table and the reified mixins are deliberately
     /// not among these roots: they are the runtime's own weak structures,
@@ -8141,12 +8148,12 @@ impl<'gc> Heap<'gc> {
     }
 
     /// Runs the marker's work list empty: each object popped unmarked is
-    /// marked, and every unmarked object its pointer words name is pushed.
-    /// The mark bit is set when the object is visited, not when it is
-    /// pushed, so an object reached twice before its visit is popped twice
-    /// and visited once -- which is also what ends the traversal on a
-    /// cycle. A married frame's registers are its entry's, already pushed
-    /// with the stack, so `pointer_ranges` leaves them out.
+    /// marked, and every unmarked object its pointer words name is pushed. The
+    /// mark bit is set when the object is visited, not when it is pushed, so an
+    /// object reached twice before its visit is popped twice and visited once
+    /// -- which is also what ends the traversal on a cycle. A married frame's
+    /// registers are its stack frame's, already pushed with the stack, so
+    /// `pointer_ranges` leaves them out.
     ///
     /// Only strong words are traced (`object::strong_pointer_ranges`): a
     /// `WeakPointers` object goes on the marker's weak list, and an
@@ -10019,7 +10026,7 @@ mod tests {
         heap.pop_activation(activation);
     }
 
-    /// Two live activations share one `values` vector; neither may see the
+    /// Two live activations share one reservation of words; neither may see the
     /// other's registers, whichever is written first.
     #[test]
     fn nested_activations_keep_separate_register_windows() {
@@ -10727,7 +10734,7 @@ mod tests {
     /// `ActivationReference::same` is how the unwinder stops at its target,
     /// and it is handed two handles
     /// and no `Heap`, so no accessor guard can reach it. Both handles below
-    /// are the first entry of their own heap's stack, so they share an index
+    /// are the first frame of their own heap's stack, so they share an index
     /// and a release build answers "identical".
     #[test]
     #[cfg(debug_assertions)]
@@ -10745,7 +10752,7 @@ mod tests {
     }
 
     /// The comparison `same`'s doc comment says the unwinder never makes: a
-    /// handle whose entry was popped, compared against the activation that
+    /// handle whose frame was popped, compared against the activation that
     /// reused its index. A release build answers "identical", which would
     /// land a return in the wrong activation -- the reason an unwind's
     /// target is a frame -- and a debug build must refuse the comparison.
@@ -10819,24 +10826,24 @@ mod tests {
         );
     }
 
-    /// Every test above pushes `FrameKind::TopLevel`, which is `None` on
-    /// both `activation_home` and `activation_captured` by construction --
-    /// closure creation is the only reason either exists. `raise_return`
-    /// picks a non-local return's target off `activation_home`, and the
-    /// outer-local walk (`locals::frame_at_depth`) starts every hop off
+    /// Every test above pushes `FrameKind::TopLevel`, which is `None` on both
+    /// `activation_home` and `activation_captured` by construction -- closure
+    /// creation is the only reason either exists. `raise_return` picks a
+    /// non-local return's target off `activation_home`, and the outer-local
+    /// walk (`locals::frame_at_depth`) starts every hop off
     /// `activation_captured`/`frame_captured`, so a closure activation that
     /// answered `None` for either would silently misroute a `^` or a
-    /// captured-variable read rather than fail loudly. The closure's two
-    /// frames are distinct -- a block inside a block captures the outer
-    /// block's activation and returns to the method's -- so that the two
-    /// swapped would fail here rather than pass. The home is derived from
-    /// the captured frame (`closure_home`) rather than stored, which is
-    /// exactly what the two nesting levels below exercise: the inner
-    /// closure's captured frame is a *block* activation, so its home is that
-    /// frame's own. This also exercises `allocate_frame`'s debug assertion
-    /// that a frame's home is populated exactly for a `FrameKind::Closure`
-    /// activation, since `reify` builds that frame from a closure entry's
-    /// `kind` here for the first time in this test module.
+    /// captured-variable read rather than fail loudly. The closure's two frames
+    /// are distinct -- a block inside a block captures the outer block's
+    /// activation and returns to the method's -- so that the two swapped would
+    /// fail here rather than pass. The home is derived from the captured frame
+    /// (`closure_home`) rather than stored, which is exactly what the two
+    /// nesting levels below exercise: the inner closure's captured frame is a
+    /// *block* activation, so its home is that frame's own. This also exercises
+    /// `allocate_frame`'s debug assertion that a frame's home is populated
+    /// exactly for a `FrameKind::Closure` activation, since `reify` builds that
+    /// frame from a closure activation's `kind` here for the first time in this
+    /// test module.
     #[test]
     fn a_closure_activations_home_and_captured_frame_are_its_closures() {
         let mut heap = frame_heap();
@@ -11145,8 +11152,8 @@ mod tests {
     }
 
     /// A handle is one word, and the offset's niche keeps an optional handle
-    /// one word too: `Option<ClassReference>` sits in every stack entry and in
-    /// `Step`, whose size the hot path was measured at.
+    /// one word too: `Option<ClassReference>` sits in `Step`, whose size the
+    /// hot path was measured at.
     #[cfg(all(target_pointer_width = "64", not(debug_assertions)))]
     #[test]
     fn a_handle_and_an_optional_handle_are_one_word() {
@@ -11225,9 +11232,9 @@ mod tests {
         heap.pop_activation(activation);
     }
 
-    /// A reified frame is reachable from the entry it is married to, which is
-    /// what makes "a running activation's frame is never collected" fall out
-    /// of the root set instead of needing a rule of its own.
+    /// A reified frame is reachable from the stack frame it is married to,
+    /// which is what makes "a running activation's frame is never collected"
+    /// fall out of the root set instead of needing a rule of its own.
     #[test]
     fn marking_reaches_a_married_frame_through_its_entry() {
         let mut heap = frame_heap();
@@ -11283,8 +11290,8 @@ mod tests {
     }
 
     /// A collection moves a married frame like any object and leaves its
-    /// marriage alone: the field names a stack entry, and no entry moves, so
-    /// the frame found again through its forwarded object still reads the
+    /// marriage alone: the field names a stack frame, and no stack frame moves,
+    /// so the frame found again through its forwarded object still reads the
     /// live registers and still answers its activation.
     #[test]
     fn a_married_frame_survives_a_collection_and_reads_its_live_registers() {

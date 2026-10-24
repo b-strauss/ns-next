@@ -3642,7 +3642,7 @@ with an argument that is no `Message` fails inside the handler, on
   method making the mirror send, reified, answered as its frame object, so
   two calls for one activation answer the same object and the coming
   `ActivationMirror` has an identity by frame already; an activation's
-  `sender` — the activation it returns to, the stack entry below it or the
+  `sender` — the activation it returns to, the stack frame below it or the
   suspended frame it returns to (`Heap::frame_sender_frame`;
   [execution.md](execution.md), "Suspending and resuming"), or nil at the
   bottom or once it has returned; an activation's `methodName` --
@@ -3687,7 +3687,7 @@ with an argument that is no `Message` fails inside the handler, on
   Once code runs while an unwind is in progress, a pushed activation can
   reuse a target's stack index, and a release build does not check an
   activation's generation. A reified frame keeps its identity; whether it
-  is still running, married to a stack entry or suspended into the frame,
+  is still running, married to a stack frame or suspended into the frame,
   is `Heap::frame_is_running`, in every build, and the leaves read and
   write a running frame through the frame, whichever it is.
   `Signal::Return` and `Signal::Restart` carry the target's

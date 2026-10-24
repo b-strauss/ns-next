@@ -11808,7 +11808,7 @@ fn a_snapshot_taken_while_an_activation_is_running_is_refused() {
 }
 
 /// The format records a frame's `sender`, and the decoder rebuilds it, but
-/// the runtime never sets one: a live activation's sender is the stack entry
+/// the runtime never sets one: a live activation's sender is the stack frame
 /// below it, and a returned one has none. So only a hand-built frame can
 /// carry one into the encoder, and this is the test that keeps that half of
 /// the frame record from rotting unnoticed.

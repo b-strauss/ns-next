@@ -41,7 +41,8 @@ Rust 1.98.0, edition 2021, six crates:
   code in `heap/tables.rs`, whose rows and ids a full collection reclaims
   (`heap/reclaim.rs`, `interpreter/reclaim.rs`; `object-model.md`, "An
   application has two ids")) -- named by handles that are 64-bit byte
-  offsets; an activation stack reified on demand into frame objects; a
+  offsets; an activation stack of frames of tagged words in a reservation
+  of its own (`heap/frames.rs`), reified on demand into frame objects; a
   Cheney scavenger with age-based tenuring (`heap/scavenge.rs`) beside a
   mark-and-slide collector, which compacts both generations into the old
   space, the mark bit in the header and the forwarding through a live-word

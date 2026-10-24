@@ -9,12 +9,16 @@
 > unwinder carries every non-local return, exception unwind and termination,
 > running `ensure:` blocks as trampoline steps; a running activation can be
 > suspended into its frame and resumed from it, lazily, and a stress mode
-> runs every program on from suspended frames.
+> runs every program on from suspended frames; every running activation is
+> a frame of tagged words in one reservation of the heap's, its
+> measurement still to be taken (road step 7a, "Planned: JIT tiers").
 > **Code:** `crates/ns-runtime/src/heap.rs` (the activation stack, the frame
 > objects, the `ActivationReference` and `FrameReference` handles, every read and write of an
 > activation, the copied values a closure carries and whether a frame keeps its
 > registers, and the side table of suspended activations with
-> `suspend_activations` and `resume_activation`), `heap/object.rs` (the
+> `suspend_activations` and `resume_activation`), `heap/frames.rs` (the
+> reservation the stack's frames lie in, the header's words and the flags
+> word), `heap/object.rs` (the
 > fixed fields of a frame object and a closure, `frame_field` and
 > `closure_field`), `heap/world.rs` (the step state
 > at rest, and its entry),
@@ -64,8 +68,8 @@ reference lowering") is the differential oracle that replaced it.
 ## Activations
 
 A Newspeak-level activation is never represented only by Rust locals or the Rust
-call stack. A running activation is an entry on one **activation stack** that the
-`Heap` owns. A first-class frame -- an object of the frame format in the
+call stack. A running activation is a frame of words on one **activation
+stack** that the `Heap` owns. A first-class frame -- an object of the frame format in the
 `Heap`'s object space, an instance of the kernel-private `Activation`
 ([object-model.md](object-model.md), "The object layout") -- exists for it only
 once something must hold it past the call that runs it: a block being
@@ -120,7 +124,12 @@ struct ActivationStack {
 }
 
 a frame on the stack           // heap/frames.rs's frame_header; every word tagged
-    0 receiver  1 current class  2 operand  3 reified   // values, objects or nil
+    0 receiver                 // a value
+    1 current class            // the class object; nil at top level
+    2 operand                  // the closure of a block frame, the class of a
+                               // class-carrying kind, the selector of a method
+                               // frame as a SmallInteger; nil otherwise
+    3 reified                  // the married frame object, or nil
     4 flags                    // SmallInteger: the kind's tag, argument_count,
                                // counted, retains_registers
     5 code  6 program counter  7 feedback base          // SmallIntegers
@@ -150,51 +159,107 @@ pub struct ActivationReference {
 ```
 
 - **The stack belongs to the `Heap`**, because `heap.rs` is already the one place
-  that stores activations, and because it is half of the collector's eventual
-  root set ([memory.md](memory.md)).
+  that stores activations, and because it is half of the collector's root set
+  ([memory.md](memory.md)).
+- **One reservation of words holds every running activation**, header and
+  registers together: a `Reservation` of `ns-memory`, the heap's second
+  beside its object space ([memory.md](memory.md), "The memory layer"),
+  16 GiB on a 64-bit target and 256 MiB otherwise (`STACK_RESERVATION`,
+  `heap/frames.rs`). Where the operating system limits address space, it
+  falls back as the object space's reservation does, halving the request
+  down to no less than 1 GiB (`reserve_falling_back`, `heap/space.rs`).
+  It is committed from its base as the stack deepens -- doubling what is
+  committed, by at least 64 KiB and at most 16 MiB at a time unless a push
+  needs more (`FrameStack::grow`) -- and never decommitted while the heap
+  lives. Frames lie back to back, innermost highest: the header,
+  `frame_header::COUNT` words -- 13 in a release build, 14 in a debug one,
+  which adds the generation -- then the registers. An
+  `ActivationReference` is the word offset of its frame's header, and a
+  married frame object's married word holds the same offset.
+- **Every word of a frame is a valid tagged value**: a number a
+  `SmallInteger`, an absent handle nil. Cog's and Primordial Soup's frames
+  are the model: a flags word that reads as a `SmallInteger` (Cog's
+  `1 + (numArgs << 8)`,
+  `prior-art/opensmalltalk-vm/src/spur64.stack/interp.c:52829-52832`;
+  Soup's `(numArgs << 1) | isClosure`,
+  `prior-art/primordialsoup/vm/interpreter.cc:46-55`), the code named in
+  the frame, the receiver and temporaries tagged. Both still hold raw
+  words -- a saved frame pointer and a bytecode pointer -- which Cog's scan
+  skips by offset (`interp.c:57557-57596`) and Soup turns into indexes
+  around every collection (`interpreter.cc:1875-1905`). Here every link is
+  an index, since `ns-runtime` forbids `unsafe`, so nothing needs either:
+  **the collector traces the stack as one linear range of tagged words**,
+  `[0, top)`, as Soup scans `[sp_, stack_base_)`, and the table of
+  continuations beside it; no stack map, no per-frame walk
+  ([memory.md](memory.md), "What the collector traces"). A married frame
+  object still skips its own registers, which are nil while the stack
+  holds the live ones. The flags word packs the kind's tag in bits 0-7,
+  the argument count in bits 8-39 and the two booleans above them; the
+  kind tags are `heap/frames.rs`'s own numbering, never written to an
+  image.
+- **The code is an id, not an `Rc`**: a return reads the caller's code from
+  the heap's code table by the `CodeId` in its code word. A method's
+  `MixinMethod` is needed only for its selector and its code, which the
+  operand and the code word hold; the push registers a method's body with
+  its method, so `reify` rebuilds `FrameKind::Method` from the code row.
 - **A push** (`Heap::push_activation`) takes a frame of the header's size
   plus its window from the frame stack, writes every word of the header,
   copies the arguments into the first registers and fills the temporaries
-  with nil; the frame names its body by its code id, found through the body's one-entry cache
-  ([memory.md](memory.md), "A closure's code id without the map") and kept
-  by a full collection while the activation runs
-  ([object-model.md](object-model.md), "An application has two ids"); only for code that
-  addresses its own slots (`CompiledCode::addresses_own_slots`) does it record
-  the receiver's guard and the full-width index of `current_class`'s
-  application, which every own-slot instruction checks and takes its slot base
-  from, so any other push pays one flag test
-  ([object-model.md](object-model.md), "What a slot access checks"). The
-  reservation stays committed across pops, so once it has grown to the
-  program's depth a push commits nothing; a push it cannot hold answers
+  with nil; the frame names its body by its code id, found through the
+  body's one-entry cache ([memory.md](memory.md), "A closure's code id
+  without the map") and kept by a full collection while the activation
+  runs ([object-model.md](object-model.md), "An application has two ids");
+  only for code that addresses its own slots
+  (`CompiledCode::addresses_own_slots`) does it record the receiver's
+  guard and the full-width index of `current_class`'s application, which
+  every own-slot instruction checks and takes its slot base from, so any
+  other push pays one flag test ([object-model.md](object-model.md), "What
+  a slot access checks"). Taking the frame is one comparison of its end
+  against what may be used without committing more, and the reservation
+  stays committed across pops, so once it has grown to the program's depth
+  a push commits nothing. A push the reservation cannot hold answers
   `StackExhausted`, which `Mutator::push` raises as the depth limit's
-  `stack overflow: recursion too deep`. Every activation the runtime pushes
-  goes through one function, `Mutator::push`, which refuses a push past the
-  depth limit ("The depth limit" below) before it reaches the heap, so no new
-  push site can skip the check. It is called from `Mutator::push_step`, for
-  the method, block or body a decision answered, and for the initializer a
-  factory entered past its first instructions decides
-  (`Mutator::enter_factory_body`). The header is written in place, every
-  word once, and a pop reads the words it needs and lowers the top: the
-  words it leaves above the top are never read again. The window is
-  recorded in its own word rather than read off the code, since a factory
-  is handed as many arguments as its send has keywords whatever its
-  register count. An
-  activation nothing reifies leaves nothing behind; only a block the compiler
-  did not inline reifies one, since an inlined `ifTrue:`/`and:`/`whileTrue:`
-  argument creates no closure.
+  `stack overflow: recursion too deep` ("The depth limit" below). Every
+  activation the runtime pushes goes through one function,
+  `Mutator::push`, which refuses a push past the depth limit before it
+  reaches the heap, so no new push site can skip the check. It is called
+  from `Mutator::push_step`, for the method, block or body a decision
+  answered, and for the initializer a factory entered past its first
+  instructions decides (`Mutator::enter_factory_body`). Every word is
+  computed before the frame is taken, so a refused push changes nothing;
+  the header is then written in place, every word once, and a pop reads
+  the words it needs and lowers the top: the words it leaves above the top
+  are never read again. The window is recorded in its own word rather than
+  read off the code, since a factory is handed as many arguments as its
+  send has keywords whatever its register count. An activation nothing
+  reifies leaves nothing behind; only a block the compiler did not inline
+  reifies one, since an inlined `ifTrue:`/`and:`/`whileTrue:` argument
+  creates no closure.
+- **The arguments are copied** into the callee's first registers;
+  overlapping the caller's outgoing arguments with the callee's window is
+  road step 7a′, behind its own measurement ("Planned: JIT tiers" below).
 - **Register access through an `ActivationReference`** is the stack's word
   at the frame's offset plus the header's size plus `r`, with no branch on
-  the handle's kind or on an args/temps split; a release build still
-  bounds-checks the slice index against the top. A debug build also checks
-  that the register lies inside the frame's own window: the neighbouring
-  activation's header and registers are in bounds of the stack, so reading
-  them would not otherwise fail. A frame's offset is fixed for its whole
-  life and everything is addressed by index, so the reservation committing
-  more moves nothing anyone holds. The activation above a frame starts
-  where its window ends, and the one below is its caller word; an offset
-  grows with depth, so a run's floor and every comparison of positions
-  stay an ordering, and the run's base has returned once the top is back
-  at its offset (`Heap::activation_stack_top`).
+  the handle's kind or on an args/temps split, and one bounds check, of
+  that index against the reservation's committed end (`FrameStack::word`,
+  through `Reservation::accessible`). A debug build also checks that the
+  index lies below the top and inside the frame's own window: the
+  neighbouring activation's header and registers are in bounds of the
+  stack, so reading them would not otherwise fail. A release build makes
+  that trade knowingly, since the run loop makes this access on nearly
+  every instruction: a register index past its window but below the
+  committed end reads or writes a stale word of the stack -- never another
+  object's memory -- and only one past the committed end panics. Only a
+  compiler defect produces such an index; the decoder refuses an
+  artifact's register out of its body's range
+  ([image-format.md](image-format.md), "Verification"). A frame's offset
+  is fixed for its whole life and everything is addressed by index, so the
+  reservation committing more moves nothing anyone holds. The activation
+  above a frame starts where its window ends, and the one below is its
+  caller word; an offset grows with depth, so a run's floor and every
+  comparison of positions stay an ordering, and the run's base has
+  returned once the top is back at its offset
+  (`Heap::activation_stack_top`).
 - **Two handle types, not one tagged handle.** `ActivationReference` names a live
   stack frame; `FrameReference` names a frame object and is the only
   activation handle anything *stores*: a closure's captured frame, a frame's
@@ -219,10 +284,11 @@ pub struct ActivationReference {
   or writes its words; the image encoder and decoder go through
   `Heap::frame_record` and the decoder's in-place fills, which never touch the
   marriage, so nothing outside the heap module can read or forge it. While
-  the married field is set, the frame's own registers stay nil and a register
-  read or write through the `FrameReference`
-  (`Heap::frame_local`/`frame_set_local`) reaches the stack slot. That branch exists only on the path from a block to its method's
-  variables — `read_outer_local`/`write_outer_local`, behind the VM's
+  the married field is set, the frame's own registers stay nil and a
+  register read or write through the `FrameReference`
+  (`Heap::frame_local`/`frame_set_local`) reaches the stack slot. That
+  branch exists only on the path from a block to its method's variables —
+  `read_outer_local`/`write_outer_local`, behind the VM's
   `LoadOuterLocal`/`StoreOuterLocal`.
 - **The accessor prefix names the handle.** `activation_*` reads or writes a live
   activation through an `ActivationReference`; `frame_*` a reified frame through a
@@ -234,7 +300,8 @@ pub struct ActivationReference {
 allocates the frame object — receiver, `kind` and its operand, `current_class`,
 `program_counter`, the code id, and `home` when the activation is a
 closure's, with room for the activation's whole register file, all nil —
-marries it to the stack frame, and records it in the frame's `reified` word; every later call
+marries it to the stack frame, and records it in the frame's `reified`
+word; every later call
 answers the same handle. Its callers are closure creation, the VM's
 `MakeClosure`, for the new closure's captured frame; the `currentActivation`
 leaf, whose `Activation` object is the frame object itself, so the same
@@ -249,10 +316,11 @@ that creates it, whether or not the block reads one of its variables, because
 and current class from.
 
 **Pop.** The run loop pops every activation it runs, on *every* exit, error
-paths included (`vm::run`), and only the top entry can be popped. Popping hands
-back the entry's continuation (`Popped`), which the loop applies to the
-activation's value ("The VM" below). If the entry was reified, its frame is
-**divorced**: its `program_counter` takes the entry's last stored one, the
+paths included (`vm::run`), and only the top frame can be popped. Popping
+hands back the frame's continuation (`Popped`), which the loop applies to
+the activation's value ("The VM" below). If the activation was reified,
+its frame object is **divorced**: its `program_counter` takes the stack
+frame's last stored one, the
 married field becomes nil, `uncontinuable` becomes true and `sender` becomes
 nil. Then the stack's top is lowered to the frame's offset.
 
@@ -267,16 +335,16 @@ activation whose fallback path actually created a closure. A frame divorced
 without its registers keeps the nil it was allocated with in each, so a
 register read answers `nil`; the frame object never grows or shrinks, and an
 image carries every register it has ([image-format.md](image-format.md),
-"Verification"). An entry that was never
+"Verification"). A frame that was never
 reified leaves nothing behind, so storage for activations nothing captured is
 bounded by the deepest the program has been rather than by every activation it
 has ever made.
 
-**Sender.** A live activation's sender is the entry below it — structural, not
-a stored field, so no call site can forget to pass it on, at a block boundary
-or anywhere else — unless its entry returns to a suspended frame, which its
-continuation names (`Continuation::ReturnToSuspended`, "Suspending and
-resuming" below). `Heap::frame_sender_frame` answers either as a frame, the
+**Sender.** A live activation's sender is the frame below it, its caller
+word — structural, not a field anyone passes on, so no call site can forget
+it, at a block boundary or anywhere else — unless it returns to a suspended
+frame, which its continuation names (`Continuation::ReturnToSuspended`,
+"Suspending and resuming" below). `Heap::frame_sender_frame` answers either as a frame, the
 `sender` leaf's answer. A suspended frame's sender is its `sender` field, the
 one place the runtime writes a sender into a frame. A dead frame's `sender` is
 `None`: Smalltalk's semantics for a returned context, and what Primordial Soup
@@ -284,8 +352,9 @@ does on return (`zap->set_sender(nil)`) and lazily in `HasLivingFrame`; the
 divorce clears it. The image format records one per frame, so beyond a
 suspended frame only a frame the decoder rebuilt can have one set.
 
-**Only a `FrameReference` is ever stored.** An `ActivationReference` is valid until its entry
-is popped, and the next activation at that depth reuses the index. Everything that
+**Only a `FrameReference` is ever stored.** An `ActivationReference` is
+valid until its frame is popped, and the next frame pushed there reuses its
+offset. Everything that
 outlives a call — a closure, another frame, an image record — holds a `FrameReference`.
 
 ### Signatures
@@ -302,7 +371,7 @@ outlives a call — a closure, another frame, an image record — holds a `Frame
   `decide_send`, `builtins::execute` and the `builtins/` modules have
   no `sender` parameter. It was removed rather than retyped to an `ActivationReference`: its only
   use was to fill a frame's sender, and once a live activation's sender is the
-  entry below it, nothing read it. No native takes an activation handle at all.
+  frame below it, nothing read it. No native takes an activation handle at all.
   The one function handed the sending activation is `Mutator::push_step`,
   which reads its reified frame for the depth count's exemption and stores
   nothing.
@@ -330,11 +399,11 @@ hierarchy resolve one level at a time.
 The registers — arguments first, then temporaries — are addressed as described in
 [compiler.md](compiler.md). Every activation is pushed with its body's whole
 register file, since the code is read before the push — the initializer's
-included — and a live window never grows: an entry below the top could not
+included — and a live window never grows: a frame below the top could not
 grow anyway, since its window ends where the next one's begins. A frame
 object never grows either: it is allocated with its code's whole register
 file ([object-model.md](object-model.md), "The object layout"). Adding a local slot to a
-running method — growing its register file, initializing the new entries to nil
+running method — growing its register file, initializing the new registers to nil
 and remapping the `program_counter`, the edit-and-continue requirement — therefore means
 taking the activation off the stack first; see "How this meets the liveness
 requirements" below, which is not built.
@@ -346,14 +415,16 @@ level it was entered at and which of its mixin's three bodies it runs
 it runs on, whose metaclass's factory entry holds its body. An
 initializer activation must be
 able to name the code it is executing so that `program_counter` is interpretable, since the
-statement→program-counter table is reached through its kind. A stack entry also holds its
-`code` directly, because the loop resumes a caller in it after a callee returns;
-`continuation`, which names the `Continuation` the loop applies to its value
-when it is popped; and `counted`, whether it counts against the depth limit
+statement→program-counter table is reached through its kind. A stack frame
+also names its code, by its code id, because the loop resumes a caller in it
+after a callee returns; `continuation`, which names the `Continuation` the
+loop applies to its value when it is popped; and `counted`, whether it counts against the depth limit
 ("The depth limit" below). A `Continuation::Deliver`, every send's, is never
 stored: the frame's continuation word is nil, so a send's return tests one
-word and reaches no table. Every other continuation lives in a row of the heap's side table
-of continuations (`Heap`'s `continuations`), minted smallest free row first
+word and reaches no table. Every other continuation lives in a row of the
+heap's side table of continuations (`Heap`'s `continuations`), since most
+of them carry Rust state no word can (`NewspeakError`, the boxed loop and
+unwind records), minted smallest free row first as `Suspensions`' rows are
 and taken out and freed by the pop; the table is a root
 ([memory.md](memory.md), "What the collector traces"). A native loop over a
 block the compiler did not inline (`whileTrue:`, `do:`) gives its row back
@@ -362,7 +433,10 @@ never free, so that pop and that push each touch only the end of the
 table's vector, inline, and only a row below the last takes the free list,
 out of line. A suspension takes its
 activation's continuation out of the table into its suspension row, and a
-resume puts it back.
+resume puts it back. `WhileCondition`, `WhileBody` and `DoElement` leave
+with the real bodies of `whileTrue:`, `whileFalse:` and `do:`
+([core-library.md](core-library.md), "Planned: real bodies for control
+flow and `do:`, before the baseline JIT").
 
 `program_counter` is an instruction index into the activation's compiled body.
 
@@ -376,7 +450,7 @@ could not be allocated, whose sends then run uncached. It is a number, not a
 handle, and it is never serialized.
 
 **The chain of running activations is walkable independently of the Rust
-stack**: it is the activation stack, innermost last, and below an entry that
+stack**: it is the activation stack, innermost last, and below a frame that
 returns to a suspended frame, the suspended frames by their `sender`. That is
 what the debugger will reflect over and what the collector scans. An image
 serializes reified frames only, and is written when nothing is running
@@ -400,17 +474,18 @@ tiers"). A frame object is in one of three states, told by its married word
 - **returned**: nil, as the divorce leaves it, `uncontinuable` true.
 
 A married or a suspended frame is running (`Heap::frame_is_running`); only a
-married one has a stack entry (`Heap::frame_activation`), so every reader
-that asks for the entry answers none for a suspended frame, and none
+married one has a stack frame (`Heap::frame_activation`), so every reader
+that asks for the stack frame answers none for a suspended frame, and none
 mistakes it for a live one.
 
-**Suspending** (`Heap::suspend_activations(floor)`) reifies every entry at or
-above `floor` first, so that each sender is a frame by the time the
+**Suspending** (`Heap::suspend_activations(floor)`) reifies every frame at
+or above `floor` first, so that each sender is a frame by the time the
 activation above it is suspended, then works from the top down. It copies
 every register into the frame, whatever `retains_registers` says, since the
 frame is now their only copy; writes the program counter and the sender;
-moves the rest of the entry into a side-table row; and truncates the entry.
-The row holds what a frame object cannot -- the entry's `Continuation`,
+moves the rest of the header into a side-table row; and lowers the stack's
+top to the frame's offset. The row holds what a frame object cannot -- the
+activation's `Continuation`,
 whether it counts against the depth limit, the level it was entered at and
 `retains_registers` -- and the frame itself, which makes the table a root
 ([memory.md](memory.md), "What the collector traces"); a frame object grows
@@ -424,7 +499,7 @@ activation back -- its registers copied back from the frame, which is
 married to it again, its row freed -- and nothing else. When its frame
 names a sender, its continuation is wrapped in
 `Continuation::ReturnToSuspended`, which holds that sender and the
-activation's own continuation. When such an entry is popped -- by a return,
+activation's own continuation. When such a frame is popped -- by a return,
 in `vm::finish`'s cold `return_to_suspended`, or by the unwinder, through
 `Mutator::pop_for_unwind` -- the sender is resumed first and the wrapped
 continuation applied or abandoned after it, so from there on everything
@@ -457,17 +532,17 @@ answers and the kernel's handler search walks; the handler leaves, which read
 and write registers through `frame_local` and `frame_set_local` and the
 marker through `Heap::frame_unwind_marker`; the unwinder ("Unwinding"
 below); and the depth reserve's walks, which follow `interpreter::unwind`'s
-`WalkedActivation` -- the live entries, then, past an entry that returns to
+`WalkedActivation` -- the live frames, then, past a frame that returns to
 a suspended frame, the suspended frames by their `sender`, reading a
 suspended `signal`'s error from its row (`Heap::frame_signalled_vm_error`).
-A reader of a live entry's own continuation looks through the wrapper
+A reader of a live frame's own continuation looks through the wrapper
 (`Heap::activation_own_continuation`), and `activation_set_continuation`
 replaces only the continuation inside it, so a VM error's `signal`
 resumed above a suspended reserve still holds the reserve and still returns
 to its suspended sender.
 
 **No activation outlives its run suspended.** Every path out of a run pops
-through the `ReturnToSuspended` entries, resuming each sender in turn, so
+through the `ReturnToSuspended` frames, resuming each sender in turn, so
 the side table is empty when a run ends; `Interpreter::run_from_host`
 debug-asserts it beside its depth assertion (`World::suspension_count`). That
 is why the image encoder, which runs only between runs, never meets a
@@ -483,11 +558,11 @@ paced by the traced size as the collect and scavenge modes are
 (`StressSchedule`, `interpreter/safepoint.rs`; [memory.md](memory.md), "The
 move stress mode") -- `Interpreter::safepoint` suspends every activation of
 the run, from the run's floor up, and resumes the top one at once, so that
-the loop always runs on a stack entry. It takes its turn after the other
+the loop always runs on a stack frame. It takes its turn after the other
 stress modes, which leave the stack as they find it. The safepoint answers
 whether it rebuilt the stack, and `vm::run` then reads its `FrameRegisters`
-again from the top entry; for that the stretch writes the running
-activation's program counter into its entry when it leaves for a safepoint,
+again from the top frame; for that the stretch writes the running
+activation's program counter into its frame when it leaves for a safepoint,
 one store on a cold path. Every golden and corpus module keeps its recorded
 outcome under it, so every return, unwind, handler search and depth-limit
 path runs from suspended frames, the path a deoptimized frame will take;
@@ -495,101 +570,6 @@ path runs from suspended frames, the path a deoptimized frame will take;
 stressed, under both lowerings. It is a gate of its own at the end of a
 batch, beside the other five ([memory.md](memory.md), "The gates the
 collector needs").
-
-### Planned: frames as words in one reservation
-
-Road step 7a ("Planned: JIT tiers" below), decided with the user on
-2026-10-24. The stack of frames is built ("Representation" above); the
-measurement below has not been taken yet.
-
-**One reservation of words holds every running activation**, header and
-registers together, in place of `values` and `entries`: a `Reservation` of
-`ns-memory` per heap, 16 GiB on a 64-bit target and 256 MiB otherwise,
-committed page by page as the stack deepens and, as the vectors' capacity
-is today, never decommitted while the heap lives. Frames lie back to back,
-innermost highest; an `ActivationReference` becomes the word offset of its
-frame's header, and a married frame's `MARRIED` word that offset. The
-activation above a frame starts where its registers end (the header's size
-plus the register count its header records), so `Heap::activation_above`
-needs no table.
-
-**The header is a fixed number of words, every one a valid tagged value**:
-
-| Word | Holds |
-|---|---|
-| receiver | the receiver, a value |
-| current class | the class object, or nil for `TopLevel` |
-| operand | the closure object of a block frame, the class of a class-carrying kind, the selector as a `SmallInteger` of a method frame, nil otherwise |
-| reified | the married frame object, or nil |
-| flags | a `SmallInteger`: the kind's tag, `argument_count`, `counted`, `retains_registers` |
-| code | the `CodeId` of the body it runs, a `SmallInteger` |
-| program counter | a `SmallInteger`, stored at the observable points only, as today |
-| feedback base | a `SmallInteger` |
-| caller | the word offset of the frame below, a `SmallInteger`; nil in the bottom frame |
-| continuation | nil for `Deliver`, otherwise a `SmallInteger` naming the continuation's row in a side table of the heap |
-| guard, entered level | `recorded_guard` and `entered_level`, `SmallInteger`s |
-| register count | the window the push wrote, arguments and temporaries, a `SmallInteger`: a factory is handed as many arguments as its send has keywords, past any register count of its code |
-| generation | debug builds only, a `SmallInteger` |
-
-Cog's and Primordial Soup's frames are the model: a flags word that reads
-as a `SmallInteger` (Cog's `1 + (numArgs << 8)`,
-`prior-art/opensmalltalk-vm/src/spur64.stack/interp.c:52829-52832`; Soup's
-`(numArgs << 1) | isClosure`, `prior-art/primordialsoup/vm/interpreter.cc:46-55`),
-the code named in the frame, the receiver and temporaries tagged. Both
-still hold raw words -- a saved frame pointer and a bytecode pointer --
-which Cog's scan skips by offset (`interp.c:57557-57596`) and Soup turns
-into indexes around every collection (`interpreter.cc:1875-1905`). Here
-every link is an index, since `ns-runtime` forbids `unsafe`, so nothing
-needs either: **the collector traces the stack as one linear range of
-tagged words**, `[0, top)`, as Soup scans `[sp_, stack_base_)`, and the continuation
-table beside it; no stack map, no per-frame walk. A married frame object
-still skips its own registers, which are nil while the stack holds the
-live ones.
-
-- **The code is an id, not an `Rc`**, as a stack entry's already is: a
-  return reads the caller's code from the heap's code table by its
-  `CodeId`, one index more than a clone of an `Rc` the entry held; this is
-  the one change on the hot path the measurement below has to clear. `FrameKind::Method`'s `MixinMethod` is
-  needed only for its selector and its code, which the operand and the
-  code word hold.
-- **A continuation other than `Deliver` lives in a side table**, minted
-  smallest free row first as `Suspensions` is, since most of them carry
-  Rust state no word can (`NewspeakError`, the boxed loop and unwind
-  records). `Deliver`, nearly every frame's, costs one nil store.
-  `WhileCondition`, `WhileBody` and `DoElement` leave with the real bodies
-  of `whileTrue:`, `whileFalse:` and `do:` ([core-library.md](core-library.md),
-  "Planned: real bodies for control flow and `do:`, before the baseline
-  JIT").
-- **The arguments are still copied** into the callee's first registers;
-  overlapping the windows is road step 7a′, behind its own measurement.
-- **The depth limit stays the bound the goldens pin** ("The depth limit"
-  below). A push also checks the frame against the committed end, one
-  comparison as Soup's `checked_stack_limit_` is, committing more on its
-  cold path, and a push the reservation cannot hold raises the same
-  `stack overflow: recursion too deep`, whose text names no number: a net
-  for frames whose register files the activation count does not bound,
-  since a body may have up to 65,535 registers. The net keeps a reserve as
-  L does: the last 1/16th of the reservation (`RESERVE_FRACTION`; 1 GiB of
-  16) is left to the pushes made while the depth reserve is held
-  (`Heap::push_reserved_activation`, which `Mutator::push` makes when an
-  ordinary push is refused and the reserve is held), and an error raised
-  with the stack that close to its end takes the depth reserve for its
-  `signal` as one within `DEPTH_RESERVE` of L does
-  (`Heap::stack_is_within_the_reserve_of_its_limit`). Without it the
-  `signal` of the overflow is itself refused and the run ends with the
-  error instead of the handler running; the `signal`, its handler search
-  and a handler of a few frames need between 256 and 1,024 words of it
-  (`a_recursion_the_reservation_cannot_hold_is_a_catchable_stack_overflow`,
-  in a 1 MiB reservation).
-- **The side tables stay**: a suspended activation leaves the reservation
-  for its frame object and its `Suspensions` row exactly as today.
-
-**It is taken only if the interpreter measures no slower in release**, by
-the protocol of "What suspending and resuming moved" (three builds a side,
-the seven micro sources and the sixteen Are We Fast Yet programs, two
-sittings): no program may be slower with its builds not overlapping
-`master`'s. Otherwise the step moves to road step 8, where compiled frames
-need the layout anyway.
 
 ## The VM
 
@@ -726,20 +706,20 @@ occupancy reaches its limit, checked by an allocation that goes old and after
 every scavenge ([memory.md](memory.md), "Generations"); and the debug-build
 move, cache, collection, scavenge and suspend stress modes keep the flag set
 while they are on. The stretch also writes the running activation's
-`program_counter` into its stack entry as it leaves, so that a suspension at
+`program_counter` into its stack frame as it leaves, so that a suspension at
 the safepoint finds it; `Interpreter::safepoint` answers whether the suspend
 stress mode rebuilt the stack, and `run` then reads its `FrameRegisters`
-afresh from the top entry ("Suspending and resuming" above). That is sound
+afresh from the top frame ("Suspending and resuming" above). That is sound
 because of what `run` carries across the safepoint, which the compiler holds
 it to, since the stretch's entry has ended before it: `FrameRegisters` — the
-running `ActivationReference`, which indexes the stack, and no stack entry
+running `ActivationReference`, which indexes the stack, and no stack frame
 moves (a rebuilt stack is read again, above); its `Rc<CompiledCode>`, which
 holds no handle; its `program_counter`; its `FeedbackBase`, a number; and its
 `RegisterBase`, an index into the register file, which a move does not touch —
 and the run's floor, a stack depth. Every value the loop works on is read from
 a register or an operand when an instruction needs it and written back before
-the next, so at a safepoint every handle is in a register on the stack, in a
-stack entry, in the heap's side table of continuations or of suspended
+the next, so at a safepoint every handle is in a word of a stack frame,
+in the heap's side table of continuations or of suspended
 activations, in a heap object or in a root, where
 the tracer rewrites it. The reusable argument buffer, which a send fills and
 empties within one instruction, is empty at every safepoint.
@@ -785,7 +765,7 @@ more, off the hot path: leaving for a safepoint, it stores the running
 activation's, since a suspension there copies it into the frame
 ("Suspending and resuming").
 
-The stores go to the stack entry (`Heap::activation_set_program_counter`), so
+The stores go to the stack frame (`Heap::activation_set_program_counter`), so
 they keep the activation's `program_counter` current for as long as it runs; a
 frame married to it holds no `program_counter` of its own that anything reads
 meanwhile. When the activation returns, the divorce gives the frame the last
@@ -815,7 +795,7 @@ It is not a field: `Heap::closure_home` derives it from the closure's
 `captured_frame` ("The closure keeps its defining activation").
 `Signal::Return` carries a `FrameReference`, its target, and `raise_return` picks
 it: for a closure activation, its closure's `home`, while that frame is
-running (`Heap::frame_is_running`: married to a stack entry or suspended into
+running (`Heap::frame_is_running`: married to a stack frame or suspended into
 the frame), and a `CannotReturn` if it is dead, either divorced because the
 activation returned or built by the image decoder, which never marries or
 suspends a frame. For any other activation
@@ -830,9 +810,9 @@ its message), ends the unwind: every activation above it has been popped, and
 the target returns the value through the ordinary return path, so a reified
 frame is divorced exactly as on any return. The unwinder decides that again
 before every pop, from the target's frame (`Heap::frame_activation`): a
-suspended target has no stack entry yet and becomes one only when the pops
+suspended target has no stack frame yet and gets one only when the pops
 reach it, since every pop is `Mutator::pop_for_unwind`, which resumes the
-suspended sender of the entry it pops before abandoning that entry's
+suspended sender of the frame it pops before abandoning that frame's
 continuation. So the unwinder resumes a target only when it is suspended, and
 only by popping down to it, as `retry` keeps popping down to its `on:do:`
 activation ("Suspending and resuming" above). The popped activations'
@@ -6536,21 +6516,45 @@ exempt ones as blocks nest — each exempt block was created by the activation
 below it, so a chain of them descends the lexical nesting — and blocks nest at
 most 128 deep, the parser's ceiling in source and the decoder's, derived from
 it, in an artifact ([image-format.md](image-format.md), "Verification"). So the
-stack holds at most 129 × (L + `DEPTH_RESERVE`) entries, the reserve below
-included, 13.0 million, whose frame headers alone take about 1.35 GB in a
-release build (13 words, 104 bytes, each, before their registers), a
-suspended activation's frame object counted in its frame's place; a push
-the stack's 16 GiB reservation cannot hold is refused with L's error. Only
+stack holds at most 129 × (L + `DEPTH_RESERVE`) frames, the reserve below
+included, 13.0 million, whose headers alone take about 1.36 GB in a release
+build (`frame_header::COUNT`, 13 words, 104 bytes, each) and 1.46 GB in a
+debug one (14 words, 112 bytes, the generation added), before their
+registers, a suspended activation's frame object counted in its frame's
+place; the reservation the frames lie in is the net beneath L (below). Only
 code that carries `SendInlinable` gets there — the reference lowering's, or an
 artifact's — recursing through 128 nested control-flow blocks at every level;
 the optimized lowering never emits it, so under it the stack holds at most L
-entries. The limit agrees under both lowerings, because the control-flow
+frames. The limit agrees under both lowerings, because the control-flow
 natives, `do:`, instantiation and the nested-class accessor are all trampoline
 steps: no recursion costs native stack under one lowering and not the other.
 The error text does not name its number, as Lua's, CPython's, V8's and Nova's
 do not, so that changing the value later changes no recorded answer. It is
 signalled as an `Error` like every other Newspeak error, so `on: Error do:`
 catches it, and an uncaught one ends the run as before.
+
+**The reservation is a net beneath L.** A body may have up to 65,535
+registers, so the activation count does not bound the words the frames
+take, and a push the stack's reservation cannot hold -- 16 GiB on a 64-bit
+target, or what its fallback reserved ("Representation" above) -- is
+refused with L's error too, whose text names no number. Taking a frame is
+one comparison against the committed end, as Soup's
+`checked_stack_limit_` is, committing more on its cold path. The net keeps
+a reserve as L does: the last 1/16th of the reservation
+(`RESERVE_FRACTION`, `heap/frames.rs`; 1 GiB of 16) is refused to an
+ordinary push and left to the pushes made while the depth reserve is held
+(`Heap::push_reserved_activation`, which `Mutator::push` tries when an
+ordinary push is refused and the reserve is held, or is being taken by
+the push of the kernel's `doesNotUnderstand:`), and an error raised with
+the stack that close to its end takes the depth reserve for its `signal`
+("Who takes it" below). Without it the `signal` of the overflow is itself
+refused and the run ends with the error instead of the handler running;
+the `signal`, its handler search and a handler of a few frames need
+between 256 and 1,024 words of it
+(`a_recursion_the_reservation_cannot_hold_is_a_catchable_stack_overflow`,
+in a 1 MiB reservation). A push the whole reservation cannot hold while
+the reserve is held ends the run as an overrun of the reserve does
+("What an overrun ends with" below).
 
 **The limit keeps a reserve for signalling it** (decided with the user on
 2026-09-25): `DEPTH_RESERVE`, 1,000 activations, as CPython allows a little
@@ -6564,7 +6568,10 @@ could only end the run as L, uncatchable and under the wrong name.
   within `DEPTH_RESERVE` counted activations of L, and `act_handler_method`,
   activating the kernel's own `Object>>doesNotUnderstand:` there
   (`Mutator::take_depth_reserve_for_does_not_understand`) — §5.5 makes a
-  message nothing understood the VM's error as much as any other. A
+  message nothing understood the VM's error as much as any other. Both
+  also take it near the end of the reservation, with the stack's top
+  within the reservation's reserve of the room ordinary pushes have
+  (`Heap::stack_is_within_the_reserve_of_its_limit`; the net above). A
   program's own `signal` takes none: one signalled at L is refused as any
   push is, and the refusal is L's error, signalled and catchable. An error
   far from L takes nothing, so its handler meets L where any code does.
@@ -6619,8 +6626,8 @@ L and L + 1 and the overruns of the machinery, a `pass`'s included.
   running total on push and pop, so an error path — which pops through
   `interpreter::unwind` like any other — leaves it exact; suspending and
   resuming leave it alone, since a suspended activation counts all along.
-  Whether an activation counts is recorded on its stack entry. Only the block
-  arm of `Mutator::push_step` ever records an exemption; a method, and every
+  Whether an activation counts is recorded in its frame's flags word. Only
+  the block arm of `Mutator::push_step` ever records an exemption; a method, and every
   body an instantiation or a nested-class accessor runs — a factory, an
   initializer level, a superclass clause — are counted by construction.
 - **The exemption is marked by the arguments.** A control-flow step's block —
@@ -6634,7 +6641,7 @@ L and L + 1 and the overruns of the machinery, a `pass`'s included.
   of the activation that sent it ([compiler.md](compiler.md), "How the limit
   counts"). A native loop's next block goes through
   `Mutator::push_continuation`, which exempts it only if the one it
-  replaces was; the loop forwards that entry's flag and decides nothing. The
+  replaces was; the loop forwards that frame's flag and decides nothing. The
   mark rides on the arguments rather than in a field of its own
   because the field measured 4–8% slower ("What the trampoline moved" above);
   so a future native that activates a block with no arguments for any other
@@ -6719,9 +6726,10 @@ Newspeak's own tests assume the Smalltalk behaviour: `KernelWeakTests.ns`'s
 flush.
 
 The Smalltalk-lineage VMs make depth a question of memory, not a count, and a
-trampolined VM could do the same, since its activation stack is a `Vec` on the
-heap. ns-next counts instead, because a memory bound would trip at different
-depths under its two lowerings — the reference lowering's activations are more
+trampolined VM could do the same, since its activation stack is memory it
+reserves itself. ns-next counts instead, keeping a byte bound only as the
+net beneath the count ("The depth limit" above), because a memory bound
+would trip at different depths under its two lowerings — the reference lowering's activations are more
 numerous and hold more registers — and the reference lowering is meant to check
 an overflow too. What the count includes is decided in
 [compiler.md](compiler.md), "How the limit counts". A fixed count like Nova's is
@@ -7889,16 +7897,20 @@ Each step gets its own design when it comes up.
   skipped but kept"), and the decoder refuses every frame not marked
   uncontinuable ([image-format.md](image-format.md), "Planned: suspend
   and resume").
-  **7a** lays frames out as words with a fixed header, every word tagged,
-  so no stack map is needed, as in Cog, Strongtalk and Primordial Soup
-  (designed in "Planned: frames as words in one reservation" above); one contiguous reservation of
+  **7a**, frames as words with a fixed header, every word tagged, so no
+  stack map is needed, as in Cog, Strongtalk and Primordial Soup, is
+  built ("Representation" above): one contiguous reservation of
   `ns-memory` holds them, as HotSpot's, V8's and Strongtalk's native
   stacks are contiguous, with the depth limit kept as the bound the
-  goldens pin and a byte bound added only as a net. It is taken only if
-  the interpreter measures no slower in release, and otherwise moves to
-  step 8. **7a′** overlaps the register windows, the caller's outgoing
-  arguments being the callee's first registers, behind its own
-  measurement. **7c** writes the deoptimization contract and the protocol
+  goldens pin and a byte bound added only as a net ("The depth limit").
+  It stays only if the interpreter measures no slower in release, by the
+  protocol of "What suspending and resuming moved" (three builds a side,
+  the seven micro sources and the sixteen Are We Fast Yet programs, two
+  sittings): no program may be slower with its builds not overlapping
+  `master`'s. Otherwise it moves to step 8, where compiled frames need
+  the layout anyway; that measurement is still to be taken. **7a′**
+  overlaps the register windows, the caller's outgoing arguments being
+  the callee's first registers, behind its own measurement. **7c** writes the deoptimization contract and the protocol
   between interpreted and compiled frames into this document.
 - **Step 8, a baseline JIT**, Cog's class: every method compiled without
   speculation, the inline caches and the allocation fast path emitted into
@@ -7932,7 +7944,7 @@ HotSpot's.
   `interpreter/`, and only running what it decided is the loop's.
 - **`program_counter` is stored only at observable points**, not at every instruction — a
   deliberate hot-path trade the debugger milestone may have to revisit.
-- **Activations are stack entries, reified on demand**, because the
+- **Activations are stack frames, reified on demand**, because the
   always-reified model cost about 41% of a send, before the arena, for a structure
   most activations never expose. The arena took the `Rc` box and the `RefCell`
   borrow, about 15% of `bench_loop.ns`. The stack took the two vector allocations
@@ -7945,8 +7957,8 @@ HotSpot's.
   and `FrameReference`, so that storing a stack handle is a compile error and a
   register access never branches on which kind it holds.
 - **A returned activation has no sender**, as in Smalltalk, Cog and Primordial
-  Soup. A live one's sender is the entry below it, by construction, or the
-  suspended frame its entry returns to. The `sender`
+  Soup. A live one's sender is the frame below it, by construction, or the
+  suspended frame it returns to. The `sender`
   parameters that once threaded through every send and block invocation were
   removed rather than retyped, because once the sender is structural nothing
   read them.

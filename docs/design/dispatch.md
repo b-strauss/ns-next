@@ -931,7 +931,7 @@ repository already holds:
   and a thread of its own, and an artifact, whose code is written without
   any feedback state and never needs rewriting.
 
-The cost is bookkeeping: a stack entry and a closure (a fixed field) carry a
+The cost is bookkeeping: a stack frame and a closure (a fixed field) carry a
 `feedback_base`, and so do `vm::run`, in a local beside the running code, and
 the `Handoff` a switch writes. This repository has measured layout effects of 4–8% from
 a single field on `Step`, so the field was measured on its own before
