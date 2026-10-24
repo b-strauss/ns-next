@@ -187,7 +187,7 @@ pub(crate) fn unwind_signal<'gc>(
             // Popped as the unwind below pops, so that every suspended
             // activation of the run comes back onto the stack on the way
             // down and none outlives the run.
-            while mutator.heap.activation_depth() > floor {
+            while mutator.heap.activation_stack_top() > floor {
                 let top = mutator
                     .heap
                     .top_activation()
@@ -231,7 +231,7 @@ pub(crate) fn unwind<'gc>(
     floor: usize,
 ) -> UnwindOutcome<'gc> {
     loop {
-        if mutator.heap.activation_depth() <= floor {
+        if mutator.heap.activation_stack_top() <= floor {
             return UnwindOutcome::Exit(Err(exit_signal(pending)));
         }
         let top = mutator
@@ -702,11 +702,17 @@ mod tests {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
             let class = mutator.builtin_class(BuiltinClass::Object);
-            let floor = mutator.heap.activation_depth();
-            let target = mutator.heap.push_activation(header(class), &[], 1);
+            let floor = mutator.heap.activation_stack_top();
+            let target = mutator
+                .heap
+                .push_activation(header(class), &[], 1)
+                .expect("the stack holds the frame");
             let frame = mutator.heap.reify(target);
             mutator.heap.pop_activation(target);
-            let successor = mutator.heap.push_activation(header(class), &[], 1);
+            let successor = mutator
+                .heap
+                .push_activation(header(class), &[], 1)
+                .expect("the stack holds the frame");
             assert_eq!(
                 mutator.heap.activation_position(successor),
                 floor,
@@ -724,7 +730,7 @@ mod tests {
                 matches!(outcome, UnwindOutcome::Exit(Err(_))),
                 "the unwind must not arrive at the successor"
             );
-            assert_eq!(mutator.heap.activation_depth(), floor);
+            assert_eq!(mutator.heap.activation_stack_top(), floor);
         });
     }
 
@@ -735,10 +741,16 @@ mod tests {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
             let class = mutator.builtin_class(BuiltinClass::Object);
-            let floor = mutator.heap.activation_depth();
-            let target = mutator.heap.push_activation(header(class), &[], 1);
+            let floor = mutator.heap.activation_stack_top();
+            let target = mutator
+                .heap
+                .push_activation(header(class), &[], 1)
+                .expect("the stack holds the frame");
             let frame = mutator.heap.reify(target);
-            mutator.heap.push_activation(header(class), &[], 1);
+            mutator
+                .heap
+                .push_activation(header(class), &[], 1)
+                .expect("the stack holds the frame");
             let outcome = unwind(
                 mutator,
                 PendingUnwind {
@@ -755,7 +767,7 @@ mod tests {
             };
             assert!(arrived.same(target));
             mutator.heap.pop_activation(target);
-            assert_eq!(mutator.heap.activation_depth(), floor);
+            assert_eq!(mutator.heap.activation_stack_top(), floor);
         });
     }
 
@@ -767,11 +779,17 @@ mod tests {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
             let class = mutator.builtin_class(BuiltinClass::Object);
-            let floor = mutator.heap.activation_depth();
-            let target = mutator.heap.push_activation(header(class), &[], 1);
+            let floor = mutator.heap.activation_stack_top();
+            let target = mutator
+                .heap
+                .push_activation(header(class), &[], 1)
+                .expect("the stack holds the frame");
             mutator.heap.activation_set_program_counter(target, 5);
             let frame = mutator.heap.reify(target);
-            mutator.heap.push_activation(header(class), &[], 1);
+            mutator
+                .heap
+                .push_activation(header(class), &[], 1)
+                .expect("the stack holds the frame");
             let outcome = unwind(
                 mutator,
                 PendingUnwind {
@@ -801,7 +819,7 @@ mod tests {
                 panic!("a termination must exit with its error");
             };
             assert_eq!(&*error.message, "boom");
-            assert_eq!(mutator.heap.activation_depth(), floor);
+            assert_eq!(mutator.heap.activation_stack_top(), floor);
         });
     }
 
@@ -823,15 +841,27 @@ mod tests {
                 ))),
                 ..header(class)
             };
-            let raised = mutator.heap.push_activation(header(class), &[], 1);
+            let raised = mutator
+                .heap
+                .push_activation(header(class), &[], 1)
+                .expect("the stack holds the frame");
             mutator.depth_reserve = Some(mutator.heap.reify(raised));
-            let signal = mutator.heap.push_activation(signalling(class), &[], 1);
+            let signal = mutator
+                .heap
+                .push_activation(signalling(class), &[], 1)
+                .expect("the stack holds the frame");
             assert!(mutator.depth_reserve_held(), "held while its signal runs");
             let signal_position = mutator.heap.activation_position(signal);
             mutator.heap.pop_activation(signal);
             mutator.heap.pop_activation(raised);
-            let other = mutator.heap.push_activation(header(class), &[], 1);
-            let other_signal = mutator.heap.push_activation(signalling(class), &[], 1);
+            let other = mutator
+                .heap
+                .push_activation(header(class), &[], 1)
+                .expect("the stack holds the frame");
+            let other_signal = mutator
+                .heap
+                .push_activation(signalling(class), &[], 1)
+                .expect("the stack holds the frame");
             assert_eq!(
                 mutator.heap.activation_position(other_signal),
                 signal_position,
@@ -858,15 +888,21 @@ mod tests {
         interpreter.enter(|mutator| {
             let class = mutator.builtin_class(BuiltinClass::Object);
             let error = || NewspeakError::error(crate::Symbol::SIGNAL, Value::nil(), "boom");
-            let floor = mutator.heap.activation_depth();
-            let raised = mutator.heap.push_activation(header(class), &[], 1);
+            let floor = mutator.heap.activation_stack_top();
+            let raised = mutator
+                .heap
+                .push_activation(header(class), &[], 1)
+                .expect("the stack holds the frame");
             let raised_frame = mutator.heap.reify(raised);
             mutator.depth_reserve = Some(raised_frame);
             let signalling = ActivationHeader {
                 then: Continuation::VmErrorSignalled(Box::new(error())),
                 ..header(class)
             };
-            mutator.heap.push_activation(signalling, &[], 1);
+            mutator
+                .heap
+                .push_activation(signalling, &[], 1)
+                .expect("the stack holds the frame");
             assert!(mutator.depth_reserve_held(), "held before the suspension");
             let top = mutator
                 .heap
@@ -904,7 +940,7 @@ mod tests {
                 .frame_activation(raised_frame)
                 .expect("the pop resumed the sender");
             mutator.heap.pop_activation(resumed);
-            assert_eq!(mutator.heap.activation_depth(), floor);
+            assert_eq!(mutator.heap.activation_stack_top(), floor);
             assert_eq!(mutator.heap.suspension_count(), 0);
         });
     }

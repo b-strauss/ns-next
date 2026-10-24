@@ -2081,7 +2081,7 @@ fn apply_continuation<'gc>(
             Err(signal) => return unwind(mutator, signal, floor, handoff),
         },
     };
-    if mutator.heap.activation_depth() == floor {
+    if mutator.heap.activation_stack_top() == floor {
         return handoff.exit(mutator.to_host(Ok(value)));
     }
     let caller = mutator
@@ -2139,7 +2139,7 @@ fn resume_caller<'gc>(
 /// once. A host's send has no instruction to run again; a future it passes
 /// in straight to a leaf ends the run.
 fn reexecute<'gc>(mutator: &mut Mutator<'gc>, floor: usize, handoff: &mut Handoff) -> Transfer {
-    if mutator.heap.activation_depth() == floor {
+    if mutator.heap.activation_stack_top() == floor {
         let error = crate::interpreter::future::host_passed_a_future();
         return handoff.exit(mutator.to_host(Err(error)));
     }

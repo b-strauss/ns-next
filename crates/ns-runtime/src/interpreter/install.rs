@@ -1258,20 +1258,23 @@ mod tests {
                 Vec::new(),
                 ns_syntax::Span::new(0, 0),
             ));
-            let activation = mutator.heap_mut().push_activation(
-                ActivationHeader {
-                    receiver,
-                    current_class: None,
-                    kind: ActivationKind::TopLevel,
-                    method: None,
-                    feedback_base: crate::interpreter::FeedbackBase::NOT_ASSIGNED,
-                    code,
-                    then: Continuation::Deliver,
-                    counted: true,
-                },
-                &[receiver],
-                0,
-            );
+            let activation = mutator
+                .heap_mut()
+                .push_activation(
+                    ActivationHeader {
+                        receiver,
+                        current_class: None,
+                        kind: ActivationKind::TopLevel,
+                        method: None,
+                        feedback_base: crate::interpreter::FeedbackBase::NOT_ASSIGNED,
+                        code,
+                        then: Continuation::Deliver,
+                        counted: true,
+                    },
+                    &[receiver],
+                    0,
+                )
+                .expect("the stack holds the frame");
             if let Err(diagnostic) = mutator.install_edit(item_id, &edit) {
                 panic!("the install was refused: {diagnostic}");
             }
@@ -1483,23 +1486,26 @@ mod tests {
                 .expect("Sub's slots need an initializer");
             assert!(code.addresses_own_slots);
             let receiver = mutator.fetch(&sub);
-            let activation = mutator.heap_mut().push_activation(
-                ActivationHeader {
-                    receiver,
-                    current_class: Some(class),
-                    kind: ActivationKind::Initializer(
-                        class,
-                        crate::interpreter::instantiate::InitializerBody::OwnPart,
-                    ),
-                    method: None,
-                    feedback_base: crate::interpreter::FeedbackBase::NOT_ASSIGNED,
-                    code,
-                    then: Continuation::Deliver,
-                    counted: true,
-                },
-                &[],
-                0,
-            );
+            let activation = mutator
+                .heap_mut()
+                .push_activation(
+                    ActivationHeader {
+                        receiver,
+                        current_class: Some(class),
+                        kind: ActivationKind::Initializer(
+                            class,
+                            crate::interpreter::instantiate::InitializerBody::OwnPart,
+                        ),
+                        method: None,
+                        feedback_base: crate::interpreter::FeedbackBase::NOT_ASSIGNED,
+                        code,
+                        then: Continuation::Deliver,
+                        counted: true,
+                    },
+                    &[],
+                    0,
+                )
+                .expect("the stack holds the frame");
             assert_eq!(mutator.heap().activation_slot_base(activation), 1);
             if let Err(diagnostic) = mutator.install_edit(base_id, &edit) {
                 panic!("the install was refused: {diagnostic}");

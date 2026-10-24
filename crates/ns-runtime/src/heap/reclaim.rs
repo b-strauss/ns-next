@@ -7,7 +7,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 use super::value::{Value, Word};
-use super::{ApplicationIndex, CodeId, Heap, MixinId, Tables};
+use super::{ActivationReference, ApplicationIndex, CodeId, Heap, MixinId, Tables};
 use crate::hash::IdentityBuildHasher;
 use crate::interpreter::FeedbackBase;
 use crate::mixin::{mixin_key, AppliedClause, DispatchId, Mixin, MixinApplication};
@@ -190,17 +190,30 @@ impl Heap<'_> {
     /// one records no guard and keeps no feedback base: it resumes with
     /// none and with its base derived again.
     pub(crate) fn stack_roots(&self) -> StackRoots {
-        let entries = &self.stack.entries;
+        let running: Vec<ActivationReference> = self
+            .stack
+            .offsets()
+            .map(|offset| self.activation_handle(offset))
+            .collect();
         let suspended = self.suspensions.rows.iter().flatten();
         StackRoots {
-            entered_levels: entries
+            entered_levels: running
                 .iter()
-                .map(|entry| entry.entered_level)
+                .map(|activation| self.activation_entered_level(*activation))
                 .chain(suspended.map(|suspension| suspension.entered_level))
                 .collect(),
-            recorded_guards: entries.iter().map(|entry| entry.recorded_guard).collect(),
-            feedback_bases: entries.iter().map(|entry| entry.feedback_base).collect(),
-            codes: entries.iter().map(|entry| entry.code).collect(),
+            recorded_guards: running
+                .iter()
+                .map(|activation| self.activation_receiver_and_recorded_guard(*activation).1)
+                .collect(),
+            feedback_bases: running
+                .iter()
+                .map(|activation| self.activation_feedback_base(*activation))
+                .collect(),
+            codes: running
+                .iter()
+                .map(|activation| self.activation_code_id(*activation))
+                .collect(),
         }
     }
 

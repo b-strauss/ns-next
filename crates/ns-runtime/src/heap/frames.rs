@@ -7,7 +7,7 @@
 //! one linear range of values, with no stack map and no walk of frames.
 
 use super::space::reserve_falling_back;
-use super::{count_word, out_of_memory, Word};
+use super::{out_of_memory, Word};
 use ns_memory::{MemoryError, Reservation};
 
 /// How much address space a heap's frame stack reserves. Reserved space
@@ -63,15 +63,21 @@ pub(super) mod frame_header {
     pub const GUARD: usize = 10;
     /// The entered level, a `SmallInteger`.
     pub const ENTERED_LEVEL: usize = 11;
+    /// How many registers follow the header, a `SmallInteger`: the window
+    /// the push wrote, arguments and temporaries together, so that the
+    /// frame above starts where they end. A word of its own, since a
+    /// factory is handed as many arguments as its send has keywords,
+    /// which no field of the flags could bound.
+    pub const REGISTER_COUNT: usize = 12;
     /// The activation's generation, a `SmallInteger`; debug builds only.
     #[cfg(debug_assertions)]
-    pub const GENERATION: usize = 12;
+    pub const GENERATION: usize = 13;
     /// The header's size: the first register's offset.
     #[cfg(debug_assertions)]
-    pub const COUNT: usize = 13;
+    pub const COUNT: usize = 14;
     /// The header's size: the first register's offset.
     #[cfg(not(debug_assertions))]
-    pub const COUNT: usize = 12;
+    pub const COUNT: usize = 13;
 }
 
 /// The kind of activation a frame runs, as `FrameFlags` records it: one
@@ -103,12 +109,14 @@ pub(super) mod kind_tag {
 
 /// Where each field of `FrameFlags` sits in the flags word's
 /// `SmallInteger`: the kind tag in bits 0-7, the argument count in bits
-/// 8-23, then the two booleans; 26 bits, far inside 61.
+/// 8-39, then the two booleans; 42 bits, far inside 61.
 const ARGUMENT_COUNT_SHIFT: u32 = 8;
-const COUNTED_BIT: u64 = 1 << 24;
-const RETAINS_REGISTERS_BIT: u64 = 1 << 25;
+const COUNTED_BIT: u64 = 1 << 40;
+const RETAINS_REGISTERS_BIT: u64 = 1 << 41;
 /// The bits below a `SmallInteger`'s payload.
 const SMALL_INTEGER_TAG_BITS: u32 = 3;
+/// A `SmallInteger`'s tag.
+const SMALL_INTEGER_TAG: u64 = 0b001;
 
 /// What a frame's flags word holds, packed into one `SmallInteger` as
 /// Cog's and Primordial Soup's frame flags are.
@@ -117,7 +125,7 @@ pub(super) struct FrameFlags {
     /// One of `kind_tag`'s constants.
     pub(super) kind_tag: u8,
     /// The arguments copied into the first registers.
-    pub(super) argument_count: u16,
+    pub(super) argument_count: u32,
     /// Whether the activation counts against the depth limit.
     pub(super) counted: bool,
     /// Whether a frame object married to the activation keeps its
@@ -127,6 +135,7 @@ pub(super) struct FrameFlags {
 
 impl FrameFlags {
     /// The flags as the `SmallInteger` word the header stores.
+    #[inline(always)]
     pub(super) fn word(self) -> Word {
         let mut payload =
             u64::from(self.kind_tag) | (u64::from(self.argument_count) << ARGUMENT_COUNT_SHIFT);
@@ -136,38 +145,56 @@ impl FrameFlags {
         if self.retains_registers {
             payload |= RETAINS_REGISTERS_BIT;
         }
-        // 26 bits: the conversion is exact on every target, and
-        // `count_word` never saturates it.
-        count_word(payload as usize)
+        number_word(payload)
     }
 
     /// The flags a header's flags word holds; `word` must be one `word`
     /// answered.
+    #[inline(always)]
     pub(super) fn of(word: Word) -> FrameFlags {
-        debug_assert!(
-            word.is_small_integer(),
-            "internal: a frame's flags word is a SmallInteger"
-        );
-        let payload = word.bits() >> SMALL_INTEGER_TAG_BITS;
+        let payload = number_of(word);
         FrameFlags {
             kind_tag: (payload & 0xFF) as u8,
-            argument_count: ((payload >> ARGUMENT_COUNT_SHIFT) & 0xFFFF) as u16,
+            argument_count: ((payload >> ARGUMENT_COUNT_SHIFT) & 0xFFFF_FFFF) as u32,
             counted: payload & COUNTED_BIT != 0,
             retains_registers: payload & RETAINS_REGISTERS_BIT != 0,
         }
     }
 }
 
+/// A header word's number -- a code id, a program counter, an offset, a
+/// row, a guard -- as the `SmallInteger` the word holds. Every one a frame
+/// stores is far inside 61 bits, so the encoding is exact and needs none
+/// of `count_word`'s saturation, which the push would pay for.
+#[inline(always)]
+pub(super) fn number_word(number: u64) -> Word {
+    debug_assert!(
+        number < 1 << 60,
+        "internal: a frame's number fits a SmallInteger"
+    );
+    Word::from_bits((number << SMALL_INTEGER_TAG_BITS) | SMALL_INTEGER_TAG)
+}
+
+/// The number `number_word` stored; `word` must be one it answered.
+#[inline(always)]
+pub(super) fn number_of(word: Word) -> u64 {
+    debug_assert!(
+        word.is_non_negative_small_integer(),
+        "internal: a frame's number word is a SmallInteger of 0 or more"
+    );
+    word.bits() >> SMALL_INTEGER_TAG_BITS
+}
+
 /// A push the reservation cannot hold, which the caller raises as the
 /// depth limit's `stack overflow: recursion too deep`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct StackExhausted;
+pub(super) struct ReservationExhausted;
 
 /// The frames of the running activations: one reservation of words,
 /// committed from its base as the stack deepens and never decommitted
 /// while it lives. Everything it lends is `[0, top)`, so the words a
-/// truncation left above the top are never read again, and a push
-/// nil-fills the frame it hands out.
+/// truncation left above the top are never read again, and the caller of a
+/// push writes every word of the frame it hands out.
 pub(super) struct FrameStack {
     reservation: Reservation,
     /// The first word past the innermost frame.
@@ -200,28 +227,26 @@ impl FrameStack {
     }
 
     /// The most words the stack can ever hold.
+    #[cfg(test)]
     pub(super) fn limit(&self) -> usize {
         self.limit
     }
 
-    /// Pushes a frame of `words` words, every one nil, and answers its word
-    /// offset; `StackExhausted`, the top and every word untouched, when the
-    /// reservation cannot hold it. One comparison against the committed
-    /// end; committing more is the cold path's.
-    #[inline]
-    pub(super) fn push(&mut self, words: usize) -> Result<usize, StackExhausted> {
+    /// Pushes a frame of `words` words and answers its word offset;
+    /// `ReservationExhausted`, the top untouched, when the reservation cannot
+    /// hold it. The frame's words are whatever the stack last held there --
+    /// a popped frame's, or zero where nothing was yet -- so the caller
+    /// writes every one of them before anything reads the stack again:
+    /// a word a popped frame left could name an object since moved or
+    /// reclaimed. One comparison against the committed end, with nothing
+    /// written twice; committing more is the cold path's.
+    #[inline(always)]
+    pub(super) fn push(&mut self, words: usize) -> Result<usize, ReservationExhausted> {
         let start = self.top;
         if words > self.committed - start {
             self.grow(words)?;
         }
-        let end = start + words;
-        match self.reservation.prefix_mut(end * 8) {
-            Some(prefix) => prefix[start..].fill(Word::NIL.bits()),
-            None => {
-                unreachable!("internal: the frame stack's top lies inside its committed prefix")
-            }
-        }
-        self.top = end;
+        self.top = start + words;
         Ok(start)
     }
 
@@ -234,10 +259,10 @@ impl FrameStack {
     /// object space's is.
     #[cold]
     #[inline(never)]
-    fn grow(&mut self, words: usize) -> Result<(), StackExhausted> {
+    fn grow(&mut self, words: usize) -> Result<(), ReservationExhausted> {
         let needed = match self.top.checked_add(words) {
             Some(end) if end <= self.limit => end,
-            _ => return Err(StackExhausted),
+            _ => return Err(ReservationExhausted),
         };
         let page = Reservation::page_size();
         let size = self.reservation.size();
@@ -276,6 +301,7 @@ impl FrameStack {
     }
 
     /// The words of every frame, `[0, top)`.
+    #[inline(always)]
     pub(super) fn words(&self) -> &[u64] {
         match self.reservation.prefix(self.top * 8) {
             Some(words) => words,
@@ -286,6 +312,7 @@ impl FrameStack {
     }
 
     /// As `words`, mutably.
+    #[inline(always)]
     pub(super) fn words_mut(&mut self) -> &mut [u64] {
         match self.reservation.prefix_mut(self.top * 8) {
             Some(words) => words,
@@ -318,7 +345,7 @@ mod tests {
     #[test]
     fn flags_round_trip_through_a_small_integer_word() {
         for kind_tag in ALL_KIND_TAGS {
-            for argument_count in [0, 1, u16::MAX] {
+            for argument_count in [0, 1, u32::MAX] {
                 for counted in [false, true] {
                     for retains_registers in [false, true] {
                         let flags = FrameFlags {
@@ -351,6 +378,7 @@ mod tests {
             frame_header::CONTINUATION,
             frame_header::GUARD,
             frame_header::ENTERED_LEVEL,
+            frame_header::REGISTER_COUNT,
         ];
         #[cfg(debug_assertions)]
         offsets.push(frame_header::GENERATION);
@@ -367,7 +395,7 @@ mod tests {
     }
 
     #[test]
-    fn a_push_past_the_committed_end_commits_and_answers_nil_words() {
+    fn a_push_past_the_committed_end_commits_the_words_it_answers() {
         let mut stack = FrameStack::new(1 << 20).expect("reserve");
         let frame_words = usize::from(u16::MAX) + frame_header::COUNT;
         assert!(frame_words * 8 > Reservation::page_size());
@@ -375,6 +403,7 @@ mod tests {
         let offset = stack.push(frame_words).expect("push");
         assert_eq!(offset, before);
         assert_eq!(stack.top(), before + frame_words);
+        stack.words_mut()[offset..].fill(Word::NIL.bits());
         assert_all_nil(&stack.words()[offset..]);
     }
 
@@ -390,7 +419,7 @@ mod tests {
                     assert_eq!(offset, before);
                     pushed += 1;
                 }
-                Err(StackExhausted) => {
+                Err(ReservationExhausted) => {
                     assert_eq!(stack.top(), before);
                     assert!(before + frame_words > stack.limit());
                     break;
@@ -408,13 +437,13 @@ mod tests {
         stack.push(frame_words).expect("push");
         let offset = stack.push(frame_words).expect("push");
         for word in &mut stack.words_mut()[offset..] {
-            *word = count_word(7).bits();
+            *word = number_word(7).bits();
         }
         stack.truncate(offset);
         assert_eq!(stack.top(), offset);
         assert_eq!(stack.words().len(), offset);
         let again = stack.push(frame_words).expect("push");
         assert_eq!(again, offset);
-        assert_all_nil(&stack.words()[offset..]);
+        assert_eq!(stack.words().len(), offset + frame_words);
     }
 }

@@ -99,6 +99,13 @@ impl Symbol {
         self.0 as usize
     }
 
+    /// The symbol whose `index` is `index`: a method frame's header holds
+    /// its selector as that number. Only a number `index` answered names
+    /// the symbol it answered it for.
+    pub(crate) fn from_index(index: u32) -> Symbol {
+        Symbol(index)
+    }
+
     pub fn intern(text: &str) -> Symbol {
         INTERNER.with_borrow_mut(|interner| {
             if let Some(&symbol) = interner.lookup.get(text) {

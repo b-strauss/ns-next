@@ -30,7 +30,6 @@ use std::ops::Range;
 use std::rc::Rc;
 
 mod compaction;
-#[cfg_attr(not(test), allow(dead_code))]
 mod frames;
 mod header;
 mod ids;
@@ -47,6 +46,7 @@ mod world;
 use compaction::ForwardingTable;
 #[cfg(debug_assertions)]
 use compaction::{Shift, ShiftedRegion};
+use frames::{frame_header, kind_tag, FrameFlags, FrameStack};
 pub(crate) use header::IDENTITY_HASH_LIMIT;
 use header::{Format, Header, MAX_AGE, WORD_COUNT_OVERFLOW};
 pub(crate) use ids::{DispatchIdAllocator, FreeIndices};
@@ -301,18 +301,20 @@ impl std::fmt::Debug for FrameReference<'_> {
     }
 }
 
-/// An opaque handle to a *live* activation: an entry on the `Heap`'s activation
-/// stack. Where a `FrameReference` names a reified activation that may be
-/// stored anywhere, an `ActivationReference` is valid only until its entry is
-/// popped -- the next activation at that depth reuses the index. That is why
+/// An opaque handle to a *live* activation: the word offset of its frame on
+/// the `Heap`'s activation stack. Where a `FrameReference` names a reified
+/// activation that may be stored anywhere, an `ActivationReference` is valid
+/// only until its frame is popped -- the next activation at that depth
+/// reuses the offset. Offsets grow with depth, so comparing two orders
+/// them as their depths do. That is why
 /// nothing stores one: a closure object, a frame object and every image record take a
 /// `FrameReference`, which `Heap::reify` answers for a live activation. See
 /// `docs/design/execution.md`, "Activations", "Representation".
 ///
 /// 4 bytes in a release build. A debug build adds the heap's id, like every
-/// handle, and a `generation` drawn at each push, so that reading through a
-/// handle whose entry was popped panics instead of answering for whichever
-/// activation reuses the index.
+/// handle, and a `generation` drawn at each push and recorded in the
+/// frame's header, so that reading through a handle whose frame was popped
+/// panics instead of answering for whichever activation reuses the offset.
 #[derive(Clone, Copy)]
 pub struct ActivationReference {
     index: u32,
@@ -346,8 +348,8 @@ impl ActivationReference {
     }
 }
 
-/// Prints the stack index and nothing else, for the reason `FrameReference`'s
-/// does.
+/// Prints the frame's stack offset and nothing else, for the reason
+/// `FrameReference`'s does.
 impl std::fmt::Debug for ActivationReference {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "ActivationReference(#{})", self.index)
@@ -380,10 +382,11 @@ impl BuiltinGuards {
 const FLOAT_DISPATCH_INDEX: usize = 4;
 
 /// Where a running activation's registers start in the activation stack's
-/// register file: Cog's `localFP`, held by the run loop so that a register
-/// access is one index (`docs/design/execution.md`, "The loop over locals").
-/// It is an index, not a pointer, so it survives the register file growing
-/// and a move, which touches no register window; it carries the danger an
+/// words, just past its frame's header: Cog's `localFP`, held by the run
+/// loop so that a register access is one index (`docs/design/execution.md`,
+/// "The loop over locals"). It is an index, not a pointer, so it survives
+/// the stack committing more and a move, which touches no register window;
+/// it carries the danger an
 /// `ActivationReference` does -- once its activation is popped, the next one
 /// at that depth reuses the window -- and a debug build checks every access
 /// against its activation's generation, as `check_activation` does.
@@ -419,6 +422,97 @@ pub struct ActivationHeader<'gc> {
     /// does, except a control-flow step's block activated for a
     /// `SendInlinable` (`Mutator::push_step`).
     pub counted: bool,
+}
+
+/// A push the activation stack's reservation cannot hold
+/// (`Heap::push_activation`): nothing was pushed, and the header comes
+/// back, so that the caller can raise the depth limit's error for the
+/// activation it names and undo what its continuation had begun.
+pub struct StackExhausted<'gc> {
+    pub header: Box<ActivationHeader<'gc>>,
+}
+
+impl<'gc> StackExhausted<'gc> {
+    /// The refusal of a push of `header`: out of line, so that the push's
+    /// common path keeps no boxed header.
+    #[cold]
+    #[inline(never)]
+    fn of(header: ActivationHeader<'gc>) -> StackExhausted<'gc> {
+        StackExhausted {
+            header: Box::new(header),
+        }
+    }
+}
+
+/// Names the refusal and nothing of the header, which holds a value.
+impl std::fmt::Debug for StackExhausted<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("StackExhausted")
+    }
+}
+
+/// Every word of a frame's header but its registers, as `push_activation`
+/// and `resume_activation` write it (`frame_header` gives the layout):
+/// built before the frame's words are borrowed, then written in one go.
+struct FrameHeaderWords {
+    receiver: Word,
+    current_class: Word,
+    operand: Word,
+    reified: Word,
+    flags: Word,
+    code: Word,
+    program_counter: Word,
+    feedback_base: Word,
+    caller: Word,
+    continuation: Word,
+    guard: Word,
+    entered_level: Word,
+    register_count: Word,
+    #[cfg(debug_assertions)]
+    generation: Word,
+}
+
+impl FrameHeaderWords {
+    /// Writes every word into `header`, a frame's first
+    /// `frame_header::COUNT` words.
+    #[inline(always)]
+    fn write(self, header: &mut [u64]) {
+        let FrameHeaderWords {
+            receiver,
+            current_class,
+            operand,
+            reified,
+            flags,
+            code,
+            program_counter,
+            feedback_base,
+            caller,
+            continuation,
+            guard,
+            entered_level,
+            register_count,
+            #[cfg(debug_assertions)]
+            generation,
+        } = self;
+        let header = &mut header[..frame_header::COUNT];
+        header[frame_header::RECEIVER] = receiver.bits();
+        header[frame_header::CURRENT_CLASS] = current_class.bits();
+        header[frame_header::OPERAND] = operand.bits();
+        header[frame_header::REIFIED] = reified.bits();
+        header[frame_header::FLAGS] = flags.bits();
+        header[frame_header::CODE] = code.bits();
+        header[frame_header::PROGRAM_COUNTER] = program_counter.bits();
+        header[frame_header::FEEDBACK_BASE] = feedback_base.bits();
+        header[frame_header::CALLER] = caller.bits();
+        header[frame_header::CONTINUATION] = continuation.bits();
+        header[frame_header::GUARD] = guard.bits();
+        header[frame_header::ENTERED_LEVEL] = entered_level.bits();
+        header[frame_header::REGISTER_COUNT] = register_count.bits();
+        #[cfg(debug_assertions)]
+        {
+            header[frame_header::GENERATION] = generation.bits();
+        }
+    }
 }
 
 /// What popping an activation hands back to the run loop.
@@ -466,79 +560,136 @@ impl HostRoots {
     }
 }
 
-/// One live activation. Its registers are `values[base..]` up to the next
-/// entry's `base` (or the end of `values`, for the top entry): the
-/// arguments first, then the temporaries.
-struct StackEntry<'gc> {
-    receiver: Value<'gc>,
-    current_class: Option<ClassReference<'gc>>,
-    kind: ActivationKind<'gc>,
-    base: u32,
-    argument_count: u32,
-    program_counter: usize,
-    /// See `ActivationHeader::feedback_base`.
-    feedback_base: FeedbackBase,
-    /// The row of the code table that holds `ActivationHeader::code`,
-    /// registered with its method for a method's activation, so that the
-    /// row names the method its frame is rebuilt from. The full
-    /// collection's code reclaim keeps every running entry's row
-    /// (`StackRoots::codes`).
-    code: CodeId,
-    /// The row of `Heap::continuations` holding what the run loop does
-    /// with the activation's value when it returns
-    /// (`ActivationHeader::then`); `None` for `Continuation::Deliver`,
-    /// which is never stored.
-    continuation: Option<ContinuationRow>,
-    /// See `ActivationHeader::counted`.
-    counted: bool,
-    /// The frame `Heap::reify` created for this activation, married to it
-    /// until the entry is popped.
-    reified: Option<FrameReference<'gc>>,
-    /// Whether this activation's registers must survive its return: set by
-    /// `retain_registers` when it creates a closure that reads enclosing
-    /// frames by reference. Nothing else can still read them once it has
-    /// returned -- a converted closure carries what it captured -- so an
-    /// unmarked activation leaves its frame with no registers at all
-    /// (`docs/design/execution.md`, "Converted representation").
-    retains_registers: bool,
-    /// For code that addresses its own slots
-    /// (`CompiledCode::addresses_own_slots`), the receiver's dispatch id
-    /// when the activation was pushed with a receiver whose chain contains
-    /// `entered_level`, or since a cold check passed; `NONE` otherwise. An own-slot instruction compares the receiver's header
-    /// against it, so that a receiver the bulk forward replaced is never
-    /// written in the layout the code was compiled for
-    /// (`interpreter::locals::check_own_slots`; `docs/design/object-model.md`,
-    /// "what a slot access checks").
-    recorded_guard: DispatchId,
-    /// The full-width index of the application the activation was entered
-    /// at -- its `current_class`'s when it was pushed, for code that
-    /// addresses its own slots, `UNREGISTERED` otherwise. The cold check
-    /// asks whether the receiver's chain still contains it: the class
-    /// object's current application is the wrong question, since an install
-    /// can rewrite it while this activation still runs the old code.
-    entered_level: ApplicationIndex,
-    #[cfg(debug_assertions)]
-    generation: u32,
-}
-
-/// Every live activation, innermost last. Both vectors keep their capacity
-/// across pops, so once they have grown to the program's depth a push
-/// allocates nothing.
-#[derive(Default)]
-struct ActivationStack<'gc> {
-    values: Vec<Word>,
-    entries: Vec<StackEntry<'gc>>,
-    /// How many of `entries`, and of the activations suspended into their
-    /// frames, count against the depth limit. One running total, since the
-    /// limit is checked on every push: suspending and resuming an
+/// Every live activation, innermost highest: one frame of tagged words
+/// each in `frames`, a header of `frame_header::COUNT` words -- receiver,
+/// current class, kind, code, continuation row, caller and the rest
+/// (`docs/design/execution.md`, the table of header words) -- followed by
+/// its registers, the arguments first, then the temporaries. A frame is
+/// named by the word offset of its header; its registers end where the
+/// frame above begins. The reservation is committed as the stack deepens
+/// and never decommitted, so once it has grown to the program's depth a
+/// push commits nothing.
+struct ActivationStack {
+    frames: FrameStack,
+    /// The innermost frame's offset, `NO_FRAME` while the stack is empty.
+    innermost: u32,
+    /// How many frames are on the stack: what `Heap::activation_depth`
+    /// answers, since an offset is no count.
+    live: usize,
+    /// How many of the live activations, and of the activations suspended
+    /// into their frames, count against the depth limit. One running total,
+    /// since the limit is checked on every push: suspending and resuming an
     /// activation leave it alone, as a suspended one counts all along.
     counted: usize,
     #[cfg(debug_assertions)]
     next_generation: u32,
 }
 
+/// The stack is traced as the one linear range `[0, top)`: every word of
+/// every live frame, header and registers alike, is a tagged value, so no
+/// stack map and no walk of frames is needed, and the words a pop left
+/// above the top are never read (`docs/design/memory.md`, "What the
+/// collector traces"). A frame's continuation is a row of
+/// `Heap::continuations`, traced there.
+impl crate::trace::Trace for ActivationStack {
+    fn trace<T: crate::trace::Tracer>(&mut self, tracer: &mut T) {
+        for bits in self.frames.words_mut() {
+            let mut word = Word::from_bits(*bits);
+            tracer.word(&mut word);
+            *bits = word.bits();
+        }
+    }
+}
+
+/// `ActivationStack::innermost` of an empty stack: no frame starts there,
+/// since a frame's offset is below the reservation's 2^31 words.
+const NO_FRAME: u32 = u32::MAX;
+
+impl ActivationStack {
+    /// An empty stack in a reservation of its own, or running out of
+    /// memory when the operating system grants no address space, as the
+    /// object space does.
+    fn new() -> ActivationStack {
+        ActivationStack {
+            frames: FrameStack::new(frames::STACK_RESERVATION)
+                .unwrap_or_else(|_| out_of_memory(frames::STACK_RESERVATION)),
+            innermost: NO_FRAME,
+            live: 0,
+            counted: 0,
+            #[cfg(debug_assertions)]
+            next_generation: 0,
+        }
+    }
+
+    /// Header word `field` of the frame at `offset`.
+    #[inline(always)]
+    fn header_word(&self, offset: u32, field: usize) -> Word {
+        Word::from_bits(self.frames.words()[offset as usize + field])
+    }
+
+    /// Writes header word `field` of the frame at `offset`.
+    #[inline(always)]
+    fn set_header_word(&mut self, offset: u32, field: usize, word: Word) {
+        self.frames.words_mut()[offset as usize + field] = word.bits();
+    }
+
+    /// The flags of the frame at `offset`.
+    #[inline(always)]
+    fn flags(&self, offset: u32) -> FrameFlags {
+        FrameFlags::of(self.header_word(offset, frame_header::FLAGS))
+    }
+
+    /// How many registers the frame at `offset` has.
+    #[inline(always)]
+    fn register_count(&self, offset: u32) -> usize {
+        // A register count is a count of words below the top, so the
+        // conversion is exact.
+        frames::number_of(self.header_word(offset, frame_header::REGISTER_COUNT)) as usize
+    }
+
+    /// Where the registers of the frame at `offset` end: where the frame
+    /// above it begins, or the top for the innermost.
+    #[inline(always)]
+    fn window_end(&self, offset: u32) -> usize {
+        offset as usize + frame_header::COUNT + self.register_count(offset)
+    }
+
+    /// The offset of the frame below the one at `offset`, `None` for the
+    /// bottom frame.
+    #[inline(always)]
+    fn caller(&self, offset: u32) -> Option<u32> {
+        let word = self.header_word(offset, frame_header::CALLER);
+        // An offset is below 2^31, so the conversion is exact.
+        word.is_small_integer()
+            .then(|| frames::number_of(word) as u32)
+    }
+
+    /// The continuation row the frame at `offset` names; `None` for one
+    /// that delivers.
+    #[inline(always)]
+    fn continuation(&self, offset: u32) -> Option<ContinuationRow> {
+        let word = self.header_word(offset, frame_header::CONTINUATION);
+        word.is_small_integer()
+            .then(|| ContinuationRow(frames::number_of(word) as u32))
+    }
+
+    /// Names `row` in the frame at `offset`; `None` for a frame that
+    /// delivers.
+    #[inline(always)]
+    fn set_continuation(&mut self, offset: u32, row: Option<ContinuationRow>) {
+        let word = row.map_or(Word::NIL, |row| frames::number_word(u64::from(row.0)));
+        self.set_header_word(offset, frame_header::CONTINUATION, word);
+    }
+
+    /// The offset of every live frame, innermost first, by the caller words.
+    fn offsets(&self) -> impl Iterator<Item = u32> + '_ {
+        let innermost = (self.innermost != NO_FRAME).then_some(self.innermost);
+        std::iter::successors(innermost, |offset| self.caller(*offset))
+    }
+}
+
 /// What a suspended activation's frame cannot hold (`Heap::suspend_activations`):
-/// the rest of its stack entry, kept until the frame is resumed. The frame
+/// the rest of its stack frame's header, kept until the frame is resumed. The frame
 /// holds its registers, program counter and sender, and names its row by
 /// its married word; a frame object grows by nothing for being suspended.
 struct Suspension<'gc> {
@@ -546,16 +697,16 @@ struct Suspension<'gc> {
     /// part of a run that has not finished, whether or not anything else
     /// still reaches it.
     frame: FrameReference<'gc>,
-    /// The continuation `StackEntry::continuation` named, taken out of
+    /// The continuation the frame's `CONTINUATION` word named, taken out of
     /// `Heap::continuations`; never a `Continuation::ReturnToSuspended`,
     /// whose sender the frame's `SENDER` holds instead.
     then: Continuation<'gc>,
-    /// See `StackEntry::counted`.
+    /// See `FrameFlags::counted`.
     counted: bool,
-    /// See `StackEntry::entered_level`: the reclaim keeps the application
+    /// See `frame_header::ENTERED_LEVEL`: the reclaim keeps the application
     /// alive while the activation is suspended, as it does for a running one.
     entered_level: ApplicationIndex,
-    /// See `StackEntry::retains_registers`.
+    /// See `FrameFlags::retains_registers`.
     retains_registers: bool,
 }
 
@@ -590,17 +741,17 @@ impl crate::trace::Trace for Suspensions<'_> {
     }
 }
 
-/// The row of `Continuations` that holds a stack entry's continuation. An
-/// entry that delivers has none, so that a send's return tests one
-/// `Option` and reaches no table.
+/// The row of `Continuations` that holds a stack frame's continuation,
+/// which the frame's `CONTINUATION` word names. A frame that delivers has
+/// none, so that a send's return tests one word and reaches no table.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct ContinuationRow(u32);
 
 /// The heap's side table of the continuations of running activations other
 /// than `Continuation::Deliver`, a row per activation, minted smallest free
 /// row first as `Suspensions` mints its rows. A continuation is kept here
-/// rather than in its stack entry so that the entry names it by a number,
-/// which a frame of words can hold as one word (`docs/design/execution.md`,
+/// rather than in its stack frame so that the frame names it by a number,
+/// which a frame of words holds as one word (`docs/design/execution.md`,
 /// "Planned: frames as words in one reservation"). A root, as the stack
 /// is: a continuation holds the handles of a native's or an unwind's state.
 #[derive(Default)]
@@ -742,16 +893,6 @@ impl crate::trace::Trace for Continuations<'_> {
     }
 }
 
-impl<'gc> ActivationStack<'gc> {
-    /// `Heap::push_activation`'s push where `entries` has no room left:
-    /// out of line, so that the push that has room makes no call.
-    #[cold]
-    #[inline(never)]
-    fn push_entry_growing(&mut self, entry: StackEntry<'gc>) {
-        self.entries.push(entry);
-    }
-}
-
 /// The initial value of `Heap::collection_floor`, and of `next_collection`
 /// before anything has collected, in bytes of objects allocated: about
 /// 4,096 objects at a 128-byte average; `bench_loop.ns` and
@@ -858,10 +999,10 @@ pub struct Heap<'gc> {
     /// collector and a snapshot (`docs/design/memory.md`) and allocation
     /// order stays unobservable (`docs/design/object-model.md`).
     next_identity_hash: u32,
-    /// Every live activation. A stack entry is popped when its activation
+    /// Every live activation. A frame is popped when its activation
     /// returns, so -- unlike `space` -- this is bounded by the deepest the
     /// program has been, not by everything it has run.
-    stack: ActivationStack<'gc>,
+    stack: ActivationStack,
     /// Every suspended activation's row (`Suspension`): what its frame
     /// cannot hold, until `resume_activation` pushes it again. Empty
     /// outside a run.
@@ -1029,7 +1170,7 @@ impl std::fmt::Debug for Heap<'_> {
         };
         f.debug_struct("Heap")
             .field("next_identity_hash", &self.next_identity_hash)
-            .field("activations", &self.stack.entries.len())
+            .field("activations", &self.stack.live)
             .field("objects", &self.object_count)
             .field("occupied bytes", &self.space.occupied_bytes())
             .field("canonical_symbols.len()", &self.canonical_symbols.len())
@@ -1188,37 +1329,6 @@ impl<M: Relocation> crate::trace::Tracer for Forwarder<M> {
     }
 }
 
-impl crate::trace::Trace for StackEntry<'_> {
-    fn trace<T: crate::trace::Tracer>(&mut self, tracer: &mut T) {
-        let StackEntry {
-            receiver,
-            current_class,
-            kind,
-            base: _,
-            argument_count: _,
-            program_counter: _,
-            feedback_base: _, // not a handle
-            code: _,          // not a handle
-            continuation: _,  // a row of `Heap::continuations`, traced there
-            counted: _,
-            reified,
-            retains_registers: _, // not a handle
-            recorded_guard: _,    // not a handle
-            entered_level: _,     // not a handle
-            #[cfg(debug_assertions)]
-                generation: _,
-        } = self;
-        tracer.value(receiver);
-        if let Some(class) = current_class {
-            tracer.object(class);
-        }
-        kind.trace(tracer);
-        if let Some(frame) = reified {
-            tracer.frame(frame);
-        }
-    }
-}
-
 /// The object space's occupancy, read without disturbing it
 /// (`Heap::heap_statistics`): `live_objects` is how many objects lie in it,
 /// a reified frame counting as one, and `young_objects` how many of them
@@ -1309,7 +1419,7 @@ fn assert_no_poison(words: &[u64]) {
 }
 
 /// The married word of a frame suspended into side-table row `row`:
-/// `-(row + 1)`, so that no row reads as a stack entry's index.
+/// `-(row + 1)`, so that no row reads as a stack frame's offset.
 fn suspended_word(row: usize) -> Word {
     // A row per suspended frame object, each of several words in a space
     // far smaller than 2^61 bytes, so no row index reaches the limit.
@@ -1347,7 +1457,7 @@ impl<'gc> Heap<'gc> {
     fn new() -> Heap<'gc> {
         let mut heap = Heap {
             next_identity_hash: 1,
-            stack: ActivationStack::default(),
+            stack: ActivationStack::new(),
             suspensions: Suspensions::default(),
             continuations: Continuations::default(),
             space: Space::new(space::DEFAULT_RESERVATION)
@@ -1549,7 +1659,7 @@ impl<'gc> Heap<'gc> {
         let base = register_base.index as usize;
         let Heap { space, stack, .. } = self;
         for (slot, register) in space.words_mut()[fields].iter_mut().zip(registers) {
-            *slot = stack.values[base + usize::from(*register)].bits();
+            *slot = stack.frames.words()[base + usize::from(*register)];
         }
         object
     }
@@ -1865,7 +1975,7 @@ impl<'gc> Heap<'gc> {
                 write_words(fixed_slots, fixed);
                 let base = register_base.index as usize;
                 for (slot, register) in copied_slots.iter_mut().zip(copied) {
-                    *slot = stack.values[base + usize::from(*register)].bits();
+                    *slot = stack.frames.words()[base + usize::from(*register)];
                 }
                 #[cfg(debug_assertions)]
                 assert_no_poison(fields);
@@ -1886,7 +1996,7 @@ impl<'gc> Heap<'gc> {
         write_words(fixed_slots, fixed);
         let base = register_base.index as usize;
         for (slot, register) in copied_slots.iter_mut().zip(copied) {
-            *slot = stack.values[base + usize::from(*register)].bits();
+            *slot = stack.frames.words()[base + usize::from(*register)];
         }
         object
     }
@@ -2703,8 +2813,9 @@ impl<'gc> Heap<'gc> {
     }
 
     /// `check_frame_origin` for a live activation, plus the check only a
-    /// stack handle needs: that its entry is still the one it was minted
-    /// for. Compiles to nothing in a release build.
+    /// stack handle needs: that its frame is still the one it was minted
+    /// for, by the generation its header records. Compiles to nothing in a
+    /// release build.
     #[inline]
     fn check_activation(&self, activation: ActivationReference) {
         #[cfg(debug_assertions)]
@@ -2714,13 +2825,8 @@ impl<'gc> Heap<'gc> {
                 "handle belongs to a different heap (handle from heap {}, read through heap {})",
                 activation.origin, self.heap_id
             );
-            let live = self
-                .stack
-                .entries
-                .get(activation.index as usize)
-                .map(|entry| entry.generation);
             assert_eq!(
-                live,
+                self.frame_generation(activation.index),
                 Some(activation.generation),
                 "stale activation handle: its activation has returned"
             );
@@ -2728,29 +2834,49 @@ impl<'gc> Heap<'gc> {
         let _ = activation;
     }
 
-    /// The handle for live entry `index`, minted with that entry's own
-    /// generation. The one place an `ActivationReference` is built.
-    fn activation_handle(&self, index: u32) -> ActivationReference {
+    /// The generation the frame at `offset` records, `None` when no frame
+    /// header fits there below the top. A word of a popped frame's
+    /// registers, or of a later frame's, reads as a generation only by a
+    /// coincidence the check accepts: it is the debug build's net, not a
+    /// proof.
+    #[cfg(debug_assertions)]
+    fn frame_generation(&self, offset: u32) -> Option<u32> {
+        let header = self
+            .stack
+            .frames
+            .words()
+            .get(offset as usize..offset as usize + frame_header::COUNT)?;
+        let word = Word::from_bits(header[frame_header::GENERATION]);
+        word.is_non_negative_small_integer()
+            .then(|| frames::number_of(word))
+            .and_then(|generation| u32::try_from(generation).ok())
+    }
+
+    /// The handle for the live frame at `offset`, minted with that frame's
+    /// own generation. The one place an `ActivationReference` is built.
+    #[inline(always)]
+    fn activation_handle(&self, offset: u32) -> ActivationReference {
         ActivationReference {
-            index,
+            index: offset,
             #[cfg(debug_assertions)]
             origin: self.heap_id,
             #[cfg(debug_assertions)]
-            generation: self.stack.entries[index as usize].generation,
+            generation: self
+                .frame_generation(offset)
+                .expect("internal: a handle is minted for a live frame"),
         }
     }
 
-    /// Where register `index` of live entry `entry` sits in `values`. The
-    /// window check is what stops an out-of-range index from silently reading
-    /// the neighbouring activation's register, which is in bounds of
-    /// `values` and so would not panic on its own.
-    fn register_slot(&self, entry: u32, index: u16) -> usize {
-        let entries = &self.stack.entries;
-        let slot = entries[entry as usize].base as usize + index as usize;
+    /// Where register `index` of the live frame at `offset` sits in the
+    /// stack's words. The window check is what stops an out-of-range index
+    /// from silently reading the neighbouring activation's header or
+    /// register, which is in bounds of the stack and so would not panic on
+    /// its own.
+    #[inline(always)]
+    fn register_slot(&self, offset: u32, index: u16) -> usize {
+        let slot = offset as usize + frame_header::COUNT + index as usize;
         debug_assert!(
-            slot < entries
-                .get(entry as usize + 1)
-                .map_or(self.stack.values.len(), |next| next.base as usize),
+            slot < self.stack.window_end(offset),
             "register {index} is outside its activation's register window"
         );
         slot
@@ -3664,21 +3790,20 @@ impl<'gc> Heap<'gc> {
             return;
         }
         let copied = &words[closure_field::COUNT..];
-        let entry = &stack.entries[activation.index as usize];
-        let first = entry.base as usize + entry.argument_count as usize;
+        let flags = stack.flags(activation.index);
+        let registers = activation.index as usize + frame_header::COUNT;
+        let first = registers + flags.argument_count as usize;
         // The activation's own window, so a list longer than its register
         // file stops at the end of it rather than writing into whatever
         // sits above.
-        let end = stack
-            .entries
-            .get(activation.index as usize + 1)
-            .map_or(stack.values.len(), |above| above.base as usize);
+        let end = stack.window_end(activation.index);
+        let stack_words = stack.frames.words_mut();
         for (position, bits) in copied.iter().enumerate() {
             let slot = first + position;
             if slot >= end {
                 break;
             }
-            stack.values[slot] = Word::from_bits(*bits);
+            stack_words[slot] = *bits;
         }
     }
 
@@ -5318,8 +5443,9 @@ impl<'gc> Heap<'gc> {
             .and_then(|object| self.object_frame(object))
     }
 
-    /// The stack entry `words`' frame is married to, or `None` while its
-    /// activation is suspended into it and once it has returned.
+    /// The stack offset of the frame `words`' frame object is married to, or
+    /// `None` while its activation is suspended into it and once it has
+    /// returned.
     fn married_entry(&self, words: &[u64]) -> Option<u32> {
         self.load(Word::from_bits(words[frame_field::MARRIED]))
             .as_small_integer()
@@ -5648,46 +5774,48 @@ impl<'gc> Heap<'gc> {
 
     // ---------- The activation stack ----------
     //
-    // A live activation is a `StackEntry` plus its window of `values`.
-    // `reify` marries a frame object to an entry when something must hold
-    // the activation past this call -- today, only a block being created --
-    // and `pop_activation` divorces it again. See
-    // `docs/design/execution.md`, "Activations", "Lifecycle".
+    // A live activation is a frame of tagged words on `stack.frames`: its
+    // header, then its registers. `reify` marries a frame object to it when
+    // something must hold the activation past this call -- a block being
+    // created, an unwind's target, a suspension -- and `pop_activation`
+    // divorces it again. See `docs/design/execution.md`, "Activations",
+    // "Lifecycle".
 
     /// Pushes an activation whose registers are `arguments` followed by
-    /// `temporary_count` nils.
+    /// `temporary_count` nils. Refuses, pushing nothing and handing the
+    /// header back, a frame the stack's reservation cannot hold: the net
+    /// beneath the depth limit for register files the activation count
+    /// does not bound, which the caller raises as that limit's error.
     #[inline(always)]
     pub fn push_activation(
         &mut self,
         header: ActivationHeader<'gc>,
         arguments: &[Value<'gc>],
         temporary_count: usize,
-    ) -> ActivationReference {
-        let base = u32::try_from(self.stack.values.len())
-            .expect("more than u32::MAX registers live at once in one heap");
+    ) -> Result<ActivationReference, StackExhausted<'gc>> {
+        let register_count = arguments.len() + temporary_count;
         let argument_count =
             u32::try_from(arguments.len()).expect("more than u32::MAX arguments to one activation");
-        let index = u32::try_from(self.stack.entries.len())
-            .expect("more than u32::MAX live activations in one heap");
-        self.stack.values.reserve(arguments.len() + temporary_count);
+        let words = frame_header::COUNT + register_count;
+        let start = match self.stack.frames.push(words) {
+            Ok(start) => start,
+            Err(frames::ReservationExhausted) => return Err(StackExhausted::of(header)),
+        };
+        // The reservation holds at most 2^31 words, so an offset is exact
+        // in 32 bits.
+        let offset = start as u32;
         // `store`'s check, made apart from the copy so that a release build,
-        // which has no check, copies the arguments in one trusted-length
-        // extend rather than a push per word.
+        // which has no check, copies the arguments' words straight in.
         #[cfg(debug_assertions)]
         for argument in arguments {
             self.store(*argument);
         }
-        self.stack
-            .values
-            .extend(arguments.iter().map(|argument| argument.word()));
-        let end = self.stack.values.len() + temporary_count;
-        self.stack.values.resize(end, Word::NIL);
+        let receiver = self.store(header.receiver);
+        let current_class = header
+            .current_class
+            .map_or(Word::NIL, |class| self.store(Value::object(class)));
+        let (kind_tag, operand) = self.kind_words(header.kind);
         self.stack.counted += usize::from(header.counted);
-        #[cfg(debug_assertions)]
-        let generation = {
-            self.stack.next_generation = self.stack.next_generation.wrapping_add(1);
-            self.stack.next_generation
-        };
         // Only code that addresses its own slots pays for these reads; a
         // send to any other method tests one flag. The receiver's guard is
         // recorded only when its chain contains the entered level: a
@@ -5735,35 +5863,90 @@ impl<'gc> Heap<'gc> {
             }
             None => self.code_id(&header.code),
         };
-        let entry = StackEntry {
-            receiver: header.receiver,
-            current_class: header.current_class,
-            kind: header.kind,
-            base,
-            argument_count,
-            program_counter: 0,
-            feedback_base: header.feedback_base,
-            code,
-            continuation: self.continuations.store(header.then),
-            counted: header.counted,
-            reified: None,
-            retains_registers: false,
-            recorded_guard,
-            entered_level,
+        let continuation = self.continuations.store(header.then);
+        let header_words = FrameHeaderWords {
+            receiver,
+            current_class,
+            operand,
+            reified: Word::NIL,
+            flags: FrameFlags {
+                kind_tag,
+                argument_count,
+                counted: header.counted,
+                retains_registers: false,
+            }
+            .word(),
+            code: frames::number_word(code.index() as u64),
+            program_counter: frames::number_word(0),
+            feedback_base: frames::number_word(u64::from(header.feedback_base.raw())),
+            caller: self.caller_word(),
+            continuation: continuation
+                .map_or(Word::NIL, |row| frames::number_word(u64::from(row.0))),
+            guard: frames::number_word(u64::from(recorded_guard.bits())),
+            entered_level: frames::number_word(entered_level.index() as u64),
+            register_count: frames::number_word(register_count as u64),
             #[cfg(debug_assertions)]
-            generation,
+            generation: self.next_generation(),
         };
-        // Pushed where the vector has room, which is every push but the
-        // ones that grow it, without the growth's call in between: around
-        // that call the entry was assembled on the stack and copied into
-        // place, reading back in sixteen-byte pieces fields just written in
-        // smaller ones, a store-forwarding stall on every push.
-        if self.stack.entries.len() < self.stack.entries.capacity() {
-            self.stack.entries.push(entry);
-        } else {
-            self.stack.push_entry_growing(entry);
+        let frame = &mut self.stack.frames.words_mut()[start..start + words];
+        let (fixed, registers) = frame.split_at_mut(frame_header::COUNT);
+        header_words.write(fixed);
+        let (argument_registers, temporaries) = registers.split_at_mut(arguments.len());
+        for (register, argument) in argument_registers.iter_mut().zip(arguments) {
+            *register = argument.word().bits();
         }
-        self.activation_handle(index)
+        temporaries.fill(Word::NIL.bits());
+        self.stack.innermost = offset;
+        self.stack.live += 1;
+        Ok(self.activation_handle(offset))
+    }
+
+    /// The caller word of a frame pushed now: the innermost frame's offset,
+    /// or nil on an empty stack.
+    #[inline(always)]
+    fn caller_word(&self) -> Word {
+        match self.stack.innermost {
+            NO_FRAME => Word::NIL,
+            innermost => frames::number_word(u64::from(innermost)),
+        }
+    }
+
+    /// The generation of the frame pushed now, drawn from the counter.
+    #[cfg(debug_assertions)]
+    fn next_generation(&mut self) -> Word {
+        // Kept inside 31 bits, so that it reads back as the `u32` a handle
+        // holds whatever the counter has wrapped through.
+        self.stack.next_generation = self.stack.next_generation.wrapping_add(1) & 0x7FFF_FFFF;
+        frames::number_word(u64::from(self.stack.next_generation))
+    }
+
+    /// The kind tag and the operand word a frame of `kind` records: the
+    /// one mapping from a kind to its tag, which `activation_kind` reads
+    /// back.
+    #[inline(always)]
+    fn kind_words(&self, kind: ActivationKind<'gc>) -> (u8, Word) {
+        let object_word = |object: ObjectReference<'gc>| self.store(Value::object(object));
+        match kind {
+            ActivationKind::Method(selector) => (
+                kind_tag::METHOD,
+                frames::number_word(selector.index() as u64),
+            ),
+            ActivationKind::Closure(closure) => (kind_tag::CLOSURE, object_word(closure)),
+            ActivationKind::TopLevel => (kind_tag::TOP_LEVEL, Word::NIL),
+            ActivationKind::Initializer(class, InitializerBody::Full) => {
+                (kind_tag::INITIALIZER_FULL, object_word(class))
+            }
+            ActivationKind::Initializer(class, InitializerBody::OwnPart) => {
+                (kind_tag::INITIALIZER_OWN_PART, object_word(class))
+            }
+            ActivationKind::Initializer(class, InitializerBody::Standalone) => {
+                (kind_tag::INITIALIZER_STANDALONE, object_word(class))
+            }
+            ActivationKind::SuperclassClause(class) => {
+                (kind_tag::SUPERCLASS_CLAUSE, object_word(class))
+            }
+            ActivationKind::Factory(class) => (kind_tag::FACTORY, object_word(class)),
+        }
     }
 
     /// Marks `activation` as one whose registers must survive its return: it
@@ -5772,7 +5955,12 @@ impl<'gc> Heap<'gc> {
     /// it creates has a non-zero `outer_reach`.
     pub fn retain_registers(&mut self, activation: ActivationReference) {
         self.check_activation(activation);
-        self.stack.entries[activation.index as usize].retains_registers = true;
+        let flags = FrameFlags {
+            retains_registers: true,
+            ..self.stack.flags(activation.index)
+        };
+        self.stack
+            .set_header_word(activation.index, frame_header::FLAGS, flags.word());
     }
 
     /// Pops the top activation. If it was reified, its frame is divorced:
@@ -5790,96 +5978,109 @@ impl<'gc> Heap<'gc> {
     pub fn pop_activation(&mut self, activation: ActivationReference) -> Popped<'gc> {
         self.check_activation(activation);
         debug_assert_eq!(
-            activation.index as usize + 1,
-            self.stack.entries.len(),
+            activation.index, self.stack.innermost,
             "only the top activation can be popped"
         );
-        // Read field by field and dropped in place, rather than the whole
-        // entry moved out and read back: the move read sixteen-byte pieces
-        // of an entry written moments before in smaller ones, a
-        // store-forwarding stall on every return.
-        let entry = self
-            .stack
-            .entries
-            .last_mut()
-            .expect("internal: an activation handle names a live entry");
-        let base = entry.base as usize;
-        let reified = entry.reified;
-        let retains_registers = entry.retains_registers;
-        let program_counter = entry.program_counter;
-        let counted = entry.counted;
-        let continuation = entry.continuation;
-        let remaining = self.stack.entries.len() - 1;
-        self.stack.entries.truncate(remaining);
+        let offset = activation.index as usize;
+        let header = &self.stack.frames.words()[offset..offset + frame_header::COUNT];
+        let reified = Word::from_bits(header[frame_header::REIFIED]).object_offset();
+        let flags = FrameFlags::of(Word::from_bits(header[frame_header::FLAGS]));
+        let program_counter = header[frame_header::PROGRAM_COUNTER];
+        let continuation = Word::from_bits(header[frame_header::CONTINUATION]);
+        let caller = Word::from_bits(header[frame_header::CALLER]);
         if let Some(frame) = reified {
-            self.check_frame_origin(frame);
-            let Heap { space, stack, .. } = self;
-            let space_words = space.words_mut();
-            let range = block_range(space_words, header_index(frame.offset));
-            let words = &mut space_words[range][FIELDS..];
-            if retains_registers {
-                for (register, word) in words[frame_field::COUNT..]
-                    .iter_mut()
-                    .zip(&stack.values[base..])
-                {
-                    *register = word.bits();
-                }
-            }
-            words[frame_field::PROGRAM_COUNTER] = count_word(program_counter).bits();
-            words[frame_field::SENDER] = Word::NIL.bits();
-            words[frame_field::UNCONTINUABLE] = Value::boolean(true).word().bits();
-            words[frame_field::MARRIED] = Word::NIL.bits();
-            // The divorce copied registers into an object the stack's roots
-            // no longer cover: an old frame that now holds a young value is
-            // remembered like any other old holder.
-            if retains_registers
-                && !space::is_young(frame.offset)
-                && self.stack.values[base..]
-                    .iter()
-                    .any(|word| word.object_offset().is_some_and(space::is_young))
-            {
-                self.remember(frame.offset);
+            self.divorce(frame, offset, flags, program_counter);
+        }
+        self.stack.frames.truncate(offset);
+        // An offset is below 2^31, so the conversion is exact.
+        self.stack.innermost = if caller.is_small_integer() {
+            frames::number_of(caller) as u32
+        } else {
+            NO_FRAME
+        };
+        self.stack.live -= 1;
+        self.stack.counted -= usize::from(flags.counted);
+        // A delivering frame names no row, so a send's return reaches no
+        // table; every other continuation is taken out of line.
+        let then = if continuation.is_small_integer() {
+            self.continuations
+                .take(ContinuationRow(frames::number_of(continuation) as u32))
+        } else {
+            Continuation::Deliver
+        };
+        Popped {
+            then,
+            counted: flags.counted,
+        }
+    }
+
+    /// The divorce of the frame object at `frame` from the popped frame at
+    /// stack offset `offset`, whose flags are `flags` and whose last stored
+    /// program counter is the word `program_counter`.
+    fn divorce(
+        &mut self,
+        frame: NonZeroU64,
+        offset: usize,
+        flags: FrameFlags,
+        program_counter: u64,
+    ) {
+        let registers = offset + frame_header::COUNT;
+        let registers = registers..self.stack.frames.top();
+        let Heap { space, stack, .. } = self;
+        let stack_words = &stack.frames.words()[registers];
+        let space_words = space.words_mut();
+        let range = block_range(space_words, header_index(frame));
+        let words = &mut space_words[range][FIELDS..];
+        if flags.retains_registers {
+            for (register, word) in words[frame_field::COUNT..].iter_mut().zip(stack_words) {
+                *register = *word;
             }
         }
-        self.stack.values.truncate(base);
-        self.stack.counted -= usize::from(counted);
-        // A delivering entry names no row, so a send's return reaches no
-        // table; every other continuation is taken out of line.
-        let then = match continuation {
-            None => Continuation::Deliver,
-            Some(row) => self.continuations.take(row),
-        };
-        Popped { then, counted }
+        words[frame_field::PROGRAM_COUNTER] = program_counter;
+        words[frame_field::SENDER] = Word::NIL.bits();
+        words[frame_field::UNCONTINUABLE] = Value::boolean(true).word().bits();
+        words[frame_field::MARRIED] = Word::NIL.bits();
+        // The divorce copied registers into an object the stack's roots
+        // no longer cover: an old frame that now holds a young value is
+        // remembered like any other old holder.
+        let remember = flags.retains_registers
+            && !space::is_young(frame)
+            && stack_words.iter().any(|word| {
+                Word::from_bits(*word)
+                    .object_offset()
+                    .is_some_and(space::is_young)
+            });
+        if remember {
+            self.remember(frame);
+        }
     }
 
     /// The frame object for a live activation, created married to it on the
-    /// first call and answered again on every later one. It has its code's
-    /// full register file -- the activation's window -- every register nil
-    /// while the activation runs, since the live ones are the stack's: so no
-    /// frame object ever grows, and the divorce copies the registers in
-    /// place.
+    /// first call and answered again on every later one. It has the
+    /// activation's whole register window, every register nil while the
+    /// activation runs, since the live ones are the stack's: so no frame
+    /// object ever grows, and the divorce copies the registers in place.
     pub fn reify(&mut self, activation: ActivationReference) -> FrameReference<'gc> {
         self.check_activation(activation);
-        let entry_index = activation.index as usize;
-        if let Some(frame) = self.stack.entries[entry_index].reified {
-            return frame;
-        }
-        let entry = &self.stack.entries[entry_index];
-        let (receiver, current_class, program_counter) =
-            (entry.receiver, entry.current_class, entry.program_counter);
-        let (kind, code) = (entry.kind, entry.code);
-        let window_end = self
+        let offset = activation.index;
+        if let Some(frame) = self
             .stack
-            .entries
-            .get(entry_index + 1)
-            .map_or(self.stack.values.len(), |above| above.base as usize);
-        let register_count = window_end - entry.base as usize;
+            .header_word(offset, frame_header::REIFIED)
+            .object_offset()
+        {
+            return self.frame_handle(frame);
+        }
+        let (receiver, current_class) = self.activation_receiver_and_current_class(activation);
+        let program_counter = self.activation_program_counter(activation);
+        let code = self.activation_code_id(activation);
+        let register_count = self.stack.register_count(offset);
+        let kind = self.activation_kind(activation);
         let home = match kind {
             ActivationKind::Closure(closure) => self.closure_home(closure),
             _ => None,
         };
         let kind = self.frame_kind_of_activation(kind, code);
-        // The entry's own row, which `frame_code_id` would answer: a
+        // The frame's own row, which `frame_code_id` would answer: a
         // method's body was registered with its method at the push.
         let code = match kind {
             FrameKind::TopLevel => None,
@@ -5899,8 +6100,13 @@ impl<'gc> Heap<'gc> {
             &[],
             register_count,
         );
-        self.frame_words_mut(handle)[frame_field::MARRIED] = count_word(entry_index).bits();
-        self.stack.entries[entry_index].reified = Some(handle);
+        self.frame_words_mut(handle)[frame_field::MARRIED] =
+            frames::number_word(u64::from(offset)).bits();
+        self.stack.set_header_word(
+            offset,
+            frame_header::REIFIED,
+            Word::with_object_offset(handle.offset),
+        );
         handle
     }
 
@@ -5908,7 +6114,15 @@ impl<'gc> Heap<'gc> {
     /// which a host's send or instantiation runs, asserts that it leaves it
     /// where it found it.
     pub fn activation_depth(&self) -> usize {
-        self.stack.entries.len()
+        self.stack.live
+    }
+
+    /// The position the next push takes: past every live activation's
+    /// frame. A run's floor is the position of its base
+    /// (`activation_position`), so the stack holds an activation of the
+    /// run exactly while this lies above the floor.
+    pub fn activation_stack_top(&self) -> usize {
+        self.stack.frames.top()
     }
 
     /// How many activations count against the depth limit: the live ones
@@ -5921,11 +6135,11 @@ impl<'gc> Heap<'gc> {
     // ---------- Suspended activations ----------
     //
     // A suspended activation lives in its frame object alone: its registers,
-    // program counter and sender in the frame's words, the rest of its stack
-    // entry in a row of the side table, which the frame's married word names
-    // (`frame_field::MARRIED`). `resume_activation` pushes one back onto the
-    // stack, married to its frame again (`docs/design/execution.md`,
-    // "Activations").
+    // program counter and sender in the frame's words, the rest of its
+    // stack frame's header in a row of the side table, which the frame's
+    // married word names (`frame_field::MARRIED`). `resume_activation`
+    // pushes one back onto the stack, married to its frame again
+    // (`docs/design/execution.md`, "Activations").
 
     /// Suspends every activation at a position of `floor` or above into its
     /// frame, the top first, and answers the top's frame; `None` when no
@@ -5934,50 +6148,51 @@ impl<'gc> Heap<'gc> {
     /// one is suspended too, the sender a resumed activation was to return
     /// to, or none when it returns below `floor`.
     pub fn suspend_activations(&mut self, floor: usize) -> Option<FrameReference<'gc>> {
-        let depth = self.stack.entries.len();
-        if floor >= depth {
+        if floor >= self.stack.frames.top() {
+            return None;
+        }
+        let suspended: Vec<u32> = self
+            .stack
+            .offsets()
+            .take_while(|offset| *offset as usize >= floor)
+            .collect();
+        if suspended.is_empty() {
             return None;
         }
         // Every frame first, so that each sender is a frame by the time
         // the activation above it is suspended.
-        for index in floor..depth {
-            let activation = self.activation_handle(index as u32);
-            self.reify(activation);
-        }
-        let top = self.stack.entries[depth - 1].reified;
-        for index in (floor..depth).rev() {
-            let entry = self
-                .stack
-                .entries
-                .pop()
-                .expect("internal: every position above the floor holds an entry");
-            let frame = entry
-                .reified
-                .expect("internal: every suspended activation was reified first");
-            self.check_frame_origin(frame);
-            let then = match entry.continuation {
+        let frames: Vec<FrameReference<'gc>> = suspended
+            .iter()
+            .map(|offset| {
+                let activation = self.activation_handle(*offset);
+                self.reify(activation)
+            })
+            .collect();
+        let lowest = suspended.len() - 1;
+        for (position, offset) in suspended.into_iter().enumerate() {
+            debug_assert_eq!(
+                offset, self.stack.innermost,
+                "internal: the activations are suspended from the top down"
+            );
+            let frame = frames[position];
+            let flags = self.stack.flags(offset);
+            let then = match self.stack.continuation(offset) {
                 None => Continuation::Deliver,
                 Some(row) => self.continuations.take(row),
             };
             let (then, sender) = match then {
                 Continuation::ReturnToSuspended(suspended) => {
                     // Its sender is the suspended frame, so its frame names
-                    // that one rather than the entry below.
+                    // that one rather than the frame below.
                     debug_assert_eq!(
-                        index, floor,
+                        position, lowest,
                         "internal: an activation that returns to a suspended sender is the lowest \
-                         one suspended; an entry below it would be suspended into a row nothing names"
+                         one suspended; a frame below it would be suspended into a row nothing names"
                     );
                     let ReturnToSuspended { sender, then } = *suspended;
                     (then, Some(sender))
                 }
-                then => {
-                    let below = index
-                        .checked_sub(1)
-                        .filter(|below| *below >= floor)
-                        .and_then(|below| self.stack.entries[below].reified);
-                    (then, below)
-                }
+                then => (then, frames.get(position + 1).copied()),
             };
             let row = match self.suspensions.free.take_smallest() {
                 Some(free) => free as usize,
@@ -5986,56 +6201,68 @@ impl<'gc> Heap<'gc> {
                     self.suspensions.rows.len() - 1
                 }
             };
+            let entered_level = self.stack.header_word(offset, frame_header::ENTERED_LEVEL);
             self.suspensions.rows[row] = Some(Suspension {
                 frame,
                 then,
-                counted: entry.counted,
-                entered_level: entry.entered_level,
-                retains_registers: entry.retains_registers,
+                counted: flags.counted,
+                entered_level: ApplicationIndex::from_raw(frames::number_of(entered_level) as u32),
+                retains_registers: flags.retains_registers,
             });
             let sender = match sender {
                 Some(sender) => self.store(Value::object(self.frame_object(sender))),
                 None => Word::NIL,
             };
-            let base = entry.base as usize;
+            let caller = self.stack.caller(offset);
+            let start = offset as usize;
+            let registers = start + frame_header::COUNT;
+            let registers = registers..self.stack.window_end(offset);
             let Heap { space, stack, .. } = self;
+            let stack_words = stack.frames.words();
+            let program_counter = stack_words[start + frame_header::PROGRAM_COUNTER];
+            let stack_registers = &stack_words[registers];
             let space_words = space.words_mut();
             let range = block_range(space_words, header_index(frame.offset));
             let words = &mut space_words[range][FIELDS..];
-            for (register, word) in words[frame_field::COUNT..]
-                .iter_mut()
-                .zip(&stack.values[base..])
-            {
-                *register = word.bits();
+            for (register, word) in words[frame_field::COUNT..].iter_mut().zip(stack_registers) {
+                *register = *word;
             }
-            words[frame_field::PROGRAM_COUNTER] = count_word(entry.program_counter).bits();
+            words[frame_field::PROGRAM_COUNTER] = program_counter;
             words[frame_field::SENDER] = sender.bits();
             words[frame_field::MARRIED] = suspended_word(row).bits();
             // The registers and the sender now live in an object the
             // stack's roots no longer cover: an old frame that holds a
             // young value is remembered like any other old holder.
-            if !space::is_young(frame.offset)
-                && std::iter::once(&sender)
-                    .chain(&self.stack.values[base..])
-                    .any(|word| word.object_offset().is_some_and(space::is_young))
-            {
+            let remember = !space::is_young(frame.offset)
+                && std::iter::once(sender.bits())
+                    .chain(stack_registers.iter().copied())
+                    .any(|word| {
+                        Word::from_bits(word)
+                            .object_offset()
+                            .is_some_and(space::is_young)
+                    });
+            if remember {
                 self.remember(frame.offset);
             }
-            self.stack.values.truncate(base);
+            self.stack.frames.truncate(start);
+            self.stack.innermost = caller.unwrap_or(NO_FRAME);
+            self.stack.live -= 1;
         }
-        top
+        frames.first().copied()
     }
 
     /// Resumes the suspended activation of `frame`, which must be
     /// suspended (`frame_is_suspended`): pushes it back onto the stack
     /// with the registers and program counter its frame holds and the rest
-    /// of its stack entry its row kept, marries the frame to it again and
+    /// of its header its row kept, marries the frame to it again and
     /// answers it. `feedback_base` is its feedback base, derived again by
     /// the caller. It starts with no recorded guard, so its first own-slot
     /// access takes the cold check. Its continuation returns to the
     /// frame's sender, resumed in turn, when the frame names one
-    /// (`Continuation::ReturnToSuspended`). The depth limit is not
-    /// checked: the activation counted against it all along.
+    /// (`Continuation::ReturnToSuspended`). Neither the depth limit nor
+    /// the reservation is checked: the activation counted against the
+    /// limit all along, and it is resumed onto the stack it was suspended
+    /// from, which holds no more below it than it did then.
     pub fn resume_activation(
         &mut self,
         frame: FrameReference<'gc>,
@@ -6054,13 +6281,15 @@ impl<'gc> Heap<'gc> {
         );
         self.suspensions.free.free(row as u32);
         ids::truncate_trailing(&mut self.suspensions.rows, &mut self.suspensions.free);
-        let receiver = self.frame_receiver(frame);
-        let current_class = self.frame_current_class(frame);
-        let kind = self.frame_kind(frame).activation_kind();
+        let receiver = self.store(self.frame_receiver(frame));
+        let current_class = self
+            .frame_current_class(frame)
+            .map_or(Word::NIL, |class| self.store(Value::object(class)));
+        let (kind_tag, operand) = self.kind_words(self.frame_kind(frame).activation_kind());
         let code = self
             .frame_code_id_field(frame)
             .expect("internal: the frame of an activation the runtime pushed names its code");
-        let argument_count = self.frame_argument_count(frame) as u32;
+        let argument_count = self.frame_argument_count(frame);
         let program_counter = self.frame_count_field(frame, frame_field::PROGRAM_COUNTER);
         let then = match self.frame_frame_field(frame, frame_field::SENDER) {
             Some(sender) => Continuation::ReturnToSuspended(Box::new(ReturnToSuspended {
@@ -6070,46 +6299,60 @@ impl<'gc> Heap<'gc> {
             None => suspension.then,
         };
         let continuation = self.continuations.store(then);
-        let base = u32::try_from(self.stack.values.len())
-            .expect("more than u32::MAX registers live at once in one heap");
-        let index = u32::try_from(self.stack.entries.len())
-            .expect("more than u32::MAX live activations in one heap");
+        let register_count = self.frame_words(frame).len() - frame_field::COUNT;
+        let words = frame_header::COUNT + register_count;
+        let start = self
+            .stack
+            .frames
+            .push(words)
+            .expect("internal: a resumed activation fits on the stack it was suspended from");
+        let offset = start as u32;
+        let header_words = FrameHeaderWords {
+            receiver,
+            current_class,
+            operand,
+            reified: Word::with_object_offset(frame.offset),
+            flags: FrameFlags {
+                kind_tag,
+                argument_count: u32::try_from(argument_count)
+                    .expect("internal: a frame's arguments fit its register count"),
+                counted: suspension.counted,
+                retains_registers: suspension.retains_registers,
+            }
+            .word(),
+            code: frames::number_word(code.index() as u64),
+            program_counter: frames::number_word(program_counter as u64),
+            feedback_base: frames::number_word(u64::from(feedback_base.raw())),
+            caller: self.caller_word(),
+            continuation: continuation
+                .map_or(Word::NIL, |row| frames::number_word(u64::from(row.0))),
+            guard: frames::number_word(u64::from(DispatchId::NONE.bits())),
+            entered_level: frames::number_word(suspension.entered_level.index() as u64),
+            register_count: frames::number_word(register_count as u64),
+            #[cfg(debug_assertions)]
+            generation: self.next_generation(),
+        };
         // The frame's own registers go back to nil, as every married
         // frame's are: the live ones are the stack's again.
         let Heap { space, stack, .. } = self;
         let space_words = space.words_mut();
         let range = block_range(space_words, header_index(frame.offset));
-        let words = &mut space_words[range][FIELDS..];
-        for register in &mut words[frame_field::COUNT..] {
-            stack.values.push(Word::from_bits(*register));
-            *register = Word::NIL.bits();
+        let words_of_frame = &mut space_words[range][FIELDS..];
+        let stack_frame = &mut stack.frames.words_mut()[start..start + words];
+        let (fixed, registers) = stack_frame.split_at_mut(frame_header::COUNT);
+        header_words.write(fixed);
+        for (register, own) in registers
+            .iter_mut()
+            .zip(&mut words_of_frame[frame_field::COUNT..])
+        {
+            *register = *own;
+            *own = Word::NIL.bits();
         }
-        words[frame_field::SENDER] = Word::NIL.bits();
-        words[frame_field::MARRIED] = count_word(index as usize).bits();
-        #[cfg(debug_assertions)]
-        let generation = {
-            self.stack.next_generation = self.stack.next_generation.wrapping_add(1);
-            self.stack.next_generation
-        };
-        self.stack.entries.push(StackEntry {
-            receiver,
-            current_class,
-            kind,
-            base,
-            argument_count,
-            program_counter,
-            feedback_base,
-            code,
-            continuation,
-            counted: suspension.counted,
-            reified: Some(frame),
-            retains_registers: suspension.retains_registers,
-            recorded_guard: DispatchId::NONE,
-            entered_level: suspension.entered_level,
-            #[cfg(debug_assertions)]
-            generation,
-        });
-        self.activation_handle(index)
+        words_of_frame[frame_field::SENDER] = Word::NIL.bits();
+        words_of_frame[frame_field::MARRIED] = frames::number_word(u64::from(offset)).bits();
+        self.stack.innermost = offset;
+        self.stack.live += 1;
+        self.activation_handle(offset)
     }
 
     /// The side-table row `frame` names while it is suspended; `None` for a
@@ -6180,7 +6423,7 @@ impl<'gc> Heap<'gc> {
         activation: ActivationReference,
     ) -> Option<FrameReference<'gc>> {
         self.check_activation(activation);
-        let row = self.stack.entries[activation.index as usize].continuation;
+        let row = self.stack.continuation(activation.index);
         match self.continuations.get(row) {
             Continuation::ReturnToSuspended(suspended) => Some(suspended.sender),
             _ => None,
@@ -6245,19 +6488,24 @@ impl<'gc> Heap<'gc> {
         activation: ActivationReference,
     ) -> Option<FrameReference<'gc>> {
         self.check_activation(activation);
-        self.stack.entries[activation.index as usize].reified
+        self.stack
+            .header_word(activation.index, frame_header::REIFIED)
+            .object_offset()
+            .map(|frame| self.frame_handle(frame))
     }
 
     pub fn activation_local(&self, activation: ActivationReference, index: u16) -> Value<'gc> {
         self.check_activation(activation);
-        self.load(self.stack.values[self.register_slot(activation.index, index)])
+        self.load(Word::from_bits(
+            self.stack.frames.words()[self.register_slot(activation.index, index)],
+        ))
     }
 
     /// The register window of `activation`, computed once per switch to it.
     pub fn activation_register_base(&self, activation: ActivationReference) -> RegisterBase {
         self.check_activation(activation);
         RegisterBase {
-            index: self.stack.entries[activation.index as usize].base,
+            index: activation.index + frame_header::COUNT as u32,
             #[cfg(debug_assertions)]
             activation,
         }
@@ -6270,7 +6518,9 @@ impl<'gc> Heap<'gc> {
     pub fn register(&self, base: RegisterBase, index: u16) -> Value<'gc> {
         #[cfg(debug_assertions)]
         self.check_register(base, index);
-        self.load(self.stack.values[base.index as usize + index as usize])
+        self.load(Word::from_bits(
+            self.stack.frames.words()[base.index as usize + index as usize],
+        ))
     }
 
     #[inline(always)]
@@ -6278,7 +6528,7 @@ impl<'gc> Heap<'gc> {
         #[cfg(debug_assertions)]
         self.check_register(base, index);
         let word = self.store(value);
-        self.stack.values[base.index as usize + index as usize] = word;
+        self.stack.frames.words_mut()[base.index as usize + index as usize] = word.bits();
     }
 
     #[cfg(debug_assertions)]
@@ -6296,12 +6546,15 @@ impl<'gc> Heap<'gc> {
         self.check_activation(activation);
         let slot = self.register_slot(activation.index, index);
         let word = self.store(value);
-        self.stack.values[slot] = word;
+        self.stack.frames.words_mut()[slot] = word.bits();
     }
 
     pub fn activation_receiver(&self, activation: ActivationReference) -> Value<'gc> {
         self.check_activation(activation);
-        self.stack.entries[activation.index as usize].receiver
+        self.load(
+            self.stack
+                .header_word(activation.index, frame_header::RECEIVER),
+        )
     }
 
     /// The receiver and `current_class` together. `decide_lexical_send`'s
@@ -6314,8 +6567,16 @@ impl<'gc> Heap<'gc> {
         activation: ActivationReference,
     ) -> (Value<'gc>, Option<ClassReference<'gc>>) {
         self.check_activation(activation);
-        let entry = &self.stack.entries[activation.index as usize];
-        (entry.receiver, entry.current_class)
+        let header = &self.stack.frames.words()
+            [activation.index as usize..activation.index as usize + frame_header::COUNT];
+        let receiver = Word::from_bits(header[frame_header::RECEIVER]);
+        let current_class = Word::from_bits(header[frame_header::CURRENT_CLASS]);
+        (
+            self.load(receiver),
+            current_class
+                .object_offset()
+                .map(|class| self.object_handle(class)),
+        )
     }
 
     pub fn activation_current_class(
@@ -6323,11 +6584,14 @@ impl<'gc> Heap<'gc> {
         activation: ActivationReference,
     ) -> Option<ClassReference<'gc>> {
         self.check_activation(activation);
-        self.stack.entries[activation.index as usize].current_class
+        self.stack
+            .header_word(activation.index, frame_header::CURRENT_CLASS)
+            .object_offset()
+            .map(|class| self.object_handle(class))
     }
 
     /// The receiver and the guard `activation` recorded for it
-    /// (`StackEntry::recorded_guard`), fetched together: an own-slot
+    /// (`frame_header::GUARD`), fetched together: an own-slot
     /// instruction's hot path needs both and nothing else.
     #[inline(always)]
     pub(crate) fn activation_receiver_and_recorded_guard(
@@ -6335,19 +6599,23 @@ impl<'gc> Heap<'gc> {
         activation: ActivationReference,
     ) -> (Value<'gc>, DispatchId) {
         self.check_activation(activation);
-        let entry = &self.stack.entries[activation.index as usize];
-        (entry.receiver, entry.recorded_guard)
+        let header = &self.stack.frames.words()
+            [activation.index as usize..activation.index as usize + frame_header::COUNT];
+        let receiver = Word::from_bits(header[frame_header::RECEIVER]);
+        let guard = frames::number_of(Word::from_bits(header[frame_header::GUARD]));
+        // A guard is a 22-bit id, so the conversion is exact.
+        (self.load(receiver), DispatchId::from_bits(guard as u32))
     }
 
     /// The full-width index of the application `activation` was entered at
-    /// (`StackEntry::entered_level`); `UNREGISTERED` for code that
+    /// (`frame_header::ENTERED_LEVEL`); `UNREGISTERED` for code that
     /// addresses no own slot.
     pub(crate) fn activation_entered_level(
         &self,
         activation: ActivationReference,
     ) -> ApplicationIndex {
         self.check_activation(activation);
-        self.stack.entries[activation.index as usize].entered_level
+        self.activation_entered_level_of(activation.index)
     }
 
     /// Records `guard` as the one `activation`'s own-slot instructions
@@ -6360,7 +6628,11 @@ impl<'gc> Heap<'gc> {
         guard: DispatchId,
     ) {
         self.check_activation(activation);
-        self.stack.entries[activation.index as usize].recorded_guard = guard;
+        self.stack.set_header_word(
+            activation.index,
+            frame_header::GUARD,
+            frames::number_word(u64::from(guard.bits())),
+        );
     }
 
     /// Whether `receiver`'s application chain -- its class's application
@@ -6398,7 +6670,7 @@ impl<'gc> Heap<'gc> {
     /// The absolute field index a compiled `InitializeSlot`'s mixin-relative
     /// `own_index` is offset by: `MixinApplication.own_slot_base` of the
     /// application the activation was entered at
-    /// (`StackEntry::entered_level`). The two bodies that contain
+    /// (`frame_header::ENTERED_LEVEL`). The two bodies that contain
     /// `InitializeSlot` run with exactly the class whose slots they write
     /// there -- an instance initializer with the level it initializes, one
     /// activation per level of the chain, and a lazy slot's getter (§6.3.3)
@@ -6418,11 +6690,7 @@ impl<'gc> Heap<'gc> {
         self.check_activation(activation);
         self.tables
             .applications
-            .get(
-                self.stack.entries[activation.index as usize]
-                    .entered_level
-                    .index(),
-            )
+            .get(self.activation_entered_level_of(activation.index).index())
             .and_then(Option::as_ref)
             .map_or(0, |application| application.own_slot_base)
     }
@@ -6430,7 +6698,11 @@ impl<'gc> Heap<'gc> {
     /// Where `activation`'s code family starts in the heap's cache table.
     pub(crate) fn activation_feedback_base(&self, activation: ActivationReference) -> FeedbackBase {
         self.check_activation(activation);
-        self.stack.entries[activation.index as usize].feedback_base
+        // A feedback base is a `u32`, so the conversion is exact.
+        FeedbackBase::from_raw(frames::number_of(
+            self.stack
+                .header_word(activation.index, frame_header::FEEDBACK_BASE),
+        ) as u32)
     }
 
     pub fn activation_set_program_counter(
@@ -6439,14 +6711,18 @@ impl<'gc> Heap<'gc> {
         program_counter: usize,
     ) {
         self.check_activation(activation);
-        self.stack.entries[activation.index as usize].program_counter = program_counter;
+        self.stack.set_header_word(
+            activation.index,
+            frame_header::PROGRAM_COUNTER,
+            frames::number_word(program_counter as u64),
+        );
     }
 
     /// A closure activation's return target -- its closure's `home` -- and
     /// `None` for every other kind, which is its own return target.
     pub fn activation_home(&self, activation: ActivationReference) -> Option<FrameReference<'gc>> {
         self.check_activation(activation);
-        match self.stack.entries[activation.index as usize].kind {
+        match self.activation_kind(activation) {
             ActivationKind::Closure(closure) => self.closure_home(closure),
             _ => None,
         }
@@ -6459,7 +6735,7 @@ impl<'gc> Heap<'gc> {
         activation: ActivationReference,
     ) -> Option<FrameReference<'gc>> {
         self.check_activation(activation);
-        match self.stack.entries[activation.index as usize].kind {
+        match self.activation_kind(activation) {
             ActivationKind::Closure(closure) => self.closure_captured_frame(closure),
             _ => None,
         }
@@ -6471,14 +6747,34 @@ impl<'gc> Heap<'gc> {
         activation: ActivationReference,
     ) -> std::rc::Rc<crate::bytecode::CompiledCode> {
         self.check_activation(activation);
-        self.entry_code(activation).code.clone()
+        self.running_code(activation).code.clone()
+    }
+
+    /// The code table's row of the body `activation` runs: its frame's
+    /// code word.
+    #[inline(always)]
+    fn activation_code_id(&self, activation: ActivationReference) -> CodeId {
+        // A code id is a `u32`, so the conversion is exact.
+        CodeId::from_raw(frames::number_of(
+            self.stack.header_word(activation.index, frame_header::CODE),
+        ) as u32)
+    }
+
+    /// The application the frame at `offset` was entered at
+    /// (`frame_header::ENTERED_LEVEL`).
+    #[inline(always)]
+    fn activation_entered_level_of(&self, offset: u32) -> ApplicationIndex {
+        // An application index is a `u32`, so the conversion is exact.
+        ApplicationIndex::from_raw(frames::number_of(
+            self.stack.header_word(offset, frame_header::ENTERED_LEVEL),
+        ) as u32)
     }
 
     /// The code table's row of the body `activation` runs, lent for one
     /// read.
     #[inline]
-    fn entry_code(&self, activation: ActivationReference) -> &CodeEntry {
-        let id = self.stack.entries[activation.index as usize].code;
+    fn running_code(&self, activation: ActivationReference) -> &CodeEntry {
+        let id = self.activation_code_id(activation);
         self.tables.codes[id.index()]
             .as_ref()
             .expect("internal: a running activation's code row is never freed")
@@ -6492,7 +6788,7 @@ impl<'gc> Heap<'gc> {
         activation: ActivationReference,
     ) -> Option<crate::bytecode::UnwindMarker> {
         self.check_activation(activation);
-        self.entry_code(activation).code.unwind_marker
+        self.running_code(activation).code.unwind_marker
     }
 
     /// Replaces what `activation` does with its value when it returns. The
@@ -6508,17 +6804,20 @@ impl<'gc> Heap<'gc> {
         then: Continuation<'gc>,
     ) {
         self.check_activation(activation);
-        let entry = &mut self.stack.entries[activation.index as usize];
-        match entry.continuation {
+        let offset = activation.index;
+        match self.stack.continuation(offset) {
             Some(row) => match self.continuations.rows[row.0 as usize].as_mut() {
                 Some(Continuation::ReturnToSuspended(suspended)) => suspended.then = then,
                 _ if matches!(then, Continuation::Deliver) => {
                     self.continuations.take(row);
-                    entry.continuation = None;
+                    self.stack.set_continuation(offset, None);
                 }
                 _ => self.continuations.replace(row, then),
             },
-            None => entry.continuation = self.continuations.store(then),
+            None => {
+                let row = self.continuations.store(then);
+                self.stack.set_continuation(offset, row);
+            }
         }
     }
 
@@ -6529,7 +6828,7 @@ impl<'gc> Heap<'gc> {
     /// its sender is on the stack or suspended.
     fn activation_own_continuation(&self, activation: ActivationReference) -> &Continuation<'gc> {
         self.check_activation(activation);
-        let row = self.stack.entries[activation.index as usize].continuation;
+        let row = self.stack.continuation(activation.index);
         match self.continuations.get(row) {
             Continuation::ReturnToSuspended(suspended) => &suspended.then,
             own => own,
@@ -6563,8 +6862,9 @@ impl<'gc> Heap<'gc> {
     /// the one it sent to, while it waits for it.
     pub fn activation_above(&self, activation: ActivationReference) -> Option<ActivationReference> {
         self.check_activation(activation);
-        let above = activation.index as usize + 1;
-        (above < self.stack.entries.len()).then(|| self.activation_handle(above as u32))
+        let above = self.stack.window_end(activation.index);
+        // An offset below the top is below 2^31, so the conversion is exact.
+        (above < self.stack.frames.top()).then(|| self.activation_handle(above as u32))
     }
 
     /// The `program_counter` last stored for `activation` -- at a send, the
@@ -6572,19 +6872,25 @@ impl<'gc> Heap<'gc> {
     /// callee returns.
     pub fn activation_program_counter(&self, activation: ActivationReference) -> usize {
         self.check_activation(activation);
-        self.stack.entries[activation.index as usize].program_counter
+        frames::number_of(
+            self.stack
+                .header_word(activation.index, frame_header::PROGRAM_COUNTER),
+        ) as usize
     }
 
     /// The innermost live activation, if any.
     pub fn top_activation(&self) -> Option<ActivationReference> {
-        let length = self.stack.entries.len();
-        (length > 0).then(|| self.activation_handle((length - 1) as u32))
+        let innermost = self.stack.innermost;
+        (innermost != NO_FRAME).then(|| self.activation_handle(innermost))
     }
 
-    /// How many activations are below `activation` -- its depth, counted from
-    /// the bottom of the stack. The run loop compares a non-local return's
-    /// target against the depth it started at to tell its own activations from
-    /// its callers'.
+    /// Where `activation` lies on the stack: its frame's word offset, which
+    /// grows with depth, so positions order activations as their depths do.
+    /// A position is no count: the depth is `activation_depth`. The run loop
+    /// compares a non-local return's target against the position its base
+    /// was at -- its floor -- to tell its own activations from its callers',
+    /// and the stack's top against it (`activation_stack_top`) to tell
+    /// whether its base has returned.
     pub fn activation_position(&self, activation: ActivationReference) -> usize {
         self.check_activation(activation);
         activation.index as usize
@@ -6599,16 +6905,44 @@ impl<'gc> Heap<'gc> {
         activation: ActivationReference,
     ) -> Option<ActivationReference> {
         self.check_activation(activation);
-        activation
-            .index
-            .checked_sub(1)
-            .map(|index| self.activation_handle(index))
+        self.stack
+            .caller(activation.index)
+            .map(|caller| self.activation_handle(caller))
     }
 
     /// What `activation` was activated for.
     pub fn activation_kind(&self, activation: ActivationReference) -> ActivationKind<'gc> {
         self.check_activation(activation);
-        self.stack.entries[activation.index as usize].kind
+        let offset = activation.index;
+        let tag = self.stack.flags(offset).kind_tag;
+        let operand = self.stack.header_word(offset, frame_header::OPERAND);
+        let object = || {
+            self.object_handle(
+                operand
+                    .object_offset()
+                    .expect("internal: the operand of a closure's or a class's frame names it"),
+            )
+        };
+        match tag {
+            // A selector's index is a `u32`, so the conversion is exact.
+            kind_tag::METHOD => {
+                ActivationKind::Method(Symbol::from_index(frames::number_of(operand) as u32))
+            }
+            kind_tag::CLOSURE => ActivationKind::Closure(object()),
+            kind_tag::TOP_LEVEL => ActivationKind::TopLevel,
+            kind_tag::INITIALIZER_FULL => {
+                ActivationKind::Initializer(object(), InitializerBody::Full)
+            }
+            kind_tag::INITIALIZER_OWN_PART => {
+                ActivationKind::Initializer(object(), InitializerBody::OwnPart)
+            }
+            kind_tag::INITIALIZER_STANDALONE => {
+                ActivationKind::Initializer(object(), InitializerBody::Standalone)
+            }
+            kind_tag::SUPERCLASS_CLAUSE => ActivationKind::SuperclassClause(object()),
+            kind_tag::FACTORY => ActivationKind::Factory(object()),
+            _ => unreachable!("internal: a frame's kind tag is one `kind_words` wrote"),
+        }
     }
 
     /// The `FrameKind` a frame of a running activation of `kind`, whose
@@ -6646,7 +6980,7 @@ impl<'gc> Heap<'gc> {
         class: ClassReference<'gc>,
     ) -> bool {
         self.check_activation(activation);
-        let closure = match self.stack.entries[activation.index as usize].kind {
+        let closure = match self.activation_kind(activation) {
             ActivationKind::Initializer(level, InitializerBody::Full) => return level.same(class),
             ActivationKind::Closure(closure) => closure,
             _ => return false,
@@ -6689,8 +7023,8 @@ impl<'gc> Heap<'gc> {
     pub(crate) fn activation_runs_method_or_clause(&self, activation: ActivationReference) -> bool {
         self.check_activation(activation);
         matches!(
-            self.stack.entries[activation.index as usize].kind,
-            ActivationKind::Method(_) | ActivationKind::SuperclassClause(_)
+            self.stack.flags(activation.index).kind_tag,
+            kind_tag::METHOD | kind_tag::SUPERCLASS_CLAUSE
         )
     }
 
@@ -6711,7 +7045,9 @@ impl<'gc> Heap<'gc> {
     pub fn frame_local(&self, frame: FrameReference<'gc>, index: u16) -> Value<'gc> {
         let words = self.frame_words(frame);
         let word = match self.married_entry(words) {
-            Some(entry) => self.stack.values[self.register_slot(entry, index)],
+            Some(offset) => {
+                Word::from_bits(self.stack.frames.words()[self.register_slot(offset, index)])
+            }
             None => words
                 .get(frame_field::COUNT + index as usize)
                 .map_or(Word::NIL, |bits| Word::from_bits(*bits)),
@@ -6727,9 +7063,9 @@ impl<'gc> Heap<'gc> {
         let live = self.married_entry(self.frame_words(frame));
         let word = self.store(value);
         match live {
-            Some(entry) => {
-                let slot = self.register_slot(entry, index);
-                self.stack.values[slot] = word;
+            Some(offset) => {
+                let slot = self.register_slot(offset, index);
+                self.stack.frames.words_mut()[slot] = word.bits();
             }
             None => {
                 if let Some(slot) = self
@@ -6981,12 +7317,7 @@ impl<'gc> Heap<'gc> {
         for object in mixin_objects.iter_mut().flatten() {
             scavenger.object(object);
         }
-        for entry in &mut stack.entries {
-            entry.trace(&mut scavenger);
-        }
-        for word in &mut stack.values {
-            scavenger.word(word);
-        }
+        stack.trace(&mut scavenger);
         suspensions.trace(&mut scavenger);
         continuations.trace(&mut scavenger);
         let roots = host_roots.get_mut();
@@ -7094,8 +7425,7 @@ impl<'gc> Heap<'gc> {
     #[cfg(debug_assertions)]
     pub(crate) fn traced_size(&self) -> usize {
         self.object_count
-            + self.stack.entries.len()
-            + self.stack.values.len()
+            + self.stack.frames.top()
             + self.suspensions.rows.len()
             + self.continuations.rows.len()
             + self.mixin_objects.len()
@@ -7446,12 +7776,7 @@ impl<'gc> Heap<'gc> {
         for object in self.mixin_objects.iter_mut().flatten() {
             forwarder.object(object);
         }
-        for entry in &mut self.stack.entries {
-            entry.trace(forwarder);
-        }
-        for word in &mut self.stack.values {
-            forwarder.word(word);
-        }
+        self.stack.trace(forwarder);
         self.suspensions.trace(forwarder);
         self.continuations.trace(forwarder);
         // The table is weak -- `begin_marking` deliberately does not walk it
@@ -7657,12 +7982,7 @@ impl<'gc> Heap<'gc> {
         if let Some(class) = &mut self.activation_class {
             marker.object(class);
         }
-        for entry in &mut self.stack.entries {
-            entry.trace(&mut marker);
-        }
-        for word in &mut self.stack.values {
-            marker.word(word);
-        }
+        self.stack.trace(&mut marker);
         self.suspensions.trace(&mut marker);
         self.continuations.trace(&mut marker);
         let roots = self.host_roots.get_mut();
@@ -9591,11 +9911,13 @@ mod tests {
     #[test]
     fn an_activation_addresses_its_arguments_before_its_temporaries() {
         let mut heap = Heap::new();
-        let activation = heap.push_activation(
-            header(),
-            &[Value::small_integer(1), Value::small_integer(2)],
-            2,
-        );
+        let activation = heap
+            .push_activation(
+                header(),
+                &[Value::small_integer(1), Value::small_integer(2)],
+                2,
+            )
+            .expect("the stack holds the frame");
         assert_eq!(
             heap.activation_local(activation, 0).as_small_integer(),
             Some(1)
@@ -9618,8 +9940,12 @@ mod tests {
     #[test]
     fn nested_activations_keep_separate_register_windows() {
         let mut heap = Heap::new();
-        let outer = heap.push_activation(header(), &[Value::small_integer(1)], 1);
-        let inner = heap.push_activation(header(), &[Value::small_integer(2)], 1);
+        let outer = heap
+            .push_activation(header(), &[Value::small_integer(1)], 1)
+            .expect("the stack holds the frame");
+        let inner = heap
+            .push_activation(header(), &[Value::small_integer(2)], 1)
+            .expect("the stack holds the frame");
         heap.activation_set_local(inner, 1, Value::small_integer(20));
         heap.activation_set_local(outer, 1, Value::small_integer(10));
         assert_eq!(heap.activation_local(outer, 0).as_small_integer(), Some(1));
@@ -9641,11 +9967,13 @@ mod tests {
         let mut heap = frame_heap();
         let objects = heap.heap_statistics().live_objects;
         for _ in 0..1000 {
-            let activation = heap.push_activation(header(), &[Value::small_integer(1)], 3);
+            let activation = heap
+                .push_activation(header(), &[Value::small_integer(1)], 3)
+                .expect("the stack holds the frame");
             heap.pop_activation(activation);
         }
         assert_eq!(heap.heap_statistics().live_objects, objects);
-        assert_eq!(heap.stack.values.len(), 0);
+        assert_eq!(heap.stack.frames.top(), 0);
         assert_eq!(heap.activation_depth(), 0);
     }
 
@@ -9653,7 +9981,9 @@ mod tests {
     fn reifying_an_activation_twice_answers_the_same_frame() {
         let mut heap = frame_heap();
         let objects = heap.heap_statistics().live_objects;
-        let activation = heap.push_activation(header(), &[], 1);
+        let activation = heap
+            .push_activation(header(), &[], 1)
+            .expect("the stack holds the frame");
         let first = heap.reify(activation);
         let second = heap.reify(activation);
         assert!(first.same(second));
@@ -9671,7 +10001,9 @@ mod tests {
     #[test]
     fn a_married_frame_reads_and_writes_the_live_registers() {
         let mut heap = frame_heap();
-        let activation = heap.push_activation(header(), &[Value::small_integer(1)], 1);
+        let activation = heap
+            .push_activation(header(), &[Value::small_integer(1)], 1)
+            .expect("the stack holds the frame");
         let frame = heap.reify(activation);
         heap.activation_set_local(activation, 1, Value::small_integer(5));
         assert_eq!(heap.frame_local(frame, 1).as_small_integer(), Some(5));
@@ -9696,16 +10028,18 @@ mod tests {
     fn popping_a_reified_activation_divorces_its_frame() {
         let mut heap = frame_heap();
         let class = named_class(&mut heap, "Initialized");
-        let activation = heap.push_activation(
-            ActivationHeader {
-                current_class: Some(class),
-                kind: ActivationKind::Initializer(class, InitializerBody::OwnPart),
-                code: shaped_code(1, 2),
-                ..header()
-            },
-            &[Value::small_integer(1)],
-            1,
-        );
+        let activation = heap
+            .push_activation(
+                ActivationHeader {
+                    current_class: Some(class),
+                    kind: ActivationKind::Initializer(class, InitializerBody::OwnPart),
+                    code: shaped_code(1, 2),
+                    ..header()
+                },
+                &[Value::small_integer(1)],
+                1,
+            )
+            .expect("the stack holds the frame");
         heap.activation_set_program_counter(activation, 4);
         let frame = heap.reify(activation);
         // What a `MakeClosure` whose block reads this frame by reference
@@ -9723,6 +10057,159 @@ mod tests {
         assert!(heap.frame_sender(frame).is_none());
         heap.frame_set_local(frame, 1, Value::small_integer(8));
         assert_eq!(heap.frame_local(frame, 1).as_small_integer(), Some(8));
+    }
+
+    /// A pop leaves its frame's words above the top, and no pass of either
+    /// collector reads them: what only the popped frames held is reclaimed,
+    /// what the frame still running holds survives.
+    #[test]
+    fn a_collection_after_a_deep_pop_reads_nothing_above_the_top() {
+        let mut heap = Heap::new();
+        let class = old_instance_class(&mut heap);
+        let weak_class = old_instance_class(&mut heap);
+        let mut activations = Vec::new();
+        let mut objects = Vec::new();
+        for _ in 0..100 {
+            let object = heap.allocate_instance(class, 0);
+            objects.push(object);
+            activations.push(
+                heap.push_activation(header(), &[Value::object(object)], 0)
+                    .expect("the stack holds the frame"),
+            );
+        }
+        let weak = heap.allocate_weak_array(weak_class, objects.len());
+        for (index, object) in objects.iter().enumerate() {
+            assert!(heap.weak_array_set_element(weak, index, Value::object(*object)));
+        }
+        for activation in activations[1..].iter().rev() {
+            heap.pop_activation(*activation);
+        }
+        let mut weak_root = Value::object(weak);
+        scavenge_bare(&mut heap, false, &mut [&mut weak_root]);
+        heap.collect_for_test(&mut [&mut weak_root]);
+
+        let weak = rooted(weak_root);
+        let elements = heap
+            .weak_array_elements(weak)
+            .expect("a weak array answers its elements");
+        let bottom = activations[0];
+        let kept = heap
+            .activation_local(bottom, 0)
+            .as_object()
+            .expect("the bottom frame still holds its object");
+        assert!(
+            names(elements[0], kept),
+            "the bottom frame's object survives"
+        );
+        assert!(
+            elements[1..].iter().all(|element| element.is_nil()),
+            "what only a popped frame held is gone"
+        );
+        heap.pop_activation(bottom);
+    }
+
+    /// Every word of the frame stack is a valid tagged value -- a
+    /// `SmallInteger`, nil, a Boolean or the offset of an object in the
+    /// space -- whatever kind of activation pushed it, which is what lets
+    /// the collector trace `[0, top)` as one range with no stack map.
+    #[test]
+    fn the_stack_is_traced_as_one_range_of_tagged_words() {
+        let mut heap = frame_heap();
+        let class = named_class(&mut heap, "Framed");
+        let method = Rc::new(crate::mixin::MixinMethod {
+            selector: Symbol::intern("framed:"),
+            access: ns_syntax::ast::AccessModifier::Public,
+            argument_count: 1,
+            declaration: None,
+            code: shaped_code(1, 3),
+            fast_path: None,
+            class_accessor: None,
+        });
+        let method_activation = heap
+            .push_activation(
+                ActivationHeader {
+                    receiver: Value::object(class),
+                    current_class: Some(class),
+                    kind: ActivationKind::Method(method.selector),
+                    code: method.code.clone(),
+                    method: Some(method.clone()),
+                    then: Continuation::Unwind(Box::new(PendingUnwind {
+                        target: None,
+                        action: UnwindAction::Restart,
+                    })),
+                    ..header()
+                },
+                &[Value::boolean(true)],
+                2,
+            )
+            .expect("the stack holds the frame");
+        heap.activation_set_program_counter(method_activation, 3);
+        let home = heap.reify(method_activation);
+        heap.retain_registers(method_activation);
+        let closure = heap.allocate_closure(
+            class,
+            NewClosure {
+                code: shaped_code(0, 1),
+                captured_frame: home,
+                copied: vec![],
+                feedback_base: FeedbackBase::NOT_ASSIGNED,
+            },
+        );
+        let kinds = [
+            ActivationKind::Closure(closure),
+            ActivationKind::TopLevel,
+            ActivationKind::Initializer(class, InitializerBody::Full),
+            ActivationKind::Initializer(class, InitializerBody::OwnPart),
+            ActivationKind::Initializer(class, InitializerBody::Standalone),
+            ActivationKind::SuperclassClause(class),
+            ActivationKind::Factory(class),
+        ];
+        let mut activations = vec![method_activation];
+        for kind in kinds {
+            let current_class = match kind {
+                ActivationKind::TopLevel => None,
+                _ => Some(class),
+            };
+            let activation = heap
+                .push_activation(
+                    ActivationHeader {
+                        receiver: Value::small_integer(-4),
+                        current_class,
+                        kind,
+                        ..header()
+                    },
+                    &[Value::small_float(1.5), Value::object(closure)],
+                    1,
+                )
+                .expect("the stack holds the frame");
+            heap.reify(activation);
+            activations.push(activation);
+        }
+
+        let space_end = (heap.space.words().len() * 8) as u64;
+        let constants = [
+            Word::NIL.bits(),
+            Value::boolean(true).word().bits(),
+            Value::boolean(false).word().bits(),
+        ];
+        let words = heap.stack.frames.words();
+        assert!(!words.is_empty());
+        for (position, bits) in words.iter().enumerate() {
+            let word = Word::from_bits(*bits);
+            let valid = word.is_small_integer()
+                || constants.contains(bits)
+                || bits & 0b111 == 0b100
+                || word
+                    .object_offset()
+                    .is_some_and(|offset| offset.get() < space_end);
+            assert!(
+                valid,
+                "word {position} of the stack is no tagged value: {bits:#x}"
+            );
+        }
+        for activation in activations.into_iter().rev() {
+            heap.pop_activation(activation);
+        }
     }
 
     /// The image decoder fills each record's placeholder in place, so that a
@@ -10019,7 +10506,9 @@ mod tests {
             },
         );
 
-        let activation = heap.push_activation(header(), &[Value::small_integer(1)], 1);
+        let activation = heap
+            .push_activation(header(), &[Value::small_integer(1)], 1)
+            .expect("the stack holds the frame");
         heap.fill_copied_values(activation, closure);
         assert_eq!(
             heap.activation_local(activation, 0).as_small_integer(),
@@ -10031,7 +10520,7 @@ mod tests {
         );
         // The activation has two registers, so the second copied value has
         // nowhere to go and is dropped rather than written past the window.
-        assert_eq!(heap.stack.values.len(), 2);
+        assert_eq!(heap.stack.frames.top(), frame_header::COUNT + 2);
         heap.pop_activation(activation);
     }
 
@@ -10040,13 +10529,17 @@ mod tests {
     #[test]
     fn a_divorced_frame_is_untouched_by_the_next_activation_at_its_depth() {
         let mut heap = frame_heap();
-        let first = heap.push_activation(header(), &[], 2);
+        let first = heap
+            .push_activation(header(), &[], 2)
+            .expect("the stack holds the frame");
         heap.activation_set_local(first, 1, Value::small_integer(3));
         let frame = heap.reify(first);
         heap.retain_registers(first);
         heap.pop_activation(first);
 
-        let second = heap.push_activation(header(), &[], 2);
+        let second = heap
+            .push_activation(header(), &[], 2)
+            .expect("the stack holds the frame");
         heap.activation_set_local(second, 1, Value::small_integer(99));
         assert_eq!(heap.frame_local(frame, 1).as_small_integer(), Some(3));
         heap.pop_activation(second);
@@ -10058,7 +10551,9 @@ mod tests {
     #[test]
     fn a_register_base_reads_and_writes_its_activations_registers() {
         let mut heap = Heap::new();
-        let activation = heap.push_activation(header(), &[Value::small_integer(7)], 2);
+        let activation = heap
+            .push_activation(header(), &[Value::small_integer(7)], 2)
+            .expect("the stack holds the frame");
         let base = heap.activation_register_base(activation);
         assert_eq!(heap.register(base, 0).as_small_integer(), Some(7));
         heap.set_register(base, 2, Value::small_integer(9));
@@ -10077,10 +10572,14 @@ mod tests {
     #[should_panic(expected = "stale activation handle")]
     fn reading_through_a_stale_register_base_panics() {
         let mut heap = Heap::new();
-        let first = heap.push_activation(header(), &[], 1);
+        let first = heap
+            .push_activation(header(), &[], 1)
+            .expect("the stack holds the frame");
         let base = heap.activation_register_base(first);
         heap.pop_activation(first);
-        let _second = heap.push_activation(header(), &[], 1);
+        let _second = heap
+            .push_activation(header(), &[], 1)
+            .expect("the stack holds the frame");
         let _ = heap.register(base, 0);
     }
 
@@ -10089,9 +10588,13 @@ mod tests {
     #[test]
     fn a_register_base_survives_a_deeper_push() {
         let mut heap = Heap::new();
-        let caller = heap.push_activation(header(), &[Value::small_integer(1)], 1);
+        let caller = heap
+            .push_activation(header(), &[Value::small_integer(1)], 1)
+            .expect("the stack holds the frame");
         let base = heap.activation_register_base(caller);
-        let callee = heap.push_activation(header(), &[], 4096);
+        let callee = heap
+            .push_activation(header(), &[], 4096)
+            .expect("the stack holds the frame");
         assert_eq!(heap.register(base, 0).as_small_integer(), Some(1));
         heap.pop_activation(callee);
         heap.pop_activation(caller);
@@ -10112,9 +10615,13 @@ mod tests {
     #[should_panic(expected = "stale activation handle")]
     fn reading_through_a_popped_activation_handle_panics() {
         let mut heap = Heap::new();
-        let first = heap.push_activation(header(), &[], 1);
+        let first = heap
+            .push_activation(header(), &[], 1)
+            .expect("the stack holds the frame");
         heap.pop_activation(first);
-        let _second = heap.push_activation(header(), &[], 1);
+        let _second = heap
+            .push_activation(header(), &[], 1)
+            .expect("the stack holds the frame");
         let _ = heap.activation_local(first, 0);
     }
 
@@ -10123,9 +10630,13 @@ mod tests {
     #[should_panic(expected = "handle belongs to a different heap")]
     fn reading_an_activation_handle_through_a_foreign_heap_panics() {
         let mut origin = Heap::new();
-        let mine = origin.push_activation(header(), &[], 1);
+        let mine = origin
+            .push_activation(header(), &[], 1)
+            .expect("the stack holds the frame");
         let mut other = Heap::new();
-        let _theirs = other.push_activation(header(), &[], 1);
+        let _theirs = other
+            .push_activation(header(), &[], 1)
+            .expect("the stack holds the frame");
         let _ = other.activation_local(mine, 0);
     }
 
@@ -10139,9 +10650,13 @@ mod tests {
     #[should_panic(expected = "handle belongs to a different heap (comparing handle from heap")]
     fn comparing_two_activation_handles_from_different_heaps_panics() {
         let mut origin = Heap::new();
-        let mine = origin.push_activation(header(), &[], 1);
+        let mine = origin
+            .push_activation(header(), &[], 1)
+            .expect("the stack holds the frame");
         let mut other = Heap::new();
-        let theirs = other.push_activation(header(), &[], 1);
+        let theirs = other
+            .push_activation(header(), &[], 1)
+            .expect("the stack holds the frame");
         let _ = mine.same(theirs);
     }
 
@@ -10157,9 +10672,13 @@ mod tests {
     )]
     fn comparing_a_popped_activation_handle_with_its_successor_panics() {
         let mut heap = Heap::new();
-        let first = heap.push_activation(header(), &[], 1);
+        let first = heap
+            .push_activation(header(), &[], 1)
+            .expect("the stack holds the frame");
         heap.pop_activation(first);
-        let second = heap.push_activation(header(), &[], 1);
+        let second = heap
+            .push_activation(header(), &[], 1)
+            .expect("the stack holds the frame");
         let _ = first.same(second);
     }
 
@@ -10170,8 +10689,12 @@ mod tests {
     #[should_panic(expected = "only the top activation")]
     fn popping_an_activation_that_is_not_on_top_panics() {
         let mut heap = Heap::new();
-        let outer = heap.push_activation(header(), &[], 1);
-        let _inner = heap.push_activation(header(), &[], 1);
+        let outer = heap
+            .push_activation(header(), &[], 1)
+            .expect("the stack holds the frame");
+        let _inner = heap
+            .push_activation(header(), &[], 1)
+            .expect("the stack holds the frame");
         heap.pop_activation(outer);
     }
 
@@ -10268,15 +10791,21 @@ mod tests {
             counted: true,
         };
 
-        let method_activation = heap.push_activation(header(), &[], 0);
+        let method_activation = heap
+            .push_activation(header(), &[], 0)
+            .expect("the stack holds the frame");
         let home_frame = heap.reify(method_activation);
         let outer_closure = block_closure(&mut heap, class, home_frame);
-        let outer_block_activation = heap.push_activation(block_header(outer_closure), &[], 0);
+        let outer_block_activation = heap
+            .push_activation(block_header(outer_closure), &[], 0)
+            .expect("the stack holds the frame");
         let captured_frame = heap.reify(outer_block_activation);
         assert!(!captured_frame.same(home_frame));
 
         let closure = block_closure(&mut heap, class, captured_frame);
-        let closure_activation = heap.push_activation(block_header(closure), &[], 0);
+        let closure_activation = heap
+            .push_activation(block_header(closure), &[], 0)
+            .expect("the stack holds the frame");
 
         assert!(heap.activation_home(method_activation).is_none());
         assert!(heap.activation_captured(method_activation).is_none());
@@ -10583,7 +11112,9 @@ mod tests {
         let class = heap.allocate_self_referential(0);
         let reachable = heap.allocate_string(class, crate::CodePoints::from("live"));
         let unreachable = heap.allocate_string(class, crate::CodePoints::from("dead"));
-        let activation = heap.push_activation(header(), &[Value::object(reachable)], 1);
+        let activation = heap
+            .push_activation(header(), &[Value::object(reachable)], 1)
+            .expect("the stack holds the frame");
 
         let marked = marked_by_marking(&mut heap, &[reachable, class, unreachable]);
 
@@ -10600,7 +11131,9 @@ mod tests {
         let target = heap.allocate_string(class, crate::CodePoints::from("target"));
         let holder = heap.allocate_instance(class, 1);
         assert!(heap.instance_set_field(holder, 0, Value::object(target)));
-        let activation = heap.push_activation(header(), &[Value::object(holder)], 1);
+        let activation = heap
+            .push_activation(header(), &[Value::object(holder)], 1)
+            .expect("the stack holds the frame");
 
         let marked = marked_by_marking(&mut heap, &[target]);
 
@@ -10614,7 +11147,9 @@ mod tests {
     #[test]
     fn marking_reaches_a_married_frame_through_its_entry() {
         let mut heap = frame_heap();
-        let activation = heap.push_activation(header(), &[], 1);
+        let activation = heap
+            .push_activation(header(), &[], 1)
+            .expect("the stack holds the frame");
         let frame = heap.reify(activation);
         let frame_object = heap.frame_object(frame);
 
@@ -10653,7 +11188,9 @@ mod tests {
         let mut heap = frame_heap();
         let frame = top_level_frame(&mut heap, 0);
         let activation_object = heap.frame_object(frame);
-        let activation = heap.push_activation(header(), &[Value::object(activation_object)], 1);
+        let activation = heap
+            .push_activation(header(), &[Value::object(activation_object)], 1)
+            .expect("the stack holds the frame");
 
         let marked = marked_by_marking(&mut heap, &[activation_object]);
 
@@ -10670,7 +11207,9 @@ mod tests {
         let mut heap = frame_heap();
         // Garbage below the frame, so that compaction moves it.
         top_level_frame(&mut heap, 2);
-        let activation = heap.push_activation(header(), &[Value::small_integer(7)], 2);
+        let activation = heap
+            .push_activation(header(), &[Value::small_integer(7)], 2)
+            .expect("the stack holds the frame");
         let frame = heap.reify(activation);
         heap.set_register(
             heap.activation_register_base(activation),
@@ -10698,11 +11237,15 @@ mod tests {
     fn a_frame_divorced_after_a_collection_holds_its_registers_only_when_retained() {
         let mut heap = frame_heap();
         top_level_frame(&mut heap, 2);
-        let retained = heap.push_activation(header(), &[Value::small_integer(7)], 1);
+        let retained = heap
+            .push_activation(header(), &[Value::small_integer(7)], 1)
+            .expect("the stack holds the frame");
         let retained_frame = heap.reify(retained);
         heap.retain_registers(retained);
         heap.activation_set_local(retained, 1, Value::small_integer(8));
-        let unretained = heap.push_activation(header(), &[Value::small_integer(5)], 1);
+        let unretained = heap
+            .push_activation(header(), &[Value::small_integer(5)], 1)
+            .expect("the stack holds the frame");
         let unretained_frame = heap.reify(unretained);
         heap.activation_set_local(unretained, 1, Value::small_integer(6));
         let mut retained_root = Value::object(heap.frame_object(retained_frame));
@@ -10755,7 +11298,9 @@ mod tests {
     fn a_married_frame_survives_a_move_and_is_divorced_into_its_moved_object() {
         let mut heap = frame_heap();
         top_level_frame(&mut heap, 2);
-        let activation = heap.push_activation(header(), &[Value::small_integer(7)], 1);
+        let activation = heap
+            .push_activation(header(), &[Value::small_integer(7)], 1)
+            .expect("the stack holds the frame");
         let frame = heap.reify(activation);
         let before = frame.offset;
         let root = heap.stash(Value::object(heap.frame_object(frame)));
@@ -10796,7 +11341,9 @@ mod tests {
         let second = heap.allocate_instance(class, 1);
         assert!(heap.instance_set_field(second, 0, Value::object(first)));
         heap.instance_set_field(first, 0, Value::object(second));
-        let activation = heap.push_activation(header(), &[Value::object(first)], 1);
+        let activation = heap
+            .push_activation(header(), &[Value::object(first)], 1)
+            .expect("the stack holds the frame");
 
         let marked = marked_by_marking(&mut heap, &[first, second]);
 
@@ -10813,7 +11360,9 @@ mod tests {
         let reachable = heap.allocate_string(class, crate::CodePoints::from("live"));
         heap.allocate_string(class, crate::CodePoints::from("dead"));
         heap.allocate_string(class, crate::CodePoints::from("also dead"));
-        let activation = heap.push_activation(header(), &[Value::object(reachable)], 1);
+        let activation = heap
+            .push_activation(header(), &[Value::object(reachable)], 1)
+            .expect("the stack holds the frame");
         let before = heap.heap_statistics().live_objects;
 
         heap.collect_for_test(&mut []);
@@ -10833,7 +11382,9 @@ mod tests {
         let class = heap.allocate_self_referential(0);
         heap.allocate_string(class, crate::CodePoints::from("dead"));
         let reachable = heap.allocate_string(class, crate::CodePoints::from("live"));
-        let activation = heap.push_activation(header(), &[Value::object(reachable)], 1);
+        let activation = heap
+            .push_activation(header(), &[Value::object(reachable)], 1)
+            .expect("the stack holds the frame");
 
         heap.collect_for_test(&mut []);
 
@@ -11135,7 +11686,9 @@ mod tests {
         heap.frame_set_local(dead, 0, Value::object(young));
         assert!(heap.header(dead_object).remembered());
 
-        let activation = heap.push_activation(header(), &[], LARGE_OBJECT_BYTES / 8);
+        let activation = heap
+            .push_activation(header(), &[], LARGE_OBJECT_BYTES / 8)
+            .expect("the stack holds the frame");
         let frame = heap.reify(activation);
         let frame_object = heap.frame_object(frame);
         assert!(!space::is_young(frame_object.offset));
@@ -11284,11 +11837,13 @@ mod tests {
         set_guards_from(&mut heap, class, activation_class);
         let captured_frame = top_level_frame(&mut heap, 0);
         let code = trivial_code();
-        let activation = heap.push_activation(
-            header(),
-            &[Value::small_integer(7), Value::object(class)],
-            2,
-        );
+        let activation = heap
+            .push_activation(
+                header(),
+                &[Value::small_integer(7), Value::object(class)],
+                2,
+            )
+            .expect("the stack holds the frame");
         let base = heap.activation_register_base(activation);
         let (fast, fast_bumps) = counting_fast_bumps(&mut heap, |heap| {
             heap.allocate_closure_from_registers(
@@ -11343,8 +11898,12 @@ mod tests {
         let closure_class = named_class(&mut heap, "Closure");
         set_guards_from(&mut heap, closure_class, activation_class);
         let arguments = [Value::small_integer(1), Value::object(closure_class)];
-        let first = heap.push_activation(header(), &arguments, 3);
-        let second = heap.push_activation(header(), &arguments, 3);
+        let first = heap
+            .push_activation(header(), &arguments, 3)
+            .expect("the stack holds the frame");
+        let second = heap
+            .push_activation(header(), &arguments, 3)
+            .expect("the stack holds the frame");
         let (fast, fast_bumps) = counting_fast_bumps(&mut heap, |heap| heap.reify(first));
         let (cold, cold_bumps) = counting_fast_bumps_refused(&mut heap, |heap| heap.reify(second));
         assert_eq!((fast_bumps, cold_bumps), (1, 0));
@@ -11736,7 +12295,9 @@ mod tests {
     #[test]
     fn a_married_frame_is_copied_and_its_entry_follows_it() {
         let mut heap = frame_heap();
-        let activation = heap.push_activation(header(), &[Value::small_integer(1)], 1);
+        let activation = heap
+            .push_activation(header(), &[Value::small_integer(1)], 1)
+            .expect("the stack holds the frame");
         let frame = heap.reify(activation);
         let before = heap.frame_object(frame).offset;
         assert!(space::is_young(before));
@@ -11769,7 +12330,9 @@ mod tests {
     #[test]
     fn the_divorce_into_a_tenured_frame_keeps_its_young_registers() {
         let mut heap = frame_heap();
-        let activation = heap.push_activation(header(), &[], 1);
+        let activation = heap
+            .push_activation(header(), &[], 1)
+            .expect("the stack holds the frame");
         heap.reify(activation);
 
         scavenge_bare(&mut heap, true, &mut []);
@@ -13537,14 +14100,16 @@ mod tests {
         let body = trivial_code();
         let (activation, id) = interpreter.enter(|mutator| {
             let heap = mutator.heap_mut();
-            let activation = heap.push_activation(
-                ActivationHeader {
-                    code: body.clone(),
-                    ..header()
-                },
-                &[],
-                0,
-            );
+            let activation = heap
+                .push_activation(
+                    ActivationHeader {
+                        code: body.clone(),
+                        ..header()
+                    },
+                    &[],
+                    0,
+                )
+                .expect("the stack holds the frame");
             (activation, heap.code_id(&body))
         });
         interpreter.collect_now();
@@ -13647,17 +14212,21 @@ mod tests {
     fn suspending_and_resuming_an_activation_keeps_its_registers_and_program_counter() {
         let mut heap = frame_heap();
         let class = named_class(&mut heap, "Suspended");
-        let bottom = heap.push_activation(
-            suspendable_header(class, 1, 1),
-            &[Value::small_integer(5)],
-            0,
-        );
+        let bottom = heap
+            .push_activation(
+                suspendable_header(class, 1, 1),
+                &[Value::small_integer(5)],
+                0,
+            )
+            .expect("the stack holds the frame");
         let bottom_frame = heap.reify(bottom);
-        let top = heap.push_activation(
-            suspendable_header(class, 2, 3),
-            &[Value::small_integer(1), Value::small_integer(2)],
-            1,
-        );
+        let top = heap
+            .push_activation(
+                suspendable_header(class, 2, 3),
+                &[Value::small_integer(1), Value::small_integer(2)],
+                1,
+            )
+            .expect("the stack holds the frame");
         heap.activation_set_program_counter(top, 7);
         let top_frame = heap.reify(top);
 
@@ -13734,7 +14303,10 @@ mod tests {
             ..header()
         };
         let activations: Vec<_> = (0..3)
-            .map(|_| heap.push_activation(unwinding(), &[], 0))
+            .map(|_| {
+                heap.push_activation(unwinding(), &[], 0)
+                    .expect("the stack holds the frame")
+            })
             .collect();
         assert_eq!(heap.continuation_rows(), vec![true, true, true]);
         for activation in activations.into_iter().rev() {
@@ -13742,7 +14314,8 @@ mod tests {
             assert!(matches!(popped.then, Continuation::Unwind(_)));
         }
 
-        heap.push_activation(unwinding(), &[], 0);
+        heap.push_activation(unwinding(), &[], 0)
+            .expect("the stack holds the frame");
 
         assert_eq!(heap.continuation_rows(), vec![true]);
     }
@@ -13766,9 +14339,14 @@ mod tests {
                 action: UnwindAction::Restart,
             }))
         };
-        heap.push_activation(unwinding(), &[], 0);
-        let middle = heap.push_activation(unwinding(), &[], 0);
-        let top = heap.push_activation(unwinding(), &[], 0);
+        heap.push_activation(unwinding(), &[], 0)
+            .expect("the stack holds the frame");
+        let middle = heap
+            .push_activation(unwinding(), &[], 0)
+            .expect("the stack holds the frame");
+        let top = heap
+            .push_activation(unwinding(), &[], 0)
+            .expect("the stack holds the frame");
 
         heap.activation_set_continuation(middle, Continuation::Deliver);
         assert_eq!(heap.continuation_rows(), vec![true, false, true]);
@@ -13787,17 +14365,19 @@ mod tests {
     #[test]
     fn a_replaced_continuation_keeps_its_row() {
         let mut heap = Heap::new();
-        let below = heap.push_activation(
-            ActivationHeader {
-                then: Continuation::Unwind(Box::new(PendingUnwind {
-                    target: None,
-                    action: UnwindAction::Restart,
-                })),
-                ..header()
-            },
-            &[],
-            0,
-        );
+        let below = heap
+            .push_activation(
+                ActivationHeader {
+                    then: Continuation::Unwind(Box::new(PendingUnwind {
+                        target: None,
+                        action: UnwindAction::Restart,
+                    })),
+                    ..header()
+                },
+                &[],
+                0,
+            )
+            .expect("the stack holds the frame");
         heap.push_activation(
             ActivationHeader {
                 then: Continuation::Unwind(Box::new(PendingUnwind {
@@ -13808,7 +14388,8 @@ mod tests {
             },
             &[],
             0,
-        );
+        )
+        .expect("the stack holds the frame");
 
         heap.activation_set_continuation(
             below,
@@ -13820,16 +14401,21 @@ mod tests {
 
         assert_eq!(heap.continuation_rows(), vec![true, true]);
         assert!(matches!(
-            heap.continuations.get(heap.stack.entries[0].continuation),
+            heap.continuations.get(heap.stack.continuation(below.index)),
             Continuation::Unwind(pending) if matches!(pending.action, UnwindAction::Return(_))
         ));
-        assert_eq!(heap.stack.entries[0].continuation, Some(ContinuationRow(0)));
+        assert_eq!(
+            heap.stack.continuation(below.index),
+            Some(ContinuationRow(0))
+        );
     }
 
     #[test]
     fn a_delivering_activation_takes_no_row() {
         let mut heap = Heap::new();
-        let activation = heap.push_activation(header(), &[], 0);
+        let activation = heap
+            .push_activation(header(), &[], 0)
+            .expect("the stack holds the frame");
         assert!(heap.continuation_rows().is_empty());
         let popped = heap.pop_activation(activation);
         assert!(matches!(popped.then, Continuation::Deliver));
@@ -13839,19 +14425,23 @@ mod tests {
     fn a_resumed_activation_returns_to_its_suspended_sender() {
         let mut heap = frame_heap();
         let class = named_class(&mut heap, "Suspended");
-        let bottom = heap.push_activation(
-            ActivationHeader {
-                then: Continuation::Unwind(Box::new(PendingUnwind {
-                    target: None,
-                    action: UnwindAction::Restart,
-                })),
-                ..suspendable_header(class, 0, 1)
-            },
-            &[],
-            1,
-        );
+        let bottom = heap
+            .push_activation(
+                ActivationHeader {
+                    then: Continuation::Unwind(Box::new(PendingUnwind {
+                        target: None,
+                        action: UnwindAction::Restart,
+                    })),
+                    ..suspendable_header(class, 0, 1)
+                },
+                &[],
+                1,
+            )
+            .expect("the stack holds the frame");
         let bottom_frame = heap.reify(bottom);
-        let top = heap.push_activation(suspendable_header(class, 0, 1), &[], 1);
+        let top = heap
+            .push_activation(suspendable_header(class, 0, 1), &[], 1)
+            .expect("the stack holds the frame");
         let top_frame = heap.reify(top);
         heap.suspend_activations(0);
 
@@ -13859,7 +14449,7 @@ mod tests {
 
         match heap
             .continuations
-            .get(heap.stack.entries[resumed_top.index as usize].continuation)
+            .get(heap.stack.continuation(resumed_top.index))
         {
             Continuation::ReturnToSuspended(suspended) => {
                 assert!(suspended.sender.same(bottom_frame));
@@ -13878,7 +14468,7 @@ mod tests {
 
         assert!(matches!(
             heap.continuations
-                .get(heap.stack.entries[resumed_bottom.index as usize].continuation),
+                .get(heap.stack.continuation(resumed_bottom.index)),
             Continuation::Unwind(pending)
                 if pending.target.is_none() && matches!(pending.action, UnwindAction::Restart)
         ));
@@ -13892,9 +14482,13 @@ mod tests {
     fn suspending_a_resumed_activation_again_keeps_its_suspended_sender() {
         let mut heap = frame_heap();
         let class = named_class(&mut heap, "Suspended");
-        let bottom = heap.push_activation(suspendable_header(class, 0, 1), &[], 1);
+        let bottom = heap
+            .push_activation(suspendable_header(class, 0, 1), &[], 1)
+            .expect("the stack holds the frame");
         let bottom_frame = heap.reify(bottom);
-        let top = heap.push_activation(suspendable_header(class, 0, 1), &[], 1);
+        let top = heap
+            .push_activation(suspendable_header(class, 0, 1), &[], 1)
+            .expect("the stack holds the frame");
         let top_frame = heap.reify(top);
         heap.suspend_activations(0);
         heap.resume_activation(top_frame, FeedbackBase::NOT_ASSIGNED);
@@ -13919,16 +14513,21 @@ mod tests {
     fn suspending_from_a_floor_leaves_the_activations_below_it_running() {
         let mut heap = frame_heap();
         let class = named_class(&mut heap, "Suspended");
-        let below = heap.push_activation(suspendable_header(class, 0, 1), &[], 1);
-        let lowest = heap.push_activation(suspendable_header(class, 0, 1), &[], 1);
+        let below = heap
+            .push_activation(suspendable_header(class, 0, 1), &[], 1)
+            .expect("the stack holds the frame");
+        let lowest = heap
+            .push_activation(suspendable_header(class, 0, 1), &[], 1)
+            .expect("the stack holds the frame");
         let lowest_frame = heap.reify(lowest);
+        let floor = heap.activation_position(lowest);
 
-        heap.suspend_activations(1);
+        heap.suspend_activations(floor);
 
         assert_eq!(heap.activation_depth(), 1);
         assert!(heap.activation_reified(below).is_none());
         assert!(heap.frame_sender(lowest_frame).is_none());
-        assert!(heap.suspend_activations(1).is_none());
+        assert!(heap.suspend_activations(floor).is_none());
         let resumed = heap.resume_activation(lowest_frame, FeedbackBase::NOT_ASSIGNED);
         heap.pop_activation(resumed);
         heap.pop_activation(below);
@@ -13938,18 +14537,23 @@ mod tests {
     fn suspended_activations_still_count_against_the_depth_limit() {
         let mut heap = frame_heap();
         let class = named_class(&mut heap, "Suspended");
-        let bottom = heap.push_activation(
-            ActivationHeader {
-                counted: false,
-                ..suspendable_header(class, 0, 1)
-            },
-            &[],
-            1,
-        );
+        let bottom = heap
+            .push_activation(
+                ActivationHeader {
+                    counted: false,
+                    ..suspendable_header(class, 0, 1)
+                },
+                &[],
+                1,
+            )
+            .expect("the stack holds the frame");
         let bottom_frame = heap.reify(bottom);
-        let top = heap.push_activation(suspendable_header(class, 0, 1), &[], 1);
+        let top = heap
+            .push_activation(suspendable_header(class, 0, 1), &[], 1)
+            .expect("the stack holds the frame");
         let top_frame = heap.reify(top);
-        heap.push_activation(suspendable_header(class, 0, 1), &[], 1);
+        heap.push_activation(suspendable_header(class, 0, 1), &[], 1)
+            .expect("the stack holds the frame");
         let before = heap.counted_depth();
         assert_eq!(before, 2);
 
@@ -13979,8 +14583,9 @@ mod tests {
         // Garbage below the frame, so that the compaction moves it.
         heap.allocate_string(class, crate::CodePoints::from("garbage"));
         let young = heap.allocate_string(class, crate::CodePoints::from("young"));
-        let activation =
-            heap.push_activation(suspendable_header(class, 1, 2), &[Value::object(young)], 1);
+        let activation = heap
+            .push_activation(suspendable_header(class, 1, 2), &[Value::object(young)], 1)
+            .expect("the stack holds the frame");
         heap.reify(activation);
         let frame = heap.suspend_activations(0).expect("a top frame");
         let root = heap.stash(Value::object(heap.frame_object(frame)));
@@ -14030,7 +14635,9 @@ mod tests {
     fn a_young_value_written_into_a_suspended_old_frame_is_remembered() {
         let mut heap = frame_heap();
         let class = old_instance_class(&mut heap);
-        let activation = heap.push_activation(suspendable_header(class, 0, 2), &[], 2);
+        let activation = heap
+            .push_activation(suspendable_header(class, 0, 2), &[], 2)
+            .expect("the stack holds the frame");
         heap.reify(activation);
         scavenge_bare(&mut heap, true, &mut []);
         // A class of its own: the scavenge left `class` stale.
@@ -14106,17 +14713,24 @@ mod tests {
                 .class_application_index(class)
                 .expect("an application");
             let object = mutator.builtin_class(crate::BuiltinClass::Object);
-            let activation = mutator.heap.push_activation(
-                ActivationHeader {
-                    kind: ActivationKind::Factory(object),
-                    ..header()
-                },
-                &[],
-                1,
-            );
+            let activation = mutator
+                .heap
+                .push_activation(
+                    ActivationHeader {
+                        kind: ActivationKind::Factory(object),
+                        ..header()
+                    },
+                    &[],
+                    1,
+                )
+                .expect("the stack holds the frame");
             // Entered at `Local`'s level, though the frame names no class
             // that keeps the level's application: only the side table can.
-            mutator.heap.stack.entries[activation.index as usize].entered_level = level;
+            mutator.heap.stack.set_header_word(
+                activation.index,
+                frame_header::ENTERED_LEVEL,
+                frames::number_word(level.index() as u64),
+            );
             mutator.heap.reify(activation);
             let frame = mutator.heap.suspend_activations(0).expect("a top frame");
             (

@@ -1060,7 +1060,34 @@ impl<'gc> Mutator<'gc> {
             // first and read back.
             return self.push_past_the_limit(Box::new(header), arguments, temporaries);
         }
-        Ok(self.heap.push_activation(header, arguments, temporaries))
+        match self.heap.push_activation(header, arguments, temporaries) {
+            Ok(activation) => Ok(activation),
+            Err(exhausted) => Err(self.refuse_exhausted_push(exhausted.header)),
+        }
+    }
+
+    /// The refusal of a push the activation stack's reservation could not
+    /// hold (`Heap::push_activation`'s `StackExhausted`): the depth limit's
+    /// own `stack overflow: recursion too deep`, since the reservation is
+    /// the net beneath the limit for frames whose register files the
+    /// activation count does not bound. While the reserve is held -- a VM
+    /// error's `signal` is running or being pushed -- the run ends instead,
+    /// as an overrun of the reserve does, so that a `signal` the
+    /// reservation refuses in turn cannot raise the error again.
+    #[cold]
+    #[inline(never)]
+    fn refuse_exhausted_push(&mut self, header: Box<ActivationHeader<'gc>>) -> Signal<'gc> {
+        let refusal = if self.depth_reserve_held() {
+            Signal::Terminate(Box::new(self.overrun_of_the_reserve(&header)))
+        } else {
+            recursion_too_deep(&header)
+        };
+        // As `push_past_the_limit` undoes it: a refused activation never
+        // runs, so a future it was to compute is unresolved again.
+        if let Continuation::Future(forcing) = header.then {
+            self.future_abandoned(*forcing);
+        }
+        refusal
     }
 
     /// A counted push at or past L. While a VM error's `signal` holds the
@@ -1085,7 +1112,10 @@ impl<'gc> Mutator<'gc> {
         {
             recursion_too_deep(&header)
         } else if self.heap.counted_depth() < MAX_ACTIVATION_DEPTH + DEPTH_RESERVE {
-            return Ok(self.heap.push_activation(*header, arguments, temporaries));
+            return self
+                .heap
+                .push_activation(*header, arguments, temporaries)
+                .map_err(|exhausted| self.refuse_exhausted_push(exhausted.header));
         } else {
             Signal::Terminate(Box::new(self.overrun_of_the_reserve(&header)))
         };

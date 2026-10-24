@@ -111,7 +111,6 @@ impl Word {
     }
 
     /// Whether the word is a `SmallInteger`.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn is_small_integer(self) -> bool {
         self.0 & SMALL_INTEGER_TAG == SMALL_INTEGER_TAG
     }

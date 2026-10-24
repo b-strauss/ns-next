@@ -725,13 +725,17 @@ check").
   `vmMirror` slot and the kernel every builtin class's `enclosing` object,
   but a root of their own keeps both alive and forwarded whatever those
   links are.
-- The activation stack: each entry's receiver, `current_class`, the
-  `ClassReference` or closure object its `ActivationKind` names and the frame it is married
-  to; and every register.
-  `StackEntry`'s impl is in `heap.rs`, where its fields are private.
+- The activation stack, as one linear range of tagged words, `[0, top)`:
+  every frame's header -- its receiver, `current_class`, the closure object
+  or class its kind's operand names, the frame object it is married to,
+  and numbers the tracer passes over -- and its registers, with no stack
+  map and no walk of frames; the words a pop left above the top are never
+  read ([execution.md](execution.md), "Planned: frames as words in one
+  reservation"). `ActivationStack`'s impl is in `heap.rs`, where its
+  fields are private.
 - The side table of continuations (`Heap`'s `continuations`): each running
-  activation's continuation other than `Deliver`, which its stack entry
-  names by row (an entry that delivers names none), and the state it
+  activation's continuation other than `Deliver`, which its stack frame
+  names by row (a frame that delivers names none), and the state it
   carries — a `WhileLoop`'s condition and
   body, a `DoLoop`'s receiver and action, a `NestedClassCreation`'s
   enclosing object and declaring class, an `Instantiation`'s instance, levels
@@ -761,9 +765,9 @@ check").
   numbers; a frame object's ten fixed fields -- sender, home, receiver,
   current class, the kind's operand among them, the rest numbers or
   constants the tracer passes over -- and its registers. A married frame's
-  registers are its entry's, traced with the stack, so its own are skipped;
-  the `Format::Frame` arm skips them only for a married word of 0 or more, a
-  stack index. A suspended frame's registers are the only copy of its
+  registers are its stack frame's, traced with the stack, so its own are
+  skipped; the `Format::Frame` arm skips them only for a married word of 0
+  or more, a stack offset. A suspended frame's registers are the only copy of its
   values, so they are traced like a returned frame's. The digits of a
   `LargeInteger`, a boxed `Float`'s bits, a string's code points and a
   `ByteArray`'s reserve and bytes are never handed to the tracer, since they
@@ -839,8 +843,8 @@ polymorphic pool and the global cache hold the same entries, and the family
 map holds `Rc`s to code, which hold no handle. The table lives in the step
 state, per heap, so nothing in it is ever reached from another heap, and a
 move leaves every entry valid. The numbers the caches add to traced records
-are not handles either, and the tracers say so: a stack entry's
-`feedback_base` (its `Trace` impl) and a closure's feedback-base field
+are not handles either, and the tracers say so: a stack frame's feedback
+base, a `SmallInteger` word the stack's trace passes over, and a closure's feedback-base field
 (`trace_block`), and the dispatch id every object carries in its header
 word, which is what a guard reads ([dispatch.md](dispatch.md), "The dispatch
 id"). The ids a cache guards on are per heap and never serialized. The
@@ -1710,36 +1714,37 @@ index, not an object.
 
 ### Frames, the activation stack and the marriage
 
-The activation stack is a root, and nothing there is reclaimed: an entry is
+The activation stack is a root, and nothing there is reclaimed: a frame is
 popped when its activation returns, so the stack is bounded by the deepest the
-program has been. Marking walks every `StackEntry` — receiver, `current_class`,
-`kind` and `reified` — every register in `stack.values`, and every row of
-the side table of continuations, which an entry whose continuation is not
-`Deliver` names by row.
+program has been. Marking traces every word of every live frame as one range
+-- the header's receiver, `current_class`, operand and `reified` words among
+them, every other header word a `SmallInteger` or nil, then the registers --
+and every row of the side table of continuations, which a frame whose
+continuation is not `Deliver` names by row.
 
 A frame object is collected exactly as every other object is, with the same
 mark bit and the same forwarding table: there is no separate store for
 frames.
 
 **A married frame cannot be collected, and that needs no rule of its own.**
-`StackEntry::trace` follows `reified`, so a frame whose activation is still
+The stack's trace reads its frames' `reified` words, so a frame whose activation is still
 running is reachable from the stack and is marked. Leaving that to the root set
 rather than to a special case is what keeps a later change from silently
 freeing a running activation's frame.
 
 The marriage survives compaction in both directions: the frame object's
-married field holds a *stack* index as a `SmallInteger`, and no stack entry
-moves, and `StackEntry::reified` is forwarded like any other handle. While
-it is married the frame's own registers are nil and skipped by the trace,
-since the live ones are the entry's. The divorce on pop writes the program
+married field holds a *stack* offset as a `SmallInteger`, and no stack frame
+moves, and the stack frame's `reified` word is forwarded like any other
+word. While it is married the frame's own registers are nil and skipped by
+the trace, since the live ones are the stack's. The divorce on pop writes the program
 counter and the uncontinuable flag, clears the marriage, and copies the
 registers into the frame object only when the activation retains them.
 
 **A frame can be tenured while it is married.** A scavenge copies a young
 married frame like any other object -- its registers skipped, since they
-are the entry's -- and `StackEntry::reified` is rewritten to the copy, in
-the survivor space or the old space; the married field still holds the
-stack index. While it is married an old frame needs no remembering: its
+are the stack's -- and the stack frame's `reified` word is rewritten to the
+copy, in the survivor space or the old space; the married field still holds
+the stack offset. While it is married an old frame needs no remembering: its
 live registers are on the activation stack, which every scavenge traces as
 a root. The divorce is a store into an existing object, so it takes the
 barrier's rule: when it copies the registers into an old frame and one of
@@ -1771,10 +1776,11 @@ Pinned by `heap.rs`'s
 `a_young_value_written_into_a_suspended_old_frame_is_remembered` and
 `the_reclaim_keeps_the_entered_level_of_a_suspended_activation`.
 
-Road step 7a replaces the two vectors by frames of tagged words in one
-reservation, which the collector traces as one linear range
-([execution.md](execution.md), "Planned: frames as words in one
-reservation").
+The stack is frames of tagged words in one reservation, which the
+collector traces as one linear range ([execution.md](execution.md),
+"Planned: frames as words in one reservation"), pinned by `heap.rs`'s
+`the_stack_is_traced_as_one_range_of_tagged_words` and
+`a_collection_after_a_deep_pop_reads_nothing_above_the_top`.
 
 What keeps a frame alive past its return is a closure's captured frame, or
 another reified frame's `sender`/`home`. Closure conversion shrank what a

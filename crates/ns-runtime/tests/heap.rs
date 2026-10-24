@@ -422,8 +422,9 @@ fn a_returning_activation_keeps_its_registers_only_when_it_was_marked() {
         let class = mutator.builtin_class(BuiltinClass::Object);
         let heap = mutator.heap_mut();
 
-        let unmarked =
-            heap.push_activation(activation_header(class), &[Value::small_integer(1)], 1);
+        let unmarked = heap
+            .push_activation(activation_header(class), &[Value::small_integer(1)], 1)
+            .expect("the stack holds the frame");
         heap.activation_set_program_counter(unmarked, 0);
         let forgetful = heap.reify(unmarked);
         heap.activation_set_local(unmarked, 1, Value::small_integer(2));
@@ -444,7 +445,9 @@ fn a_returning_activation_keeps_its_registers_only_when_it_was_marked() {
         heap.frame_set_local(forgetful, 2, Value::small_integer(9));
         assert!(heap.frame_local(forgetful, 2).is_nil());
 
-        let marked = heap.push_activation(activation_header(class), &[Value::small_integer(1)], 1);
+        let marked = heap
+            .push_activation(activation_header(class), &[Value::small_integer(1)], 1)
+            .expect("the stack holds the frame");
         heap.activation_set_program_counter(marked, 0);
         let kept = heap.reify(marked);
         // What `MakeClosure` does for a block whose `outer_reach` is

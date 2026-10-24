@@ -50,6 +50,23 @@ table_index!(MixinId, "a mixin");
 table_index!(ApplicationIndex, "a mixin application");
 table_index!(CodeId, "a compiled body");
 
+impl CodeId {
+    /// The id a frame's header recorded as `index` answered it: a frame
+    /// holds every number as a word, and the push stored one this heap
+    /// minted.
+    pub(crate) fn from_raw(raw: u32) -> CodeId {
+        CodeId(raw)
+    }
+}
+
+impl ApplicationIndex {
+    /// The index a frame's header recorded as `index` answered it, as
+    /// `CodeId::from_raw`.
+    pub(crate) fn from_raw(raw: u32) -> ApplicationIndex {
+        ApplicationIndex(raw)
+    }
+}
+
 /// A body's code id in the last heap that asked for it, with that heap's
 /// code-table epoch (`Heap::code_table_epoch`): a one-entry cache in front of
 /// `Heap::register_code`'s map, read by every activation's push, every
