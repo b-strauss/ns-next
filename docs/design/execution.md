@@ -8101,13 +8101,20 @@ callee                      | r0 .. r(argc-1)       | header (13) | r(argc+13) .
   the `Heap` -- instead of a slice; the buffer goes.
 
 **Two stages, each measured** as "What frames as words moved" was, with
-three builds a side. The first drops the buffer: decisions, primitives
-and builtins read the argument window, and the push copies once, from the
-caller's registers. The second overlaps the windows: the layout, the
-lowerings, new send forms with new wire tags, and the decoder's checks.
-Each is kept only if no program measures slower with its builds not
-overlapping those of the tree before it -- the second against the first,
-not only against `master` -- and the measurement says what each moved.
+three builds a side. The first makes the arguments contiguous and drops
+the buffer: both lowerings lower a send's arguments into slots at the top
+of the live registers, new send forms name the slot base and each
+argument's source, decisions, primitives and builtins read the argument
+window, and the push copies once, from the slots. A window is a base and
+a count, so the slots come first: over today's arbitrary register lists
+the window would have to lend the instruction's list to every decision.
+The second overlaps the windows: the header left out of the numbering and
+13 words in every build, the callee's frame on the caller's slots, the
+pop, suspension and frame objects without the header's numbers, and the
+decoder's checks. Each is kept only if no program measures slower with
+its builds not overlapping those of the tree before it -- the second
+against the first, not only against `master` -- and the measurement says
+what each moved.
 
 ## Planned: JIT tiers
 

@@ -24,8 +24,8 @@ instead of being copied. Designed with the user on 2026-10-24
 windows"): Cog's layout, the arguments, then the header, then the other
 registers, the header's words left out of the register numbering and 13
 words in every build; in two stages, each measured against the tree
-before it -- first the argument buffer goes and the push copies once, then
-the windows overlap. 7b and 7a are built: a
+before it -- first a send's arguments become contiguous slots, the
+argument buffer goes and the push copies once, then the windows overlap. 7b and 7a are built: a
 running activation is suspended into its frame and resumed from it lazily,
 the landing point of every later deoptimization, and a sixth stress mode
 runs every golden on from suspended frames
