@@ -1062,8 +1062,35 @@ impl<'gc> Mutator<'gc> {
         }
         match self.heap.push_activation(header, arguments, temporaries) {
             Ok(activation) => Ok(activation),
-            Err(exhausted) => Err(self.refuse_exhausted_push(exhausted.header)),
+            Err(exhausted) => {
+                self.push_into_the_stack_reserve(exhausted.header, arguments, temporaries)
+            }
         }
+    }
+
+    /// A push the ordinary room of the activation stack's reservation could
+    /// not hold. While the depth limit's reserve is held -- a VM error's
+    /// `signal` is running or being pushed -- the frame may use the room
+    /// the ordinary pushes leave free, as a counted push may go
+    /// `DEPTH_RESERVE` past L; a push that room cannot hold either, and
+    /// every push when the reserve is not held, is refused
+    /// (`refuse_exhausted_push`).
+    #[cold]
+    #[inline(never)]
+    fn push_into_the_stack_reserve(
+        &mut self,
+        header: Box<ActivationHeader<'gc>>,
+        arguments: &[Value<'gc>],
+        temporaries: usize,
+    ) -> Result<ActivationReference, Signal<'gc>> {
+        // The order `push_past_the_limit` asks in: the push that makes a
+        // freshly taken reserve held is asked about first.
+        if !self.pushes_the_reserves_does_not_understand(&header) && !self.depth_reserve_held() {
+            return Err(self.refuse_exhausted_push(header));
+        }
+        self.heap
+            .push_reserved_activation(*header, arguments, temporaries)
+            .map_err(|exhausted| self.refuse_exhausted_push(exhausted.header))
     }
 
     /// The refusal of a push the activation stack's reservation could not
@@ -1115,7 +1142,9 @@ impl<'gc> Mutator<'gc> {
             return self
                 .heap
                 .push_activation(*header, arguments, temporaries)
-                .map_err(|exhausted| self.refuse_exhausted_push(exhausted.header));
+                .or_else(|exhausted| {
+                    self.push_into_the_stack_reserve(exhausted.header, arguments, temporaries)
+                });
         } else {
             Signal::Terminate(Box::new(self.overrun_of_the_reserve(&header)))
         };
@@ -1233,7 +1262,8 @@ impl<'gc> Mutator<'gc> {
         defining_class: ClassReference<'gc>,
     ) {
         if !defining_class.same(self.builtin_class(BuiltinClass::Object))
-            || self.heap.counted_depth() < MAX_ACTIVATION_DEPTH - DEPTH_RESERVE
+            || (self.heap.counted_depth() < MAX_ACTIVATION_DEPTH - DEPTH_RESERVE
+                && !self.heap.stack_is_within_the_reserve_of_its_limit())
             || self.depth_reserve_held()
         {
             return;
@@ -3169,5 +3199,73 @@ mod tests {
         assert_eq!(std::mem::size_of::<Signal>(), 40);
         assert_eq!(std::mem::size_of::<Result<Step, Signal>>(), 56);
         assert_eq!(std::mem::size_of::<EvaluationResult>(), 40);
+    }
+
+    /// A recursion whose frames fill the stack's reservation long before the
+    /// depth limit is reached. The transcript writes to the process's
+    /// stdout, which a unit test cannot read, so `probe` answers what
+    /// `main:args:` shows.
+    const DEEP: &str = indoc! {"
+        class Deep = Object new (
+        ) (
+          recurse: depth = (
+            | first second third fourth |
+            ^self recurse: depth + 1.
+          )
+
+          public probe = (
+            ^[self recurse: 0] on: Error do: [:error | error messageText]
+          )
+
+          public main: platform args: arguments = (
+            platform transcript
+                show: ([self recurse: 0] on: Error do: [:error | error messageText]);
+                newLine.
+          )
+        )
+    "};
+
+    crate::for_each_lowering! {
+        /// A push the stack's reservation cannot hold is signalled as a push
+        /// past the depth limit is: an `Error` an `on:do:` catches, with the
+        /// same text, though the activation count is far below the limit.
+        /// The handler runs on the reserve the refusal leaves.
+        fn a_recursion_the_reservation_cannot_hold_is_a_catchable_stack_overflow(lowering) {
+            let module = ns_syntax::parse(DEEP).expect("parse");
+            let resolved = crate::resolve(
+                module,
+                Rc::from(DEEP),
+                SourceOrigin::File(PathBuf::from("deep.ns")),
+            )
+            .expect("resolve");
+            let mut interpreter =
+                crate::heap::with_stack_reservation(1 << 20, || Interpreter::bootstrap_with(lowering));
+            let class = interpreter.load_module(&resolved);
+            let deep = expect_ok(interpreter.instantiate(&class, &[]), "Deep new");
+            let text = expect_ok(
+                interpreter.send(&deep, Symbol::intern("probe"), &[]),
+                "Deep probe",
+            );
+            interpreter.enter(|mutator| {
+                let value = mutator.fetch(&text);
+                let Some(object) = value.as_object() else {
+                    panic!("expected a string, got {}", mutator.heap().describe(value));
+                };
+                assert_eq!(
+                    mutator.heap().str_value(object).as_deref(),
+                    Some("stack overflow: recursion too deep")
+                );
+                assert!(mutator.heap.counted_depth() < MAX_ACTIVATION_DEPTH / 4);
+            });
+            let platform = interpreter.platform();
+            let arguments = interpreter.enter(|mutator| {
+                let array = mutator.new_array(Vec::new());
+                mutator.stash(Value::object(array))
+            });
+            expect_ok(
+                interpreter.send(&deep, Symbol::intern("main:args:"), &[platform, arguments]),
+                "Deep main:args:",
+            );
+        }
     }
 }

@@ -412,7 +412,8 @@ fn start_signalling<'gc>(
         Ok(step) => step,
     };
     let taking = !mutator.depth_reserve_held()
-        && mutator.heap.counted_depth() >= MAX_ACTIVATION_DEPTH - DEPTH_RESERVE;
+        && (mutator.heap.counted_depth() >= MAX_ACTIVATION_DEPTH - DEPTH_RESERVE
+            || mutator.heap.stack_is_within_the_reserve_of_its_limit());
     let sender = mutator.heap.top_activation();
     let taking = taking && sender.is_some();
     if let (true, Some(top)) = (taking, sender) {

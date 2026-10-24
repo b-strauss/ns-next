@@ -19,6 +19,42 @@ pub(super) const STACK_RESERVATION: usize = 16 << 30;
 #[cfg(not(target_pointer_width = "64"))]
 pub(super) const STACK_RESERVATION: usize = 256 << 20;
 
+#[cfg(test)]
+thread_local! {
+    /// The reservation, in bytes, the next `ActivationStack` of this thread
+    /// takes instead of `STACK_RESERVATION`: how a test gets a stack small
+    /// enough to fill (`with_stack_reservation`).
+    static STACK_RESERVATION_OVERRIDE: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Runs `body` with every stack this thread builds reserving `bytes`, for a
+/// test of the stack's bound. The override ends with `body`.
+#[cfg(test)]
+pub(crate) fn with_stack_reservation<T>(bytes: usize, body: impl FnOnce() -> T) -> T {
+    STACK_RESERVATION_OVERRIDE.with(|cell| cell.set(Some(bytes)));
+    let answer = body();
+    STACK_RESERVATION_OVERRIDE.with(|cell| cell.set(None));
+    answer
+}
+
+/// The reservation a new stack takes.
+pub(super) fn stack_reservation() -> usize {
+    #[cfg(test)]
+    if let Some(bytes) = STACK_RESERVATION_OVERRIDE.with(|cell| cell.get()) {
+        return bytes;
+    }
+    STACK_RESERVATION
+}
+
+/// How much of a reservation only the depth limit's reserve may use, as a
+/// fraction of it: 1 in this many words. An ordinary push is refused once
+/// it would end in the last 1/16th, as one counted push is refused at
+/// `MAX_ACTIVATION_DEPTH`; a push made while the depth reserve is held
+/// (`Mutator::push`) may use all of it, so that the `signal` of the
+/// overflow, its handler search and its handler have room to run.
+const RESERVE_FRACTION: usize = 16;
+
 /// The least a growth commits beyond what is committed, in bytes, so that
 /// a shallow program commits once.
 const MINIMUM_GROWTH: usize = 64 << 10;
@@ -204,6 +240,14 @@ pub(super) struct FrameStack {
     committed: usize,
     /// The reservation's size, in words: no frame ends past it.
     limit: usize,
+    /// Where an ordinary frame must end by, in words: `limit` less the
+    /// reserve. Only a reserved push (`push_reserved`) ends past it.
+    ordinary_limit: usize,
+    /// Where an ordinary push may end without a growth: the committed end
+    /// or `ordinary_limit`, whichever is lower, so that the one comparison
+    /// of the hot path also refuses a frame that would use the reserve,
+    /// though a reserved push has committed past it.
+    ordinary_end: usize,
 }
 
 impl FrameStack {
@@ -218,6 +262,8 @@ impl FrameStack {
             top: 0,
             committed: 0,
             limit,
+            ordinary_limit: limit - limit / RESERVE_FRACTION,
+            ordinary_end: 0,
         })
     }
 
@@ -247,26 +293,52 @@ impl FrameStack {
         words: usize,
     ) -> Result<(usize, &mut [u64]), ReservationExhausted> {
         let start = self.top;
-        if words > self.committed - start {
-            self.grow(words)?;
-        }
         let end = start + words;
+        if end > self.ordinary_end {
+            self.grow(words, self.ordinary_limit)?;
+        }
         self.top = end;
         Ok((start, &mut self.reservation.accessible_mut()[start..end]))
+    }
+
+    /// `push`, but a frame may end anywhere in the reservation, the reserve
+    /// included: the push of an activation the depth limit's reserve is
+    /// held for. Cold, since only the unwinding of an overflow makes it.
+    #[cold]
+    #[inline(never)]
+    pub(super) fn push_reserved(
+        &mut self,
+        words: usize,
+    ) -> Result<(usize, &mut [u64]), ReservationExhausted> {
+        let start = self.top;
+        let end = start + words;
+        if end > self.committed {
+            self.grow(words, self.limit)?;
+        }
+        self.top = end;
+        Ok((start, &mut self.reservation.accessible_mut()[start..end]))
+    }
+
+    /// Whether the top is within the reserve of the end of the ordinary
+    /// frames' room: the stack is as full as an error should find it for
+    /// its `signal` to take the depth limit's reserve, as a counted depth
+    /// within `DEPTH_RESERVE` of the limit is.
+    pub(super) fn within_the_reserve_of_the_limit(&self) -> bool {
+        self.top + (self.limit - self.ordinary_limit) >= self.ordinary_limit
     }
 
     /// Commits whole pages from the committed end up to at least
     /// `top + words`: double what is committed, at least `MINIMUM_GROWTH`
     /// and at most `MAXIMUM_GROWTH` more, within the reservation, or just
     /// what the push needs when the operating system refuses that much.
-    /// Refuses, committing nothing, past the reservation. A commit the
+    /// Refuses, committing nothing, past `cap` words. A commit the
     /// operating system refuses outright is running out of memory, as the
     /// object space's is.
     #[cold]
     #[inline(never)]
-    fn grow(&mut self, words: usize) -> Result<(), ReservationExhausted> {
+    fn grow(&mut self, words: usize, cap: usize) -> Result<(), ReservationExhausted> {
         let needed = match self.top.checked_add(words) {
-            Some(end) if end <= self.limit => end,
+            Some(end) if end <= cap => end,
             _ => return Err(ReservationExhausted),
         };
         let page = Reservation::page_size();
@@ -276,7 +348,11 @@ impl FrameStack {
         // end inside it up to a page stays inside it.
         let needed_bytes = (needed * 8).div_ceil(page) * page;
         let growth = committed_bytes.clamp(MINIMUM_GROWTH, MAXIMUM_GROWTH);
-        let generous = (committed_bytes + growth).min(size).div_ceil(page) * page;
+        let generous = (committed_bytes + growth)
+            .min(cap * 8)
+            .div_ceil(page)
+            .saturating_mul(page)
+            .min(size);
         let target = needed_bytes.max(generous);
         let end = if self.reservation.commit(committed_bytes..target).is_ok() {
             target
@@ -289,7 +365,8 @@ impl FrameStack {
         } else {
             out_of_memory(needed_bytes - committed_bytes)
         };
-        self.committed = end / 8;
+        self.committed = self.committed.max(end / 8);
+        self.ordinary_end = self.committed.min(self.ordinary_limit);
         Ok(())
     }
 
@@ -444,13 +521,47 @@ mod tests {
                 }
                 Err(ReservationExhausted) => {
                     assert_eq!(stack.top(), before);
-                    assert!(before + frame_words > stack.limit());
+                    assert!(before + frame_words > stack.ordinary_limit);
                     break;
                 }
             }
         }
         assert!(pushed > 0);
         assert_eq!(stack.words().len(), stack.top());
+    }
+
+    #[test]
+    fn a_reserved_push_may_use_the_room_an_ordinary_push_leaves() {
+        let mut stack = FrameStack::new(64 << 10).expect("reserve");
+        let frame_words = frame_header::COUNT + 100;
+        while stack.push(frame_words).is_ok() {}
+        let ordinary_top = stack.top();
+        assert!(
+            stack.limit() - ordinary_top >= frame_words,
+            "a reserve is left"
+        );
+        let mut reserved = 0;
+        loop {
+            let before = stack.top();
+            match stack.push_reserved(frame_words) {
+                Ok((offset, _)) => {
+                    assert_eq!(offset, before);
+                    reserved += 1;
+                }
+                Err(ReservationExhausted) => {
+                    assert_eq!(stack.top(), before);
+                    assert!(before + frame_words > stack.limit());
+                    break;
+                }
+            }
+        }
+        assert!(reserved > 0);
+        // Back below the ordinary room, an ordinary push is refused only at
+        // the ordinary limit again, though the reserve has been committed.
+        stack.truncate(ordinary_top);
+        assert!(stack.push(frame_words).is_err());
+        stack.truncate(ordinary_top - frame_words);
+        assert!(stack.push(frame_words).is_ok());
     }
 
     #[test]

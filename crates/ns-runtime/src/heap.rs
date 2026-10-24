@@ -31,6 +31,8 @@ use std::rc::Rc;
 
 mod compaction;
 mod frames;
+#[cfg(test)]
+pub(crate) use frames::with_stack_reservation;
 mod header;
 mod ids;
 pub(crate) mod mark;
@@ -617,8 +619,8 @@ impl ActivationStack {
     /// object space does.
     fn new() -> ActivationStack {
         ActivationStack {
-            frames: FrameStack::new(frames::STACK_RESERVATION)
-                .unwrap_or_else(|_| out_of_memory(frames::STACK_RESERVATION)),
+            frames: FrameStack::new(frames::stack_reservation())
+                .unwrap_or_else(|_| out_of_memory(frames::stack_reservation())),
             innermost: NO_FRAME,
             live: 0,
             counted: 0,
@@ -5812,6 +5814,39 @@ impl<'gc> Heap<'gc> {
         arguments: &[Value<'gc>],
         temporary_count: usize,
     ) -> Result<ActivationReference, StackExhausted<'gc>> {
+        self.push_activation_in::<false>(header, arguments, temporary_count)
+    }
+
+    /// `push_activation`, refusing only a frame the whole reservation cannot
+    /// hold, the reserve the ordinary pushes leave free included: the push
+    /// made while the depth limit's reserve is held, so that the `signal`
+    /// of the overflow and its handler run in the room the refusal left.
+    #[cold]
+    #[inline(never)]
+    pub fn push_reserved_activation(
+        &mut self,
+        header: ActivationHeader<'gc>,
+        arguments: &[Value<'gc>],
+        temporary_count: usize,
+    ) -> Result<ActivationReference, StackExhausted<'gc>> {
+        self.push_activation_in::<true>(header, arguments, temporary_count)
+    }
+
+    /// Whether the activation stack is within the reserve of the end of the
+    /// room ordinary frames have: an error raised here takes the depth
+    /// limit's reserve for its `signal`, as one within `DEPTH_RESERVE`
+    /// activations of the limit does.
+    pub fn stack_is_within_the_reserve_of_its_limit(&self) -> bool {
+        self.stack.frames.within_the_reserve_of_the_limit()
+    }
+
+    #[inline(always)]
+    fn push_activation_in<const RESERVED: bool>(
+        &mut self,
+        header: ActivationHeader<'gc>,
+        arguments: &[Value<'gc>],
+        temporary_count: usize,
+    ) -> Result<ActivationReference, StackExhausted<'gc>> {
         let register_count = arguments.len() + temporary_count;
         let argument_count =
             u32::try_from(arguments.len()).expect("more than u32::MAX arguments to one activation");
@@ -5908,7 +5943,12 @@ impl<'gc> Heap<'gc> {
             continuations,
             ..
         } = self;
-        let (start, frame) = match stack.frames.push(words) {
+        let pushed = if RESERVED {
+            stack.frames.push_reserved(words)
+        } else {
+            stack.frames.push(words)
+        };
+        let (start, frame) = match pushed {
             Ok(pushed) => pushed,
             Err(frames::ReservationExhausted) => return Err(StackExhausted::of(header)),
         };

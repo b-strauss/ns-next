@@ -568,7 +568,19 @@ live ones.
   cold path, and a push the reservation cannot hold raises the same
   `stack overflow: recursion too deep`, whose text names no number: a net
   for frames whose register files the activation count does not bound,
-  since a body may have up to 65,535 registers.
+  since a body may have up to 65,535 registers. The net keeps a reserve as
+  L does: the last 1/16th of the reservation (`RESERVE_FRACTION`; 1 GiB of
+  16) is left to the pushes made while the depth reserve is held
+  (`Heap::push_reserved_activation`, which `Mutator::push` makes when an
+  ordinary push is refused and the reserve is held), and an error raised
+  with the stack that close to its end takes the depth reserve for its
+  `signal` as one within `DEPTH_RESERVE` of L does
+  (`Heap::stack_is_within_the_reserve_of_its_limit`). Without it the
+  `signal` of the overflow is itself refused and the run ends with the
+  error instead of the handler running; the `signal`, its handler search
+  and a handler of a few frames need between 256 and 1,024 words of it
+  (`a_recursion_the_reservation_cannot_hold_is_a_catchable_stack_overflow`,
+  in a 1 MiB reservation).
 - **The side tables stay**: a suspended activation leaves the reservation
   for its frame object and its `Suspensions` row exactly as today.
 
