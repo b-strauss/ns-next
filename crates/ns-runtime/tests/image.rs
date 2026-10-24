@@ -4602,14 +4602,32 @@ fn runs_body(writer: &mut encode::Writer, code_id: u32) {
 }
 
 /// Everything of a frame record after its kind and its body: `program_counter`,
-/// continuable, a nil receiver, no sender, no home, no current class, and
+/// uncontinuable, a nil receiver, no sender, no home, no current class, and
 /// `registers` registers, each nil.
 fn frame_tail(writer: &mut encode::Writer, program_counter: u32, registers: u32) {
+    frame_tail_marked(writer, program_counter, registers, true, None);
+}
+
+/// `frame_tail` with the `uncontinuable` flag and the home (a frame's object
+/// id) left to the caller.
+fn frame_tail_marked(
+    writer: &mut encode::Writer,
+    program_counter: u32,
+    registers: u32,
+    uncontinuable: bool,
+    home: Option<u32>,
+) {
     writer.write_u32(program_counter);
-    writer.write_boolean(false); // continuable
+    writer.write_boolean(uncontinuable);
     writer.write_u8(VALUE_NIL); // receiver: nil
     writer.write_boolean(false); // no sender
-    writer.write_boolean(false); // no home
+    match home {
+        Some(frame) => {
+            writer.write_boolean(true);
+            writer.write_u32(frame);
+        }
+        None => writer.write_boolean(false),
+    }
     writer.write_boolean(false); // no current class
     writer.write_u32(registers);
     for _ in 0..registers {
@@ -4651,7 +4669,7 @@ fn a_frame_id_out_of_range_is_a_decode_error_not_a_panic() {
     writer.write_u8(FRAME_TOP_LEVEL); // frame kind: TopLevel
     no_body(&mut writer);
     writer.write_u32(0); // program_counter
-    writer.write_boolean(false); // continuable
+    writer.write_boolean(true); // uncontinuable
     writer.write_u8(VALUE_NIL); // receiver: nil
     writer.write_boolean(true); // has a sender...
     writer.write_u32(99); // ...whose id is out of range
@@ -4680,7 +4698,7 @@ fn a_frame_reference_naming_a_string_is_refused() {
     writer.write_u8(FRAME_TOP_LEVEL); // frame kind: TopLevel
     no_body(&mut writer);
     writer.write_u32(0); // program_counter
-    writer.write_boolean(false); // continuable
+    writer.write_boolean(true); // uncontinuable
     writer.write_u8(VALUE_NIL); // receiver: nil
     writer.write_boolean(true); // has a sender...
     writer.write_u32(0); // ...object 0, the string
@@ -4718,7 +4736,7 @@ fn a_frame_record_whose_register_count_would_exhaust_the_bytes_is_refused_before
     writer.write_u8(FRAME_TOP_LEVEL); // frame kind: TopLevel
     no_body(&mut writer);
     writer.write_u32(0); // program_counter
-    writer.write_boolean(false); // continuable
+    writer.write_boolean(true); // uncontinuable
     writer.write_u8(VALUE_NIL); // receiver: nil
     writer.write_boolean(false); // no sender
     writer.write_boolean(false); // no home
@@ -6393,7 +6411,7 @@ fn a_closure_frame_naming_an_object_that_is_not_a_closure_is_refused() {
     writer.write_u32(0); // ...naming object 0, the string
     runs_body(&mut writer, 0); // the fixture's block
     writer.write_u32(0); // program_counter
-    writer.write_boolean(false); // continuable
+    writer.write_boolean(true); // uncontinuable
     writer.write_u8(VALUE_NIL); // receiver: nil
     writer.write_boolean(false); // no sender
     writer.write_boolean(true); // a home...
@@ -8066,6 +8084,62 @@ fn foo_frame_at_program_counter(
         runs_body(writer, 1); // code id 1 -- `foo`'s body
         frame_tail(writer, program_counter, registers);
     }
+}
+
+/// An image is written only when no activation runs, so a frame it carries
+/// has returned and is marked so. One that is not could be resumed from the
+/// registers and program counter its author wrote.
+#[test]
+fn a_frame_not_marked_uncontinuable_is_refused() {
+    let mut writer = one_frame_prefix();
+    writer.write_u8(FRAME_TOP_LEVEL); // frame kind: TopLevel
+    no_body(&mut writer);
+    frame_tail_marked(&mut writer, 0, 0, false, None);
+    writer.write_u32(0); // no roots
+    let bytes = writer.into_bytes();
+    assert_eq!(
+        GraphFixture::new().decode_error(&bytes),
+        decode::DecodeError::ContinuableFrame
+    );
+}
+
+/// Only a closure's activation has a home, the activation its `^` returns
+/// from; a method frame that names one is not something a run produces.
+#[test]
+fn a_method_frame_with_a_home_is_refused() {
+    let (mut fixture, table) = closure_world();
+    let bytes = closure_over_frame(|writer| {
+        writer.write_u8(FRAME_METHOD); // frame kind: Method
+        writer.write_u32(0); // selector id 0 -- "foo"
+        writer.write_u8(mixins::access_tag(AccessModifier::Public));
+        runs_body(writer, 1); // code id 1 -- `foo`'s body
+        frame_tail_marked(writer, 0, 2, true, Some(1));
+    });
+    fixture.decoded(&bytes, "decode", |heap, graph| {
+        assert_eq!(
+            decode::verify_graph(heap, graph, &table),
+            Err(decode::DecodeError::FrameHomeMismatch)
+        );
+    });
+}
+
+/// The record can leave a closure frame's home out, and a `^` in its body
+/// would then have nowhere to return to.
+#[test]
+fn a_closure_frame_without_a_home_is_refused() {
+    let (mut fixture, table) = closure_world();
+    let bytes = closure_over_frame(|writer| {
+        writer.write_u8(FRAME_CLOSURE); // frame kind: a closure...
+        writer.write_u32(0); // ...object 0
+        runs_body(writer, 0); // code id 0 -- the block's body
+        frame_tail_marked(writer, 0, 1, true, None);
+    });
+    fixture.decoded(&bytes, "decode", |heap, graph| {
+        assert_eq!(
+            decode::verify_graph(heap, graph, &table),
+            Err(decode::DecodeError::FrameHomeMismatch)
+        );
+    });
 }
 
 #[test]
@@ -11849,14 +11923,11 @@ fn an_activation_object_round_trips() {
     });
 }
 
-/// A decoded frame never ran in the loading world, so it is never married and
-/// no `^` can return into it -- whatever its record's `uncontinuable` flag
-/// says. `raise_return` decides a home's liveness by `Heap::frame_activation`,
-/// not by that flag: a file claiming a continuable home must still produce
-/// `cannotReturn` rather than a `Signal::Return` that no activation on the
-/// stack will ever catch.
+/// A decoded frame never ran in the loading world, so no `^` can return into
+/// it, and a file that calls its home continuable would have it resumed
+/// from registers the file chose: the loader refuses it outright.
 #[test]
-fn a_return_into_a_decoded_home_is_cannot_return_even_if_the_file_calls_it_continuable() {
+fn a_real_image_with_a_home_called_continuable_is_refused() {
     let source = indoc! {"
         class X = Object new (
         ) (
@@ -11891,29 +11962,9 @@ fn a_return_into_a_decoded_home_is_cannot_return_even_if_the_file_calls_it_conti
         .expect("snapshot")
     });
 
-    let mut loaded = image::load(&bytes).expect("load");
-    let decoded = loaded.roots[1].clone();
-    loaded.interpreter.enter(|mutator| {
-        let decoded_value = mutator.fetch(&decoded);
-        let decoded_home = mutator
-            .heap()
-            .closure_home(object(decoded_value))
-            .expect("expected a closure");
-        assert!(
-            !mutator.heap().frame_is_uncontinuable(decoded_home),
-            "the flag the file carried must survive decoding, or this tests nothing"
-        );
-        assert!(mutator.heap().frame_activation(decoded_home).is_none());
-    });
-    match loaded
-        .interpreter
-        .send(&decoded, Symbol::intern("value"), &[])
-    {
-        Err(HostSignal::Error(error)) => {
-            assert!(error.message.contains("cannotReturn"), "{}", error.message)
-        }
-        Err(HostSignal::Return) => panic!("the return escaped instead of being refused"),
-        Ok(_) => panic!("a `^` into a decoded home must not return normally"),
+    match image::load(&bytes) {
+        Err(message) => assert_eq!(message, decode::DecodeError::ContinuableFrame.to_string()),
+        Ok(_) => panic!("a frame not marked uncontinuable must be refused"),
     }
 }
 
@@ -16077,7 +16128,7 @@ fn a_shipped_name_in_a_forbidden_position_is_refused() {
         writer.write_u8(FRAME_TOP_LEVEL);
         no_body(&mut writer);
         writer.write_u32(0); // program counter
-        writer.write_boolean(false); // continuable
+        writer.write_boolean(true); // uncontinuable
         writer.write_u8(VALUE_SHIPPED_MODULE); // receiver: a shipped module
         writer.write_u32(receiver);
         writer.write_boolean(false); // no sender

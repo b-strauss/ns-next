@@ -2365,9 +2365,11 @@ stopped. An image is written only when no activation runs, so every frame
 in one belongs to an activation that has returned and is marked
 uncontinuable; a frame that is not can only come from a crafted image, and
 resuming it would run the image's code from a program counter the image
-chose. Step 7b's decoder therefore refuses every frame not marked
-uncontinuable, and `verify_graph` gains the `home`-against-`kind`
-cross-check in the same step. Suspend and resume is what writes a
+chose. The decoder therefore refuses every frame not marked
+uncontinuable (`DecodeError::ContinuableFrame`), and `verify_graph` holds
+a frame's `home` to its `kind` (`DecodeError::FrameHomeMismatch`: a home
+exactly for a closure's activation). The encoder debug-asserts that no
+frame it writes is suspended. Suspend and resume is what writes a
 continuable frame, so it has to lift that refusal, and before it does,
 verify everything a resumable frame carries: `home` against `kind`, the
 program counter against the body, and the entered level against its

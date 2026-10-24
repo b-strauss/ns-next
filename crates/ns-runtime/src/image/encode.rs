@@ -2000,6 +2000,12 @@ fn encode_frame<'gc>(
     context: &EncodeContext<'_, 'gc>,
     symbols: &mut symbols::Builder,
 ) -> Result<(), String> {
+    // A run leaves no suspended frame behind, and the decoder refuses one:
+    // its registers and program counter would be resumable.
+    debug_assert!(
+        !context.heap.frame_is_suspended(frame),
+        "a suspended frame cannot be written into an image"
+    );
     let snapshot = context.heap.frame_record(frame);
     let frame_class = NamePosition::FrameClass;
     match &snapshot.kind {

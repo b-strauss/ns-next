@@ -460,6 +460,15 @@ pub enum DecodeError {
     /// program counter and the register file mean nothing against a body
     /// the frame never ran.
     FrameCodeMismatch,
+    /// A frame record is not marked uncontinuable. An image is written only
+    /// when no activation runs, so every frame in a genuine one has
+    /// returned; a frame that could be resumed would continue from
+    /// registers and a program counter the image's author chose.
+    ContinuableFrame,
+    /// A frame's `home` is not populated exactly when its kind is a
+    /// closure's: a closure activation's home is the activation a `^` in its
+    /// body returns from, and no other activation has one.
+    FrameHomeMismatch,
     /// A frame record names its body by declaration (`FRAME_BODY_DECLARED`)
     /// where the class it resolves through applies no shipped mixin, or
     /// whose kind is a closure's or a top-level one: only a shipped body,
@@ -915,6 +924,14 @@ impl std::fmt::Display for DecodeError {
             DecodeError::FrameCodeMismatch => {
                 write!(f, "a frame's body is not one its kind runs")
             }
+            DecodeError::ContinuableFrame => write!(
+                f,
+                "a frame is not marked uncontinuable, but an image only carries frames that have returned"
+            ),
+            DecodeError::FrameHomeMismatch => write!(
+                f,
+                "a frame has a home unless it is a closure's activation, or lacks one when it is"
+            ),
             DecodeError::DeclaredBodyNotShipped => write!(
                 f,
                 "a frame names its body by declaration, which only a frame of shipped code may"
@@ -3300,6 +3317,12 @@ fn decode_frame<'gc>(
     };
     let program_counter = reader.read_u32()? as usize;
     let uncontinuable = reader.read_boolean()?;
+    // An image is only written while no activation runs, so every frame it
+    // carries has returned. A frame not marked so could be resumed from its
+    // crafted registers and program counter, which nothing here has run.
+    if !uncontinuable {
+        return Err(DecodeError::ContinuableFrame);
+    }
     let receiver = decode_value(reader, context, tables, NamePosition::FrameRegister)?;
     let sender = decode_frame_reference(reader, context, tables)?;
     let home = decode_frame_reference(reader, context, tables)?;
@@ -5195,6 +5218,8 @@ fn frame_body<'gc>(heap: &Heap<'gc>, frame: FrameReference<'gc>) -> Option<Rc<Co
 ///    runs it at that declaration's class object
 ///    (`Heap::frame_runs_declaration_code`), since the code's mark, not the
 ///    frame, decides where its lexical sends start.
+/// 4. A frame has a `home` exactly when its kind is a closure's, as
+///    `Heap::allocate_frame` holds every frame the runtime reifies to.
 pub fn verify_graph<'gc>(
     heap: &Heap<'gc>,
     graph: &DecodedGraph<'gc>,
@@ -5207,6 +5232,9 @@ pub fn verify_graph<'gc>(
     let index_of = code_index(table);
     for frame in &graph.frames {
         let kind = heap.frame_kind(*frame);
+        if heap.frame_home(*frame).is_some() != matches!(kind, FrameKind::Closure(_)) {
+            return Err(DecodeError::FrameHomeMismatch);
+        }
         let Some(code) = frame_body(heap, *frame) else {
             // Only a top-level frame runs no body (`decode_frame`).
             if matches!(kind, FrameKind::TopLevel) {
