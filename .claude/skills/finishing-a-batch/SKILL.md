@@ -20,21 +20,20 @@ Create a todo for each item.
    rows for the end of a batch, against `git diff --stat master...HEAD` (or the
    batch's commits). Only Markdown changed → no gates; go to step 3.
 2. **Run the gates** the table names: for a batch that changed the runtime
-   `cargo xtask gates end-of-batch` (`images`, `caches`, `benchmarks` and
-   `stress`), and `plugin-verification` beside it for one that changed the
-   plugin. The stress modes act only in debug builds: MOVES moves every object
-   at the run loop's safepoints, CACHES vacates every inline cache at every
-   safepoint, COLLECT collects at every safepoint, SCAVENGE verifies the
-   remembered set and scavenges at every safepoint, WIDE encodes every
-   instruction in its wide form, SUSPEND suspends every activation into its
-   frame and runs on from the frames. `stress` runs the six suites at once,
-   because each ends in a long tail of a few depth-limit tests that leaves
-   most cores idle and the tails overlap (measured 2026-10-01 for the first
-   three: 277 s, MOVES the longest, against 703 s, the sum of the three
-   per-mode times, one after another), each into `.temp/stress-<MODE>.log`,
-   and prints each summary line; each must report every test passed, and
-   `run-corpus` "ran 6, failed 0, skipped 205". Report failures with their
-   output.
+   `cargo xtask gates end-of-batch` (`images`, `caches`, `benchmarks`,
+   `release-checks` and `stress`), and `plugin-verification` beside it for one
+   that changed the plugin. The stress modes act only in debug builds: MOVES
+   moves every object at the run loop's safepoints, CACHES vacates every inline
+   cache at every safepoint, COLLECT collects at every safepoint, SCAVENGE
+   verifies the remembered set and scavenges at every safepoint, WIDE encodes
+   every instruction in its wide form, SUSPEND suspends every activation into
+   its frame and runs on from the frames. `stress` runs the six suites at once,
+   because each ends in a long tail of a few depth-limit tests that leaves most
+   cores idle and the tails overlap (measured 2026-10-01 for the first three:
+   277 s, MOVES the longest, against 703 s, the sum of the three per-mode times,
+   one after another), each into `.temp/stress-<MODE>.log`, and prints each
+   summary line; each must report every test passed, and `run-corpus` "ran 6,
+   failed 0, skipped 205". Report failures with their output.
 3. **Open work.** Remove from `docs/OPEN-WORK.md` every item the batch closed;
    add every item a review, measurement or design discussion left open, with a
    pointer to where it is explained.

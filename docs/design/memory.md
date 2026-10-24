@@ -745,22 +745,23 @@ check").
   takes each row's entered level beside the stack's (`Heap::stack_roots`),
   so an application stays alive while an activation entered at it is
   suspended, as it does while one runs.
-- Every object in the space, by its format: its class word; an instance's
-  or an array's fields; a `WeakArray`'s slots and an `Ephemeron`'s fields,
+- Every object in the space, by its format: its class word; an instance's or
+  an array's fields; a `WeakArray`'s slots and an `Ephemeron`'s fields,
   every one forwarded but traced for liveness only as "Weak references"
-  says; a closure's captured frame and its copied values,
-  never its code id or feedback base; a class object's enclosing object,
-  declaring class, superclass, for a metaclass its class (`this_class`), and
-  its value-class refusal, never its builtin tag, applied clause or
-  application, which are numbers; a frame object's ten fixed fields --
-  sender, home, receiver, current class, the kind's operand among them, the
-  rest numbers or constants the tracer passes over -- and its registers. A
-  married frame's registers are its entry's, traced with the stack, so its
-  own are skipped; the `Format::Frame` arm skips them only for a married
-  word of 0 or more, a stack index. A suspended frame's registers are the
-  only copy of its values, so they are traced like a returned frame's. The digits of a `LargeInteger`, a boxed `Float`'s bits,
-  a string's code points and a `ByteArray`'s reserve and bytes are never
-  handed to the tracer, since they would read as handles.
+  says; a closure's captured frame and its copied values, never its code id
+  or feedback base; a class object's enclosing object, declaring class,
+  superclass, for a metaclass its class (`this_class`), and its value-class
+  refusal, never its builtin tag, applied clause or application, which are
+  numbers; a frame object's ten fixed fields -- sender, home, receiver,
+  current class, the kind's operand among them, the rest numbers or
+  constants the tracer passes over -- and its registers. A married frame's
+  registers are its entry's, traced with the stack, so its own are skipped;
+  the `Format::Frame` arm skips them only for a married word of 0 or more, a
+  stack index. A suspended frame's registers are the only copy of its
+  values, so they are traced like a returned frame's. The digits of a
+  `LargeInteger`, a boxed `Float`'s bits, a string's code points and a
+  `ByteArray`'s reserve and bytes are never handed to the tracer, since they
+  would read as handles.
 - The host root table.
 - The kernel-private `Activation` class, every frame object's class, which
   the heap holds (`Heap::activation_class`).
@@ -811,16 +812,16 @@ entry, where the stack is traced anyway.
 
 **A handle lives only where the tracer can rewrite it in place**: in an
 object's words, in a stack entry, in a continuation that one stack entry or
-side-table row owns, or in the step state's own roots — never behind a shared `Rc`, which the tracer could reach
-only through a shared reference. So a closure's handles live in the
-closure object's own words, and its code, which holds no handle, is named by
-a code id into the heap's table of compiled code, shared with the
-`MakeClosure` instruction that made it; and everything else
-that needs a closure — `FrameKind::Closure` on each of its activations,
-`WhileLoop.condition` and `.body`, a `DoLoop`'s `LoopAction::Closure`, `Step::Block` — names the
-closure object, whose captured frame and copied values the tracer then
-rewrites once, in its words.
-A native loop's state is boxed in its continuation (`Box<WhileLoop>`,
+side-table row owns, or in the step state's own roots — never behind a
+shared `Rc`, which the tracer could reach only through a shared reference.
+So a closure's handles live in the closure object's own words, and its code,
+which holds no handle, is named by a code id into the heap's table of
+compiled code, shared with the `MakeClosure` instruction that made it; and
+everything else that needs a closure — `FrameKind::Closure` on each of its
+activations, `WhileLoop.condition` and `.body`, a `DoLoop`'s
+`LoopAction::Closure`, `Step::Block` — names the closure object, whose
+captured frame and copied values the tracer then rewrites once, in its
+words. A native loop's state is boxed in its continuation (`Box<WhileLoop>`,
 `Box<DoLoop>`), owned by exactly one stack entry.
 
 The inline caches ([dispatch.md](dispatch.md), "3b — The caches") add
@@ -2251,12 +2252,13 @@ objects lie end to end from the region's start up to its top.
   accessors still copy out; lending an object's fields as a slice is the
   open question "Known rough edges in the seam" names.
 - **Frames stay objects of the frame format** in the space, with their
-  registers inline. Married and divorced frames keep their meaning
-  ("Frames, the activation stack and the marriage"); a frame object is
-  allocated with its code's full register count, so none ever grows, and
-  whether a divorce copies the registers stays decided per activation from
-  the block's `outer_reach`. The activation stack of running activations is
-  unchanged until road step 7, the execution model for compiled code.
+  registers inline. Married and divorced frames, and suspended ones, keep
+  their meaning ("Frames, the activation stack and the marriage"); a frame
+  object is allocated with its code's full register count, so none ever
+  grows, and whether a divorce copies the registers stays decided per
+  activation from the block's `outer_reach`. The activation stack's layout
+  stays as it is until road step 7a lays frames out as words in one
+  reservation.
 - **The full collector is mark and sliding compaction** over the variably
   sized objects of both generations, after Spur's planning compactor,
   which slides marked objects
@@ -2414,12 +2416,13 @@ A Cheney copy of the nursery's survivors (`heap/scavenge.rs`), as Spur's
 (`universe_more.cpp:81-137`) are.
 
 - **The roots** are what a full collection marks from -- the `Activation`
-  class, every activation stack entry and every register, the host roots,
-  and the step state's `StepRoots` -- plus the remembered set. The whole
+  class, every activation stack entry and every register, the side table
+  of suspended activations, the host roots, and the step state's
+  `StepRoots` -- plus the remembered set. The whole
   activation stack is a root, so a scavenge costs time in proportion to the
   recursion depth, up to the depth limit's 100,000 activations and its
-  1,000 reserve; Spur bounds that with stack pages, and road step 7's
-  shared frames revisit it. Each remembered object leaves the set, its bit
+  1,000 reserve; Spur bounds that with stack pages, and road step 7a's
+  frames as words revisit it. Each remembered object leaves the set, its bit
   cleared, has its strong pointer words scanned, and rejoins only if it
   still names a young object, a weak word included once the weak objects
   are settled.

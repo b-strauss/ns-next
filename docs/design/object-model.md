@@ -2472,11 +2472,15 @@ sender, home, receiver, current class, program counter, code id (`nil` for a
 top-level frame), kind (the kind's wire tag), the kind's operand -- the
 closure of a block frame, or the class of an initializer, superclass-clause,
 superclass-message or mixin-application-message frame, a handle the trace
-sees -- `uncontinuable`, and the index of the stack entry it is married to,
-`nil` once divorced; its registers follow inline. The `Activation` object
-the exception machinery holds is this frame object itself, so the same
-activation answers the same object every time; the running activations stay
-on the activation stack until road step 7. A frame object is allocated at
+sees -- `uncontinuable`, and its married word; its registers follow
+inline. The married word tells the frame's three states: a `SmallInteger`
+of 0 or more is the index of the stack entry it is married to, a negative
+one, `-(row + 1)`, names the side-table row of its suspended activation,
+and `nil` means it has returned ([execution.md](execution.md), "Suspending
+and resuming"). The `Activation` object the exception machinery holds is
+this frame object itself, so the same activation answers the same object
+every time; a running activation is a stack entry, or is suspended into
+its frame until something returns into it. A frame object is allocated at
 `reify` with its code's full register count, whatever the code; whether the
 divorce copies the registers into it is decided per activation from the
 block's `outer_reach` ([execution.md](execution.md), "Closure conversion").
@@ -2681,17 +2685,19 @@ application, and so the guard, from being reclaimed, and a collection
 that frees a guard vacates every cache entry and the verified pair that
 name it ("An application has two ids" above).
 
-**A reified frame has no field for it.** The recorded guard and the entered
-level live in the activation stack's entry alone. An activation resumed
-from a frame (road step 7) will start with `NONE`, so its first own-slot
-access takes the cold check, and a passing cold check records the
+**A reified frame has no field for it.** The recorded guard and the
+entered level live in the activation's stack entry; while the activation
+is suspended, its entered level lives in its row of the heap's side table
+and goes back into the entry when it is resumed
+([execution.md](execution.md), "Suspending and resuming"). A resumed
+activation starts with `NONE` (`Heap::resume_activation`), so its first
+own-slot access takes the cold check, and a passing cold check records the
 receiver's current guard. Reading the guard afresh from the header on
 resume instead would defeat the check: after a bulk forward it would read
 the replacing object's own guard, which always matches that object. One
 cold check per resumed activation buys eight bytes in every reified frame,
 which `bench_block.ns` reifies once per iteration (decided with the user
-on 2026-10-03). Where a resumed activation's entered level comes from is
-road step 7's to decide.
+on 2026-10-03).
 
 The tests are `builtins/reflection.rs`'s, under both lowerings: an
 initializer, a lazy getter, a simultaneous clause, a private and a super

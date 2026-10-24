@@ -14,8 +14,9 @@
 > objects, the `ActivationReference` and `FrameReference` handles, every read and write of an
 > activation, the copied values a closure carries and whether a frame keeps its
 > registers, and the side table of suspended activations with
-> `suspend_activations` and `resume_activation`), `heap/object.rs` (the fixed fields of a frame object and a
-> closure, `frame_field` and `closure_field`), `heap/world.rs` (the step state
+> `suspend_activations` and `resume_activation`), `heap/object.rs` (the
+> fixed fields of a frame object and a closure, `frame_field` and
+> `closure_field`), `heap/world.rs` (the step state
 > at rest, and its entry),
 > `types.rs` (`FrameKind`, `Continuation` and the state its variants
 > carry), `bytecode/compact.rs` (the eight-byte encoding the loop runs),
@@ -264,17 +265,17 @@ reified leaves nothing behind, so storage for activations nothing captured is
 bounded by the deepest the program has been rather than by every activation it
 has ever made.
 
-**Sender.** A live activation's sender is the entry below it — structural, not a
-stored field, so no call site can forget to pass it on, at a block boundary or
-anywhere else — unless its entry returns to a suspended frame, which its
+**Sender.** A live activation's sender is the entry below it — structural, not
+a stored field, so no call site can forget to pass it on, at a block boundary
+or anywhere else — unless its entry returns to a suspended frame, which its
 continuation names (`Continuation::ReturnToSuspended`, "Suspending and
 resuming" below). `Heap::frame_sender_frame` answers either as a frame, the
-`sender` leaf's answer. A suspended frame's sender is its `sender` field,
-the one place the runtime writes a sender into a frame. A dead frame's `sender` is `None`:
-Smalltalk's semantics for a returned context, and what Primordial Soup does on
-return (`zap->set_sender(nil)`) and lazily in `HasLivingFrame`; the divorce
-clears it. The image format records one per frame, so beyond a suspended
-frame only a frame the decoder rebuilt can have one set.
+`sender` leaf's answer. A suspended frame's sender is its `sender` field, the
+one place the runtime writes a sender into a frame. A dead frame's `sender` is
+`None`: Smalltalk's semantics for a returned context, and what Primordial Soup
+does on return (`zap->set_sender(nil)`) and lazily in `HasLivingFrame`; the
+divorce clears it. The image format records one per frame, so beyond a
+suspended frame only a frame the decoder rebuilt can have one set.
 
 **Only a `FrameReference` is ever stored.** An `ActivationReference` is valid until its entry
 is popped, and the next activation at that depth reuses the index. Everything that
@@ -301,14 +302,14 @@ outlives a call — a closure, another frame, an image record — holds a `Frame
 - `vm::run` receives the `ActivationReference` of an activation its caller has just
   pushed — its *base* — and pops it, with everything it pushes above it, on
   every path out.
-- The image encoder only ever runs between sends, when nothing is live:
-  its one writer, behind `image::package` and `image::snapshot`, refuses to
-  start while any activation is on the stack, and
-  `Heap::frame_record` debug-asserts that no encoded frame is married, the
-  encoder that none is suspended. The decoder builds frames that are never
-  married or suspended, and refuses one not marked uncontinuable. The format knows nothing of the
-  stack: a frame record describes a reified frame, and nothing else is
-  serialized ([image-format.md](image-format.md)).
+- The image encoder only ever runs between sends, when nothing is live: its
+  one writer, behind `image::package` and `image::snapshot`, refuses to start
+  while any activation is on the stack, and `Heap::frame_record` debug-asserts
+  that no encoded frame is married, the encoder that none is suspended. The
+  decoder builds frames that are never married or suspended, and refuses one
+  not marked uncontinuable. The format knows nothing of the stack: a frame
+  record describes a reified frame, and nothing else is serialized
+  ([image-format.md](image-format.md)).
 
 ### What an activation carries
 
@@ -450,8 +451,9 @@ the side table is empty when a run ends; `Interpreter::run_from_host`
 debug-asserts it beside its depth assertion (`World::suspension_count`). That
 is why the image encoder, which runs only between runs, never meets a
 suspended frame. Runs never nest (nothing re-enters the loop from Rust,
-which `run_from_host` debug-asserts; "No re-entry from Rust" below), so a suspended frame whose `sender` is nil returns to the host, and
-nothing lies below the run's floor that a sender walk would miss.
+which `run_from_host` debug-asserts; "No re-entry from Rust" below), so a
+suspended frame whose `sender` is nil returns to the host, and nothing lies
+below the run's floor that a sender walk would miss.
 
 **The suspend stress mode runs every program through it.** With
 `NS_NEXT_STRESS_SUSPEND` set to anything but empty or `0`, a debug build
@@ -600,32 +602,30 @@ a loop that makes no send included; a forward jump does not test it. When the
 flag is set the stretch writes its frame back to `FrameRegisters` and leaves
 its entry (`Leave::Safepoint`), and `run` calls `Interpreter::safepoint`
 (`interpreter/safepoint.rs`), out of line, which is where a scavenge or a
-collection runs ([memory.md](memory.md), "Where a collection can happen"),
-and enters again. A scavenge is requested by an allocation that fills eden
-to its threshold or finds eden spent, and by a remembered set past its
-limit, through the barrier or after a scavenge; a full collection once the
-old space's occupancy reaches its limit, checked by an allocation that goes
-old and after every scavenge ([memory.md](memory.md), "Generations"); and
-the debug-build move,
-cache, collection, scavenge and suspend stress modes keep the flag set while
-they are on. The stretch also writes the running activation's
-`program_counter` into its stack entry as it leaves, so that a suspension
-at the safepoint finds it; `Interpreter::safepoint` answers whether the
-suspend stress mode rebuilt the stack, and `run` then reads its
-`FrameRegisters` afresh from the top entry ("Suspending and resuming"
-above).
-That is sound because of what `run` carries across the safepoint, which the
-compiler holds it to, since the stretch's entry has ended before it:
-`FrameRegisters` — the running `ActivationReference`, which indexes the
-stack, and no stack entry moves (a rebuilt stack is read again, above); its `Rc<CompiledCode>`, which holds no
-handle; its `program_counter`; its `FeedbackBase`, a number; and its
-`RegisterBase`, an index into the register file, which a move does not
-touch — and the run's floor, a stack depth. Every value the loop works on is
-read from a register or an operand when an instruction needs it and written
-back before the next, so at a safepoint every handle is in a register on the
-stack, in a stack entry or the continuation it owns, in a heap object or in
-a root, where the tracer rewrites it. The reusable argument buffer, which a
-send fills and empties within one instruction, is empty at every safepoint.
+collection runs ([memory.md](memory.md), "Where a collection can happen"), and
+enters again. A scavenge is requested by an allocation that fills eden to its
+threshold or finds eden spent, and by a remembered set past its limit, through
+the barrier or after a scavenge; a full collection once the old space's
+occupancy reaches its limit, checked by an allocation that goes old and after
+every scavenge ([memory.md](memory.md), "Generations"); and the debug-build
+move, cache, collection, scavenge and suspend stress modes keep the flag set
+while they are on. The stretch also writes the running activation's
+`program_counter` into its stack entry as it leaves, so that a suspension at
+the safepoint finds it; `Interpreter::safepoint` answers whether the suspend
+stress mode rebuilt the stack, and `run` then reads its `FrameRegisters`
+afresh from the top entry ("Suspending and resuming" above). That is sound
+because of what `run` carries across the safepoint, which the compiler holds
+it to, since the stretch's entry has ended before it: `FrameRegisters` — the
+running `ActivationReference`, which indexes the stack, and no stack entry
+moves (a rebuilt stack is read again, above); its `Rc<CompiledCode>`, which
+holds no handle; its `program_counter`; its `FeedbackBase`, a number; and its
+`RegisterBase`, an index into the register file, which a move does not touch —
+and the run's floor, a stack depth. Every value the loop works on is read from
+a register or an operand when an instruction needs it and written back before
+the next, so at a safepoint every handle is in a register on the stack, in a
+stack entry or the continuation it owns, in a heap object or in a root, where
+the tracer rewrites it. The reusable argument buffer, which a send fills and
+empties within one instruction, is empty at every safepoint.
 
 **The VM has no dispatch logic, no `doesNotUnderstand:` construction, no native
 dispatch and no error text of its own.** It pushes, pops, switches, writes
@@ -668,12 +668,13 @@ more, off the hot path: leaving for a safepoint, it stores the running
 activation's, since a suspension there copies it into the frame
 ("Suspending and resuming").
 
-The stores go to the stack entry (`Heap::activation_set_program_counter`), so they keep the
-activation's `program_counter` current for as long as it runs; a frame married to it holds no
-`program_counter` of its own that anything reads meanwhile. When the activation returns, the
-divorce gives the frame the last `program_counter` stored — often a later send's, not the
-`MakeClosure` that reified it — and a suspension gives the frame the same, which a resume
-gives back to the entry.
+The stores go to the stack entry (`Heap::activation_set_program_counter`), so
+they keep the activation's `program_counter` current for as long as it runs; a
+frame married to it holds no `program_counter` of its own that anything reads
+meanwhile. When the activation returns, the divorce gives the frame the last
+`program_counter` stored — often a later send's, not the `MakeClosure` that
+reified it — and a suspension gives the frame the same, which a resume gives
+back to the entry.
 
 The loop itself reads it back. While a callee runs, the caller's only record
 of where it stopped is the `program_counter` its send stored; when the callee
@@ -704,27 +705,27 @@ suspends a frame. For any other activation
 — an initializer's `^` from an inlined block — the target is the activation
 itself, reified for the purpose.
 
-The one unwinder, `interpreter::unwind`, carries it down the stack; `vm::unwind`
-only does what it answers. A target whose frame is married to the activation
-on top of the stack, which sits at or above the run's floor and catches a return
-(`Mutator::catches_return`: a method, a superclass clause or its message), ends
-the unwind: every activation above it has been popped, and the target returns the
-value through the ordinary return path, so a reified frame is divorced exactly
-as on any return. The unwinder decides that again before every pop, from
-the target's frame (`Heap::frame_activation`): a suspended target has no
-stack entry yet and becomes one only when the pops reach it, since every pop
-is `Mutator::pop_for_unwind`, which resumes the suspended sender of the
-entry it pops before abandoning that entry's continuation. So the unwinder
-resumes a target only when it is suspended, and only by popping down to it,
-as `retry` keeps popping down to its `on:do:` activation ("Suspending and
-resuming" above). The popped activations' continuations are not applied, so a
-`^` out of an `and:` block, a native loop's body or a `do:` block abandons the
-coercion or the loop; they go to `Mutator::abandon` instead, which unmarks a
-nested class's creation in its cache slot and drops every other. A return
-whose target catches none, or has returned meanwhile, pops every activation of
-the run, `base` included, in the same way — running the pending blocks on
-its way — and leaves `vm::run` with the signal, for the host that started the
-run.
+The one unwinder, `interpreter::unwind`, carries it down the stack;
+`vm::unwind` only does what it answers. A target whose frame is married to the
+activation on top of the stack, which sits at or above the run's floor and
+catches a return (`Mutator::catches_return`: a method, a superclass clause or
+its message), ends the unwind: every activation above it has been popped, and
+the target returns the value through the ordinary return path, so a reified
+frame is divorced exactly as on any return. The unwinder decides that again
+before every pop, from the target's frame (`Heap::frame_activation`): a
+suspended target has no stack entry yet and becomes one only when the pops
+reach it, since every pop is `Mutator::pop_for_unwind`, which resumes the
+suspended sender of the entry it pops before abandoning that entry's
+continuation. So the unwinder resumes a target only when it is suspended, and
+only by popping down to it, as `retry` keeps popping down to its `on:do:`
+activation ("Suspending and resuming" above). The popped activations'
+continuations are not applied, so a `^` out of an `and:` block, a native
+loop's body or a `do:` block abandons the coercion or the loop; they go to
+`Mutator::abandon` instead, which unmarks a nested class's creation in its
+cache slot and drops every other. A return whose target catches none, or has
+returned meanwhile, pops every activation of the run, `base` included, in the
+same way — running the pending blocks on its way — and leaves `vm::run` with
+the signal, for the host that started the run.
 
 **The exceptions' unwinds are the same unwind.** `Exception>>return:` and
 `resume:` answer `Signal::Return` aimed at the `on:do:` or the `signal`
@@ -6418,19 +6419,19 @@ could only end the run as L, uncatchable and under the wrong name.
 - **What an overrun ends with.** A push past the reserve answers
   `Signal::Terminate`, so the run ends at once and uncatchably, running the
   pending `ensure:` blocks on the way, with the error
-  `Mutator::overrun_of_the_reserve` picks by walking down from the top of
-  the stack and on into suspended frames, once per run. If the holder nearest the top is still in the
-  signalling machinery's hands — its exception still searching for a
-  handler, after `signal` or a `pass` (`Exception`'s `searching` slot), or
-  running its default action (`reachedDefault`), or the kernel's
-  `doesNotUnderstand:` still building its exception — the run ends with
-  that error, as it would have had there been room to signal it; an error
-  the search itself raised, a `handles:` nothing understands, belongs to
-  the search it arose in, so the walk reports the outermost of a run of
-  such holders. If a handler, or anything run once one was found, overran
-  it, the run ends with L's own error, "stack overflow: recursion too deep".
-  A `signal` push that the used-up reserve refuses ends the run with the
-  error being signalled, the same way.
+  `Mutator::overrun_of_the_reserve` picks by walking down from the top of the
+  stack and on into suspended frames, once per run. If the holder nearest the
+  top is still in the signalling machinery's hands — its exception still
+  searching for a handler, after `signal` or a `pass` (`Exception`'s
+  `searching` slot), or running its default action (`reachedDefault`), or the
+  kernel's `doesNotUnderstand:` still building its exception — the run ends
+  with that error, as it would have had there been room to signal it; an error
+  the search itself raised, a `handles:` nothing understands, belongs to the
+  search it arose in, so the walk reports the outermost of a run of such
+  holders. If a handler, or anything run once one was found, overran it, the
+  run ends with L's own error, "stack overflow: recursion too deep". A
+  `signal` push that the used-up reserve refuses ends the run with the error
+  being signalled, the same way.
 
 `goldens/runtime/depth-limit/the_depth_limit_is_caught`,
 `an_error_just_below_the_depth_limit_is_caught`,
@@ -6445,10 +6446,10 @@ L and L + 1 and the overruns of the machinery, a `pass`'s included.
   `Heap::counted_depth` has reached the limit. The heap keeps that count as a
   running total on push and pop, so an error path — which pops through
   `interpreter::unwind` like any other — leaves it exact; suspending and
-  resuming leave it alone, since a suspended activation counts all along. Whether an activation counts
-  is recorded on its stack entry. Only the block arm of
-  `Mutator::push_step` ever records an exemption; a method, and every body
-  an instantiation or a nested-class accessor runs — a factory, an
+  resuming leave it alone, since a suspended activation counts all along.
+  Whether an activation counts is recorded on its stack entry. Only the block
+  arm of `Mutator::push_step` ever records an exemption; a method, and every
+  body an instantiation or a nested-class accessor runs — a factory, an
   initializer level, a superclass clause — are counted by construction.
 - **The exemption is marked by the arguments.** A control-flow step's block —
   one a `whileTrue:` or `whileFalse:` leaf activates, or one a Boolean
@@ -6815,15 +6816,16 @@ plus that frame object, not the values of the frame's registers. An activation t
 fallback closure is the exception and keeps them, which is exactly what
 `outer_reach` decides ("Converted representation" below).
 
-The link costs a closure nothing it did not already hold, and the home is
-no longer a field of its own: `Heap::closure_home` derives it from
-`captured_frame` — that frame itself when it is a method's, an initializer's or
-a superclass clause's, and that frame's own `home` when it is a block's. A
-decoded frame can be missing its `home` (the decoder does not require one), so
-`closure_home` falls back to the captured frame rather than asserting: a
-decoded frame is never married, so `raise_return` treats it as a dead home and
-raises `cannotReturn` either way, where an assertion would have aborted the
-process on an untrusted image ("An image is untrusted input", `CLAUDE.md`).
+The link costs a closure nothing it did not already hold, and the home is no
+longer a field of its own: `Heap::closure_home` derives it from
+`captured_frame` — that frame itself when it is a method's, an initializer's
+or a superclass clause's, and that frame's own `home` when it is a block's.
+The decoder refuses a closure frame without a `home`
+(`DecodeError::FrameHomeMismatch`), and `closure_home` still falls back to the
+captured frame rather than asserting: a decoded frame is never married or
+suspended, so `raise_return` treats it as a dead home and raises
+`cannotReturn` either way, where an assertion would have aborted the process
+on an untrusted image ("An image is untrusted input", `CLAUDE.md`).
 
 ### Where the analysis lives
 
@@ -7293,8 +7295,8 @@ brand"). The safepoint is tested where it always was -- every switch to
 another activation and every backward jump, the latter in the one
 `jump_to!` macro every jumping arm goes through -- as a compare of the
 heap's flag, and only when it is set does the stretch leave its entry. Under
-the move, cache and collection stress modes it is set at every safepoint
-their schedule picks, so the
+the move, cache, collection, scavenge and suspend stress modes it is set
+at every safepoint their schedule picks, so the
 suite still meets every handle held across one.
 
 **No per-instruction answer.** A straight-line arm writes its register,

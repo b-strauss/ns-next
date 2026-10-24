@@ -3635,32 +3635,32 @@ with an argument that is no `Message` fails inside the handler, on
   program can name — no accessor on `Object`, and its shipped name is
   refused wherever an image names a class but the header of a frame record
   and a frame's class, as `Top`'s is everywhere but a frame's class. An
-  activation reads another frame's temporaries and unwinds stacks, so it is a
-  capability, and Newspeak hands those out only through mirrors, which the
+  activation reads another frame's temporaries and unwinds stacks, so it is
+  a capability, and Newspeak hands those out only through mirrors, which the
   reflection step builds on it. The eleven leaves (`builtins/activation.rs`,
-  rows of `MIRROR`): `currentActivation` — the activation of
-  the kernel method making the mirror send, reified, answered as its frame
-  object, so two calls for one activation answer the same object and the
-  coming `ActivationMirror` has an identity by frame already; an activation's
-  `sender` — the activation it returns to, the stack entry below it or
-  the suspended frame it returns to (`Heap::frame_sender_frame`;
+  rows of `MIRROR`): `currentActivation` — the activation of the kernel
+  method making the mirror send, reified, answered as its frame object, so
+  two calls for one activation answer the same object and the coming
+  `ActivationMirror` has an identity by frame already; an activation's
+  `sender` — the activation it returns to, the stack entry below it or the
+  suspended frame it returns to (`Heap::frame_sender_frame`;
   [execution.md](execution.md), "Suspending and resuming"), or nil at the
-  bottom or once it has returned; an activation's `methodName` -- `'Shape>>area'`, the class
-  declaring the method it runs, named as `Class>>name` and `Metaclass>>name`
-  answer, and the selector its mixin holds that code under, or nil for a
-  returned activation or one running a block, an initializer or a clause --
-  for `Object>>subclassResponsibility`; the three the `on:do:` marker's
-  registers answer,
-  `isActiveHandler` (false for a returned activation or one with no marker),
-  `handlerClass` and `handlerBlock`, and `handlerActive:`, which writes the
-  flag; `returnValue:` and `restart`, which answer the signals the unwinder
+  bottom or once it has returned; an activation's `methodName` --
+  `'Shape>>area'`, the class declaring the method it runs, named as
+  `Class>>name` and `Metaclass>>name` answer, and the selector its mixin
+  holds that code under, or nil for a returned activation or one running a
+  block, an initializer or a clause -- for `Object>>subclassResponsibility`;
+  the three the `on:do:` marker's registers answer, `isActiveHandler` (false
+  for a returned activation or one with no marker), `handlerClass` and
+  `handlerBlock`, and `handlerActive:`, which writes the flag;
+  `returnValue:` and `restart`, which answer the signals the unwinder
   carries out (a returned target is §7.2's "cannotReturn: the activation has
   already returned"); `inheritsMixinOf:` for `Class>>handles:`; and
   `terminate…` for `defaultAction`. `Message>>sendTo:`'s row is
   `message:sendTo:ifFail:` (`builtins/message.rs`);
   `Object>>doesNotUnderstand:` forwards to no row: it is Newspeak that
-  signals a `MessageNotUnderstood`. The tracer follows the frame
-  reference, so the stress modes cover it.
+  signals a `MessageNotUnderstood`. The tracer follows the frame reference,
+  so the stress modes cover it.
 - **Markers.** Whether a method is `on:do:`, `ensure:` or `ifCurtailed:` is
   a property of its compiled code (`bytecode::UnwindMarker`, naming the
   registers of the method's arguments and of its `handlerActive` or

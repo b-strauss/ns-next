@@ -31,8 +31,8 @@ master (`733c15bd`) and task by task: every program within noise, but
 `bench_megamorphic.ns`, +1.3-2.1% after the private and super accessor
 check, at the edge of build noise and not diagnosed ("Planned: performance
 and representation" below). Everything up to road step 6 on the road
-is built, and `new` as compiled code and road step 7b after it; each step has its entry in
-[PROGRESS.md](PROGRESS.md), and the whole road is below.
+is built, and `new` as compiled code and road step 7b after it; each step
+has its entry in [PROGRESS.md](PROGRESS.md), and the whole road is below.
 
 **Measuring.** The protocol is [execution.md](design/execution.md)'s "What
 removing the re-entries moved"; every compared binary, the current tree

@@ -355,6 +355,7 @@ fn benchmark_collector_statistics_reports_to_stderr() {
         .env_remove("NS_NEXT_STRESS_COLLECT")
         .env_remove("NS_NEXT_STRESS_SCAVENGE")
         .env_remove("NS_NEXT_STRESS_WIDE")
+        .env_remove("NS_NEXT_STRESS_SUSPEND")
         .output()
         .unwrap();
     assert_eq!(
