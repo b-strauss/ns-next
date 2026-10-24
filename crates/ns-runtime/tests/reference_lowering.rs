@@ -184,8 +184,9 @@ fn full_initializer(
 }
 
 /// The full initializer's prologue under the reference lowering: the
-/// optimized lowering's shapes (`compiler.rs`), each clause argument in a
-/// register nothing else writes and the parameter it reads copied first.
+/// optimized lowering's shapes (`compiler.rs`), each clause argument
+/// produced in its slot, which nothing else writes, and the parameter it
+/// reads copied first.
 #[test]
 fn the_reference_lowering_emits_the_same_prologue() {
     let superclass_with_argument = indoc! {"
@@ -204,42 +205,34 @@ fn the_reference_lowering_emits_the_same_prologue() {
                 source: 0
             },
             Instruction::LoadLiteral {
-                destination: 4,
-                literal: ns_runtime::bytecode::Literal::SmallInteger(1)
-            },
-            Instruction::Move {
                 destination: 3,
-                source: 4
+                literal: ns_runtime::bytecode::Literal::SmallInteger(1)
             },
             Instruction::SendPublic {
                 receiver_register: 2,
                 selector: Symbol::intern("+"),
                 argument_base: 3,
                 argument_sources: vec![3],
-                destination: 5,
-                call_site: CallSite::UNCACHED
-            },
-            Instruction::Move {
                 destination: 1,
-                source: 5
+                call_site: CallSite::UNCACHED
             },
             Instruction::InitializeSuperclass {
                 steps: 1,
                 selector: Symbol::intern("y:"),
                 argument_base: 1,
                 argument_sources: vec![1],
-                destination: 6
+                destination: 4
             },
             Instruction::Move {
-                destination: 7,
+                destination: 5,
                 source: 0
             },
             Instruction::InitializeSlot {
-                source: 7,
+                source: 5,
                 own_index: 0
             },
-            Instruction::LoadSelf { destination: 8 },
-            Instruction::ImplicitReturn { register: 8 },
+            Instruction::LoadSelf { destination: 6 },
+            Instruction::ImplicitReturn { register: 6 },
         ]
     );
 
@@ -278,21 +271,17 @@ fn the_reference_lowering_emits_the_same_prologue() {
                 destination: 1
             },
             Instruction::LoadLiteral {
-                destination: 3,
-                literal: ns_runtime::bytecode::Literal::SmallInteger(1)
-            },
-            Instruction::Move {
                 destination: 2,
-                source: 3
+                literal: ns_runtime::bytecode::Literal::SmallInteger(1)
             },
             Instruction::InitializeAppliedLevel {
                 steps: 1,
                 argument_base: 2,
                 argument_sources: vec![2],
-                destination: 4
+                destination: 3
             },
-            Instruction::LoadSelf { destination: 5 },
-            Instruction::ImplicitReturn { register: 5 },
+            Instruction::LoadSelf { destination: 4 },
+            Instruction::ImplicitReturn { register: 4 },
         ]
     );
 }

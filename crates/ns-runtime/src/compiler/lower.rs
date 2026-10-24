@@ -785,7 +785,7 @@ impl<'a> Lowerer<'a> {
             let start = self.code.len();
             let access =
                 self.resolve_variable(0, super::temporary_index(self.argument_count, position));
-            let read = self.emit_read(access);
+            let read = self.emit_read(access, None);
             // `ResolveFuture` runs user code -- the future's block -- exactly
             // as a send does, and runs again once that block has answered
             // (`AfterForcing::Reexecute`), reading its source afresh. So its
@@ -921,7 +921,7 @@ impl<'a> Lowerer<'a> {
     /// `Lowerer` that inherits this one's whole scope stack, and emits
     /// `MakeClosure`. `captured_frame`/`home`/`bindings` are supplied by the
     /// VM at run time (`docs/design/execution.md`, "Activations").
-    fn lower_block_literal(&mut self, block: &ast::BlockExpression) -> u16 {
+    fn lower_block_literal(&mut self, block: &ast::BlockExpression, into: Option<u16>) -> u16 {
         let parameters: Vec<crate::Symbol> = block
             .parameters
             .iter()
@@ -979,7 +979,7 @@ impl<'a> Lowerer<'a> {
         };
         self.next_call_site = if too_large { first_call_site } else { after };
         let parameters = super::parameters_of(parameters, &code);
-        let destination = self.allocate_scratch();
+        let destination = self.target_register(into);
         self.emit(Instruction::MakeClosure {
             destination,
             parameters: Rc::new(parameters),
@@ -1044,14 +1044,6 @@ impl<'a> Lowerer<'a> {
         self.materialize(register, clobbered)
     }
 
-    /// `lower_operand` for a send's argument, whose protective copy goes
-    /// into its slot.
-    fn lower_argument(&mut self, expression: &Expression, rest: &[Expression], slot: u16) -> u16 {
-        let register = self.lower_expression(expression);
-        let clobbered = self.clobbered_by(register, rest);
-        self.materialize_into(register, clobbered, slot)
-    }
-
     /// Whether anything in `rest` can write `register`. Only a writable
     /// named local can be clobbered (`materialize`), so nothing else walks
     /// `rest`: a long argument list or tuple of one parameter would
@@ -1087,7 +1079,7 @@ impl<'a> Lowerer<'a> {
                 self.lower_assign(target, value, ValueUse::Discarded)
             }
             (ValueUse::Discarded, ExpressionKind::Send(send)) => {
-                self.lower_send(send, ValueUse::Discarded)
+                self.lower_send(send, ValueUse::Discarded, None)
             }
             _ => self.lower_expression(expression),
         }
@@ -1297,27 +1289,70 @@ impl<'a> Lowerer<'a> {
 
     /// Returns the register holding `expression`'s value.
     pub(crate) fn lower_expression(&mut self, expression: &Expression) -> u16 {
+        self.lower_expression_to(expression, None)
+    }
+
+    /// Lowers a send's argument into `slot`, its argument slot, and answers
+    /// the argument's source: `slot` itself when the value was produced
+    /// there. A send that is not inlined writes its `destination` into the
+    /// slot, and a literal, `self`, a read of another frame's local or of a
+    /// vector, a closure and an array are loaded into it, so the send
+    /// copies none of them. Every other expression answers the register its
+    /// value is in -- a named local's own (or, when an argument after it
+    /// can write that local, `lower_operand`'s protective copy, which goes
+    /// into the slot), an inlined form's result register, an assignment's
+    /// value, a cascade's last send -- and the send copies it into the slot.
+    ///
+    /// Writing the slot this early is sound because the slots were
+    /// allocated before any argument was lowered (`lower_arguments`):
+    /// whatever the arguments after this one emit lands above all of them,
+    /// and nothing but the send reads a slot.
+    fn lower_expression_into(
+        &mut self,
+        expression: &Expression,
+        rest: &[Expression],
+        slot: u16,
+    ) -> u16 {
+        let register = self.lower_expression_to(expression, Some(slot));
+        let clobbered = self.clobbered_by(register, rest);
+        self.materialize_into(register, clobbered, slot)
+    }
+
+    /// The register an instruction that produces a value writes: `into`,
+    /// the argument slot `lower_expression_into` lowers into, or else a
+    /// fresh scratch register.
+    fn target_register(&mut self, into: Option<u16>) -> u16 {
+        match into {
+            Some(slot) => slot,
+            None => self.allocate_scratch(),
+        }
+    }
+
+    /// `lower_expression`, the value produced in `into` where its last
+    /// instruction is one that writes a register of its choosing
+    /// (`lower_expression_into`); answers the register holding the value.
+    fn lower_expression_to(&mut self, expression: &Expression, into: Option<u16>) -> u16 {
         match &expression.kind {
             ExpressionKind::Literal(literal) => {
-                let destination = self.allocate_scratch();
+                let destination = self.target_register(into);
                 self.emit(Instruction::LoadLiteral {
                     destination,
                     literal: lower_literal(literal),
                 });
                 destination
             }
-            ExpressionKind::Identifier(id) => self.lower_identifier_read(id),
+            ExpressionKind::Identifier(id) => self.lower_identifier_read(id, into),
             ExpressionKind::Assign { target, value, .. } => {
                 self.lower_assign(target, value, ValueUse::Read)
             }
-            ExpressionKind::Send(send) => self.lower_send(send, ValueUse::Read),
+            ExpressionKind::Send(send) => self.lower_send(send, ValueUse::Read, into),
             ExpressionKind::Cascade(cascade) => self.lower_cascade(cascade),
-            ExpressionKind::Block(block) => self.lower_block_literal(block),
+            ExpressionKind::Block(block) => self.lower_block_literal(block, into),
             ExpressionKind::DynamicArray { elements, .. } => {
                 let element_registers: Vec<u16> = (0..elements.len())
                     .map(|index| self.lower_operand(&elements[index], &elements[index + 1..]))
                     .collect();
-                let destination = self.allocate_scratch();
+                let destination = self.target_register(into);
                 self.emit(Instruction::MakeArray {
                     destination,
                     element_registers,
@@ -1377,11 +1412,11 @@ impl<'a> Lowerer<'a> {
 
     /// Emits whatever `access` needs to leave the variable's value in a
     /// register, and answers that register.
-    fn emit_read(&mut self, access: Access) -> u16 {
+    fn emit_read(&mut self, access: Access, into: Option<u16>) -> u16 {
         match access {
             Access::Register(register) => register,
             Access::OuterRegister { hops, index } => {
-                let destination = self.allocate_scratch();
+                let destination = self.target_register(into);
                 self.emit(Instruction::LoadOuterLocal {
                     destination,
                     depth: hops,
@@ -1391,7 +1426,7 @@ impl<'a> Lowerer<'a> {
             }
             Access::Vector { vector, slot } => {
                 let vector = self.emit_vector_register(vector);
-                let destination = self.allocate_scratch();
+                let destination = self.target_register(into);
                 self.emit(Instruction::LoadVector {
                     destination,
                     vector,
@@ -1450,20 +1485,20 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn lower_identifier_read(&mut self, id: &ast::Identifier) -> u16 {
+    fn lower_identifier_read(&mut self, id: &ast::Identifier, into: Option<u16>) -> u16 {
         if id.name == "self" {
-            let destination = self.allocate_scratch();
+            let destination = self.target_register(into);
             self.emit(Instruction::LoadSelf { destination });
             return destination;
         }
         match self.bindings.get(&id.span) {
             Some(Binding::Local(slot)) => {
                 let access = self.resolve_variable(0, *slot);
-                self.emit_read(access)
+                self.emit_read(access, into)
             }
             Some(Binding::OuterLocal { depth, index }) => {
                 let access = self.resolve_variable(*depth, *index);
-                self.emit_read(access)
+                self.emit_read(access, into)
             }
             Some(Binding::LexicalSend { depth }) => {
                 let depth = *depth;
@@ -1473,6 +1508,7 @@ impl<'a> Lowerer<'a> {
                     crate::Symbol::intern(&id.name),
                     argument_base,
                     argument_sources,
+                    into,
                 )
             }
             // The resolver attaches `SuperSend` to a bare identifier in one
@@ -1483,7 +1519,7 @@ impl<'a> Lowerer<'a> {
             // `current_class` -- the class that declares the clause.
             Some(Binding::SuperSend) => {
                 let (argument_base, argument_sources) = self.lower_arguments(&[], &[]);
-                self.emit_send(|destination, call_site| Instruction::SendSuper {
+                self.emit_send(into, |destination, call_site| Instruction::SendSuper {
                     selector: crate::Symbol::intern(&id.name),
                     argument_base,
                     argument_sources,
@@ -1504,7 +1540,7 @@ impl<'a> Lowerer<'a> {
             // `UnresolvedIdentifier`: the VM raises `literals`' own error when
             // the instruction executes.
             Some(Binding::MirrorSend | Binding::EnclosingObject { .. }) | None => {
-                let destination = self.allocate_scratch();
+                let destination = self.target_register(into);
                 self.emit(Instruction::LoadLiteral {
                     destination,
                     literal: BytecodeLiteral::UnresolvedIdentifier(id.name.clone()),
@@ -1578,7 +1614,7 @@ impl<'a> Lowerer<'a> {
                 // writes a different frame.)
                 let clobbered = use_ == ValueUse::Read && self.a_send_can_write(value_register);
                 value_register = self.materialize_into(value_register, clobbered, argument_base);
-                self.emit_lexical_send(depth, setter, argument_base, vec![value_register]);
+                self.emit_lexical_send(depth, setter, argument_base, vec![value_register], None);
             }
             Some(Binding::SuperSend | Binding::MirrorSend | Binding::EnclosingObject { .. })
             | None => panic!(
@@ -1605,8 +1641,14 @@ impl<'a> Lowerer<'a> {
         CallSite { number }
     }
 
-    fn emit_send(&mut self, build: impl FnOnce(u16, CallSite) -> Instruction) -> u16 {
-        let destination = self.allocate_scratch();
+    /// Emits a send whose value lands in `into`, or else in a fresh
+    /// scratch register.
+    fn emit_send(
+        &mut self,
+        into: Option<u16>,
+        build: impl FnOnce(u16, CallSite) -> Instruction,
+    ) -> u16 {
+        let destination = self.target_register(into);
         let call_site = self.take_call_site();
         self.emit(build(destination, call_site));
         destination
@@ -1618,8 +1660,9 @@ impl<'a> Lowerer<'a> {
         selector: crate::Symbol,
         argument_base: u16,
         argument_sources: Vec<u16>,
+        into: Option<u16>,
     ) -> u16 {
-        self.emit_send(|destination, call_site| Instruction::SendLexical {
+        self.emit_send(into, |destination, call_site| Instruction::SendLexical {
             depth,
             selector,
             argument_base,
@@ -1633,11 +1676,12 @@ impl<'a> Lowerer<'a> {
         &mut self,
         receiver_register: u16,
         message: &ast::MessageSend,
+        into: Option<u16>,
     ) -> u16 {
         let selector = selector_of(message);
         let (argument_base, argument_sources) =
             self.lower_arguments(&[receiver_register], &message.arguments);
-        self.emit_send(|destination, call_site| Instruction::SendPublic {
+        self.emit_send(into, |destination, call_site| Instruction::SendPublic {
             selector,
             receiver_register,
             argument_base,
@@ -1654,18 +1698,25 @@ impl<'a> Lowerer<'a> {
     /// blocks").
     fn lower_fallback_send(&mut self, receiver_register: u16, message: &ast::MessageSend) -> u16 {
         let saved = std::mem::replace(&mut self.blocks_by_reference, true);
-        let result = self.emit_ordinary_send_with_receiver(receiver_register, message);
+        let result = self.emit_ordinary_send_with_receiver(receiver_register, message, None);
         self.blocks_by_reference = saved;
         result
     }
 
     /// A send's `count` contiguous argument slots, allocated at once, after
-    /// every register in `receivers` the send also reads -- a receiver, a
-    /// mirror send's subject, a setter's value -- so that the slots are
-    /// the top of the registers live at the send
-    /// (`docs/design/execution.md`, "Planned: overlapping register
-    /// windows"). Answers the first slot; for no argument, where the first
-    /// would be.
+    /// every scratch register in `receivers` the send also reads -- a
+    /// receiver, a mirror send's subject, a setter's value -- and before
+    /// any of its arguments is lowered. Answers the first slot; for no
+    /// argument, where the first would be.
+    ///
+    /// The slots are not always the top of what is live at the send:
+    /// whatever an argument is evaluated with lands above them, and an
+    /// argument the send copies (`lower_expression_into`) -- an inlined
+    /// form's result register, an assignment's value or a cascade's last
+    /// send, unless that is a named local below the slots -- is read by the
+    /// send from a register above them. Every other register above the
+    /// slots is dead by the time the send executes
+    /// (`docs/design/compiler.md`, "Sends").
     fn allocate_argument_slots(&mut self, receivers: &[u16], count: usize) -> u16 {
         let argument_base = self.next_scratch;
         for _ in 0..count {
@@ -1687,12 +1738,13 @@ impl<'a> Lowerer<'a> {
     }
 
     /// A send's arguments: their slots allocated first
-    /// (`allocate_argument_slots`), then each argument lowered as
-    /// `lower_operand` lowers an operand, the register it answers recorded
-    /// as its source -- every argument is live until the send reads it, so
-    /// each has to survive whatever the arguments after it emit, and a
-    /// protective copy goes into its own slot. The send copies each source
-    /// that is not its slot. Answers the first slot and the sources.
+    /// (`allocate_argument_slots`), then each argument lowered into its
+    /// slot (`lower_expression_into`), the register it answers recorded as
+    /// its source -- every argument is live until the send reads it, so
+    /// each has to survive whatever the arguments after it emit, which is
+    /// why a named local a later argument can write is copied, into its
+    /// slot, as `lower_operand` copies an operand. The send copies each
+    /// source that is not its slot. Answers the first slot and the sources.
     fn lower_arguments(&mut self, receivers: &[u16], arguments: &[Expression]) -> (u16, Vec<u16>) {
         let argument_base = self.allocate_argument_slots(receivers, arguments.len());
         let argument_sources = (0..arguments.len())
@@ -1701,7 +1753,7 @@ impl<'a> Lowerer<'a> {
                 // is kept (`finish`), so a saturated slot is never run.
                 let offset = u16::try_from(index).unwrap_or(u16::MAX);
                 let slot = argument_base.saturating_add(offset);
-                self.lower_argument(&arguments[index], &arguments[index + 1..], slot)
+                self.lower_expression_into(&arguments[index], &arguments[index + 1..], slot)
             })
             .collect();
         (argument_base, argument_sources)
@@ -1709,7 +1761,7 @@ impl<'a> Lowerer<'a> {
 
     /// `use_` is what reads the send's value. Only an inlined form passes it
     /// on, to the blocks whose values become its own.
-    fn lower_send(&mut self, send: &ast::Send, use_: ValueUse) -> u16 {
+    fn lower_send(&mut self, send: &ast::Send, use_: ValueUse, into: Option<u16>) -> u16 {
         // The inlining gate: only an ordinary explicit-receiver send is ever
         // offered to `recognize` (`docs/design/compiler.md`, "Control-flow
         // inlining"), through the one predicate the capture analysis and the
@@ -1717,7 +1769,7 @@ impl<'a> Lowerer<'a> {
         // runtime guard whose failure path is a real virtual send, so
         // inlining stays a pure optimization.
         if !control_flow::is_ordinary_send(self.bindings, send) {
-            return self.lower_super_or_lexical_send(send);
+            return self.lower_super_or_lexical_send(send, into);
         }
         if let Some((primitive, block)) = control_flow::recognize_mirror_send(self.bindings, send) {
             return self.lower_mirror_send(send, primitive, block, use_);
@@ -1747,17 +1799,17 @@ impl<'a> Lowerer<'a> {
         // The receiver is read by the send instruction, so it has to
         // survive its own arguments' lowering.
         let receiver_register = self.lower_operand(&send.receiver, &send.message.arguments);
-        self.emit_ordinary_send_with_receiver(receiver_register, &send.message)
+        self.emit_ordinary_send_with_receiver(receiver_register, &send.message, into)
     }
 
     /// The sends `is_ordinary_send` rejects: none has a receiver expression,
     /// and none is ever inlined. `outer N` alone is no send at all but the
     /// object `outer N m` would send to, loaded without running any code.
-    fn lower_super_or_lexical_send(&mut self, send: &ast::Send) -> u16 {
+    fn lower_super_or_lexical_send(&mut self, send: &ast::Send, into: Option<u16>) -> u16 {
         let selector = selector_of(&send.message);
         match self.bindings.get(&send.span) {
             Some(Binding::EnclosingObject { depth }) => {
-                let destination = self.allocate_scratch();
+                let destination = self.target_register(into);
                 self.emit(Instruction::LoadEnclosingObject {
                     destination,
                     depth: *depth,
@@ -1768,7 +1820,7 @@ impl<'a> Lowerer<'a> {
                 let depth = *depth;
                 let (argument_base, argument_sources) =
                     self.lower_arguments(&[], &send.message.arguments);
-                self.emit_lexical_send(depth, selector, argument_base, argument_sources)
+                self.emit_lexical_send(depth, selector, argument_base, argument_sources, into)
             }
             binding => {
                 debug_assert!(
@@ -1777,7 +1829,7 @@ impl<'a> Lowerer<'a> {
                 );
                 let (argument_base, argument_sources) =
                     self.lower_arguments(&[], &send.message.arguments);
-                self.emit_send(|destination, call_site| Instruction::SendSuper {
+                self.emit_send(into, |destination, call_site| Instruction::SendSuper {
                     selector,
                     argument_base,
                     argument_sources,
@@ -1800,9 +1852,10 @@ impl<'a> Lowerer<'a> {
                 .flat_map(|message| message.arguments.iter())
                 .any(|argument| self.writes_register(argument, receiver_register, 0));
         let receiver_register = self.materialize(receiver_register, clobbered);
-        let mut result = self.emit_ordinary_send_with_receiver(receiver_register, &cascade.first);
+        let mut result =
+            self.emit_ordinary_send_with_receiver(receiver_register, &cascade.first, None);
         for message in &cascade.rest {
-            result = self.emit_ordinary_send_with_receiver(receiver_register, message);
+            result = self.emit_ordinary_send_with_receiver(receiver_register, message, None);
         }
         result
     }
@@ -2455,8 +2508,8 @@ mod tests {
                     _ => None,
                 })
                 .collect::<Vec<_>>(),
-            vec![(0, vec![1, 4])],
-            "receiver and first argument are read straight out of their own registers, the literal out of the register after the slots"
+            vec![(0, vec![1, 3])],
+            "receiver and first argument are read straight out of their own registers, the literal out of its slot"
         );
     }
 
@@ -4844,6 +4897,58 @@ mod tests {
                 source: 0
             }),
             "the copy out of `x` is a Move into the slot: {:?}",
+            code.instructions()
+        );
+    }
+
+    /// The methods the tests of arguments lowered into their slots send
+    /// from: a send's value and a literal, and an inlined conditional.
+    const ARGUMENTS_INTO_SLOTS: &str = indoc! {"
+        class X = Object new (
+        ) (
+          foo: first baz: second = ( ^first )
+          foo: first = ( ^first )
+          a = ( ^self )
+          straight = ( ^self foo: (a bar) baz: 3 )
+          branch: c = ( ^self foo: (c ifTrue: [1] ifFalse: [2]) )
+        ) : ()
+    "};
+
+    /// A send's value and a literal are produced in their slots: both are
+    /// their own sources, and nothing is moved.
+    #[test]
+    fn a_send_and_a_literal_argument_are_lowered_into_their_slots() {
+        let code = lower_whole_method(ARGUMENTS_INTO_SLOTS, 3);
+        let (argument_base, sources) = assert_contiguous_slots(&code, "foo:baz:", 2, 0);
+        assert_eq!(
+            sources,
+            vec![argument_base, argument_base + 1],
+            "{:?}",
+            code.instructions()
+        );
+        assert!(
+            !has(&code, |instruction| matches!(
+                instruction,
+                Instruction::Move { .. }
+            )),
+            "no argument is moved: {:?}",
+            code.instructions()
+        );
+    }
+
+    /// An inlined conditional's value is in the branch's result register,
+    /// which both arms write, so the send copies it into its slot.
+    #[test]
+    fn an_inlined_conditional_argument_is_copied_by_the_send() {
+        let code = lower_whole_method(ARGUMENTS_INTO_SLOTS, 4);
+        let (argument_base, sources) = assert_contiguous_slots(&code, "foo:", 1, 1);
+        assert_ne!(sources[0], argument_base, "{:?}", code.instructions());
+        assert!(
+            has(&code, |instruction| matches!(
+                instruction,
+                Instruction::Move { destination, .. } if *destination == sources[0]
+            )),
+            "the source is the branch's result register: {:?}",
             code.instructions()
         );
     }

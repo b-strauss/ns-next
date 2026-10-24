@@ -8015,9 +8015,10 @@ registers.
 **What a send copies today.** Each argument up to three times. A send
 names its arguments' contiguous slots, allocated after its receiver, and
 each argument's source, and copies a source that is not its slot into it
--- a named local passed as an argument, and every argument the optimized
-lowering evaluated into a register above the slots
-([compiler.md](compiler.md), "Sends"). `vm::send` then gathers the slots into
+-- a named local passed as an argument, and an argument whose value the
+optimized lowering leaves in the register an inlined form, an assignment
+or a cascade answered; a send's value, a literal or a closure is produced
+in its slot and not copied ([compiler.md](compiler.md), "Sends"). `vm::send` then gathers the slots into
 the step state's reusable buffer, because the decision reads them as a
 `&[Value]` while it holds `&mut Mutator` ("No re-entry from Rust"), and
 `Heap::push_activation_in` copies the buffer into the callee's first

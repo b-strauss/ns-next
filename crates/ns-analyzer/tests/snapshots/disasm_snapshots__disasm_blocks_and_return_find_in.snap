@@ -2,9 +2,9 @@
 source: crates/ns-analyzer/tests/disasm_snapshots.rs
 expression: "disasm(\"language/blocks_and_return\", &[\"find:in:\"])"
 ---
-method find:in: (args 2, registers 5)
-   0   stmt 0  MakeClosure r3, [:each] -> copying r0
-        block block (args 1, registers 8)
+method find:in: (args 2, registers 4)
+   0   stmt 0  MakeClosure r2, [:each] -> copying r0
+        block block (args 1, registers 7)
            0   stmt 0  IntegerBinary Equal r3 <- r0, r1 else -> 2
            1   stmt 0  Jump -> 3
            2   stmt 0  SendPublic r3 <- r0 #= (r2 <- r1) @0
@@ -18,13 +18,13 @@ method find:in: (args 2, registers 5)
           10   stmt 0  LoadLiteral r5, nil
           11   stmt 0  Move r4, r5
           12   stmt 0  Jump -> 16
-          13   stmt 0  MakeClosure r6, [] ->
+          13   stmt 0  MakeClosure r5, [] ->
                 block block (args 0, registers 1)
                    0   stmt 0  LoadLiteral r0, 'found'
                    1   stmt 0  NonLocalReturn r0
-          14   stmt 0  SendPublic r7 <- r3 #ifTrue: (r5 <- r6) @1
-          15   stmt 0  Move r4, r7
+          14   stmt 0  SendPublic r6 <- r3 #ifTrue: (r5) @1
+          15   stmt 0  Move r4, r6
           16        -  ImplicitReturn r4
-   1   stmt 0  SendPublic r4 <- r1 #do: (r2 <- r3) @2
+   1   stmt 0  SendPublic r3 <- r1 #do: (r2) @2
    2   stmt 1  LoadLiteral r2, 'not found'
    3   stmt 1  Return r2

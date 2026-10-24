@@ -77,13 +77,29 @@ identity". Each names its arguments as contiguous slots: `argument_base` and
 argument_base + argument_sources.len()`. Before it decides, the send copies
 each source that is not its slot into the slot, so a named local passed as
 an argument is copied by the send itself. Both lowerings allocate the slots
-after everything else the send reads -- its receiver, a mirror send's
-subject, a setter's value -- so they are the top of the registers live at
-the send; the optimized lowering records each argument's register as its
-source and puts a protective copy into the slot, and the reference lowering
-moves every argument into its slot, so each of its sources is its slot
-(`check_shape`) ([execution.md](execution.md), "Planned: overlapping
-register windows").
+after every scratch register the send also reads -- its receiver, a mirror
+send's subject, a setter's value -- and before they lower any argument,
+then lower each argument into its slot ([execution.md](execution.md),
+"Planned: overlapping register windows").
+
+- **The optimized lowering** (`Lowerer::lower_expression_into`) produces
+  in its slot a send it does not inline, whose `destination` is the slot,
+  and a literal, `self`, a read of another frame's local or of a vector, a
+  closure and an array, each loaded into the slot; the send copies none of
+  them. Every other argument's source is the register its value is in,
+  and the send copies it: a named local's own register (below the slots),
+  or the slot itself when an argument after it can write that local and
+  the protective copy goes into the slot ("The value-register
+  invariant"); an inlined form's result register -- a conditional's,
+  `and:`/`or:`'s, a loop's, an integer leaf's, a mirror send's -- and an
+  assignment's or a cascade's value, which are above the slots unless the
+  value is a named local's register. So the slots are not always the top of
+  what is live at the send: a source the send copies from above them is
+  live until it does. Every other register above the slots -- whatever
+  an argument was evaluated with -- is dead by then.
+- **The reference lowering** produces every argument in its slot, a named
+  local by the `Move` that is its read, so each of its sources is its slot
+  and no register above the slots is live at the send (`check_shape`).
 
 - `SendPublic { selector, receiver_register, argument_base, argument_sources,
   destination, call_site }` — an ordinary explicit-receiver send, resolved
@@ -1007,8 +1023,9 @@ against code nothing had checked.
    an inner block's `StoreOuterLocal`. A defect in which the optimized lowering
    overwrites a register that is still live cannot happen here, so it shows as
    a divergence.
-3. Every read of a local is a `Move` into a fresh register, and every read of
-   an outer local a `LoadOuterLocal`. There are no inlined scopes, so the hop
+3. Every read of a local is a `Move` into a fresh register (or into the
+   argument slot it is read for, rule 4), and every read of an outer local
+   a `LoadOuterLocal`. There are no inlined scopes, so the hop
    count is the resolver's depth unchanged.
 4. Every send is a real send, receiver then arguments from left to right.
    Nothing is inlined. Every send the optimized lowering inlines — exactly the
@@ -1017,15 +1034,18 @@ against code nothing had checked.
    explicit-receiver send a `SendPublic` ("How the limit counts" below). A
    mirror send is therefore an ordinary send to the mirror object here, its
    failure block a real closure ("Mirror sends"). A send's argument slots
-   are allocated after its receiver, and each argument is evaluated into a
-   fresh register and `Move`d into its slot, so every source is its slot and
-   the send copies nothing: the optimized lowering's copy inside the send is
-   what the two are compared on.
-5. An assignment evaluates its value into a fresh register, then stores it or
-   sends the setter, the value `Move`d into the setter's slot. The
+   are allocated after its receiver, and each argument is produced in its
+   slot -- the instruction that computes its value writes the slot, and a
+   named local's read is the `Move` into it -- so every source is its slot
+   and the send copies nothing: the optimized lowering's copy inside the
+   send is what the two are compared on.
+5. An assignment evaluates its value into a fresh register, or into the
+   slot it is an argument for, then stores it or sends the setter, whose
+   one slot is that same register: nothing above it is live by then. The
    assignment's value is that register, never the local.
 6. A cascade evaluates its receiver once into a fresh register and sends every
-   message to it; its value is the last send's.
+   message to it; its value is the last send's, produced in the slot when
+   the cascade is an argument.
 7. A block literal is a `MakeClosure` whose body the reference lowering
    compiles too, with an empty `copied` list: every block reaches its
    enclosing variables by reference, which is the model closure conversion is
@@ -1047,8 +1067,8 @@ runs (`check_shape`): no branch instruction, since only inlining emits one;
 every scratch register written by exactly one instruction; a named local
 written only by `StoreLocal`; and a named local read only by `Move`, every other
 operand being a scratch register — rule 3, the property that keeps a value from
-changing under its consumer; and a send's sources are its own slots, each
-written by the one `Move` that reads a scratch register. The register
+changing under its consumer; and a send's sources are its own slots, so
+every `Move` it emits is the read of a named local. The register
 ceiling is checked in every build (`Body::new`, `fresh`), as it is in
 `lower.rs`, and a body past it compiles to the raising body of "Compilation
 cannot fail"; the shape check does not run on a body it replaced. (The

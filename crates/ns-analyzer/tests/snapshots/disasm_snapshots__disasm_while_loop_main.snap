@@ -2,7 +2,7 @@
 source: crates/ns-analyzer/tests/disasm_snapshots.rs
 expression: "disasm(\"language/control-flow/while_loop\", &[\"main:args:\"])"
 ---
-method main:args: (args 2, registers 16)
+method main:args: (args 2, registers 13)
    0   stmt 0  LoadLiteral r2, nil
    1   stmt 0  SendLexical r3 <- depth 0 #n () @0
    2   stmt 0  LoadLiteral r4, 5
@@ -43,13 +43,13 @@ method main:args: (args 2, registers 16)
   37   stmt 1  SignalNonBoolean r5
   38   stmt 2  SendPublic r2 <- r0 #transcript () @14
   39   stmt 2  SendLexical r4 <- depth 0 #sum () @15
-  40   stmt 2  SendPublic r5 <- r4 #printString () @16
-  41   stmt 2  SendPublic r6 <- r2 #show: (r3 <- r5) @17
-  42   stmt 2  LoadLiteral r8, ' '
-  43   stmt 2  SendPublic r9 <- r2 #show: (r7 <- r8) @18
-  44   stmt 2  SendLexical r11 <- depth 0 #n () @19
-  45   stmt 2  SendPublic r12 <- r11 #printString () @20
-  46   stmt 2  SendPublic r13 <- r2 #show: (r10 <- r12) @21
-  47   stmt 2  SendPublic r14 <- r2 #newLine () @22
-  48        -  LoadSelf r15
-  49        -  ImplicitReturn r15
+  40   stmt 2  SendPublic r3 <- r4 #printString () @16
+  41   stmt 2  SendPublic r5 <- r2 #show: (r3) @17
+  42   stmt 2  LoadLiteral r6, ' '
+  43   stmt 2  SendPublic r7 <- r2 #show: (r6) @18
+  44   stmt 2  SendLexical r9 <- depth 0 #n () @19
+  45   stmt 2  SendPublic r8 <- r9 #printString () @20
+  46   stmt 2  SendPublic r10 <- r2 #show: (r8) @21
+  47   stmt 2  SendPublic r11 <- r2 #newLine () @22
+  48        -  LoadSelf r12
+  49        -  ImplicitReturn r12
