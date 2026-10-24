@@ -11845,7 +11845,7 @@ fn a_snapshot_taken_while_an_activation_is_running_is_refused() {
                     then: ns_runtime::Continuation::Deliver,
                     counted: true,
                 },
-                Arguments::Values(&[]),
+                Arguments::NONE,
                 0,
             )
             .expect("the stack holds the frame");

@@ -629,7 +629,7 @@ pub(crate) fn see_through<'gc>(
         primitive,
         *receiver,
         selector,
-        Arguments::Values(arguments),
+        Arguments::Values(&arguments),
     ))
 }
 

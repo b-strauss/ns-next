@@ -207,8 +207,8 @@ pub struct ActivationReference {
 - **A push** (`Heap::push_activation`) takes a frame of the header's size
   plus its window from the frame stack, writes every word of the header,
   copies the arguments into the first registers -- a send's out of its
-  slots in the frame below, with one `copy_within` of the stack's words,
-  other arguments from the values a decision or the host built
+  window in the frame below, one or two word by word and more with one
+  `copy_within` of the stack's words, other arguments from the values a decision or the host built
   (`interpreter::Arguments`) -- and fills the temporaries with nil; the frame names its body by its code id, found through the
   body's one-entry cache ([memory.md](memory.md), "A closure's code id
   without the map") and kept by a full collection while the activation
@@ -7014,7 +7014,14 @@ while it holds `&mut Mutator`: it is handed an argument window,
 `interpreter::Arguments`, which names the slots by the sender's
 `RegisterBase` and reads each one through the heap it is handed, or names
 values a decision or the host built (`Message>>sendTo:`'s, a host's send,
-a `doesNotUnderstand:` handler's message). Nothing gathers the arguments
+a `doesNotUnderstand:` handler's message). Each case is one word -- the
+register base's index, the first slot and the count packed into a `u64`
+by arithmetic (`heap::ArgumentSlots`), or a reference to the values'
+slice -- so the window is a tag and a word, built in registers and passed
+in two: as three narrow fields beside a fat slice it was a sixteen-byte
+aggregate, built by narrow stores and copied or read back wider, and every
+such read waited for the stores to retire: +24% on Mandelbrot, measured
+by bisecting the first stage. Nothing gathers the arguments
 anywhere first, so the step state keeps no argument buffer. The slots
 stay put from the send's start to its push: no collection runs inside a
 decision, only at safepoints, and nothing pops the sender meanwhile.
@@ -8029,10 +8036,10 @@ optimized lowering leaves in the register an inlined conditional,
 send's value, an inlined integer operation's, a literal or a closure is
 produced in its slot and not copied ([compiler.md](compiler.md), "Sends").
 The decision, the native and the push then read the slots where they are,
-through an argument window (`interpreter::Arguments`, "No re-entry from
-Rust"), and `Heap::push_activation_in` copies them into the callee's
-first registers with one `copy_within` of the stack's words
-("Representation" above). Nothing has measured what the copies cost yet;
+through an argument window (`interpreter::Arguments`, a tag and one word,
+"No re-entry from Rust"), and `Heap::push_activation_in` copies them into
+the callee's first registers, one or two word by word and more with one
+`copy_within` of the stack's words ("Representation" above). Nothing has measured what the copies cost yet;
 "What a send costs" found the argument count immaterial, but on the
 retired `Rc<RefCell<_>>` representation.
 

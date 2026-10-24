@@ -604,7 +604,7 @@ impl<'gc> Mutator<'gc> {
             kind,
             Symbol::DOES_NOT_UNDERSTAND,
             field,
-            Arguments::Values(&[message]),
+            Arguments::Values(&[message].as_slice()),
         )
     }
 
@@ -729,7 +729,7 @@ mod tests {
                 FeedbackBase::NOT_ASSIGNED,
                 receiver,
                 selector,
-                Arguments::Values(&[]),
+                Arguments::NONE,
             ) {
                 Ok(Step::Value(answer)) => {
                     assert!(
@@ -875,7 +875,7 @@ mod tests {
                 resolved,
                 Value::small_integer(3),
                 Symbol::intern("+"),
-                Arguments::Values(&[Value::small_integer(4)]),
+                Arguments::Values(&[Value::small_integer(4)].as_slice()),
             ) {
                 Ok(Step::Value(answer)) if answer.as_small_integer() == Some(7) => {}
                 _ => panic!("3 + 4 is 7"),

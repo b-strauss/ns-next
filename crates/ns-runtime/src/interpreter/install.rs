@@ -1272,7 +1272,7 @@ mod tests {
                         then: Continuation::Deliver,
                         counted: true,
                     },
-                    Arguments::Values(&[receiver]),
+                    Arguments::Values(&[receiver].as_slice()),
                     0,
                 )
                 .expect("the stack holds the frame");
@@ -1503,7 +1503,7 @@ mod tests {
                         then: Continuation::Deliver,
                         counted: true,
                     },
-                    Arguments::Values(&[]),
+                    Arguments::NONE,
                     0,
                 )
                 .expect("the stack holds the frame");

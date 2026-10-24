@@ -426,7 +426,7 @@ fn a_returning_activation_keeps_its_registers_only_when_it_was_marked() {
         let unmarked = heap
             .push_activation(
                 activation_header(class),
-                Arguments::Values(&[Value::small_integer(1)]),
+                Arguments::Values(&[Value::small_integer(1)].as_slice()),
                 1,
             )
             .expect("the stack holds the frame");
@@ -453,7 +453,7 @@ fn a_returning_activation_keeps_its_registers_only_when_it_was_marked() {
         let marked = heap
             .push_activation(
                 activation_header(class),
-                Arguments::Values(&[Value::small_integer(1)]),
+                Arguments::Values(&[Value::small_integer(1)].as_slice()),
                 1,
             )
             .expect("the stack holds the frame");

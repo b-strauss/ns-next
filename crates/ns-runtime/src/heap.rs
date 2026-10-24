@@ -400,6 +400,67 @@ pub struct RegisterBase {
     activation: ActivationReference,
 }
 
+/// A send's argument window: `count` consecutive registers from `start` in
+/// the window a `RegisterBase` names (`interpreter::Arguments::Slots`).
+///
+/// The three numbers are packed into one word by arithmetic, so that the
+/// window is built in a register and travels in one: built in memory by
+/// narrow stores and read back wider, as three fields of their own were,
+/// each read waited for the stores to retire (`docs/design/execution.md`,
+/// "Planned: overlapping register windows"). A debug build carries the
+/// register base's activation beside it, checked on every read as any
+/// register access is.
+#[derive(Clone, Copy)]
+pub struct ArgumentSlots {
+    /// The register base's index in bits 0-31, `start` in bits 32-47,
+    /// `count` in bits 48-63.
+    packed: u64,
+    #[cfg(debug_assertions)]
+    activation: ActivationReference,
+}
+
+impl ArgumentSlots {
+    /// The `count` registers from `start` in `register_base`'s window.
+    #[inline(always)]
+    pub(crate) fn new(register_base: RegisterBase, start: u16, count: u16) -> ArgumentSlots {
+        ArgumentSlots {
+            packed: u64::from(register_base.index)
+                | (u64::from(start) << 32)
+                | (u64::from(count) << 48),
+            #[cfg(debug_assertions)]
+            activation: register_base.activation,
+        }
+    }
+
+    /// The window the registers lie in.
+    #[inline(always)]
+    pub(crate) fn register_base(self) -> RegisterBase {
+        RegisterBase {
+            index: self.packed as u32,
+            #[cfg(debug_assertions)]
+            activation: self.activation,
+        }
+    }
+
+    /// The first register.
+    #[inline(always)]
+    pub(crate) fn start(self) -> u16 {
+        (self.packed >> 32) as u16
+    }
+
+    /// How many registers.
+    #[inline(always)]
+    pub(crate) fn count(self) -> u16 {
+        (self.packed >> 48) as u16
+    }
+
+    /// The index of the first register's word on the activation stack.
+    #[inline(always)]
+    fn first_word(self) -> usize {
+        self.packed as u32 as usize + usize::from(self.start())
+    }
+}
+
 /// Everything a new activation is apart from its registers, which
 /// `Heap::push_activation` takes separately.
 pub struct ActivationHeader<'gc> {
@@ -5866,18 +5927,15 @@ impl<'gc> Heap<'gc> {
         // only that the slots lie in their live window is checked.
         #[cfg(debug_assertions)]
         match arguments {
-            Arguments::Slots {
-                register_base,
-                argument_base,
-                count,
-            } => {
+            Arguments::Slots(slots) => {
+                let count = slots.count();
                 if count > 0 {
-                    self.check_register(register_base, argument_base);
-                    self.check_register(register_base, argument_base + (count - 1));
+                    self.check_register(slots.register_base(), slots.start());
+                    self.check_register(slots.register_base(), slots.start() + (count - 1));
                 }
             }
             Arguments::Values(values) => {
-                for argument in values {
+                for argument in values.iter() {
                     self.store(*argument);
                 }
             }
@@ -5982,18 +6040,26 @@ impl<'gc> Heap<'gc> {
         match arguments {
             // The slots lie in the sender's window, below the frame just
             // pushed, so the copy reads none of the words it writes.
-            Arguments::Slots {
-                register_base,
-                argument_base,
-                count,
-            } => {
-                let source = register_base.index as usize + usize::from(argument_base);
-                words.copy_within(source..source + usize::from(count), registers_start);
+            // One argument or two are copied word by word: `copy_within`
+            // is a call out of line, on every push.
+            Arguments::Slots(slots) => {
+                let source = slots.first_word();
+                match slots.count() {
+                    0 => {}
+                    1 => words[registers_start] = words[source],
+                    2 => {
+                        words[registers_start] = words[source];
+                        words[registers_start + 1] = words[source + 1];
+                    }
+                    count => {
+                        words.copy_within(source..source + usize::from(count), registers_start);
+                    }
+                }
             }
             Arguments::Values(values) => {
                 for (register, argument) in words[registers_start..temporaries_start]
                     .iter_mut()
-                    .zip(values)
+                    .zip(values.iter())
                 {
                     *register = argument.word().bits();
                 }
@@ -10040,7 +10106,7 @@ mod tests {
         let activation = heap
             .push_activation(
                 header(),
-                Arguments::Values(&[Value::small_integer(1), Value::small_integer(2)]),
+                Arguments::Values(&[Value::small_integer(1), Value::small_integer(2)].as_slice()),
                 2,
             )
             .expect("the stack holds the frame");
@@ -10067,10 +10133,18 @@ mod tests {
     fn nested_activations_keep_separate_register_windows() {
         let mut heap = Heap::new();
         let outer = heap
-            .push_activation(header(), Arguments::Values(&[Value::small_integer(1)]), 1)
+            .push_activation(
+                header(),
+                Arguments::Values(&[Value::small_integer(1)].as_slice()),
+                1,
+            )
             .expect("the stack holds the frame");
         let inner = heap
-            .push_activation(header(), Arguments::Values(&[Value::small_integer(2)]), 1)
+            .push_activation(
+                header(),
+                Arguments::Values(&[Value::small_integer(2)].as_slice()),
+                1,
+            )
             .expect("the stack holds the frame");
         heap.activation_set_local(inner, 1, Value::small_integer(20));
         heap.activation_set_local(outer, 1, Value::small_integer(10));
@@ -10093,7 +10167,7 @@ mod tests {
     fn a_push_takes_its_arguments_from_the_slots_below_or_from_values() {
         let mut heap = Heap::new();
         let sender = heap
-            .push_activation(header(), Arguments::Values(&[]), 5)
+            .push_activation(header(), Arguments::NONE, 5)
             .expect("the stack holds the frame");
         for register in 0..5 {
             heap.activation_set_local(
@@ -10103,30 +10177,30 @@ mod tests {
             );
         }
         let register_base = heap.activation_register_base(sender);
-        let from_slots = heap
-            .push_activation(
-                header(),
-                Arguments::Slots {
-                    register_base,
-                    argument_base: 2,
-                    count: 2,
-                },
-                1,
-            )
-            .expect("the stack holds the frame");
-        assert_eq!(
-            heap.activation_local(from_slots, 0).as_small_integer(),
-            Some(12)
-        );
-        assert_eq!(
-            heap.activation_local(from_slots, 1).as_small_integer(),
-            Some(13)
-        );
-        assert!(heap.activation_local(from_slots, 2).is_nil());
+        // One, two and three: the push copies the first two word by word
+        // and more through `copy_within`.
+        for count in 1..=3_u16 {
+            let from_slots = heap
+                .push_activation(
+                    header(),
+                    Arguments::Slots(ArgumentSlots::new(register_base, 2, count)),
+                    1,
+                )
+                .expect("the stack holds the frame");
+            for register in 0..count {
+                assert_eq!(
+                    heap.activation_local(from_slots, register)
+                        .as_small_integer(),
+                    Some(12 + i64::from(register))
+                );
+            }
+            assert!(heap.activation_local(from_slots, count).is_nil());
+            heap.pop_activation(from_slots);
+        }
         let from_values = heap
             .push_activation(
                 header(),
-                Arguments::Values(&[Value::small_integer(7), Value::small_integer(8)]),
+                Arguments::Values(&[Value::small_integer(7), Value::small_integer(8)].as_slice()),
                 1,
             )
             .expect("the stack holds the frame");
@@ -10140,7 +10214,6 @@ mod tests {
         );
         assert!(heap.activation_local(from_values, 2).is_nil());
         heap.pop_activation(from_values);
-        heap.pop_activation(from_slots);
         for register in 0..5 {
             assert_eq!(
                 heap.activation_local(sender, register).as_small_integer(),
@@ -10161,7 +10234,11 @@ mod tests {
         let objects = heap.heap_statistics().live_objects;
         for _ in 0..1000 {
             let activation = heap
-                .push_activation(header(), Arguments::Values(&[Value::small_integer(1)]), 3)
+                .push_activation(
+                    header(),
+                    Arguments::Values(&[Value::small_integer(1)].as_slice()),
+                    3,
+                )
                 .expect("the stack holds the frame");
             heap.pop_activation(activation);
         }
@@ -10175,7 +10252,7 @@ mod tests {
         let mut heap = frame_heap();
         let objects = heap.heap_statistics().live_objects;
         let activation = heap
-            .push_activation(header(), Arguments::Values(&[]), 1)
+            .push_activation(header(), Arguments::NONE, 1)
             .expect("the stack holds the frame");
         let first = heap.reify(activation);
         let second = heap.reify(activation);
@@ -10195,7 +10272,11 @@ mod tests {
     fn a_married_frame_reads_and_writes_the_live_registers() {
         let mut heap = frame_heap();
         let activation = heap
-            .push_activation(header(), Arguments::Values(&[Value::small_integer(1)]), 1)
+            .push_activation(
+                header(),
+                Arguments::Values(&[Value::small_integer(1)].as_slice()),
+                1,
+            )
             .expect("the stack holds the frame");
         let frame = heap.reify(activation);
         heap.activation_set_local(activation, 1, Value::small_integer(5));
@@ -10229,7 +10310,7 @@ mod tests {
                     code: shaped_code(1, 2),
                     ..header()
                 },
-                Arguments::Values(&[Value::small_integer(1)]),
+                Arguments::Values(&[Value::small_integer(1)].as_slice()),
                 1,
             )
             .expect("the stack holds the frame");
@@ -10266,8 +10347,12 @@ mod tests {
             let object = heap.allocate_instance(class, 0);
             objects.push(object);
             activations.push(
-                heap.push_activation(header(), Arguments::Values(&[Value::object(object)]), 0)
-                    .expect("the stack holds the frame"),
+                heap.push_activation(
+                    header(),
+                    Arguments::Values(&[Value::object(object)].as_slice()),
+                    0,
+                )
+                .expect("the stack holds the frame"),
             );
         }
         let weak = heap.allocate_weak_array(weak_class, objects.len());
@@ -10332,7 +10417,7 @@ mod tests {
                     })),
                     ..header()
                 },
-                Arguments::Values(&[Value::boolean(true)]),
+                Arguments::Values(&[Value::boolean(true)].as_slice()),
                 2,
             )
             .expect("the stack holds the frame");
@@ -10371,7 +10456,9 @@ mod tests {
                         kind,
                         ..header()
                     },
-                    Arguments::Values(&[Value::small_float(1.5), Value::object(closure)]),
+                    Arguments::Values(
+                        &[Value::small_float(1.5), Value::object(closure)].as_slice(),
+                    ),
                     1,
                 )
                 .expect("the stack holds the frame");
@@ -10700,7 +10787,11 @@ mod tests {
         );
 
         let activation = heap
-            .push_activation(header(), Arguments::Values(&[Value::small_integer(1)]), 1)
+            .push_activation(
+                header(),
+                Arguments::Values(&[Value::small_integer(1)].as_slice()),
+                1,
+            )
             .expect("the stack holds the frame");
         heap.fill_copied_values(activation, closure);
         assert_eq!(
@@ -10723,7 +10814,7 @@ mod tests {
     fn a_divorced_frame_is_untouched_by_the_next_activation_at_its_depth() {
         let mut heap = frame_heap();
         let first = heap
-            .push_activation(header(), Arguments::Values(&[]), 2)
+            .push_activation(header(), Arguments::NONE, 2)
             .expect("the stack holds the frame");
         heap.activation_set_local(first, 1, Value::small_integer(3));
         let frame = heap.reify(first);
@@ -10731,7 +10822,7 @@ mod tests {
         heap.pop_activation(first);
 
         let second = heap
-            .push_activation(header(), Arguments::Values(&[]), 2)
+            .push_activation(header(), Arguments::NONE, 2)
             .expect("the stack holds the frame");
         heap.activation_set_local(second, 1, Value::small_integer(99));
         assert_eq!(heap.frame_local(frame, 1).as_small_integer(), Some(3));
@@ -10745,7 +10836,11 @@ mod tests {
     fn a_register_base_reads_and_writes_its_activations_registers() {
         let mut heap = Heap::new();
         let activation = heap
-            .push_activation(header(), Arguments::Values(&[Value::small_integer(7)]), 2)
+            .push_activation(
+                header(),
+                Arguments::Values(&[Value::small_integer(7)].as_slice()),
+                2,
+            )
             .expect("the stack holds the frame");
         let base = heap.activation_register_base(activation);
         assert_eq!(heap.register(base, 0).as_small_integer(), Some(7));
@@ -10766,12 +10861,12 @@ mod tests {
     fn reading_through_a_stale_register_base_panics() {
         let mut heap = Heap::new();
         let first = heap
-            .push_activation(header(), Arguments::Values(&[]), 1)
+            .push_activation(header(), Arguments::NONE, 1)
             .expect("the stack holds the frame");
         let base = heap.activation_register_base(first);
         heap.pop_activation(first);
         let _second = heap
-            .push_activation(header(), Arguments::Values(&[]), 1)
+            .push_activation(header(), Arguments::NONE, 1)
             .expect("the stack holds the frame");
         let _ = heap.register(base, 0);
     }
@@ -10782,11 +10877,15 @@ mod tests {
     fn a_register_base_survives_a_deeper_push() {
         let mut heap = Heap::new();
         let caller = heap
-            .push_activation(header(), Arguments::Values(&[Value::small_integer(1)]), 1)
+            .push_activation(
+                header(),
+                Arguments::Values(&[Value::small_integer(1)].as_slice()),
+                1,
+            )
             .expect("the stack holds the frame");
         let base = heap.activation_register_base(caller);
         let callee = heap
-            .push_activation(header(), Arguments::Values(&[]), 4096)
+            .push_activation(header(), Arguments::NONE, 4096)
             .expect("the stack holds the frame");
         assert_eq!(heap.register(base, 0).as_small_integer(), Some(1));
         heap.pop_activation(callee);
@@ -10809,11 +10908,11 @@ mod tests {
     fn reading_through_a_popped_activation_handle_panics() {
         let mut heap = Heap::new();
         let first = heap
-            .push_activation(header(), Arguments::Values(&[]), 1)
+            .push_activation(header(), Arguments::NONE, 1)
             .expect("the stack holds the frame");
         heap.pop_activation(first);
         let _second = heap
-            .push_activation(header(), Arguments::Values(&[]), 1)
+            .push_activation(header(), Arguments::NONE, 1)
             .expect("the stack holds the frame");
         let _ = heap.activation_local(first, 0);
     }
@@ -10824,11 +10923,11 @@ mod tests {
     fn reading_an_activation_handle_through_a_foreign_heap_panics() {
         let mut origin = Heap::new();
         let mine = origin
-            .push_activation(header(), Arguments::Values(&[]), 1)
+            .push_activation(header(), Arguments::NONE, 1)
             .expect("the stack holds the frame");
         let mut other = Heap::new();
         let _theirs = other
-            .push_activation(header(), Arguments::Values(&[]), 1)
+            .push_activation(header(), Arguments::NONE, 1)
             .expect("the stack holds the frame");
         let _ = other.activation_local(mine, 0);
     }
@@ -10844,11 +10943,11 @@ mod tests {
     fn comparing_two_activation_handles_from_different_heaps_panics() {
         let mut origin = Heap::new();
         let mine = origin
-            .push_activation(header(), Arguments::Values(&[]), 1)
+            .push_activation(header(), Arguments::NONE, 1)
             .expect("the stack holds the frame");
         let mut other = Heap::new();
         let theirs = other
-            .push_activation(header(), Arguments::Values(&[]), 1)
+            .push_activation(header(), Arguments::NONE, 1)
             .expect("the stack holds the frame");
         let _ = mine.same(theirs);
     }
@@ -10866,11 +10965,11 @@ mod tests {
     fn comparing_a_popped_activation_handle_with_its_successor_panics() {
         let mut heap = Heap::new();
         let first = heap
-            .push_activation(header(), Arguments::Values(&[]), 1)
+            .push_activation(header(), Arguments::NONE, 1)
             .expect("the stack holds the frame");
         heap.pop_activation(first);
         let second = heap
-            .push_activation(header(), Arguments::Values(&[]), 1)
+            .push_activation(header(), Arguments::NONE, 1)
             .expect("the stack holds the frame");
         let _ = first.same(second);
     }
@@ -10883,10 +10982,10 @@ mod tests {
     fn popping_an_activation_that_is_not_on_top_panics() {
         let mut heap = Heap::new();
         let outer = heap
-            .push_activation(header(), Arguments::Values(&[]), 1)
+            .push_activation(header(), Arguments::NONE, 1)
             .expect("the stack holds the frame");
         let _inner = heap
-            .push_activation(header(), Arguments::Values(&[]), 1)
+            .push_activation(header(), Arguments::NONE, 1)
             .expect("the stack holds the frame");
         heap.pop_activation(outer);
     }
@@ -10985,19 +11084,19 @@ mod tests {
         };
 
         let method_activation = heap
-            .push_activation(header(), Arguments::Values(&[]), 0)
+            .push_activation(header(), Arguments::NONE, 0)
             .expect("the stack holds the frame");
         let home_frame = heap.reify(method_activation);
         let outer_closure = block_closure(&mut heap, class, home_frame);
         let outer_block_activation = heap
-            .push_activation(block_header(outer_closure), Arguments::Values(&[]), 0)
+            .push_activation(block_header(outer_closure), Arguments::NONE, 0)
             .expect("the stack holds the frame");
         let captured_frame = heap.reify(outer_block_activation);
         assert!(!captured_frame.same(home_frame));
 
         let closure = block_closure(&mut heap, class, captured_frame);
         let closure_activation = heap
-            .push_activation(block_header(closure), Arguments::Values(&[]), 0)
+            .push_activation(block_header(closure), Arguments::NONE, 0)
             .expect("the stack holds the frame");
 
         assert!(heap.activation_home(method_activation).is_none());
@@ -11306,7 +11405,11 @@ mod tests {
         let reachable = heap.allocate_string(class, crate::CodePoints::from("live"));
         let unreachable = heap.allocate_string(class, crate::CodePoints::from("dead"));
         let activation = heap
-            .push_activation(header(), Arguments::Values(&[Value::object(reachable)]), 1)
+            .push_activation(
+                header(),
+                Arguments::Values(&[Value::object(reachable)].as_slice()),
+                1,
+            )
             .expect("the stack holds the frame");
 
         let marked = marked_by_marking(&mut heap, &[reachable, class, unreachable]);
@@ -11325,7 +11428,11 @@ mod tests {
         let holder = heap.allocate_instance(class, 1);
         assert!(heap.instance_set_field(holder, 0, Value::object(target)));
         let activation = heap
-            .push_activation(header(), Arguments::Values(&[Value::object(holder)]), 1)
+            .push_activation(
+                header(),
+                Arguments::Values(&[Value::object(holder)].as_slice()),
+                1,
+            )
             .expect("the stack holds the frame");
 
         let marked = marked_by_marking(&mut heap, &[target]);
@@ -11341,7 +11448,7 @@ mod tests {
     fn marking_reaches_a_married_frame_through_its_stack_frame() {
         let mut heap = frame_heap();
         let activation = heap
-            .push_activation(header(), Arguments::Values(&[]), 1)
+            .push_activation(header(), Arguments::NONE, 1)
             .expect("the stack holds the frame");
         let frame = heap.reify(activation);
         let frame_object = heap.frame_object(frame);
@@ -11384,7 +11491,7 @@ mod tests {
         let activation = heap
             .push_activation(
                 header(),
-                Arguments::Values(&[Value::object(activation_object)]),
+                Arguments::Values(&[Value::object(activation_object)].as_slice()),
                 1,
             )
             .expect("the stack holds the frame");
@@ -11405,7 +11512,11 @@ mod tests {
         // Garbage below the frame, so that compaction moves it.
         top_level_frame(&mut heap, 2);
         let activation = heap
-            .push_activation(header(), Arguments::Values(&[Value::small_integer(7)]), 2)
+            .push_activation(
+                header(),
+                Arguments::Values(&[Value::small_integer(7)].as_slice()),
+                2,
+            )
             .expect("the stack holds the frame");
         let frame = heap.reify(activation);
         heap.set_register(
@@ -11435,13 +11546,21 @@ mod tests {
         let mut heap = frame_heap();
         top_level_frame(&mut heap, 2);
         let retained = heap
-            .push_activation(header(), Arguments::Values(&[Value::small_integer(7)]), 1)
+            .push_activation(
+                header(),
+                Arguments::Values(&[Value::small_integer(7)].as_slice()),
+                1,
+            )
             .expect("the stack holds the frame");
         let retained_frame = heap.reify(retained);
         heap.retain_registers(retained);
         heap.activation_set_local(retained, 1, Value::small_integer(8));
         let unretained = heap
-            .push_activation(header(), Arguments::Values(&[Value::small_integer(5)]), 1)
+            .push_activation(
+                header(),
+                Arguments::Values(&[Value::small_integer(5)].as_slice()),
+                1,
+            )
             .expect("the stack holds the frame");
         let unretained_frame = heap.reify(unretained);
         heap.activation_set_local(unretained, 1, Value::small_integer(6));
@@ -11496,7 +11615,11 @@ mod tests {
         let mut heap = frame_heap();
         top_level_frame(&mut heap, 2);
         let activation = heap
-            .push_activation(header(), Arguments::Values(&[Value::small_integer(7)]), 1)
+            .push_activation(
+                header(),
+                Arguments::Values(&[Value::small_integer(7)].as_slice()),
+                1,
+            )
             .expect("the stack holds the frame");
         let frame = heap.reify(activation);
         let before = frame.offset;
@@ -11539,7 +11662,11 @@ mod tests {
         assert!(heap.instance_set_field(second, 0, Value::object(first)));
         heap.instance_set_field(first, 0, Value::object(second));
         let activation = heap
-            .push_activation(header(), Arguments::Values(&[Value::object(first)]), 1)
+            .push_activation(
+                header(),
+                Arguments::Values(&[Value::object(first)].as_slice()),
+                1,
+            )
             .expect("the stack holds the frame");
 
         let marked = marked_by_marking(&mut heap, &[first, second]);
@@ -11558,7 +11685,11 @@ mod tests {
         heap.allocate_string(class, crate::CodePoints::from("dead"));
         heap.allocate_string(class, crate::CodePoints::from("also dead"));
         let activation = heap
-            .push_activation(header(), Arguments::Values(&[Value::object(reachable)]), 1)
+            .push_activation(
+                header(),
+                Arguments::Values(&[Value::object(reachable)].as_slice()),
+                1,
+            )
             .expect("the stack holds the frame");
         let before = heap.heap_statistics().live_objects;
 
@@ -11580,7 +11711,11 @@ mod tests {
         heap.allocate_string(class, crate::CodePoints::from("dead"));
         let reachable = heap.allocate_string(class, crate::CodePoints::from("live"));
         let activation = heap
-            .push_activation(header(), Arguments::Values(&[Value::object(reachable)]), 1)
+            .push_activation(
+                header(),
+                Arguments::Values(&[Value::object(reachable)].as_slice()),
+                1,
+            )
             .expect("the stack holds the frame");
 
         heap.collect_for_test(&mut []);
@@ -11884,7 +12019,7 @@ mod tests {
         assert!(heap.header(dead_object).remembered());
 
         let activation = heap
-            .push_activation(header(), Arguments::Values(&[]), LARGE_OBJECT_BYTES / 8)
+            .push_activation(header(), Arguments::NONE, LARGE_OBJECT_BYTES / 8)
             .expect("the stack holds the frame");
         let frame = heap.reify(activation);
         let frame_object = heap.frame_object(frame);
@@ -12037,7 +12172,7 @@ mod tests {
         let activation = heap
             .push_activation(
                 header(),
-                Arguments::Values(&[Value::small_integer(7), Value::object(class)]),
+                Arguments::Values(&[Value::small_integer(7), Value::object(class)].as_slice()),
                 2,
             )
             .expect("the stack holds the frame");
@@ -12096,10 +12231,10 @@ mod tests {
         set_guards_from(&mut heap, closure_class, activation_class);
         let arguments = [Value::small_integer(1), Value::object(closure_class)];
         let first = heap
-            .push_activation(header(), Arguments::Values(&arguments), 3)
+            .push_activation(header(), Arguments::Values(&arguments.as_slice()), 3)
             .expect("the stack holds the frame");
         let second = heap
-            .push_activation(header(), Arguments::Values(&arguments), 3)
+            .push_activation(header(), Arguments::Values(&arguments.as_slice()), 3)
             .expect("the stack holds the frame");
         let (fast, fast_bumps) = counting_fast_bumps(&mut heap, |heap| heap.reify(first));
         let (cold, cold_bumps) = counting_fast_bumps_refused(&mut heap, |heap| heap.reify(second));
@@ -12493,7 +12628,11 @@ mod tests {
     fn a_married_frame_is_copied_and_its_entry_follows_it() {
         let mut heap = frame_heap();
         let activation = heap
-            .push_activation(header(), Arguments::Values(&[Value::small_integer(1)]), 1)
+            .push_activation(
+                header(),
+                Arguments::Values(&[Value::small_integer(1)].as_slice()),
+                1,
+            )
             .expect("the stack holds the frame");
         let frame = heap.reify(activation);
         let before = heap.frame_object(frame).offset;
@@ -12528,7 +12667,7 @@ mod tests {
     fn the_divorce_into_a_tenured_frame_keeps_its_young_registers() {
         let mut heap = frame_heap();
         let activation = heap
-            .push_activation(header(), Arguments::Values(&[]), 1)
+            .push_activation(header(), Arguments::NONE, 1)
             .expect("the stack holds the frame");
         heap.reify(activation);
 
@@ -14303,7 +14442,7 @@ mod tests {
                         code: body.clone(),
                         ..header()
                     },
-                    Arguments::Values(&[]),
+                    Arguments::NONE,
                     0,
                 )
                 .expect("the stack holds the frame");
@@ -14412,7 +14551,7 @@ mod tests {
         let bottom = heap
             .push_activation(
                 suspendable_header(class, 1, 1),
-                Arguments::Values(&[Value::small_integer(5)]),
+                Arguments::Values(&[Value::small_integer(5)].as_slice()),
                 0,
             )
             .expect("the stack holds the frame");
@@ -14420,7 +14559,7 @@ mod tests {
         let top = heap
             .push_activation(
                 suspendable_header(class, 2, 3),
-                Arguments::Values(&[Value::small_integer(1), Value::small_integer(2)]),
+                Arguments::Values(&[Value::small_integer(1), Value::small_integer(2)].as_slice()),
                 1,
             )
             .expect("the stack holds the frame");
@@ -14501,7 +14640,7 @@ mod tests {
         };
         let activations: Vec<_> = (0..3)
             .map(|_| {
-                heap.push_activation(unwinding(), Arguments::Values(&[]), 0)
+                heap.push_activation(unwinding(), Arguments::NONE, 0)
                     .expect("the stack holds the frame")
             })
             .collect();
@@ -14511,7 +14650,7 @@ mod tests {
             assert!(matches!(popped.then, Continuation::Unwind(_)));
         }
 
-        heap.push_activation(unwinding(), Arguments::Values(&[]), 0)
+        heap.push_activation(unwinding(), Arguments::NONE, 0)
             .expect("the stack holds the frame");
 
         assert_eq!(heap.continuation_rows(), vec![true]);
@@ -14536,13 +14675,13 @@ mod tests {
                 action: UnwindAction::Restart,
             }))
         };
-        heap.push_activation(unwinding(), Arguments::Values(&[]), 0)
+        heap.push_activation(unwinding(), Arguments::NONE, 0)
             .expect("the stack holds the frame");
         let middle = heap
-            .push_activation(unwinding(), Arguments::Values(&[]), 0)
+            .push_activation(unwinding(), Arguments::NONE, 0)
             .expect("the stack holds the frame");
         let top = heap
-            .push_activation(unwinding(), Arguments::Values(&[]), 0)
+            .push_activation(unwinding(), Arguments::NONE, 0)
             .expect("the stack holds the frame");
 
         heap.activation_set_continuation(middle, Continuation::Deliver);
@@ -14571,7 +14710,7 @@ mod tests {
                     })),
                     ..header()
                 },
-                Arguments::Values(&[]),
+                Arguments::NONE,
                 0,
             )
             .expect("the stack holds the frame");
@@ -14583,7 +14722,7 @@ mod tests {
                 })),
                 ..header()
             },
-            Arguments::Values(&[]),
+            Arguments::NONE,
             0,
         )
         .expect("the stack holds the frame");
@@ -14611,7 +14750,7 @@ mod tests {
     fn a_delivering_activation_takes_no_row() {
         let mut heap = Heap::new();
         let activation = heap
-            .push_activation(header(), Arguments::Values(&[]), 0)
+            .push_activation(header(), Arguments::NONE, 0)
             .expect("the stack holds the frame");
         assert!(heap.continuation_rows().is_empty());
         let popped = heap.pop_activation(activation);
@@ -14631,13 +14770,13 @@ mod tests {
                     })),
                     ..suspendable_header(class, 0, 1)
                 },
-                Arguments::Values(&[]),
+                Arguments::NONE,
                 1,
             )
             .expect("the stack holds the frame");
         let bottom_frame = heap.reify(bottom);
         let top = heap
-            .push_activation(suspendable_header(class, 0, 1), Arguments::Values(&[]), 1)
+            .push_activation(suspendable_header(class, 0, 1), Arguments::NONE, 1)
             .expect("the stack holds the frame");
         let top_frame = heap.reify(top);
         heap.suspend_activations(0);
@@ -14680,11 +14819,11 @@ mod tests {
         let mut heap = frame_heap();
         let class = named_class(&mut heap, "Suspended");
         let bottom = heap
-            .push_activation(suspendable_header(class, 0, 1), Arguments::Values(&[]), 1)
+            .push_activation(suspendable_header(class, 0, 1), Arguments::NONE, 1)
             .expect("the stack holds the frame");
         let bottom_frame = heap.reify(bottom);
         let top = heap
-            .push_activation(suspendable_header(class, 0, 1), Arguments::Values(&[]), 1)
+            .push_activation(suspendable_header(class, 0, 1), Arguments::NONE, 1)
             .expect("the stack holds the frame");
         let top_frame = heap.reify(top);
         heap.suspend_activations(0);
@@ -14711,10 +14850,10 @@ mod tests {
         let mut heap = frame_heap();
         let class = named_class(&mut heap, "Suspended");
         let below = heap
-            .push_activation(suspendable_header(class, 0, 1), Arguments::Values(&[]), 1)
+            .push_activation(suspendable_header(class, 0, 1), Arguments::NONE, 1)
             .expect("the stack holds the frame");
         let lowest = heap
-            .push_activation(suspendable_header(class, 0, 1), Arguments::Values(&[]), 1)
+            .push_activation(suspendable_header(class, 0, 1), Arguments::NONE, 1)
             .expect("the stack holds the frame");
         let lowest_frame = heap.reify(lowest);
         let floor = heap.activation_position(lowest);
@@ -14740,16 +14879,16 @@ mod tests {
                     counted: false,
                     ..suspendable_header(class, 0, 1)
                 },
-                Arguments::Values(&[]),
+                Arguments::NONE,
                 1,
             )
             .expect("the stack holds the frame");
         let bottom_frame = heap.reify(bottom);
         let top = heap
-            .push_activation(suspendable_header(class, 0, 1), Arguments::Values(&[]), 1)
+            .push_activation(suspendable_header(class, 0, 1), Arguments::NONE, 1)
             .expect("the stack holds the frame");
         let top_frame = heap.reify(top);
-        heap.push_activation(suspendable_header(class, 0, 1), Arguments::Values(&[]), 1)
+        heap.push_activation(suspendable_header(class, 0, 1), Arguments::NONE, 1)
             .expect("the stack holds the frame");
         let before = heap.counted_depth();
         assert_eq!(before, 2);
@@ -14783,7 +14922,7 @@ mod tests {
         let activation = heap
             .push_activation(
                 suspendable_header(class, 1, 2),
-                Arguments::Values(&[Value::object(young)]),
+                Arguments::Values(&[Value::object(young)].as_slice()),
                 1,
             )
             .expect("the stack holds the frame");
@@ -14837,7 +14976,7 @@ mod tests {
         let mut heap = frame_heap();
         let class = old_instance_class(&mut heap);
         let activation = heap
-            .push_activation(suspendable_header(class, 0, 2), Arguments::Values(&[]), 2)
+            .push_activation(suspendable_header(class, 0, 2), Arguments::NONE, 2)
             .expect("the stack holds the frame");
         heap.reify(activation);
         scavenge_bare(&mut heap, true, &mut []);
@@ -14921,7 +15060,7 @@ mod tests {
                         kind: ActivationKind::Factory(object),
                         ..header()
                     },
-                    Arguments::Values(&[]),
+                    Arguments::NONE,
                     1,
                 )
                 .expect("the stack holds the frame");

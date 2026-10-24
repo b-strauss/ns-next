@@ -225,7 +225,10 @@ impl Interpreter {
                 .map(|argument| mutator.fetch(argument))
                 .collect();
             let decided = mutator.decide_instantiation(class, factory_arguments.len());
-            mutator.start(Ok(decided), Arguments::Values(&factory_arguments))
+            mutator.start(
+                Ok(decided),
+                Arguments::Values(&factory_arguments.as_slice()),
+            )
         });
         self.run_from_host(start, depth)
     }
@@ -649,7 +652,8 @@ impl<'gc> Mutator<'gc> {
                 .set_register(register_base, registers.answer, instance);
             return Ok((factory, FACTORY_INITIALIZE + 1));
         };
-        let initializer_arguments = initializer_arguments.window(arguments);
+        let owned = initializer_arguments.owned();
+        let initializer_arguments = initializer_arguments.window(arguments, &owned);
         let pushed = self.push_initializer(
             instance,
             *level,
@@ -1108,7 +1112,7 @@ impl<'gc> Mutator<'gc> {
             check_arity(
                 superclass,
                 declared_factory_arity(superclass_view),
-                Arguments::Values(&[]),
+                Arguments::NONE,
             )?;
             level = superclass;
             view = superclass_view;

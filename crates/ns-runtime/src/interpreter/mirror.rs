@@ -47,7 +47,8 @@ pub(crate) fn execute_sent<'gc>(
     }
     let subject = arguments.get(&mutator.heap, 0);
     let block = arguments.get(&mutator.heap, arguments.len() - 1);
-    let rest = arguments.slice(1..arguments.len() - 1);
+    let mut view: &[Value<'gc>] = &[];
+    let rest = arguments.slice(1..arguments.len() - 1, &mut view);
     let answer = match run_leaf(mutator, row, subject, rest) {
         Some(Ok(step)) => return Ok(owning_its_arguments(&mutator.heap, step, rest)),
         failed => crate::interpreter::future::after_a_failed_leaf(
@@ -582,7 +583,7 @@ mod tests {
                 crate::interpreter::inline_cache::FeedbackBase::NOT_ASSIGNED,
                 receiver,
                 Symbol::intern("same:"),
-                Arguments::Values(&[receiver]),
+                Arguments::Values(&[receiver].as_slice()),
             );
             assert!(matches!(
                 accepted,
@@ -597,7 +598,7 @@ mod tests {
                 crate::interpreter::inline_cache::FeedbackBase::NOT_ASSIGNED,
                 receiver,
                 Symbol::intern("size"),
-                Arguments::Values(&[]),
+                Arguments::NONE,
             );
             assert!(matches!(
                 declined,

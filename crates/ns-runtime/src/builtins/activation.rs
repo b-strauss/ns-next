@@ -430,7 +430,7 @@ mod tests {
                 let subject = mutator.fetch(subject);
                 let arguments = [mutator.fetch(class)];
                 assert_eq!(
-                    inherits_mixin_of(mutator, subject, Arguments::Values(&arguments)),
+                    inherits_mixin_of(mutator, subject, Arguments::Values(&arguments.as_slice())),
                     Some(true)
                 );
             }

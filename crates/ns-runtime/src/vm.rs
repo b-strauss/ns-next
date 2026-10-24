@@ -17,7 +17,7 @@ use std::rc::Rc;
 
 use crate::builtins::primitive::MirrorPrimitive;
 use crate::bytecode::{CompactInstruction, CompiledCode, Instruction, IntegerOperation, Literal};
-use crate::heap::{ActivationReference, RegisterBase};
+use crate::heap::{ActivationReference, ArgumentSlots, RegisterBase};
 use crate::interpreter::future::{
     not_a_closure, resolve_for_instruction, value_for_a_value_slot, FutureOutcome, Resolution,
 };
@@ -1787,11 +1787,11 @@ fn send_mirror(
     let mirror = mutator.heap.register(register_base, mirror_register);
     let subject = mutator.heap.register(register_base, subject_register);
     let slots = place_arguments(mutator, register_base, argument_base, argument_sources);
-    let arguments = Arguments::Slots {
+    let arguments = Arguments::Slots(ArgumentSlots::new(
         register_base,
-        argument_base: slots.start,
-        count: slots.end - slots.start,
-    };
+        slots.start,
+        slots.end - slots.start,
+    ));
     mutator
         .heap
         .activation_set_program_counter(activation, program_counter);
@@ -2061,11 +2061,11 @@ fn send<'gc>(
     handoff: &mut Handoff,
     decide: impl FnOnce(&mut Mutator<'gc>, Arguments<'_, 'gc>) -> Result<Step<'gc>, Signal<'gc>>,
 ) -> Transfer {
-    let arguments = Arguments::Slots {
-        register_base: sender.register_base,
-        argument_base: slots.start,
-        count: slots.end - slots.start,
-    };
+    let arguments = Arguments::Slots(ArgumentSlots::new(
+        sender.register_base,
+        slots.start,
+        slots.end - slots.start,
+    ));
     mutator
         .heap
         .activation_set_program_counter(sender.activation, program_counter);
@@ -2594,7 +2594,7 @@ fn force_and_reexecute<'gc>(
     mutator
         .heap
         .activation_set_program_counter(activation, program_counter);
-    match mutator.push_step(step, Arguments::Values(&[]), Some(activation), false) {
+    match mutator.push_step(step, Arguments::NONE, Some(activation), false) {
         Ok(callee) => handoff.switch_to(mutator, callee, 0),
         Err(signal) => unwind(mutator, signal, floor, handoff),
     }

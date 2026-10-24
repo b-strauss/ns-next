@@ -2137,7 +2137,7 @@ mod tests {
             };
             assert!(Rc::ptr_eq(recorded, &found_code));
             let (hit, _) = materialize(mutator, target, key).expect("a hit");
-            match mutator.act(hit, receiver, Symbol::NEW, Arguments::Values(&[])) {
+            match mutator.act(hit, receiver, Symbol::NEW, Arguments::NONE) {
                 Ok(crate::interpreter::Step::Factory { code, .. }) => {
                     assert!(
                         Rc::ptr_eq(&code, &found_code),

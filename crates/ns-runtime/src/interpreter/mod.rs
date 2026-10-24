@@ -29,7 +29,7 @@ use std::rc::Rc;
 
 use crate::compiler::Lowering;
 use crate::hash::IdentityMap;
-use crate::heap::{ActivationHeader, ActivationReference, Heap, RegisterBase, Root};
+use crate::heap::{ActivationHeader, ActivationReference, ArgumentSlots, Heap, Root};
 use crate::shipped_code::ShippedCodePath;
 use crate::types::*;
 use crate::Symbol;
@@ -246,59 +246,76 @@ pub(crate) enum StepArguments<'gc> {
 }
 
 impl<'gc> StepArguments<'gc> {
+    /// The decision's own arguments, for `window`: `Owned`'s, none for the
+    /// others.
+    pub(crate) fn owned(&self) -> &[Value<'gc>] {
+        match self {
+            StepArguments::Owned(arguments) => arguments,
+            StepArguments::Send | StepArguments::ControlFlow => &[],
+        }
+    }
+
     /// The arguments the activation is pushed with: `send`'s own for
-    /// `Send`, none for `ControlFlow`, the decision's for `Owned`.
+    /// `Send`, none for `ControlFlow`, the decision's for `Owned`, which
+    /// `owned` is `self.owned()`, held by the caller so that the window
+    /// can name it by a thin reference (`Arguments::Values`).
     pub(crate) fn window<'values>(
-        &'values self,
+        &self,
         send: Arguments<'values, 'gc>,
+        owned: &'values &'values [Value<'gc>],
     ) -> Arguments<'values, 'gc> {
         match self {
             StepArguments::Send => send,
-            StepArguments::ControlFlow => Arguments::Values(&[]),
-            StepArguments::Owned(arguments) => Arguments::Values(arguments),
+            StepArguments::ControlFlow => Arguments::NONE,
+            StepArguments::Owned(_) => Arguments::Values(owned),
         }
     }
 }
 
-/// The arguments a decision reads: a send's slots in its sender's
-/// window, read where they are, or values a decision or the host built.
+/// The arguments a decision reads: a send's window in its sender's
+/// registers, read where they are, or values a decision or the host built.
 ///
-/// A send's arguments stay in the sender's slots while the send is decided
-/// and its activation pushed, and the push copies them from there into the
-/// callee's window (`Heap::push_activation`), so nothing gathers them
-/// anywhere in between (`docs/design/execution.md`, "Planned: overlapping
-/// register windows"). Reading a slot is reading a register of a live
-/// activation: good while the sender stays where it is, which it does
+/// A send's arguments stay in the sender's registers while the send is
+/// decided and its activation pushed, and the push copies them from there
+/// into the callee's window (`Heap::push_activation`), so nothing gathers
+/// them anywhere in between (`docs/design/execution.md`, "Planned:
+/// overlapping register windows"). Reading one is reading a register of a
+/// live activation: good while the sender stays where it is, which it does
 /// from the send's start to its push -- no collection runs inside a
 /// decision, only at safepoints, and nothing pops the sender meanwhile.
+///
+/// Each case holds one word, so that the enum is a tag and a word and
+/// travels in two registers: as a three-field window beside a fat slice it
+/// was an aggregate of sixteen bytes, passed by reference to a copy built
+/// by narrow stores and read back wide, a stall on every send.
 /// Public because `Heap::push_activation` is, for a host's own frames.
 #[derive(Clone, Copy)]
 pub enum Arguments<'values, 'gc> {
-    /// The `count` slots from `argument_base` in the window `register_base`
-    /// names, which must lie in a live activation's registers, as
-    /// `Heap::register` requires of every register it reads.
-    Slots {
-        register_base: RegisterBase,
-        argument_base: u16,
-        count: u16,
-    },
+    /// Consecutive registers of a window, which must lie in a live
+    /// activation's registers, as `Heap::register` requires of every
+    /// register it reads: a send's argument slots.
+    Slots(ArgumentSlots),
     /// Values built apart from any window: `Message>>sendTo:`'s, a host's,
-    /// a decision's own.
-    Values(&'values [Value<'gc>]),
+    /// a decision's own -- named through a reference to the slice, which
+    /// keeps this case one word.
+    Values(&'values &'values [Value<'gc>]),
 }
 
 impl<'values, 'gc> Arguments<'values, 'gc> {
+    /// No arguments.
+    pub const NONE: Arguments<'values, 'gc> = Arguments::Values(&(&[] as &[Value<'gc>]));
+
     /// How many arguments there are.
     #[inline(always)]
     pub(crate) fn len(self) -> usize {
         match self {
-            Arguments::Slots { count, .. } => usize::from(count),
+            Arguments::Slots(slots) => usize::from(slots.count()),
             Arguments::Values(values) => values.len(),
         }
     }
 
     /// Argument `index`; panics past the last, as indexing a slice does,
-    /// so that a slot is never read beyond the send's own.
+    /// so that a register is never read beyond the send's own.
     #[inline(always)]
     pub(crate) fn get(self, heap: &Heap<'gc>, index: usize) -> Value<'gc> {
         assert!(
@@ -322,11 +339,9 @@ impl<'values, 'gc> Arguments<'values, 'gc> {
         match self {
             // `index < count`, a `u16`, so the sum is a register of the
             // window the send named.
-            Arguments::Slots {
-                register_base,
-                argument_base,
-                ..
-            } => heap.register(register_base, argument_base + index as u16),
+            Arguments::Slots(slots) => {
+                heap.register(slots.register_base(), slots.start() + index as u16)
+            }
             Arguments::Values(values) => values[index],
         }
     }
@@ -338,24 +353,31 @@ impl<'values, 'gc> Arguments<'values, 'gc> {
     }
 
     /// The arguments in `range`, which must lie inside `0..len`, read where
-    /// they are as these are.
-    pub(crate) fn slice(self, range: std::ops::Range<usize>) -> Arguments<'values, 'gc> {
+    /// they are as these are. `view` is where the narrower slice of
+    /// `Values` is kept for the answer to name.
+    pub(crate) fn slice<'narrow>(
+        self,
+        range: std::ops::Range<usize>,
+        view: &'narrow mut &'values [Value<'gc>],
+    ) -> Arguments<'narrow, 'gc>
+    where
+        'values: 'narrow,
+    {
         assert!(
             range.start <= range.end && range.end <= self.len(),
             "internal: the range lies outside the send's arguments"
         );
         match self {
-            Arguments::Slots {
-                register_base,
-                argument_base,
-                ..
-            } => Arguments::Slots {
-                register_base,
-                // Both below `count`, a `u16`.
-                argument_base: argument_base + range.start as u16,
-                count: (range.end - range.start) as u16,
-            },
-            Arguments::Values(values) => Arguments::Values(&values[range]),
+            // Both below `count`, a `u16`.
+            Arguments::Slots(slots) => Arguments::Slots(ArgumentSlots::new(
+                slots.register_base(),
+                slots.start() + range.start as u16,
+                (range.end - range.start) as u16,
+            )),
+            Arguments::Values(values) => {
+                *view = &values[range];
+                Arguments::Values(view)
+            }
         }
     }
 
@@ -743,8 +765,9 @@ impl Interpreter {
                 .iter()
                 .map(|argument| mutator.fetch(argument))
                 .collect();
-            let decided = mutator.decide_send(receiver, selector, Arguments::Values(&arguments));
-            mutator.start(decided, Arguments::Values(&arguments))
+            let decided =
+                mutator.decide_send(receiver, selector, Arguments::Values(&arguments.as_slice()));
+            mutator.start(decided, Arguments::Values(&arguments.as_slice()))
         });
         self.run_from_host(start, depth)
     }
@@ -777,7 +800,7 @@ impl Interpreter {
                 declaring_class,
                 nested::NO_CACHED_FIELD,
             );
-            mutator.start(decided, Arguments::Values(&[]))
+            mutator.start(decided, Arguments::NONE)
         });
         self.run_from_host(start, depth)
     }
@@ -1426,7 +1449,8 @@ impl<'gc> Mutator<'gc> {
                 arguments,
                 feedback_base,
             } => {
-                let arguments = arguments.window(send_arguments);
+                let owned = arguments.owned();
+                let arguments = arguments.window(send_arguments, &owned);
                 check_method_arity(&method, receiver, arguments.len())?;
                 let code = method.code.clone();
                 // A decision never knows its method's range -- only
@@ -1461,7 +1485,8 @@ impl<'gc> Mutator<'gc> {
                 then,
             } => {
                 let control_flow = matches!(arguments, StepArguments::ControlFlow);
-                let arguments = arguments.window(send_arguments);
+                let owned = arguments.owned();
+                let arguments = arguments.window(send_arguments, &owned);
                 let (code, captured_frame, closure_feedback_base) = self
                     .heap
                     .closure_activation(closure)
@@ -1537,7 +1562,8 @@ impl<'gc> Mutator<'gc> {
                 code,
                 arguments,
             } => {
-                let arguments = arguments.window(send_arguments);
+                let owned = arguments.owned();
+                let arguments = arguments.window(send_arguments, &owned);
                 // The entry's arity is its selector's, which the send
                 // matched, and a host's factory is built for its count;
                 // checked all the same, since the window is laid out from
@@ -1574,13 +1600,16 @@ impl<'gc> Mutator<'gc> {
                 arguments,
                 body,
                 code,
-            } => self.push_initializer(
-                receiver,
-                level,
-                arguments.window(send_arguments),
-                body,
-                code,
-            ),
+            } => {
+                let owned = arguments.owned();
+                self.push_initializer(
+                    receiver,
+                    level,
+                    arguments.window(send_arguments, &owned),
+                    body,
+                    code,
+                )
+            }
             Step::SuperclassClause(creation) => {
                 let code = nested::superclass_clause_code(&creation.nested);
                 let feedback_base = self.caches.base_for(&code);
@@ -1598,7 +1627,7 @@ impl<'gc> Mutator<'gc> {
                         counted: true,
                         feedback_base,
                     },
-                    Arguments::Values(&[]),
+                    Arguments::NONE,
                     temporaries,
                 )?;
                 // A nested class's creation is in progress exactly while its
@@ -1821,8 +1850,8 @@ impl<'gc> Mutator<'gc> {
         // (`StepArguments::Send` is only answered by a decision about a send,
         // and a continuation decides none: the one send it makes, a body's
         // `value`, is a `Step::MethodThen`, which owns its arguments), so
-        // `Arguments::Values(&[])` is always right here.
-        self.push_step(step, Arguments::Values(&[]), sender, !replaced_counted)
+        // `Arguments::NONE` is always right here.
+        self.push_step(step, Arguments::NONE, sender, !replaced_counted)
     }
 
     /// The step that sends `value` to `action`, or `value:` with
@@ -3029,7 +3058,7 @@ mod tests {
         let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         interpreter.enter(|mutator| {
             let receiver = mutator.fetch(&instance);
-            match mutator.decide_send(receiver, Symbol::intern("foo"), Arguments::Values(&[])) {
+            match mutator.decide_send(receiver, Symbol::intern("foo"), Arguments::NONE) {
                 Ok(Step::Method { method, .. }) => assert_eq!(method.selector.as_str(), "foo"),
                 _ => panic!("a user method is decided as an activation"),
             }
@@ -3037,7 +3066,7 @@ mod tests {
             match mutator.decide_send(
                 Value::small_integer(3),
                 Symbol::intern("+"),
-                Arguments::Values(&[Value::small_integer(4)]),
+                Arguments::Values(&[Value::small_integer(4)].as_slice()),
             ) {
                 Ok(Step::Value(answer)) if answer.as_small_integer() == Some(7) => {}
                 _ => panic!("a native leaf is decided as its value"),
@@ -3070,7 +3099,7 @@ mod tests {
         );
         interpreter.enter(|mutator| {
             let (items, echo) = (mutator.fetch(&items), mutator.fetch(&echo));
-            match mutator.decide_send(items, Symbol::intern("do:"), Arguments::Values(&[echo])) {
+            match mutator.decide_send(items, Symbol::intern("do:"), Arguments::Values(&[echo].as_slice())) {
                 Ok(Step::Block {
                     arguments: StepArguments::Owned(arguments),
                     then: Continuation::DoElement(state),
@@ -3109,19 +3138,18 @@ mod tests {
         let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         interpreter.enter(|mutator| {
             let instance = mutator.fetch(&instance);
-            let slot =
-                match mutator.decide_send(instance, Symbol::intern("N"), Arguments::Values(&[])) {
-                    Ok(Step::SuperclassClause(creation)) => {
-                        assert!(
-                            instance
-                                .as_object()
-                                .is_some_and(|object| object.same(creation.enclosing)),
-                            "the clause runs on the enclosing object"
-                        );
-                        creation.index
-                    }
-                    _ => panic!("a nested class is decided as its clause's activation"),
-                };
+            let slot = match mutator.decide_send(instance, Symbol::intern("N"), Arguments::NONE) {
+                Ok(Step::SuperclassClause(creation)) => {
+                    assert!(
+                        instance
+                            .as_object()
+                            .is_some_and(|object| object.same(creation.enclosing)),
+                        "the clause runs on the enclosing object"
+                    );
+                    creation.index
+                }
+                _ => panic!("a nested class is decided as its clause's activation"),
+            };
             assert_eq!(mutator.heap().activation_depth(), 0, "nothing was pushed");
             let Some(object) = instance.as_object() else {
                 panic!("an instance is an object");
@@ -3177,7 +3205,8 @@ mod tests {
                     panic!("the accessor answers a class object")
                 };
                 let arguments = vec![Value::small_integer(3); arity];
-                match mutator.decide_send(class, selector, Arguments::Values(&arguments)) {
+                match mutator.decide_send(class, selector, Arguments::Values(&arguments.as_slice()))
+                {
                     Ok(Step::Factory {
                         class: decided,
                         code,
