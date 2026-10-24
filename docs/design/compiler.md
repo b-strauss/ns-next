@@ -374,6 +374,11 @@ valid. A fallback closure and anything nested in it get a by-reference
 resolver index names — because such a closure reaches the frame whose common
 path it stands in for by reference.
 
+**Planned (road step 7a′):** the numbering skips the header's 13 words
+after the parameters, and a send's arguments become contiguous slots at
+the top of the live registers, which the callee's window overlaps
+([execution.md](execution.md), "Planned: overlapping register windows").
+
 Registers above the named locals are compiler-allocated scratch from a bump
 allocator **reset to the first scratch index at the start of every statement**.
 Statements are the unit `program_counter` and safepoints already work at, so scratch never

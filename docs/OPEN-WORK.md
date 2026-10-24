@@ -19,8 +19,13 @@ when they were written.
 high-performance VM" below; [execution.md](design/execution.md), "Planned:
 JIT tiers"), the next part of road step 7, an execution model for compiled
 code: the caller's outgoing arguments become the callee's first registers
-instead of being copied ([execution.md](design/execution.md),
-"Representation"), behind its own measurement. 7b and 7a are built: a
+instead of being copied. Designed with the user on 2026-10-24
+([execution.md](design/execution.md), "Planned: overlapping register
+windows"): Cog's layout, the arguments, then the header, then the other
+registers, the header's words left out of the register numbering and 13
+words in every build; in two stages, each measured against the tree
+before it -- first the argument buffer goes and the push copies once, then
+the windows overlap. 7b and 7a are built: a
 running activation is suspended into its frame and resumed from it lazily,
 the landing point of every later deoptimization, and a sixth stress mode
 runs every golden on from suspended frames
@@ -276,7 +281,9 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
   of twenty-four faster ("What frames as words moved"). What remains of
   step 7: **7a′**, next, register windows
   that overlap, the caller's outgoing arguments being the callee's first
-  registers, behind its own measurement; **7c**, the deoptimization
+  registers, designed in Cog's layout and built in two measured stages
+  ([execution.md](design/execution.md), "Planned: overlapping register
+  windows"); **7c**, the deoptimization
   contract and the protocol between interpreted and compiled frames,
   written into [execution.md](design/execution.md).
 - **Between steps 7 and 8, real Newspeak bodies for `whileTrue:`, `whileFalse:` and

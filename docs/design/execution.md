@@ -239,7 +239,8 @@ pub struct ActivationReference {
   creates no closure.
 - **The arguments are copied** into the callee's first registers;
   overlapping the caller's outgoing arguments with the callee's window is
-  road step 7a′, behind its own measurement ("Planned: JIT tiers" below).
+  road step 7a′, behind its own measurement ("Planned: overlapping
+  register windows" below).
 - **Register access through an `ActivationReference`** is the stack's word
   at the frame's offset plus the header's size plus `r`, with no branch on
   the handle's kind or on an args/temps split, and one bounds check, of
@@ -8001,6 +8002,113 @@ marks — `on:do:`, whose `^self value` is a tail send — is never skipped, or
 `signal` would no longer find its handler. `ensure:` is never in tail
 position, since `onUnwind value` follows `self value`.
 
+## Planned: overlapping register windows
+
+**Status: road step 7a′, decided with the user on 2026-10-24, not built.**
+Would change: a send's arguments are no longer copied into the callee's
+window; the caller's outgoing argument registers *are* the callee's first
+registers.
+
+**What a send copies today.** Twice each argument: `vm::send` gathers the
+argument registers into the step state's reusable buffer, because the
+decision reads them as a `&[Value]` while it holds `&mut Mutator` ("No
+re-entry from Rust"), and `Heap::push_activation_in` copies the buffer into
+the callee's first registers ("Representation" above). The argument
+registers are an arbitrary list: a named local is passed in its own
+register, the same register may be passed twice, and the reference
+lowering interleaves arguments with the scratch of later ones. Nothing has
+measured what the two copies cost; "What a send costs" found the argument
+count immaterial, but on the retired `Rc<RefCell<_>>` representation.
+
+**The prior art overlaps them, and puts the header between the arguments
+and the temporaries.** Cog's stack frame is the caller's pushed receiver
+and arguments, then the saved frame pointer, method, flags, context and a
+copy of the receiver, then the temporaries
+(`prior-art/opensmalltalk-vm/src/spur64.stack/gcc3x-interp.c:150-157`,
+`internalActivateNewMethod` at 5601-5660; arguments read above the frame
+pointer, `temporary:in:` at 65657-65667); Primordial Soup's is the same
+(`prior-art/primordialsoup/vm/interpreter.cc:18-45`, `FrameTemp` at
+94-101), and Strongtalk's native frame too
+(`prior-art/strongtalk/vm/runtime/frame.hpp:29-51`). A primitive reads
+its arguments in place in all three, and a failed one activates the method
+over them. Lua keeps the header out of line (`CallInfo`) so that the
+window is contiguous from `base`, the compiler placing the arguments at
+the top of the free registers; Dalvik's `invoke/range` takes contiguous
+registers and its non-range form copies once, into the callee's place.
+
+**The layout is Cog's, with the header's registers left out of the
+numbering.** A frame is its arguments, then the header, then the rest of
+its registers:
+
+```
+caller   ... live registers | slot 0 .. slot argc-1 | dead above
+callee                      | r0 .. r(argc-1)       | header (13) | r(argc+13) ..
+```
+
+- **The callee's register numbering skips the header**: registers `0 ..
+  argc` are the arguments, `argc .. argc + COUNT` name the header's words
+  and no instruction names them, and copied values, temporaries, the vector
+  register and scratch start at `argc + COUNT` ([compiler.md](compiler.md),
+  "Registers"). Every register is still `base + r`, one addition and no
+  branch on an args/temps split; the header sits at `base + argc`, and an
+  `ActivationReference` is its offset, as it is now.
+- **The header is 13 words in every build**, since its size is in the
+  compiled code and a debug build's artifact or image must run in a
+  release one: the debug build's generation moves into the flags word,
+  whose argument count narrows to 16 bits -- 8 + 16 + 2 + 31 bits, inside
+  61. The register ceiling bounds the count: a body with more parameters
+  compiles to the raising body ("Compilation cannot fail"), and a host's
+  arguments past it fail the arity check before the push.
+- **A send's arguments are contiguous slots at the top of the caller's
+  live registers.** Both lowerings allocate the `argc` slots right after
+  the receiver and lower each argument into its slot: a literal or a send
+  writes it directly, so nothing copies it. Every register numbered above
+  the slots is dead when the send executes -- the callee's header and
+  window overwrite them -- which the bump allocator already makes true and
+  which becomes a stated invariant, checked by the lowerings' debug
+  assertions and by `check_shape`.
+- **A named local passed as an argument is copied by the send itself**:
+  the send names its slot base and, for each argument, the register it
+  comes from, and copies only those not already in their slot -- one copy,
+  inside the send's own dispatch, where a `Move` before it would cost an
+  instruction. The reference lowering never uses it: it `Move`s every
+  local into a fresh slot, as its rule 3 already asks, so that the
+  optimized lowering's in-send copy is what the two are compared on
+  ([compiler.md](compiler.md), "The reference lowering").
+- **A push without the arguments in the caller's registers copies them**
+  to the top of the stack, above the caller's whole window: a
+  `doesNotUnderstand:` handler's message, `Message>>sendTo:`, `cull:`, a
+  native loop's next block, an unwind block, a host's entry, a resumed
+  frame, and the initializer a factory enters, whose arguments are the
+  factory's own and lie below its header. A future forced before a send
+  is re-run lands above the caller's window too, so the slots it re-reads
+  are untouched.
+- **A pop restores the top to the caller's window end**, not to the
+  callee's offset, since the caller's registers above its slots are its
+  own again. Suspending a sender copies its registers below its callee's
+  header only and leaves the rest nil, so a frame object holds no stale
+  header word; a frame object and an image record keep the registers
+  without the header's numbers.
+- **Parameter slots are immutable (§3.6, §6.3.2)**, so a callee never
+  writes the caller's slots: a setter assignment's value, read from the
+  slot after the send, is still there. The decoder takes this from the
+  compiler as a check, refusing an instruction that writes an argument
+  register or names one of the header's numbers, and an outer store into
+  another frame's scratch, which would write a live frame above it
+  ([image-format.md](image-format.md), "Verification").
+- **The decision reads the arguments where they are**, through an
+  argument window -- the frame, the slot base and the count, read through
+  the `Heap` -- instead of a slice; the buffer goes.
+
+**Two stages, each measured** as "What frames as words moved" was, with
+three builds a side. The first drops the buffer: decisions, primitives
+and builtins read the argument window, and the push copies once, from the
+caller's registers. The second overlaps the windows: the layout, the
+lowerings, new send forms with new wire tags, and the decoder's checks.
+Each is kept only if no program measures slower with its builds not
+overlapping those of the tree before it -- the second against the first,
+not only against `master` -- and the measurement says what each moved.
+
 ## Planned: JIT tiers
 
 Would change: hot code runs as machine code instead of in `vm::run`. Nothing
@@ -8051,7 +8159,8 @@ Each step gets its own design when it comes up.
   inside `vm::run`, nineteen of twenty-four programs are faster and the
   rest level ("What frames as words moved"). **7a′**, next,
   overlaps the register windows, the caller's outgoing arguments being
-  the callee's first registers, behind its own measurement. **7c** writes
+  the callee's first registers, in Cog's layout and in two measured
+  stages ("Planned: overlapping register windows"). **7c** writes
   the deoptimization contract and the protocol between interpreted and
   compiled frames into this document.
 - **Step 8, a baseline JIT**, Cog's class: every method compiled without
