@@ -261,7 +261,8 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
   resume"). What remains of step 7:
   **7a**, frames as words with a fixed header in one contiguous
   reservation of `ns-memory`, the depth limit kept and a byte bound added
-  only as a net, taken only if the interpreter measures no slower in
+  only as a net, designed in [execution.md](design/execution.md),
+  "Planned: frames as words in one reservation", taken only if the interpreter measures no slower in
   release and otherwise moved to road step 8; **7a′**, register windows
   that overlap, the caller's outgoing arguments being the callee's first
   registers, behind its own measurement; **7c**, the deoptimization

@@ -1763,6 +1763,11 @@ Pinned by `heap.rs`'s
 `a_young_value_written_into_a_suspended_old_frame_is_remembered` and
 `the_reclaim_keeps_the_entered_level_of_a_suspended_activation`.
 
+Road step 7a replaces the two vectors by frames of tagged words in one
+reservation, which the collector traces as one linear range
+([execution.md](execution.md), "Planned: frames as words in one
+reservation").
+
 What keeps a frame alive past its return is a closure's captured frame, or
 another reified frame's `sender`/`home`. Closure conversion shrank what a
 frame retains -- a body nothing reaches by reference keeps its registers nil

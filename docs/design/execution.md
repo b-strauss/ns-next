@@ -475,6 +475,87 @@ stressed, under both lowerings. It is a gate of its own at the end of a
 batch, beside the other five ([memory.md](memory.md), "The gates the
 collector needs").
 
+### Planned: frames as words in one reservation
+
+Road step 7a ("Planned: JIT tiers" below), decided with the user on
+2026-10-24. Not built; the representation above is today's.
+
+**One reservation of words holds every running activation**, header and
+registers together, in place of `values` and `entries`: a `Reservation` of
+`ns-memory` per heap, 16 GiB on a 64-bit target and 256 MiB otherwise,
+committed page by page as the stack deepens and, as the vectors' capacity
+is today, never decommitted while the heap lives. Frames lie back to back,
+innermost highest; an `ActivationReference` becomes the word offset of its
+frame's header, and a married frame's `MARRIED` word that offset. The
+activation above a frame starts where its registers end (the header's size
+plus the code's `register_count`), so `Heap::activation_above` needs no
+table.
+
+**The header is a fixed number of words, every one a valid tagged value**:
+
+| Word | Holds |
+|---|---|
+| receiver | the receiver, a value |
+| current class | the class object, or nil for `TopLevel` |
+| operand | the closure object of a block frame, the class of a class-carrying kind, the selector as a `SmallInteger` of a method frame, nil otherwise |
+| reified | the married frame object, or nil |
+| flags | a `SmallInteger`: the kind's tag, `argument_count`, `counted`, `retains_registers` |
+| code | the `CodeId` of the body it runs, a `SmallInteger` |
+| program counter | a `SmallInteger`, stored at the observable points only, as today |
+| feedback base | a `SmallInteger` |
+| caller | the word offset of the frame below, a `SmallInteger`; nil in the bottom frame |
+| continuation | nil for `Deliver`, otherwise a `SmallInteger` naming the continuation's row in a side table of the heap |
+| guard, entered level | `recorded_guard` and `entered_level`, `SmallInteger`s |
+| generation | debug builds only, a `SmallInteger` |
+
+Cog's and Primordial Soup's frames are the model: a flags word that reads
+as a `SmallInteger` (Cog's `1 + (numArgs << 8)`,
+`prior-art/opensmalltalk-vm/src/spur64.stack/interp.c:52829-52832`; Soup's
+`(numArgs << 1) | isClosure`, `prior-art/primordialsoup/vm/interpreter.cc:46-55`),
+the code named in the frame, the receiver and temporaries tagged. Both
+still hold raw words -- a saved frame pointer and a bytecode pointer --
+which Cog's scan skips by offset (`interp.c:57557-57596`) and Soup turns
+into indexes around every collection (`interpreter.cc:1875-1905`). Here
+every link is an index, since `ns-runtime` forbids `unsafe`, so nothing
+needs either: **the collector traces the stack as one linear range of
+tagged words**, `[0, top)`, as Soup scans `[sp_, stack_base_)`, and the continuation
+table beside it; no stack map, no per-frame walk. A married frame object
+still skips its own registers, which are nil while the stack holds the
+live ones.
+
+- **The code is an id, not an `Rc`.** A return reads the caller's code from
+  the heap's code table by its `CodeId`, one index more than today's clone
+  of the entry's `Rc`; this is the one change on the hot path the
+  measurement below has to clear. `FrameKind::Method`'s `MixinMethod` is
+  needed only for its selector and its code, which the operand and the
+  code word hold.
+- **A continuation other than `Deliver` lives in a side table**, minted
+  smallest free row first as `Suspensions` is, since most of them carry
+  Rust state no word can (`NewspeakError`, the boxed loop and unwind
+  records). `Deliver`, nearly every frame's, costs one nil store.
+  `WhileCondition`, `WhileBody` and `DoElement` leave with the real bodies
+  of `whileTrue:`, `whileFalse:` and `do:` ([core-library.md](core-library.md),
+  "Planned: real bodies for control flow and `do:`, before the baseline
+  JIT").
+- **The arguments are still copied** into the callee's first registers;
+  overlapping the windows is road step 7a′, behind its own measurement.
+- **The depth limit stays the bound the goldens pin** ("The depth limit"
+  below). A push also checks the frame against the committed end, one
+  comparison as Soup's `checked_stack_limit_` is, committing more on its
+  cold path, and a push the reservation cannot hold raises the same
+  `stack overflow: recursion too deep`, whose text names no number: a net
+  for frames whose register files the activation count does not bound,
+  since a body may have up to 65,535 registers.
+- **The side tables stay**: a suspended activation leaves the reservation
+  for its frame object and its `Suspensions` row exactly as today.
+
+**It is taken only if the interpreter measures no slower in release**, by
+the protocol of "What suspending and resuming moved" (three builds a side,
+the seven micro sources and the sixteen Are We Fast Yet programs, two
+sittings): no program may be slower with its builds not overlapping
+`master`'s. Otherwise the step moves to road step 8, where compiled frames
+need the layout anyway.
+
 ## The VM
 
 Every body a program runs hangs off the declaration it belongs to — a method's
@@ -7770,9 +7851,9 @@ Each step gets its own design when it comes up.
   skipped but kept"), and the decoder refuses every frame not marked
   uncontinuable ([image-format.md](image-format.md), "Planned: suspend
   and resume").
-  **7a** lays frames out as words with a fixed header, every word tagged
-  or known to the collector as header, so no stack map is needed, as in
-  Cog, Strongtalk and Primordial Soup; one contiguous reservation of
+  **7a** lays frames out as words with a fixed header, every word tagged,
+  so no stack map is needed, as in Cog, Strongtalk and Primordial Soup
+  (designed in "Planned: frames as words in one reservation" above); one contiguous reservation of
   `ns-memory` holds them, as HotSpot's, V8's and Strongtalk's native
   stacks are contiguous, with the depth limit kept as the bound the
   goldens pin and a byte bound added only as a net. It is taken only if
