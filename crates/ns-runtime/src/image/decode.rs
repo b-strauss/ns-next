@@ -4112,7 +4112,11 @@ impl Sizing<'_, '_, '_> {
             }
         }
         reader.read_u32()?; // the program counter, checked by `verify_graph`
-        reader.read_boolean()?; // uncontinuable
+                            // Refused here, before any placeholder exists; the fill pass checks
+                            // again, so no path skips the refusal.
+        if !reader.read_boolean()? {
+            return Err(DecodeError::ContinuableFrame);
+        }
         self.value(reader, NamePosition::FrameRegister)?; // the receiver
         self.frame_reference(reader)?; // the sender
         self.frame_reference(reader)?; // the home

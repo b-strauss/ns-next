@@ -11968,6 +11968,48 @@ fn a_real_image_with_a_home_called_continuable_is_refused() {
     }
 }
 
+/// A decoded home belongs to an activation that has returned and is never
+/// married in the loading world, so a `^` into it must answer `cannotReturn`
+/// rather than a `Signal::Return` no activation on the stack will catch.
+#[test]
+fn a_return_into_a_decoded_home_is_cannot_return() {
+    let source = indoc! {"
+        class X = Object new (
+        ) (
+          public mk = ( ^[ ^1 ] )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let closure = expect_ok(interpreter.send(&instance, Symbol::intern("mk"), &[]), "mk");
+    let bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let instance = mutator.fetch(&instance);
+        let closure = mutator.fetch(&closure);
+        snapshot_one(
+            mutator,
+            false,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &[instance, closure],
+        )
+        .expect("snapshot")
+    });
+
+    let mut loaded = image::load(&bytes).expect("load");
+    let decoded = loaded.roots[1].clone();
+    match loaded
+        .interpreter
+        .send(&decoded, Symbol::intern("value"), &[])
+    {
+        Err(HostSignal::Error(error)) => {
+            assert!(error.message.contains("cannotReturn"), "{}", error.message)
+        }
+        Err(HostSignal::Return) => panic!("the return escaped instead of being refused"),
+        Ok(_) => panic!("a `^` into a decoded home must not return normally"),
+    }
+}
+
 /// A module written so that every *interesting* kind of source text is
 /// present and distinctive: a comment, an initializer expression, a slot
 /// clause, several method bodies, and a nested class. Each line the leak
