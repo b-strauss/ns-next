@@ -5823,7 +5823,7 @@ impl<'gc> Heap<'gc> {
     /// of the overflow and its handler run in the room the refusal left.
     #[cold]
     #[inline(never)]
-    pub fn push_reserved_activation(
+    pub(crate) fn push_reserved_activation(
         &mut self,
         header: ActivationHeader<'gc>,
         arguments: &[Value<'gc>],
@@ -5836,7 +5836,7 @@ impl<'gc> Heap<'gc> {
     /// room ordinary frames have: an error raised here takes the depth
     /// limit's reserve for its `signal`, as one within `DEPTH_RESERVE`
     /// activations of the limit does.
-    pub fn stack_is_within_the_reserve_of_its_limit(&self) -> bool {
+    pub(crate) fn stack_is_within_the_reserve_of_its_limit(&self) -> bool {
         self.stack.frames.within_the_reserve_of_the_limit()
     }
 

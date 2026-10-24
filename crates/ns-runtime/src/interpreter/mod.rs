@@ -3207,9 +3207,13 @@ mod tests {
     /// `main:args:` shows.
     const DEEP: &str = indoc! {"
         class Deep = Object new (
+          |
+            public deepest ::= 0.
+          |
         ) (
           recurse: depth = (
             | first second third fourth |
+            deepest:: depth.
             ^self recurse: depth + 1.
           )
 
@@ -3255,7 +3259,23 @@ mod tests {
                     mutator.heap().str_value(object).as_deref(),
                     Some("stack overflow: recursion too deep")
                 );
-                assert!(mutator.heap.counted_depth() < MAX_ACTIVATION_DEPTH / 4);
+            });
+            // The deepest level the recursion reached, far below L: the
+            // reservation refused it, not the depth limit.
+            let deepest = expect_ok(
+                interpreter.send(&deep, Symbol::intern("deepest"), &[]),
+                "Deep deepest",
+            );
+            interpreter.enter(|mutator| {
+                let reached = mutator
+                    .fetch(&deepest)
+                    .as_small_integer()
+                    .expect("a depth is a small integer");
+                assert!(reached > 100, "the recursion got going: {reached}");
+                assert!(
+                    (reached as usize) < MAX_ACTIVATION_DEPTH / 4,
+                    "the reservation refused it, not the depth limit: {reached}"
+                );
             });
             let platform = interpreter.platform();
             let arguments = interpreter.enter(|mutator| {
