@@ -396,9 +396,14 @@ pub struct RegisterBase {
 /// `Heap::push_activation` takes separately.
 pub struct ActivationHeader<'gc> {
     pub receiver: Value<'gc>,
-    /// `None` only for `FrameKind::TopLevel` (`newspeak-spec.pdf` §3.6).
+    /// `None` only for `ActivationKind::TopLevel` (`newspeak-spec.pdf` §3.6).
     pub current_class: Option<ClassReference<'gc>>,
-    pub kind: FrameKind<'gc>,
+    pub kind: ActivationKind<'gc>,
+    /// The method an `ActivationKind::Method` activation runs, `None` for
+    /// every other kind. The push registers the body's code row with it,
+    /// which is where the activation's frame finds its method again
+    /// (`Heap::code_method`); the kind keeps only the selector.
+    pub method: Option<Rc<MixinMethod>>,
     /// Where the activation's code family starts in the heap's cache table
     /// (`interpreter::inline_cache::InlineCaches`), found or assigned by
     /// `Mutator::push_step` before the header is built.
@@ -465,7 +470,7 @@ impl HostRoots {
 struct StackEntry<'gc> {
     receiver: Value<'gc>,
     current_class: Option<ClassReference<'gc>>,
-    kind: FrameKind<'gc>,
+    kind: ActivationKind<'gc>,
     base: u32,
     argument_count: u32,
     program_counter: usize,
@@ -5549,15 +5554,24 @@ impl<'gc> Heap<'gc> {
         // A method's body is registered with its method, every other body
         // alone; either hits the body's one-entry cache but for its first
         // push after a reclaim freed rows.
-        let code = match &header.kind {
-            FrameKind::Method(method) => {
+        debug_assert_eq!(
+            header.method.is_some(),
+            matches!(header.kind, ActivationKind::Method(_)),
+            "internal: a header names its method exactly for a method's activation"
+        );
+        let code = match &header.method {
+            Some(method) => {
                 debug_assert!(
                     Rc::ptr_eq(&method.code, &header.code),
                     "internal: a method's activation runs its method's body"
                 );
+                debug_assert!(
+                    matches!(header.kind, ActivationKind::Method(selector) if selector == method.selector),
+                    "internal: a method's activation is named by its method's selector"
+                );
                 self.code_id_of_method(method)
             }
-            _ => self.code_id(&header.code),
+            None => self.code_id(&header.code),
         };
         let entry = StackEntry {
             receiver: header.receiver,
@@ -5685,17 +5699,18 @@ impl<'gc> Heap<'gc> {
         let entry = &self.stack.entries[entry_index];
         let (receiver, current_class, program_counter) =
             (entry.receiver, entry.current_class, entry.program_counter);
-        let (kind, code) = (entry.kind.clone(), entry.code);
+        let (kind, code) = (entry.kind, entry.code);
         let window_end = self
             .stack
             .entries
             .get(entry_index + 1)
             .map_or(self.stack.values.len(), |above| above.base as usize);
         let register_count = window_end - entry.base as usize;
-        let home = match &kind {
-            FrameKind::Closure(closure) => self.closure_home(*closure),
+        let home = match kind {
+            ActivationKind::Closure(closure) => self.closure_home(closure),
             _ => None,
         };
+        let kind = self.frame_kind_of_activation(kind, code);
         // The entry's own row, which `frame_code_id` would answer: a
         // method's body was registered with its method at the push.
         let code = match kind {
@@ -5869,7 +5884,7 @@ impl<'gc> Heap<'gc> {
         ids::truncate_trailing(&mut self.suspensions.rows, &mut self.suspensions.free);
         let receiver = self.frame_receiver(frame);
         let current_class = self.frame_current_class(frame);
-        let kind = self.frame_kind(frame);
+        let kind = self.frame_kind(frame).activation_kind();
         let code = self
             .frame_code_id_field(frame)
             .expect("internal: the frame of an activation the runtime pushed names its code");
@@ -6240,8 +6255,8 @@ impl<'gc> Heap<'gc> {
     /// `None` for every other kind, which is its own return target.
     pub fn activation_home(&self, activation: ActivationReference) -> Option<FrameReference<'gc>> {
         self.check_activation(activation);
-        match &self.stack.entries[activation.index as usize].kind {
-            FrameKind::Closure(closure) => self.closure_home(*closure),
+        match self.stack.entries[activation.index as usize].kind {
+            ActivationKind::Closure(closure) => self.closure_home(closure),
             _ => None,
         }
     }
@@ -6253,8 +6268,8 @@ impl<'gc> Heap<'gc> {
         activation: ActivationReference,
     ) -> Option<FrameReference<'gc>> {
         self.check_activation(activation);
-        match &self.stack.entries[activation.index as usize].kind {
-            FrameKind::Closure(closure) => self.closure_captured_frame(*closure),
+        match self.stack.entries[activation.index as usize].kind {
+            ActivationKind::Closure(closure) => self.closure_captured_frame(closure),
             _ => None,
         }
     }
@@ -6391,9 +6406,26 @@ impl<'gc> Heap<'gc> {
     }
 
     /// What `activation` was activated for.
-    pub fn activation_kind(&self, activation: ActivationReference) -> FrameKind<'gc> {
+    pub fn activation_kind(&self, activation: ActivationReference) -> ActivationKind<'gc> {
         self.check_activation(activation);
-        self.stack.entries[activation.index as usize].kind.clone()
+        self.stack.entries[activation.index as usize].kind
+    }
+
+    /// The `FrameKind` a frame of a running activation of `kind`, whose
+    /// body is the row `code`, records: the view with a method's selector
+    /// replaced by the method the row was registered with at the push.
+    fn frame_kind_of_activation(&self, kind: ActivationKind<'gc>, code: CodeId) -> FrameKind<'gc> {
+        match kind {
+            ActivationKind::Method(_) => FrameKind::Method(
+                self.code_method(code)
+                    .expect("internal: a method's activation registered its row with its method"),
+            ),
+            ActivationKind::Closure(closure) => FrameKind::Closure(closure),
+            ActivationKind::TopLevel => FrameKind::TopLevel,
+            ActivationKind::Initializer(class, body) => FrameKind::Initializer(class, body),
+            ActivationKind::SuperclassClause(class) => FrameKind::SuperclassClause(class),
+            ActivationKind::Factory(class) => FrameKind::Factory(class),
+        }
     }
 
     /// Whether `activation` runs the own code of the body-less declaration
@@ -6414,9 +6446,9 @@ impl<'gc> Heap<'gc> {
         class: ClassReference<'gc>,
     ) -> bool {
         self.check_activation(activation);
-        let closure = match &self.stack.entries[activation.index as usize].kind {
-            FrameKind::Initializer(level, InitializerBody::Full) => return level.same(class),
-            FrameKind::Closure(closure) => *closure,
+        let closure = match self.stack.entries[activation.index as usize].kind {
+            ActivationKind::Initializer(level, InitializerBody::Full) => return level.same(class),
+            ActivationKind::Closure(closure) => closure,
             _ => return false,
         };
         self.closure_captured_frame(closure)
@@ -6453,13 +6485,12 @@ impl<'gc> Heap<'gc> {
     }
 
     /// Whether `activation` runs a method or a superclass clause -- not a
-    /// block, an initializer, a factory or a top-level activation. Answered without cloning the
-    /// kind, which holds an `Rc` for a method.
+    /// block, an initializer, a factory or a top-level activation.
     pub(crate) fn activation_runs_method_or_clause(&self, activation: ActivationReference) -> bool {
         self.check_activation(activation);
         matches!(
             self.stack.entries[activation.index as usize].kind,
-            FrameKind::Method(_) | FrameKind::SuperclassClause(_)
+            ActivationKind::Method(_) | ActivationKind::SuperclassClause(_)
         )
     }
 
@@ -9327,7 +9358,8 @@ mod tests {
         ActivationHeader {
             receiver: Value::nil(),
             current_class: None,
-            kind: FrameKind::TopLevel,
+            kind: ActivationKind::TopLevel,
+            method: None,
             feedback_base: FeedbackBase::NOT_ASSIGNED,
             code: trivial_code(),
             then: Continuation::Deliver,
@@ -9459,7 +9491,7 @@ mod tests {
         let activation = heap.push_activation(
             ActivationHeader {
                 current_class: Some(class),
-                kind: FrameKind::Initializer(class, InitializerBody::OwnPart),
+                kind: ActivationKind::Initializer(class, InitializerBody::OwnPart),
                 code: shaped_code(1, 2),
                 ..header()
             },
@@ -10020,7 +10052,8 @@ mod tests {
         let block_header = |closure| ActivationHeader {
             receiver: Value::nil(),
             current_class: None,
-            kind: FrameKind::Closure(closure),
+            kind: ActivationKind::Closure(closure),
+            method: None,
             feedback_base: FeedbackBase::NOT_ASSIGNED,
             code: trivial_code(),
             then: Continuation::Deliver,
@@ -13391,7 +13424,7 @@ mod tests {
     ) -> ActivationHeader<'gc> {
         ActivationHeader {
             current_class: Some(class),
-            kind: FrameKind::Initializer(class, InitializerBody::OwnPart),
+            kind: ActivationKind::Initializer(class, InitializerBody::OwnPart),
             code: shaped_code(argument_count, register_count),
             ..header()
         }
@@ -13751,7 +13784,7 @@ mod tests {
             let object = mutator.builtin_class(crate::BuiltinClass::Object);
             let activation = mutator.heap.push_activation(
                 ActivationHeader {
-                    kind: FrameKind::Factory(object),
+                    kind: ActivationKind::Factory(object),
                     ..header()
                 },
                 &[],

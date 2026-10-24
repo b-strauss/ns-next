@@ -120,8 +120,10 @@ struct ActivationStack {
 struct StackEntry {
     receiver: Value,
     current_class: Option<ClassReference>,
-    kind: FrameKind,           // Closure(ObjectReference): the closure object, whose
-                               // captured frame the home is derived from
+    kind: ActivationKind,      // a copyable view of FrameKind: a method by its
+                               // selector, its method the code row's;
+                               // Closure(ObjectReference): the closure object,
+                               // whose captured frame the home is derived from
     base: u32,                 // first register in `values`
     argument_count: u32,
     program_counter: usize,    // no slot base: `InitializeSlot` derives it from

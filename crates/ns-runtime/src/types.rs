@@ -358,6 +358,46 @@ pub enum FrameKind<'gc> {
     Factory(ClassReference<'gc>),
 }
 
+impl<'gc> FrameKind<'gc> {
+    /// The view of this kind a running activation holds: a method's
+    /// selector in place of the method.
+    pub fn activation_kind(&self) -> ActivationKind<'gc> {
+        match self {
+            FrameKind::Method(method) => ActivationKind::Method(method.selector),
+            FrameKind::Closure(closure) => ActivationKind::Closure(*closure),
+            FrameKind::TopLevel => ActivationKind::TopLevel,
+            FrameKind::Initializer(class, body) => ActivationKind::Initializer(*class, *body),
+            FrameKind::SuperclassClause(class) => ActivationKind::SuperclassClause(*class),
+            FrameKind::Factory(class) => ActivationKind::Factory(*class),
+        }
+    }
+}
+
+/// What a running activation was activated for: a `FrameKind` with a
+/// method named by its selector alone, so that it holds no `Rc` and is
+/// copied rather than cloned. The method itself is its code row's
+/// (`Heap::code_method`), registered with it when the activation was
+/// pushed; a frame object and an image rebuild the `FrameKind` from the
+/// two (`docs/design/execution.md`, "Activations").
+#[derive(Debug, Clone, Copy)]
+pub enum ActivationKind<'gc> {
+    /// An activation of the method of this selector.
+    Method(Symbol),
+    /// See `FrameKind::Closure`.
+    Closure(ObjectReference<'gc>),
+    /// See `FrameKind::TopLevel`.
+    TopLevel,
+    /// See `FrameKind::Initializer`.
+    Initializer(
+        ClassReference<'gc>,
+        crate::interpreter::instantiate::InitializerBody,
+    ),
+    /// See `FrameKind::SuperclassClause`.
+    SuperclassClause(ClassReference<'gc>),
+    /// See `FrameKind::Factory`.
+    Factory(ClassReference<'gc>),
+}
+
 /// What the run loop does with an activation's value when it returns
 /// (`docs/design/execution.md`, "The trampoline"). Every activation a send
 /// makes hands its value to that send; the others are how a builtin native

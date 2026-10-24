@@ -726,7 +726,7 @@ check").
   but a root of their own keeps both alive and forwarded whatever those
   links are.
 - The activation stack: each entry's receiver, `current_class`, the
-  `ClassReference` or closure object its `FrameKind` names, the frame it is married
+  `ClassReference` or closure object its `ActivationKind` names, the frame it is married
   to, and the state its continuation carries — a `WhileLoop`'s condition and
   body, a `DoLoop`'s receiver and action, a `NestedClassCreation`'s
   enclosing object and declaring class, an `Instantiation`'s instance, levels

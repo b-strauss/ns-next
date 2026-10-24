@@ -5,7 +5,7 @@
 use indoc::indoc;
 use ns_runtime::bytecode::{CodeKind, CompiledCode, Instruction};
 use ns_runtime::interpreter::FeedbackBase;
-use ns_runtime::types::{Continuation, FrameKind, Value};
+use ns_runtime::types::{ActivationKind, Continuation, Value};
 use ns_runtime::Interpreter;
 use ns_runtime::ValueKind;
 use ns_runtime::{
@@ -398,10 +398,11 @@ fn activation_header<'gc>(class: ns_runtime::ClassReference<'gc>) -> ActivationH
     ActivationHeader {
         receiver: Value::nil(),
         current_class: Some(class),
-        kind: FrameKind::Initializer(
+        kind: ActivationKind::Initializer(
             class,
             ns_runtime::interpreter::instantiate::InitializerBody::OwnPart,
         ),
+        method: None,
         feedback_base: FeedbackBase::NOT_ASSIGNED,
         code: trivial_code(),
         then: Continuation::Deliver,

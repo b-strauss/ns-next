@@ -105,10 +105,10 @@ impl<'gc> WalkedActivation<'gc> {
     }
 
     /// What the activation was activated for.
-    pub(crate) fn kind(self, heap: &Heap<'gc>) -> FrameKind<'gc> {
+    pub(crate) fn kind(self, heap: &Heap<'gc>) -> ActivationKind<'gc> {
         match self {
             WalkedActivation::Live(activation) => heap.activation_kind(activation),
-            WalkedActivation::Suspended(frame) => heap.frame_kind(frame),
+            WalkedActivation::Suspended(frame) => heap.frame_kind(frame).activation_kind(),
         }
     }
 
@@ -542,7 +542,7 @@ impl<'gc> Mutator<'gc> {
         };
         let exception_class = self.builtin_class(BuiltinClass::Exception);
         let is_signal = matches!(signal.kind(&self.heap),
-            FrameKind::Method(method) if method.selector == Symbol::SIGNAL)
+            ActivationKind::Method(selector) if selector == Symbol::SIGNAL)
             && signal
                 .current_class(&self.heap)
                 .is_some_and(|class| class.same(exception_class));
@@ -683,7 +683,8 @@ mod tests {
         ActivationHeader {
             receiver: Value::nil(),
             current_class: Some(class),
-            kind: FrameKind::SuperclassClause(class),
+            kind: ActivationKind::SuperclassClause(class),
+            method: None,
             feedback_base: FeedbackBase::NOT_ASSIGNED,
             code: trivial_code(),
             then: Continuation::Deliver,

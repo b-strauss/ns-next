@@ -341,7 +341,7 @@ mod tests {
     use crate::interpreter::edit::MemberEdit;
     use crate::interpreter::{HostResult, HostSignal, Interpreter};
     use crate::mixin::Mixin;
-    use crate::types::{BuiltinClass, Continuation, FrameKind, SourceOrigin, Value};
+    use crate::types::{ActivationKind, BuiltinClass, Continuation, SourceOrigin, Value};
     use crate::{Root, Symbol};
     use indoc::indoc;
     use std::path::PathBuf;
@@ -1262,7 +1262,8 @@ mod tests {
                 ActivationHeader {
                     receiver,
                     current_class: None,
-                    kind: FrameKind::TopLevel,
+                    kind: ActivationKind::TopLevel,
+                    method: None,
                     feedback_base: crate::interpreter::FeedbackBase::NOT_ASSIGNED,
                     code,
                     then: Continuation::Deliver,
@@ -1486,10 +1487,11 @@ mod tests {
                 ActivationHeader {
                     receiver,
                     current_class: Some(class),
-                    kind: FrameKind::Initializer(
+                    kind: ActivationKind::Initializer(
                         class,
                         crate::interpreter::instantiate::InitializerBody::OwnPart,
                     ),
+                    method: None,
                     feedback_base: crate::interpreter::FeedbackBase::NOT_ASSIGNED,
                     code,
                     then: Continuation::Deliver,

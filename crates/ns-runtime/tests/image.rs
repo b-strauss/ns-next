@@ -11772,7 +11772,8 @@ fn a_snapshot_taken_while_an_activation_is_running_is_refused() {
             ns_runtime::ActivationHeader {
                 receiver: Value::nil(),
                 current_class: None,
-                kind: FrameKind::TopLevel,
+                kind: ns_runtime::types::ActivationKind::TopLevel,
+                method: None,
                 feedback_base: ns_runtime::interpreter::FeedbackBase::NOT_ASSIGNED,
                 code: code_with(
                     CodeKind::Method,

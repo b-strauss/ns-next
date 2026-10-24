@@ -1148,8 +1148,8 @@ impl<'gc> Mutator<'gc> {
     pub(crate) fn is_kernel_does_not_understand(&self, activation: WalkedActivation<'gc>) -> bool {
         let object = self.builtin_class(BuiltinClass::Object);
         match activation.kind(&self.heap) {
-            FrameKind::Method(method) => {
-                method.selector == Symbol::DOES_NOT_UNDERSTAND
+            ActivationKind::Method(selector) => {
+                selector == Symbol::DOES_NOT_UNDERSTAND
                     && activation
                         .current_class(&self.heap)
                         .is_some_and(|class| class.same(object))
@@ -1172,8 +1172,8 @@ impl<'gc> Mutator<'gc> {
             return false;
         };
         let object = self.builtin_class(BuiltinClass::Object);
-        let is_kernel_handler = matches!(&header.kind,
-            FrameKind::Method(method) if method.selector == Symbol::DOES_NOT_UNDERSTAND)
+        let is_kernel_handler = matches!(header.kind,
+            ActivationKind::Method(selector) if selector == Symbol::DOES_NOT_UNDERSTAND)
             && header.current_class.is_some_and(|class| class.same(object));
         is_kernel_handler
             && self
@@ -1273,7 +1273,8 @@ impl<'gc> Mutator<'gc> {
                     ActivationHeader {
                         receiver,
                         current_class: Some(defining_class),
-                        kind: FrameKind::Method(method),
+                        kind: ActivationKind::Method(method.selector),
+                        method: Some(method),
                         code,
                         then: Continuation::Deliver,
                         counted: true,
@@ -1341,7 +1342,8 @@ impl<'gc> Mutator<'gc> {
                     ActivationHeader {
                         receiver,
                         current_class,
-                        kind: FrameKind::Closure(closure),
+                        kind: ActivationKind::Closure(closure),
+                        method: None,
                         code,
                         then,
                         counted,
@@ -1385,7 +1387,8 @@ impl<'gc> Mutator<'gc> {
                     ActivationHeader {
                         receiver: Value::object(class),
                         current_class: Some(class),
-                        kind: FrameKind::Factory(class),
+                        kind: ActivationKind::Factory(class),
+                        method: None,
                         code,
                         then: Continuation::Deliver,
                         counted: true,
@@ -1414,7 +1417,8 @@ impl<'gc> Mutator<'gc> {
                     ActivationHeader {
                         receiver: Value::object(enclosing),
                         current_class: Some(creation.declaring_class),
-                        kind: FrameKind::SuperclassClause(creation.declaring_class),
+                        kind: ActivationKind::SuperclassClause(creation.declaring_class),
+                        method: None,
                         code,
                         then: Continuation::NestedClass(creation),
                         counted: true,
@@ -1525,7 +1529,8 @@ impl<'gc> Mutator<'gc> {
             ActivationHeader {
                 receiver,
                 current_class: Some(level),
-                kind: FrameKind::Initializer(level, body),
+                kind: ActivationKind::Initializer(level, body),
+                method: None,
                 code,
                 then: Continuation::Deliver,
                 counted: true,
@@ -2343,9 +2348,9 @@ fn recursion_too_deep<'gc>(header: &ActivationHeader<'gc>) -> Signal<'gc> {
 /// The error inside `recursion_too_deep`'s signal: what an overrun of the
 /// reserve ends the run with too.
 pub(crate) fn recursion_too_deep_error<'gc>(header: &ActivationHeader<'gc>) -> NewspeakError<'gc> {
-    let selector = match &header.kind {
-        FrameKind::Method(method) => method.selector,
-        FrameKind::Closure(_) => Symbol::VALUE,
+    let selector = match header.kind {
+        ActivationKind::Method(selector) => selector,
+        ActivationKind::Closure(_) => Symbol::VALUE,
         _ => Symbol::NEW,
     };
     NewspeakError::error(

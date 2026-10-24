@@ -29,15 +29,15 @@ pub(crate) fn unresolved_identifier_error<'gc>(name: &str, receiver: Value<'gc>)
 ///
 /// Raised by `vm::make_value` for `bytecode::Literal::BodyTooLarge`.
 pub(crate) fn body_too_large_error<'gc>(
-    kind: &FrameKind<'gc>,
+    kind: ActivationKind<'gc>,
     receiver: Value<'gc>,
 ) -> Signal<'gc> {
     let (selector, body) = match kind {
-        FrameKind::Method(method) => (method.selector, "method"),
-        FrameKind::Closure(_) => (Symbol::VALUE, "block"),
-        FrameKind::Initializer(..) | FrameKind::TopLevel => (Symbol::NEW, "initializer"),
-        FrameKind::Factory(_) => (Symbol::NEW, "factory"),
-        FrameKind::SuperclassClause(_) => (Symbol::NEW, "superclass clause"),
+        ActivationKind::Method(selector) => (selector, "method"),
+        ActivationKind::Closure(_) => (Symbol::VALUE, "block"),
+        ActivationKind::Initializer(..) | ActivationKind::TopLevel => (Symbol::NEW, "initializer"),
+        ActivationKind::Factory(_) => (Symbol::NEW, "factory"),
+        ActivationKind::SuperclassClause(_) => (Symbol::NEW, "superclass clause"),
     };
     Signal::Error(NewspeakError::error(
         selector,
