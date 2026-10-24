@@ -15,24 +15,22 @@ when they were written.
 
 ## Next
 
-**Road step 7a's measurement, then road step 7a′** ("The road to a
+**Road step 7a′, overlapping register windows** ("The road to a
 high-performance VM" below; [execution.md](design/execution.md), "Planned:
-JIT tiers"), the next parts of road step 7, an execution model for compiled
-code. 7a is built: every running activation is a frame of tagged words in
-one reservation of the heap's, traced as one linear range
-([execution.md](design/execution.md), "Representation"). It stays only if
-the interpreter measures no slower in release, by the protocol of "What
-suspending and resuming moved" (three builds a side, the seven micro
-sources and the sixteen Are We Fast Yet programs, two sittings): no
-program may be slower with its builds not overlapping `master`'s;
-otherwise it moves to road step 8, where compiled frames need the layout
-anyway. 7a′ then overlaps the register windows, behind its own
-measurement. The first part of road step 7, 7b, is built too: a running
-activation is suspended into
-its frame and resumed from it lazily, the landing point of every later
-deoptimization, and a sixth stress mode runs every golden on from
-suspended frames ([execution.md](design/execution.md), "Suspending and
-resuming"). Road step 6 and `new` as compiled code are built, so a factory
+JIT tiers"), the next part of road step 7, an execution model for compiled
+code: the caller's outgoing arguments become the callee's first registers
+instead of being copied ([execution.md](design/execution.md),
+"Representation"), behind its own measurement. 7b and 7a are built: a
+running activation is suspended into its frame and resumed from it lazily,
+the landing point of every later deoptimization, and a sixth stress mode
+runs every golden on from suspended frames
+([execution.md](design/execution.md), "Suspending and resuming"); every
+running activation is a frame of tagged words in one reservation of the
+heap's, traced as one linear range, and measured no slower than the stack
+of entries before it -- nineteen of twenty-four programs faster, the rest
+level, with three builds a side that vary the block layout inside
+`vm::run` ([execution.md](design/execution.md), "What frames as words
+moved"). Road step 6 and `new` as compiled code are built, so a factory
 and the initializers are compiled code the JIT tiers will compile like any
 other.
 
@@ -41,14 +39,14 @@ master (`733c15bd`) and task by task: every program within noise, but
 `bench_megamorphic.ns`, +1.3-2.1% after the private and super accessor
 check, at the edge of build noise and not diagnosed ("Planned: performance
 and representation" below). Everything up to road step 6 on the road
-is built, and `new` as compiled code and road step 7b after it, and 7a
-awaits its measurement; each step
-has its entry in [PROGRESS.md](PROGRESS.md), and the whole road is below.
+is built, and `new` as compiled code and road steps 7b and 7a after it;
+each step has its entry in [PROGRESS.md](PROGRESS.md), and the whole road is below.
 
 **Measuring.** The protocol is [execution.md](design/execution.md)'s "What
 removing the re-entries moved"; every compared binary, the current tree
 included, is built with the same explicit `RUSTFLAGS` (`CLAUDE.md`,
-"Working in this repository"). Four of the eight measurement sources are
+"Working in this repository"), and the three builds a side vary the block
+layout inside `vm::run` as that section says. Four of the eight measurement sources are
 goldens under `benchmarks/micro/`; the other four -- `bench_new.ns`,
 `bench_new2.ns`, `bench_newarg.ns` and `bench_do.ns` -- are not in the tree
 and must be written out from [execution.md](design/execution.md), "What
@@ -269,14 +267,14 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
   the decoder refuses every frame not marked uncontinuable
   ([execution.md](design/execution.md), "Suspending and resuming";
   [image-format.md](design/image-format.md), "Planned: suspend and
-  resume"). **7a is built, its measurement still to be taken**: frames
-  as words with a fixed header, every word tagged, in one contiguous
-  reservation of `ns-memory`, the depth limit kept and a byte bound added
-  only as a net ([execution.md](design/execution.md), "Representation",
-  "The depth limit"); it stays only if the interpreter measures no slower
-  in release, no program slower with its builds not overlapping
-  `master`'s, and otherwise moves to road step 8. What remains of step 7:
-  **7a′**, register windows
+  resume"). **7a is built**: frames as words with a fixed header, every
+  word tagged, in one contiguous reservation of `ns-memory`, the depth
+  limit kept and a byte bound added only as a net
+  ([execution.md](design/execution.md), "Representation", "The depth
+  limit"), kept because the interpreter measures no slower in release --
+  no program slower with its builds not overlapping `master`'s, nineteen
+  of twenty-four faster ("What frames as words moved"). What remains of
+  step 7: **7a′**, next, register windows
   that overlap, the caller's outgoing arguments being the callee's first
   registers, behind its own measurement; **7c**, the deoptimization
   contract and the protocol between interpreted and compiled frames,

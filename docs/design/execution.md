@@ -10,8 +10,9 @@
 > running `ensure:` blocks as trampoline steps; a running activation can be
 > suspended into its frame and resumed from it, lazily, and a stress mode
 > runs every program on from suspended frames; every running activation is
-> a frame of tagged words in one reservation of the heap's, its
-> measurement still to be taken (road step 7a, "Planned: JIT tiers").
+> a frame of tagged words in one reservation of the heap's, measured no
+> slower than the stack of entries before it (road step 7a, "What frames
+> as words moved").
 > **Code:** `crates/ns-runtime/src/heap.rs` (the activation stack, the frame
 > objects, the `ActivationReference` and `FrameReference` handles, every read and write of an
 > activation, the copied values a closure carries and whether a frame keeps its
@@ -2509,9 +2510,32 @@ The other seven sources stay within 0.3–2.3% between builds. Pooling several
 plain builds varies nothing when the builds are byte-identical, as they are
 on the machine these measurements ran on ("What the value conditions cost"
 below): build the extra ones with `-C metadata=<word>` added to `RUSTFLAGS`.
-That varies code layout only. The runtime's data layout (which symbol ids,
-object offsets and dispatch ids a program's objects receive) is not varied by
-it, so a difference that follows from data layout survives every such pool.
+That varies the order of functions, and nothing inside one: the three
+`-C metadata` builds of a tree have `vm::run` identical instruction for
+instruction at the same offsets from its start ("What frames as words
+moved" below), so they sample one layout of the run loop three times, and
+a difference that follows from where its blocks fall -- the indirect
+dispatch jump every instruction arm shares among them -- survives the
+pool. So the second and third builds also align every block not reached
+by fall-through, each instruction arm the dispatch jumps to among them,
+the second to 16 bytes and the third to 32 (decided with the user on
+2026-10-24):
+
+```powershell
+$pinned = "-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"
+$buildA = $pinned
+$buildB = "$pinned -C metadata=buildb -C llvm-args=-align-all-nofallthru-blocks=4"
+$buildC = "$pinned -C metadata=buildc -C llvm-args=-align-all-nofallthru-blocks=5"
+```
+
+the same three on both sides, each set as `RUSTFLAGS` for its own build
+in its own `--target-dir`. Before timing, check in a disassembly of a
+build with debug information (`CARGO_PROFILE_RELEASE_DEBUG=limited`, the
+build's flags) that the three give `vm::run` three different layouts; if
+two coincide, take another alignment and say so. The runtime's data layout (which symbol ids,
+object offsets and dispatch ids a program's objects receive) is varied by
+none of them, so a difference that follows from data layout survives every
+such pool.
 
 Medians in ms from the first sitting, each group's mean, and the change of
 the mean in both sittings:
@@ -6155,6 +6179,110 @@ niche -- are the input of "The compact instruction encoding" below, which
 replaced the stored enum with eight-byte slots; what that moved is "What
 the compact instruction encoding moved".
 
+### What frames as words moved
+
+Road step 7a ("Representation" above) was measured whole against `master`
+(`d135623a`, the tree before it) at `9c11b943` on 2026-10-24, by the
+protocol of "What suspending and resuming moved" below with one
+extension: `master` exported with `git archive` under the git-ignored
+`.temp/`, the branch exported afresh, `cargo xtask shipped-code` in each
+tree before its builds; the eight micro sources (the seven of 7b's
+measurement and `bench_do.ns`) at `--iterations 30`, five rounds a
+sitting, and the sixteen Are We Fast Yet programs, three rounds a sitting,
+the ten binaries of both protocols below rotating by one position from
+round to round; two sittings, every run printing its recorded answer or
+`<Name>: ok`. Every binary has one `vm::run` and no `vm::run::closure` or
+`run_stretch` of its own, and none imports `VCRUNTIME140.dll`.
+
+**The extension: the three builds a side vary the block layout inside
+`vm::run`.** Build a carries the pinned `RUSTFLAGS`; build b adds `-C
+metadata=buildb -C llvm-args=-align-all-nofallthru-blocks=4`, build c `-C
+metadata=buildc -C llvm-args=-align-all-nofallthru-blocks=5`, the same
+three on both sides. The step's first measurement, with the three builds
+told apart by `-C metadata` alone, found `bench_loop.ns` 1.3% slower after
+the fix of its one real cost, with the builds separated -- yet the hot
+path's machine code was then instruction for instruction what it was
+before the regression, the one block sampled more was the run loop's
+shared indirect dispatch jump on identical instructions, and with every
+block not reached by fall-through aligned to 32 bytes both trees measured
+the same. `-C metadata` changes the order of functions and so their
+addresses, but not the layout inside one: a disassembly
+(`CARGO_PROFILE_RELEASE_DEBUG=limited`, each build's flags) shows `vm::run`
+of the three `-C metadata` builds of one tree identical instruction for
+instruction at the same offsets from its start, only the addresses of
+other functions and data differing, so such a pool samples one layout of
+the run loop three times. The two alignments give it two more: on the
+branch, `vm::run` is 38,847 bytes with 513 padding instructions in build a,
+41,919 with 903 in build b and 45,311 with 1,128 in build c (`master`:
+39,420, 42,556, 44,988), the same 7,546 instructions apart from the
+padding in all three (`master`: 7,587), and the measured binaries' `vm::run`
+matching their debug-information builds' at the same offsets.
+
+Means of each build's medians, pooled over both sittings (n = 10 rounds a
+build for the micro sources, 6 for Are We Fast Yet), in ms; "builds" says
+whether the three build means of one side all lie above or below the
+other side's:
+
+| Source | `master` | 7a | change | `master` a, b, c | 7a a, b, c | builds |
+|---|---|---|---|---|---|---|
+| `bench_block.ns` | 7.841 | 7.399 | -5.6% | 7.806, 7.863, 7.854 | 7.398, 7.432, 7.369 | faster |
+| `bench_loop.ns` | 2.365 | 2.374 | +0.4% | 2.350, 2.368, 2.377 | 2.388, 2.375, 2.358 | overlapping |
+| `bench_megamorphic.ns` | 5.223 | 4.925 | -5.7% | 5.183, 5.242, 5.244 | 4.940, 4.915, 4.922 | faster |
+| `bench_send.ns` | 3.623 | 3.445 | -4.9% | 3.621, 3.633, 3.616 | 3.460, 3.434, 3.442 | faster |
+| `bench_new.ns` | 2.983 | 2.776 | -6.9% | 2.986, 2.971, 2.992 | 2.790, 2.755, 2.782 | faster |
+| `bench_new2.ns` | 3.849 | 3.673 | -4.6% | 3.853, 3.834, 3.861 | 3.686, 3.643, 3.691 | faster |
+| `bench_newarg.ns` | 3.871 | 3.716 | -4.0% | 3.910, 3.853, 3.848 | 3.733, 3.681, 3.734 | faster |
+| `bench_do.ns` | 2.692 | 2.663 | -1.1% | 2.683, 2.726, 2.666 | 2.667, 2.663, 2.660 | overlapping |
+| Bounce | 0.961 | 0.938 | -2.4% | 0.959, 0.969, 0.956 | 0.957, 0.930, 0.927 | overlapping |
+| CD | 3635.4 | 3560.5 | -2.1% | 3602.2, 3659.6, 3644.2 | 3579.5, 3540.4, 3561.7 | faster |
+| DeltaBlue | 660.10 | 634.86 | -3.8% | 658.68, 658.21, 663.42 | 639.80, 631.55, 633.22 | faster |
+| DeltaBlueTon80 | 7.356 | 7.055 | -4.1% | 7.385, 7.282, 7.402 | 7.064, 7.031, 7.072 | faster |
+| Havlak | 3447.9 | 3322.0 | -3.7% | 3460.4, 3439.3, 3444.0 | 3336.8, 3286.5, 3342.9 | faster |
+| Json | 10.633 | 10.304 | -3.1% | 10.599, 10.666, 10.634 | 10.253, 10.342, 10.318 | faster |
+| List | 1.006 | 0.957 | -4.9% | 1.006, 1.017, 0.994 | 0.961, 0.950, 0.959 | faster |
+| Mandelbrot | 3020.7 | 2990.8 | -1.0% | 3023.6, 3004.1, 3034.5 | 2985.2, 3006.6, 2980.5 | overlapping |
+| NBody | 2241.1 | 2223.0 | -0.8% | 2215.9, 2248.5, 2259.0 | 2230.9, 2223.3, 2214.7 | overlapping |
+| Permute | 2.498 | 2.377 | -4.8% | 2.509, 2.474, 2.511 | 2.354, 2.373, 2.403 | faster |
+| Queens | 2.110 | 2.019 | -4.3% | 2.108, 2.112, 2.108 | 2.028, 2.013, 2.016 | faster |
+| Richards | 68.178 | 64.832 | -4.9% | 68.211, 68.646, 67.676 | 64.965, 64.559, 64.971 | faster |
+| RichardsTon80 | 4.618 | 4.488 | -2.8% | 4.646, 4.610, 4.600 | 4.508, 4.518, 4.440 | faster |
+| Sieve | 1.374 | 1.322 | -3.8% | 1.381, 1.360, 1.382 | 1.314, 1.334, 1.317 | faster |
+| Storage | 1.502 | 1.426 | -5.1% | 1.495, 1.495, 1.517 | 1.409, 1.444, 1.425 | faster |
+| Towers | 3.343 | 3.078 | -7.9% | 3.347, 3.350, 3.331 | 3.084, 3.115, 3.035 | faster |
+
+**No program is slower with its builds separated, so 7a is taken.**
+Nineteen of the twenty-four are faster with the builds separated; the
+other five overlap, `bench_loop.ns` the only one above `master`, by 0.4%
+(+0.1% and +0.7% in the two sittings, overlapping in both). Its builds
+show what the extension samples: against `master`'s build of the same
+layout the branch is +1.6% in build a, +0.3% in build b and -0.8% in
+build c.
+
+The same sittings also ran the three `-C metadata` builds a side of the
+step's first measurement, builds b and c without the alignments: there
+`bench_loop.ns` is +1.7% (2.349 against 2.388 ms, the builds 2.348-2.350
+against 2.387-2.389, separated in both sittings) and NBody +0.5% (2221.0
+against 2231.6 ms, separated in the first sitting only), and every other
+program is level or faster as above. Under that protocol the rule would
+fail on those two; it is the extended one that decides, since the other
+samples a single layout of the run loop.
+
+Not every gain is the frames'. `ce7cdd31` and `9c11b943` changed
+`ns-memory`'s `prefix` and `accessible` -- one comparison to lend the
+committed prefix, its end kept in words -- and every object access in the
+object space goes through them as every stack word does; the measurement
+does not separate the two, and the allocation- and object-heavy programs
+(Towers, Storage, Permute, the `bench_new*` sources) are where the second
+could show. What the measurement did not cover: one machine (Intel Core
+Ultra 9 285K) and operating system, not idle, two sittings back to back the
+same afternoon; data layout (symbol ids, object offsets, dispatch ids),
+which neither `-C metadata` nor the block alignment varies; the alignment
+of a function's blocks other than `vm::run`'s, which the two flags vary
+too but which was not checked; `master`'s build a and its two `-C
+metadata` builds were built earlier the same day from the same tree with
+the same flags, and cargo found them current; no program signalling
+exceptions in its inner loop.
+
 ### What suspending and resuming moved
 
 Road step 7b ("Suspending and resuming" above) was measured whole against
@@ -7903,15 +8031,16 @@ Each step gets its own design when it comes up.
   `ns-memory` holds them, as HotSpot's, V8's and Strongtalk's native
   stacks are contiguous, with the depth limit kept as the bound the
   goldens pin and a byte bound added only as a net ("The depth limit").
-  It stays only if the interpreter measures no slower in release, by the
-  protocol of "What suspending and resuming moved" (three builds a side,
-  the seven micro sources and the sixteen Are We Fast Yet programs, two
-  sittings): no program may be slower with its builds not overlapping
-  `master`'s. Otherwise it moves to step 8, where compiled frames need
-  the layout anyway; that measurement is still to be taken. **7a′**
+  It is kept because the interpreter measures no slower in release, no
+  program slower with its builds not overlapping `master`'s -- the
+  condition it was built under, without which it would have moved to
+  step 8: measured with three builds a side that vary the block layout
+  inside `vm::run`, nineteen of twenty-four programs are faster and the
+  rest level ("What frames as words moved"). **7a′**, next,
   overlaps the register windows, the caller's outgoing arguments being
-  the callee's first registers, behind its own measurement. **7c** writes the deoptimization contract and the protocol
-  between interpreted and compiled frames into this document.
+  the callee's first registers, behind its own measurement. **7c** writes
+  the deoptimization contract and the protocol between interpreted and
+  compiled frames into this document.
 - **Step 8, a baseline JIT**, Cog's class: every method compiled without
   speculation, the inline caches and the allocation fast path emitted into
   the code, values kept in registers, for x64 and arm64, since images are
