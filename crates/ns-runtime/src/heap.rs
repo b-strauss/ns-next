@@ -5262,7 +5262,8 @@ impl<'gc> Heap<'gc> {
     /// true for every frame the divorce left behind, but on a decoded frame
     /// it answers whatever the file said. It is not liveness --
     /// `raise_return` treats every decoded frame as dead, because it
-    /// decides by `frame_activation`, and a decoded frame is never married.
+    /// decides by `frame_is_running`, and a decoded frame is never married
+    /// nor suspended.
     pub fn frame_is_uncontinuable(&self, frame: FrameReference<'gc>) -> bool {
         self.frame_field(frame, frame_field::UNCONTINUABLE)
             .as_boolean()
@@ -5914,6 +5915,73 @@ impl<'gc> Heap<'gc> {
             .map(|suspension| &suspension.then)
     }
 
+    /// The frame of the activation `frame`'s activation returns to: for a
+    /// married frame, the suspended sender its entry returns to
+    /// (`Continuation::ReturnToSuspended`), or else the entry below,
+    /// reified; for a suspended one, the sender its frame names. `None`
+    /// for a returned frame and for the run's base, which returns to the
+    /// host. The `sender` leaf the kernel's handler search walks.
+    pub fn frame_sender_frame(
+        &mut self,
+        frame: FrameReference<'gc>,
+    ) -> Option<FrameReference<'gc>> {
+        if let Some(activation) = self.frame_activation(frame) {
+            if let Some(sender) = self.activation_suspended_sender(activation) {
+                return Some(sender);
+            }
+            let below = self.activation_sender(activation)?;
+            return Some(self.reify(below));
+        }
+        if self.frame_is_suspended(frame) {
+            return self.frame_sender(frame);
+        }
+        None
+    }
+
+    /// The suspended frame `activation` returns to, when its sender is
+    /// suspended (`Continuation::ReturnToSuspended`); `None` when its
+    /// sender is the entry below it, or the host.
+    pub(crate) fn activation_suspended_sender(
+        &self,
+        activation: ActivationReference,
+    ) -> Option<FrameReference<'gc>> {
+        self.check_activation(activation);
+        match &self.stack.entries[activation.index as usize].then {
+            Continuation::ReturnToSuspended(suspended) => Some(suspended.sender),
+            _ => None,
+        }
+    }
+
+    /// The unwind marker of the code `frame`'s activation runs, as
+    /// `activation_unwind_marker` reads a stack entry's: the entry's own
+    /// while the frame is married, the frame's recorded code otherwise.
+    pub(crate) fn frame_unwind_marker(
+        &self,
+        frame: FrameReference<'gc>,
+    ) -> Option<crate::bytecode::UnwindMarker> {
+        match self.frame_activation(frame) {
+            Some(activation) => self.activation_unwind_marker(activation),
+            None => self.frame_code(frame)?.unwind_marker,
+        }
+    }
+
+    /// The VM error `frame`'s activation is the `signal` of, as
+    /// `activation_signalled_vm_error` answers it for a stack entry: read
+    /// from the entry while the frame is married, from its side-table row
+    /// while it is suspended; `None` once it has returned.
+    pub(crate) fn frame_signalled_vm_error(
+        &self,
+        frame: FrameReference<'gc>,
+    ) -> Option<NewspeakError<'gc>> {
+        if let Some(activation) = self.frame_activation(frame) {
+            return self.activation_signalled_vm_error(activation);
+        }
+        match self.frame_suspended_continuation(frame)? {
+            Continuation::VmErrorSignalled(error) => Some((**error).clone()),
+            _ => None,
+        }
+    }
+
     /// How many activations are suspended; zero outside a run.
     pub fn suspension_count(&self) -> usize {
         self.suspensions.rows.iter().flatten().count()
@@ -6376,8 +6444,9 @@ impl<'gc> Heap<'gc> {
     /// The live activation `frame` is married to, or `None` while that
     /// activation is suspended (`frame_is_suspended`) and once it has
     /// returned -- and for every frame the image decoder built, since none
-    /// of those ever ran here. `raise_return` uses it to
-    /// tell a live home from a dead one.
+    /// of those ever ran here. The unwinder asks it before every pop
+    /// whether its target is the top; whether a frame's activation is
+    /// running at all is `frame_is_running`.
     pub fn frame_activation(&self, frame: FrameReference<'gc>) -> Option<ActivationReference> {
         self.married_entry(self.frame_words(frame))
             .map(|entry| self.activation_handle(entry))

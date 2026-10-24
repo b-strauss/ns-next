@@ -11,7 +11,7 @@ use std::rc::Rc;
 
 use crate::builtins::primitive::{ActivationPrimitive, Primitive};
 use crate::bytecode::{CodeKind, UnwindMarker};
-use crate::heap::ActivationReference;
+use crate::heap::{ActivationReference, FrameReference};
 use crate::interpreter::{unwind, Signal, Step};
 use crate::types::*;
 use crate::{Mutator, Symbol};
@@ -118,8 +118,11 @@ enum SubjectLeaf {
 }
 
 /// A leaf whose subject is an activation object: the object names a frame,
-/// whose running activation is `live` -- `None` once it has returned. A
-/// subject that is no activation object declines.
+/// whose activation is running while the frame is married to a stack
+/// entry or suspended into it (`Heap::frame_is_running`), and has returned
+/// otherwise. Each leaf reads and writes through the frame, so that a
+/// suspended activation answers as a married one does. A subject that is
+/// no activation object declines.
 fn activation_leaf<'gc>(
     mutator: &mut Mutator<'gc>,
     leaf: SubjectLeaf,
@@ -128,68 +131,79 @@ fn activation_leaf<'gc>(
 ) -> Option<Result<Step<'gc>, Signal<'gc>>> {
     let object = subject.as_object()?;
     let frame = mutator.heap.object_frame(object)?;
-    let live = mutator.heap.frame_activation(frame);
+    let running = mutator.heap.frame_is_running(frame);
     let answer = match leaf {
         SubjectLeaf::Sender => {
-            match live.and_then(|activation| mutator.heap.activation_sender(activation)) {
-                Some(sender) => activation_object(mutator, sender),
+            match running
+                .then(|| mutator.heap.frame_sender_frame(frame))
+                .flatten()
+            {
+                Some(sender) => Value::object(mutator.new_activation_object(sender)),
                 None => Value::nil(),
             }
         }
-        SubjectLeaf::MethodName => {
-            match live.and_then(|activation| method_name(mutator, activation)) {
-                Some(name) => Value::object(mutator.new_string(name)),
-                None => Value::nil(),
-            }
-        }
+        SubjectLeaf::MethodName => match running.then(|| method_name(mutator, frame)).flatten() {
+            Some(name) => Value::object(mutator.new_string(name)),
+            None => Value::nil(),
+        },
         SubjectLeaf::IsActiveHandler => {
-            let active = live
-                .and_then(|activation| {
-                    let (_, _, active_register) = handler_registers(mutator, activation)?;
-                    Some(mutator.heap.activation_local(activation, active_register))
+            let active = running
+                .then(|| {
+                    let (_, _, active_register) = handler_registers(mutator, frame)?;
+                    Some(mutator.heap.frame_local(frame, active_register))
                 })
+                .flatten()
                 .is_some_and(|value| value.as_boolean() == Some(true));
             Value::boolean(active)
         }
         SubjectLeaf::HandlerClass => {
-            let activation = live?;
-            let (class_register, _, _) = handler_registers(mutator, activation)?;
-            mutator.heap.activation_local(activation, class_register)
+            if !running {
+                return None;
+            }
+            let (class_register, _, _) = handler_registers(mutator, frame)?;
+            mutator.heap.frame_local(frame, class_register)
         }
         SubjectLeaf::HandlerBlock => {
-            let activation = live?;
-            let (_, block_register, _) = handler_registers(mutator, activation)?;
-            mutator.heap.activation_local(activation, block_register)
+            if !running {
+                return None;
+            }
+            let (_, block_register, _) = handler_registers(mutator, frame)?;
+            mutator.heap.frame_local(frame, block_register)
         }
         SubjectLeaf::SetHandlerActive => {
-            let activation = live?;
-            let (_, _, active_register) = handler_registers(mutator, activation)?;
+            if !running {
+                return None;
+            }
+            let (_, _, active_register) = handler_registers(mutator, frame)?;
             let active = arguments.first().and_then(|value| value.as_boolean())?;
             mutator
                 .heap
-                .activation_set_local(activation, active_register, Value::boolean(active));
+                .frame_set_local(frame, active_register, Value::boolean(active));
             subject
         }
         // Both name the frame rather than the activation, as every unwind
-        // target does; a dead one is §7.2's `cannotReturn`, raised here, as
+        // target does, so a suspended one is unwound to as a married one
+        // is; a returned one is §7.2's `cannotReturn`, raised here, as
         // `raise_return` raises it for a block's `^`.
         SubjectLeaf::ReturnValue => {
             let value = *arguments.first()?;
-            return Some(Err(match live {
-                Some(_) => Signal::Return(frame, value),
-                None => Signal::Error(unwind::dead_activation_error(
+            return Some(Err(if running {
+                Signal::Return(frame, value)
+            } else {
+                Signal::Error(unwind::dead_activation_error(
                     Symbol::intern("returnValue:"),
                     value,
-                )),
+                ))
             }));
         }
         SubjectLeaf::Restart => {
-            return Some(Err(match live {
-                Some(_) => Signal::Restart(frame),
-                None => Signal::Error(unwind::dead_activation_error(
+            return Some(Err(if running {
+                Signal::Restart(frame)
+            } else {
+                Signal::Error(unwind::dead_activation_error(
                     Symbol::intern("restart"),
                     Value::nil(),
-                )),
+                ))
             }));
         }
     };
@@ -206,14 +220,16 @@ fn activation_object<'gc>(
     Value::object(mutator.new_activation_object(frame))
 }
 
-/// `"{class}>>{selector}"` for an activation running a method: the class
-/// that declares it, named as `Class>>name` and `Metaclass>>name` answer,
-/// and the selector its mixin holds the method's code under. A factory's
-/// activation is named as its entry's method on the metaclass, `Foo
-/// class>>new`. `None` for an activation running a block, an initializer or
-/// a clause, which have no selector to report.
-fn method_name(mutator: &Mutator<'_>, activation: ActivationReference) -> Option<String> {
-    if let FrameKind::Factory(class) = mutator.heap.activation_kind(activation) {
+/// `"{class}>>{selector}"` for the running activation of `frame` when it
+/// runs a method: the class that declares it, named as `Class>>name` and
+/// `Metaclass>>name` answer, and the selector its mixin holds the method's
+/// code under. A factory's activation is named as its entry's method on
+/// the metaclass, `Foo class>>new`. `None` for an activation running a
+/// block, an initializer or a clause, which have no selector to report.
+/// Read off the frame, which records the kind, code and class its stack
+/// entry had, so a suspended activation is named as a married one is.
+fn method_name<'gc>(mutator: &Mutator<'gc>, frame: FrameReference<'gc>) -> Option<String> {
+    if let FrameKind::Factory(class) = mutator.heap.frame_kind(frame) {
         // Read through the metaclass (`Heap::class_factory`): a body-less
         // declaration's class object applies its last clause's mixin and
         // has its declaration's factory.
@@ -224,11 +240,11 @@ fn method_name(mutator: &Mutator<'_>, activation: ActivationReference) -> Option
             factory.selector
         ));
     }
-    let code = mutator.heap.activation_code(activation);
+    let code = mutator.heap.frame_code(frame)?;
     if code.kind != CodeKind::Method {
         return None;
     }
-    let class = mutator.heap.activation_current_class(activation)?;
+    let class = mutator.heap.frame_current_class(frame)?;
     let application = mutator.heap.class_application(class)?;
     let method = application
         .mixin
@@ -241,12 +257,13 @@ fn method_name(mutator: &Mutator<'_>, activation: ActivationReference) -> Option
     ))
 }
 
-/// The registers of `activation`'s `on:do:` marker, if its code carries one.
-fn handler_registers(
-    mutator: &Mutator<'_>,
-    activation: ActivationReference,
+/// The registers of the `on:do:` marker of the code `frame`'s activation
+/// runs, if it carries one.
+fn handler_registers<'gc>(
+    mutator: &Mutator<'gc>,
+    frame: FrameReference<'gc>,
 ) -> Option<(u16, u16, u16)> {
-    match mutator.heap.activation_unwind_marker(activation)? {
+    match mutator.heap.frame_unwind_marker(frame)? {
         UnwindMarker::Handler {
             class_register,
             block_register,

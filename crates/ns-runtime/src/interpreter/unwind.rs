@@ -14,7 +14,7 @@
 //! no marker costs one test.
 
 use crate::bytecode::UnwindMarker;
-use crate::heap::{ActivationHeader, ActivationReference, Heap};
+use crate::heap::{ActivationHeader, ActivationReference, FrameReference, Heap};
 use crate::types::*;
 use crate::Symbol;
 
@@ -49,6 +49,98 @@ pub(crate) enum UnwindOutcome<'gc> {
     Signalling(ActivationReference),
     /// Popped down to the run's floor: the run ends with this.
     Exit(EvaluationResult<'gc>),
+}
+
+/// An activation a walk from the top of the stack towards the run's base
+/// meets: the live entries first, then -- past an entry whose sender is
+/// suspended (`Continuation::ReturnToSuspended`) -- the frames the
+/// suspended activations live in, each naming its sender. The depth
+/// limit's reserve walks it (`Mutator::overrun_of_the_reserve`,
+/// `Mutator::depth_reserve_held`) without reifying a live entry; neither
+/// is on a hot path.
+#[derive(Clone, Copy)]
+pub(crate) enum WalkedActivation<'gc> {
+    /// An activation on the stack.
+    Live(ActivationReference),
+    /// An activation suspended into its frame.
+    Suspended(FrameReference<'gc>),
+}
+
+impl<'gc> WalkedActivation<'gc> {
+    /// The activation this one returns to: the suspended sender of a live
+    /// entry that has one, else the entry below; a suspended one's sender
+    /// frame. `None` for the run's base and the bottom of the stack.
+    pub(crate) fn sender(self, heap: &Heap<'gc>) -> Option<WalkedActivation<'gc>> {
+        match self {
+            WalkedActivation::Live(activation) => {
+                match heap.activation_suspended_sender(activation) {
+                    Some(sender) => Some(WalkedActivation::Suspended(sender)),
+                    None => heap
+                        .activation_sender(activation)
+                        .map(WalkedActivation::Live),
+                }
+            }
+            WalkedActivation::Suspended(frame) => {
+                heap.frame_sender(frame).map(WalkedActivation::Suspended)
+            }
+        }
+    }
+
+    /// Whether this is the running activation of `frame`.
+    pub(crate) fn is_activation_of(self, heap: &Heap<'gc>, frame: FrameReference<'gc>) -> bool {
+        match self {
+            WalkedActivation::Live(activation) => heap
+                .frame_activation(frame)
+                .is_some_and(|married| married.same(activation)),
+            WalkedActivation::Suspended(suspended) => suspended.same(frame),
+        }
+    }
+
+    pub(crate) fn receiver(self, heap: &Heap<'gc>) -> Value<'gc> {
+        match self {
+            WalkedActivation::Live(activation) => heap.activation_receiver(activation),
+            WalkedActivation::Suspended(frame) => heap.frame_receiver(frame),
+        }
+    }
+
+    pub(crate) fn kind(self, heap: &Heap<'gc>) -> FrameKind<'gc> {
+        match self {
+            WalkedActivation::Live(activation) => heap.activation_kind(activation),
+            WalkedActivation::Suspended(frame) => heap.frame_kind(frame),
+        }
+    }
+
+    pub(crate) fn current_class(self, heap: &Heap<'gc>) -> Option<ClassReference<'gc>> {
+        match self {
+            WalkedActivation::Live(activation) => heap.activation_current_class(activation),
+            WalkedActivation::Suspended(frame) => heap.frame_current_class(frame),
+        }
+    }
+
+    /// Register `index` of the activation.
+    pub(crate) fn local(self, heap: &Heap<'gc>, index: u16) -> Value<'gc> {
+        match self {
+            WalkedActivation::Live(activation) => heap.activation_local(activation, index),
+            WalkedActivation::Suspended(frame) => heap.frame_local(frame, index),
+        }
+    }
+
+    /// The VM error the activation is the `signal` of, if the unwinder
+    /// pushed it to signal one (`Continuation::VmErrorSignalled`).
+    pub(crate) fn signalled_vm_error(self, heap: &Heap<'gc>) -> Option<NewspeakError<'gc>> {
+        match self {
+            WalkedActivation::Live(activation) => heap.activation_signalled_vm_error(activation),
+            WalkedActivation::Suspended(frame) => heap.frame_signalled_vm_error(frame),
+        }
+    }
+
+    /// `signalled_vm_error` without cloning the error of a live entry.
+    pub(crate) fn signals_a_vm_error(self, heap: &Heap<'gc>) -> bool {
+        match self {
+            WalkedActivation::Live(activation) => heap.activation_signals_a_vm_error(activation),
+            WalkedActivation::Suspended(frame) => heap.frame_signalled_vm_error(frame).is_some(),
+        }
+    }
 }
 
 /// A signal leaving the running activation. A non-local return is an
@@ -89,13 +181,15 @@ pub(crate) fn unwind_signal<'gc>(
             action: UnwindAction::Terminate(*error),
         },
         error @ Signal::Error(_) => {
+            // Popped as the unwind below pops, so that every suspended
+            // activation of the run comes back onto the stack on the way
+            // down and none outlives the run.
             while mutator.heap.activation_depth() > floor {
                 let top = mutator
                     .heap
                     .top_activation()
                     .expect("internal: a stack deeper than the floor has a top");
-                let popped = mutator.heap.pop_activation(top);
-                mutator.abandon(popped.then);
+                mutator.pop_for_unwind(top);
             }
             return UnwindOutcome::Exit(Err(error));
         }
@@ -118,7 +212,11 @@ pub(crate) fn unwind_signal<'gc>(
 /// The target is found by its frame, not by an activation handle, because
 /// the blocks this runs push activations while the unwind is in progress:
 /// one of them can sit at the index a popped target used, which a frame --
-/// divorced when its activation was popped -- cannot be mistaken for.
+/// divorced when its activation was popped -- cannot be mistaken for. And
+/// a target suspended into its frame (`Heap::frame_is_suspended`) becomes
+/// a stack entry only once the pops reach it, each pop resuming the
+/// suspended sender of what it pops (`Mutator::pop_for_unwind`); so the
+/// destination is decided again from the frame before every pop.
 ///
 /// Every activation it pops hands its continuation to `Mutator::abandon`,
 /// which undoes what a continuation that will now never run had begun.
@@ -127,12 +225,6 @@ pub(crate) fn unwind<'gc>(
     pending: PendingUnwind<'gc>,
     floor: usize,
 ) -> UnwindOutcome<'gc> {
-    let destination = pending
-        .target
-        .and_then(|frame| mutator.heap.frame_activation(frame))
-        .filter(|&target| {
-            mutator.heap.activation_position(target) >= floor && mutator.catches_return(target)
-        });
     loop {
         if mutator.heap.activation_depth() <= floor {
             return UnwindOutcome::Exit(Err(exit_signal(pending)));
@@ -141,10 +233,16 @@ pub(crate) fn unwind<'gc>(
             .heap
             .top_activation()
             .expect("internal: a stack deeper than the floor has a top");
-        if let Some(target) = destination {
-            if top.same(target) {
-                return arrive(mutator, target, pending.action);
-            }
+        let arrived = pending
+            .target
+            .and_then(|frame| mutator.heap.frame_activation(frame))
+            .is_some_and(|target| {
+                top.same(target)
+                    && mutator.heap.activation_position(target) >= floor
+                    && mutator.catches_return(target)
+            });
+        if arrived {
+            return arrive(mutator, top, pending.action);
         }
         if let Some(block) = block_to_run(mutator, top) {
             return UnwindOutcome::RunBlock {
@@ -152,8 +250,7 @@ pub(crate) fn unwind<'gc>(
                 then: Box::new(pending),
             };
         }
-        let popped = mutator.heap.pop_activation(top);
-        mutator.abandon(popped.then);
+        mutator.pop_for_unwind(top);
     }
 }
 
@@ -394,18 +491,19 @@ impl<'gc> Mutator<'gc> {
     /// program's own `signal` takes no reserve, so it is never the error an
     /// overrun reports.
     ///
-    /// Walks the stack from its top: once per run, since an overrun ends
-    /// it.
+    /// Walks the activations from the top of the stack towards the run's
+    /// base, the suspended ones included (`WalkedActivation::sender`): once
+    /// per run, since an overrun ends it.
     pub(crate) fn overrun_of_the_reserve(
         &self,
         header: &ActivationHeader<'gc>,
     ) -> NewspeakError<'gc> {
         let mut reported = None;
         let mut above = None;
-        let mut current = self.heap.top_activation();
+        let mut current = self.heap.top_activation().map(WalkedActivation::Live);
         while let Some(activation) = current {
-            if let Some(error) = self.heap.activation_signalled_vm_error(activation) {
-                if !self.is_finding_its_handler(self.heap.activation_receiver(activation)) {
+            if let Some(error) = activation.signalled_vm_error(&self.heap) {
+                if !self.is_finding_its_handler(activation.receiver(&self.heap)) {
                     break;
                 }
                 reported = Some(error);
@@ -419,7 +517,7 @@ impl<'gc> Mutator<'gc> {
                 }
             }
             above = Some(activation);
-            current = self.heap.activation_sender(activation);
+            current = activation.sender(&self.heap);
         }
         reported.unwrap_or_else(|| super::recursion_too_deep_error(header))
     }
@@ -432,19 +530,18 @@ impl<'gc> Mutator<'gc> {
     /// or after it has returned, it is the machinery.
     fn does_not_understand_is_finding_its_handler(
         &self,
-        above: Option<ActivationReference>,
+        above: Option<WalkedActivation<'gc>>,
     ) -> bool {
         let Some(signal) = above else {
             return true;
         };
         let exception_class = self.builtin_class(BuiltinClass::Exception);
-        let is_signal = matches!(self.heap.activation_kind(signal),
+        let is_signal = matches!(signal.kind(&self.heap),
             FrameKind::Method(method) if method.selector == Symbol::SIGNAL)
-            && self
-                .heap
-                .activation_current_class(signal)
+            && signal
+                .current_class(&self.heap)
                 .is_some_and(|class| class.same(exception_class));
-        !is_signal || self.is_finding_its_handler(self.heap.activation_receiver(signal))
+        !is_signal || self.is_finding_its_handler(signal.receiver(&self.heap))
     }
 
     /// The error an unhandled `MessageNotUnderstood` would have ended the
@@ -455,16 +552,16 @@ impl<'gc> Mutator<'gc> {
     /// arguments).
     fn does_not_understand_error(
         &self,
-        activation: ActivationReference,
+        activation: WalkedActivation<'gc>,
     ) -> Option<NewspeakError<'gc>> {
-        let message = self.heap.activation_local(activation, 0).as_object()?;
+        let message = activation.local(&self.heap, 0).as_object()?;
         let selector = self
             .kernel_slot(message, BuiltinClass::Message, "selector")?
             .as_object()?;
         let selector = self.heap.symbol_value(selector)?;
         Some(NewspeakError::error(
             selector,
-            self.heap.activation_receiver(activation),
+            activation.receiver(&self.heap),
             format!("an object does not understand #{}", selector.as_str()),
         ))
     }

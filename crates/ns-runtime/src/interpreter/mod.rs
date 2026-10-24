@@ -33,6 +33,7 @@ use crate::heap::{ActivationHeader, ActivationReference, Heap, Root};
 use crate::shipped_code::ShippedCodePath;
 use crate::types::*;
 use crate::Symbol;
+use unwind::WalkedActivation;
 
 // `inline_cache` is `pub(crate)`, so `FeedbackBase` on its own would be
 // visible only inside this crate; re-exporting it through `interpreter`
@@ -1090,47 +1091,67 @@ impl<'gc> Mutator<'gc> {
     }
 
     /// Whether the depth limit's reserve is held: its activation is still
-    /// running, and directly above it is the `signal` of the VM error that
-    /// arose there -- or its `Object>>doesNotUnderstand:` -- or that
-    /// `signal` is being pushed. Forgets a reserve found no longer held, so
-    /// that the pop that ended it pays nothing to give it back.
+    /// running -- on the stack or suspended into its frame -- and directly
+    /// above it is the `signal` of the VM error that arose there -- or its
+    /// `Object>>doesNotUnderstand:` -- or that `signal` is being pushed.
+    /// Forgets a reserve found no longer held, so that the pop that ended
+    /// it pays nothing to give it back.
     pub(crate) fn depth_reserve_held(&mut self) -> bool {
         let Some(frame) = self.depth_reserve else {
             return false;
         };
-        let held = self.heap.frame_activation(frame).is_some_and(|activation| {
-            self.taking_depth_reserve
+        let held = self.heap.frame_is_running(frame)
+            && (self.taking_depth_reserve
                 || self
-                    .heap
-                    .activation_above(activation)
-                    .is_some_and(|above| self.holds_the_depth_reserve(above))
-        });
+                    .activation_above_frame(frame)
+                    .is_some_and(|above| self.holds_the_depth_reserve(above)));
         if !held {
             self.depth_reserve = None;
         }
         held
     }
 
+    /// The activation directly above the running activation of `frame`,
+    /// the one it sent to: the next stack entry while the frame is married;
+    /// while it is suspended, the one a walk from the top of the stack meets
+    /// just before it (`WalkedActivation::sender`), which reifies nothing.
+    fn activation_above_frame(&self, frame: FrameReference<'gc>) -> Option<WalkedActivation<'gc>> {
+        if let Some(activation) = self.heap.frame_activation(frame) {
+            return self
+                .heap
+                .activation_above(activation)
+                .map(WalkedActivation::Live);
+        }
+        let mut above = None;
+        let mut current = self.heap.top_activation().map(WalkedActivation::Live);
+        while let Some(walked) = current {
+            if walked.is_activation_of(&self.heap, frame) {
+                return above;
+            }
+            above = Some(walked);
+            current = walked.sender(&self.heap);
+        }
+        None
+    }
+
     /// Whether `activation` is one the reserve is taken for: the `signal`
     /// the unwinder pushed for a VM error (`Continuation::VmErrorSignalled`),
     /// or the kernel's own `Object>>doesNotUnderstand:` -- §5.5's error, the
     /// VM's as much as any other, though `Kernel.ns` signals it.
-    pub(crate) fn holds_the_depth_reserve(&self, activation: ActivationReference) -> bool {
-        self.heap.activation_signals_a_vm_error(activation)
-            || self.is_kernel_does_not_understand(activation)
+    pub(crate) fn holds_the_depth_reserve(&self, activation: WalkedActivation<'gc>) -> bool {
+        activation.signals_a_vm_error(&self.heap) || self.is_kernel_does_not_understand(activation)
     }
 
     /// Whether `activation` runs the kernel's `Object>>doesNotUnderstand:`,
     /// not an override of it: the one method of that selector whose current
     /// class is `Object` itself.
-    pub(crate) fn is_kernel_does_not_understand(&self, activation: ActivationReference) -> bool {
+    pub(crate) fn is_kernel_does_not_understand(&self, activation: WalkedActivation<'gc>) -> bool {
         let object = self.builtin_class(BuiltinClass::Object);
-        match self.heap.activation_kind(activation) {
+        match activation.kind(&self.heap) {
             FrameKind::Method(method) => {
                 method.selector == Symbol::DOES_NOT_UNDERSTAND
-                    && self
-                        .heap
-                        .activation_current_class(activation)
+                    && activation
+                        .current_class(&self.heap)
                         .is_some_and(|class| class.same(object))
             }
             _ => false,
@@ -1140,7 +1161,9 @@ impl<'gc> Mutator<'gc> {
     /// Whether `header` is the kernel's `Object>>doesNotUnderstand:`, about
     /// to be pushed directly above the activation that has just taken the
     /// reserve for it: the decision took the reserve, and this is the push
-    /// that makes it held.
+    /// that makes it held. That activation is the top of the stack, never
+    /// suspended, since the push follows the decision with no safepoint
+    /// between them: a reserve whose frame is suspended was taken earlier.
     fn pushes_the_reserves_does_not_understand(&self, header: &ActivationHeader<'gc>) -> bool {
         let Some(frame) = self.depth_reserve else {
             return false;
@@ -1575,6 +1598,25 @@ impl<'gc> Mutator<'gc> {
         }
     }
 
+    /// Pops `top`, the top of the stack, for an unwind that goes on below
+    /// it: its continuation is abandoned, and a sender it would have
+    /// returned to suspended (`Continuation::ReturnToSuspended`) is resumed
+    /// first, as `vm::finish` resumes it for a return, so that the next top
+    /// is the activation the unwind goes on with -- whose `ensure:` block it
+    /// runs, or which it arrives at -- as if it had been on the stack all
+    /// along.
+    pub(crate) fn pop_for_unwind(&mut self, top: ActivationReference) {
+        let popped = self.heap.pop_activation(top);
+        match popped.then {
+            Continuation::ReturnToSuspended(suspended) => {
+                let ReturnToSuspended { sender, then } = *suspended;
+                self.resume_frame(sender);
+                self.abandon(then);
+            }
+            then => self.abandon(then),
+        }
+    }
+
     /// Pushes the activation a continuation decided (`resume`), in place of
     /// the one just popped; `replaced_counted` is that one's
     /// `Popped::counted`. The exemption's rule for a native loop lives here
@@ -1649,8 +1691,10 @@ impl<'gc> Mutator<'gc> {
     /// Where a `^` in `activation` returns to. A block returns from its home --
     /// the method or initializer that lexically encloses it -- and only
     /// while that activation is still running: its reified frame is married
-    /// to a live stack entry exactly until the activation returns, and a
-    /// frame the image decoder built never is. A dead home is §7.2's
+    /// to a live stack entry, or suspended into the frame, exactly until the
+    /// activation returns (`Heap::frame_is_running`), and a frame the image
+    /// decoder built never is. A suspended home is unwound to, resumed when
+    /// the unwind's pops reach it. A returned home is §7.2's
     /// `cannotReturn`. Every other activation's `^` -- an initializer's from
     /// an inlined block -- returns from itself, reified here so that the
     /// signal can name it by frame.
@@ -1661,17 +1705,15 @@ impl<'gc> Mutator<'gc> {
     ) -> Signal<'gc> {
         let target = match self.heap.activation_home(activation) {
             None => self.heap.reify(activation),
-            Some(home) => match self.heap.frame_activation(home) {
-                Some(_) => home,
-                None => {
-                    return Signal::Error(NewspeakError::cannot_return(
-                        Symbol::CARET,
-                        value,
-                        value,
-                        "cannotReturn: the enclosing method activation has already returned",
-                    ))
-                }
-            },
+            Some(home) if self.heap.frame_is_running(home) => home,
+            Some(_) => {
+                return Signal::Error(NewspeakError::cannot_return(
+                    Symbol::CARET,
+                    value,
+                    value,
+                    "cannotReturn: the enclosing method activation has already returned",
+                ))
+            }
         };
         Signal::Return(target, value)
     }

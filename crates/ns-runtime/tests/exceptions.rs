@@ -370,6 +370,39 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+const ESCAPER: &str = indoc! {"
+    class Escaper = Object new () (
+        escapingBlock = ( ^[:value | ^value] )
+        public escape = ( ^self escapingBlock value: 3 )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A block's `^` whose home has returned -- its frame no longer married
+    /// to a stack entry, nor suspended -- is still §7.2's `cannotReturn`:
+    /// only a running home, live or suspended, is unwound to.
+    fn a_return_into_a_returned_home_is_still_cannot_return(lowering) {
+        let module = ns_syntax::parse(ESCAPER).expect("parse");
+        let resolved = ns_runtime::resolve(
+            module,
+            ESCAPER.into(),
+            ns_runtime::SourceOrigin::File("escaper.ns".into()),
+        )
+        .expect("resolve");
+        let mut interpreter = Interpreter::bootstrap_with(lowering);
+        let class = interpreter.load_module(&resolved);
+        let escaper = expect_ok(interpreter.instantiate(&class, &[]), "Escaper new");
+        let error = expect_error(
+            interpreter.send(&escaper, Symbol::intern("escape"), &[]),
+            "escape",
+        );
+        assert_eq!(
+            error.message, "cannotReturn: the enclosing method activation has already returned",
+            "{lowering:?}"
+        );
+    }
+}
+
 const SHAPES: &str = indoc! {"
     class Shapes = Object new () (
         class Shape = Object new () (

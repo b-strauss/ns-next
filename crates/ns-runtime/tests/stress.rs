@@ -348,3 +348,316 @@ ns_runtime::for_each_lowering! {
         assert_runs_on_from_suspended_frames(SLOW_FUTURE, lowering, "answered 9003001");
     }
 }
+
+// ---------- Unwinding through suspended frames ----------
+//
+// The handler search, `return:`, `resume:`, `retry`, `ensure:` and a block's
+// `^` each reach activations the suspend stress mode moved into their
+// frames: a loop that passes many safepoints (`spin`) runs above them.
+
+/// An `Error` signalled fifty activations above its `on:do:`, with a loop
+/// that passes safepoints both before it is signalled and in its handler:
+/// the search walks through suspended senders to the handler, and the
+/// handler's `return:` unwinds into the suspended `on:do:`.
+const HANDLER_BELOW_SUSPENDED_FRAMES: &str = indoc! {"
+    class Handled = Object new (
+    ) (
+      spin = (
+        | sum |
+        sum:: 0.
+        1 to: 3000 do: [:each | sum:: sum + each].
+        ^sum
+      )
+      descend: count = (
+        count = 0 ifTrue: [
+          self spin.
+          ^(Error signal: 'deep') + 1
+        ].
+        ^self descend: count - 1
+      )
+      public run = (
+        ^([self descend: 50] on: Error do: [:e | self spin. e return: 42]) + 1
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    fn an_exception_signalled_above_suspended_frames_finds_its_handler(lowering) {
+        assert_runs_on_from_suspended_frames(HANDLER_BELOW_SUSPENDED_FRAMES, lowering, "answered 43");
+    }
+}
+
+/// `retry` from a handler that passes safepoints, its `on:do:` suspended
+/// meanwhile: the protected block runs again until it lets the exception
+/// through.
+const RETRY_A_SUSPENDED_ON_DO: &str = indoc! {"
+    class Retrying = Object new (
+      | attempts ::= 0. |
+    ) (
+      spin = (
+        | sum |
+        sum:: 0.
+        1 to: 3000 do: [:each | sum:: sum + each].
+        ^sum
+      )
+      public run = (
+        ^[
+          attempts:: attempts + 1.
+          self spin.
+          attempts < 3 ifTrue: [Error signal].
+          attempts * 10
+        ] on: Error do: [:e | self spin. e retry]
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    fn retry_restarts_a_suspended_on_do_activation(lowering) {
+        assert_runs_on_from_suspended_frames(RETRY_A_SUSPENDED_ON_DO, lowering, "answered 30");
+    }
+}
+
+/// Three nested `ensure:` and an `ifCurtailed:`, a loop that passes
+/// safepoints inside the innermost, then a `^` out of a block past all of
+/// them: each block runs once, innermost first, which the digits of `log`
+/// record, and each passes safepoints of its own.
+const ENSURE_BLOCKS_OF_SUSPENDED_ACTIVATIONS: &str = indoc! {"
+    class Unwinding = Object new (
+      | log ::= 0. |
+    ) (
+      spin = (
+        | sum |
+        sum:: 0.
+        1 to: 3000 do: [:each | sum:: sum + each].
+        ^sum
+      )
+      note: digit = (
+        self spin.
+        log:: log * 10 + digit.
+      )
+      escape = (
+        [
+          [
+            [
+              [
+                self spin.
+                ^5
+              ] ifCurtailed: [self note: 1]
+            ] ensure: [self note: 2]
+          ] ensure: [self note: 3]
+        ] ensure: [self note: 4].
+        ^0
+      )
+      public run = (
+        ^self escape + (log * 10)
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    fn an_unwind_runs_the_ensure_blocks_of_suspended_activations_in_order(lowering) {
+        assert_runs_on_from_suspended_frames(
+            ENSURE_BLOCKS_OF_SUSPENDED_ACTIVATIONS,
+            lowering,
+            "answered 12345",
+        );
+    }
+}
+
+/// A block's `^` while its home is suspended below the method that runs
+/// the block, which passes safepoints: the home is still running, so the
+/// return is caught there rather than being a `cannotReturn`.
+const RETURN_INTO_A_SUSPENDED_HOME: &str = indoc! {"
+    class Finder = Object new (
+    ) (
+      each: block = (
+        1 to: 3000 do: [:index | block value: index].
+      )
+      find = (
+        self each: [:value | value = 2500 ifTrue: [^value]].
+        ^0
+      )
+      public run = (
+        ^self find + 1
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    fn a_return_into_a_suspended_home_is_caught_there(lowering) {
+        assert_runs_on_from_suspended_frames(RETURN_INTO_A_SUSPENDED_HOME, lowering, "answered 2501");
+    }
+}
+
+/// `return:` to an `on:do:` and `resume:` to a `signal` that are suspended
+/// while the handler passes safepoints, twenty activations above the
+/// `on:do:`.
+const RETURN_AND_RESUME_ON_SUSPENDED_ACTIVATIONS: &str = indoc! {"
+    class Resuming = Object new (
+    ) (
+      spin = (
+        | sum |
+        sum:: 0.
+        1 to: 3000 do: [:each | sum:: sum + each].
+        ^sum
+      )
+      descend: count then: block = (
+        count = 0 ifTrue: [
+          self spin.
+          ^block value
+        ].
+        ^self descend: count - 1 then: block
+      )
+      returned = (
+        ^[
+          self descend: 20 then: [
+            Error signal.
+            1
+          ]
+        ] on: Error do: [:e | self spin. e return: 5]
+      )
+      resumed = (
+        ^[self descend: 20 then: [(Exception signal) + 1]] on: Exception do: [:e |
+          self spin.
+          e resume: 7
+        ]
+      )
+      public run = (
+        ^self returned * 100 + self resumed
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    fn return_value_and_resume_on_a_suspended_activation(lowering) {
+        assert_runs_on_from_suspended_frames(
+            RETURN_AND_RESUME_ON_SUSPENDED_ACTIVATIONS,
+            lowering,
+            "answered 508",
+        );
+    }
+}
+
+/// The depth limit's fixture: a recursion to the limit, which records how
+/// deep it got; an error raised at that depth and one level further; a
+/// handler recursing past the reserve, which records how deep that got;
+/// and errors raised short of where the reserve ends and at it.
+const DEPTH_LIMIT: &str = indoc! {"
+    class Deep = Object new (
+      |
+        public deepest ::= 0.
+        public reserveDeepest ::= 0.
+      |
+    ) (
+      public probe: count = (
+        deepest:: count.
+        ^self probe: count + 1
+      )
+      reserveProbe: count = (
+        reserveDeepest:: count.
+        ^self reserveProbe: count + 1
+      )
+      public descend: count to: bottom = (
+        count = bottom ifTrue: [^{1} at: 5].
+        ^self descend: count + 1 to: bottom
+      )
+      public measureTheReserve = (
+        ^[[self probe: 1] on: Error do: [:e | self reserveProbe: 1]] on: Error do: [:e | 7]
+      )
+      public failInTheReserveAt: bottom = (
+        ^[[self probe: 1] on: Error do: [:e | self descend: 1 to: bottom]] on: Error do: [:e | 7]
+      )
+    ) : ()
+"};
+
+/// How each step of the depth limit's fixture ended -- its answer or its
+/// error, and each depth it recorded -- and how often the suspend stress
+/// mode fired.
+fn depth_limit_outcomes(lowering: Lowering, suspend: bool) -> (Vec<String>, usize) {
+    let module = ns_syntax::parse(DEPTH_LIMIT).expect("parse");
+    let resolved = ns_runtime::resolve(
+        module,
+        DEPTH_LIMIT.into(),
+        ns_runtime::SourceOrigin::File("deep.ns".into()),
+    )
+    .expect("resolve");
+    let mut interpreter = Interpreter::bootstrap_with(lowering);
+    let class = interpreter.load_module(&resolved);
+    interpreter.set_stress_suspend(suspend);
+    let suspensions_before = interpreter.stress_suspensions();
+    let deep = expect_ok(interpreter.instantiate(&class, &[]), "Deep new");
+    let describe = |interpreter: &mut Interpreter, result: HostResult| match result {
+        Ok(answer) => interpreter.enter(|mutator| match mutator.fetch(&answer).kind() {
+            ValueKind::SmallInteger(answer) => format!("answered {answer}"),
+            _ => "answered something other than a small integer".to_string(),
+        }),
+        Err(HostSignal::Return) => "a non-local return escaped".to_string(),
+        Err(HostSignal::Error(error)) => format!("failed: {}", error.message),
+    };
+    let integer = |interpreter: &mut Interpreter, selector: &str| {
+        let value = expect_ok(
+            interpreter.send(&deep, Symbol::intern(selector), &[]),
+            selector,
+        );
+        interpreter.enter(|mutator| match mutator.fetch(&value).kind() {
+            ValueKind::SmallInteger(integer) => integer,
+            _ => panic!("{selector} answers a small integer"),
+        })
+    };
+    let send_integers = |interpreter: &mut Interpreter, selector: &str, arguments: &[i64]| {
+        let arguments: Vec<Root> = arguments
+            .iter()
+            .map(|&argument| interpreter.stash(ns_runtime::Value::small_integer(argument)))
+            .collect();
+        interpreter.send(&deep, Symbol::intern(selector), &arguments)
+    };
+    let mut outcomes = Vec::new();
+    let result = send_integers(&mut interpreter, "probe:", &[1]);
+    outcomes.push(describe(&mut interpreter, result));
+    let deepest = integer(&mut interpreter, "deepest");
+    outcomes.push(format!("deepest {deepest}"));
+    for bottom in [deepest, deepest + 1] {
+        let result = send_integers(&mut interpreter, "descend:to:", &[1, bottom]);
+        outcomes.push(describe(&mut interpreter, result));
+    }
+    let result = interpreter.send(&deep, Symbol::intern("measureTheReserve"), &[]);
+    outcomes.push(describe(&mut interpreter, result));
+    let reserve_deepest = integer(&mut interpreter, "reserveDeepest");
+    outcomes.push(format!("reserve deepest {reserve_deepest}"));
+    for bottom in [reserve_deepest - 500, reserve_deepest - 2, reserve_deepest] {
+        let result = send_integers(&mut interpreter, "failInTheReserveAt:", &[bottom]);
+        outcomes.push(describe(&mut interpreter, result));
+    }
+    (
+        outcomes,
+        interpreter.stress_suspensions() - suspensions_before,
+    )
+}
+
+ns_runtime::for_each_lowering! {
+    /// The suspended activations of a deep recursion count against the
+    /// depth limit as running ones do: the limit is met at the same depth,
+    /// an error raised there is reported from the reserve as itself, and
+    /// the reserve ends at the same depth and reports the same errors.
+    fn the_depth_limit_counts_suspended_activations(lowering) {
+        const INDEX_ERROR: &str = "failed: index 5 out of range: valid indices are 1..1 (size 1)";
+        const DEPTH_ERROR: &str = "failed: stack overflow: recursion too deep";
+        let (plain, plain_suspensions) = depth_limit_outcomes(lowering, false);
+        assert_eq!(plain_suspensions, 0);
+        let expected = [
+            (0, DEPTH_ERROR),
+            (2, INDEX_ERROR),
+            (3, DEPTH_ERROR),
+            (4, DEPTH_ERROR),
+            (6, "answered 7"),
+            (7, INDEX_ERROR),
+            (8, INDEX_ERROR),
+        ];
+        for (position, outcome) in expected {
+            assert_eq!(plain[position], outcome, "the control, step {position}");
+        }
+        let (suspended, suspensions) = depth_limit_outcomes(lowering, true);
+        assert_eq!(suspended, plain);
+        assert!(suspensions > 0, "the suspend stress mode never suspended");
+    }
+}
