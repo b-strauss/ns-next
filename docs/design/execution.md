@@ -3271,8 +3271,8 @@ sitting 1 / sitting 2:
 | `bench_newarg.ns` | +1.02% / +1.51% | +1.39% / +2.21% | −8.31% / −8.08% |
 
 No group lies entirely above its parent's in either sitting, so the field
-was kept as designed — after `slot_base` in the stack entry, loaded by the
-switch that needs it — and none of the prepared variants (the base answered
+was kept as designed — beside the activation's other header fields, loaded
+by the switch that needs it — and none of the prepared variants (the base answered
 by the push beside the activation, another place in the entry, `run` loading
 it instead of `Flow::Switch` carrying it) was needed. `Result<Step, Signal>`
 stayed 56 bytes: `Step::Method`'s base fits its padding.
@@ -6432,9 +6432,10 @@ per instruction), found these causes, each of which is a reason still true:
   (one instruction held about 9% of all samples), `pop_activation` moved
   the whole entry out the same way, and `enter_factory_body` moved the
   decided `Step` out of the callee's return slot so (3%). `push_activation`
-  and `Mutator::push` are `#[inline(always)]`, write the entry where the
-  vector has room with the growth path out of line, and `pop_activation`
-  reads the fields it needs and drops the entry in place.
+  and `Mutator::push` are `#[inline(always)]` and write each header word
+  straight into the frame the stack lends, with the growth path out of
+  line, and `pop_activation` reads the header words it needs in place
+  ("Representation").
 
 Tried and dropped, measured with three builds a side: returning straight
 through a caller whose next instruction is `Return`, no gain beyond noise;
