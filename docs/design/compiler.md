@@ -83,15 +83,17 @@ then lower each argument into its slot ([execution.md](execution.md),
 "Planned: overlapping register windows").
 
 - **The optimized lowering** (`Lowerer::lower_expression_into`) produces
-  in its slot a send it does not inline, whose `destination` is the slot,
-  and a literal, `self`, a read of another frame's local or of a vector, a
-  closure and an array, each loaded into the slot; the send copies none of
-  them. Every other argument's source is the register its value is in,
-  and the send copies it: a named local's own register (below the slots),
-  or the slot itself when an argument after it can write that local and
-  the protective copy goes into the slot ("The value-register
-  invariant"); an inlined form's result register -- a conditional's,
-  `and:`/`or:`'s, a loop's, an integer leaf's, a mirror send's -- and an
+  in its slot a send it does not inline, whose `destination` is the slot;
+  an inlined integer leaf (`n - 1`), whose fast path and fallback send both
+  write their destination, the slot; and a literal, `self`, a read of
+  another frame's local or of a vector, a closure and an array, each
+  loaded into the slot. The send copies none of them. A named local's
+  source is its own register, below the slots, which the send copies --
+  or, when an argument after it can write that local, the protective
+  `Move` into the slot, which the send then does not copy ("The
+  value-register invariant"). Every other argument's source is the
+  register its value is in, and the send copies it: the result register of
+  an inlined conditional, `and:`/`or:`, loop or mirror send, and an
   assignment's or a cascade's value, which are above the slots unless the
   value is a named local's register. So the slots are not always the top of
   what is live at the send: a source the send copies from above them is

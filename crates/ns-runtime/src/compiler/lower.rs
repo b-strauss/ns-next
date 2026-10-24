@@ -1294,14 +1294,17 @@ impl<'a> Lowerer<'a> {
 
     /// Lowers a send's argument into `slot`, its argument slot, and answers
     /// the argument's source: `slot` itself when the value was produced
-    /// there. A send that is not inlined writes its `destination` into the
-    /// slot, and a literal, `self`, a read of another frame's local or of a
-    /// vector, a closure and an array are loaded into it, so the send
-    /// copies none of them. Every other expression answers the register its
-    /// value is in -- a named local's own (or, when an argument after it
-    /// can write that local, `lower_operand`'s protective copy, which goes
-    /// into the slot), an inlined form's result register, an assignment's
-    /// value, a cascade's last send -- and the send copies it into the slot.
+    /// there. A send that is not inlined and an inlined integer leaf write
+    /// their `destination` into the slot, and a literal, `self`, a read of
+    /// another frame's local or of a vector, a closure and an array are
+    /// loaded into it, so the send copies none of them. A named local
+    /// answers its own register, which the send copies -- or, when an
+    /// argument after it can write that local, the protective `Move` into
+    /// the slot, which the send then does not copy. Every other expression
+    /// answers the register its value is in -- the result register of an
+    /// inlined conditional, `and:`/`or:`, loop or mirror send, an
+    /// assignment's value, a cascade's last send -- and the send copies it
+    /// into the slot.
     ///
     /// Writing the slot this early is sound because the slots were
     /// allocated before any argument was lowered (`lower_arguments`):
@@ -1711,9 +1714,9 @@ impl<'a> Lowerer<'a> {
     ///
     /// The slots are not always the top of what is live at the send:
     /// whatever an argument is evaluated with lands above them, and an
-    /// argument the send copies (`lower_expression_into`) -- an inlined
-    /// form's result register, an assignment's value or a cascade's last
-    /// send, unless that is a named local below the slots -- is read by the
+    /// argument the send copies (`lower_expression_into`) -- the result
+    /// register of an inlined conditional, `and:`/`or:`, loop or mirror
+    /// send, an assignment's value or a cascade's last send, unless that is a named local below the slots -- is read by the
     /// send from a register above them. Every other register above the
     /// slots is dead by the time the send executes
     /// (`docs/design/compiler.md`, "Sends").
@@ -1794,7 +1797,7 @@ impl<'a> Lowerer<'a> {
             };
         }
         if let Some(operation) = control_flow::recognize_integer_binary(send) {
-            return self.lower_integer_binary(send, operation);
+            return self.lower_integer_binary(send, operation, into);
         }
         // The receiver is read by the send instruction, so it has to
         // survive its own arguments' lowering.
@@ -2022,9 +2025,16 @@ impl<'a> Lowerer<'a> {
     /// error and its text still coming from that send's primitive. It lands
     /// its result in the same `destination` the fast path writes, rather
     /// than in a scratch register of its own that a `Move` then copies: the
-    /// two paths are mutually exclusive, and `destination` was allocated
-    /// after both operands, so neither can be reading it.
-    fn lower_integer_binary(&mut self, send: &ast::Send, operation: IntegerOperation) -> u16 {
+    /// two paths are mutually exclusive, and `destination` is neither
+    /// operand: a fresh register allocated after both, or `into`, the
+    /// argument slot the operation is lowered into
+    /// (`lower_expression_into`), which was allocated before both.
+    fn lower_integer_binary(
+        &mut self,
+        send: &ast::Send,
+        operation: IntegerOperation,
+        into: Option<u16>,
+    ) -> u16 {
         // The parser gives a binary selector exactly one argument; name the
         // invariant so a mismatch surfaces here rather than as a bare
         // slice-index panic, as `control_flow::recognize` does for its own.
@@ -2046,7 +2056,7 @@ impl<'a> Lowerer<'a> {
         } else {
             self.allocate_argument_slots(&[left_register, right_register], 1)
         };
-        let destination = self.allocate_scratch();
+        let destination = self.target_register(into);
         let fallback_jump = self.emit(Instruction::IntegerBinary {
             operation,
             destination,
@@ -4949,6 +4959,38 @@ mod tests {
                 Instruction::Move { destination, .. } if *destination == sources[0]
             )),
             "the source is the branch's result register: {:?}",
+            code.instructions()
+        );
+    }
+
+    /// An inlined integer operation's fast path and its fallback send both
+    /// write its destination, which is the slot: the send copies nothing.
+    #[test]
+    fn an_inlined_integer_operation_argument_is_lowered_into_its_slot() {
+        let source = indoc! {"
+            class X = Object new (
+            ) (
+              foo: first = ( ^first )
+              m: n = ( ^self foo: n - 1 )
+            ) : ()
+        "};
+        let code = lower_whole_method(source, 1);
+        let (argument_base, sources) = assert_contiguous_slots(&code, "foo:", 1, 1);
+        assert_eq!(sources, vec![argument_base], "{:?}", code.instructions());
+        assert!(
+            has(&code, |instruction| matches!(
+                instruction,
+                Instruction::IntegerBinary { destination, .. } if *destination == argument_base
+            )),
+            "the fast path writes the slot: {:?}",
+            code.instructions()
+        );
+        assert!(
+            !has(&code, |instruction| matches!(
+                instruction,
+                Instruction::Move { destination, .. } if *destination == argument_base
+            )),
+            "nothing is moved into the slot: {:?}",
             code.instructions()
         );
     }
