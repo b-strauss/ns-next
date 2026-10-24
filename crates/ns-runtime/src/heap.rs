@@ -512,8 +512,10 @@ struct StackEntry<'gc> {
 struct ActivationStack<'gc> {
     values: Vec<Word>,
     entries: Vec<StackEntry<'gc>>,
-    /// How many of `entries` count against the depth limit. Kept as a
-    /// running total, since the limit is checked on every push.
+    /// How many of `entries`, and of the activations suspended into their
+    /// frames, count against the depth limit. One running total, since the
+    /// limit is checked on every push: suspending and resuming an
+    /// activation leave it alone, as a suspended one counts all along.
     counted: usize,
     #[cfg(debug_assertions)]
     next_generation: u32,
@@ -546,9 +548,6 @@ struct Suspension<'gc> {
 struct Suspensions<'gc> {
     rows: Vec<Option<Suspension<'gc>>>,
     free: ids::FreeIndices,
-    /// How many suspended activations count against the depth limit: they
-    /// count all along, since resuming one never checks the limit.
-    counted: usize,
 }
 
 impl crate::trace::Trace for Suspension<'_> {
@@ -556,7 +555,7 @@ impl crate::trace::Trace for Suspension<'_> {
         let Suspension {
             frame,
             then,
-            counted: _,
+            counted: _,           // not a handle
             entered_level: _,     // not a handle
             retains_registers: _, // not a handle
         } = self;
@@ -567,11 +566,7 @@ impl crate::trace::Trace for Suspension<'_> {
 
 impl crate::trace::Trace for Suspensions<'_> {
     fn trace<T: crate::trace::Tracer>(&mut self, tracer: &mut T) {
-        let Suspensions {
-            rows,
-            free: _,
-            counted: _,
-        } = self;
+        let Suspensions { rows, free: _ } = self;
         for suspension in rows.iter_mut().flatten() {
             suspension.trace(tracer);
         }
@@ -1142,16 +1137,19 @@ fn assert_no_poison(words: &[u64]) {
     );
 }
 
-/// `count_word`'s value, for a field written through `set_pointer_word`.
 /// The married word of a frame suspended into side-table row `row`:
 /// `-(row + 1)`, so that no row reads as a stack entry's index.
 fn suspended_word(row: usize) -> Word {
+    // A row per suspended frame object, each of several words in a space
+    // far smaller than 2^61 bytes, so no row index reaches the limit.
     let row = i64::try_from(row)
-        .unwrap_or(SMALL_INTEGER_MAX)
-        .min(SMALL_INTEGER_MAX);
+        .ok()
+        .filter(|row| *row < SMALL_INTEGER_MAX)
+        .expect("internal: a side-table row index fits a SmallInteger");
     Value::small_integer(-row - 1).word()
 }
 
+/// `count_word`'s value, for a field written through `set_pointer_word`.
 fn count_value<'gc>(count: usize) -> Value<'gc> {
     let count = i64::try_from(count).unwrap_or(SMALL_INTEGER_MAX);
     Value::small_integer(count.min(SMALL_INTEGER_MAX))
@@ -5688,7 +5686,7 @@ impl<'gc> Heap<'gc> {
     /// that do, and the suspended ones that do, which count all along so
     /// that resuming one never has to check the limit.
     pub fn counted_depth(&self) -> usize {
-        self.stack.counted + self.suspensions.counted
+        self.stack.counted
     }
 
     // ---------- Suspended activations ----------
@@ -5730,6 +5728,12 @@ impl<'gc> Heap<'gc> {
             self.check_frame_origin(frame);
             let (then, sender) = match entry.then {
                 Continuation::ReturnToSuspended(suspended) => {
+                    // Its sender is the suspended frame, so its frame names
+                    // that one rather than the entry below.
+                    debug_assert_eq!(
+                        index, floor,
+                        "internal: an activation that returns to a suspended sender is the lowest                          one suspended; an entry below it would be suspended into a row nothing names"
+                    );
                     let ReturnToSuspended { sender, then } = *suspended;
                     (then, Some(sender))
                 }
@@ -5755,8 +5759,6 @@ impl<'gc> Heap<'gc> {
                 entered_level: entry.entered_level,
                 retains_registers: entry.retains_registers,
             });
-            self.suspensions.counted += usize::from(entry.counted);
-            self.stack.counted -= usize::from(entry.counted);
             let sender = match sender {
                 Some(sender) => self.store(Value::object(self.frame_object(sender))),
                 None => Word::NIL,
@@ -5818,8 +5820,6 @@ impl<'gc> Heap<'gc> {
         );
         self.suspensions.free.free(row as u32);
         ids::truncate_trailing(&mut self.suspensions.rows, &mut self.suspensions.free);
-        self.suspensions.counted -= usize::from(suspension.counted);
-        self.stack.counted += usize::from(suspension.counted);
         let receiver = self.frame_receiver(frame);
         let current_class = self.frame_current_class(frame);
         let kind = self.frame_kind(frame);
@@ -5914,7 +5914,7 @@ impl<'gc> Heap<'gc> {
             .map(|suspension| &suspension.then)
     }
 
-    /// How many activations are suspended. Empty outside a run.
+    /// How many activations are suspended; zero outside a run.
     pub fn suspension_count(&self) -> usize {
         self.suspensions.rows.iter().flatten().count()
     }
