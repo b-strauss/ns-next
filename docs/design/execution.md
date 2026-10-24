@@ -131,7 +131,9 @@ struct StackEntry {
                                     // and the receiver has entered_level
     entered_level: ApplicationIndex, // the application it was entered at,
                                     // `UNREGISTERED` unless it does
-    code: Rc<CompiledCode>,    // the body it runs, which the loop resumes it in
+    code: CodeId,              // the code table's row of the body it runs, which
+                               // the loop resumes it in; a method's registered
+                               // with its method
     then: Continuation,        // what the loop does with its value
     counted: bool,             // whether it counts against the depth limit
     reified: Option<FrameReference>, // set once the activation is married
@@ -159,7 +161,11 @@ pub struct ActivationReference {
   that stores activations, and because it is half of the collector's eventual
   root set ([memory.md](memory.md)).
 - **A push** (`Heap::push_activation`) copies the arguments into `values`, fills
-  the temporaries with nil and appends a `StackEntry`; only for code that
+  the temporaries with nil and appends a `StackEntry`, which names its body
+  by its code id, found through the body's one-entry cache
+  ([memory.md](memory.md), "A closure's code id without the map") and kept
+  by a full collection while the activation runs
+  ([object-model.md](object-model.md), "An application has two ids"); only for code that
   addresses its own slots (`CompiledCode::addresses_own_slots`) does it record
   the receiver's guard and the full-width index of `current_class`'s
   application, which every own-slot instruction checks and takes its slot base
@@ -523,10 +529,10 @@ table beside it; no stack map, no per-frame walk. A married frame object
 still skips its own registers, which are nil while the stack holds the
 live ones.
 
-- **The code is an id, not an `Rc`.** A return reads the caller's code from
-  the heap's code table by its `CodeId`, one index more than today's clone
-  of the entry's `Rc`; this is the one change on the hot path the
-  measurement below has to clear. `FrameKind::Method`'s `MixinMethod` is
+- **The code is an id, not an `Rc`**, as a stack entry's already is: a
+  return reads the caller's code from the heap's code table by its
+  `CodeId`, one index more than a clone of an `Rc` the entry held; this is
+  the one change on the hot path the measurement below has to clear. `FrameKind::Method`'s `MixinMethod` is
   needed only for its selector and its code, which the operand and the
   code word hold.
 - **A continuation other than `Deliver` lives in a side table**, minted

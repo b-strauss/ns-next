@@ -2826,7 +2826,7 @@ Cogit's `genPrimitiveNew` and `genCreateFullClosure:…` do in machine code
 
 ### A closure's code id without the map
 
-A closure and a frame object store their body's code id, which
+A closure, a frame object and a stack entry store their body's code id, which
 `Heap::register_code` finds in a map keyed by the body's `Rc` pointer. A
 body carries a one-entry cache in front of the map (`CompiledCode`'s
 `code_id_cache`, a `CodeIdCache`): the id it was last answered and the

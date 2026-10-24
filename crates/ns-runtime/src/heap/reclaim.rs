@@ -7,7 +7,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 use super::value::{Value, Word};
-use super::{ApplicationIndex, Heap, MixinId, Tables};
+use super::{ApplicationIndex, CodeId, Heap, MixinId, Tables};
 use crate::hash::IdentityBuildHasher;
 use crate::interpreter::FeedbackBase;
 use crate::mixin::{mixin_key, AppliedClause, DispatchId, Mixin, MixinApplication};
@@ -73,6 +73,16 @@ impl GatheredIds {
             if raw != FeedbackBase::NOT_ASSIGNED.raw() {
                 self.feedback_bases.insert(raw);
             }
+        }
+    }
+
+    /// The code ids the running activations name (`StackRoots::codes`),
+    /// which no marking reaches: every one names a live row, since a
+    /// running activation's row is never freed.
+    pub(crate) fn running_codes(&mut self, codes: &[CodeId]) {
+        for code in codes {
+            self.codes
+                .insert(u32::try_from(code.index()).expect("a code row fits a u32"));
         }
     }
 
@@ -152,6 +162,10 @@ pub(crate) struct StackRoots {
     pub(crate) recorded_guards: Vec<DispatchId>,
     /// Every activation's feedback base, `NOT_ASSIGNED` included.
     pub(crate) feedback_bases: Vec<FeedbackBase>,
+    /// Every running activation's code id. A suspended activation's is its
+    /// frame's `CODE_ID`, which marking gathers: the side table of
+    /// suspensions is a root, so the frame is always marked.
+    pub(crate) codes: Vec<CodeId>,
 }
 
 impl Heap<'_> {
@@ -186,6 +200,7 @@ impl Heap<'_> {
                 .collect(),
             recorded_guards: entries.iter().map(|entry| entry.recorded_guard).collect(),
             feedback_bases: entries.iter().map(|entry| entry.feedback_base).collect(),
+            codes: entries.iter().map(|entry| entry.code).collect(),
         }
     }
 
@@ -451,24 +466,15 @@ impl Heap<'_> {
     }
 
     /// The address of every body that may still run: each one a marked
-    /// closure or frame names by id (`codes`) and each one an activation
-    /// runs.
+    /// closure or frame, or a running activation, names by id (`codes`).
     pub(crate) fn running_bodies(&self, codes: &BitSet) -> HashSet<usize> {
-        let mut running: HashSet<usize> = self
-            .tables
+        self.tables
             .codes
             .iter()
             .enumerate()
             .filter(|(row, _)| codes.contains(u32::try_from(*row).expect("a code row fits a u32")))
             .filter_map(|(_, entry)| Some(Rc::as_ptr(&entry.as_ref()?.code) as usize))
-            .collect();
-        running.extend(
-            self.stack
-                .entries
-                .iter()
-                .map(|entry| Rc::as_ptr(&entry.code) as usize),
-        );
-        running
+            .collect()
     }
 
     /// Drops every superseded version only `superseded` holds and no
@@ -515,11 +521,11 @@ impl Heap<'_> {
         super::ids::truncate_trailing(&mut self.tables.mixins, &mut self.tables.free_mixins);
     }
 
-    /// Frees every code id no marked closure or frame names (`codes`): an
-    /// activation holds its body itself, never by id, so the marked
-    /// objects are every holder of one. The body leaves `code_ids` with
-    /// its row and lives on with whoever else holds it; a frame reified
-    /// later registers it again.
+    /// Frees every code id `codes` does not name: the caller's set holds
+    /// those of every marked closure and frame and of every running
+    /// activation (`GatheredIds::running_codes`), every holder of one. The
+    /// body leaves `code_ids` with its row and lives on with whoever else
+    /// holds it; a later push, closure or frame registers it again.
     pub(crate) fn free_unnamed_codes(&mut self, codes: &BitSet) {
         let mut freed = false;
         for row in 0..self.tables.codes.len() {

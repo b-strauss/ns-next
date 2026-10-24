@@ -471,7 +471,12 @@ struct StackEntry<'gc> {
     program_counter: usize,
     /// See `ActivationHeader::feedback_base`.
     feedback_base: FeedbackBase,
-    code: std::rc::Rc<crate::bytecode::CompiledCode>,
+    /// The row of the code table that holds `ActivationHeader::code`,
+    /// registered with its method for a method's activation, so that the
+    /// row names the method its frame is rebuilt from. The full
+    /// collection's code reclaim keeps every running entry's row
+    /// (`StackRoots::codes`).
+    code: CodeId,
     then: Continuation<'gc>,
     /// See `ActivationHeader::counted`.
     counted: bool,
@@ -1026,7 +1031,7 @@ impl crate::trace::Trace for StackEntry<'_> {
             argument_count: _,
             program_counter: _,
             feedback_base: _, // not a handle
-            code: _,
+            code: _,          // not a handle
             then,
             counted: _,
             reified,
@@ -4049,14 +4054,20 @@ impl<'gc> Heap<'gc> {
         &self.tables.superseded
     }
 
+    #[inline]
     pub(crate) fn code_id(&mut self, code: &Rc<CompiledCode>) -> CodeId {
         self.register_code(code, None)
     }
 
+    #[inline]
     pub(crate) fn code_id_of_method(&mut self, method: &Rc<MixinMethod>) -> CodeId {
         self.register_code(&method.code, Some(method))
     }
 
+    /// The id of `code`, registered with `method` when one is given. Inline
+    /// up to the cache's hit, since every activation's push asks it
+    /// (`push_activation`); a miss takes the map out of line.
+    #[inline(always)]
     fn register_code(
         &mut self,
         code: &Rc<CompiledCode>,
@@ -4084,6 +4095,17 @@ impl<'gc> Heap<'gc> {
                 return id;
             }
         }
+        self.register_code_uncached(code, method)
+    }
+
+    /// `register_code` past its cache: the map, or a new row.
+    #[cold]
+    #[inline(never)]
+    fn register_code_uncached(
+        &mut self,
+        code: &Rc<CompiledCode>,
+        method: Option<&Rc<MixinMethod>>,
+    ) -> CodeId {
         let key = Rc::as_ptr(code) as usize;
         if let Some(id) = self.tables.code_ids.get(&key).copied() {
             let entry = self.tables.codes[id.index()]
@@ -5148,12 +5170,16 @@ impl<'gc> Heap<'gc> {
     /// finds none (`fill_frame_fields`). `image::decode` reconciles a decoded
     /// frame against it.
     pub(crate) fn frame_code(&self, frame: FrameReference<'gc>) -> Option<Rc<CompiledCode>> {
-        let id = self
-            .frame_field(frame, frame_field::CODE_ID)
+        self.code(self.frame_code_id_field(frame)?)
+    }
+
+    /// The code id `frame` records, as `frame_code` reads it: `None` for a
+    /// top-level frame's, which names no body.
+    fn frame_code_id_field(&self, frame: FrameReference<'gc>) -> Option<CodeId> {
+        self.frame_field(frame, frame_field::CODE_ID)
             .as_small_integer()
             .and_then(|id| usize::try_from(id).ok())
-            .and_then(CodeId::from_index)?;
-        self.code(id)
+            .and_then(CodeId::from_index)
     }
 
     /// The body a frame of `kind` runs, found the way a decoded frame's is:
@@ -5520,6 +5546,19 @@ impl<'gc> Heap<'gc> {
         } else {
             (DispatchId::NONE, ApplicationIndex::UNREGISTERED)
         };
+        // A method's body is registered with its method, every other body
+        // alone; either hits the body's one-entry cache but for its first
+        // push after a reclaim freed rows.
+        let code = match &header.kind {
+            FrameKind::Method(method) => {
+                debug_assert!(
+                    Rc::ptr_eq(&method.code, &header.code),
+                    "internal: a method's activation runs its method's body"
+                );
+                self.code_id_of_method(method)
+            }
+            _ => self.code_id(&header.code),
+        };
         let entry = StackEntry {
             receiver: header.receiver,
             current_class: header.current_class,
@@ -5528,7 +5567,7 @@ impl<'gc> Heap<'gc> {
             argument_count,
             program_counter: 0,
             feedback_base: header.feedback_base,
-            code: header.code,
+            code,
             then: header.then,
             counted: header.counted,
             reified: None,
@@ -5646,7 +5685,7 @@ impl<'gc> Heap<'gc> {
         let entry = &self.stack.entries[entry_index];
         let (receiver, current_class, program_counter) =
             (entry.receiver, entry.current_class, entry.program_counter);
-        let (kind, code) = (entry.kind.clone(), entry.code.clone());
+        let (kind, code) = (entry.kind.clone(), entry.code);
         let window_end = self
             .stack
             .entries
@@ -5657,7 +5696,12 @@ impl<'gc> Heap<'gc> {
             FrameKind::Closure(closure) => self.closure_home(*closure),
             _ => None,
         };
-        let code = self.frame_code_id(&kind, Some(&code));
+        // The entry's own row, which `frame_code_id` would answer: a
+        // method's body was registered with its method at the push.
+        let code = match kind {
+            FrameKind::TopLevel => None,
+            _ => Some(code),
+        };
         let handle = self.allocate_frame(
             FrameFields {
                 sender: None,
@@ -5827,7 +5871,7 @@ impl<'gc> Heap<'gc> {
         let current_class = self.frame_current_class(frame);
         let kind = self.frame_kind(frame);
         let code = self
-            .frame_code(frame)
+            .frame_code_id_field(frame)
             .expect("internal: the frame of an activation the runtime pushed names its code");
         let argument_count = self.frame_argument_count(frame) as u32;
         let program_counter = self.frame_count_field(frame, frame_field::PROGRAM_COUNTER);
@@ -6221,7 +6265,17 @@ impl<'gc> Heap<'gc> {
         activation: ActivationReference,
     ) -> std::rc::Rc<crate::bytecode::CompiledCode> {
         self.check_activation(activation);
-        self.stack.entries[activation.index as usize].code.clone()
+        self.entry_code(activation).code.clone()
+    }
+
+    /// The code table's row of the body `activation` runs, lent for one
+    /// read.
+    #[inline]
+    fn entry_code(&self, activation: ActivationReference) -> &CodeEntry {
+        let id = self.stack.entries[activation.index as usize].code;
+        self.tables.codes[id.index()]
+            .as_ref()
+            .expect("internal: a running activation's code row is never freed")
     }
 
     /// The unwind marker of the code `activation` runs, read afresh on every
@@ -6232,9 +6286,7 @@ impl<'gc> Heap<'gc> {
         activation: ActivationReference,
     ) -> Option<crate::bytecode::UnwindMarker> {
         self.check_activation(activation);
-        self.stack.entries[activation.index as usize]
-            .code
-            .unwind_marker
+        self.entry_code(activation).code.unwind_marker
     }
 
     /// Replaces what `activation` does with its value when it returns. The
@@ -13232,6 +13284,37 @@ mod tests {
                 &mutator.heap().code_method(id).expect("the method recorded"),
                 &copy
             ));
+        });
+    }
+
+    /// A running activation names its body by id, and nothing else need
+    /// name it: the full collection's code reclaim keeps the row.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_full_collection_keeps_the_code_row_of_a_running_activation() {
+        let mut interpreter = crate::Interpreter::bootstrap();
+        let body = trivial_code();
+        let (activation, id) = interpreter.enter(|mutator| {
+            let heap = mutator.heap_mut();
+            let activation = heap.push_activation(
+                ActivationHeader {
+                    code: body.clone(),
+                    ..header()
+                },
+                &[],
+                0,
+            );
+            (activation, heap.code_id(&body))
+        });
+        interpreter.collect_now();
+        interpreter.enter(|mutator| {
+            let heap = mutator.heap_mut();
+            assert!(Rc::ptr_eq(&heap.activation_code(activation), &body));
+            assert!(
+                heap.code(id).is_some_and(|code| Rc::ptr_eq(&code, &body)),
+                "the running body's row survives the collection"
+            );
+            heap.pop_activation(activation);
         });
     }
 
