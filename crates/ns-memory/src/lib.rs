@@ -116,7 +116,10 @@ impl Reservation {
 
     /// Reserves at least `bytes` of address space, committing none of it.
     /// The size is rounded up to the platform's reservation granularity; a
-    /// size whose rounding up overflows `usize` answers `InvalidRange`.
+    /// size whose rounding up overflows `usize`, or passes `isize::MAX`,
+    /// answers `InvalidRange`. No slice may be longer than `isize::MAX`
+    /// bytes, so bounding the reservation once is what lets every lending
+    /// below skip that comparison.
     pub fn reserve(bytes: usize) -> Result<Reservation, MemoryError> {
         if bytes == 0 {
             return Err(MemoryError::InvalidRange);
@@ -125,6 +128,7 @@ impl Reservation {
         let size = bytes
             .checked_add(granularity - 1)
             .map(|rounded| rounded / granularity * granularity)
+            .filter(|size| *size <= isize::MAX as usize)
             .ok_or(MemoryError::InvalidRange)?;
         // SAFETY: reserving touches no memory the program owns.
         let base = unsafe { platform::reserve(size) }.map_err(|code| MemoryError::Refused {
@@ -404,10 +408,42 @@ impl Reservation {
         Some(unsafe { std::slice::from_raw_parts_mut(self.base.as_ptr().cast::<u64>(), end / 8) })
     }
 
+    /// The accessible prefix lies inside the reservation, which `reserve`
+    /// bounds by `isize::MAX`, so `end` needs no comparison against it.
     #[inline]
     fn check_prefix(&self, end: usize) -> Option<()> {
-        (end.is_multiple_of(8) && end <= self.accessible_prefix && end <= isize::MAX as usize)
-            .then_some(())
+        (end.is_multiple_of(8) && end <= self.accessible_prefix).then_some(())
+    }
+
+    /// The words of the whole committed read-write prefix at the base, with
+    /// no check at all: its end is the field every change to the page map
+    /// refreshes, a whole number of pages and so of words, inside the
+    /// reservation and so below `isize::MAX` bytes. What indexes the slice
+    /// then makes the one bounds check the access needs -- the activation
+    /// stack's register access, which the run loop makes on nearly every
+    /// instruction.
+    #[inline(always)]
+    pub fn accessible(&self) -> &[u64] {
+        // SAFETY: `0..accessible_prefix` is committed read-write from the
+        // page-aligned base, so it is 8-byte aligned and initialized, and
+        // its length is a multiple of the page size; `&self` keeps
+        // `protect` and `decommit` away while the slice lives.
+        unsafe {
+            std::slice::from_raw_parts(self.base.as_ptr().cast::<u64>(), self.accessible_prefix / 8)
+        }
+    }
+
+    /// As `accessible`, mutably.
+    #[inline(always)]
+    pub fn accessible_mut(&mut self) -> &mut [u64] {
+        // SAFETY: as for `accessible`, and `&mut self` makes the slice
+        // unique.
+        unsafe {
+            std::slice::from_raw_parts_mut(
+                self.base.as_ptr().cast::<u64>(),
+                self.accessible_prefix / 8,
+            )
+        }
     }
 
     /// A non-empty range inside the reservation, on page boundaries.
@@ -465,6 +501,31 @@ mod tests {
         assert!(reservation.prefix(page + 8).is_none());
         reservation.decommit(0..page).expect("decommit");
         assert!(reservation.prefix(8).is_none());
+    }
+
+    #[test]
+    fn the_accessible_words_are_the_committed_read_write_prefix() {
+        let page = Reservation::page_size();
+        let mut reservation = Reservation::reserve(4 * page).expect("reserve");
+        assert!(reservation.accessible().is_empty(), "nothing committed yet");
+        reservation.commit(0..2 * page).expect("commit");
+        assert_eq!(reservation.accessible().len(), 2 * page / 8);
+        reservation.accessible_mut()[1] = 0xABCD;
+        assert_eq!(reservation.words(8..16), Some(&[0xABCD][..]));
+        reservation
+            .protect(page..2 * page, Protection::NoAccess)
+            .expect("protect");
+        assert_eq!(reservation.accessible().len(), page / 8);
+        reservation.decommit(0..page).expect("decommit");
+        assert!(reservation.accessible().is_empty());
+    }
+
+    #[test]
+    fn a_reservation_past_isize_max_is_refused() {
+        assert!(matches!(
+            Reservation::reserve(isize::MAX as usize + 1),
+            Err(MemoryError::InvalidRange)
+        ));
     }
 
     #[test]
