@@ -3557,16 +3557,17 @@ impl<'gc> Heap<'gc> {
     }
 
     /// A closure's home: the activation a `^` in its body returns from.
-    /// Derived rather than stored: the captured frame itself when it is a method's, an initializer's or a
-    /// clause's, its own `home` when it is a block's.
+    /// Derived rather than stored: the captured frame itself when it is a
+    /// method's, an initializer's or a clause's, its own `home` when it is a
+    /// block's.
     ///
-    /// A closure frame the runtime reified always carries a `home`
-    /// (`allocate_frame` asserts it), so the fallback below is reached only
-    /// by a *decoded* closure frame, which `fill_frame_fields` fills straight
-    /// from the wire. Answering the captured frame for one is what keeps an
-    /// untrusted image from panicking here: a decoded frame is never married
-    /// to an activation, so a `^` aimed at it is the `cannotReturn` error
-    /// `raise_return` already raises for a dead home.
+    /// A closure frame always carries a `home`: the runtime asserts it when
+    /// it reifies one (`allocate_frame`), and the decoder refuses a closure
+    /// frame without one (`DecodeError::FrameHomeMismatch`). The fallback
+    /// below is therefore a defence, not a path: answering the captured frame
+    /// keeps a frame this heap holds without a home from panicking here, and
+    /// a `^` aimed at a frame that is not running is the `cannotReturn`
+    /// error `raise_return` already raises for a dead home.
     pub fn closure_home(&self, object: ObjectReference<'gc>) -> Option<FrameReference<'gc>> {
         let captured = self.closure_captured_frame(object)?;
         if !self.frame_runs_a_closure(captured) {
@@ -5733,7 +5734,8 @@ impl<'gc> Heap<'gc> {
                     // that one rather than the entry below.
                     debug_assert_eq!(
                         index, floor,
-                        "internal: an activation that returns to a suspended sender is the lowest                          one suspended; an entry below it would be suspended into a row nothing names"
+                        "internal: an activation that returns to a suspended sender is the lowest \
+                         one suspended; an entry below it would be suspended into a row nothing names"
                     );
                     let ReturnToSuspended { sender, then } = *suspended;
                     (then, Some(sender))

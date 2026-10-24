@@ -4112,8 +4112,9 @@ impl Sizing<'_, '_, '_> {
             }
         }
         reader.read_u32()?; // the program counter, checked by `verify_graph`
-                            // Refused here, before any placeholder exists; the fill pass checks
-                            // again, so no path skips the refusal.
+
+        // Refused here, before any placeholder exists; the fill pass checks
+        // again, so no path skips the refusal.
         if !reader.read_boolean()? {
             return Err(DecodeError::ContinuableFrame);
         }

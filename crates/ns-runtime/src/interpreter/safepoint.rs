@@ -229,10 +229,9 @@ impl StressMoves {
 }
 
 /// The schedule of the collect, the scavenge and the suspend stress
-/// modes: their work
-/// at every safepoint while the traced size is within
-/// `STRESS_MOVE_BUDGET`, and above it once per size-over-budget safepoints
-/// -- the pacing `StressMoves` uses, for the same reason.
+/// modes: their work at every safepoint while the traced size is within
+/// `STRESS_MOVE_BUDGET`, and above it once per size-over-budget safepoints --
+/// the pacing `StressMoves` uses, for the same reason.
 #[cfg(debug_assertions)]
 #[derive(Default)]
 pub(crate) struct StressSchedule {

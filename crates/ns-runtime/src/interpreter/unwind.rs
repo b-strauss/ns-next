@@ -204,10 +204,10 @@ pub(crate) fn unwind_signal<'gc>(
 /// running (`Heap::frame_is_running`: on the stack, or suspended into its
 /// frame until the pops resume it), that the pops reach as the top
 /// (`Heap::frame_activation`, asked again before every pop), at or above
-/// the run's floor, and that catches a return (`Mutator::catches_return`: a method, or a superclass
-/// clause or its message) ends the unwind: everything above it is popped,
-/// and it returns the value through the ordinary return path, or runs
-/// again from its start for a restart. Any other target -- a home that has
+/// the run's floor, and that catches a return (`Mutator::catches_return`: a
+/// method, or a superclass clause or its message) ends the unwind: everything
+/// above it is popped, and it returns the value through the ordinary return
+/// path, or runs again from its start for a restart. Any other target -- a home that has
 /// returned meanwhile, or a running initializer, which catches none (the
 /// known gap in `docs/design/execution.md`, "Unwinding") -- and a
 /// termination, which has none, pop every activation of the run, `base`

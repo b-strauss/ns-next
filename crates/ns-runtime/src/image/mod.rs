@@ -328,11 +328,13 @@ fn write_image<'gc>(
     // `program_counter` on the activation stack, and the format has no record
     // for the stack, so encoding one would write a frame with empty registers
     // and succeed. `Heap::frame_record` debug-asserts against that per frame;
-    // this is the check a release build keeps.
-    if heap.activation_depth() != 0 {
+    // this is the check a release build keeps. A suspended activation is a
+    // running one too -- its registers live in its frame, not on the stack --
+    // so the suspension count is refused alongside the stack's depth.
+    if heap.activation_depth() != 0 || heap.suspension_count() != 0 {
         return Err(
             "image encoding cannot snapshot a world mid-execution: a snapshot is \
-             taken only between sends, when no activation is running"
+             taken only between sends, when no activation is running or suspended"
                 .to_string(),
         );
     }
