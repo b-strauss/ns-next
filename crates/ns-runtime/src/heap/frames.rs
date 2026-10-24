@@ -232,22 +232,27 @@ impl FrameStack {
         self.limit
     }
 
-    /// Pushes a frame of `words` words and answers its word offset;
-    /// `ReservationExhausted`, the top untouched, when the reservation cannot
-    /// hold it. The frame's words are whatever the stack last held there --
-    /// a popped frame's, or zero where nothing was yet -- so the caller
-    /// writes every one of them before anything reads the stack again:
-    /// a word a popped frame left could name an object since moved or
-    /// reclaimed. One comparison against the committed end, with nothing
-    /// written twice; committing more is the cold path's.
+    /// Pushes a frame of `words` words and answers its word offset and its
+    /// words; `ReservationExhausted`, the top untouched, when the
+    /// reservation cannot hold it. The frame's words are whatever the stack
+    /// last held there -- a popped frame's, or zero where nothing was yet --
+    /// so the caller writes every one of them before anything reads the
+    /// stack again: a word a popped frame left could name an object since
+    /// moved or reclaimed. One comparison against the committed end and the
+    /// slice's one, with nothing written twice; committing more is the cold
+    /// path's.
     #[inline(always)]
-    pub(super) fn push(&mut self, words: usize) -> Result<usize, ReservationExhausted> {
+    pub(super) fn push(
+        &mut self,
+        words: usize,
+    ) -> Result<(usize, &mut [u64]), ReservationExhausted> {
         let start = self.top;
         if words > self.committed - start {
             self.grow(words)?;
         }
-        self.top = start + words;
-        Ok(start)
+        let end = start + words;
+        self.top = end;
+        Ok((start, &mut self.reservation.accessible_mut()[start..end]))
     }
 
     /// Commits whole pages from the committed end up to at least
@@ -300,26 +305,43 @@ impl FrameStack {
         self.top = offset.min(self.top);
     }
 
-    /// The words of every frame, `[0, top)`.
+    /// The words of every frame, `[0, top)`: one comparison, of the top
+    /// against the committed end it never passes.
     #[inline(always)]
     pub(super) fn words(&self) -> &[u64] {
-        match self.reservation.prefix(self.top * 8) {
-            Some(words) => words,
-            None => {
-                unreachable!("internal: the frame stack's top lies inside its committed prefix")
-            }
-        }
+        &self.reservation.accessible()[..self.top]
     }
 
     /// As `words`, mutably.
     #[inline(always)]
     pub(super) fn words_mut(&mut self) -> &mut [u64] {
-        match self.reservation.prefix_mut(self.top * 8) {
-            Some(words) => words,
-            None => {
-                unreachable!("internal: the frame stack's top lies inside its committed prefix")
-            }
-        }
+        &mut self.reservation.accessible_mut()[..self.top]
+    }
+
+    /// Word `index` of a live frame. The register access of the run loop,
+    /// so it makes one bounds check, against the committed end; that
+    /// `index` lies below the top -- inside a live frame's window -- is the
+    /// caller's, which a debug build checks here and the heap's
+    /// `register_slot` against the frame's own window. A release build
+    /// that broke it would read a stale word of this stack, never another
+    /// object's memory.
+    #[inline(always)]
+    pub(super) fn word(&self, index: usize) -> u64 {
+        debug_assert!(
+            index < self.top,
+            "internal: a stack word lies below the top"
+        );
+        self.reservation.accessible()[index]
+    }
+
+    /// Writes word `index` of a live frame, as `word` reads it.
+    #[inline(always)]
+    pub(super) fn set_word(&mut self, index: usize, bits: u64) {
+        debug_assert!(
+            index < self.top,
+            "internal: a stack word lies below the top"
+        );
+        self.reservation.accessible_mut()[index] = bits;
     }
 }
 
@@ -400,7 +422,7 @@ mod tests {
         let frame_words = usize::from(u16::MAX) + frame_header::COUNT;
         assert!(frame_words * 8 > Reservation::page_size());
         let before = stack.top();
-        let offset = stack.push(frame_words).expect("push");
+        let (offset, _) = stack.push(frame_words).expect("push");
         assert_eq!(offset, before);
         assert_eq!(stack.top(), before + frame_words);
         stack.words_mut()[offset..].fill(Word::NIL.bits());
@@ -415,8 +437,9 @@ mod tests {
         loop {
             let before = stack.top();
             match stack.push(frame_words) {
-                Ok(offset) => {
+                Ok((offset, frame)) => {
                     assert_eq!(offset, before);
+                    assert_eq!(frame.len(), frame_words);
                     pushed += 1;
                 }
                 Err(ReservationExhausted) => {
@@ -435,14 +458,14 @@ mod tests {
         let mut stack = FrameStack::new(1 << 20).expect("reserve");
         let frame_words = frame_header::COUNT + 4;
         stack.push(frame_words).expect("push");
-        let offset = stack.push(frame_words).expect("push");
+        let (offset, _) = stack.push(frame_words).expect("push");
         for word in &mut stack.words_mut()[offset..] {
             *word = number_word(7).bits();
         }
         stack.truncate(offset);
         assert_eq!(stack.top(), offset);
         assert_eq!(stack.words().len(), offset);
-        let again = stack.push(frame_words).expect("push");
+        let (again, _) = stack.push(frame_words).expect("push");
         assert_eq!(again, offset);
         assert_eq!(stack.words().len(), offset + frame_words);
     }

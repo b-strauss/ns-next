@@ -601,6 +601,12 @@ impl crate::trace::Trace for ActivationStack {
     }
 }
 
+/// The bits of a debug build's generation counter: inside 31, so that a
+/// generation reads back as the `u32` a handle holds whatever the counter
+/// has wrapped through.
+#[cfg(debug_assertions)]
+const GENERATION_MASK: u32 = 0x7FFF_FFFF;
+
 /// `ActivationStack::innermost` of an empty stack: no frame starts there,
 /// since a frame's offset is below the reservation's 2^31 words.
 const NO_FRAME: u32 = u32::MAX;
@@ -624,13 +630,13 @@ impl ActivationStack {
     /// Header word `field` of the frame at `offset`.
     #[inline(always)]
     fn header_word(&self, offset: u32, field: usize) -> Word {
-        Word::from_bits(self.frames.words()[offset as usize + field])
+        Word::from_bits(self.frames.word(offset as usize + field))
     }
 
     /// Writes header word `field` of the frame at `offset`.
     #[inline(always)]
     fn set_header_word(&mut self, offset: u32, field: usize, word: Word) {
-        self.frames.words_mut()[offset as usize + field] = word.bits();
+        self.frames.set_word(offset as usize + field, word.bits());
     }
 
     /// The flags of the frame at `offset`.
@@ -1659,7 +1665,7 @@ impl<'gc> Heap<'gc> {
         let base = register_base.index as usize;
         let Heap { space, stack, .. } = self;
         for (slot, register) in space.words_mut()[fields].iter_mut().zip(registers) {
-            *slot = stack.frames.words()[base + usize::from(*register)];
+            *slot = stack.frames.word(base + usize::from(*register));
         }
         object
     }
@@ -1975,7 +1981,7 @@ impl<'gc> Heap<'gc> {
                 write_words(fixed_slots, fixed);
                 let base = register_base.index as usize;
                 for (slot, register) in copied_slots.iter_mut().zip(copied) {
-                    *slot = stack.frames.words()[base + usize::from(*register)];
+                    *slot = stack.frames.word(base + usize::from(*register));
                 }
                 #[cfg(debug_assertions)]
                 assert_no_poison(fields);
@@ -1996,7 +2002,7 @@ impl<'gc> Heap<'gc> {
         write_words(fixed_slots, fixed);
         let base = register_base.index as usize;
         for (slot, register) in copied_slots.iter_mut().zip(copied) {
-            *slot = stack.frames.words()[base + usize::from(*register)];
+            *slot = stack.frames.word(base + usize::from(*register));
         }
         object
     }
@@ -2835,21 +2841,34 @@ impl<'gc> Heap<'gc> {
     }
 
     /// The generation the frame at `offset` records, `None` when no frame
-    /// header fits there below the top. A word of a popped frame's
-    /// registers, or of a later frame's, reads as a generation only by a
-    /// coincidence the check accepts: it is the debug build's net, not a
-    /// proof.
+    /// header fits there below the top, or when the words there cannot be
+    /// one: a register count whose window passes the top, or a caller word
+    /// that is neither nil nor an offset below this one. A word of a popped
+    /// frame's registers, or of a later frame's, reads as a generation only
+    /// when all three hold by coincidence, which the check accepts: it is
+    /// the debug build's net, not a proof.
     #[cfg(debug_assertions)]
     fn frame_generation(&self, offset: u32) -> Option<u32> {
-        let header = self
-            .stack
-            .frames
-            .words()
-            .get(offset as usize..offset as usize + frame_header::COUNT)?;
-        let word = Word::from_bits(header[frame_header::GENERATION]);
-        word.is_non_negative_small_integer()
-            .then(|| frames::number_of(word))
-            .and_then(|generation| u32::try_from(generation).ok())
+        let start = offset as usize;
+        let words = self.stack.frames.words();
+        let header = words.get(start..start + frame_header::COUNT)?;
+        let number = |field: usize| {
+            let word = Word::from_bits(header[field]);
+            word.is_non_negative_small_integer()
+                .then(|| frames::number_of(word))
+        };
+        let register_count = usize::try_from(number(frame_header::REGISTER_COUNT)?).ok()?;
+        if register_count > words.len() - start - frame_header::COUNT {
+            return None;
+        }
+        let caller = Word::from_bits(header[frame_header::CALLER]);
+        let caller_below = caller.bits() == Word::NIL.bits()
+            || (caller.is_non_negative_small_integer()
+                && frames::number_of(caller) < u64::from(offset));
+        if !caller_below {
+            return None;
+        }
+        u32::try_from(number(frame_header::GENERATION)?).ok()
     }
 
     /// The handle for the live frame at `offset`, minted with that frame's
@@ -5797,13 +5816,10 @@ impl<'gc> Heap<'gc> {
         let argument_count =
             u32::try_from(arguments.len()).expect("more than u32::MAX arguments to one activation");
         let words = frame_header::COUNT + register_count;
-        let start = match self.stack.frames.push(words) {
-            Ok(start) => start,
-            Err(frames::ReservationExhausted) => return Err(StackExhausted::of(header)),
-        };
-        // The reservation holds at most 2^31 words, so an offset is exact
-        // in 32 bits.
-        let offset = start as u32;
+        // Every word is computed before the frame is pushed, and the push is
+        // the last thing that can refuse: nothing runs while the stack's top
+        // covers words not yet written, and a refused push has changed
+        // nothing -- no count, no continuation row.
         // `store`'s check, made apart from the copy so that a release build,
         // which has no check, copies the arguments' words straight in.
         #[cfg(debug_assertions)]
@@ -5815,7 +5831,6 @@ impl<'gc> Heap<'gc> {
             .current_class
             .map_or(Word::NIL, |class| self.store(Value::object(class)));
         let (kind_tag, operand) = self.kind_words(header.kind);
-        self.stack.counted += usize::from(header.counted);
         // Only code that addresses its own slots pays for these reads; a
         // send to any other method tests one flag. The receiver's guard is
         // recorded only when its chain contains the entered level: a
@@ -5863,8 +5878,7 @@ impl<'gc> Heap<'gc> {
             }
             None => self.code_id(&header.code),
         };
-        let continuation = self.continuations.store(header.then);
-        let header_words = FrameHeaderWords {
+        let mut header_words = FrameHeaderWords {
             receiver,
             current_class,
             operand,
@@ -5880,15 +5894,27 @@ impl<'gc> Heap<'gc> {
             program_counter: frames::number_word(0),
             feedback_base: frames::number_word(u64::from(header.feedback_base.raw())),
             caller: self.caller_word(),
-            continuation: continuation
-                .map_or(Word::NIL, |row| frames::number_word(u64::from(row.0))),
+            // Named once the push has succeeded, below, so that a refused
+            // push takes no row.
+            continuation: Word::NIL,
             guard: frames::number_word(u64::from(recorded_guard.bits())),
             entered_level: frames::number_word(entered_level.index() as u64),
             register_count: frames::number_word(register_count as u64),
             #[cfg(debug_assertions)]
-            generation: self.next_generation(),
+            generation: self.peek_next_generation(),
         };
-        let frame = &mut self.stack.frames.words_mut()[start..start + words];
+        let Heap {
+            stack,
+            continuations,
+            ..
+        } = self;
+        let (start, frame) = match stack.frames.push(words) {
+            Ok(pushed) => pushed,
+            Err(frames::ReservationExhausted) => return Err(StackExhausted::of(header)),
+        };
+        if let Some(row) = continuations.store(header.then) {
+            header_words.continuation = frames::number_word(u64::from(row.0));
+        }
         let (fixed, registers) = frame.split_at_mut(frame_header::COUNT);
         header_words.write(fixed);
         let (argument_registers, temporaries) = registers.split_at_mut(arguments.len());
@@ -5896,8 +5922,16 @@ impl<'gc> Heap<'gc> {
             *register = argument.word().bits();
         }
         temporaries.fill(Word::NIL.bits());
-        self.stack.innermost = offset;
-        self.stack.live += 1;
+        // The reservation holds at most 2^31 words, so an offset is exact
+        // in 32 bits.
+        let offset = start as u32;
+        stack.innermost = offset;
+        stack.live += 1;
+        stack.counted += usize::from(header.counted);
+        #[cfg(debug_assertions)]
+        {
+            stack.next_generation = stack.next_generation.wrapping_add(1) & GENERATION_MASK;
+        }
         Ok(self.activation_handle(offset))
     }
 
@@ -5911,13 +5945,13 @@ impl<'gc> Heap<'gc> {
         }
     }
 
-    /// The generation of the frame pushed now, drawn from the counter.
+    /// The generation the next frame pushed takes: one past the counter's,
+    /// which the push advances only once it has succeeded.
     #[cfg(debug_assertions)]
-    fn next_generation(&mut self) -> Word {
-        // Kept inside 31 bits, so that it reads back as the `u32` a handle
-        // holds whatever the counter has wrapped through.
-        self.stack.next_generation = self.stack.next_generation.wrapping_add(1) & 0x7FFF_FFFF;
-        frames::number_word(u64::from(self.stack.next_generation))
+    fn peek_next_generation(&self) -> Word {
+        frames::number_word(u64::from(
+            self.stack.next_generation.wrapping_add(1) & GENERATION_MASK,
+        ))
     }
 
     /// The kind tag and the operand word a frame of `kind` records: the
@@ -6301,11 +6335,9 @@ impl<'gc> Heap<'gc> {
         let continuation = self.continuations.store(then);
         let register_count = self.frame_words(frame).len() - frame_field::COUNT;
         let words = frame_header::COUNT + register_count;
-        let start = self
-            .stack
-            .frames
-            .push(words)
-            .expect("internal: a resumed activation fits on the stack it was suspended from");
+        let start = self.stack.frames.top();
+        // The reservation holds at most 2^31 words, so an offset is exact
+        // in 32 bits.
         let offset = start as u32;
         let header_words = FrameHeaderWords {
             receiver,
@@ -6330,7 +6362,7 @@ impl<'gc> Heap<'gc> {
             entered_level: frames::number_word(suspension.entered_level.index() as u64),
             register_count: frames::number_word(register_count as u64),
             #[cfg(debug_assertions)]
-            generation: self.next_generation(),
+            generation: self.peek_next_generation(),
         };
         // The frame's own registers go back to nil, as every married
         // frame's are: the live ones are the stack's again.
@@ -6338,7 +6370,10 @@ impl<'gc> Heap<'gc> {
         let space_words = space.words_mut();
         let range = block_range(space_words, header_index(frame.offset));
         let words_of_frame = &mut space_words[range][FIELDS..];
-        let stack_frame = &mut stack.frames.words_mut()[start..start + words];
+        let (_, stack_frame) = stack
+            .frames
+            .push(words)
+            .expect("internal: a resumed activation fits on the stack it was suspended from");
         let (fixed, registers) = stack_frame.split_at_mut(frame_header::COUNT);
         header_words.write(fixed);
         for (register, own) in registers
@@ -6352,6 +6387,11 @@ impl<'gc> Heap<'gc> {
         words_of_frame[frame_field::MARRIED] = frames::number_word(u64::from(offset)).bits();
         self.stack.innermost = offset;
         self.stack.live += 1;
+        #[cfg(debug_assertions)]
+        {
+            self.stack.next_generation =
+                self.stack.next_generation.wrapping_add(1) & GENERATION_MASK;
+        }
         self.activation_handle(offset)
     }
 
@@ -6497,7 +6537,9 @@ impl<'gc> Heap<'gc> {
     pub fn activation_local(&self, activation: ActivationReference, index: u16) -> Value<'gc> {
         self.check_activation(activation);
         self.load(Word::from_bits(
-            self.stack.frames.words()[self.register_slot(activation.index, index)],
+            self.stack
+                .frames
+                .word(self.register_slot(activation.index, index)),
         ))
     }
 
@@ -6519,7 +6561,7 @@ impl<'gc> Heap<'gc> {
         #[cfg(debug_assertions)]
         self.check_register(base, index);
         self.load(Word::from_bits(
-            self.stack.frames.words()[base.index as usize + index as usize],
+            self.stack.frames.word(base.index as usize + index as usize),
         ))
     }
 
@@ -6528,7 +6570,9 @@ impl<'gc> Heap<'gc> {
         #[cfg(debug_assertions)]
         self.check_register(base, index);
         let word = self.store(value);
-        self.stack.frames.words_mut()[base.index as usize + index as usize] = word.bits();
+        self.stack
+            .frames
+            .set_word(base.index as usize + index as usize, word.bits());
     }
 
     #[cfg(debug_assertions)]
@@ -6546,7 +6590,7 @@ impl<'gc> Heap<'gc> {
         self.check_activation(activation);
         let slot = self.register_slot(activation.index, index);
         let word = self.store(value);
-        self.stack.frames.words_mut()[slot] = word.bits();
+        self.stack.frames.set_word(slot, word.bits());
     }
 
     pub fn activation_receiver(&self, activation: ActivationReference) -> Value<'gc> {
@@ -7046,7 +7090,7 @@ impl<'gc> Heap<'gc> {
         let words = self.frame_words(frame);
         let word = match self.married_entry(words) {
             Some(offset) => {
-                Word::from_bits(self.stack.frames.words()[self.register_slot(offset, index)])
+                Word::from_bits(self.stack.frames.word(self.register_slot(offset, index)))
             }
             None => words
                 .get(frame_field::COUNT + index as usize)
@@ -7065,7 +7109,7 @@ impl<'gc> Heap<'gc> {
         match live {
             Some(offset) => {
                 let slot = self.register_slot(offset, index);
-                self.stack.frames.words_mut()[slot] = word.bits();
+                self.stack.frames.set_word(slot, word.bits());
             }
             None => {
                 if let Some(slot) = self
