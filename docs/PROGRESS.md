@@ -51,7 +51,8 @@ first.
 | Java counterparts of the Are We Fast Yet benchmarks, verified in the `benchmarks` gate; `--warm-up` and `--measure` in both harnesses | Complete | 2026-10-22 | [java-benchmarks](superpowers/plans/2026-10-22-1522-java-benchmarks.md) |
 | After road step 6 — `new` as compiled code: a synthesized factory body, three initializer bodies per mixin with the clause messages lowered inline, a level reached through a mirror an ordinary class of its mixin, a declaration without a body the mixin application it writes, and a nested-class accessor's hit one field load | Complete | 2026-10-23 | [compiled-new](superpowers/plans/2026-10-22-2051-compiled-new.md) |
 | Road step 7b — resuming an activation from its frame: suspended frames and a side table, the lazy resume, unwinding and the sender walks through suspended frames, a sixth stress mode, the decoder refusing a continuable frame | Complete | 2026-10-24 | [resuming-frames](superpowers/plans/2026-10-24-0140-resuming-frames.md) |
-| Road step 7 — an execution model for compiled code: 7a, 7a′ and 7c | Not started | — | — |
+| Road step 7a — frames as words in one reservation: the code an id, the kind a copyable view, the continuation a side-table row, every activation a frame of tagged words with a fixed header in one `ns-memory` reservation, the reservation a net beneath the depth limit; the measuring protocol varying the block layout inside `vm::run` | Complete | 2026-10-24 | [frames-as-words](superpowers/plans/2026-10-24-1147-frames-as-words.md) |
+| Road step 7 — an execution model for compiled code: 7a′ and 7c | Not started | — | — |
 | Between road steps 7 and 8 — real Newspeak bodies for `whileTrue:`, `whileFalse:` and `do:` | Not started | — | — |
 | Road step 8 (M5) — a baseline JIT | Not started | — | — |
 | Road step 9 (M6) — an optimizing JIT | Not started | — | — |
@@ -6003,3 +6004,76 @@ What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): road step
 7a, next, then 7a′ and 7c; suspend and resume of images, which has to
 carry the side table and lift the decoder's refusal; a top-level frame,
 which cannot be resumed.
+
+## Frames as words in one reservation, road step 7a (2026-10-24)
+
+Plan: [frames-as-words](superpowers/plans/2026-10-24-1147-frames-as-words.md);
+[execution.md](design/execution.md), "Representation", "The depth limit",
+"What frames as words moved"; [memory.md](design/memory.md), "Frames, the
+activation stack and the marriage", "What the collector traces", "The
+memory layer".
+
+Decided with the user on 2026-10-24, as the second part of road step 7:
+every running activation is a frame of tagged words -- a fixed header of
+thirteen words (fourteen in a debug build, the generation added), then its
+registers -- in one reservation of `ns-memory` per heap, 16 GiB on a 64-bit
+target, committed from its base as the stack deepens, in place of the two
+vectors of values and entries; taken only if the interpreter measures no
+slower, and otherwise moved to road step 8. Staged so that each part
+removed one field that was not a word while the vectors still existed: a
+frame names its code by its `CodeId`, its kind is a copyable view whose
+tag and argument count a flags word packs, and a continuation other than
+`Deliver` is a row of a side table of the heap's, native loops keeping
+theirs. Every word of a frame is a valid tagged value, so the collector
+traces the stack as one linear range with no stack map, as Primordial
+Soup scans its stack; an `ActivationReference` is the frame's word offset,
+and a register access one bounds check against the committed end. The
+reservation is a net beneath the depth limit, which stays the bound the
+goldens pin: a push it cannot hold is refused with the limit's error, and
+its last sixteenth is kept for the pushes made while the depth reserve is
+held, so the handler of the overflow runs.
+
+The first full measurement found `bench_loop.ns` 3.8% slower; a bisection
+and profiles traced it to `ns-memory`'s `accessible`, which divided its byte
+end by eight on every stack word, and to header reads that made three
+bounds checks where one does, both fixed. What remained, +1.3% with the
+builds separated, was the block layout of `vm::run`, whose hot path was
+then instruction for instruction what it was before: `-C metadata` reorders
+functions but leaves the run loop's layout unchanged, so three such builds
+sample one layout. Decided with the user on 2026-10-24: the measuring
+protocol's three builds a side vary it, the second and third aligning every
+block not reached by fall-through to 16 and 32 bytes (the
+`measuring-performance` skill; execution.md, "What removing the re-entries
+moved"). Measured so against `master`, no program is slower and nineteen of
+the twenty-four are faster, Towers -7.9%, `bench_new.ns` -6.9%,
+`bench_megamorphic.ns` -5.7%, Richards -4.9%; `bench_loop.ns` +0.4%, its
+builds overlapping (execution.md, "What frames as words moved", with the
+`-C metadata` protocol's figures beside them). Part of the gain is
+`ns-memory`'s cheaper `prefix` and `accessible`, which every object access
+uses too.
+
+No golden's outcome changed. The end-of-batch gates passed, the suite under
+all six stress modes and `run-corpus` under each. New tests in `heap.rs`,
+`heap/frames.rs`, `interpreter/mod.rs` and `ns-memory`.
+
+- `cfe3c13b`, `9b7d3227` -- the design and the plan.
+- `adf0ada8` -- a stack entry names its code by id.
+- `28898b47` -- an activation's kind is a copyable view.
+- `55821ee6`, `a58389d3` -- a continuation other than `Deliver` lives in a
+  side table, and native loops keep their row.
+- `14db896d`, `e2169455` -- the frame stack over a reservation, and every
+  activation a frame of tagged words in it.
+- `ce7cdd31`, `8efe3d6f` -- `ns-memory` lends its committed prefix with one
+  comparison, and one bounds check per stack word.
+- `dc9c419f`, `8bbf538f` -- the reservation refuses a push as the depth
+  limit does, its overflow told from the limit's in a test.
+- `c9b9822a` -- the documents.
+- `9c11b943` -- the stack lends its words and frame headers without a
+  shift.
+- `7cfbbead` -- the reservation's overflow test runs without the suspend
+  stress mode, which empties the stack.
+- This commit -- the measurement, the protocol that varies the block
+  layout, and this entry.
+
+What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): road step
+7a′, next, then 7c.

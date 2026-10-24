@@ -50,7 +50,7 @@ pub use inline_cache::{
 pub(crate) enum Signal<'gc> {
     /// A non-local return: its home's frame, never its activation, since the
     /// unwind that carries it runs `ensure:` blocks on its way, and an
-    /// activation they push can reuse a popped activation's stack index
+    /// activation they push can reuse a popped activation's stack offset
     /// (`docs/design/execution.md`, "Unwinding").
     Return(FrameReference<'gc>, Value<'gc>),
     Error(NewspeakError<'gc>),
@@ -111,7 +111,7 @@ pub struct HostError {
 /// above it (`DEPTH_RESERVE`). It bounds memory, not the native stack, which
 /// the trampoline no longer recurses on: with the exempt block activations,
 /// at most one per level of block nesting above each counted one, the stack
-/// holds at most 129 x (L + `DEPTH_RESERVE`) entries -- 128 being the
+/// holds at most 129 x (L + `DEPTH_RESERVE`) frames -- 128 being the
 /// parser's nesting ceiling, which `image::decode` holds an artifact to as
 /// well (`docs/design/execution.md`, "The depth limit").
 pub const MAX_ACTIVATION_DEPTH: usize = 100_000;
@@ -389,7 +389,7 @@ pub struct Mutator<'gc> {
     /// frame of the activation a VM error arose in, whose `signal` -- or,
     /// for a message nothing understood, whose `Object>>doesNotUnderstand:`
     /// -- sits directly above it (`Mutator::depth_reserve_held`). A frame
-    /// and not a stack index, because a frame is divorced when its
+    /// and not a stack offset, because a frame is divorced when its
     /// activation is popped and married to nothing again, where an index is
     /// reused -- by another error's `signal`, possibly far from the limit,
     /// which must not inherit the reserve. Released when a host's run ends,
@@ -675,13 +675,16 @@ impl Interpreter {
     /// from Rust"). `depth` is the stack's depth before the host's entry
     /// decided anything.
     ///
-    /// Three things are checked in a debug build, because each is otherwise
+    /// Five things are checked in a debug build, because each is otherwise
     /// silent. The loop is never entered while it is running -- nothing it
     /// calls can reach here. The stack is left as deep as it was found: a
-    /// leaked entry would put a later activation on top of a dead one's
+    /// leaked frame would put a later activation on top of a dead one's
     /// registers (a leak inside a run is caught too, by
-    /// `Heap::pop_activation`'s check that it pops the top). And no nested
-    /// class's creation outlives the run that began it.
+    /// `Heap::pop_activation`'s check that it pops the top). No suspended
+    /// activation outlives the run that suspended it, and no continuation
+    /// the run's activations held stays in the heap's table, where it
+    /// would keep what it names alive. And no nested class's creation
+    /// outlives the run that began it.
     fn run_from_host(&mut self, start: HostStart, depth: usize) -> HostResult {
         debug_assert!(
             !self.running,
@@ -711,6 +714,13 @@ impl Interpreter {
             self.world.suspension_count(),
             0,
             "internal: a suspended activation outlived its run"
+        );
+        // No activation outlives its run, so neither does a continuation
+        // its stack frame named.
+        debug_assert_eq!(
+            self.world.continuation_count(),
+            0,
+            "internal: a continuation outlived its run"
         );
         #[cfg(debug_assertions)]
         assert_eq!(
@@ -1050,7 +1060,61 @@ impl<'gc> Mutator<'gc> {
             // first and read back.
             return self.push_past_the_limit(Box::new(header), arguments, temporaries);
         }
-        Ok(self.heap.push_activation(header, arguments, temporaries))
+        match self.heap.push_activation(header, arguments, temporaries) {
+            Ok(activation) => Ok(activation),
+            Err(exhausted) => {
+                self.push_into_the_stack_reserve(exhausted.header, arguments, temporaries)
+            }
+        }
+    }
+
+    /// A push the ordinary room of the activation stack's reservation could
+    /// not hold. While the depth limit's reserve is held -- a VM error's
+    /// `signal` is running or being pushed -- the frame may use the room
+    /// the ordinary pushes leave free, as a counted push may go
+    /// `DEPTH_RESERVE` past L; a push that room cannot hold either, and
+    /// every push when the reserve is not held, is refused
+    /// (`refuse_exhausted_push`).
+    #[cold]
+    #[inline(never)]
+    fn push_into_the_stack_reserve(
+        &mut self,
+        header: Box<ActivationHeader<'gc>>,
+        arguments: &[Value<'gc>],
+        temporaries: usize,
+    ) -> Result<ActivationReference, Signal<'gc>> {
+        // The order `push_past_the_limit` asks in: the push that makes a
+        // freshly taken reserve held is asked about first.
+        if !self.pushes_the_reserves_does_not_understand(&header) && !self.depth_reserve_held() {
+            return Err(self.refuse_exhausted_push(header));
+        }
+        self.heap
+            .push_reserved_activation(*header, arguments, temporaries)
+            .map_err(|exhausted| self.refuse_exhausted_push(exhausted.header))
+    }
+
+    /// The refusal of a push the activation stack's reservation could not
+    /// hold (`Heap::push_activation`'s `StackExhausted`): the depth limit's
+    /// own `stack overflow: recursion too deep`, since the reservation is
+    /// the net beneath the limit for frames whose register files the
+    /// activation count does not bound. While the reserve is held -- a VM
+    /// error's `signal` is running or being pushed -- the run ends instead,
+    /// as an overrun of the reserve does, so that a `signal` the
+    /// reservation refuses in turn cannot raise the error again.
+    #[cold]
+    #[inline(never)]
+    fn refuse_exhausted_push(&mut self, header: Box<ActivationHeader<'gc>>) -> Signal<'gc> {
+        let refusal = if self.depth_reserve_held() {
+            Signal::Terminate(Box::new(self.overrun_of_the_reserve(&header)))
+        } else {
+            recursion_too_deep(&header)
+        };
+        // As `push_past_the_limit` undoes it: a refused activation never
+        // runs, so a future it was to compute is unresolved again.
+        if let Continuation::Future(forcing) = header.then {
+            self.future_abandoned(*forcing);
+        }
+        refusal
     }
 
     /// A counted push at or past L. While a VM error's `signal` holds the
@@ -1075,7 +1139,12 @@ impl<'gc> Mutator<'gc> {
         {
             recursion_too_deep(&header)
         } else if self.heap.counted_depth() < MAX_ACTIVATION_DEPTH + DEPTH_RESERVE {
-            return Ok(self.heap.push_activation(*header, arguments, temporaries));
+            return self
+                .heap
+                .push_activation(*header, arguments, temporaries)
+                .or_else(|exhausted| {
+                    self.push_into_the_stack_reserve(exhausted.header, arguments, temporaries)
+                });
         } else {
             Signal::Terminate(Box::new(self.overrun_of_the_reserve(&header)))
         };
@@ -1112,7 +1181,7 @@ impl<'gc> Mutator<'gc> {
     }
 
     /// The activation directly above the running activation of `frame`,
-    /// the one it sent to: the next stack entry while the frame is married;
+    /// the one it sent to: the next stack frame while the frame is married;
     /// while it is suspended, the one a walk from the top of the stack meets
     /// just before it (`WalkedActivation::sender`), which reifies nothing.
     fn activation_above_frame(&self, frame: FrameReference<'gc>) -> Option<WalkedActivation<'gc>> {
@@ -1148,8 +1217,8 @@ impl<'gc> Mutator<'gc> {
     pub(crate) fn is_kernel_does_not_understand(&self, activation: WalkedActivation<'gc>) -> bool {
         let object = self.builtin_class(BuiltinClass::Object);
         match activation.kind(&self.heap) {
-            FrameKind::Method(method) => {
-                method.selector == Symbol::DOES_NOT_UNDERSTAND
+            ActivationKind::Method(selector) => {
+                selector == Symbol::DOES_NOT_UNDERSTAND
                     && activation
                         .current_class(&self.heap)
                         .is_some_and(|class| class.same(object))
@@ -1172,8 +1241,8 @@ impl<'gc> Mutator<'gc> {
             return false;
         };
         let object = self.builtin_class(BuiltinClass::Object);
-        let is_kernel_handler = matches!(&header.kind,
-            FrameKind::Method(method) if method.selector == Symbol::DOES_NOT_UNDERSTAND)
+        let is_kernel_handler = matches!(header.kind,
+            ActivationKind::Method(selector) if selector == Symbol::DOES_NOT_UNDERSTAND)
             && header.current_class.is_some_and(|class| class.same(object));
         is_kernel_handler
             && self
@@ -1193,7 +1262,8 @@ impl<'gc> Mutator<'gc> {
         defining_class: ClassReference<'gc>,
     ) {
         if !defining_class.same(self.builtin_class(BuiltinClass::Object))
-            || self.heap.counted_depth() < MAX_ACTIVATION_DEPTH - DEPTH_RESERVE
+            || (self.heap.counted_depth() < MAX_ACTIVATION_DEPTH - DEPTH_RESERVE
+                && !self.heap.stack_is_within_the_reserve_of_its_limit())
             || self.depth_reserve_held()
         {
             return;
@@ -1273,7 +1343,8 @@ impl<'gc> Mutator<'gc> {
                     ActivationHeader {
                         receiver,
                         current_class: Some(defining_class),
-                        kind: FrameKind::Method(method),
+                        kind: ActivationKind::Method(method.selector),
+                        method: Some(method),
                         code,
                         then: Continuation::Deliver,
                         counted: true,
@@ -1327,7 +1398,7 @@ impl<'gc> Mutator<'gc> {
                 // passes to one is, and which keeps a crafted artifact from
                 // recursing uncounted (`docs/design/compiler.md`, "How the
                 // limit counts"). Asked in this order so that an ordinary
-                // `value` never reads the sender's entry.
+                // `value` never reads the sender's frame.
                 let created_by_sender = |heap: &Heap<'gc>| {
                     sender
                         .and_then(|sender| heap.activation_reified(sender))
@@ -1341,7 +1412,8 @@ impl<'gc> Mutator<'gc> {
                     ActivationHeader {
                         receiver,
                         current_class,
-                        kind: FrameKind::Closure(closure),
+                        kind: ActivationKind::Closure(closure),
+                        method: None,
                         code,
                         then,
                         counted,
@@ -1385,7 +1457,8 @@ impl<'gc> Mutator<'gc> {
                     ActivationHeader {
                         receiver: Value::object(class),
                         current_class: Some(class),
-                        kind: FrameKind::Factory(class),
+                        kind: ActivationKind::Factory(class),
+                        method: None,
                         code,
                         then: Continuation::Deliver,
                         counted: true,
@@ -1414,7 +1487,8 @@ impl<'gc> Mutator<'gc> {
                     ActivationHeader {
                         receiver: Value::object(enclosing),
                         current_class: Some(creation.declaring_class),
-                        kind: FrameKind::SuperclassClause(creation.declaring_class),
+                        kind: ActivationKind::SuperclassClause(creation.declaring_class),
+                        method: None,
                         code,
                         then: Continuation::NestedClass(creation),
                         counted: true,
@@ -1525,7 +1599,8 @@ impl<'gc> Mutator<'gc> {
             ActivationHeader {
                 receiver,
                 current_class: Some(level),
-                kind: FrameKind::Initializer(level, body),
+                kind: ActivationKind::Initializer(level, body),
+                method: None,
                 code,
                 then: Continuation::Deliver,
                 counted: true,
@@ -1691,7 +1766,7 @@ impl<'gc> Mutator<'gc> {
     /// Where a `^` in `activation` returns to. A block returns from its home --
     /// the method or initializer that lexically encloses it -- and only
     /// while that activation is still running: its reified frame is married
-    /// to a live stack entry, or suspended into the frame, exactly until the
+    /// to a live stack frame, or suspended into the frame, exactly until the
     /// activation returns (`Heap::frame_is_running`), and a frame the image
     /// decoder built never is. A suspended home is unwound to, resumed when
     /// the unwind's pops reach it. A returned home is §7.2's
@@ -1903,7 +1978,7 @@ impl<'gc> Mutator<'gc> {
     /// The activation object of `frame`, which the caller has already
     /// reified (`Heap::reify`): the frame object itself, an instance of the
     /// kernel-private `Activation` class. It is a frame, never a running
-    /// activation's stack entry, since only a reified frame survives its
+    /// activation's stack frame, since only a reified frame survives its
     /// activation's pop.
     pub fn new_activation_object(&mut self, frame: FrameReference<'gc>) -> ObjectReference<'gc> {
         self.heap.frame_object(frame)
@@ -2343,9 +2418,9 @@ fn recursion_too_deep<'gc>(header: &ActivationHeader<'gc>) -> Signal<'gc> {
 /// The error inside `recursion_too_deep`'s signal: what an overrun of the
 /// reserve ends the run with too.
 pub(crate) fn recursion_too_deep_error<'gc>(header: &ActivationHeader<'gc>) -> NewspeakError<'gc> {
-    let selector = match &header.kind {
-        FrameKind::Method(method) => method.selector,
-        FrameKind::Closure(_) => Symbol::VALUE,
+    let selector = match header.kind {
+        ActivationKind::Method(selector) => selector,
+        ActivationKind::Closure(_) => Symbol::VALUE,
         _ => Symbol::NEW,
     };
     NewspeakError::error(
@@ -3124,5 +3199,98 @@ mod tests {
         assert_eq!(std::mem::size_of::<Signal>(), 40);
         assert_eq!(std::mem::size_of::<Result<Step, Signal>>(), 56);
         assert_eq!(std::mem::size_of::<EvaluationResult>(), 40);
+    }
+
+    /// A recursion whose frames fill the stack's reservation long before the
+    /// depth limit is reached. The transcript writes to the process's
+    /// stdout, which a unit test cannot read, so `probe` answers what
+    /// `main:args:` shows.
+    const DEEP: &str = indoc! {"
+        class Deep = Object new (
+          |
+            public deepest ::= 0.
+          |
+        ) (
+          recurse: depth = (
+            | first second third fourth |
+            deepest:: depth.
+            ^self recurse: depth + 1.
+          )
+
+          public probe = (
+            ^[self recurse: 0] on: Error do: [:error | error messageText]
+          )
+
+          public main: platform args: arguments = (
+            platform transcript
+                show: ([self recurse: 0] on: Error do: [:error | error messageText]);
+                newLine.
+          )
+        )
+    "};
+
+    crate::for_each_lowering! {
+        /// A push the stack's reservation cannot hold is signalled as a push
+        /// past the depth limit is: an `Error` an `on:do:` catches, with the
+        /// same text, though the activation count is far below the limit.
+        /// The handler runs on the reserve the refusal leaves.
+        fn a_recursion_the_reservation_cannot_hold_is_a_catchable_stack_overflow(lowering) {
+            let module = ns_syntax::parse(DEEP).expect("parse");
+            let resolved = crate::resolve(
+                module,
+                Rc::from(DEEP),
+                SourceOrigin::File(PathBuf::from("deep.ns")),
+            )
+            .expect("resolve");
+            let mut interpreter =
+                crate::heap::with_stack_reservation(1 << 20, || Interpreter::bootstrap_with(lowering));
+            // The suspend stress mode moves the running activations off the
+            // stack into their frame objects, so the reservation would never
+            // fill and the depth limit would refuse the recursion instead.
+            #[cfg(debug_assertions)]
+            interpreter.set_stress_suspend(false);
+            let class = interpreter.load_module(&resolved);
+            let deep = expect_ok(interpreter.instantiate(&class, &[]), "Deep new");
+            let text = expect_ok(
+                interpreter.send(&deep, Symbol::intern("probe"), &[]),
+                "Deep probe",
+            );
+            interpreter.enter(|mutator| {
+                let value = mutator.fetch(&text);
+                let Some(object) = value.as_object() else {
+                    panic!("expected a string, got {}", mutator.heap().describe(value));
+                };
+                assert_eq!(
+                    mutator.heap().str_value(object).as_deref(),
+                    Some("stack overflow: recursion too deep")
+                );
+            });
+            // The deepest level the recursion reached, far below L: the
+            // reservation refused it, not the depth limit.
+            let deepest = expect_ok(
+                interpreter.send(&deep, Symbol::intern("deepest"), &[]),
+                "Deep deepest",
+            );
+            interpreter.enter(|mutator| {
+                let reached = mutator
+                    .fetch(&deepest)
+                    .as_small_integer()
+                    .expect("a depth is a small integer");
+                assert!(reached > 100, "the recursion got going: {reached}");
+                assert!(
+                    (reached as usize) < MAX_ACTIVATION_DEPTH / 4,
+                    "the reservation refused it, not the depth limit: {reached}"
+                );
+            });
+            let platform = interpreter.platform();
+            let arguments = interpreter.enter(|mutator| {
+                let array = mutator.new_array(Vec::new());
+                mutator.stash(Value::object(array))
+            });
+            expect_ok(
+                interpreter.send(&deep, Symbol::intern("main:args:"), &[platform, arguments]),
+                "Deep main:args:",
+            );
+        }
     }
 }

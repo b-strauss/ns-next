@@ -15,14 +15,22 @@ when they were written.
 
 ## Next
 
-**Road step 7a, frames as words in one reservation** ("The road to a
+**Road step 7a′, overlapping register windows** ("The road to a
 high-performance VM" below; [execution.md](design/execution.md), "Planned:
 JIT tiers"), the next part of road step 7, an execution model for compiled
-code. Its first part, 7b, is built: a running activation is suspended into
-its frame and resumed from it lazily, the landing point of every later
-deoptimization, and a sixth stress mode runs every golden on from
-suspended frames ([execution.md](design/execution.md), "Suspending and
-resuming"). Road step 6 and `new` as compiled code are built, so a factory
+code: the caller's outgoing arguments become the callee's first registers
+instead of being copied ([execution.md](design/execution.md),
+"Representation"), behind its own measurement. 7b and 7a are built: a
+running activation is suspended into its frame and resumed from it lazily,
+the landing point of every later deoptimization, and a sixth stress mode
+runs every golden on from suspended frames
+([execution.md](design/execution.md), "Suspending and resuming"); every
+running activation is a frame of tagged words in one reservation of the
+heap's, traced as one linear range, and measured no slower than the stack
+of entries before it -- nineteen of twenty-four programs faster, the rest
+level, with three builds a side that vary the block layout inside
+`vm::run` ([execution.md](design/execution.md), "What frames as words
+moved"). Road step 6 and `new` as compiled code are built, so a factory
 and the initializers are compiled code the JIT tiers will compile like any
 other.
 
@@ -31,13 +39,14 @@ master (`733c15bd`) and task by task: every program within noise, but
 `bench_megamorphic.ns`, +1.3-2.1% after the private and super accessor
 check, at the edge of build noise and not diagnosed ("Planned: performance
 and representation" below). Everything up to road step 6 on the road
-is built, and `new` as compiled code and road step 7b after it; each step
-has its entry in [PROGRESS.md](PROGRESS.md), and the whole road is below.
+is built, and `new` as compiled code and road steps 7b and 7a after it;
+each step has its entry in [PROGRESS.md](PROGRESS.md), and the whole road is below.
 
 **Measuring.** The protocol is [execution.md](design/execution.md)'s "What
 removing the re-entries moved"; every compared binary, the current tree
 included, is built with the same explicit `RUSTFLAGS` (`CLAUDE.md`,
-"Working in this repository"). Four of the eight measurement sources are
+"Working in this repository"), and the three builds a side vary the block
+layout inside `vm::run` as that section says. Four of the eight measurement sources are
 goldens under `benchmarks/micro/`; the other four -- `bench_new.ns`,
 `bench_new2.ns`, `bench_newarg.ns` and `bench_do.ns` -- are not in the tree
 and must be written out from [execution.md](design/execution.md), "What
@@ -258,11 +267,14 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
   the decoder refuses every frame not marked uncontinuable
   ([execution.md](design/execution.md), "Suspending and resuming";
   [image-format.md](design/image-format.md), "Planned: suspend and
-  resume"). What remains of step 7:
-  **7a**, frames as words with a fixed header in one contiguous
-  reservation of `ns-memory`, the depth limit kept and a byte bound added
-  only as a net, taken only if the interpreter measures no slower in
-  release and otherwise moved to road step 8; **7a′**, register windows
+  resume"). **7a is built**: frames as words with a fixed header, every
+  word tagged, in one contiguous reservation of `ns-memory`, the depth
+  limit kept and a byte bound added only as a net
+  ([execution.md](design/execution.md), "Representation", "The depth
+  limit"), kept because the interpreter measures no slower in release --
+  no program slower with its builds not overlapping `master`'s, nineteen
+  of twenty-four faster ("What frames as words moved"). What remains of
+  step 7: **7a′**, next, register windows
   that overlap, the caller's outgoing arguments being the callee's first
   registers, behind its own measurement; **7c**, the deoptimization
   contract and the protocol between interpreted and compiled frames,
@@ -1404,7 +1416,7 @@ that only answers `isKindOfArray` or `isKindOfString`, the error of a
   object space").
   [image-format.md](design/image-format.md), "Verification".
 - **The memory bound under a crafted artifact** is proportional but large,
-  about 129 × (limit + reserve) stack entries: `MAX_BLOCK_NESTING` is 128
+  about 129 × (limit + reserve) stack frames: `MAX_BLOCK_NESTING` is 128
   (`image/decode.rs`), and the encoder does not refuse deeper nesting.
 - **A list's reservation in the decoder is capped in elements, not bytes.**
   `reserve_for` (`image/decode.rs`) caps a capacity at the bytes remaining,
@@ -1683,6 +1695,18 @@ that only answers `isKindOfArray` or `isKindOfString`, the error of a
   body, and builds that body afresh on every call rather than reading the
   class's factory entry, a cold path. Only a host reaches it.
   [object-model.md](design/object-model.md), "Instantiation".
+- **A code row records the first `MixinMethod` that registered its body**
+  (2026-10-24): `Heap::register_code` fills a row's `method` only while it
+  is `None`, and `reify` rebuilds a method frame's `FrameKind::Method` from
+  that row (`Heap::code_method`). Were two methods ever to share one
+  `Rc<CompiledCode>`, a frame of the second would reify naming the first,
+  and a mirror or an image would see the wrong method. Nothing shows that
+  no two do: the image decoder builds a superseded version's method around
+  the decoded body (`image/decode.rs`), and a lazy slot's getter takes the
+  code it is handed (`MixinMethod::lazy_slot_getter`). Either show in
+  [object-model.md](design/object-model.md), "An application has two ids",
+  that every `MixinMethod` owns its body, or key the row by method.
+  [execution.md](design/execution.md), "Representation".
 
 ## Missing tests
 
@@ -1793,6 +1817,11 @@ that only answers `isKindOfArray` or `isKindOfString`, the error of a
   `a_nested_class_hit_after_the_enclosing_object_was_reshaped_takes_the_slow_path`)
   never runs a hit on a stale guard, since every forward and every edit
   invalidates the caches before the next send.
+- Frames as words' (noted 2026-10-24): no test of `ns-memory` checks the
+  accessible words' end after `Reservation::record_failure`, which no
+  portable test can provoke; `record` refreshes it with the byte end on
+  every change to the page map, so only the commit and decommit test
+  (`the_accessible_words_are_the_committed_read_write_prefix`) pins it.
 
 ## Code quality follow-ups
 

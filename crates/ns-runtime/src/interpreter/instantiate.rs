@@ -1837,7 +1837,7 @@ fn non_value_slot_error<'gc>(
     // A lazy slot's getter (§6.3.3) stores from a method activation, and
     // the send the program wrote there is the getter's, not a factory.
     let selector = match mutator.heap().activation_kind(activation) {
-        FrameKind::Method(method) => method.selector,
+        ActivationKind::Method(selector) => selector,
         _ => mutator
             .heap()
             .class_factory(instantiated)

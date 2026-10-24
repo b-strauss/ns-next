@@ -52,9 +52,9 @@ const DEPTH: &str = indoc! {"
     ) : ()
 "};
 
-/// Fifty thousand nested method activations: far past what the Rust stack of
-/// a test thread would hold if every send recursed on it, and nothing but
-/// activation-stack entries since none does. Under the optimized lowering no
+/// Fifty thousand nested method activations: far past what the Rust stack of a
+/// test thread would hold if every send recursed on it, and nothing but frames
+/// on the activation stack since none does. Under the optimized lowering no
 /// native re-enters Newspeak here, since every control-flow send is inlined.
 #[test]
 fn a_deep_method_recursion_runs_on_the_activation_stack() {

@@ -41,7 +41,8 @@ Rust 1.98.0, edition 2021, six crates:
   code in `heap/tables.rs`, whose rows and ids a full collection reclaims
   (`heap/reclaim.rs`, `interpreter/reclaim.rs`; `object-model.md`, "An
   application has two ids")) -- named by handles that are 64-bit byte
-  offsets; an activation stack reified on demand into frame objects; a
+  offsets; an activation stack of frames of tagged words in a reservation
+  of its own (`heap/frames.rs`), reified on demand into frame objects; a
   Cheney scavenger with age-based tenuring (`heap/scavenge.rs`) beside a
   mark-and-slide collector, which compacts both generations into the old
   space, the mark bit in the header and the forwarding through a live-word
@@ -227,10 +228,10 @@ would let a stale artifact decode into a different, valid program.
 
 **A handle means nothing against a `Heap` that did not mint it, nor across a
 move.** An `ObjectReference`, `ClassReference` or `FrameReference` is a 64-bit
-byte offset into its heap's object space, an `ActivationReference` an index
-into its activation stack. Never hold one across the death of its
-interpreter — the offset or index answers a different, valid object in
-another heap. Reach the real `Heap` (a `&Heap`
+byte offset into its heap's object space, an `ActivationReference` the word
+offset of a frame on its activation stack. Never hold one across the death of
+its interpreter — the offset answers a different, valid object in another
+heap. Reach the real `Heap` (a `&Heap`
 parameter, or read through `interpreter.enter` while it lives); a reader of
 compiled code alone takes the mixin, which holds no handle (`compiler.md`,
 "Readers of compiled code take the mixin"). A host keeps a value across a run
@@ -250,7 +251,7 @@ reach the `Interpreter`. A stored `Word` carries no brand, so `Heap::load` and
 doctests on `Interpreter::enter` pin it (`memory.md`, "The brand").
 
 **A running activation is an `ActivationReference`; only a `FrameReference` is
-ever stored.** An activation's index is reused after its pop; a closure's
+ever stored.** An activation's offset is reused after its pop; a closure's
 captured frame, a frame object's sender and home, and image records take a
 `FrameReference`, the handle of a frame object in the object space
 (`Heap::reify`; there is no separate store for frames). The run loop
@@ -266,7 +267,7 @@ tests' `assert_derived_as_decoded` holds the two to each other
 **An unwind target is a `FrameReference`.** Non-local return, `return:`,
 `resume:`, `retry` and the depth reserve name the target's frame; the unwinder
 asks `Heap::frame_activation` afresh each time it carries on, because `ensure:`
-and `ifCurtailed:` blocks run meanwhile and can reuse the index. Release builds
+and `ifCurtailed:` blocks run meanwhile and can reuse the offset. Release builds
 do not check generations (`execution.md`, "Unwinding").
 
 **Never `{:?}` a `Value`, and never `.unwrap()` / `.expect()` / `{:?}` an

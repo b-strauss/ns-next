@@ -11768,24 +11768,28 @@ fn the_source_an_image_carries_is_never_parsed() {
 fn a_snapshot_taken_while_an_activation_is_running_is_refused() {
     let (mut interpreter, class) = load(TRIVIAL_MODULE);
     let result = interpreter.enter(|mutator| {
-        let running = mutator.heap_mut().push_activation(
-            ns_runtime::ActivationHeader {
-                receiver: Value::nil(),
-                current_class: None,
-                kind: FrameKind::TopLevel,
-                feedback_base: ns_runtime::interpreter::FeedbackBase::NOT_ASSIGNED,
-                code: code_with(
-                    CodeKind::Method,
-                    0,
-                    1,
-                    vec![Instruction::Return { register: 0 }],
-                ),
-                then: ns_runtime::Continuation::Deliver,
-                counted: true,
-            },
-            &[],
-            0,
-        );
+        let running = mutator
+            .heap_mut()
+            .push_activation(
+                ns_runtime::ActivationHeader {
+                    receiver: Value::nil(),
+                    current_class: None,
+                    kind: ns_runtime::types::ActivationKind::TopLevel,
+                    method: None,
+                    feedback_base: ns_runtime::interpreter::FeedbackBase::NOT_ASSIGNED,
+                    code: code_with(
+                        CodeKind::Method,
+                        0,
+                        1,
+                        vec![Instruction::Return { register: 0 }],
+                    ),
+                    then: ns_runtime::Continuation::Deliver,
+                    counted: true,
+                },
+                &[],
+                0,
+            )
+            .expect("the stack holds the frame");
         let class = class_reference(mutator, &class);
         let result = snapshot_one(
             mutator,
@@ -11804,7 +11808,7 @@ fn a_snapshot_taken_while_an_activation_is_running_is_refused() {
 }
 
 /// The format records a frame's `sender`, and the decoder rebuilds it, but
-/// the runtime never sets one: a live activation's sender is the stack entry
+/// the runtime never sets one: a live activation's sender is the stack frame
 /// below it, and a returned one has none. So only a hand-built frame can
 /// carry one into the encoder, and this is the test that keeps that half of
 /// the frame record from rotting unnoticed.

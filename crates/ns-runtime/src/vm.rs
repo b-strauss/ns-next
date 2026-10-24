@@ -186,7 +186,7 @@ pub(crate) fn run(interpreter: &mut Interpreter, base: ActivationReference) -> H
             |mutator| run_stretch(mutator, &mut frame, floor),
         ) {
             Leave::Safepoint => {
-                // The suspend stress mode put a different entry on top --
+                // The suspend stress mode put a different frame on top --
                 // the running activation, suspended and resumed -- whose
                 // state the stretch wrote back before it left.
                 if interpreter.safepoint(floor) {
@@ -1167,7 +1167,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
     }
     // A safepoint is requested, at a switch or a backward jump: the frame
     // the stretch stands at, written back for the next one -- its program
-    // counter into its stack entry too, where the safepoint finds it when
+    // counter into its stack frame too, where the safepoint finds it when
     // it suspends the activation into its frame.
     mutator
         .heap
@@ -2013,7 +2013,7 @@ fn deliver<'gc>(
 /// in the popped activation's place. `Mutator::resume` applies the
 /// continuation and
 /// `Mutator::push_continuation` pushes what it decided, depth count included;
-/// the loop only forwards the popped entry's flag. A future's forcing
+/// the loop only forwards the popped frame's flag. A future's forcing
 /// (`Mutator::future_computed`) may also run the caller's stopped
 /// instruction again (`reexecute`) rather than resume after it. A caller
 /// suspended into its frame is resumed first (`return_to_suspended`).
@@ -2028,7 +2028,7 @@ fn finish<'gc>(
     apply_continuation(mutator, popped.then, popped.counted, value, floor, handoff)
 }
 
-/// What `finish` does once the entry is popped: `then`, the popped entry's
+/// What `finish` does once the frame is popped: `then`, the popped frame's
 /// continuation, applied to `value`, and `counted`, its flag, handed on to
 /// whatever the continuation pushes.
 #[inline(always)]
@@ -2081,7 +2081,7 @@ fn apply_continuation<'gc>(
             Err(signal) => return unwind(mutator, signal, floor, handoff),
         },
     };
-    if mutator.heap.activation_depth() == floor {
+    if mutator.heap.activation_stack_top() == floor {
         return handoff.exit(mutator.to_host(Ok(value)));
     }
     let caller = mutator
@@ -2093,7 +2093,7 @@ fn apply_continuation<'gc>(
 
 /// The popped activation returns to a sender suspended into its frame
 /// (`Heap::suspend_activations`): the sender is resumed onto the stack,
-/// and the continuation the popped entry carried inside the wrapper is
+/// and the continuation the popped frame carried inside the wrapper is
 /// applied as any popped one is, so that from here on everything proceeds
 /// as if the sender had been on the stack all along -- the caller a value
 /// is delivered to, the activation a continuation pushes above, the
@@ -2139,7 +2139,7 @@ fn resume_caller<'gc>(
 /// once. A host's send has no instruction to run again; a future it passes
 /// in straight to a leaf ends the run.
 fn reexecute<'gc>(mutator: &mut Mutator<'gc>, floor: usize, handoff: &mut Handoff) -> Transfer {
-    if mutator.heap.activation_depth() == floor {
+    if mutator.heap.activation_stack_top() == floor {
         let error = crate::interpreter::future::host_passed_a_future();
         return handoff.exit(mutator.to_host(Err(error)));
     }
@@ -2601,7 +2601,7 @@ fn make_value<'gc>(
         Literal::BodyTooLarge => {
             let receiver = mutator.heap.activation_receiver(activation);
             let kind = mutator.heap.activation_kind(activation);
-            return Err(body_too_large_error(&kind, receiver));
+            return Err(body_too_large_error(kind, receiver));
         }
     })
 }

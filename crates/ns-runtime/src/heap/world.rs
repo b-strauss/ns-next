@@ -175,6 +175,13 @@ impl World {
         self.mutator.heap.suspension_count()
     }
 
+    /// How many running activations hold a continuation other than
+    /// `Continuation::Deliver`; `Interpreter::run_from_host` checks none
+    /// outlives its run.
+    pub(crate) fn continuation_count(&self) -> usize {
+        self.mutator.heap.continuation_count()
+    }
+
     pub(crate) fn clear_safepoint_request(&mut self) {
         self.mutator.heap.clear_safepoint_request();
     }

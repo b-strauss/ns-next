@@ -39,11 +39,21 @@ the re-entries moved", has the full measurement protocol and its history.
 3. **Several builds per tree, pooled.** With the pin in place,
    `bench_block.ns` still measured 16% apart between two builds of the same
    tree, each stable to about 1%. One build per side measures the build.
-   **Build them at once**, each in its own `--target-dir` (the second and
-   third adding `-C metadata=buildb`, `-C metadata=buildc` to the pinned
-   `RUSTFLAGS`): the release profile's fat LTO ends in a pass on one core,
-   so builds one after another leave most cores idle. Nothing is timed while
-   they build.
+   **The three builds vary the block layout inside `vm::run`**, the same
+   three on both sides: build a with the pinned `RUSTFLAGS` alone, build b
+   adding `-C metadata=buildb -C llvm-args=-align-all-nofallthru-blocks=4`,
+   build c adding `-C metadata=buildc -C llvm-args=-align-all-nofallthru-blocks=5`.
+   `-C metadata` alone reorders functions but leaves `vm::run` identical at
+   every offset, so three such builds sample one layout of the run loop:
+   road step 7a measured `bench_loop.ns` +1.7%, builds separated, on code
+   instruction for instruction what `master` ran, and level once the
+   blocks moved (`execution.md`, "What frames as words moved"). Check in a
+   `dumpbin /disasm` of each build with debug information (point 6) that
+   the three `vm::run`s differ in size and padding; if two coincide, take
+   another alignment and say so. **Build them at once**, each in its own
+   `--target-dir`: the release profile's fat LTO ends in a pass on one
+   core, so builds one after another leave most cores idle. Nothing is
+   timed while they build.
 4. **Interim and final measurements differ.** Each step of a batch's work,
    a bisection probe or an experiment, is an *interim* measurement: one
    pinned build a side, only the sources the change can move (the micro
@@ -84,5 +94,7 @@ the re-entries moved", has the full measurement protocol and its history.
 - Comparing one pinned build against one unpinned build, or the current tree
   built with the configuration's flags against an old one built with the pin.
 - A single build per side for a source known to be build-sensitive.
+- Three builds a side told apart by `-C metadata` alone, which pool one
+  layout of `vm::run` three times.
 - Timing a send-path change without the `dumpbin` check, so an outlined
   `run_stretch` shows up as the change's cost.

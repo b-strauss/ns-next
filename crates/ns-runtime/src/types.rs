@@ -358,6 +358,46 @@ pub enum FrameKind<'gc> {
     Factory(ClassReference<'gc>),
 }
 
+impl<'gc> FrameKind<'gc> {
+    /// The view of this kind a running activation holds: a method's
+    /// selector in place of the method.
+    pub fn activation_kind(&self) -> ActivationKind<'gc> {
+        match self {
+            FrameKind::Method(method) => ActivationKind::Method(method.selector),
+            FrameKind::Closure(closure) => ActivationKind::Closure(*closure),
+            FrameKind::TopLevel => ActivationKind::TopLevel,
+            FrameKind::Initializer(class, body) => ActivationKind::Initializer(*class, *body),
+            FrameKind::SuperclassClause(class) => ActivationKind::SuperclassClause(*class),
+            FrameKind::Factory(class) => ActivationKind::Factory(*class),
+        }
+    }
+}
+
+/// What a running activation was activated for: a `FrameKind` with a
+/// method named by its selector alone, so that it holds no `Rc` and is
+/// copied rather than cloned. The method itself is its code row's
+/// (`Heap::code_method`), registered with it when the activation was
+/// pushed; a frame object and an image rebuild the `FrameKind` from the
+/// two (`docs/design/execution.md`, "Activations").
+#[derive(Debug, Clone, Copy)]
+pub enum ActivationKind<'gc> {
+    /// An activation of the method of this selector.
+    Method(Symbol),
+    /// See `FrameKind::Closure`.
+    Closure(ObjectReference<'gc>),
+    /// See `FrameKind::TopLevel`.
+    TopLevel,
+    /// See `FrameKind::Initializer`.
+    Initializer(
+        ClassReference<'gc>,
+        crate::interpreter::instantiate::InitializerBody,
+    ),
+    /// See `FrameKind::SuperclassClause`.
+    SuperclassClause(ClassReference<'gc>),
+    /// See `FrameKind::Factory`.
+    Factory(ClassReference<'gc>),
+}
+
 /// What the run loop does with an activation's value when it returns
 /// (`docs/design/execution.md`, "The trampoline"). Every activation a send
 /// makes hands its value to that send; the others are how a builtin native
@@ -402,12 +442,12 @@ pub enum Continuation<'gc> {
 }
 
 /// What a resumed activation returns to when its sender is suspended
-/// (`Continuation::ReturnToSuspended`). Owned by exactly one stack entry.
+/// (`Continuation::ReturnToSuspended`). Owned by exactly one activation.
 #[derive(Debug, Clone)]
 pub struct ReturnToSuspended<'gc> {
     /// The suspended frame the activation returns to, resumed when the
     /// activation is popped. A frame, never an activation: the sender has
-    /// no stack entry until then.
+    /// no stack frame until then.
     pub(crate) sender: FrameReference<'gc>,
     /// The activation's own continuation, applied before the sender is
     /// resumed. Never a `ReturnToSuspended` itself: suspending the
@@ -417,12 +457,12 @@ pub struct ReturnToSuspended<'gc> {
 
 /// An unwind in progress (`interpreter::unwind`): where it is going and what
 /// happens there. Boxed in a `Continuation::Unwind` while one of the blocks
-/// it runs on its way is running, and owned by exactly one stack entry.
+/// it runs on its way is running, and owned by exactly one activation.
 #[derive(Debug, Clone)]
 pub struct PendingUnwind<'gc> {
     /// The frame the unwind ends at, never the activation: code runs while
     /// the unwind is in progress, and an activation pushed meanwhile can
-    /// reuse a popped activation's stack index, where a reified frame keeps
+    /// reuse a popped activation's stack offset, where a reified frame keeps
     /// its identity and says whether it still runs
     /// (`Heap::frame_activation`). `None` is the floor of the run.
     pub(crate) target: Option<FrameReference<'gc>>,
@@ -467,7 +507,7 @@ impl<'gc> LoopAction<'gc> {
 /// what it runs as the body -- a closure it activates, or any other object,
 /// which it sends `value` -- and the condition value that keeps it going.
 ///
-/// Boxed in its continuation, and owned by exactly one stack entry.
+/// Boxed in its continuation, and owned by exactly one activation.
 #[derive(Debug, Clone)]
 pub struct WhileLoop<'gc> {
     /// The condition's closure object.
@@ -482,7 +522,7 @@ pub struct WhileLoop<'gc> {
 /// index of the next element, which is read from the array only when the
 /// walk reaches it, so a store the action makes to a later index is seen.
 ///
-/// Boxed in its continuation, and owned by exactly one stack entry.
+/// Boxed in its continuation, and owned by exactly one activation.
 #[derive(Debug, Clone)]
 pub struct DoLoop<'gc> {
     pub(crate) receiver: ObjectReference<'gc>,
@@ -495,7 +535,7 @@ pub struct DoLoop<'gc> {
 /// (`interpreter::nested`): what the accessor needs once the declaration's
 /// superclass clause has been evaluated.
 ///
-/// Boxed in its continuation, and owned by exactly one stack entry.
+/// Boxed in its continuation, and owned by exactly one activation.
 #[derive(Debug, Clone)]
 pub struct NestedClassCreation<'gc> {
     /// The enclosing object `r` of `newspeak-spec.pdf` §6, which caches the

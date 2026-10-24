@@ -25,8 +25,12 @@ impl Mutator<'_> {
     /// The steps run in order, each releasing the `Rc`s the next one
     /// counts: the applications, the caches that hold them, the mixins
     /// the applications applied, the code ids, and the feedback ranges.
-    pub(crate) fn reclaim_ids(&mut self, gathered: GatheredIds) {
+    pub(crate) fn reclaim_ids(&mut self, mut gathered: GatheredIds) {
         let stack = self.heap.stack_roots();
+        // A running activation names its body by id, beside the marked
+        // closures and frames: step 3 asks which bodies run, step 4 frees
+        // the rest.
+        gathered.running_codes(&stack.codes);
         // Step 1: applications. Live: what a marked class object names,
         // what an activation was entered at, the application whose guard
         // an activation recorded -- a receiver forwarded under it must
@@ -131,8 +135,8 @@ impl Mutator<'_> {
         drop(dropped);
         self.heap.truncate_application_rows();
         self.reclaim_mixins(&gathered);
-        // Step 4: codes. No activation names a body by id, so the marked
-        // closures and frames are every holder of one.
+        // Step 4: codes. The marked closures and frames and the running
+        // activations are every holder of one.
         self.heap.free_unnamed_codes(&gathered.codes);
         // Step 5: feedback ranges. Whether or not anything above was freed:
         // a body steps 3 and 4 let go of can end a family on its own.
@@ -347,6 +351,7 @@ mod tests {
             assert!(stack.entered_levels.is_empty());
             assert!(stack.recorded_guards.is_empty());
             assert!(stack.feedback_bases.is_empty());
+            assert!(stack.codes.is_empty());
         });
     }
 

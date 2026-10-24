@@ -1,14 +1,18 @@
-//! Reserved, committed and protected memory for the object space.
+//! Reserved, committed and protected memory for the object space and the
+//! activation stack.
 //!
 //! One `Reservation` is one contiguous address range, reserved once and
 //! committed as a space grows, so that a handle can be a byte offset from a
 //! fixed base (docs/design/memory.md, "The memory layer"). This is
 //! the only crate in the workspace with `unsafe` code: every operating-system
 //! call is in `platform`, and everything this crate hands out is safe to use.
-//! The heap reads through `Reservation::prefix`, the committed read-write
-//! range at the base, which is lent in O(1). The heap's young allocations
-//! bump a cursor the reservation holds (`Reservation::bump`), one
-//! comparison against a limit inside that prefix.
+//! The heap reads its objects through `Reservation::prefix`, the committed
+//! read-write range at the base, which is lent in O(1), and its activation
+//! stack through `Reservation::accessible`/`accessible_mut`, that whole
+//! range lent with no check at all, so that the one bounds check of a
+//! stack access is the index's. The heap's young allocations bump a cursor
+//! the reservation holds (`Reservation::bump`), one comparison against a
+//! limit inside that prefix.
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(clippy::undocumented_unsafe_blocks)]
 
@@ -105,6 +109,10 @@ pub struct Reservation {
     size: usize,
     pages: PageMap,
     accessible_prefix: usize,
+    /// `accessible_prefix` in words, kept beside it so that `accessible`,
+    /// which the activation stack's every register access goes through,
+    /// lends its slice without a shift.
+    accessible_words: usize,
     bump: BumpCursor,
 }
 
@@ -116,7 +124,10 @@ impl Reservation {
 
     /// Reserves at least `bytes` of address space, committing none of it.
     /// The size is rounded up to the platform's reservation granularity; a
-    /// size whose rounding up overflows `usize` answers `InvalidRange`.
+    /// size whose rounding up overflows `usize`, or passes `isize::MAX`,
+    /// answers `InvalidRange`. No slice may be longer than `isize::MAX`
+    /// bytes, so bounding the reservation once is what lets every lending
+    /// below skip that comparison.
     pub fn reserve(bytes: usize) -> Result<Reservation, MemoryError> {
         if bytes == 0 {
             return Err(MemoryError::InvalidRange);
@@ -125,6 +136,7 @@ impl Reservation {
         let size = bytes
             .checked_add(granularity - 1)
             .map(|rounded| rounded / granularity * granularity)
+            .filter(|size| *size <= isize::MAX as usize)
             .ok_or(MemoryError::InvalidRange)?;
         // SAFETY: reserving touches no memory the program owns.
         let base = unsafe { platform::reserve(size) }.map_err(|code| MemoryError::Refused {
@@ -136,6 +148,7 @@ impl Reservation {
             size,
             pages: PageMap::new(),
             accessible_prefix: 0,
+            accessible_words: 0,
             bump: BumpCursor { top: 0, limit: 0 },
         })
     }
@@ -263,11 +276,10 @@ impl Reservation {
     /// read-write throughout.
     fn check_words(&self, range: &Range<usize>) -> Option<()> {
         let aligned = range.start.is_multiple_of(8) && range.end.is_multiple_of(8);
+        // Inside the reservation, which `reserve` bounds by `isize::MAX`, is
+        // also the byte length `from_raw_parts` allows.
         let inside = range.start < range.end && range.end <= self.size;
-        // `from_raw_parts` requires a byte length of at most `isize::MAX`,
-        // which a reservation on a 32-bit target can exceed.
-        let lendable = range.len() <= isize::MAX as usize;
-        (aligned && lendable && inside && self.pages.is_accessible(range.clone())).then_some(())
+        (aligned && inside && self.pages.is_accessible(range.clone())).then_some(())
     }
 
     /// Records the state of `range` after a system call on it failed. The rule:
@@ -286,6 +298,7 @@ impl Reservation {
     fn record(&mut self, range: Range<usize>, state: Option<Protection>) {
         self.pages.set(range, state);
         self.accessible_prefix = self.pages.accessible_prefix();
+        self.accessible_words = self.accessible_prefix / 8;
         // A shrunken prefix takes the cursor's limit with it, so no bump
         // lends memory that is no longer committed.
         self.bump.limit = self.bump.limit.min(self.accessible_prefix);
@@ -404,10 +417,41 @@ impl Reservation {
         Some(unsafe { std::slice::from_raw_parts_mut(self.base.as_ptr().cast::<u64>(), end / 8) })
     }
 
+    /// The accessible prefix lies inside the reservation, which `reserve`
+    /// bounds by `isize::MAX`, so `end` needs no comparison against it.
     #[inline]
     fn check_prefix(&self, end: usize) -> Option<()> {
-        (end.is_multiple_of(8) && end <= self.accessible_prefix && end <= isize::MAX as usize)
-            .then_some(())
+        (end.is_multiple_of(8) && end <= self.accessible_prefix).then_some(())
+    }
+
+    /// The words of the whole committed read-write prefix at the base, with
+    /// no check at all: its end is the field every change to the page map
+    /// refreshes, a whole number of pages and so of words, inside the
+    /// reservation and so below `isize::MAX` bytes. What indexes the slice
+    /// then makes the one bounds check the access needs -- the activation
+    /// stack's register access, which the run loop makes on nearly every
+    /// instruction.
+    #[inline(always)]
+    pub fn accessible(&self) -> &[u64] {
+        // SAFETY: `0..accessible_prefix` is committed read-write from the
+        // page-aligned base, so it is 8-byte aligned and initialized, and
+        // its length is a multiple of the page size; it lies inside the
+        // reservation, which `reserve` bounds by `isize::MAX` bytes, so its
+        // length is one `from_raw_parts` allows on every target; `&self`
+        // keeps `protect` and `decommit` away while the slice lives.
+        unsafe {
+            std::slice::from_raw_parts(self.base.as_ptr().cast::<u64>(), self.accessible_words)
+        }
+    }
+
+    /// As `accessible`, mutably.
+    #[inline(always)]
+    pub fn accessible_mut(&mut self) -> &mut [u64] {
+        // SAFETY: as for `accessible`, and `&mut self` makes the slice
+        // unique.
+        unsafe {
+            std::slice::from_raw_parts_mut(self.base.as_ptr().cast::<u64>(), self.accessible_words)
+        }
     }
 
     /// A non-empty range inside the reservation, on page boundaries.
@@ -465,6 +509,31 @@ mod tests {
         assert!(reservation.prefix(page + 8).is_none());
         reservation.decommit(0..page).expect("decommit");
         assert!(reservation.prefix(8).is_none());
+    }
+
+    #[test]
+    fn the_accessible_words_are_the_committed_read_write_prefix() {
+        let page = Reservation::page_size();
+        let mut reservation = Reservation::reserve(4 * page).expect("reserve");
+        assert!(reservation.accessible().is_empty(), "nothing committed yet");
+        reservation.commit(0..2 * page).expect("commit");
+        assert_eq!(reservation.accessible().len(), 2 * page / 8);
+        reservation.accessible_mut()[1] = 0xABCD;
+        assert_eq!(reservation.words(8..16), Some(&[0xABCD][..]));
+        reservation
+            .protect(page..2 * page, Protection::NoAccess)
+            .expect("protect");
+        assert_eq!(reservation.accessible().len(), page / 8);
+        reservation.decommit(0..page).expect("decommit");
+        assert!(reservation.accessible().is_empty());
+    }
+
+    #[test]
+    fn a_reservation_past_isize_max_is_refused() {
+        assert!(matches!(
+            Reservation::reserve(isize::MAX as usize + 1),
+            Err(MemoryError::InvalidRange)
+        ));
     }
 
     #[test]

@@ -5,7 +5,7 @@
 use indoc::indoc;
 use ns_runtime::bytecode::{CodeKind, CompiledCode, Instruction};
 use ns_runtime::interpreter::FeedbackBase;
-use ns_runtime::types::{Continuation, FrameKind, Value};
+use ns_runtime::types::{ActivationKind, Continuation, Value};
 use ns_runtime::Interpreter;
 use ns_runtime::ValueKind;
 use ns_runtime::{
@@ -398,10 +398,11 @@ fn activation_header<'gc>(class: ns_runtime::ClassReference<'gc>) -> ActivationH
     ActivationHeader {
         receiver: Value::nil(),
         current_class: Some(class),
-        kind: FrameKind::Initializer(
+        kind: ActivationKind::Initializer(
             class,
             ns_runtime::interpreter::instantiate::InitializerBody::OwnPart,
         ),
+        method: None,
         feedback_base: FeedbackBase::NOT_ASSIGNED,
         code: trivial_code(),
         then: Continuation::Deliver,
@@ -421,8 +422,9 @@ fn a_returning_activation_keeps_its_registers_only_when_it_was_marked() {
         let class = mutator.builtin_class(BuiltinClass::Object);
         let heap = mutator.heap_mut();
 
-        let unmarked =
-            heap.push_activation(activation_header(class), &[Value::small_integer(1)], 1);
+        let unmarked = heap
+            .push_activation(activation_header(class), &[Value::small_integer(1)], 1)
+            .expect("the stack holds the frame");
         heap.activation_set_program_counter(unmarked, 0);
         let forgetful = heap.reify(unmarked);
         heap.activation_set_local(unmarked, 1, Value::small_integer(2));
@@ -443,7 +445,9 @@ fn a_returning_activation_keeps_its_registers_only_when_it_was_marked() {
         heap.frame_set_local(forgetful, 2, Value::small_integer(9));
         assert!(heap.frame_local(forgetful, 2).is_nil());
 
-        let marked = heap.push_activation(activation_header(class), &[Value::small_integer(1)], 1);
+        let marked = heap
+            .push_activation(activation_header(class), &[Value::small_integer(1)], 1)
+            .expect("the stack holds the frame");
         heap.activation_set_program_counter(marked, 0);
         let kept = heap.reify(marked);
         // What `MakeClosure` does for a block whose `outer_reach` is

@@ -241,7 +241,7 @@ fn no_longer_has_the_slots<'gc>(
         |level| level.mixin.reflected_name(),
     );
     let selector = match mutator.heap.activation_kind(activation) {
-        FrameKind::Method(method) => method.selector,
+        ActivationKind::Method(selector) => selector,
         _ => level.as_ref().map_or(Symbol::NEW, |level| {
             super::instantiate::factory_selector(level)
         }),

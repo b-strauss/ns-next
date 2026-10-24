@@ -52,11 +52,11 @@ pub(crate) enum UnwindOutcome<'gc> {
 }
 
 /// An activation a walk from the top of the stack towards the run's base
-/// meets: the live entries first, then -- past an entry whose sender is
+/// meets: the live frames first, then -- past a frame whose sender is
 /// suspended (`Continuation::ReturnToSuspended`) -- the frames the
 /// suspended activations live in, each naming its sender. The depth
 /// limit's reserve walks it (`Mutator::overrun_of_the_reserve`,
-/// `Mutator::depth_reserve_held`) without reifying a live entry; neither
+/// `Mutator::depth_reserve_held`) without reifying a live frame; neither
 /// is on a hot path.
 #[derive(Clone, Copy)]
 pub(crate) enum WalkedActivation<'gc> {
@@ -68,7 +68,7 @@ pub(crate) enum WalkedActivation<'gc> {
 
 impl<'gc> WalkedActivation<'gc> {
     /// The activation this one returns to: the suspended sender of a live
-    /// entry that has one, else the entry below; a suspended one's sender
+    /// frame that has one, else the frame below; a suspended one's sender
     /// frame. `None` for the run's base and the bottom of the stack.
     pub(crate) fn sender(self, heap: &Heap<'gc>) -> Option<WalkedActivation<'gc>> {
         match self {
@@ -105,10 +105,10 @@ impl<'gc> WalkedActivation<'gc> {
     }
 
     /// What the activation was activated for.
-    pub(crate) fn kind(self, heap: &Heap<'gc>) -> FrameKind<'gc> {
+    pub(crate) fn kind(self, heap: &Heap<'gc>) -> ActivationKind<'gc> {
         match self {
             WalkedActivation::Live(activation) => heap.activation_kind(activation),
-            WalkedActivation::Suspended(frame) => heap.frame_kind(frame),
+            WalkedActivation::Suspended(frame) => heap.frame_kind(frame).activation_kind(),
         }
     }
 
@@ -137,7 +137,7 @@ impl<'gc> WalkedActivation<'gc> {
         }
     }
 
-    /// `signalled_vm_error` without cloning the error of a live entry.
+    /// `signalled_vm_error` without cloning the error of a live frame.
     pub(crate) fn signals_a_vm_error(self, heap: &Heap<'gc>) -> bool {
         match self {
             WalkedActivation::Live(activation) => heap.activation_signals_a_vm_error(activation),
@@ -187,7 +187,7 @@ pub(crate) fn unwind_signal<'gc>(
             // Popped as the unwind below pops, so that every suspended
             // activation of the run comes back onto the stack on the way
             // down and none outlives the run.
-            while mutator.heap.activation_depth() > floor {
+            while mutator.heap.activation_stack_top() > floor {
                 let top = mutator
                     .heap
                     .top_activation()
@@ -219,7 +219,7 @@ pub(crate) fn unwind_signal<'gc>(
 /// one of them can sit at the index a popped target used, which a frame --
 /// divorced when its activation was popped -- cannot be mistaken for. And
 /// a target suspended into its frame (`Heap::frame_is_suspended`) becomes
-/// a stack entry only once the pops reach it, each pop resuming the
+/// a stack frame only once the pops reach it, each pop resuming the
 /// suspended sender of what it pops (`Mutator::pop_for_unwind`); so the
 /// destination is decided again from the frame before every pop.
 ///
@@ -231,7 +231,7 @@ pub(crate) fn unwind<'gc>(
     floor: usize,
 ) -> UnwindOutcome<'gc> {
     loop {
-        if mutator.heap.activation_depth() <= floor {
+        if mutator.heap.activation_stack_top() <= floor {
             return UnwindOutcome::Exit(Err(exit_signal(pending)));
         }
         let top = mutator
@@ -412,7 +412,8 @@ fn start_signalling<'gc>(
         Ok(step) => step,
     };
     let taking = !mutator.depth_reserve_held()
-        && mutator.heap.counted_depth() >= MAX_ACTIVATION_DEPTH - DEPTH_RESERVE;
+        && (mutator.heap.counted_depth() >= MAX_ACTIVATION_DEPTH - DEPTH_RESERVE
+            || mutator.heap.stack_is_within_the_reserve_of_its_limit());
     let sender = mutator.heap.top_activation();
     let taking = taking && sender.is_some();
     if let (true, Some(top)) = (taking, sender) {
@@ -542,7 +543,7 @@ impl<'gc> Mutator<'gc> {
         };
         let exception_class = self.builtin_class(BuiltinClass::Exception);
         let is_signal = matches!(signal.kind(&self.heap),
-            FrameKind::Method(method) if method.selector == Symbol::SIGNAL)
+            ActivationKind::Method(selector) if selector == Symbol::SIGNAL)
             && signal
                 .current_class(&self.heap)
                 .is_some_and(|class| class.same(exception_class));
@@ -683,7 +684,8 @@ mod tests {
         ActivationHeader {
             receiver: Value::nil(),
             current_class: Some(class),
-            kind: FrameKind::SuperclassClause(class),
+            kind: ActivationKind::SuperclassClause(class),
+            method: None,
             feedback_base: FeedbackBase::NOT_ASSIGNED,
             code: trivial_code(),
             then: Continuation::Deliver,
@@ -692,7 +694,7 @@ mod tests {
     }
 
     /// A return aimed at a frame whose activation has been popped must not
-    /// land in the activation that took its stack index since: the frame
+    /// land in the activation that took its stack offset since: the frame
     /// was divorced on the pop and is married to nothing, so the unwind
     /// goes on to the floor. A release build has no generation to tell the
     /// two activations apart by, which is why the target is a frame.
@@ -701,11 +703,17 @@ mod tests {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
             let class = mutator.builtin_class(BuiltinClass::Object);
-            let floor = mutator.heap.activation_depth();
-            let target = mutator.heap.push_activation(header(class), &[], 1);
+            let floor = mutator.heap.activation_stack_top();
+            let target = mutator
+                .heap
+                .push_activation(header(class), &[], 1)
+                .expect("the stack holds the frame");
             let frame = mutator.heap.reify(target);
             mutator.heap.pop_activation(target);
-            let successor = mutator.heap.push_activation(header(class), &[], 1);
+            let successor = mutator
+                .heap
+                .push_activation(header(class), &[], 1)
+                .expect("the stack holds the frame");
             assert_eq!(
                 mutator.heap.activation_position(successor),
                 floor,
@@ -723,7 +731,7 @@ mod tests {
                 matches!(outcome, UnwindOutcome::Exit(Err(_))),
                 "the unwind must not arrive at the successor"
             );
-            assert_eq!(mutator.heap.activation_depth(), floor);
+            assert_eq!(mutator.heap.activation_stack_top(), floor);
         });
     }
 
@@ -734,10 +742,16 @@ mod tests {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
             let class = mutator.builtin_class(BuiltinClass::Object);
-            let floor = mutator.heap.activation_depth();
-            let target = mutator.heap.push_activation(header(class), &[], 1);
+            let floor = mutator.heap.activation_stack_top();
+            let target = mutator
+                .heap
+                .push_activation(header(class), &[], 1)
+                .expect("the stack holds the frame");
             let frame = mutator.heap.reify(target);
-            mutator.heap.push_activation(header(class), &[], 1);
+            mutator
+                .heap
+                .push_activation(header(class), &[], 1)
+                .expect("the stack holds the frame");
             let outcome = unwind(
                 mutator,
                 PendingUnwind {
@@ -754,7 +768,7 @@ mod tests {
             };
             assert!(arrived.same(target));
             mutator.heap.pop_activation(target);
-            assert_eq!(mutator.heap.activation_depth(), floor);
+            assert_eq!(mutator.heap.activation_stack_top(), floor);
         });
     }
 
@@ -766,11 +780,17 @@ mod tests {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
             let class = mutator.builtin_class(BuiltinClass::Object);
-            let floor = mutator.heap.activation_depth();
-            let target = mutator.heap.push_activation(header(class), &[], 1);
+            let floor = mutator.heap.activation_stack_top();
+            let target = mutator
+                .heap
+                .push_activation(header(class), &[], 1)
+                .expect("the stack holds the frame");
             mutator.heap.activation_set_program_counter(target, 5);
             let frame = mutator.heap.reify(target);
-            mutator.heap.push_activation(header(class), &[], 1);
+            mutator
+                .heap
+                .push_activation(header(class), &[], 1)
+                .expect("the stack holds the frame");
             let outcome = unwind(
                 mutator,
                 PendingUnwind {
@@ -800,13 +820,13 @@ mod tests {
                 panic!("a termination must exit with its error");
             };
             assert_eq!(&*error.message, "boom");
-            assert_eq!(mutator.heap.activation_depth(), floor);
+            assert_eq!(mutator.heap.activation_stack_top(), floor);
         });
     }
 
     /// The depth limit's reserve belongs to the activation it was taken
-    /// for, not to a stack index: once that activation and its `signal`
-    /// are gone, another error whose `signal` lands at the very same index
+    /// for, not to a stack offset: once that activation and its `signal`
+    /// are gone, another error whose `signal` lands at the very same offset
     /// -- which exempt block activations make possible far from the limit
     /// -- does not find the reserve held.
     #[test]
@@ -822,15 +842,27 @@ mod tests {
                 ))),
                 ..header(class)
             };
-            let raised = mutator.heap.push_activation(header(class), &[], 1);
+            let raised = mutator
+                .heap
+                .push_activation(header(class), &[], 1)
+                .expect("the stack holds the frame");
             mutator.depth_reserve = Some(mutator.heap.reify(raised));
-            let signal = mutator.heap.push_activation(signalling(class), &[], 1);
+            let signal = mutator
+                .heap
+                .push_activation(signalling(class), &[], 1)
+                .expect("the stack holds the frame");
             assert!(mutator.depth_reserve_held(), "held while its signal runs");
             let signal_position = mutator.heap.activation_position(signal);
             mutator.heap.pop_activation(signal);
             mutator.heap.pop_activation(raised);
-            let other = mutator.heap.push_activation(header(class), &[], 1);
-            let other_signal = mutator.heap.push_activation(signalling(class), &[], 1);
+            let other = mutator
+                .heap
+                .push_activation(header(class), &[], 1)
+                .expect("the stack holds the frame");
+            let other_signal = mutator
+                .heap
+                .push_activation(signalling(class), &[], 1)
+                .expect("the stack holds the frame");
             assert_eq!(
                 mutator.heap.activation_position(other_signal),
                 signal_position,
@@ -857,15 +889,21 @@ mod tests {
         interpreter.enter(|mutator| {
             let class = mutator.builtin_class(BuiltinClass::Object);
             let error = || NewspeakError::error(crate::Symbol::SIGNAL, Value::nil(), "boom");
-            let floor = mutator.heap.activation_depth();
-            let raised = mutator.heap.push_activation(header(class), &[], 1);
+            let floor = mutator.heap.activation_stack_top();
+            let raised = mutator
+                .heap
+                .push_activation(header(class), &[], 1)
+                .expect("the stack holds the frame");
             let raised_frame = mutator.heap.reify(raised);
             mutator.depth_reserve = Some(raised_frame);
             let signalling = ActivationHeader {
                 then: Continuation::VmErrorSignalled(Box::new(error())),
                 ..header(class)
             };
-            mutator.heap.push_activation(signalling, &[], 1);
+            mutator
+                .heap
+                .push_activation(signalling, &[], 1)
+                .expect("the stack holds the frame");
             assert!(mutator.depth_reserve_held(), "held before the suspension");
             let top = mutator
                 .heap
@@ -903,7 +941,7 @@ mod tests {
                 .frame_activation(raised_frame)
                 .expect("the pop resumed the sender");
             mutator.heap.pop_activation(resumed);
-            assert_eq!(mutator.heap.activation_depth(), floor);
+            assert_eq!(mutator.heap.activation_stack_top(), floor);
             assert_eq!(mutator.heap.suspension_count(), 0);
         });
     }

@@ -40,14 +40,14 @@ pub(crate) trait Trace {
     fn trace<T: Tracer>(&mut self, tracer: &mut T);
 }
 
-impl Trace for FrameKind<'_> {
+impl Trace for ActivationKind<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         match self {
-            FrameKind::Method(_) | FrameKind::TopLevel => {}
-            FrameKind::Closure(closure) => tracer.object(closure),
-            FrameKind::Initializer(class, _)
-            | FrameKind::Factory(class)
-            | FrameKind::SuperclassClause(class) => tracer.object(class),
+            ActivationKind::Method(_) | ActivationKind::TopLevel => {}
+            ActivationKind::Closure(closure) => tracer.object(closure),
+            ActivationKind::Initializer(class, _)
+            | ActivationKind::Factory(class)
+            | ActivationKind::SuperclassClause(class) => tracer.object(class),
         }
     }
 }

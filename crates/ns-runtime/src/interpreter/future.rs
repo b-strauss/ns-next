@@ -67,7 +67,7 @@ pub enum AfterForcing {
 
 /// A forcing in progress, boxed in the `Continuation::Future` of the
 /// activation computing its future -- its block, or the send of `value` to
-/// a computation that is none -- and owned by exactly one stack entry.
+/// a computation that is none -- and owned by exactly one activation.
 ///
 /// The chain behind `then` is as long as a program makes it -- each future's
 /// block answering the next -- and nothing bounds it: the run loop pops each

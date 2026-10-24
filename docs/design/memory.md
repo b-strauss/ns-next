@@ -130,7 +130,7 @@ Value  = one tagged word: a handle, a SmallInteger, a SmallFloat64 or a constant
 Word   = the bare word a heap object stores, 8 bytes in every build
 ObjectReference     { offset: NonZeroU64 }   // private to the heap module; 8 bytes in a release build
 FrameReference      { offset: NonZeroU64 }   // likewise, a frame object's; ClassReference is an alias for ObjectReference
-ActivationReference { index: u32 }           // likewise, into the activation stack
+ActivationReference { offset: u32 }          // likewise, a frame's word offset on the activation stack
 
 Heap { space: Space,                  // every object end to end: header, class word, fields
        stack: ActivationStack, tables: Tables,   // mixins, applications, code
@@ -190,7 +190,7 @@ failing. A `debug_assertions`-only guard makes that explicit rather
 than conventional: each `Heap` carries a distinct id, each handle records the
 id of the heap that minted it, and every accessor in `heap.rs` that takes a
 handle asserts the two match. The check of an `ActivationReference` also
-compares a generation, because a stack index is reused as soon as its entry
+compares a generation, because a stack offset is reused as soon as its frame
 is popped. An `ObjectReference` or a `FrameReference` also carries the heap's
 move epoch, which the same check compares ("The move stress mode" below). In
 a release build neither the fields nor the checks exist, and a handle is
@@ -235,7 +235,7 @@ its graph depth is attacker-controlled, that is not acceptable.
 
 Objects and activations have no such graph: an object is words in the
 space, a word holds an offset, and dropping the `Heap` releases the space's
-reservation in one call and drops the activation stack's two flat vectors.
+reservation and the activation stack's in one call each.
 The hand-written iterative `Drop` implementations they used to need are
 gone.
 
@@ -603,7 +603,7 @@ handed was minted or read in the entry that compares it. Only a bare `Heap` in
 `heap.rs`'s own unit tests can still make a stale handle, and those tests are
 about the debug check itself.
 
-`ActivationReference` stays unbranded: the collector moves no stack entry, and
+`ActivationReference` stays unbranded: the collector moves no stack frame, and
 its generation check already covers an index reused after a pop.
 
 **Why no cast is needed.** The heap stores handles in their at-rest form and a
@@ -725,19 +725,29 @@ check").
   `vmMirror` slot and the kernel every builtin class's `enclosing` object,
   but a root of their own keeps both alive and forwarded whatever those
   links are.
-- The activation stack: each entry's receiver, `current_class`, the
-  `ClassReference` or closure object its `FrameKind` names, the frame it is married
-  to, and the state its continuation carries — a `WhileLoop`'s condition and
+- The activation stack, as one linear range of tagged words, `[0, top)`:
+  every frame's header -- its receiver, `current_class`, the closure object
+  or class its kind's operand names, the frame object it is married to,
+  and numbers the tracer passes over -- and its registers, with no stack
+  map and no walk of frames; the words a pop left above the top are never
+  read ([execution.md](execution.md), "Representation"). `ActivationStack`'s
+  impl is in `heap.rs`, where its
+  fields are private.
+- The side table of continuations (`Heap`'s `continuations`): each running
+  activation's continuation other than `Deliver`, which its stack frame
+  names by row (a frame that delivers names none), and the state it
+  carries — a `WhileLoop`'s condition and
   body, a `DoLoop`'s receiver and action, a `NestedClassCreation`'s
   enclosing object and declaring class, an `Instantiation`'s instance, levels
   with their arguments, and phase, an `Unwind`'s target frame and the value or error it carries,
   a `VmErrorSignalled` error's receiver, and a `Future` forcing's future and
   that of every forcing chained behind it, and a `ReturnToSuspended`'s
-  suspended sender with the continuation it wraps; and every register.
-  `StackEntry`'s impl is in `heap.rs`, where its fields are private.
+  suspended sender with the continuation it wraps
+  ([execution.md](execution.md), "Representation"). It is a root of
+  marking, of every move and of the scavenge, as the stack is.
 - The side table of suspended activations (`Heap`'s `suspensions`): each
-  row's frame and the state its continuation carries, as a stack entry's
-  ([execution.md](execution.md), "Suspending and resuming"). It is a root
+  row's frame and the state its continuation carries, as a running
+  activation's ([execution.md](execution.md), "Suspending and resuming"). It is a root
   of marking, of every move and of the scavenge, because a suspended frame
   belongs to a run that has not finished, whether or not anything else
   still reaches it: a suspended chain nothing else names would otherwise
@@ -755,9 +765,9 @@ check").
   numbers; a frame object's ten fixed fields -- sender, home, receiver,
   current class, the kind's operand among them, the rest numbers or
   constants the tracer passes over -- and its registers. A married frame's
-  registers are its entry's, traced with the stack, so its own are skipped;
-  the `Format::Frame` arm skips them only for a married word of 0 or more, a
-  stack index. A suspended frame's registers are the only copy of its
+  registers are its stack frame's, traced with the stack, so its own are
+  skipped; the `Format::Frame` arm skips them only for a married word of 0
+  or more, a stack offset. A suspended frame's registers are the only copy of its
   values, so they are traced like a returned frame's. The digits of a
   `LargeInteger`, a boxed `Float`'s bits, a string's code points and a
   `ByteArray`'s reserve and bytes are never handed to the tracer, since they
@@ -799,7 +809,7 @@ the heap module can mint a handle. `trace.rs` exists in
 every build, since the collector runs in every build.
 
 A reified frame is not a root of its own: it is reached through the closure
-that captured it, through the live entry it is married to, or through the
+that captured it, through the stack frame it is married to, or through the
 side-table row of its suspension. Two things the
 step state keeps hold no handle, on purpose, and a debug assertion before
 every move checks it: a send's argument buffer, empty between instructions
@@ -807,12 +817,13 @@ every move checks it: a send's argument buffer, empty between instructions
 outside the activation stack: its factory and initializers are activations
 like any method's ([execution.md](execution.md), "No re-entry from Rust"). A nested
 class being created is marked in its own cache slot by a primitive (`false`),
-while the enclosing object stays in the continuation of the clause's stack
-entry, where the stack is traced anyway.
+while the enclosing object stays in the continuation of the clause's
+activation, in the side table of continuations, which is traced anyway.
 
 **A handle lives only where the tracer can rewrite it in place**: in an
-object's words, in a stack entry, in a continuation that one stack entry or
-side-table row owns, or in the step state's own roots — never behind a
+object's words, in a word of a stack frame, in a continuation that one
+activation's row of the side tables owns, or in the step state's own roots
+— never behind a
 shared `Rc`, which the tracer could reach only through a shared reference.
 So a closure's handles live in the closure object's own words, and its code,
 which holds no handle, is named by a code id into the heap's table of
@@ -822,7 +833,7 @@ activations, `WhileLoop.condition` and `.body`, a `DoLoop`'s
 `LoopAction::Closure`, `Step::Block` — names the closure object, whose
 captured frame and copied values the tracer then rewrites once, in its
 words. A native loop's state is boxed in its continuation (`Box<WhileLoop>`,
-`Box<DoLoop>`), owned by exactly one stack entry.
+`Box<DoLoop>`), owned by exactly one activation.
 
 The inline caches ([dispatch.md](dispatch.md), "3b — The caches") add
 nothing to this list, by design, and are not traced: an entry holds a
@@ -833,8 +844,8 @@ polymorphic pool and the global cache hold the same entries, and the family
 map holds `Rc`s to code, which hold no handle. The table lives in the step
 state, per heap, so nothing in it is ever reached from another heap, and a
 move leaves every entry valid. The numbers the caches add to traced records
-are not handles either, and the tracers say so: a stack entry's
-`feedback_base` (its `Trace` impl) and a closure's feedback-base field
+are not handles either, and the tracers say so: a stack frame's feedback
+base, a `SmallInteger` word the stack's trace passes over, and a closure's feedback-base field
 (`trace_block`), and the dispatch id every object carries in its header
 word, which is what a guard reads ([dispatch.md](dispatch.md), "The dispatch
 id"). The ids a cache guards on are per heap and never serialized. The
@@ -913,15 +924,15 @@ a mistake the move would otherwise make permanent. A value stored in a heap
 object or a register is a bare `Word` with no epoch to check, so `Heap::store`
 refuses a foreign or stale value when it is stored, and the move rewrites the
 word by its offset. `ActivationReference` carries no
-epoch: no stack entry moves, and its generation already covers an index reused
+epoch: no stack frame moves, and its generation already covers an offset reused
 after a pop. V8's `--stress-compaction`, SpiderMonkey's compacting GC zeal mode
 and HotSpot's `ScavengeALot` exist for the same reason. Here the stress mode
 also comes first: the tracing and forwarding the collector will need are built,
 and held to the whole suite, before the collector is.
 
 **The schedule is budgeted, not every safepoint.** A move costs work
-proportional to what it traces — the objects, the activation stack's entries
-and registers, the canonical symbol table and the host roots
+proportional to what it traces — the objects, the activation stack's words,
+the canonical symbol table and the host roots
 (`Heap::traced_size`) — so moving at every
 safepoint is quadratic in a deep recursion: the tests and goldens that recurse
 to 100,000 activations, and the `bench_*` fixtures, would take hours per suite
@@ -992,7 +1003,7 @@ The heap stores handles at rest and a step sees them branded. Converting each
 payload safely at the boundary — at a push, a pop, an allocation — rebuilds
 it, and a `Box<WhileLoop>`, `Box<DoLoop>` or `Box<NestedClassCreation>`
 can change its lifetime in safe Rust only by reallocating: at every push
-and pop of a stack entry that carries one, which is every iteration of a
+and pop of a stack frame that carries one, which is every iteration of a
 native `whileTrue:` or `do:`. Rejected for that cost, with the user, on
 2026-09-13. Nothing is converted at a push, a pop or
 an allocation: the whole step state is handed over as it rests.
@@ -1438,7 +1449,7 @@ second walk of the heap would cost what the marking already reads.
 
 The roots are the ones a move forwards -- the heap's own, which
 `Heap::begin_marking` pushes (the `Activation` class, the activation
-stack's entries and registers, the host roots), and the step state's,
+stack's words, the host roots), and the step state's,
 `StepRoots` (the builtin classes, the `platform` singleton, the VM mirror,
 the kernel, the shipped world and the depth limit's reserve) -- with the canonical symbol
 table and the table of reified mixins removed, since those are weak. The remembered set is not a root here:
@@ -1704,34 +1715,37 @@ index, not an object.
 
 ### Frames, the activation stack and the marriage
 
-The activation stack is a root, and nothing there is reclaimed: an entry is
+The activation stack is a root, and nothing there is reclaimed: a frame is
 popped when its activation returns, so the stack is bounded by the deepest the
-program has been. Marking walks every `StackEntry` — receiver, `current_class`,
-`kind`, the continuation and `reified` — and every register in `stack.values`.
+program has been. Marking traces every word of every live frame as one range
+-- the header's receiver, `current_class`, operand and `reified` words among
+them, every other header word a `SmallInteger` or nil, then the registers --
+and every row of the side table of continuations, which a frame whose
+continuation is not `Deliver` names by row.
 
 A frame object is collected exactly as every other object is, with the same
 mark bit and the same forwarding table: there is no separate store for
 frames.
 
 **A married frame cannot be collected, and that needs no rule of its own.**
-`StackEntry::trace` follows `reified`, so a frame whose activation is still
+The stack's trace reads its frames' `reified` words, so a frame whose activation is still
 running is reachable from the stack and is marked. Leaving that to the root set
 rather than to a special case is what keeps a later change from silently
 freeing a running activation's frame.
 
 The marriage survives compaction in both directions: the frame object's
-married field holds a *stack* index as a `SmallInteger`, and no stack entry
-moves, and `StackEntry::reified` is forwarded like any other handle. While
-it is married the frame's own registers are nil and skipped by the trace,
-since the live ones are the entry's. The divorce on pop writes the program
+married field holds a *stack* offset as a `SmallInteger`, and no stack frame
+moves, and the stack frame's `reified` word is forwarded like any other
+word. While it is married the frame's own registers are nil and skipped by
+the trace, since the live ones are the stack's. The divorce on pop writes the program
 counter and the uncontinuable flag, clears the marriage, and copies the
 registers into the frame object only when the activation retains them.
 
 **A frame can be tenured while it is married.** A scavenge copies a young
 married frame like any other object -- its registers skipped, since they
-are the entry's -- and `StackEntry::reified` is rewritten to the copy, in
-the survivor space or the old space; the married field still holds the
-stack index. While it is married an old frame needs no remembering: its
+are the stack's -- and the stack frame's `reified` word is rewritten to the
+copy, in the survivor space or the old space; the married field still holds
+the stack offset. While it is married an old frame needs no remembering: its
 live registers are on the activation stack, which every scavenge traces as
 a root. The divorce is a store into an existing object, so it takes the
 barrier's rule: when it copies the registers into an old frame and one of
@@ -1762,6 +1776,12 @@ Pinned by `heap.rs`'s
 `a_suspended_frame_survives_a_move_a_scavenge_and_a_collection_with_its_registers`,
 `a_young_value_written_into_a_suspended_old_frame_is_remembered` and
 `the_reclaim_keeps_the_entered_level_of_a_suspended_activation`.
+
+The stack is frames of tagged words in one reservation, which the
+collector traces as one linear range ([execution.md](execution.md),
+"Representation"), pinned by `heap.rs`'s
+`the_stack_is_traced_as_one_range_of_tagged_words` and
+`a_collection_after_a_deep_pop_reads_nothing_above_the_top`.
 
 What keeps a frame alive past its return is a closure's captured frame, or
 another reified frame's `sender`/`home`. Closure conversion shrank what a
@@ -2012,14 +2032,20 @@ lent only over memory that is committed and accessible -- so everything above
 it keeps the compiler-checked guarantee. This is step 1 of the road in
 [OPEN-WORK.md](../OPEN-WORK.md), "The road to a high-performance VM". The
 heap is its user: each `Heap`'s object space is one `Reservation` ("The
-object space" below), and eden's top is the reservation's bump cursor
-("Inline allocation"). `Reservation` is not `Send` or `Sync`, since it holds
-a `NonNull`, and nothing needs it to be: the space belongs to one `Heap`,
+object space" below), eden's top is that reservation's bump cursor
+("Inline allocation"), and the heap's activation stack is a second
+`Reservation`, the frames of the running activations
+([execution.md](execution.md), "Representation"). `Reservation` is not
+`Send` or `Sync`, since it holds a `NonNull`, and nothing needs it to be:
+both belong to one `Heap`,
 and an interpreter, which holds `Rc`s throughout, is not `Send` either.
 
-- **One contiguous reservation per heap**: `Reservation::reserve` rounds the
-  size up to the platform's reservation granularity and commits nothing. The
-  heap holds its object space in it, reserved once at a generous size --
+- **One contiguous reservation per space**: `Reservation::reserve` rounds the
+  size up to the platform's reservation granularity and commits nothing,
+  and refuses a size past `isize::MAX` bytes as `InvalidRange`, the most a
+  slice may span, so `prefix` and `accessible` below need no comparison
+  against it. The heap holds its object space in one, reserved once at a
+  generous size --
   64 GiB on a 64-bit target and 1 GiB otherwise (`DEFAULT_RESERVATION`,
   `heap/space.rs`), since reserved address space costs nothing until it is
   committed -- and committed as the space grows; the nursery lies at its
@@ -2032,6 +2058,13 @@ and an interpreter, which holds `Rc`s throughout, is not `Send` either.
   commits (`prior-art/strongtalk/vm/runtime/virtualspace.cpp:27-31`, `:73-135`;
   `VirtualAlloc` with `MEM_RESERVE`, then `MEM_COMMIT`,
   `prior-art/strongtalk/vm/runtime/os_nt.cpp:403-414`).
+  The heap's activation stack is the second: 16 GiB on a 64-bit target
+  and 256 MiB otherwise (`STACK_RESERVATION`, `heap/frames.rs`),
+  committed from its base as the stack deepens and never decommitted
+  while the heap lives. Where the operating system limits address
+  space, either reservation falls back, halving the request down to no
+  less than 1 GiB (`reserve_falling_back`, `heap/space.rs`; a request
+  already below that is tried alone).
 - **Operations**: `reserve`, `commit` a range, `decommit` a range when a space
   shrinks, `protect` a range as no-access or read-write, and lend each
   accessible, committed range as its own `&[u64]` (`words`) and `&mut [u64]`
@@ -2039,8 +2072,14 @@ and an interpreter, which holds `Rc`s throughout, is not `Send` either.
   and the committed read-write range at the base up to an end, `0..end`, in
   O(1) (`prefix`, `prefix_mut`): the reservation keeps the end of that range
   as a field, refreshed whenever its page map changes, so lending it is one
-  comparison rather than a walk of the map; dropping the reservation
-  releases it. Ranges are byte offsets from the
+  comparison rather than a walk of the map. `accessible` and
+  `accessible_mut` lend that whole range with no check at all, its end
+  being the field -- kept in words beside the byte end, so that lending
+  it takes no shift either -- so what indexes the slice makes the
+  access's one bounds check, against the committed end: the activation
+  stack's register access, which the run loop makes on nearly every
+  instruction, where the shift cost `bench_loop.ns` about 2%. Dropping
+  the reservation releases it. Ranges are byte offsets from the
   base: commit, decommit and protect take page-aligned, non-empty ranges
   inside the reservation, the slices 8-byte-aligned ones that are committed
   read-write throughout and no longer than `isize::MAX` bytes, and a
@@ -2057,7 +2096,13 @@ and an interpreter, which holds `Rc`s throughout, is not `Send` either.
   `words_mut`) and indexes it by the offset, so an offset at or above the
   top finds no word: that slice is the bounds check the accessors rely on.
   The old space lies above the nursery, so the one slice covers all four
-  regions and the heap needs no other; `split_words_mut` is unused by it.
+  regions and the object space needs no other; `split_words_mut` is unused
+  by the heap. The activation stack re-borrows its whole accessible range
+  (`FrameStack::word`, `words`) and indexes it by a word's offset, so
+  only an offset at or past the committed end finds no word; that an
+  offset lies below the top, in a live frame, is the stack's to keep,
+  which a debug build checks ([execution.md](execution.md),
+  "Representation").
 - **A bump cursor**: the reservation holds one cursor, a top and a limit
   in byte offsets (`BumpCursor`), and eden's young allocations take their
   memory from it ("Inline allocation"). `set_bump` places it and refuses
@@ -2416,8 +2461,9 @@ A Cheney copy of the nursery's survivors (`heap/scavenge.rs`), as Spur's
 (`universe_more.cpp:81-137`) are.
 
 - **The roots** are what a full collection marks from -- the `Activation`
-  class, every activation stack entry and every register, the side table
-  of suspended activations, the host roots, and the step state's
+  class, every word of the activation stack, the side tables of
+  continuations and of suspended activations, the host roots, and the step
+  state's
   `StepRoots` -- plus the remembered set. The whole
   activation stack is a root, so a scavenge costs time in proportion to the
   recursion depth, up to the depth limit's 100,000 activations and its
@@ -2821,7 +2867,7 @@ Cogit's `genPrimitiveNew` and `genCreateFullClosure:…` do in machine code
 
 ### A closure's code id without the map
 
-A closure and a frame object store their body's code id, which
+A closure, a frame object and a stack frame store their body's code id, which
 `Heap::register_code` finds in a map keyed by the body's `Rc` pointer. A
 body carries a one-entry cache in front of the map (`CompiledCode`'s
 `code_id_cache`, a `CodeIdCache`): the id it was last answered and the
@@ -2893,7 +2939,7 @@ moved".
   a handle from another heap is in range and names a valid object, so the read
   succeeds with the wrong answer. It costs nothing in a release build, where the
   origin field does not exist. An `ActivationReference` adds a generation to the same
-  guard, for the same reason: a stack index is reused once its entry is popped.
+  guard, for the same reason: a stack offset is reused once its frame is popped.
 - **Activations live on a stack, not in the object space**, so that what nothing
   captures is not retained. Only a reified frame reaches the space, and it is
   the one activation form anything may store.

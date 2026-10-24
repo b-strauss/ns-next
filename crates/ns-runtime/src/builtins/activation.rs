@@ -119,7 +119,7 @@ enum SubjectLeaf {
 
 /// A leaf whose subject is an activation object: the object names a frame,
 /// whose activation is running while the frame is married to a stack
-/// entry or suspended into it (`Heap::frame_is_running`), and has returned
+/// frame or suspended into it (`Heap::frame_is_running`), and has returned
 /// otherwise. Each leaf reads and writes through the frame, so that a
 /// suspended activation answers as a married one does. A subject that is
 /// no activation object declines.
@@ -227,7 +227,7 @@ fn activation_object<'gc>(
 /// the metaclass, `Foo class>>new`. `None` for an activation running a
 /// block, an initializer or a clause, which have no selector to report.
 /// Read off the frame, which records the kind, code and class its stack
-/// entry had, so a suspended activation is named as a married one is.
+/// frame had, so a suspended activation is named as a married one is.
 fn method_name<'gc>(mutator: &Mutator<'gc>, frame: FrameReference<'gc>) -> Option<String> {
     if let FrameKind::Factory(class) = mutator.heap.frame_kind(frame) {
         // Read through the metaclass (`Heap::class_factory`): a body-less

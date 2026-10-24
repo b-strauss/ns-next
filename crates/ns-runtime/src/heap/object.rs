@@ -111,7 +111,7 @@ pub(in crate::heap) fn pointer_ranges_of(
         | Format::IndexablePointers
         | Format::WeakPointers
         | Format::Ephemeron => ranges[1] = clamped(FIELDS, length),
-        // A married frame's registers are its stack entry's, traced with
+        // A married frame's registers are its stack frame's, traced with
         // the stack; its own stay nil until the divorce copies them in, so
         // they are skipped rather than walked for nothing. A suspended
         // frame's are the only copy of its values, and a returned one's
@@ -692,7 +692,7 @@ pub(in crate::heap) mod closure_field {
 /// `Heap::store` and read through `Heap::load` like an instance's.
 pub(in crate::heap) mod frame_field {
     /// The frame object of the activation this one returns to, or nil: a
-    /// live activation's sender is the stack entry below it, and a returned
+    /// live activation's sender is the stack frame below it, and a returned
     /// one has none, so only a suspended frame whose activation returns to
     /// another suspended one, and a decoded frame, carry one.
     pub(in crate::heap) const SENDER: usize = 0;
@@ -713,7 +713,7 @@ pub(in crate::heap) mod frame_field {
     pub(in crate::heap) const KIND_OPERAND: usize = 7;
     /// `true` once the activation has returned.
     pub(in crate::heap) const UNCONTINUABLE: usize = 8;
-    /// The frame's state: a `SmallInteger` ≥ 0, the stack entry index of
+    /// The frame's state: a `SmallInteger` ≥ 0, the stack offset of
     /// the activation the frame is married to, while it runs; a
     /// `SmallInteger` < 0, `-(row + 1)`, naming its row in the heap's side
     /// table of suspensions, while its activation is suspended into it
