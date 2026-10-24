@@ -591,7 +591,7 @@ impl crate::trace::Trace for Suspensions<'_> {
 /// The row of `Continuations` that holds a stack entry's continuation. An
 /// entry that delivers has none, so that a send's return tests one
 /// `Option` and reaches no table.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct ContinuationRow(u32);
 
 /// The heap's side table of the continuations of running activations other
@@ -626,36 +626,93 @@ impl<'gc> Continuations<'gc> {
     }
 
     /// Stores `continuation`, never a `Deliver`, in the smallest free row.
-    /// Out of line: only a native's step, an unwind's block, a future or a
-    /// resumed activation takes a row.
-    #[cold]
-    #[inline(never)]
+    /// A native loop over a block that is not inlined takes a row and
+    /// gives it back on every step, and its row is the last one, so the
+    /// common case appends to a table with no free row and is inline; only
+    /// a table with holes takes the free list's way.
+    #[inline]
     fn insert(&mut self, continuation: Continuation<'gc>) -> ContinuationRow {
         debug_assert!(
             !matches!(continuation, Continuation::Deliver),
             "internal: a delivering activation takes no row"
         );
-        let row = match self.free.take_smallest() {
-            Some(free) => free as usize,
-            None => {
-                self.rows.push(None);
-                self.rows.len() - 1
-            }
-        };
-        self.rows[row] = Some(continuation);
-        ContinuationRow(u32::try_from(row).expect("more than u32::MAX continuations live at once"))
+        if !self.free.is_empty() {
+            return self.insert_into_free_row(continuation);
+        }
+        self.rows.push(Some(continuation));
+        Self::row_of(self.rows.len() - 1)
     }
 
-    /// Takes the continuation out of `row` and frees the row.
+    /// `insert` into the smallest free row: out of line, since a hole
+    /// below the last row opens only when a continuation other than the
+    /// top's is taken or replaced by a `Deliver` (an unwind, a suspension).
     #[cold]
     #[inline(never)]
+    fn insert_into_free_row(&mut self, continuation: Continuation<'gc>) -> ContinuationRow {
+        let row = self
+            .free
+            .take_smallest()
+            .expect("internal: the caller checked a row is free") as usize;
+        self.rows[row] = Some(continuation);
+        Self::row_of(row)
+    }
+
+    fn row_of(index: usize) -> ContinuationRow {
+        ContinuationRow(
+            u32::try_from(index).expect("more than u32::MAX continuations live at once"),
+        )
+    }
+
+    /// Takes the continuation out of `row` and frees the row. The last row
+    /// is never free -- trailing free rows are truncated -- so taking it,
+    /// a native loop's every step, pops it without the free list; a row
+    /// below it, or a hole the pop uncovers, takes the free list's way.
+    #[inline]
     fn take(&mut self, row: ContinuationRow) -> Continuation<'gc> {
-        let continuation = self.rows[row.0 as usize]
+        let index = row.0 as usize;
+        if index + 1 != self.rows.len() {
+            return self.take_below_the_last(index);
+        }
+        let continuation = self
+            .rows
+            .pop()
+            .flatten()
+            .expect("internal: a stack entry names a live continuation row");
+        if matches!(self.rows.last(), Some(None)) {
+            self.truncate_trailing();
+        }
+        continuation
+    }
+
+    /// `take` of a row below the last one: it becomes a free row.
+    #[cold]
+    #[inline(never)]
+    fn take_below_the_last(&mut self, index: usize) -> Continuation<'gc> {
+        let continuation = self.rows[index]
             .take()
             .expect("internal: a stack entry names a live continuation row");
-        self.free.free(row.0);
-        ids::truncate_trailing(&mut self.rows, &mut self.free);
+        self.free.free(index as u32);
         continuation
+    }
+
+    /// Gives back the free rows the last row's pop left at the end.
+    #[cold]
+    #[inline(never)]
+    fn truncate_trailing(&mut self) {
+        ids::truncate_trailing(&mut self.rows, &mut self.free);
+    }
+
+    /// Replaces the continuation in `row` with `continuation`, never a
+    /// `Deliver`, keeping the row.
+    fn replace(&mut self, row: ContinuationRow, continuation: Continuation<'gc>) {
+        debug_assert!(
+            !matches!(continuation, Continuation::Deliver),
+            "internal: a delivering activation takes no row"
+        );
+        let slot = self.rows[row.0 as usize]
+            .as_mut()
+            .expect("internal: a stack entry names a live continuation row");
+        *slot = continuation;
     }
 
     /// The continuation an entry naming `row` applies: `Deliver` for none.
@@ -6453,10 +6510,11 @@ impl<'gc> Heap<'gc> {
         match entry.continuation {
             Some(row) => match self.continuations.rows[row.0 as usize].as_mut() {
                 Some(Continuation::ReturnToSuspended(suspended)) => suspended.then = then,
-                _ => {
+                _ if matches!(then, Continuation::Deliver) => {
                     self.continuations.take(row);
-                    entry.continuation = self.continuations.store(then);
+                    entry.continuation = None;
                 }
+                _ => self.continuations.replace(row, then),
             },
             None => entry.continuation = self.continuations.store(then),
         }
@@ -7057,8 +7115,9 @@ impl<'gc> Heap<'gc> {
 
     /// Moves every object, every reified frame among them, to a new offset
     /// and rewrites every handle the heap itself holds -- in every object,
-    /// in every stack entry and the continuation it owns, in every register,
-    /// and in every host root -- into the next epoch. What the heap does not
+    /// in every stack entry, every suspended activation and every
+    /// continuation, in every register, and in every host root -- into the
+    /// next epoch. What the heap does not
     /// hold, the caller forwards with the answer: the interpreter's own
     /// roots (`World::move_everything`). A compacting collection that
     /// treats everything as live; the stress mode runs one at the run loop's
@@ -7340,9 +7399,10 @@ impl<'gc> Heap<'gc> {
     }
 
     /// Forwards every handle the heap itself holds through `forwarder`:
-    /// every object, the `Activation` class, every stack entry and
-    /// the continuation it owns, every register, every surviving canonical
-    /// symbol table entry, and every host root. Shared by `move_everything`,
+    /// every object, the `Activation` class, every stack entry, every
+    /// register, every row of the tables of suspended activations and of
+    /// continuations, every surviving canonical symbol table entry, and
+    /// every host root. Shared by `move_everything`,
     /// `compact` and `forward_identity` -- each builds its own `Forwarder`
     /// first, over its own `Relocation`, and then walks the same roots
     /// through it -- so that a field any of them must reach is named here
@@ -13683,6 +13743,85 @@ mod tests {
         heap.push_activation(unwinding(), &[], 0);
 
         assert_eq!(heap.continuation_rows(), vec![true]);
+    }
+
+    /// A continuation replaced by a `Deliver` leaves a hole below the last
+    /// row, which the next push fills first; popping the last row gives
+    /// back the holes it uncovers.
+    #[test]
+    fn a_row_freed_below_the_last_is_minted_first_and_given_back_with_it() {
+        let mut heap = Heap::new();
+        let unwinding = || ActivationHeader {
+            then: Continuation::Unwind(Box::new(PendingUnwind {
+                target: None,
+                action: UnwindAction::Restart,
+            })),
+            ..header()
+        };
+        let restart = || {
+            Continuation::Unwind(Box::new(PendingUnwind {
+                target: None,
+                action: UnwindAction::Restart,
+            }))
+        };
+        heap.push_activation(unwinding(), &[], 0);
+        let middle = heap.push_activation(unwinding(), &[], 0);
+        let top = heap.push_activation(unwinding(), &[], 0);
+
+        heap.activation_set_continuation(middle, Continuation::Deliver);
+        assert_eq!(heap.continuation_rows(), vec![true, false, true]);
+        heap.activation_set_continuation(middle, restart());
+        assert_eq!(heap.continuation_rows(), vec![true, true, true]);
+        heap.activation_set_continuation(middle, Continuation::Deliver);
+
+        heap.pop_activation(top);
+        assert_eq!(heap.continuation_rows(), vec![true]);
+        heap.activation_set_continuation(middle, restart());
+        assert_eq!(heap.continuation_rows(), vec![true, true]);
+    }
+
+    /// Replacing one continuation other than `Deliver` with another keeps
+    /// its row.
+    #[test]
+    fn a_replaced_continuation_keeps_its_row() {
+        let mut heap = Heap::new();
+        let below = heap.push_activation(
+            ActivationHeader {
+                then: Continuation::Unwind(Box::new(PendingUnwind {
+                    target: None,
+                    action: UnwindAction::Restart,
+                })),
+                ..header()
+            },
+            &[],
+            0,
+        );
+        heap.push_activation(
+            ActivationHeader {
+                then: Continuation::Unwind(Box::new(PendingUnwind {
+                    target: None,
+                    action: UnwindAction::Restart,
+                })),
+                ..header()
+            },
+            &[],
+            0,
+        );
+
+        heap.activation_set_continuation(
+            below,
+            Continuation::Unwind(Box::new(PendingUnwind {
+                target: None,
+                action: UnwindAction::Return(Value::small_integer(3)),
+            })),
+        );
+
+        assert_eq!(heap.continuation_rows(), vec![true, true]);
+        assert!(matches!(
+            heap.continuations.get(heap.stack.entries[0].continuation),
+            Continuation::Unwind(pending) if matches!(pending.action, UnwindAction::Return(_))
+        ));
+        assert_eq!(heap.stack.entries[0].continuation, Some(ContinuationRow(0)));
     }
 
     #[test]

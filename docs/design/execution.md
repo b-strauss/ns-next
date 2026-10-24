@@ -356,9 +356,14 @@ when it is popped; and `counted`, whether it counts against the depth limit
 ("The depth limit" below). A `Continuation::Deliver`, every send's, is never
 stored: the entry's `None`, so a send's return tests one `Option` and reaches
 no table. Every other continuation lives in a row of the heap's side table
-of continuations (`Heap`'s `continuations`), minted smallest free row first,
-taken out and freed by the pop, out of line; the table is a root
-([memory.md](memory.md), "What the collector traces"). A suspension takes its
+of continuations (`Heap`'s `continuations`), minted smallest free row first
+and taken out and freed by the pop; the table is a root
+([memory.md](memory.md), "What the collector traces"). A native loop over a
+block the compiler did not inline (`whileTrue:`, `do:`) gives its row back
+and takes one again on every step, and its row is the last: the last row is
+never free, so that pop and that push each touch only the end of the
+table's vector, inline, and only a row below the last takes the free list,
+out of line. A suspension takes its
 activation's continuation out of the table into its suspension row, and a
 resume puts it back.
 
@@ -722,7 +727,8 @@ holds no handle; its `program_counter`; its `FeedbackBase`, a number; and its
 and the run's floor, a stack depth. Every value the loop works on is read from
 a register or an operand when an instruction needs it and written back before
 the next, so at a safepoint every handle is in a register on the stack, in a
-stack entry or the continuation it owns, in a heap object or in a root, where
+stack entry, in the heap's side table of continuations or of suspended
+activations, in a heap object or in a root, where
 the tracer rewrites it. The reusable argument buffer, which a send fills and
 empties within one instruction, is empty at every safepoint.
 

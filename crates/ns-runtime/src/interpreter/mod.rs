@@ -675,13 +675,16 @@ impl Interpreter {
     /// from Rust"). `depth` is the stack's depth before the host's entry
     /// decided anything.
     ///
-    /// Three things are checked in a debug build, because each is otherwise
+    /// Five things are checked in a debug build, because each is otherwise
     /// silent. The loop is never entered while it is running -- nothing it
     /// calls can reach here. The stack is left as deep as it was found: a
     /// leaked entry would put a later activation on top of a dead one's
     /// registers (a leak inside a run is caught too, by
-    /// `Heap::pop_activation`'s check that it pops the top). And no nested
-    /// class's creation outlives the run that began it.
+    /// `Heap::pop_activation`'s check that it pops the top). No suspended
+    /// activation outlives the run that suspended it, and no continuation
+    /// the run's activations held stays in the heap's table, where it
+    /// would keep what it names alive. And no nested class's creation
+    /// outlives the run that began it.
     fn run_from_host(&mut self, start: HostStart, depth: usize) -> HostResult {
         debug_assert!(
             !self.running,

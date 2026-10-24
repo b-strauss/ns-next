@@ -32,6 +32,12 @@ impl FreeIndices {
         self.free.contains(&index)
     }
 
+    /// Whether no index is free: a table's mint then appends a row, its
+    /// fast path (`heap.rs`'s `Continuations::insert`).
+    pub(crate) fn is_empty(&self) -> bool {
+        self.free.is_empty()
+    }
+
     /// How many indices are free. Read by the tests that check the
     /// collection's reclamation of dead rows.
     #[cfg_attr(not(test), allow(dead_code))]
