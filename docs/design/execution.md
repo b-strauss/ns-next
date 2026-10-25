@@ -245,25 +245,30 @@ pub struct ActivationReference {
   a slot access checks"). Taking the frame is one comparison of its end
   against what may be used without committing more, and the reservation
   stays committed across pops, so once it has grown to the program's depth
-  a push commits nothing. A push the reservation cannot hold is refused
-  (`PushRefused`; `StackExhausted` from the public `Heap::push_activation`),
-  which `Mutator::push_placed` raises as the depth limit's
-  `stack overflow: recursion too deep` ("The depth limit" below). Every
-  activation the runtime pushes goes through one function,
-  `Mutator::push_placed` (`Mutator::push` calls it for a push above the
-  sender's window), which refuses a push past the depth limit before it
-  reaches the heap, so no new push site can skip the check. It is called
-  from `Mutator::push_step`, for the method, block or body a decision
+  a push commits nothing. The heap's pushes refuse a frame the
+  reservation cannot hold with `PushRefused`, and the public
+  `Heap::push_activation` with `StackExhausted`; `Mutator::push_placed`
+  raises either as the depth limit's `stack overflow: recursion too deep`
+  ("The depth limit" below). Every activation the runtime pushes goes
+  through that one function, which `Mutator::push` calls for a push above
+  the sender's window. It refuses a push past the depth limit before it
+  reaches the heap -- the compare sits in `Mutator::push_above` and
+  `Mutator::push_on_slots`, the two placements it chooses between -- so no
+  new push site can skip the check. It is called from
+  `Mutator::push_step`, for the method, block or body a decision
   answered, and for the initializer a factory entered past its first
   instructions decides (`Mutator::enter_factory_body`). It lends the
   header to the heap's push rather than moving it, and hands it on whole
-  only to a refusal's cold path (`Mutator::push_refused`): moved through
+  only to a refusal's cold path, `Mutator::push_refused`. Moved through
   the push's inlined layers, the header, built by narrow stores, was
   copied into each layer's own place sixteen bytes at a time and so read
   back wide right after it was written, a store-forwarding stall on every
-  send. Every word is
-  computed before the frame is taken, so a refused push changes nothing;
-  the header is then written in place, every word once. A pop reads the
+  send. Every word is computed before the frame is taken, so a refused
+  push changes nothing; the header is then written in place, every word
+  once. The caller word packs the caller's offset with the top the frame
+  was pushed at, which is the caller's window end, as a distance from the
+  frame's start (`frames::caller_link_word`), so that a pop finds the top
+  it gives back without reading the caller's header. A pop reads the
   words it needs and sets the top to its caller's window end -- the
   caller's registers above its slots are its own again, dead, and a debug
   build fills them with the `SmallInteger` `0x5EAD_5EAD`, so that a read
@@ -6934,9 +6939,10 @@ could only end the run as L, uncatchable and under the wrong name.
 `crates/ns-runtime/tests/exceptions.rs` the uncaught cases at L − 3, L − 1,
 L and L + 1 and the overruns of the machinery, a `pass`'s included.
 
-- **L is checked on every push.** `Mutator::push_placed`, the one function
-  every activation the runtime pushes goes through (`Mutator::push` calls
-  it), refuses a counted push when
+- **L is checked on every push.** `Mutator::push_placed` is the one
+  function every activation the runtime pushes goes through, and
+  `Mutator::push` calls it. Its two placements, `Mutator::push_above` and
+  `Mutator::push_on_slots`, each refuse a counted push when
   `Heap::counted_depth` has reached the limit. The heap keeps that count as a
   running total on push and pop, so an error path — which pops through
   `interpreter::unwind` like any other — leaves it exact; suspending and

@@ -110,8 +110,10 @@ pub(super) mod frame_header {
     pub const PROGRAM_COUNTER: usize = 6;
     /// The feedback base, a `SmallInteger`.
     pub const FEEDBACK_BASE: usize = 7;
-    /// The word offset of the frame below, a `SmallInteger`; nil in the
-    /// bottom frame.
+    /// The word offset of the frame below and how far the top stood
+    /// above this frame's start when it was pushed -- the caller's window
+    /// end, which its pop gives back -- packed into one `SmallInteger`
+    /// (`caller_link_word`); nil in the bottom frame.
     pub const CALLER: usize = 8;
     /// Nil for `Deliver`, otherwise the continuation's row in the heap's
     /// side table, a `SmallInteger`.
@@ -277,6 +279,50 @@ pub(super) fn number_word(number: u64) -> Word {
         "internal: a frame's number fits a SmallInteger"
     );
     Word::from_bits((number << SMALL_INTEGER_TAG_BITS) | SMALL_INTEGER_TAG)
+}
+
+/// The bits of a caller word (`frame_header::CALLER`) that hold the
+/// caller's offset: every offset is below `MAXIMUM_STACK_WORDS`, 2^31.
+const CALLER_OFFSET_BITS: u32 = 31;
+
+/// The bits above the caller's offset, which hold how far the caller's
+/// window end lies above the frame's start: 29, so that the word stays a
+/// `number_word`. A frame is pushed either at the top, so the distance is
+/// 0, or on its caller's slots, so the distance is at most the caller's
+/// window, whose registers are numbered in 16 bits: far below 2^29.
+const CALLER_TOP_BITS: u32 = 60 - CALLER_OFFSET_BITS;
+
+const _: () = assert!(MAXIMUM_STACK_WORDS <= 1 << CALLER_OFFSET_BITS);
+
+/// The caller word of a frame pushed on `caller` from stack word `start`,
+/// its first argument, while the top stood at `top`: the caller's window
+/// end, which the frame's pop restores without reading the caller's
+/// header.
+#[inline(always)]
+pub(super) fn caller_link_word(caller: u32, start: usize, top: usize) -> Word {
+    debug_assert!(
+        start <= top,
+        "internal: a frame starts at or below the top it is pushed at"
+    );
+    let above = (top - start) as u64;
+    debug_assert!(
+        above < 1 << CALLER_TOP_BITS && u64::from(caller) < 1 << CALLER_OFFSET_BITS,
+        "internal: a caller word's offset and distance fit their bits"
+    );
+    number_word(u64::from(caller) | (above << CALLER_OFFSET_BITS))
+}
+
+/// The caller's offset a caller word holds.
+#[inline(always)]
+pub(super) fn caller_offset_of(word: Word) -> u32 {
+    (number_of(word) & ((1 << CALLER_OFFSET_BITS) - 1)) as u32
+}
+
+/// How far above its frame's start the top stood when the frame was
+/// pushed, which a caller word holds.
+#[inline(always)]
+pub(super) fn caller_top_above_start(word: Word) -> usize {
+    (number_of(word) >> CALLER_OFFSET_BITS) as usize
 }
 
 /// The number `number_word` stored; `word` must be one it answered.
@@ -674,6 +720,24 @@ mod tests {
             ),
             0x7FFF_FFFF << 26
         );
+    }
+
+    #[test]
+    fn a_caller_word_holds_the_caller_and_the_top_the_frame_was_pushed_at() {
+        // The largest of each: the last offset the reservation allows, and
+        // a caller window of every register number a body can have above
+        // a frame that starts at the caller's first argument.
+        let caller = (MAXIMUM_STACK_WORDS - 1) as u32;
+        let start = 1000;
+        let top = start + usize::from(u16::MAX) + 1;
+        let word = caller_link_word(caller, start, top);
+        assert!(word.is_non_negative_small_integer());
+        assert_eq!(caller_offset_of(word), caller);
+        assert_eq!(start + caller_top_above_start(word), top);
+        // A frame pushed at the top: nothing above its start.
+        let word = caller_link_word(7, start, start);
+        assert_eq!(caller_offset_of(word), 7);
+        assert_eq!(caller_top_above_start(word), 0);
     }
 
     #[test]

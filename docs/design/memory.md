@@ -507,8 +507,8 @@ source was slower beyond the sittings' noise, and `bench_block.ns` was 4%
 faster for another reason ([execution.md](execution.md), "What 2b moved",
 which also has the one borderline group). So Cog's trick was not
 needed; it stays the fallback should a later measurement show the poll's price
-on the send path: a request lowers the limit `Mutator::push_placed` already
-compares the activation depth against, so a send pays nothing it does not pay
+on the send path: a request lowers the limit that `Mutator::push_above` and
+`Mutator::push_on_slots` already compare the activation depth against, so a send pays nothing it does not pay
 anyway.
 
 ### No Rust frame is live below a safepoint

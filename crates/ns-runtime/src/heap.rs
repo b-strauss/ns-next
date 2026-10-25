@@ -794,13 +794,24 @@ impl ActivationStack {
 
     /// The top once the innermost frame, at `offset`, is gone: its caller's
     /// window end, the caller's registers above its slots its own again
-    /// though dead, or the frame's start for the bottom frame.
+    /// though dead, or the frame's start for the bottom frame. The caller's
+    /// window end is the top the frame was pushed at, which its caller
+    /// word records as a distance from its start, so that the pop reads
+    /// nothing of the caller's header (`frames::caller_link_word`).
     #[inline(always)]
     fn top_without(&self, offset: u32) -> usize {
-        match self.caller(offset) {
-            Some(caller) => self.window_end(caller),
-            None => self.frame_start(offset),
+        let start = self.frame_start(offset);
+        let word = self.header_word(offset, frame_header::CALLER);
+        if !word.is_small_integer() {
+            return start;
         }
+        let top = start + frames::caller_top_above_start(word);
+        debug_assert_eq!(
+            top,
+            self.window_end(frames::caller_offset_of(word)),
+            "internal: a frame's caller word records its caller's window end"
+        );
+        top
     }
 
     /// Takes the innermost frame, at `offset`, off the stack's words: the
@@ -825,9 +836,8 @@ impl ActivationStack {
     #[inline(always)]
     fn caller(&self, offset: u32) -> Option<u32> {
         let word = self.header_word(offset, frame_header::CALLER);
-        // An offset is below 2^31, so the conversion is exact.
         word.is_small_integer()
-            .then(|| frames::number_of(word) as u32)
+            .then(|| frames::caller_offset_of(word))
     }
 
     /// The continuation row the frame at `offset` names; `None` for one
@@ -3030,7 +3040,7 @@ impl<'gc> Heap<'gc> {
         let caller = Word::from_bits(header[frame_header::CALLER]);
         let caller_below = caller.bits() == Word::NIL.bits()
             || (caller.is_non_negative_small_integer()
-                && frames::number_of(caller) < u64::from(offset));
+                && frames::caller_offset_of(caller) < offset);
         if !caller_below {
             return None;
         }
@@ -6054,11 +6064,14 @@ impl<'gc> Heap<'gc> {
     /// which is named only once the push has succeeded, so that a refused
     /// push takes no row: computed before the frame is pushed, since the
     /// push is the last thing that can refuse, so a refused push has
-    /// changed nothing.
+    /// changed nothing. `start` is the stack word of the frame's first
+    /// argument, from which its caller word measures the top
+    /// (`caller_word`).
     #[inline(always)]
     fn header_words(
         &mut self,
         header: &ActivationHeader<'gc>,
+        start: usize,
         argument_count: u16,
         temporary_count: usize,
     ) -> FrameHeaderWords {
@@ -6126,7 +6139,7 @@ impl<'gc> Heap<'gc> {
             code: frames::number_word(code.index() as u64),
             program_counter: frames::number_word(0),
             feedback_base: frames::number_word(u64::from(header.feedback_base.raw())),
-            caller: self.caller_word(),
+            caller: self.caller_word(start),
             continuation: Word::NIL,
             guard: frames::number_word(u64::from(recorded_guard.bits())),
             entered_level: frames::number_word(entered_level.index() as u64),
@@ -6187,7 +6200,9 @@ impl<'gc> Heap<'gc> {
                 }
             }
         }
-        let mut header_words = self.header_words(header, argument_count, temporary_count);
+        // Pushed at the top: its first argument is the top's word.
+        let top = self.stack.frames.top();
+        let mut header_words = self.header_words(header, top, argument_count, temporary_count);
         let Heap {
             stack,
             continuations,
@@ -6347,7 +6362,7 @@ impl<'gc> Heap<'gc> {
             offset <= self.stack.window_end(self.stack.innermost),
             "internal: a send's slots end inside its sender's window"
         );
-        let mut header_words = self.header_words(header, argument_count, temporary_count);
+        let mut header_words = self.header_words(header, start, argument_count, temporary_count);
         let Heap {
             stack,
             continuations,
@@ -6373,13 +6388,15 @@ impl<'gc> Heap<'gc> {
         Ok(self.pushed_at(offset as u32, header.counted))
     }
 
-    /// The caller word of a frame pushed now: the innermost frame's offset,
-    /// or nil on an empty stack.
+    /// The caller word of a frame pushed now from stack word `start`, its
+    /// first argument: the innermost frame's offset and the top, which is
+    /// that frame's window end (`frames::caller_link_word`), or nil on an
+    /// empty stack.
     #[inline(always)]
-    fn caller_word(&self) -> Word {
+    fn caller_word(&self, start: usize) -> Word {
         match self.stack.innermost {
             NO_FRAME => Word::NIL,
-            innermost => frames::number_word(u64::from(innermost)),
+            innermost => frames::caller_link_word(innermost, start, self.stack.frames.top()),
         }
     }
 
@@ -6468,7 +6485,7 @@ impl<'gc> Heap<'gc> {
         self.stack.take_off_words(activation.offset);
         // An offset is below 2^31, so the conversion is exact.
         self.stack.innermost = if caller.is_small_integer() {
-            frames::number_of(caller) as u32
+            frames::caller_offset_of(caller)
         } else {
             NO_FRAME
         };
@@ -6819,7 +6836,7 @@ impl<'gc> Heap<'gc> {
             code: frames::number_word(code.index() as u64),
             program_counter: frames::number_word(program_counter as u64),
             feedback_base: frames::number_word(u64::from(feedback_base.raw())),
-            caller: self.caller_word(),
+            caller: self.caller_word(start),
             continuation: continuation
                 .map_or(Word::NIL, |row| frames::number_word(u64::from(row.0))),
             guard: frames::number_word(u64::from(DispatchId::NONE.bits())),
