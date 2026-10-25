@@ -262,7 +262,7 @@ pub struct ActivationReference {
   above it left there would otherwise be traced again, keeping alive what
   nothing reaches -- a `WeakArray` would not forget it -- or, after a
   collection that ran while those words lay above the top, untraced, naming
-  an object since moved or reclaimed (`FrameStack::raise_top_over_dead_registers`). The registers above the header are
+  an object since moved or reclaimed (`FrameStack::set_top_over_dead_registers`). The registers above the header are
   recorded in their own word rather than read off the code, and the
   arguments in the flags, since a factory is handed as many arguments as
   its send has keywords whatever its register count. An activation nothing

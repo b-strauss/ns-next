@@ -733,7 +733,7 @@ check").
   already hold, and the one pop that puts words below the top again -- a
   callee's that lay on its sender's slots, giving the sender back its dead
   registers above them -- writes every one of them, nil in a release build
-  (`FrameStack::raise_top_over_dead_registers`; [execution.md](execution.md),
+  (`FrameStack::set_top_over_dead_registers`; [execution.md](execution.md),
   "Representation"), so that what the callee left there neither keeps an
   object alive nor names one a collection moved meanwhile.
   `ActivationStack`'s impl is in `heap.rs`, where its fields are private.

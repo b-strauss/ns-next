@@ -300,7 +300,7 @@ pub(super) struct ReservationExhausted;
 /// push writes every word of the frame it hands out but the arguments a
 /// callee shares with its sender. The words above the top come below it
 /// again only when a pop gives a sender back its window above a callee
-/// that lay on its slots (`raise_top_over_dead_registers`), which writes
+/// that lay on its slots (`set_top_over_dead_registers`), which writes
 /// every one of them.
 pub(super) struct FrameStack {
     reservation: Reservation,
@@ -391,7 +391,7 @@ impl FrameStack {
     /// ordinary room cannot hold them. The top becomes their end, below
     /// the sender's window end when the callee's window is the shorter: the
     /// words between are dead, and untraced, until the callee's pop writes
-    /// them (`raise_top_over_dead_registers`). One comparison against the
+    /// them (`set_top_over_dead_registers`). One comparison against the
     /// committed end, as `push` makes.
     #[inline(always)]
     pub(super) fn push_from(
@@ -421,16 +421,18 @@ impl FrameStack {
         self.top = top;
     }
 
-    /// Sets the top to `top` and every word from `dead` up to it to
-    /// `filler`: a pop of a callee that lay on its sender's slots from
-    /// `dead`, its header's offset, gives the sender back its window up to
-    /// `top`, its registers above the slots dead. Each is written, since a
+    /// Sets the top to `top` -- above the current top when the callee's
+    /// window was the shorter, below it when the callee's was the longer --
+    /// and every word from `dead` up to it to `filler`: a pop of a callee
+    /// that lay on its sender's slots from `dead`, its header's offset,
+    /// gives the sender back its window up to `top`, its registers above
+    /// the slots dead. Each is written, since a
     /// word the callee or a frame above it left there would otherwise be
     /// traced again -- keeping alive what nothing reaches, or naming,
     /// after a collection that ran while it lay above the top, an object
     /// since moved or reclaimed.
     #[inline(always)]
-    pub(super) fn raise_top_over_dead_registers(&mut self, dead: usize, top: usize, filler: u64) {
+    pub(super) fn set_top_over_dead_registers(&mut self, dead: usize, top: usize, filler: u64) {
         debug_assert!(
             dead <= top && top <= self.committed,
             "internal: a sender's dead registers lie inside the committed stack"

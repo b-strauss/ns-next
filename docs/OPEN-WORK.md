@@ -36,8 +36,9 @@ open in it: frame objects and image records without the header's numbers,
 whose fields for them a frame object still holds as nil -- until then an
 image holding a frame of a body past the register ceiling whose arguments
 leave no number above the header is refused (`FrameRegisterFile`); the
-decoder's refusal of a write to an argument register and of an outer store
-into another frame's scratch; and the stage's measurement, which is to say
+decoder's refusal of a write to an argument register and of an outer load
+or store into another frame's registers above its named locals, its
+scratch, where a callee laid on its slots has its live header; and the stage's measurement, which is to say
 what the pop's writing of a sender's dead registers costs -- every return
 of a callee that lay on its caller's slots writes the caller's registers
 above them, nil in a release build, so that what the callee left there

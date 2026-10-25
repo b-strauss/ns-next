@@ -2305,9 +2305,11 @@ impl<'a> Lowerer<'a> {
                 .all(|target| target < self.code.len()),
             "internal: a jump target does not name an instruction of this body"
         );
-        // Every register above a send's slots dead once it executes, which
-        // the bump allocator makes true: nothing is allocated below a slot
-        // after it, and what an argument is computed with lands above.
+        // Every register above a send's slots dead once it executes. The
+        // bump allocator makes it true for every value but a setter
+        // assignment's, which is the one value kept across a send:
+        // `lower_setter_assign`'s `Move` into the slot makes it true there.
+        // The scan checks it.
         if cfg!(debug_assertions) {
             super::reference::check_registers_above_sends_are_dead(&self.code.instructions());
         }

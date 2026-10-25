@@ -1253,17 +1253,22 @@ the base on, since the send writes a source into its slot: a body whose last
 slot runs past its register file is refused (`ArgumentSlotsOutOfRange`) even
 when the base and the sources are inside it.
 
-**No register names a live frame's header.** A body's register numbers
-`argument_count .. argument_count + HEADER_REGISTERS` are its frame header's
-words, which the register numbering skips ([compiler.md](compiler.md),
+**No instruction names its own frame's header numbers.** A body's register
+numbers `argument_count .. argument_count + HEADER_REGISTERS` are its frame
+header's words, which the register numbering skips ([compiler.md](compiler.md),
 "Registers"): a register operand there, or an outer local's index there in the
-body that declares it, would read or write a live frame's caller word or
+body that declares it, would read or write that frame's caller word or
 register count, so it is refused (`HeaderRegister`). A send's callee is laid on
 its argument slots, its header where they end
 ([execution.md](execution.md), "Planned: overlapping register windows"), so a
 send whose slots start below the end of its own body's header's numbers --
 among its arguments or on the header itself -- is refused too
-(`ArgumentSlotsBelowTheHeader`), even with no argument.
+(`ArgumentSlotsBelowTheHeader`), even with no argument. These refusals do not
+yet keep every header out of reach: through the overlap, a register of a
+sender's above its slots is its callee's header, so an outer load or store
+into another frame's registers above its named locals -- its scratch, where a
+live callee may lie -- is still to be refused ([OPEN-WORK.md](../OPEN-WORK.md),
+"Next").
 
 **A frame record's register file matches its body.** Every reified frame is
 allocated with its code's full register file ([object-model.md](object-model.md),

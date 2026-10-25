@@ -647,7 +647,7 @@ struct ActivationStack {
 /// The stack is traced as the one linear range `[0, top)`: every word of
 /// every live frame, header and registers alike, is a tagged value, so no
 /// stack map and no walk of frames is needed, and the words above the top
-/// come below it again only written (`FrameStack::raise_top_over_dead_registers`;
+/// come below it again only written (`FrameStack::set_top_over_dead_registers`;
 /// `docs/design/memory.md`, "What the collector traces"). A frame's continuation is a row of
 /// `Heap::continuations`, traced there.
 impl crate::trace::Trace for ActivationStack {
@@ -805,7 +805,7 @@ impl ActivationStack {
         let offset = offset as usize;
         if offset < top {
             self.frames
-                .raise_top_over_dead_registers(offset, top, dead_register().bits());
+                .set_top_over_dead_registers(offset, top, dead_register().bits());
         } else {
             self.frames.lower_top(top);
         }

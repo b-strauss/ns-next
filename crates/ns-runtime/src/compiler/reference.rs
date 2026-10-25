@@ -912,8 +912,11 @@ fn check_shape(instructions: &[Instruction], first_scratch: u16) {
 /// sends it holds to it are those whose callee is laid on their slots:
 /// every send with argument slots but a mirror send, whose leaf's
 /// activation lands above its sender's window. Walked in program order,
-/// which a straight-line body is, and an inlined form's arms in sequence;
-/// a read reached only through a backward jump is not covered.
+/// which a straight-line body is, and an inlined form's arms in sequence.
+/// A read reached only through a backward jump -- a loop's head reading a
+/// register a send in the loop's body went over -- is not checked; for it
+/// the debug build's poison is the net, which turns such a read into wrong
+/// output.
 pub(super) fn check_registers_above_sends_are_dead(instructions: &[Instruction]) {
     use std::collections::BTreeSet;
     let mut holding = BTreeSet::new();
