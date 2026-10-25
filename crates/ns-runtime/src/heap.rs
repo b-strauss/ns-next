@@ -6503,7 +6503,7 @@ impl<'gc> Heap<'gc> {
         let flags = FrameFlags::new(
             kind_tag,
             u16::try_from(argument_count)
-                .expect("internal: a frame's arguments are its code's, at most u16::MAX"),
+                .expect("internal: a frame's arguments are its code's, within the register ceiling of u16::MAX"),
             suspension.counted,
             suspension.retains_registers,
         );

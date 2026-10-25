@@ -119,9 +119,9 @@ pub(super) mod frame_header {
     pub const ENTERED_LEVEL: usize = 11;
     /// How many registers follow the header, a `SmallInteger`: the window
     /// the push wrote, arguments and temporaries together, so that the
-    /// frame above starts where they end. A word of its own, since a
-    /// factory is handed as many arguments as its send has keywords,
-    /// which no field of the flags could bound.
+    /// frame above starts where they end. A word of its own, since
+    /// arguments and temporaries together can pass the 16 bits the flags
+    /// give the argument count.
     pub const REGISTER_COUNT: usize = 12;
     /// The header's size: the first register's offset. The same in every
     /// build, a debug build's generation riding in the flags word, so that

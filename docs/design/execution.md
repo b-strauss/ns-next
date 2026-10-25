@@ -199,9 +199,9 @@ pub struct ActivationReference {
   the argument count in bits 8-23 -- every argument is a register, so the
   register ceiling, `u16::MAX`, bounds it: `Interpreter::push` refuses a
   longer list of values with the too-large error the only body that
-  declares more parameters, the raising one, would raise -- `counted` at 24, `retains_registers` at 25 and, in
-  a debug build, the 31-bit generation in bits 26-56, 57 bits inside a
-  `SmallInteger`'s 61; the
+  declares more parameters, the raising one, would raise -- `counted` at
+  24, `retains_registers` at 25 and, in a debug build, the 31-bit
+  generation in bits 26-56, 57 bits inside a `SmallInteger`'s 61; the
   kind tags are `heap/frames.rs`'s own numbering, never written to an
   image.
 - **The code is an id, not an `Rc`**: a return reads the caller's code from
@@ -8234,7 +8234,7 @@ callee                      | r0 .. r(argc-1)       | header (13) | r(argc+13) .
   arity still passes the arity check, so a longer list of values -- a
   host's send or `Message>>sendTo:` -- is refused at the push instead:
   `Interpreter::push` raises the error the raising body would, without
-  pushing, the sender the signalling activation (built).
+  pushing, so the sender is the activation that signals it (built).
 - **A send's arguments are contiguous slots at the top of the caller's
   live registers.** Both lowerings allocate the `argc` slots right after
   the receiver and lower each argument into its slot: a literal or a send
