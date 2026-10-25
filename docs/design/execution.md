@@ -8174,6 +8174,80 @@ was never measured. What the gate showed, the join it led to, and what the
 built encoding moved are "What the compact instruction encoding moved"
 above.
 
+## Keeping the hot path in registers
+
+The send, push and return path is Rust that LLVM compiles, and twice in
+road step 7a′ its machine code, not its algorithm, cost 10-28%: a
+sixteen-byte `Arguments`, and later the 72-byte `ActivationHeader`, were
+written onto the stack by narrow stores and read back by sixteen-byte
+loads, which the store buffer cannot forward, so every send waited for the
+stores to retire ("What contiguous arguments moved"; "Representation" above);
+and `Mutator::push_sent` grew from 276 to 7,265 instructions when the push
+chain was inlined into it. Both were found only after hours of measuring.
+Four rules keep the path in registers, and a gate holds them.
+
+- **What the path passes or answers by value is at most two scalars.**
+  Rust's ABI passes at most two scalars in registers; a larger aggregate
+  goes through memory, a copy written and read back. The argument window
+  is a tag and one word (`Arguments`, its slots packed into
+  `heap::ArgumentSlots`'s `u64`), an activation's handle one 32-bit
+  offset, the optional sender two scalars, the feedback base one, a
+  continuation a tag and a box, a value one word, and a `Transfer` one
+  byte. Release-only size tests hold the window, the handle, the sender,
+  the feedback base and the continuation there
+  (`interpreter`'s `what_the_hot_path_passes_by_value_is_at_most_two_scalars`,
+  `heap`'s `an_activation_handle_and_an_argument_window_are_one_scalar_each`,
+  beside the older pins of the handles and of `RegisterBase`). Three values
+  are larger and still cross by value, through memory: the decided `Step`
+  (56 bytes) that `push_sent` and `push_step` take, the pushes'
+  `Result<ActivationReference, Signal>` (40), and the `Popped` (24) that
+  `Heap::pop_activation` answers; the decision's `Result<Step, Signal>`
+  and the `Signal` are pinned besides. Each is pinned at the size it was
+  measured at, so that it does not grow
+  (`what_the_hot_path_passes_through_memory_stays_the_size_it_was_measured_at`,
+  `what_a_pop_answers_stays_the_size_it_was_measured_at`), and whether to
+  lend them is open ([OPEN-WORK.md](../OPEN-WORK.md), "Three values of
+  the send, push and return path cross by value through memory").
+- **Nothing larger is moved through a `Result`, an `enum` or a `match`
+  there; it is lent.** The activation header is built once, in
+  `Mutator::push_placed`'s callers, and lent `&mut` to `push_above` and
+  `push_on_slots` and from them to `Heap::push_activation_from` and
+  `Heap::push_overlapped_activation`, which write it into the frame in
+  place. A refusal hands it back to nobody: the push answers a `Refusal`
+  of at most the arguments, and only `Mutator::push_refused`, `#[cold]`
+  and `#[inline(never)]`, takes the header by value, and boxes it for the
+  reserve's paths. The by-value entries that remain, `Mutator::push` and
+  `push_placed`, are `#[inline(always)]`, so the header is never copied
+  into them, and the public `Heap::push_activation` serves hosts and
+  tests. No test can keep the header out of by-value signatures; the
+  codegen gate's count of wide loads is what notices a copy of it.
+- **Inlining is decided, not left to LLVM's budget.** The small helpers
+  of the path are `#[inline(always)]` (`Continuations::insert` and
+  `row_of`, `Heap::fill_copied_values`, the push layers), since a larger
+  caller once pushed them past the budget and made each a call; the
+  refusals and rare paths are `#[cold]` `#[inline(never)]`
+  (`push_refused`, `push_past_the_limit`, `push_into_the_stack_reserve`,
+  `Heap::push_reserved_activation`, `Continuations::insert_into_free_row`,
+  `vm::return_to_suspended`), so that they cost the hot code nothing; and
+  the out-of-line pieces of the loop, `vm::place_arguments` and
+  `vm::run_wide`, are `#[inline(never)]`, since inlined they cost
+  `vm::run` its registers ("What contiguous arguments moved").
+- **The codegen gate holds the result.** `cargo xtask gates codegen`
+  (`xtask/src/codegen.rs`; [README.md](README.md), "Gates") reads the
+  release listing of `ns-runtime` and holds each out-of-line function of
+  the path -- `vm::run`, `vm::run_wide`, `push_sent`, `push_step`,
+  `push_initializer_placed`, `Heap::pop_activation`, `vm::finish`,
+  `vm::resume_caller`, `Mutator::resume`, `vm::place_arguments`,
+  `vm::unwind`, `Step`'s drop glue and `builtins::execute` -- to a budget
+  of instructions and one of sixteen- or 32-byte stack loads over earlier
+  narrower stores, each the count at the time with a headroom of about
+  10%. At `0037350d`, the commit with the header's stall, it fails:
+  `push_sent` has 6,588 instructions and 79 such loads against budgets
+  of 5,390 and 14, `push_step` and `push_initializer_placed` likewise.
+  The count is static, over the listing's order rather than the control
+  flow, so it counts candidate sites, cold ones among them; what it
+  catches is a jump in their number.
+
 ## Planned: tail calls, skipped but kept
 
 **Status: a direction the user set on 2026-09-25, not designed and not
@@ -8451,6 +8525,24 @@ Each step gets its own design when it comes up.
   ("The Are We Fast Yet benchmarks"), and with
   `prior-art/newspeak-benchmarks`, a separate suite -- DeltaBlue, Richards,
   Splay, parser combinators and micro-benchmarks -- with Java versions of five of its programs.
+
+**Open: whether the interpreter tier is generated by the JIT's backend.**
+`vm::run` is a Rust `match` loop, compiled by LLVM, which decides where the
+program counter, the register base and the mutator live and has twice
+cost 10-28% through codegen ("Keeping the hot path in registers");
+`vm::run` holds about 60-70% of `bench_send.ns`'s samples. JSC's LLInt is
+written in offlineasm, V8's Ignition handlers are built by its optimizing
+compiler's backend, and HotSpot's template interpreter is generated at
+start-up by its macro assembler; each keeps the program counter, the
+frame and the dispatch base in fixed machine registers and leaves no
+compiler between the design and the instructions, which typically gives
+1.3-2x on interpreter-bound code. LuaJIT's interpreter is hand-written
+assembly, which is not the option here: a hand-written interpreter beside
+a generated JIT is two implementations of every instruction, which drift.
+The interpreter would instead be emitted by the macro assembler road step
+8 builds. It is decided only once the instruction set and the frame
+layout settle and that macro assembler exists
+([OPEN-WORK.md](../OPEN-WORK.md), "Open design questions").
 
 Steps 1 to 6 of the road give a very good interpreter on a modern object
 representation; road step 8 reaches Cog's class, and road step 9 Strongtalk's and
