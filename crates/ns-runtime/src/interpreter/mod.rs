@@ -1236,19 +1236,20 @@ impl<'gc> Mutator<'gc> {
         match pushed {
             Ok(activation) => {
                 // What the frame did not take is released here, inline: the
-                // method and the code, and the continuation's place, which
-                // the push left `Deliver` -- tested here, so that a frame
-                // that took no continuation calls no drop glue.
+                // method and the code. A successful push always took the
+                // continuation and left `Deliver` in its place, which owns
+                // nothing, so forgetting it is dropping it without a call
+                // into `Continuation`'s drop glue.
                 let ActivationHeader {
                     method, code, then, ..
                 } = header;
                 drop(method);
                 drop(code);
-                if matches!(then, Continuation::Deliver) {
-                    std::mem::forget(then);
-                } else {
-                    drop(then);
-                }
+                debug_assert!(
+                    matches!(then, Continuation::Deliver),
+                    "internal: a successful push takes the continuation"
+                );
+                std::mem::forget(then);
                 Ok(activation)
             }
             Err(refusal) => self.push_refused(refusal, header, temporaries),
