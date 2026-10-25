@@ -1302,8 +1302,8 @@ agree, so this rule is ns-next's own.
 exempted. Every other push is counted by construction: `push_step`'s method arm
 and its body arms, for a factory, an initializer level and a superclass
 clause, record `counted: true`. The flag
-rides on the stack frame, and `Mutator::push` refuses a counted push at the
-limit. A block is exempt when it carries
+rides on the stack frame, and `Mutator::push_placed` refuses a counted push at
+the limit. A block is exempt when it carries
 `StepArguments::ControlFlow` — the arguments only the control-flow leaves and a
 declining sent mirror send build —
 the send that led to it was a `SendInlinable`, and its `captured_frame` is the

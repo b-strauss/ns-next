@@ -250,7 +250,7 @@ pub struct ActivationReference {
   which `Mutator::push_placed` raises as the depth limit's
   `stack overflow: recursion too deep` ("The depth limit" below). Every
   activation the runtime pushes goes through one function,
-  `Mutator::push_placed` (`Mutator::push` is it for a push above the
+  `Mutator::push_placed` (`Mutator::push` calls it for a push above the
   sender's window), which refuses a push past the depth limit before it
   reaches the heap, so no new push site can skip the check. It is called
   from `Mutator::push_step`, for the method, block or body a decision
@@ -6857,8 +6857,8 @@ one comparison against the committed end, as Soup's
 a reserve as L does: the last 1/16th of the reservation
 (`RESERVE_FRACTION`, `heap/frames.rs`; 1 GiB of 16) is refused to an
 ordinary push and left to the pushes made while the depth reserve is held
-(`Heap::push_reserved_activation`, which `Mutator::push` tries when an
-ordinary push is refused and the reserve is held, or is being taken by
+(`Heap::push_reserved_activation`, which a push tries
+(`Mutator::push_into_the_stack_reserve`) when an ordinary push is refused and the reserve is held, or is being taken by
 the push of the kernel's `doesNotUnderstand:`), and an error raised with
 the stack that close to its end takes the depth reserve for its `signal`
 ("Who takes it" below). Without it the `signal` of the overflow is itself
@@ -6934,8 +6934,9 @@ could only end the run as L, uncatchable and under the wrong name.
 `crates/ns-runtime/tests/exceptions.rs` the uncaught cases at L − 3, L − 1,
 L and L + 1 and the overruns of the machinery, a `pass`'s included.
 
-- **L is checked on every push.** `Mutator::push`, the one function every
-  activation the runtime pushes goes through, refuses a counted push when
+- **L is checked on every push.** `Mutator::push_placed`, the one function
+  every activation the runtime pushes goes through (`Mutator::push` calls
+  it), refuses a counted push when
   `Heap::counted_depth` has reached the limit. The heap keeps that count as a
   running total on push and pop, so an error path — which pops through
   `interpreter::unwind` like any other — leaves it exact; suspending and
