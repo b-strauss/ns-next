@@ -340,7 +340,11 @@ fn encode_code(
     symbols: &mut symbols::Builder,
 ) -> Result<(), String> {
     writer.write_u8(code_kind_tag(code.kind));
-    writer.write_u16(code.argument_count);
+    // Refused past the argument limit as the decoder refuses it
+    // (`decode::check_argument_count`), so that `build` refuses what `load`
+    // would. A body past the register ceiling saturates its arity at
+    // `u16::MAX`, which this refuses too.
+    writer.write_u16(arity_field("body arity", usize::from(code.argument_count))?);
     writer.write_u16(code.register_count);
     // `outer_reach` is deliberately absent: it follows from the
     // instructions, and `decode_code` recomputes it as the compiler did,

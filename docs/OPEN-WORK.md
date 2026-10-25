@@ -1759,12 +1759,13 @@ that only answers `isKindOfArray` or `isKindOfString`, the error of a
   id to the current version. [object-model.md](design/object-model.md),
   "An application has two ids".
 
-- **A host's `Interpreter::instantiate` with more than 65,535 arguments
-  raises "factory too large" rather than the arity error** a send with a
-  wrong count gets (2026-10-22): `decide_instantiation` builds
-  `factory_body` of the count saturated to a `u16`, which is the too-large
-  body, and builds that body afresh on every call rather than reading the
-  class's factory entry, a cold path. Only a host reaches it.
+- **A host's `Interpreter::instantiate` builds its factory body afresh on
+  every call** (2026-10-22). `decide_instantiation` builds `factory_body`
+  of the argument count instead of reading the class's factory entry. It is
+  a cold path that only a host reaches. Past the argument limit of 255 the
+  arity is checked first, so a wrong count raises the arity error, as a
+  send's does. Only a class whose factory itself takes more than 255
+  parameters raises "factory too large".
   [object-model.md](design/object-model.md), "Instantiation".
 - **A code row records the first `MixinMethod` that registered its body**
   (2026-10-24): `Heap::register_code` fills a row's `method` only while it
@@ -1978,9 +1979,9 @@ Small, deliberately left, none affecting an outcome.
   source of about 400 bytes, `(a and: [(b g: a) or: [...]])` ten deep,
   compiles to 1,048,576 bodies and 18,175,273 instructions under the
   optimized lowering, against 21 bodies and 106 instructions under the
-  reference one. So the instruction limit of 2^20 per body, which this
-  duplication can reach from small source, is not yet the real bound there.
-  It refuses a body the duplication made, not one the source wrote
+  reference one. The duplication multiplies the bodies and call sites per
+  family, about 17 instructions per body there, so the per-body
+  instruction limit of 2^20 does not bound it
   ([compiler.md](design/compiler.md), "Limits").
 - A fallback closure (an inlined conditional's, sent to a non-Boolean)
   reloads its scope's indirection vector (`LoadOuterLocal`, then

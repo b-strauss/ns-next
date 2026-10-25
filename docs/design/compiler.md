@@ -1136,12 +1136,14 @@ argument, since they raise before they read one
 (`CompiledCode::stands_for_too_many_arguments`, which `push_step` asks of
 a factory body). An image cannot carry a method, factory or block of more
 than 255 parameters. `image::snapshot`, and so `ns-next build`, refuses
-the program with `image encoding cannot write a method arity of 256: it is
-past the limit of 255 arguments` (or the factory arity's, the closure
-parameter count's), and the decoder refuses such a record where it reads
-the count. Past 65,535 the 16-bit field is what refuses, `image encoding
-cannot write a method arity of 65536: it does not fit the image format's
-16-bit field`, as it refuses a register list of more than 65,535 entries.
+the program at the body's arity with `image encoding cannot write a body
+arity of 256: it is past the limit of 255 arguments` (`encode::arity_field`,
+which also holds a closure's parameter count and a method's and factory's
+arity to the limit). A body past the register ceiling saturates its arity
+at 65,535 and meets the same refusal. The decoder refuses each of these
+where it reads the count. A register list of more than 65,535 entries is
+refused by its 16-bit field instead, with `image encoding cannot write a
+register list of 65536: it does not fit the image format's 16-bit field`.
 Under the optimized lowering, a tuple whose operands all read one
 parameter's register fits the ceiling and still meets that refusal. Both
 refusals are errors, never aborts ([image-format.md](image-format.md), "The
@@ -1202,10 +1204,13 @@ reserves anything for it ([image-format.md](image-format.md),
 | String and symbol literal length | none | only the module's size, which a `Span`'s `u32` offsets bound, and the image's `u32` length | 36,775 bytes (`DeploymentManager.ns`) |
 
 The instruction limit keeps every instruction index, jump target and table
-index within 20 bits, and it bounds the work of every pass over one body. A
-nested inlined conditional's fallback closure compiles its blocks again,
-so a small source can reach the limit. There it is not yet the real bound
-either (`OPEN-WORK.md`). With the argument limit, an argument count fits a
+index within 20 bits, and it bounds the work of every pass over one body. It
+does not bound the code of a nested inlined conditional. That conditional's
+fallback closure compiles its blocks again, which multiplies the bodies and
+call sites of one code family with each level of nesting, but each body
+stays small: about 17 instructions in the ten-deep construct of
+`OPEN-WORK.md`. So a small source can compile to a family of a million
+bodies that no limit on one body refuses. With the argument limit, an argument count fits a
 byte, and every program that compiles can be packaged. The clause limit
 replaces the two ceilings that existed before it: the class object's
 23-bit clause field, which keeps its headroom, and the initializer's

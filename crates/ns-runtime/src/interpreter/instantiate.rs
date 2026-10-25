@@ -224,11 +224,9 @@ impl Interpreter {
                 .iter()
                 .map(|argument| mutator.fetch(argument))
                 .collect();
-            let decided = mutator.decide_instantiation(class, factory_arguments.len());
-            mutator.start(
-                Ok(decided),
-                Arguments::Values(&factory_arguments.as_slice()),
-            )
+            let arguments = Arguments::Values(&factory_arguments.as_slice());
+            let decided = mutator.decide_instantiation(class, arguments);
+            mutator.start(decided, arguments)
         });
         self.run_from_host(start, depth)
     }
@@ -578,17 +576,31 @@ impl<'gc> Mutator<'gc> {
     /// metaclass holds none -- one a host built by hand -- instantiates
     /// too, and the factory's arity is checked where a send's is, by
     /// `decide_instance_initializer`, after the allocation's refusals.
+    ///
+    /// Past `bytecode::ARGUMENT_LIMIT` arguments the body of that count is
+    /// the too-large one, which would raise its error before the arity is
+    /// checked: so the arity is checked first there, and a class whose
+    /// factory takes another count raises the arity error, as it does for
+    /// any other wrong count.
     pub(crate) fn decide_instantiation(
         &self,
         class: ClassReference<'gc>,
-        argument_count: usize,
-    ) -> Step<'gc> {
+        arguments: Arguments<'_, 'gc>,
+    ) -> Result<Step<'gc>, Signal<'gc>> {
+        let argument_count = arguments.len();
+        if argument_count > usize::from(crate::bytecode::ARGUMENT_LIMIT) {
+            check_arity(
+                class,
+                declared_factory_arity(self.heap.class_level(class)),
+                arguments,
+            )?;
+        }
         let code = crate::compiler::factory_body(u16::try_from(argument_count).unwrap_or(u16::MAX));
-        Step::Factory {
+        Ok(Step::Factory {
             class,
             code: Rc::new(code),
             arguments: StepArguments::Send,
-        }
+        })
     }
 
     /// The factory activation `factory`, just pushed for `class` with the
@@ -2093,6 +2105,29 @@ mod tests {
                 assert_eq!(
                     error.message,
                     "wrong number of factory arguments: factory takes 0, got 1"
+                );
+                assert_eq!(error.selector, Symbol::NEW);
+            }
+            Err(HostSignal::Return) => panic!("a non-local return escaped"),
+            Ok(_) => panic!("expected the arity error"),
+        }
+    }
+
+    /// Past the argument limit too: a host's instantiation with 256
+    /// arguments of a class whose factory takes none raises the arity
+    /// error, never the too-large error the factory body of 256 arguments
+    /// would raise.
+    #[test]
+    fn a_wrong_argument_count_past_the_argument_limit_raises_the_arity_error() {
+        let (mut interpreter, class) = load("class Empty = () ()\n");
+        let arguments: Vec<crate::Root> = (0..256)
+            .map(|_| interpreter.stash(crate::Value::small_integer(1)))
+            .collect();
+        match interpreter.instantiate(&class, &arguments) {
+            Err(HostSignal::Error(error)) => {
+                assert_eq!(
+                    error.message,
+                    "wrong number of factory arguments: factory takes 0, got 256"
                 );
                 assert_eq!(error.selector, Symbol::NEW);
             }

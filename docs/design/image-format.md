@@ -458,10 +458,16 @@ Literals:
 count of heap objects.** A count a
 program decides is written through a checked narrowing that answers an
 error, `image encoding cannot write a <what> of <n>: it does not fit the
-image format's 16-bit field` (or `32-bit`): in 16 bits a register list, a
-closure's parameter and copied-value counts and a method's or factory's
-arity (`encode::u16_field`), all of which a valid program can pass
-([compiler.md](compiler.md), "Compilation cannot fail"); in 32 bits a
+image format's 16-bit field` (or `32-bit`): in 16 bits a register list and
+a closure's copied-value count (`encode::u16_field`), both of which a
+valid program can pass ([compiler.md](compiler.md), "Compilation cannot
+fail"). A body's arity, a closure's parameter count and a method's or
+factory's arity go through `encode::arity_field` instead. It refuses a
+count past the 16-bit field the same way, and one past the argument limit
+of 255 with `image encoding cannot write a <what> of <n>: it is past the
+limit of 255 arguments` ([compiler.md](compiler.md), "Limits"). A body past
+that limit compiled to one that raises, and the decoder refuses its arity,
+so `build` refuses what `load` would. In 32 bits a
 string's, a symbol's, a value list's and a `LargeInteger`'s digit count
 (`encode::u32_length`). Every other count goes through the asserting
 `encode::u32_field`, because no program is meant to pass it: object ids, a

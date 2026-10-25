@@ -1734,9 +1734,10 @@ fn snapshot_error(source: &str) -> String {
     })
 }
 
-/// A method of more than 65,535 parameters compiles, but its arity does not
-/// fit the mixin table's 16-bit field: building the image is refused with
-/// an error, never a panic.
+/// A method of more than 65,535 parameters compiles, to a body whose arity
+/// saturates at `u16::MAX`, past the argument limit: building the image is
+/// refused at that body with an error, never a panic, before the mixin
+/// table's 16-bit field is reached.
 #[test]
 fn a_method_of_more_parameters_than_the_format_counts_is_refused_not_a_panic() {
     let pattern: String = (0..=usize::from(u16::MAX))
@@ -1750,7 +1751,7 @@ fn a_method_of_more_parameters_than_the_format_counts_is_refused_not_a_panic() {
     "};
     assert_eq!(
         snapshot_error(&source),
-        "image encoding cannot write a method arity of 65536: it does not fit the image format's 16-bit field"
+        "image encoding cannot write a body arity of 65535: it is past the limit of 255 arguments"
     );
 }
 
@@ -1768,7 +1769,7 @@ fn a_method_of_256_parameters_is_refused_by_the_encoder() {
     "};
     assert_eq!(
         snapshot_error(&source),
-        "image encoding cannot write a method arity of 256: it is past the limit of 255 arguments"
+        "image encoding cannot write a body arity of 256: it is past the limit of 255 arguments"
     );
 }
 
