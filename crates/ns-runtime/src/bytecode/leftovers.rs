@@ -174,11 +174,14 @@ pub(crate) fn tainted_at(
 /// a frame's cost is then a lookup and the writes of its nils. Only the
 /// sets are kept, never a pass's bitsets.
 ///
-/// What it can reach: an entry per program counter asked, at most one per
-/// instruction, each 24 bytes and 4 per range of its set, which holds at
-/// most half the body's scratch registers plus one range -- in practice
-/// one or two. It lives as long as its body, which a full collection gives
-/// back once nothing names it (`heap/tables.rs`).
+/// What it can reach, per body: one entry per program counter a frame was
+/// met at, so at most one per instruction, each 24 bytes and 4 per range
+/// of its set; a set's ranges are disjoint and apart, so it holds at most
+/// half the body's scratch registers as ranges, plus one -- in practice
+/// one or two. A body of `n` instructions and `s` scratch registers thus
+/// keeps at most `n` entries of `24 + 4 (s / 2 + 1)` bytes, however many
+/// collections ask. It lives as long as its body, which a full collection
+/// gives back once nothing names it (`heap/tables.rs`).
 #[derive(Default)]
 pub(crate) struct TaintedSets {
     /// Whether `check` accepted the body, asked at the first fill: the
@@ -210,43 +213,64 @@ impl TaintedSets {
         let position = match found {
             Ok(position) => position,
             Err(position) => {
-                self.fill(code, program_counter, position);
+                // The fill inserts exactly this set, where the search says.
+                self.fill_all(code, &[program_counter]);
                 position
             }
         };
         Ref::map(self.sets.borrow(), |sets| &*sets[position].registers)
     }
 
-    /// Asks `tainted_at` for `program_counter` and keeps the answer at
-    /// `position`, checking the body first if no fill has.
+    /// Whether the set before `program_counter` is kept already, so that
+    /// `before` answers it without a pass.
+    pub(crate) fn has(&self, program_counter: u32) -> bool {
+        self.sets
+            .borrow()
+            .binary_search_by_key(&program_counter, |set| set.program_counter)
+            .is_ok()
+    }
+
+    /// Keeps the sets of `code` before each of `program_counters`, which
+    /// is ascending, from one pass over the body, checking the body first
+    /// if no fill has: what the collector's pre-pass asks for every
+    /// program counter its walk met a frame of the body at and found no
+    /// set for, so that a collection decodes and analyses a body once
+    /// however many frames run it. A set kept already stays as it is.
     #[cold]
     #[inline(never)]
-    fn fill(&self, code: &CompiledCode, program_counter: u32, position: usize) {
+    pub(crate) fn fill_all(&self, code: &CompiledCode, program_counters: &[u32]) {
+        if program_counters.is_empty() {
+            return;
+        }
         let instructions = code.instructions();
         if !self.checked.get() {
             if let Err(refusal) = check(&instructions, code.local_count, code.register_count) {
                 panic!(
-                    "internal: the leftover analysis refuses a running body ({refusal:?}), \
-                     which every compiled, decoded and shipped body passes"
+                    "internal: the leftover analysis refuses a running body ({refusal:?}),                      which every compiled, decoded and shipped body passes"
                 );
             }
             self.checked.set(true);
         }
-        let registers = tainted_at(
+        let answers = tainted_at(
             &instructions,
             code.local_count,
             code.register_count,
-            &[program_counter],
-        )
-        .pop()
-        .unwrap_or_default();
-        self.sets.borrow_mut().insert(
-            position,
-            TaintedSet {
-                program_counter,
-                registers: registers.into_boxed_slice(),
-            },
+            program_counters,
         );
+        let mut sets = self.sets.borrow_mut();
+        for (program_counter, registers) in program_counters.iter().zip(answers) {
+            if let Err(position) =
+                sets.binary_search_by_key(program_counter, |set| set.program_counter)
+            {
+                sets.insert(
+                    position,
+                    TaintedSet {
+                        program_counter: *program_counter,
+                        registers: registers.into_boxed_slice(),
+                    },
+                );
+            }
+        }
     }
 }
 

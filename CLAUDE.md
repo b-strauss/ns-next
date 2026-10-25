@@ -163,6 +163,25 @@ checked by `lower_assign`'s `debug_assert!`s against `read_only_locals`. Getting
 it wrong is silent wrong output at exit status 0 (`execution.md`, "Fewer
 protective copies").
 
+**A register a frame does not read before it writes it is dead, and only
+the collector's pre-pass makes it safe to trace.** Neither a push nor a
+pop writes a scratch register -- at or above its body's `local_count` --
+nor the registers a callee that lay on its sender's slots gives back, so
+such a word may be one a callee or a popped frame left. The pre-pass
+before every trace (`Heap::nil_leftovers`) nils every register
+`bytecode::leftovers` finds tainted before the program counter the frame
+stores; a suspension nils the same in its copy, a divorce every scratch
+register. The decoder refuses image code that reads a tainted register,
+both lowerings `debug_assert!` it on every body, and a debug build writes
+a poison word no value can be into dead registers and refuses an
+instruction's read of it. A new instruction declares its register
+effects in `bytecode.rs`'s exhaustive matches (`registers_read`,
+`register_written`, `jump_target`, `falls_through`, `successors`, and
+`Instruction::argument_slots` for a send), or the analysis misjudges it. A miss is a stale handle traced -- an object since
+moved or reclaimed -- or an object nothing reaches kept alive, which a
+`WeakArray` shows (`compiler.md`, "What a callee leaves"; `memory.md`,
+"What the collector traces").
+
 **An image is untrusted input.** No byte sequence may panic or abort the
 process: validate every id, tag, count and length before it indexes, allocates
 or slices; bound any recursion the input controls; never add a pre-allocation

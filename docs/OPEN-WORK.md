@@ -34,13 +34,11 @@ frame lies on its caller's slots, the header's numbers are left out of the
 numbering, of frame objects and of image records, and the decoder refuses a
 register naming a header word, a write to an argument register and an
 outer load or store into another frame's scratch, where a callee laid on
-its slots has its live header. Still open in it: the stage's measurement, which is to say
-what the pop's writing of a sender's dead registers costs -- every return
-of a callee that lay on its caller's slots writes the caller's registers
-above them, nil in a release build, so that what the callee left there
-neither keeps an object alive nor names one a collection moved -- and
-whether bounding that write by the furthest the top reached since the
-last collection pays. 7b and 7a are built: a
+its slots has its live header. Neither a push nor a return writes a
+scratch register: the collector's pre-pass nils what a callee or a popped
+frame left there before every trace ([memory.md](design/memory.md), "What
+the collector traces"). Still open in it: the stage's measurement. 7b and
+7a are built: a
 running activation is suspended into its frame and resumed from it lazily,
 the landing point of every later deoptimization, and a sixth stress mode
 runs every golden on from suspended frames

@@ -1461,6 +1461,7 @@ mod tests {
     /// A loop head reads r3, which the send in the loop's body, laid over
     /// every register from r1 up, left tainted for the next iteration. The
     /// in-order check never saw a read reached only through a back edge.
+    #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "internal: the body reads r3")]
     fn a_loop_reading_what_its_body_sent_over_panics_in_debug() {

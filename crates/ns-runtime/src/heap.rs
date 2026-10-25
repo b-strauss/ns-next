@@ -658,9 +658,11 @@ struct ActivationStack {
 
 /// The stack is traced as the one linear range `[0, top)`: every word of
 /// every live frame, header and registers alike, is a tagged value, so no
-/// stack map and no walk of frames is needed, and the words above the top
-/// come below it again only written (`FrameStack::set_top_over_dead_registers`;
-/// `docs/design/memory.md`, "What the collector traces"). A frame's continuation is a row of
+/// stack map and no walk of frames is needed. A push writes no scratch
+/// register and a pop none it gives back, so a word below the top may be
+/// one a callee or a popped frame left; the pre-pass before every trace
+/// nils each of them (`Heap::nil_leftovers`; `docs/design/memory.md`,
+/// "What the collector traces"). A frame's continuation is a row of
 /// `Heap::continuations`, traced there.
 impl crate::trace::Trace for ActivationStack {
     fn trace<T: crate::trace::Tracer>(&mut self, tracer: &mut T) {
@@ -686,20 +688,65 @@ const _: () = assert!(crate::bytecode::HEADER_REGISTERS as usize == frame_header
 /// since a frame's offset is below the reservation's 2^31 words.
 const NO_FRAME: u32 = u32::MAX;
 
-/// What a pop leaves in a sender's dead registers, from its slots' end to
-/// its window's (`Heap::pop_activation`), and what the collector's
-/// pre-pass writes into every register no frame reads before it writes it
-/// (`Heap::nil_leftovers`): nil in a release build, so that
-/// nothing the callee left there is traced again, and in a debug build the
-/// `SmallInteger` `0x5EAD_5EAD`, a number no program prints by chance, so
-/// that a lowering reading a register the callee overwrote shows as wrong
-/// output.
+/// What the collector's pre-pass writes into every register no frame reads
+/// before it writes it (`Heap::nil_leftovers`), and what a frame object
+/// takes for such a register when an activation is suspended or divorced:
+/// nil in a release build, so that nothing a callee or a popped frame left
+/// there is traced again. A debug build writes `Word::DEAD_REGISTER`
+/// there instead, and into every scratch register a push hands out and
+/// every register a pop gives back above a callee
+/// (`FrameStack::give_back_dead_registers`), and refuses an instruction's
+/// read of it (`assert_live_register`): the dynamic net under the leftover
+/// analysis, which says nothing reads such a register before it writes
+/// it. The word is one no `Value` can be -- the tag no constructor makes
+/// -- since a number such as the `SmallInteger` `0x5EAD_5EAD` a program
+/// could compute as well, and a read of it would pass unseen; the
+/// tracers, which take a word naming no object as a number, pass over it.
 #[inline(always)]
 fn dead_register() -> Word {
     #[cfg(debug_assertions)]
-    return frames::number_word(0x5EAD_5EAD);
+    return Word::DEAD_REGISTER;
     #[cfg(not(debug_assertions))]
     return Word::NIL;
+}
+
+/// Refuses, in a debug build, an instruction's read of a register no
+/// instruction wrote: `bits`, register `index` of the frame at `offset`,
+/// must not be `dead_register`'s word. Bulk copies of a frame's registers
+/// -- a reification's, a suspension's, a divorce's, a trace -- are not
+/// reads of this kind: they nil such words instead.
+#[cfg(debug_assertions)]
+#[inline(always)]
+fn assert_live_register(offset: u32, index: u16, bits: u64) {
+    assert!(
+        !Word::from_bits(bits).is_dead_register(),
+        "internal: the frame at stack word {offset} reads r{index}, which nothing wrote since \
+         its push or its callee's return (the leftover analysis says nothing reads it)"
+    );
+}
+
+/// Writes a pushed frame's `temporaries` -- its registers above the header
+/// -- as its body needs them: nil into the named ones, below the body's
+/// `local_count` (the copied values, the named temporaries and the
+/// indirection vector's register), which the body may read before it
+/// writes them, and nothing into the scratch, which no body reads before
+/// it writes it (`bytecode::leftovers`, which the lowerings check and the
+/// decoder holds an image to) and which the collector's pre-pass nils
+/// before a trace (`Heap::nil_leftovers`). A debug build writes
+/// `dead_register`'s word into the scratch, so that a read of one is
+/// refused. A `local_count` below the arguments and the header's numbers,
+/// which an image may carry, names no temporary.
+#[inline(always)]
+fn fill_temporaries(temporaries: &mut [u64], local_count: u16, argument_count: u16) {
+    let named = usize::from(local_count)
+        .saturating_sub(usize::from(argument_count) + frame_header::COUNT)
+        .min(temporaries.len());
+    let (named_registers, scratch) = temporaries.split_at_mut(named);
+    named_registers.fill(Word::NIL.bits());
+    #[cfg(debug_assertions)]
+    scratch.fill(dead_register().bits());
+    #[cfg(not(debug_assertions))]
+    let _ = scratch;
 }
 
 /// Writes `filler` into the words of `range` that no window of `claimed`
@@ -750,19 +797,23 @@ fn claim(claimed: &mut Vec<Range<usize>>, window: Range<usize>) {
 /// it below `end` -- into `fields`, a frame object's register fields
 /// (`Heap::frame_field_of_register`): the arguments, then the registers
 /// above the header, the header itself left out; every field past `end`
-/// nil. Answers whether a copied word names a young object, which an old
-/// frame object must then be remembered for.
+/// nil, and every field of a register of `dead` -- ranges of register
+/// numbers, which the frame does not read before it writes them -- nil
+/// as well, since such a register may hold a word a callee or a popped
+/// frame left, naming an object since moved or reclaimed, and a frame
+/// object is traced as it lies. Answers whether a copied word names a
+/// young object, which an old frame object must then be remembered for.
 fn copy_registers_out(
     stack_words: &[u64],
     start: usize,
     offset: usize,
     end: usize,
+    dead: &[Range<u16>],
     fields: &mut [u64],
 ) -> bool {
     let argument_count = offset - start;
-    let mut holds_young = false;
     for (index, field) in fields.iter_mut().enumerate() {
-        let word = if index < argument_count {
+        *field = if index < argument_count {
             stack_words[start + index]
         } else {
             let slot = offset + frame_header::COUNT + (index - argument_count);
@@ -772,12 +823,27 @@ fn copy_registers_out(
                 Word::NIL.bits()
             }
         };
-        holds_young |= Word::from_bits(word)
-            .object_offset()
-            .is_some_and(space::is_young);
-        *field = word;
     }
-    holds_young
+    let above_header = argument_count + frame_header::COUNT;
+    for range in dead {
+        let (low, high) = (usize::from(range.start), usize::from(range.end));
+        // Registers below the header are their own fields, those above it
+        // `frame_header::COUNT` fields lower (`Heap::frame_field_of_register`).
+        let arguments = low.min(argument_count)..high.min(argument_count);
+        let registers = low.max(above_header) - frame_header::COUNT
+            ..high.max(above_header) - frame_header::COUNT;
+        for fields_range in [arguments, registers] {
+            let until = fields_range.end.min(fields.len());
+            if fields_range.start < until {
+                fields[fields_range.start..until].fill(Word::NIL.bits());
+            }
+        }
+    }
+    fields.iter().any(|word| {
+        Word::from_bits(*word)
+            .object_offset()
+            .is_some_and(space::is_young)
+    })
 }
 
 impl ActivationStack {
@@ -837,12 +903,13 @@ impl ActivationStack {
         offset as usize - usize::from(self.flags(offset).argument_count)
     }
 
-    /// The top once the innermost frame, at `offset`, is gone: its caller's
-    /// window end, the caller's registers above its slots its own again
-    /// though dead, or the frame's start for the bottom frame. The caller's
-    /// window end is the top the frame was pushed at, which its caller
-    /// word records as a distance from its start, so that the pop reads
-    /// nothing of the caller's header (`frames::caller_link_word`).
+    /// The top once the innermost frame, at `offset`, is gone: the top it
+    /// was pushed at, or the frame's start for the bottom frame. That top
+    /// is at or past its caller's window end -- past it where a frame
+    /// below lies longer than the caller on its slots, since a push never
+    /// lowers the top -- and its caller word records it as a distance
+    /// from its start, so that the pop reads nothing of the caller's
+    /// header (`frames::caller_link_word`).
     #[inline(always)]
     fn top_without(&self, offset: u32) -> usize {
         let start = self.frame_start(offset);
@@ -851,29 +918,29 @@ impl ActivationStack {
             return start;
         }
         let top = start + frames::caller_top_above_start(word);
-        debug_assert_eq!(
-            top,
-            self.window_end(frames::caller_offset_of(word)),
-            "internal: a frame's caller word records its caller's window end"
+        debug_assert!(
+            top >= self.window_end(frames::caller_offset_of(word)),
+            "internal: a frame's caller word records a top at or past its caller's window end"
         );
         top
     }
 
     /// Takes the innermost frame, at `offset`, off the stack's words: the
-    /// top goes to `top_without`'s, and a caller's dead registers a
-    /// callee that lay on its slots gives back -- from the callee's header
-    /// up -- are set to `dead_register`'s word. A frame pushed above its caller's
-    /// window gives nothing back.
+    /// top goes back to `top_without`'s, and nothing is written. A caller's
+    /// registers a callee that lay on its slots gives back -- from the
+    /// callee's header up -- are dead, and the collector's pre-pass nils
+    /// them before any trace (`Heap::nil_leftovers`); a debug build writes
+    /// `dead_register`'s word there, so that a read of one is refused.
     #[inline(always)]
     fn take_off_words(&mut self, offset: u32) {
         let top = self.top_without(offset);
-        let offset = offset as usize;
-        if offset < top {
+        #[cfg(debug_assertions)]
+        if (offset as usize) < top {
             self.frames
-                .set_top_over_dead_registers(offset, top, dead_register().bits());
-        } else {
-            self.frames.lower_top(top);
+                .give_back_dead_registers(offset as usize, top, dead_register().bits());
+            return;
         }
+        self.frames.lower_top(top);
     }
 
     /// The offset of the frame below the one at `offset`, `None` for the
@@ -6233,10 +6300,10 @@ impl<'gc> Heap<'gc> {
         #[cfg(debug_assertions)]
         match arguments {
             Arguments::Slots(slots) => {
-                let count = slots.count();
-                if count > 0 {
-                    self.check_register(slots.register_base(), slots.start());
-                    self.check_register(slots.register_base(), slots.start() + (count - 1));
+                // `register` checks each slot against its window and
+                // refuses a dead one: the push reads every argument.
+                for index in 0..slots.count() {
+                    let _ = self.register(slots.register_base(), slots.start() + index);
                 }
             }
             Arguments::Values(values) => {
@@ -6315,7 +6382,7 @@ impl<'gc> Heap<'gc> {
                 }
             },
         }
-        temporaries.fill(Word::NIL.bits());
+        fill_temporaries(temporaries, header.code.local_count, argument_count);
         // The reservation holds at most `MAXIMUM_STACK_WORDS`, 2^31 words,
         // so an offset is exact in 32 bits.
         let offset = (start + usize::from(argument_count)) as u32;
@@ -6336,8 +6403,10 @@ impl<'gc> Heap<'gc> {
         #[cfg(debug_assertions)]
         if count > 0 {
             let register_base = window.register_base();
-            self.check_register(register_base, window.start());
-            self.check_register(register_base, window.start() + (window.count() - 1));
+            // `register` refuses a dead source: the copy reads every one.
+            for index in 0..window.count() {
+                let _ = self.register(register_base, window.start() + index);
+            }
             self.check_register(register_base, argument_base);
             self.check_register(register_base, argument_base + (window.count() - 1));
         }
@@ -6396,9 +6465,10 @@ impl<'gc> Heap<'gc> {
                 usize::from(argument_base) >= usize::from(sender_arguments) + frame_header::COUNT,
                 "internal: a send's slots from r{argument_base} lie above its sender's header"
             );
-            if argument_count > 0 {
-                self.check_register(register_base, argument_base);
-                self.check_register(register_base, argument_base + (argument_count - 1));
+            // `register` refuses a dead slot: every slot holds its
+            // argument by now.
+            for index in 0..argument_count {
+                let _ = self.register(register_base, argument_base + index);
             }
         }
         let start = register_base.index as usize + usize::from(argument_base);
@@ -6428,7 +6498,7 @@ impl<'gc> Heap<'gc> {
         }
         let (fixed, temporaries) = frame.split_at_mut(frame_header::COUNT);
         header_words.write(fixed);
-        temporaries.fill(Word::NIL.bits());
+        fill_temporaries(temporaries, header.code.local_count, argument_count);
         // Inside the reservation, so exact in 32 bits.
         Ok(self.pushed_at(offset as u32, header.counted))
     }
@@ -6526,7 +6596,8 @@ impl<'gc> Heap<'gc> {
         // A sender's registers from its slots' end to its window's --
         // where a callee that lay on its slots had its header and window --
         // are dead, and every lowering writes them before it reads them
-        // again (`compiler::reference::check_leftovers`).
+        // again (`compiler::reference::check_leftovers`), so the pop
+        // writes none of them: the pre-pass nils them before a trace.
         self.stack.take_off_words(activation.offset);
         // An offset is below 2^31, so the conversion is exact.
         self.stack.innermost = if caller.is_small_integer() {
@@ -6552,7 +6623,11 @@ impl<'gc> Heap<'gc> {
 
     /// The divorce of the frame object at `frame` from the popped frame at
     /// stack offset `offset`, whose flags are `flags` and whose last stored
-    /// program counter is the word `program_counter`.
+    /// program counter is the word `program_counter`. A frame that keeps
+    /// its registers keeps those below its body's `local_count` only --
+    /// the arguments, the copied values and the named temporaries, all a
+    /// block reaching them by reference can name -- and nil for every
+    /// scratch register, which may hold a word a callee left.
     fn divorce(
         &mut self,
         frame: NonZeroU64,
@@ -6561,21 +6636,36 @@ impl<'gc> Heap<'gc> {
         program_counter: u64,
     ) {
         let start = offset - usize::from(flags.argument_count);
-        // The popped frame is the innermost, so its window ends at the top.
-        let end = self.stack.frames.top();
-        let Heap { space, stack, .. } = self;
-        let stack_words = stack.frames.words();
-        let space_words = space.words_mut();
-        let range = block_range(space_words, header_index(frame));
-        let words = &mut space_words[range][FIELDS..];
-        let holds_young = flags.retains_registers
-            && copy_registers_out(
+        // An offset is below 2^31, so the conversion is exact.
+        let end = self.stack.window_end(offset as u32);
+        let Heap {
+            space,
+            stack,
+            tables,
+            ..
+        } = self;
+        let holds_young = flags.retains_registers && {
+            let code_index =
+                frames::number_of(stack.header_word(offset as u32, frame_header::CODE)) as usize;
+            let Some(entry) = tables.codes.get(code_index).and_then(Option::as_ref) else {
+                unreachable!("internal: a running frame names a live code row")
+            };
+            let scratch = entry.code.local_count..u16::MAX;
+            let stack_words = stack.frames.words();
+            let space_words = space.words_mut();
+            let range = block_range(space_words, header_index(frame));
+            copy_registers_out(
                 stack_words,
                 start,
                 offset,
                 end,
-                &mut words[frame_field::COUNT..],
-            );
+                std::slice::from_ref(&scratch),
+                &mut space_words[range][FIELDS + frame_field::COUNT..],
+            )
+        };
+        let space_words = space.words_mut();
+        let range = block_range(space_words, header_index(frame));
+        let words = &mut space_words[range][FIELDS..];
         words[frame_field::PROGRAM_COUNTER] = program_counter;
         words[frame_field::SENDER] = Word::NIL.bits();
         words[frame_field::UNCONTINUABLE] = Value::boolean(true).word().bits();
@@ -6768,9 +6858,26 @@ impl<'gc> Heap<'gc> {
             let start = self.stack.frame_start(offset);
             let end = self.stack.window_end(offset).min(callee_header);
             callee_header = header;
-            let Heap { space, stack, .. } = self;
+            let Heap {
+                space,
+                stack,
+                tables,
+                ..
+            } = self;
             let stack_words = stack.frames.words();
             let program_counter = stack_words[header + frame_header::PROGRAM_COUNTER];
+            let code_index =
+                frames::number_of(stack.header_word(offset, frame_header::CODE)) as usize;
+            let Some(entry) = tables.codes.get(code_index).and_then(Option::as_ref) else {
+                unreachable!("internal: a running frame names a live code row")
+            };
+            // The registers the frame does not read before it writes them,
+            // as the pre-pass decides them (`nil_leftovers`): what a callee
+            // or a popped frame left there, which the frame object, traced
+            // as it lies, must not keep.
+            let tainted = entry
+                .code
+                .tainted_before(frames::number_of(Word::from_bits(program_counter)) as u32);
             let space_words = space.words_mut();
             let range = block_range(space_words, header_index(frame.offset));
             let words = &mut space_words[range][FIELDS..];
@@ -6779,8 +6886,10 @@ impl<'gc> Heap<'gc> {
                 start,
                 header,
                 end,
+                &tainted,
                 &mut words[frame_field::COUNT..],
             );
+            drop(tainted);
             words[frame_field::PROGRAM_COUNTER] = program_counter;
             words[frame_field::SENDER] = sender.bits();
             words[frame_field::MARRIED] = suspended_word(row).bits();
@@ -7059,11 +7168,13 @@ impl<'gc> Heap<'gc> {
 
     pub fn activation_local(&self, activation: ActivationReference, index: u16) -> Value<'gc> {
         self.check_activation(activation);
-        self.load(Word::from_bits(
-            self.stack
-                .frames
-                .word(self.register_slot(activation.offset, index)),
-        ))
+        let bits = self
+            .stack
+            .frames
+            .word(self.register_slot(activation.offset, index));
+        #[cfg(debug_assertions)]
+        assert_live_register(activation.offset, index, bits);
+        self.load(Word::from_bits(bits))
     }
 
     /// The register window of `activation`, computed once per switch to it:
@@ -7086,9 +7197,10 @@ impl<'gc> Heap<'gc> {
     pub fn register(&self, base: RegisterBase, index: u16) -> Value<'gc> {
         #[cfg(debug_assertions)]
         self.check_register(base, index);
-        self.load(Word::from_bits(
-            self.stack.frames.word(base.index as usize + index as usize),
-        ))
+        let bits = self.stack.frames.word(base.index as usize + index as usize);
+        #[cfg(debug_assertions)]
+        assert_live_register(base.activation.offset, index, bits);
+        self.load(Word::from_bits(bits))
     }
 
     #[inline(always)]
@@ -7649,7 +7761,10 @@ impl<'gc> Heap<'gc> {
         let words = self.frame_words(frame);
         let word = match self.married_offset(words) {
             Some(offset) => {
-                Word::from_bits(self.stack.frames.word(self.register_slot(offset, index)))
+                let bits = self.stack.frames.word(self.register_slot(offset, index));
+                #[cfg(debug_assertions)]
+                assert_live_register(offset, index, bits);
+                Word::from_bits(bits)
             }
             None => self
                 .dead_frame_field(frame, index)
@@ -7897,6 +8012,7 @@ impl<'gc> Heap<'gc> {
     /// the claimed windows merge as the walk goes down, since a frame
     /// starts at or below every frame above it.
     fn nil_leftovers(&mut self) {
+        self.fill_missing_tainted_sets();
         let Heap { stack, tables, .. } = self;
         if stack.innermost == NO_FRAME {
             return;
@@ -7956,6 +8072,46 @@ impl<'gc> Heap<'gc> {
             match stack.caller(offset) {
                 Some(caller) => offset = caller,
                 None => break,
+            }
+        }
+    }
+
+    /// Keeps the tainted set of every frame on the stack whose body has
+    /// none yet for the program counter the frame stores, before
+    /// `nil_leftovers` walks them: the misses are gathered by body first
+    /// and each body's are filled from one pass over it
+    /// (`CompiledCode::fill_tainted_before`), so that a collection that
+    /// meets a body at many new program counters -- a deep recursion
+    /// through it, the first collection of a run -- decodes and analyses
+    /// it once rather than once per program counter. A walk that finds
+    /// every set kept, the common case once a program has run a while,
+    /// allocates nothing.
+    fn fill_missing_tainted_sets(&mut self) {
+        let Heap { stack, tables, .. } = self;
+        let mut missing: Vec<(usize, u32)> = Vec::new();
+        for offset in stack.offsets() {
+            let code_index =
+                frames::number_of(stack.header_word(offset, frame_header::CODE)) as usize;
+            // A program counter is an instruction's index, and a body has
+            // at most `INSTRUCTION_LIMIT` of them.
+            let program_counter =
+                frames::number_of(stack.header_word(offset, frame_header::PROGRAM_COUNTER)) as u32;
+            let Some(entry) = tables.codes.get(code_index).and_then(Option::as_ref) else {
+                unreachable!("internal: a running frame names a live code row")
+            };
+            if !entry.code.has_tainted_before(program_counter) {
+                missing.push((code_index, program_counter));
+            }
+        }
+        missing.sort_unstable();
+        missing.dedup();
+        for body in missing.chunk_by(|first, second| first.0 == second.0) {
+            let program_counters: Vec<u32> = body
+                .iter()
+                .map(|(_, program_counter)| *program_counter)
+                .collect();
+            if let Some(entry) = tables.codes.get(body[0].0).and_then(Option::as_ref) {
+                entry.code.fill_tainted_before(&program_counters);
             }
         }
     }
@@ -8449,6 +8605,9 @@ impl<'gc> Heap<'gc> {
     /// one level up).
     fn forward_everything<M: Relocation>(&mut self, forwarder: &mut Forwarder<M>) {
         use crate::trace::{Trace, Tracer};
+        // A full collection runs the pre-pass twice, before its marking and
+        // again here: idempotent on purpose, since nothing runs between the
+        // two and a second pass writes only the words the first wrote.
         self.nil_leftovers();
         // A married frame's registers are its stack frame's, traced below
         // with the stack; its married field is a stack offset, and no stack
@@ -9352,9 +9511,13 @@ mod tests {
         argument_count: u16,
         register_count: u16,
     ) -> std::rc::Rc<crate::bytecode::CompiledCode> {
+        // Sixteen instructions, so that a test may stop a frame of it at
+        // any program counter it names.
         let mut code = crate::bytecode::CompiledCode::new(
             crate::bytecode::CodeKind::Method,
-            vec![crate::bytecode::Instruction::Return { register: 0 }],
+            (0..16)
+                .map(|_| crate::bytecode::Instruction::Return { register: 0 })
+                .collect(),
             argument_count,
             register_count,
             0,
@@ -10606,17 +10769,22 @@ mod tests {
         }
     }
 
-    /// A body that returns its first register: no test here runs it.
+    /// A body that returns its first register: no test here runs it. Every
+    /// register it has is a named local, so that a push of it fills every
+    /// temporary a test asks for with nil, and no collection takes one for
+    /// scratch; a test of the scratch builds its own body.
     fn trivial_code() -> std::rc::Rc<crate::bytecode::CompiledCode> {
-        std::rc::Rc::new(crate::bytecode::CompiledCode::new(
+        let mut code = crate::bytecode::CompiledCode::new(
             crate::bytecode::CodeKind::Method,
             vec![crate::bytecode::Instruction::Return { register: 0 }],
             0,
-            1,
+            u16::MAX,
             0,
             Vec::new(),
             ns_syntax::Span::new(0, 0),
-        ))
+        );
+        code.local_count = u16::MAX;
+        std::rc::Rc::new(code)
     }
 
     #[test]
@@ -10839,6 +11007,15 @@ mod tests {
         heap.pop_activation(from_values);
         assert_eq!(heap.stack.frames.top(), top);
 
+        let above_slots = argument_base + 2..first_above_header(0) + 6;
+        let before: Vec<u64> = above_slots
+            .clone()
+            .map(|register| {
+                heap.stack
+                    .frames
+                    .word(base.index as usize + usize::from(register))
+            })
+            .collect();
         heap.pop_activation(callee);
         assert_eq!(
             heap.stack.frames.top(),
@@ -10854,28 +11031,55 @@ mod tests {
             heap.register(base, argument_base + 1).as_small_integer(),
             Some(8)
         );
-        // The pop writes the dead registers from the slots' end up: nil,
-        // and in a debug build a number a lowering reading one would show.
-        for register in argument_base + 2..first_above_header(0) + 6 {
-            assert_eq!(
-                heap.stack
-                    .frames
-                    .word(base.index as usize + usize::from(register)),
-                dead_register().bits(),
-                "r{register} above the slots is written"
-            );
+        // A release build's pop writes none of the dead registers from the
+        // slots' end up, which hold the callee's header words; a debug
+        // build's writes the dead register word into each, which an
+        // instruction's read refuses.
+        for (register, before) in above_slots.zip(before) {
+            let word = heap
+                .stack
+                .frames
+                .word(base.index as usize + usize::from(register));
+            if cfg!(debug_assertions) {
+                assert_eq!(word, dead_register().bits(), "r{register} is dead");
+            } else {
+                assert_eq!(word, before, "r{register} above the slots is untouched");
+            }
         }
         heap.pop_activation(sender);
         assert_eq!(heap.stack.frames.top(), 0);
         assert_eq!(heap.activation_depth(), 0);
     }
 
-    /// A callee whose window ends below its sender's leaves the sender's
-    /// dead registers above the top, where nothing traces them; its pop
-    /// writes them, so that it puts no word below the top again that names
-    /// an object a collection reclaimed meanwhile.
+    /// A body of `register_count` registers taking `argument_count`
+    /// arguments, whose first `named` registers above the header are
+    /// named temporaries and the rest scratch: no test here runs it.
+    fn scratch_code(
+        argument_count: u16,
+        named: u16,
+        register_count: u16,
+    ) -> Rc<crate::bytecode::CompiledCode> {
+        let mut code = crate::bytecode::CompiledCode::new(
+            crate::bytecode::CodeKind::Method,
+            vec![crate::bytecode::Instruction::Return { register: 0 }],
+            argument_count,
+            register_count,
+            0,
+            Vec::new(),
+            ns_syntax::Span::new(0, 0),
+        );
+        code.local_count = first_above_header(argument_count) + named;
+        Rc::new(code)
+    }
+
+    /// A callee whose window ends below its sender's leaves the top at the
+    /// sender's window end, since a push never lowers it, so the sender's
+    /// dead registers above the callee stay below the top: a collection
+    /// meanwhile nils them rather than leaving them untraced, and the pop
+    /// writes none of them in a release build -- the top goes back to the
+    /// sender's window end and nothing else changes.
     #[test]
-    fn a_pop_writes_the_senders_dead_registers_it_gives_back() {
+    fn a_pop_leaves_the_senders_dead_registers_above_a_shorter_callee() {
         let mut heap = frame_heap();
         let class = named_class(&mut heap, "Dead");
         let argument_base = first_above_header(0);
@@ -10914,6 +11118,7 @@ mod tests {
             )
             .expect("the stack holds the frame");
         let base = heap.activation_register_base(sender);
+        let sender_end = heap.stack.window_end(sender.offset);
         heap.set_register(base, argument_base, Value::small_integer(7));
         let dead = first_above_header(0) + 30;
         let unreachable = heap.allocate_instance(class, 0);
@@ -10922,31 +11127,174 @@ mod tests {
             .push_overlapped_activation(&mut header(), base, argument_base, 1, 0)
             .expect("the stack holds the frame");
         let dead_word = base.index as usize + usize::from(dead);
-        assert!(
-            heap.stack.frames.top() <= dead_word,
-            "the dead register lies above the top"
+        assert!(heap.stack.window_end(callee.offset) <= dead_word);
+        assert_eq!(
+            heap.stack.frames.top(),
+            sender_end,
+            "the push leaves the top at the sender's window end"
         );
-        // Reclaims the object, which only the untraced word named.
+        // The pre-pass nils the dead register, which the trace then finds
+        // naming nothing.
         heap.collect_for_test(&mut []);
+        assert_eq!(heap.stack.frames.word(dead_word), dead_register().bits());
         assert_eq!(
             heap.register(heap.activation_register_base(callee), 0)
                 .as_small_integer(),
             Some(7)
         );
+        let left = Value::small_integer(55).word().bits();
+        heap.stack.frames.set_word(dead_word, left);
         heap.pop_activation(callee);
-        assert_eq!(
-            heap.stack.frames.word(dead_word),
-            dead_register().bits(),
-            "the pop wrote the dead register"
-        );
+        assert_eq!(heap.stack.frames.top(), sender_end);
+        if cfg!(debug_assertions) {
+            assert_eq!(
+                heap.stack.frames.word(dead_word),
+                dead_register().bits(),
+                "a debug build's pop writes the dead register word"
+            );
+        } else {
+            assert_eq!(
+                heap.stack.frames.word(dead_word),
+                left,
+                "a release build's pop writes nothing"
+            );
+        }
         assert_eq!(
             heap.register(base, argument_base).as_small_integer(),
             Some(7)
         );
-        // A collection now traces the sender's whole window, and finds no
-        // stale word in it.
         heap.collect_for_test(&mut []);
         heap.pop_activation(sender);
+    }
+
+    /// A push fills its named temporaries with nil and leaves its scratch
+    /// as the stack last held it -- here a popped frame's numbers -- in a
+    /// release build, and writes the dead register word there in a debug
+    /// one; both for a push above every window and for a callee laid on
+    /// its sender's slots.
+    #[test]
+    fn a_push_writes_its_named_temporaries_and_leaves_its_scratch() {
+        let mut heap = frame_heap();
+        let expect_left = |heap: &Heap<'_>, word: usize, left: i64| {
+            let expected = if cfg!(debug_assertions) {
+                dead_register().bits()
+            } else {
+                Value::small_integer(left).word().bits()
+            };
+            assert_eq!(heap.stack.frames.word(word), expected, "word {word}");
+        };
+        let first = first_above_header(0);
+        // A frame that writes 1 to 4 into its four temporaries, then goes.
+        let earlier = heap
+            .push_activation(header(), Arguments::NONE, 4)
+            .expect("the stack holds the frame");
+        for register in first..first + 4 {
+            heap.activation_set_local(
+                earlier,
+                register,
+                Value::small_integer(i64::from(register - first) + 1),
+            );
+        }
+        let earlier_base = heap.activation_register_base(earlier).index as usize;
+        heap.pop_activation(earlier);
+
+        // One named temporary and three scratch registers, where the
+        // earlier frame's four were.
+        let pushed = heap
+            .push_activation(
+                ActivationHeader {
+                    code: scratch_code(0, 1, first + 4),
+                    ..header()
+                },
+                Arguments::NONE,
+                4,
+            )
+            .expect("the stack holds the frame");
+        let base = heap.activation_register_base(pushed);
+        assert_eq!(base.index as usize, earlier_base);
+        assert!(heap.register(base, first).is_nil(), "the named temporary");
+        for register in first + 1..first + 4 {
+            expect_left(
+                &heap,
+                base.index as usize + usize::from(register),
+                i64::from(register - first) + 1,
+            );
+        }
+
+        // A callee on the slot r14 of a sender of twenty registers above
+        // its header, each holding a number: its header goes over r15 to
+        // r27, and its one named temporary and two scratch registers over
+        // r28 to r30, which keep the sender's numbers.
+        let sender = heap
+            .push_activation(
+                ActivationHeader {
+                    code: scratch_code(0, 0, first + 20),
+                    ..header()
+                },
+                Arguments::NONE,
+                20,
+            )
+            .expect("the stack holds the frame");
+        let sender_base = heap.activation_register_base(sender);
+        for register in first..first + 20 {
+            heap.set_register(
+                sender_base,
+                register,
+                Value::small_integer(100 + i64::from(register)),
+            );
+        }
+        let callee = heap
+            .push_overlapped_activation(
+                &mut ActivationHeader {
+                    code: scratch_code(1, 1, first_above_header(1) + 3),
+                    ..header()
+                },
+                sender_base,
+                first + 1,
+                1,
+                3,
+            )
+            .expect("the stack holds the frame");
+        let callee_base = heap.activation_register_base(callee);
+        assert_eq!(
+            heap.register(callee_base, 0).as_small_integer(),
+            Some(100 + i64::from(first + 1))
+        );
+        let callee_first = first_above_header(1);
+        assert!(
+            heap.register(callee_base, callee_first).is_nil(),
+            "the named temporary"
+        );
+        for register in callee_first + 1..callee_first + 3 {
+            let word = callee_base.index as usize + usize::from(register);
+            let sender_register = (word - sender_base.index as usize) as i64;
+            expect_left(&heap, word, 100 + sender_register);
+        }
+        heap.pop_activation(callee);
+        heap.pop_activation(sender);
+        heap.pop_activation(pushed);
+    }
+
+    /// The dynamic net under the leftover analysis: a debug build refuses
+    /// an instruction's read of a register nothing wrote since the push.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "internal: the frame at stack word")]
+    fn a_debug_read_of_a_dead_register_panics() {
+        let mut heap = frame_heap();
+        let first = first_above_header(0);
+        let activation = heap
+            .push_activation(
+                ActivationHeader {
+                    code: scratch_code(0, 0, first + 1),
+                    ..header()
+                },
+                Arguments::NONE,
+                1,
+            )
+            .expect("the stack holds the frame");
+        let base = heap.activation_register_base(activation);
+        let _ = heap.register(base, first);
     }
 
     /// A sender suspended while its callee lies on its slots keeps its
@@ -11230,7 +11578,7 @@ mod tests {
             access: ns_syntax::ast::AccessModifier::Public,
             argument_count: 1,
             declaration: None,
-            code: shaped_code(1, 3),
+            code: shaped_code(1, first_above_header(1) + 2),
             fast_path: None,
             class_accessor: None,
         });
@@ -11314,8 +11662,11 @@ mod tests {
         assert!(!words.is_empty());
         for (position, bits) in words.iter().enumerate() {
             let word = Word::from_bits(*bits);
+            // A debug build's dead register word too, which every tracer
+            // passes over as naming no object.
             let valid = word.is_small_integer()
                 || constants.contains(bits)
+                || *bits == dead_register().bits()
                 || bits & 0b111 == 0b100
                 || word
                     .object_offset()
@@ -16398,8 +16749,7 @@ mod tests {
         /// what it wrote below them and the slots themselves, which are
         /// its callee's arguments; it loses a register below them it never
         /// wrote. The callee loses its own unwritten scratch, and a frame
-        /// pushed above the callee, inside the sender's window past the
-        /// callee's, is that frame's alone.
+        /// pushed above the callee keeps its argument.
         #[test]
         fn a_frame_in_flight_keeps_its_registers_below_its_slots() {
             let mut heap = Heap::new();
@@ -16446,7 +16796,11 @@ mod tests {
                 "the callee's window ends inside its sender's"
             );
             let above = pushed(&mut heap, top_code, &[Value::object(held[4])]);
-            assert_eq!(heap.activation_position(above), callee_end);
+            assert_eq!(
+                heap.activation_position(above),
+                heap.stack.window_end(sender.offset),
+                "a push never lowers the top, so a frame pushed above the callee starts past                  its sender's window"
+            );
             let mut weak = weak_over(&mut heap, &held);
 
             heap.collect_for_test(&mut [&mut weak]);
@@ -16490,19 +16844,21 @@ mod tests {
             let sender = pushed(&mut heap, sender_code, &[]);
             heap.activation_set_program_counter(sender, 3);
             let base = heap.activation_register_base(sender);
+            heap.set_register(base, FIRST + 1, Value::nil());
             let callee = heap
                 .push_overlapped_activation(&mut running(callee_code), base, FIRST + 1, 1, 0)
                 .expect("the stack holds the frame");
             let callee_end = heap.stack.window_end(callee.offset);
             let sender_end = heap.stack.window_end(sender.offset);
             assert!(callee_end < base.index as usize + usize::from(written));
-            // The top a push that never lowers it leaves: the sender's
-            // window end, its registers above the callee's holding a word
-            // they held before.
+            // A push never lowers the top: it stays at the sender's window
+            // end, the sender's registers above the callee's holding a word
+            // they held before, as the one the sender wrote does.
+            assert_eq!(heap.stack.frames.top(), sender_end);
             let stale = heap.store(Value::object(held[0])).bits();
-            heap.stack
-                .frames
-                .set_top_over_dead_registers(callee_end, sender_end, stale);
+            for word in callee_end..sender_end {
+                heap.stack.frames.set_word(word, stale);
+            }
             let mut weak = weak_over(&mut heap, &held);
 
             heap.collect_for_test(&mut [&mut weak]);

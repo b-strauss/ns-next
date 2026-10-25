@@ -3,10 +3,11 @@
 //! is its arguments, a header of `frame_header::COUNT` words, then the rest
 //! of its registers, innermost highest; a callee a send pushes lies on its
 //! sender's argument slots, which are its own arguments, every other frame
-//! above its sender's whole window. Every word is a valid tagged `Word` --
-//! a number a `SmallInteger`, an absent handle nil -- so that the collector
-//! can trace `[0, top)` as one linear range of values, with no stack map
-//! and no walk of frames.
+//! above its sender's whole window. Every word a frame writes is a valid
+//! tagged `Word` -- a number a `SmallInteger`, an absent handle nil -- and
+//! the collector's pre-pass nils every register no frame reads before it
+//! writes it (`Heap::nil_leftovers`), so that the trace takes `[0, top)`
+//! as one linear range of values, with no stack map and no walk of frames.
 
 use super::space::reserve_falling_back;
 use super::{out_of_memory, Word};
@@ -342,12 +343,13 @@ pub(super) struct ReservationExhausted;
 
 /// The frames of the running activations: one reservation of words,
 /// committed from its base as the stack deepens and never decommitted
-/// while it lives. Everything it lends is `[0, top)`, and the caller of a
-/// push writes every word of the frame it hands out but the arguments a
-/// callee shares with its sender. The words above the top come below it
-/// again only when a pop gives a sender back its window above a callee
-/// that lay on its slots (`set_top_over_dead_registers`), which writes
-/// every one of them.
+/// while it lives. Everything it lends is `[0, top)`. The caller of a push
+/// writes the header and the registers the frame reads before it writes
+/// them, and no other: a scratch register keeps whatever the stack last
+/// held there, and so does a register a pop gives back, until the
+/// collector's pre-pass nils it before a trace (`Heap::nil_leftovers`).
+/// The top never stands below the innermost frame's window end, nor below
+/// the window end of a frame a callee lies on the slots of.
 pub(super) struct FrameStack {
     reservation: Reservation,
     /// The first word past the innermost frame.
@@ -411,11 +413,12 @@ impl FrameStack {
     /// from, and its own words; `ReservationExhausted`, the top untouched,
     /// when the reservation cannot hold it. The frame's words are whatever
     /// the stack last held there -- a popped frame's, or zero where nothing
-    /// was yet -- so the caller writes every one of them before anything
-    /// reads the stack again: a word a popped frame left could name an
-    /// object since moved or reclaimed. One comparison against the
-    /// committed end and the slices' own, with nothing written twice;
-    /// committing more is the cold path's.
+    /// was yet -- so the caller writes every one its frame reads before it
+    /// writes it, and the collector's pre-pass nils the rest before a
+    /// trace: a word a popped frame left could name an object since moved
+    /// or reclaimed. One comparison against the committed end and the
+    /// slices' own, with nothing written twice; committing more is the
+    /// cold path's.
     #[inline(always)]
     pub(super) fn push(
         &mut self,
@@ -435,11 +438,12 @@ impl FrameStack {
     /// -- a callee's header laid on its sender's argument slots, over the
     /// sender's registers above them, which are dead -- and answers them;
     /// `ReservationExhausted`, the top untouched, when the reservation's
-    /// ordinary room cannot hold them. The top becomes their end, below
-    /// the sender's window end when the callee's window is the shorter: the
-    /// words between are dead, and untraced, until the callee's pop writes
-    /// them (`set_top_over_dead_registers`). One comparison against the
-    /// committed end, as `push` makes.
+    /// ordinary room cannot hold them. The top becomes their end where that
+    /// lies above it, and stays where it is otherwise: the sender's
+    /// registers past a shorter callee's window stay below the top, traced
+    /// once the pre-pass has nilled them (`Heap::nil_leftovers`), so that
+    /// no word comes below the top again that a collection never saw. One
+    /// comparison against the committed end, as `push` makes.
     #[inline(always)]
     pub(super) fn push_from(
         &mut self,
@@ -454,42 +458,37 @@ impl FrameStack {
         if end > self.ordinary_end {
             self.grow_to(end, self.ordinary_limit)?;
         }
-        self.top = end;
+        self.top = self.top.max(end);
         Ok(&mut self.reservation.accessible_mut()[start..end])
     }
 
-    /// Lowers the top to `top`, which must not lie above it: a pop of a
-    /// frame pushed above its sender's window. The words above the new top
-    /// keep whatever they held, but nothing reads them: `words` lends only
-    /// below the top, and a push overwrites them.
+    /// Lowers the top to `top`, which must not lie above it: a pop, which
+    /// gives back the top its frame was pushed at. The words above the new
+    /// top keep whatever they held, and so do the words below it a callee
+    /// laid on its sender's slots gives back: nothing reads either before
+    /// a write, and the pre-pass nils the second before a trace.
     #[inline(always)]
     pub(super) fn lower_top(&mut self, top: usize) {
         debug_assert!(top <= self.top, "internal: a pop never raises the top here");
         self.top = top;
     }
 
-    /// Sets the top to `top` -- above the current top when the callee's
-    /// window was the shorter, below it when the callee's was the longer --
-    /// and every word from `dead` up to it to `filler`, and up to three
-    /// words past it inside the committed stack, which are no frame's: a
-    /// pop of a callee that lay on its sender's slots from `dead`, its
-    /// header's offset, gives the sender back its window up to `top`, its
-    /// registers above the slots dead. Each is written, since a word the
-    /// callee or a frame above it left there would otherwise be
-    /// traced again -- keeping alive what nothing reaches, or naming,
-    /// after a collection that ran while it lay above the top, an object
-    /// since moved or reclaimed.
-    #[inline(always)]
-    pub(super) fn set_top_over_dead_registers(&mut self, dead: usize, top: usize, filler: u64) {
+    /// A debug build's pop of a callee that lay on its sender's slots from
+    /// `dead`, its header's offset: lowers the top to `top`, the top the
+    /// callee was pushed at, and writes `filler`, the dead register word,
+    /// into every word from `dead` up to it -- the sender's registers above
+    /// its slots, and any of a frame below that the sender lay on, all
+    /// dead -- so that an instruction's read of one is refused rather than
+    /// answering what the callee left. In whole blocks of four words, up
+    /// to three past the top where the committed stack allows: a word
+    /// above the top is no frame's.
+    #[cfg(debug_assertions)]
+    pub(super) fn give_back_dead_registers(&mut self, dead: usize, top: usize, filler: u64) {
         debug_assert!(
-            dead <= top && top <= self.committed,
-            "internal: a sender's dead registers lie inside the committed stack"
+            dead <= top && top <= self.top,
+            "internal: a pop gives back dead registers below the top"
         );
         self.top = top;
-        // In whole blocks of four words, past the top where the committed
-        // stack allows: a word above the top is no frame's and is written
-        // before it is read, and a fill that ends anywhere took a
-        // word-by-word tail after its four-word stores on every pop.
         let end = dead + (top - dead).next_multiple_of(4);
         let words = self.reservation.accessible_mut();
         if end <= self.committed {

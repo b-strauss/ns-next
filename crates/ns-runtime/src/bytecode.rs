@@ -801,6 +801,18 @@ impl CompiledCode {
         self.tainted_sets.before(self, program_counter)
     }
 
+    /// Whether the set before `program_counter` is kept already
+    /// (`tainted_before` answers it without a pass).
+    pub(crate) fn has_tainted_before(&self, program_counter: u32) -> bool {
+        self.tainted_sets.has(program_counter)
+    }
+
+    /// Keeps the sets before each of `program_counters`, ascending, from
+    /// one pass over the body (`leftovers::TaintedSets::fill_all`).
+    pub(crate) fn fill_tainted_before(&self, program_counters: &[u32]) {
+        self.tainted_sets.fill_all(self, program_counters);
+    }
+
     /// The instruction at `index`, decoded: what was emitted there.
     pub fn instruction(&self, index: usize) -> Instruction {
         self.body.instruction(index)

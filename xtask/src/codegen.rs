@@ -54,8 +54,9 @@ struct Budget {
 /// the path the compiler keeps out of line (`place_arguments`, a native
 /// loop's `resume`).
 ///
-/// Each budget is the count measured at `d7488e20` with a headroom: 10% on
-/// the instructions, rounded up to a multiple of ten, and 10% but at least
+/// Each budget is the count measured at `d7488e20`, or where a comment
+/// names a later change that shrank it, at that change, with a headroom:
+/// 10% on the instructions, rounded up to a multiple of ten, and 10% but at least
 /// two on the wide loads. An ordinary change moves a function's size by a
 /// few percent (`push_sent` grew 2% over the four commits after
 /// `6d7da106`; a change to the switch sites, reverted, grew `vm::run` 1%)
@@ -99,16 +100,17 @@ const BUDGETS: &[Budget] = &[
         instructions: 3_380,
         wide_loads: 10,
     },
-    // Measured 1,020 and 0.
+    // Measured 1,007 and 0, once a push stopped filling its scratch.
     Budget {
         function: "<ns_runtime::interpreter::Mutator>::push_initializer_placed",
-        instructions: 1_130,
+        instructions: 1_110,
         wide_loads: 2,
     },
-    // Measured 393 and 0.
+    // Measured 386 and 0, once a pop stopped filling the registers it
+    // gives back.
     Budget {
         function: "<ns_runtime::heap::Heap>::pop_activation",
-        instructions: 440,
+        instructions: 430,
         wide_loads: 2,
     },
     // Measured 519 and 0.

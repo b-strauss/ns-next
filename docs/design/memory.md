@@ -728,15 +728,16 @@ check").
   every frame's header -- its receiver, `current_class`, the closure object
   or class its kind's operand names, the frame object it is married to,
   and numbers the tracer passes over -- and its registers, with no stack
-  map and no walk of frames. The words above the top are not traced: a
-  push writes every word of its frame but the arguments its sender's slots
-  already hold, and the one pop that puts words below the top again -- a
-  callee's that lay on its sender's slots, giving the sender back its dead
-  registers above them -- writes every one of them, nil in a release build
-  (`FrameStack::set_top_over_dead_registers`; [execution.md](execution.md),
-  "Representation"), so that what the callee left there neither keeps an
-  object alive nor names one a collection moved meanwhile.
-  `ActivationStack`'s impl is in `heap.rs`, where its fields are private.
+  map and no walk of frames. The words above the top are not traced, and
+  no push or pop writes a scratch register: a push writes its frame's
+  header and named locals only, a pop nothing, and a push laid on its
+  sender's slots never lowers the top, so a sender's registers past a
+  shorter callee stay below it ([execution.md](execution.md),
+  "Representation"). A word below the top may so be one a callee or a
+  popped frame left, and the pre-pass below nils each before the trace,
+  so that it neither keeps an object alive nor names one a collection
+  moved meanwhile. `ActivationStack`'s impl is in `heap.rs`, where its
+  fields are private.
 
   Before every trace of the stack -- the scavenge, marking, and every
   forward (`forward_everything`: a compaction's, a stress move's, the
@@ -761,9 +762,17 @@ check").
   the analysis runs once per body and program counter, at the first
   collection that finds a frame there, after a `check` of the body, since
   the shipped code is decoded unverified and an answer for a body `check`
-  refuses would nil live registers. The push still fills a frame's
-  temporaries and the pop the sender's registers it gives back, so that
-  today the pre-pass finds most of what it writes nil already.
+  refuses would nil live registers. The walk gathers the program counters
+  it finds no set for by body first and fills each body's from one pass,
+  so a collection analyses a body once however many frames run it. It is
+  the only guard: no push or pop writes the registers it nils. A full
+  collection runs it twice, before its marking and before its
+  forwarding, which is idempotent on purpose. A frame object traced as
+  it lies takes no such register either: a suspension copies the frame's
+  registers less those the pre-pass would nil, a divorce its named ones
+  only. In a debug build the word it writes is `Word::DEAD_REGISTER`,
+  which every tracer passes over and an instruction's read refuses
+  ([execution.md](execution.md), "Representation").
 - The side table of continuations (`Heap`'s `continuations`): each running
   activation's continuation other than `Deliver`, which its stack frame
   names by row (a frame that delivers names none), and the state it

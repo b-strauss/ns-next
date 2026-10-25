@@ -222,7 +222,8 @@ pub struct ActivationReference {
   (`Heap::push_overlapped_activation`) takes the header and the registers
   above it from the end of the send's argument slots, which are its
   arguments and are copied nowhere, writes every word of the header and
-  fills the registers above it with nil. Every other push
+  fills its named locals above it with nil -- those below its body's
+  `local_count` -- and no scratch register. Every other push
   (`Heap::push_activation`) -- a host's, a `doesNotUnderstand:` handler's,
   `Message>>sendTo:`'s, a native loop's block, an unwind block, the
   initializer a factory enters, a resumed or forcing activation -- takes
@@ -232,7 +233,12 @@ pub struct ActivationReference {
   registers -- out of their window in the frame below, or from the values
   a decision or the host built (`interpreter::Arguments`); one or two word
   by word, more by a loop kept inline -- writes the header and fills the
-  rest with nil, never indexing the whole stack once the frame is pushed.
+  named locals with nil, never indexing the whole stack once the frame is
+  pushed. No push writes a scratch register: no body reads one before it
+  writes it (`bytecode::leftovers`, which both lowerings check and the
+  decoder holds an image to; [compiler.md](compiler.md), "What a callee
+  leaves"), and the collector's pre-pass nils what the stack held there
+  before every trace (`Heap::nil_leftovers`).
   The frame names its body by its code id, found through the
   body's one-entry cache ([memory.md](memory.md), "A closure's code id
   without the map") and kept by a full collection while the activation
@@ -268,16 +274,30 @@ pub struct ActivationReference {
   once. The caller word packs the caller's offset with the top the frame
   was pushed at, which is the caller's window end, as a distance from the
   frame's start (`frames::caller_link_word`), so that a pop finds the top
-  it gives back without reading the caller's header. A pop reads the
-  words it needs and sets the top to its caller's window end -- the
-  caller's registers above its slots are its own again, dead, and a debug
-  build fills them with the `SmallInteger` `0x5EAD_5EAD`, so that a read
-  of one shows as wrong output -- or, for the bottom frame, to its start.
-  A release build writes them with nil: whatever the callee or a frame
-  above it left there would otherwise be traced again, keeping alive what
-  nothing reaches -- a `WeakArray` would not forget it -- or, after a
-  collection that ran while those words lay above the top, untraced, naming
-  an object since moved or reclaimed (`FrameStack::set_top_over_dead_registers`). The registers above the header are
+  it gives back without reading the caller's header. A push laid on its
+  sender's slots never lowers the top (`FrameStack::push_from`), so the
+  top stays at a live window end: the sender's registers past a shorter
+  callee's window stay below it, traced, and no word comes below the top
+  again that a collection never saw. A pop reads the words it needs and
+  sets the top back to the one it was pushed at -- the caller's window
+  end, or past it where the caller lies on a longer frame's slots -- or,
+  for the bottom frame, to its start, and writes nothing: the caller's
+  registers above its slots are its own again, dead, and whatever the
+  callee or a frame above it left there the collector's pre-pass nils
+  before the next trace, which would otherwise keep alive what nothing
+  reaches -- a `WeakArray` would not forget it -- or meet a handle to an
+  object a collection moved or reclaimed ([memory.md](memory.md), "What
+  the collector traces"). A debug build writes `Word::DEAD_REGISTER` --
+  under the tag no value carries, so that it cannot be told from a
+  program's number -- into every scratch register a push hands out and
+  every register a pop gives back (`FrameStack::give_back_dead_registers`),
+  and the pre-pass writes it into what it nils; `Heap::register` and every
+  other register read an instruction makes refuse it, the dynamic net
+  under the analysis that says nothing reads such a register. Bulk copies
+  -- a reification's, a suspension's, a divorce's, a trace -- are no such
+  reads: a suspension nils the registers the pre-pass would, a divorce
+  every scratch register, and the tracers pass over the word as naming no
+  object. The registers above the header are
   recorded in their own word rather than read off the code, and the
   arguments in the flags, since a factory is handed as many arguments as
   its send has keywords whatever its register count. An activation nothing
@@ -8406,13 +8426,19 @@ callee                      | r0 .. r(argc-1)       | header (13) | r(argc+13) .
   leaf and `InitializeInstance` hand theirs on from elsewhere, and land
   above too (pinned by
   `goldens/language/evaluation-order/a_push_that_is_not_the_senders_callee_leaves_its_window.ns`).
-- **A pop restores the top to the caller's window end** (built), not to
-  the callee's offset, since the caller's registers above its slots are its
-  own again; the pop writes them, nil in a release build and a poison
-  `SmallInteger` in a debug one ("Representation" above).
-  Suspending a sender copies its registers below its callee's header only
-  and leaves the rest nil, so a frame object holds no stale header word
-  (built). A frame object and an image record hold the registers without
+- **A pop restores the top it was pushed at** (built), not the callee's
+  offset: the caller's window end, or past it where the caller lies on a
+  longer frame's slots, since a push never lowers the top. The caller's
+  registers above its slots are its own again, dead, and the pop writes
+  none of them in a release build, nor does a push write a scratch
+  register: the collector's pre-pass nils every register a frame does not
+  read before it writes it, before every trace ([memory.md](memory.md),
+  "What the collector traces"). A debug build writes a poison word no
+  value can be into both, and refuses an instruction's read of it
+  ("Representation" above). Suspending a sender copies its registers
+  below its callee's header only and leaves the rest nil, so a frame
+  object holds no stale header word, and nils every register the
+  pre-pass would (built). A frame object and an image record hold the registers without
   the header's numbers (built): register `r` is field `r` below the
   argument count and field `r - 13` above the header, and a number the
   header takes has no field (`Heap::frame_field_of_register`), so a frame

@@ -380,17 +380,23 @@ fn a_class_given_a_new_application_moves_its_live_instances_with_it() {
     });
 }
 
-/// A body that returns its first register; nothing here runs it.
+/// A body that returns its first register; nothing here runs it. It
+/// takes one argument and names one temporary above the header, so that a
+/// frame of it keeps the temporary when its registers are kept: a divorce
+/// keeps a body's named registers only, never its scratch.
 fn trivial_code() -> std::rc::Rc<CompiledCode> {
-    std::rc::Rc::new(CompiledCode::new(
+    let registers = 1 + ns_runtime::bytecode::HEADER_REGISTERS + 1;
+    let mut code = CompiledCode::new(
         CodeKind::Method,
         vec![Instruction::Return { register: 0 }],
         1,
-        2,
+        registers,
         0,
         Vec::new(),
         ns_syntax::Span::new(0, 0),
-    ))
+    );
+    code.local_count = registers;
+    std::rc::Rc::new(code)
 }
 
 /// An initializer activation of `class` running `trivial_code`: a frame
