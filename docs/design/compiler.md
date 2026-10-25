@@ -898,173 +898,189 @@ prints a send's number as `@N`, and `UNCACHED` as `@-`.
 A send's callee is laid on its argument slots, so after it returns, every
 register of the sender above the slots may hold what the callee left
 there: its header's words and its temporaries, and in a shipped method's
-scratch the VM mirror. `bytecode::leftovers::analyze` derives, from a
-body's code alone, which scratch registers may hold such a leftover at
-each instruction. It is the base of three readers still to come: the
-image decoder's refusal of a read of a leftover, a debug build's check of
-every compiled body, and the collector's pre-pass, which nils the
-leftovers so that a return can write nothing.
+scratch the VM mirror. `bytecode::leftovers` derives, from a body's code
+alone, which scratch registers may hold such a leftover at each
+instruction. It is the base of three readers still to come:
+
+- the image decoder, which refuses a read of a leftover (`check`, which
+  keeps nothing);
+- a debug build, which checks every compiled body;
+- the collector's pre-pass, which nils the leftovers so that a return can
+  write nothing. It asks `Leftovers::tainted_before_each` for every frame
+  pc of a code it meets, answered from one pass, and caches the result;
+  `tainted_before` answers one.
 
 **The rule.**
 
 - Every send but `SendMirror` taints the registers at and above its slot
   end. A mirror send's leaf lands above its sender's window.
-- The slots themselves hold what the send copied there.
-- A write cleans a register. A destination is written after the callee
-  returned.
-- Registers below `local_count` are never tainted.
+- **A send writes none of its slots for certain.** The run loop reads one
+  argument, or consecutive ones, where they stand (`vm.rs`,
+  `argument_window`), and a primitive or an accessor answers without a
+  push. So a slot keeps the status it had: clean where its producer wrote
+  it, tainted where an earlier callee went over it.
+- A write cleans a register, a send's destination after the callee
+  returned. Registers below `local_count` are never tainted.
 - A join is tainted where either path is.
 
 The register effects are `bytecode::registers_read`, `register_written`,
-`jump_target` and `successors`. Each is exhaustive over `Instruction`, and
-the reference lowering's checks and the decoder share them.
+`jump_target`, `falls_through` and `successors`. Each is exhaustive over
+`Instruction`; the reference lowering's checks and the decoder share them.
+
+Every body the goldens, the core library and `benchmarks/` compile to,
+under both lowerings (18,496 bodies), reads no register the rule taints
+(`every_golden_body_stays_within_the_bound`).
 
 **One pass, no state per jump target.** A state stored at every jump
 target is quadratic in compiled code. A flat keyword send of N parts, each
 an inlined conditional over a value beside a register an inner send
 tainted, holds Θ(N) separate runs of clean registers at each of its 3N
-targets; at N = 2,000 that was 18 million stored entries for 24,002
-instructions. So the analysis makes one pass in instruction order with one
+targets. So the analysis makes one pass in instruction order with one
 current state:
 
-- **The state.** Each written register keeps its write time. The taints
-  are a stack of `(end, time)` with rising ends: a later taint pops every
-  one with an end at or above its own, by a logical truncation, so a taint
-  is one record. A register is tainted when the latest taint at or below
-  it is later than its write.
-- **The log.** Every change is a record in an undo log.
-- **A forward jump** opens a pending entry, anchored at the log's length.
+- **The state.** A register keeps its write time, and the taints are a
+  stack of `(end, time)` with rising ends. A later taint pops every taint
+  with an end at or above its own, by a logical truncation, so a taint is
+  one record. A time is a record's position on the path from the body's
+  start. A register is tainted when the latest taint at or below it is
+  later than its write.
+- **The log.** Every change is a sixteen-byte record in an undo log. With
+  no jump pending, the log is dropped.
+- **A forward jump** opens a pending entry, anchored at the path's
+  position.
 - **At an unreachable target** the pass truncates the log back to an
   entry's anchor. Every pending entry anchored above it keeps the
-  truncated records as a shared segment of its chain.
+  truncated records as a link to one shared segment, added at the back of
+  its chain.
 - **A join** of the current state with an entry costs the records of the
   two paths since their common version `A`, the anchor, never the size of
-  the state:
+  the state.
   - Below the chain's lowest taint, a register the current path wrote
     takes back its write time at `A` where the entry's version holds it
     tainted.
   - At and above it, one taint covers everything the chain tainted, and
     the registers clean in both, which the chain wrote, are written again.
 - **A loop head** is tainted, when the pass reaches it, at and above the
-  lowest slot end of any send between it and its last back edge. The loop
-  cannot taint below that, and is entered only at its head (the analysis
-  refuses a jump into it from outside, and loops that cross). So every
-  later iteration's state is within the head's, and the back edge needs no
-  second pass.
-  - Over-tainting a loop's head is sound.
-  - Neither lowering reads a register at or above that floor before
-    rewriting it in the same iteration, because every scratch register a
-    loop reads across iterations was allocated before the loop, below
-    every slot inside it.
+  lowest slot end of any send between it and its last back edge.
+  - The analysis refuses loops that cross, and a jump into a loop from
+    outside but at its head.
+  - So the loop's code cannot taint below that floor, and every later
+    iteration's state is within the head's. A debug build asserts it at
+    every back edge.
+  - Over-tainting the head is sound. Neither lowering reads a register at
+    or above the floor before rewriting it in the same iteration: every
+    scratch register a loop reads across iterations was allocated before
+    the loop, below every slot inside it.
 
-A test-only fixpoint over explicit sets (`leftovers/tests.rs`, `oracle`)
-holds the pass to the rule:
-
-- equal at every instruction of a body without a loop, and never less
-  with one;
-- over 4,000 crafted bodies, whose forward jumps cross freely and which
-  take the truncation, chain and redo paths thousands of times;
-- over every compiled body of up to 400 instructions.
+**The oracle.** A test-only fixpoint over explicit sets (`oracle` in
+`leftovers/tests.rs`) holds the pass to the rule: equal at every
+instruction of a body without a loop, and never less with one. It runs
+over 4,000 crafted bodies, whose forward jumps cross freely and which take
+the truncation, chain and redo paths thousands of times, and over every
+compiled body of up to 400 instructions.
 
 **The bound on open entries.** The analysis refuses a body that keeps
-more than `OPEN_ENTRY_LIMIT = 2 × 128 + 2 = 258` forward jumps open at
-once. No compiled body reaches it:
+more than `OPEN_ENTRY_LIMIT` forward jumps open at once, stated and
+derived once, in `leftovers.rs`.
 
-- **The reference lowering** emits no jump at all (`check_shape`).
-- **The optimized lowering** opens forward jumps only in these shapes
-  (`lower.rs`; `finish`'s target check lists every emitter). Each keeps at
-  most two of its own entries open over any code lowered inside it, and
-  all of that code lies in one of its block literals:
+- **The reference lowering** emits no jump (`check_shape`).
+- **The optimized lowering** opens forward jumps only in four inlined
+  forms (`lower.rs`; `finish`'s target check lists every emitter):
 
-  | Shape | Open over its blocks | Open over its own instructions |
+  | Form | Open over the code in its blocks | Open over its own instructions |
   |---|---|---|
-  | `emit_guarded_branch` (`ifTrue:` and its relatives, `and:`, `or:`) | the guard and the false branch over the true arm; the guard and the true arm's exit over the false arm; both exits over the fallback, which is a send of closures | at most three, just as an arm's exit opens |
-  | `lower_while` | the guard and the exit branch over the body. The condition has none of this loop's | two |
-  | `lower_mirror_send` | the jump past the failure block | two |
-  | `lower_integer_binary` | none: its operands are lowered before it | two, around the fallback send |
+  | `emit_guarded_branch` (`ifTrue:` and its relatives, `and:`, `or:`) | two: the guard and the false branch over the true arm; the guard and the true arm's exit over the false arm; both exits over the fallback, a send of closures | three, as the true arm's exit opens |
+  | `lower_while` | two: the guard and the exit branch over the body. The condition has none of this loop's | two |
+  | `lower_mirror_send` | one: the jump past the failure block | two |
+  | `lower_integer_binary` | none, since its operands are lowered before it | two, around the fallback send |
 
-- **No other form opens one**, and everything evaluated before a form's
-  first jump (its receiver, its operands) has none of its entries open.
-- **So** a point inside `E` inlined block literals of the code has at most
-  `2E + 3` entries open.
-- **The parser bounds `E`.** Every block literal is one of the parser's
-  guarded productions, and at most `MAX_DEPTH = 128`
-  (`crates/ns-syntax/src/parser/mod.rs`) may be open at once, so a form's
-  own instructions lie inside at most 127. Hence `2 × 127 + 3 = 257 ≤
-  258`.
-- **Pinned.** `the_parser_accepts_no_deeper_nesting` holds
+- **What lies outside a form's jumps:** everything evaluated before a
+  form's first jump (its receiver, its operands) has none of its entries
+  open, and all code a form encloses lies in one of its block literals.
+- **What the parser allows:** a block literal is one of the parser's
+  guarded productions, of which at most `MAX_DEPTH = 128` may be open
+  (`crates/ns-syntax/src/parser/mod.rs`). A form needs one production
+  more than the blocks around it, for its blocks or its operands, so its
+  own instructions lie inside at most 127.
+- **So** the most that can be open is a guarded branch's three at that
+  depth: `OPEN_ENTRY_LIMIT = 2 × 127 + 3 = 257`.
+- **Pinned and measured.** `the_parser_accepts_no_deeper_nesting` holds
   `PARSER_NESTING_LIMIT` to what the parser accepts. A `whileTrue:`
-  nested in the body of another, 125 deep (the deepest the parser
-  accepts), keeps 250 entries open (`the_deepest_nesting_stays_within_the_bound`).
+  nested in the body of another 125 deep, the deepest the parser accepts,
+  keeps 250 open (`the_deepest_nesting_stays_within_the_bound`).
 
-**The work bound** is `WORK_PER_UNIT × units + WORK_ALLOWANCE`, where:
+**The work bound** is `WORK_PER_UNIT × units + WORK_ALLOWANCE`:
 
-- a body's units are its instructions, every register they read and every
-  argument slot, at most its encoded bytes;
-- `WORK_PER_UNIT = 16 × 258 + 64 = 4,192`;
-- `WORK_ALLOWANCE = 65,536`;
-- an operation on one of the pass's tables counts as one unit of work,
-  and the factor of a lookup is left out.
+- a body's units are its instructions and every register they read;
+- `WORK_PER_UNIT = 14 × 257 + 32 = 3,630`, and `WORK_ALLOWANCE = 65,536`;
+- an operation on a table counts as one unit, and a lookup's log factor
+  is left out.
 
-The derivation, for compiled code:
+For compiled code:
 
-- **Records an instruction makes:** at most its slots, a destination and a
-  taint, at most its units.
-- **Records a join makes:**
-  - one taint;
-  - a write time put back, for each register whose clean status a record
-    on the current path made, charged to that record once;
-  - a write again, for each register the entry's chain wrote, whose
-    records the join releases. In compiled code a chain is held by one
-    entry: a truncation re-anchors only the form's own entries, and the
-    shared prefix between a guard and its false branch is empty.
+- **An instruction's own work** is at most two plus its reads, the scan of
+  at most 257 pending entries at a target, and at most 257 re-anchored
+  entries at a truncation.
+- **Records.** An instruction makes at most two: a destination's write
+  and a taint. A join makes one taint, and a write time put back, charged
+  once to the record that cleaned the register. A write again is charged
+  to a record of the entry's chain the join releases; in compiled code a
+  chain is held by one entry. So there are at most three records per unit.
+- **Reads of a record:**
+  - each one is read on the log by the joins of the at most 257 entries
+    open when it was made;
+  - once by its undo;
+  - once by its chain's holder;
+  - at most four operations each, with the join's tables.
+- **Total:** `2 + 2 × 257 + 3 × 4 × (257 + 2) = 14 × 257 + 26 ≤ 3,630`.
 
-  So at most 5 records per unit are made, and at most 4 per unit are
-  alive at once.
-- **How often a record is read:**
-  - on the log, by the join of each entry open when it was made (at most
-    258);
-  - by one undo;
-  - in a chain, by its one holder's join or redo;
-  - with the join's tables, three times per read: `3 × (258 + 3)` per
-    record.
-- **Truncation:** each costs at most the open entries, at most 258 per
-  instruction.
-- **Total:** `1 + 15 × 261 + 258 ≤ 4,192` per unit.
+Measured, the largest ratio of work to units: 8.13 over every compiled
+body, 4.76 for the flat case at N = 2,000, and 39.1 for the 125-deep loop
+nesting.
 
-Measured, the largest ratio of work to units:
+**The memory bound** is `MEMORY_PER_BYTE × bytes + MEMORY_ALLOWANCE`, held
+for one body at a time.
 
-- 5.36 over every body of the goldens, the core library and `benchmarks/`
-  (18,496 bodies, both lowerings);
-- 2.90 for the flat N = 2,000 case above;
-- 17.5 for the 125-deep loop nesting.
+- `bytes` is the body's smallest encoding: three bytes per instruction and
+  two per register it reads. The image's encoding takes at least that.
+- `MEMORY_PER_BYTE = 96`, and `MEMORY_ALLOWANCE = 320 KiB`. The allowance
+  covers the write times, one `u32` per register up to the highest written
+  (at most 256 KiB), and the at most 257 pending entries.
 
-**The memory bound** is `MEMORY_PER_UNIT × units + MEMORY_ALLOWANCE` bytes,
-held for one body at a time, like the decoded `Vec<Instruction>`
-([memory.md](memory.md), "The amplification bound of a rejected load",
-"What the figures do not count"). `MEMORY_PER_UNIT = 448`, at most 448x a
-body's encoded bytes:
+The derivation, per byte, with every table at its capacity:
 
-| What | Bytes |
+| What | Bytes per byte |
 |---|---|
-| per instruction: its effect, its loop floor and head flag, and the loop sweep's two tables | 41 |
-| the at most 4 records alive per unit, 48 bytes each | 192 |
-| the write times | 32 |
-| a join's tables, as many as the records it reads | 128 |
-| the taint stack | 16 |
+| the records alive, at most one per byte (three per instruction of three bytes), 16 bytes each: the log at twice its length, a truncated segment beside it | 48 |
+| a join's tables, at most one entry per record it reads, twice their length | 24 |
+| the taint stack, at most two taints per instruction, 8 bytes each at twice its length | 11 |
+| the loops, at most one per instruction | 8 |
+| what `analyze` keeps of each instruction, 12 bytes | 4 |
+| **Total** | **95** |
 
-`MEMORY_ALLOWANCE = 65,536`, for a small body's fixed costs and the at
-most 258 pending entries. Measured, past the allowance, compiled bodies
-held at most 71 bytes per unit, under both lowerings.
+The decoder's `check` keeps the last row's bytes no more. Measured, past
+the allowance:
+
+| Bodies | Bytes per byte |
+|---|---|
+| the most of any compiled body of at least 1,024 bytes | 4.1 |
+| the 125-deep loop nesting | 6.9 |
+| the flat case at N = 2,000 | 1.1 |
+
+So the bound stays above the 10.7x of a rejected load's graph
+([memory.md](memory.md), "The amplification bound of a rejected load").
+What compiled code holds stays below it.
 
 **The tests:**
 
-- `every_golden_body_stays_within_the_bound`, a unit test in
-  `bytecode/leftovers/tests.rs`, since it needs the shipped modules
-  resolved as the boot resolves them;
-- `the_flat_worst_case_stays_within_the_bound`;
-- `the_deepest_nesting_stays_within_the_bound`;
-- the brief's hand-built cases.
+- `every_golden_body_stays_within_the_bound`, a unit test, since it needs
+  the shipped modules resolved as the boot resolves them. It asserts that
+  each source it cannot compile is a golden recording a parse or resolve
+  error.
+- `the_flat_worst_case_stays_within_the_bound`.
+- `the_deepest_nesting_stays_within_the_bound`.
+- The hand-built cases in `leftovers/tests.rs`, among them
+  `a_send_writes_none_of_its_slots`.
 
 ## Compilation cannot fail
 

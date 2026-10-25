@@ -4,7 +4,9 @@ use std::rc::Rc;
 
 use super::*;
 use crate::builtins::primitive::MirrorPrimitive;
-use crate::bytecode::{jump_target, CallSite, CompiledCode, Literal};
+use crate::bytecode::{
+    falls_through, jump_target, register_written, successors, CallSite, CompiledCode, Literal,
+};
 use crate::{Lowering, Symbol};
 
 fn send(argument_base: u16, argument_sources: Vec<u16>, destination: u16) -> Instruction {
@@ -76,17 +78,32 @@ fn a_mirror_send_taints_nothing() {
 }
 
 #[test]
-fn the_slots_a_send_writes_are_clean() {
+fn a_send_writes_none_of_its_slots() {
     let body = [
-        send(5, vec![5], 5),
-        // Sources 0 and 1 are copied into slots 6 and 7, which the first
-        // send had tainted.
-        send(6, vec![0, 1], 9),
-        Instruction::Return { register: 9 },
+        load(10),
+        // Its slot is r10, so it taints r11 and up.
+        send(10, vec![10], 10),
+        // Consecutive named sources are read where they stand, and a
+        // primitive answers without a push: slots r10 and r11 are never
+        // written, so r10 stays clean and r11 tainted.
+        send(10, vec![0, 1], 12),
+        Instruction::Return { register: 11 },
     ];
-    let leftovers = analyzed(&body, 5, 12);
-    assert_eq!(tainted(&leftovers, 1), vec![6, 7, 8, 9, 10, 11]);
-    assert_eq!(tainted(&leftovers, 2), vec![8, 10, 11]);
+    assert_eq!(
+        analyze(&body, 5, 14).err(),
+        Some(LeftoverRefusal::Read {
+            instruction: 3,
+            register: 11
+        })
+    );
+    let body = [
+        load(10),
+        send(10, vec![10], 10),
+        send(10, vec![0, 1], 12),
+        Instruction::Return { register: 10 },
+    ];
+    let leftovers = analyzed(&body, 5, 14);
+    assert_eq!(tainted(&leftovers, 3), vec![11, 13]);
 }
 
 #[test]
@@ -272,9 +289,6 @@ fn oracle(
         let mut state = states[index].clone().expect("a visited state");
         if let Some((base, sources)) = instruction.argument_slots() {
             let end = (usize::from(base) + sources.len()).min(usize::from(register_count)) as u16;
-            for slot in base..end {
-                state.remove(&slot);
-            }
             if !matches!(instruction, Instruction::SendMirror { .. }) {
                 for register in end.max(local_count)..register_count {
                     state.insert(register);
@@ -330,8 +344,22 @@ fn agrees_with_the_oracle(
 ) -> Result<(), String> {
     let expected = oracle(instructions, local_count, register_count);
     let looping = has_back_edge(instructions);
+    // Every program counter from one pass, in reverse to hold the answers
+    // to the order asked; the last one through the single query as well.
+    let program_counters: Vec<u32> = (0..instructions.len() as u32).rev().collect();
+    let mut every = leftovers.tainted_before_each(&program_counters);
+    every.reverse();
+    if let Some(last) = program_counters.first() {
+        let single: Vec<u16> = leftovers.tainted_before(*last).collect();
+        if every.last() != Some(&single) {
+            return Err(format!(
+                "at {last}: one query answers {single:?}, the pass {:?}",
+                every.last()
+            ));
+        }
+    }
     for (index, expected) in expected.iter().enumerate() {
-        let found: BTreeSet<u16> = leftovers.tainted_before(index as u32).collect();
+        let found: BTreeSet<u16> = every[index].iter().copied().collect();
         let expected = expected.clone().unwrap_or_default();
         let agrees = if looping {
             found.is_superset(&expected)
@@ -506,16 +534,26 @@ struct Measured {
     ratio: f64,
     memory_ratio: f64,
     open_entries: usize,
+    /// The peak against the fewest bytes the body can take on the wire --
+    /// an instruction's tag and one register, two bytes for each register
+    /// it reads -- for a body of at least `LARGE` of them.
+    memory_per_byte: Option<f64>,
 }
+
+/// A body this large on the wire is measured against its bytes: below it,
+/// the allowance's fixed costs dominate.
+const LARGE: u64 = 1024;
 
 fn measure(code: &CompiledCode) -> Result<Measured, String> {
     let instructions = code.instructions();
-    let leftovers = analyze(&instructions, code.local_count, code.register_count)
+    let spent = check(&instructions, code.local_count, code.register_count)
         .map_err(|refusal| format!("{refusal:?}"))?;
+    let bytes = spent.bytes;
     Ok(Measured {
-        ratio: leftovers.work as f64 / leftovers.units as f64,
-        memory_ratio: leftovers.peak_memory as f64 / leftovers.units as f64,
-        open_entries: leftovers.peak_open_entries,
+        ratio: spent.work as f64 / spent.units as f64,
+        memory_ratio: spent.peak_memory as f64 / spent.bytes as f64,
+        open_entries: spent.peak_open_entries,
+        memory_per_byte: (bytes >= LARGE).then(|| spent.peak_memory as f64 / bytes as f64),
     })
 }
 
@@ -530,22 +568,31 @@ fn every_golden_body_stays_within_the_bound() {
     let mut worst_ratio = (0.0f64, String::new());
     let mut worst_memory = (0.0f64, String::new());
     let mut most_open = (0usize, String::new());
+    let mut worst_per_byte = (0.0f64, String::new());
     let mut failures = Vec::new();
+    let mut skipped: Vec<PathBuf> = Vec::new();
     for lowering in [Lowering::Optimized, Lowering::Reference] {
         let mut resolved_modules: Vec<(String, Rc<crate::ResolvedModule>)> = Vec::new();
         for file in &files {
             let source = std::fs::read_to_string(file).expect("readable");
-            let Ok(module) = ns_syntax::parse(&source) else {
-                continue;
-            };
-            let Ok(resolved) = crate::resolve(
-                module,
-                Rc::from(source.as_str()),
-                crate::SourceOrigin::File(file.clone()),
-            ) else {
-                continue;
-            };
-            resolved_modules.push((file.display().to_string(), Rc::new(resolved)));
+            let resolved = ns_syntax::parse(&source).ok().and_then(|module| {
+                crate::resolve(
+                    module,
+                    Rc::from(source.as_str()),
+                    crate::SourceOrigin::File(file.clone()),
+                )
+                .ok()
+            });
+            match resolved {
+                Some(resolved) => {
+                    resolved_modules.push((file.display().to_string(), Rc::new(resolved)))
+                }
+                None => {
+                    if lowering == Lowering::Optimized {
+                        skipped.push(file.clone());
+                    }
+                }
+            }
         }
         resolved_modules.push((
             "Kernel".to_string(),
@@ -577,6 +624,11 @@ fn every_golden_body_stays_within_the_bound() {
                         if measured.open_entries > most_open.0 {
                             most_open = (measured.open_entries, label.clone());
                         }
+                        if let Some(per_byte) = measured.memory_per_byte {
+                            if per_byte > worst_per_byte.0 {
+                                worst_per_byte = (per_byte, label.clone());
+                            }
+                        }
                         if let Ok(leftovers) =
                             analyze(&instructions, code.local_count, code.register_count)
                         {
@@ -604,10 +656,29 @@ fn every_golden_body_stays_within_the_bound() {
         "{modules} modules, {bodies} bodies; largest work ratio {:.2} ({}), largest memory ratio {:.2} ({}), most open entries {} ({})",
         worst_ratio.0, worst_ratio.1, worst_memory.0, worst_memory.1, most_open.0, most_open.1
     );
+    eprintln!(
+        "largest memory per encoded byte of a large body {:.2} ({})",
+        worst_per_byte.0, worst_per_byte.1
+    );
     for failure in failures.iter().take(3) {
         eprintln!("{failure}");
     }
     assert!(failures.is_empty(), "{} bodies failed", failures.len());
+    // A source that does not parse or resolve is a golden that records
+    // that error, never a benchmark.
+    for file in &skipped {
+        let outcome = std::fs::read_to_string(file.with_extension("toml")).unwrap_or_default();
+        assert!(
+            outcome.contains("status = 1")
+                && (outcome.contains("parse error") || outcome.contains("resolve error")),
+            "{} neither compiles nor records a parse or resolve error",
+            file.display()
+        );
+    }
+    eprintln!(
+        "{} sources skipped, each a golden of a parse or resolve error",
+        skipped.len()
+    );
     assert!(bodies > 10_000, "only {bodies} bodies");
 }
 
@@ -637,6 +708,7 @@ fn assert_within_the_bound(source: &str, what: &str) -> (f64, usize) {
         collect(&Rc::new(compile_first_method(source, lowering)), &mut codes);
         let mut instructions = 0;
         let mut lowering_worst = (0.0f64, 0.0f64, 0usize);
+        let mut per_byte = 0.0f64;
         for code in &codes {
             instructions += code.instruction_count();
             let measured = match measure(code) {
@@ -644,8 +716,9 @@ fn assert_within_the_bound(source: &str, what: &str) -> (f64, usize) {
                 Err(refusal) => panic!("{what} {lowering:?}: {refusal}"),
             };
             assert!(measured.ratio <= WORK_PER_UNIT as f64);
-            assert!(measured.memory_ratio <= MEMORY_PER_UNIT as f64);
+            assert!(measured.memory_per_byte.unwrap_or(0.0) <= MEMORY_PER_BYTE as f64);
             assert!(measured.open_entries <= OPEN_ENTRY_LIMIT);
+            per_byte = per_byte.max(measured.memory_per_byte.unwrap_or(0.0));
             lowering_worst = (
                 lowering_worst.0.max(measured.ratio),
                 lowering_worst.1.max(measured.memory_ratio),
@@ -653,10 +726,11 @@ fn assert_within_the_bound(source: &str, what: &str) -> (f64, usize) {
             );
         }
         eprintln!(
-            "{what} {lowering:?}: {} bodies, {instructions} instructions, work ratio {:.2}, memory ratio {:.2}, open entries {}",
+            "{what} {lowering:?}: {} bodies, {instructions} instructions, work ratio {:.2}, memory ratio {:.2}, memory per byte {:.2}, open entries {}",
             codes.len(),
             lowering_worst.0,
             lowering_worst.1,
+            per_byte,
             lowering_worst.2
         );
         worst = (worst.0.max(lowering_worst.0), worst.1.max(lowering_worst.2));
