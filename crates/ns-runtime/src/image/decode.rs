@@ -7,6 +7,7 @@ use std::rc::Rc;
 
 use ns_syntax::Span;
 
+use crate::bytecode::leftovers::{self, LeftoverRefusal, LOOP_LIMIT, PENDING_LIMIT};
 use crate::bytecode::{
     jump_target, register_written, BodyLimit, CallSite, CodeBuilder, CodeKind, CompiledCode,
     CreatedBlock, Emitted, Instruction, IntegerOperation, Literal, ARGUMENT_LIMIT,
@@ -492,6 +493,24 @@ pub enum DecodeError {
         depth: u16,
         index: u16,
         local_count: u16,
+    },
+    /// A read of `register` at `instruction` where it may still hold what
+    /// a callee left there -- above the slots of a send before it, where
+    /// the callee was laid -- or the word the push left in a scratch
+    /// register: no compiled body reads one before writing it, and a callee
+    /// may have left the VM mirror there (`bytecode::leftovers`;
+    /// `docs/design/compiler.md`, "What a callee leaves").
+    LeftoverRead {
+        instruction: u32,
+        register: u16,
+    },
+    /// A body the leftover analysis refuses at `instruction` before it
+    /// allocates for it: more jump targets pending or loops open than any
+    /// compiled body has, crossing loops, or a jump into a loop past its
+    /// head (`bytecode::leftovers`; `docs/design/compiler.md`, "What a
+    /// callee leaves").
+    VerificationPastTheBound {
+        instruction: u32,
     },
     /// A `local_count` past its body's register file.
     LocalCountOutOfRange {
@@ -1042,6 +1061,17 @@ impl std::fmt::Display for DecodeError {
             } => write!(
                 f,
                 "outer local r{index} at depth {depth} is a scratch register of the enclosing body, whose first is r{local_count}"
+            ),
+            DecodeError::LeftoverRead {
+                instruction,
+                register,
+            } => write!(
+                f,
+                "register r{register} is read at instruction {instruction} before the body writes it: it may hold what a callee or the push left there"
+            ),
+            DecodeError::VerificationPastTheBound { instruction } => write!(
+                f,
+                "a body in the image passes the verification's bound at instruction {instruction}: no compiled body keeps more than {PENDING_LIMIT} jump targets pending or {LOOP_LIMIT} loops open, crosses two loops or jumps into a loop past its head"
             ),
             DecodeError::LocalCountOutOfRange {
                 local_count,
@@ -1919,8 +1949,10 @@ fn number_call_sites(
 /// register operand is inside its own register file and off its header's
 /// numbers, no instruction writes an argument register, every send's slots
 /// start at or above its body's `local_count` and none of its sources is
-/// another of its slots, and every outer local is inside the register file
-/// of the body it addresses, off that body's header's numbers and below its
+/// another of its slots, no instruction reads a register the body may not
+/// have written -- what a callee left above a send's slots, or the push in
+/// the scratch -- and every outer local is inside the register file of the
+/// body it addresses, off that body's header's numbers and below its
 /// `local_count` -- off the scratch a live callee of that frame may lie on.
 ///
 /// Each body is decoded here once, and both checks that read every
@@ -2041,7 +2073,26 @@ fn verify_body(code: &CompiledCode, instructions: &[Instruction]) -> Result<(), 
             }
         }
     }
-    Ok(())
+    // Last, on a body every register and target of which is in range: a
+    // read of what a callee may have left -- the VM mirror among it -- or
+    // of what the push left in the scratch is refused, as no compiled body
+    // makes one. The analysis holds one body's bitsets at a time, bounded
+    // before it allocates them (`docs/design/memory.md`, "The
+    // amplification bound of a rejected load").
+    leftovers::check(instructions, code.local_count, code.register_count).map_err(|refusal| {
+        match refusal {
+            LeftoverRefusal::Read {
+                instruction,
+                register,
+            } => DecodeError::LeftoverRead {
+                instruction,
+                register,
+            },
+            LeftoverRefusal::PastTheBound { instruction } => {
+                DecodeError::VerificationPastTheBound { instruction }
+            }
+        }
+    })
 }
 
 /// Every operand that addresses a register of the *executing* frame.

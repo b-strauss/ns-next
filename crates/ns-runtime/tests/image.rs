@@ -1631,6 +1631,11 @@ fn an_instantiation_instruction_a_crafted_image_runs_raises_an_error() {
             Rc::new(CompiledCode::new(
                 CodeKind::Method,
                 vec![
+                    // What the return reads, written first, as a compiled
+                    // body writes it.
+                    Instruction::LoadSelf {
+                        destination: HEADER_REGISTERS,
+                    },
                     instruction,
                     Instruction::Return {
                         register: HEADER_REGISTERS,
@@ -1639,7 +1644,7 @@ fn an_instantiation_instruction_a_crafted_image_runs_raises_an_error() {
                 0,
                 destination + 1,
                 0,
-                vec![(0, 0..2)],
+                vec![(0, 0..3)],
                 Span::new(0, 0),
             ))
         };
@@ -2687,7 +2692,11 @@ fn code_table_with_nested_blocks(levels: usize) -> Vec<u8> {
                 writer.write_u32(u32::try_from(block).expect("a test-sized code id"));
                 writer.write_u16(0); // copying nothing
             }
-            None => writer.write_u32(1), // the innermost: one instruction ...
+            None => {
+                writer.write_u32(2); // the innermost: two instructions ...
+                writer.write_u8(OPCODE_LOAD_SELF); // ... r13 <- self,
+                writer.write_u16(HEADER_REGISTERS);
+            }
         }
         writer.write_u8(OPCODE_RETURN); // ... then ^r13
         writer.write_u16(HEADER_REGISTERS);
@@ -7224,6 +7233,8 @@ fn code_with_copied(
 ) -> Rc<CompiledCode> {
     let mut code = (*code_with(kind, argument_count, register_count, instructions)).clone();
     code.copied_count = copied_count;
+    // The copied values are locals, below the scratch.
+    code.local_count = (argument_count + HEADER_REGISTERS + copied_count).min(register_count);
     Rc::new(code)
 }
 
@@ -7408,6 +7419,8 @@ fn a_send_whose_argument_slots_leave_the_body_is_refused() {
             0,
             15,
             vec![
+                Instruction::LoadSelf { destination: 13 },
+                Instruction::LoadSelf { destination: 14 },
                 Instruction::SendLexical {
                     depth: 0,
                     selector: Symbol::intern("foo:bar:"),
@@ -7905,6 +7918,12 @@ fn a_send_whose_source_is_another_of_its_slots_is_refused() {
                 Instruction::LoadSelf {
                     destination: HEADER_REGISTERS,
                 },
+                Instruction::LoadSelf {
+                    destination: HEADER_REGISTERS + 1,
+                },
+                Instruction::LoadSelf {
+                    destination: HEADER_REGISTERS + 2,
+                },
                 Instruction::SendLexical {
                     depth: 0,
                     selector: Symbol::intern("foo:bar:"),
@@ -7978,7 +7997,10 @@ fn a_body_that_ends_in_a_non_boolean_signal_is_terminated() {
         CodeKind::Method,
         0,
         14,
-        vec![Instruction::SignalNonBoolean { register: 13 }],
+        vec![
+            Instruction::LoadSelf { destination: 13 },
+            Instruction::SignalNonBoolean { register: 13 },
+        ],
     )]);
     assert_eq!(decode::verify_code_table(&table), Ok(()));
 }
@@ -8002,20 +8024,25 @@ fn a_body_that_runs_past_its_last_instruction_is_refused() {
 #[test]
 fn a_body_with_an_instantiation_instruction_is_accepted() {
     let instructions = every_instantiation_instruction().instructions();
+    let register_count = 2 + HEADER_REGISTERS + 601;
     for instruction in instructions
         .iter()
         .filter(|instruction| !matches!(instruction, Instruction::Return { .. }))
     {
+        // Every register the instruction may read written first, as a
+        // compiled body writes it.
+        let mut body: Vec<Instruction> = (HEADER_REGISTERS..register_count)
+            .map(|destination| Instruction::LoadSelf { destination })
+            .collect();
+        body.push(instruction.clone());
+        body.push(Instruction::Return {
+            register: HEADER_REGISTERS,
+        });
         let table = table_of(vec![code_with(
             CodeKind::Initializer,
             0,
-            2 + HEADER_REGISTERS + 601,
-            vec![
-                instruction.clone(),
-                Instruction::Return {
-                    register: HEADER_REGISTERS,
-                },
-            ],
+            register_count,
+            body,
         )]);
         assert_eq!(decode::verify_code_table(&table), Ok(()), "{instruction:?}");
     }
@@ -8401,6 +8428,7 @@ fn a_store_to_an_outer_local_is_checked_like_a_load() {
         0,
         14,
         vec![
+            Instruction::LoadSelf { destination: 13 },
             Instruction::StoreOuterLocal {
                 source: 13,
                 depth: 1,
@@ -18170,4 +18198,217 @@ fn an_image_applying_1025_mixins_is_refused() {
         }
         Ok(_) => panic!("expected the row of 1,025 clauses to be refused"),
     }
+}
+
+/// The register a `key:` send's callee, `Ephemeron>>key:`, holds the VM
+/// mirror in when it answers, as the sender numbers it: the callee lowers
+/// `vmMirror` into a scratch register of its own for its last
+/// `SendMirror`, whose answer it returns, and is laid on the send's slots,
+/// from `argument_base` on.
+fn mirror_register_of_ephemeron_key<'gc>(
+    mutator: &Mutator<'gc>,
+    ephemeron: Value<'gc>,
+    argument_base: u16,
+) -> u16 {
+    let key_code = method_code(mutator.heap(), mutator.class_of(ephemeron), "key:");
+    let mirror_register = key_code
+        .instructions()
+        .iter()
+        .rev()
+        .find_map(|instruction| match instruction {
+            Instruction::SendMirror {
+                mirror_register, ..
+            } => Some(*mirror_register),
+            _ => None,
+        })
+        .expect("Ephemeron>>key: runs a mirror send");
+    argument_base + mirror_register
+}
+
+/// The capability barrier the analysis protects: a crafted method sends
+/// `key: nil` to an `Ephemeron`, whose shipped method stores the key by a
+/// `SendMirror` and so holds the VM mirror in one of its registers until
+/// it answers -- a register of the sender's above the send's slots, where
+/// the callee is laid; then the crafted method returns that register. No
+/// compiled body reads a register above a send's slots before writing it,
+/// so the image carrying the method is refused at load, before any of its
+/// code runs, whatever the pop leaves in that register.
+#[test]
+fn an_image_reading_the_mirror_a_kernel_method_left_is_refused() {
+    let source = indoc! {"
+        class X = Object new (
+        ) (
+          public ephemeronOf: platform = ( ^platform kernel Ephemeron new )
+          public run: subject = ( ^subject key: nil )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let platform = interpreter.platform();
+    let ephemeron = expect_ok(
+        interpreter.send(&instance, Symbol::intern("ephemeronOf:"), &[platform]),
+        "ephemeronOf:",
+    );
+    let (image_bytes, refused_at, mirror_register) = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let run = method_code(mutator.heap(), class, "run:");
+        let mut instructions = run.instructions();
+        let (argument_base, slot_end) = instructions
+            .iter()
+            .find_map(|instruction| match instruction {
+                Instruction::SendPublic {
+                    selector,
+                    argument_base,
+                    argument_sources,
+                    ..
+                } if *selector == Symbol::intern("key:") => Some((
+                    *argument_base,
+                    *argument_base + argument_sources.len() as u16,
+                )),
+                _ => None,
+            })
+            .expect("run: sends key:");
+        let ephemeron = mutator.fetch(&ephemeron);
+        let mirror_register = mirror_register_of_ephemeron_key(mutator, ephemeron, argument_base);
+        assert!(
+            mirror_register >= slot_end,
+            "the mirror lies above the slots"
+        );
+        // The body's own return of the send's answer answers the register
+        // the callee held the mirror in instead.
+        let last = instructions.len() - 1;
+        assert!(matches!(
+            instructions[last],
+            Instruction::Return { .. } | Instruction::ImplicitReturn { .. }
+        ));
+        instructions[last] = Instruction::Return {
+            register: mirror_register,
+        };
+        let doctored = Rc::new(CompiledCode::new(
+            CodeKind::Method,
+            instructions,
+            run.argument_count,
+            run.register_count.max(mirror_register + 1),
+            0,
+            vec![],
+            Span::new(0, 0),
+        ));
+        let mixin = with_method_code(mixin_of(mutator.heap(), class), "run:", doctored);
+        install_mixin(mutator, class, mixin);
+        let instance = mutator.fetch(&instance);
+        let image_bytes = snapshot_one(
+            mutator,
+            false,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &[instance],
+        )
+        .expect("snapshot");
+        (image_bytes, last as u32, mirror_register)
+    });
+    let Err(error) = image::load(&image_bytes) else {
+        panic!("a read of the mirror a callee left must be refused at load")
+    };
+    let expected = decode::DecodeError::LeftoverRead {
+        instruction: refused_at,
+        register: mirror_register,
+    };
+    assert!(error.contains(&expected.to_string()), "{error}");
+}
+
+/// A body whose return reads a scratch register nothing wrote -- a word
+/// the push left there -- is refused, and so is one that reads a register
+/// above a send's slots, where its callee was laid.
+#[test]
+fn an_image_reading_unwritten_scratch_is_refused() {
+    let table = table_of(vec![code_with(
+        CodeKind::Method,
+        0,
+        HEADER_REGISTERS + 1,
+        vec![Instruction::Return {
+            register: HEADER_REGISTERS,
+        }],
+    )]);
+    let error = decode::verify_code_table(&table).expect_err("the scratch is unwritten");
+    assert_eq!(
+        error,
+        decode::DecodeError::LeftoverRead {
+            instruction: 0,
+            register: HEADER_REGISTERS,
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "register r{HEADER_REGISTERS} is read at instruction 0 before the body writes it: \
+             it may hold what a callee or the push left there"
+        )
+    );
+    let receiver = HEADER_REGISTERS;
+    let above = HEADER_REGISTERS + 2;
+    let table = table_of(vec![code_with(
+        CodeKind::Method,
+        0,
+        HEADER_REGISTERS + 3,
+        vec![
+            Instruction::LoadSelf {
+                destination: receiver,
+            },
+            Instruction::LoadSelf { destination: above },
+            Instruction::SendPublic {
+                receiver_register: receiver,
+                selector: Symbol::intern("foo"),
+                argument_base: HEADER_REGISTERS + 1,
+                argument_sources: vec![receiver],
+                destination: receiver,
+                call_site: CallSite { number: 0 },
+            },
+            Instruction::Return { register: above },
+        ],
+    )]);
+    assert_eq!(
+        decode::verify_code_table(&table),
+        Err(decode::DecodeError::LeftoverRead {
+            instruction: 3,
+            register: above,
+        })
+    );
+}
+
+/// A body keeping 258 forward branch targets pending at once, one more
+/// than any compiled body can, is refused at the branch that opens the
+/// 258th, before the analysis takes a bitset for it; one of 257 verifies.
+#[test]
+fn an_image_past_the_verification_bound_is_refused() {
+    let nested_branches = |count: u32| {
+        let mut instructions: Vec<Instruction> = (0..count)
+            .map(|index| Instruction::BranchIfFalse {
+                register: 0,
+                target: 2 * count - 1 - index,
+            })
+            .collect();
+        instructions.extend((0..count).map(|_| Instruction::LoadSelf {
+            destination: HEADER_REGISTERS + 1,
+        }));
+        instructions.push(Instruction::Return { register: 0 });
+        table_of(vec![code_with(
+            CodeKind::Method,
+            1,
+            HEADER_REGISTERS + 2,
+            instructions,
+        )])
+    };
+    let error = decode::verify_code_table(&nested_branches(258))
+        .expect_err("258 pending targets are past the bound");
+    assert_eq!(
+        error,
+        decode::DecodeError::VerificationPastTheBound { instruction: 257 }
+    );
+    assert_eq!(
+        error.to_string(),
+        "a body in the image passes the verification's bound at instruction 257: no \
+         compiled body keeps more than 257 jump targets pending or 128 loops open, \
+         crosses two loops or jumps into a loop past its head"
+    );
+    assert_eq!(decode::verify_code_table(&nested_branches(257)), Ok(()));
 }

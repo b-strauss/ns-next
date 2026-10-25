@@ -32,9 +32,9 @@
 //! refuses a body either lowering emits (the proof is
 //! `docs/design/compiler.md`, "What a callee leaves").
 //!
-//! Its readers -- the decoder's refusal and the collector's pre-pass -- are
-//! still to come; a debug build's check of every compiled body calls
-//! `check`.
+//! The decoder's refusal (`image::decode`'s `verify_body`) and a debug
+//! build's check of every compiled body call `check`; the collector's
+//! pre-pass, which will ask `tainted_at`, is still to come.
 
 use std::ops::Range;
 

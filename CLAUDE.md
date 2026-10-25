@@ -183,7 +183,9 @@ nothing collects while its placeholders exist and the peak argument stands
 transient peak of a rejected load is about 10.7x of the graph bytes plus ≤4x
 of the symbol section in a release build, and about 16x of the graph bytes
 plus ≤4x of the symbol section in a debug one, plus ≤6x of the text table
-in an image with source in both (`memory.md`, "The
+in an image with source in both, plus the leftover analysis's fixed term
+of at most 2.02 MiB (3.02 MiB in a debug build), one body at a time and
+before the graph pass (`memory.md`, "The
 amplification bound of a rejected load", has the breakdown and what is not
 counted; `decode_value`'s doc comment the derivation, `texts::decode`'s
 the text table's; both count a class

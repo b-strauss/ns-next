@@ -445,11 +445,12 @@ makes it true -- nothing is allocated below a slot after it, and what an
 argument is computed with lands above -- and both lowerings check it on every
 body in a debug build (`reference::check_leftovers`, which runs the leftover
 analysis, "What a callee leaves"): no instruction after a send reads a
-register above its slots before something writes it again, along any path --
-a loop's back edges and the entry state included. The one value a lowering keeps across a send is a setter
-assignment's, which is the setter's slot or a named local below it: a value
-left in a register above the slot, an inner assignment's or an inlined
-conditional's, is copied into the slot (`lower_setter_assign`).
+register above its slots before something writes it again, along any path
+-- a loop's back edges and the entry state included. The one value a
+lowering keeps across a send is a setter assignment's, which is the
+setter's slot or a named local below it: a value left in a register above
+the slot, an inner assignment's or an inlined conditional's, is copied into
+the slot (`lower_setter_assign`).
 
 Registers above the named locals are compiler-allocated scratch from a bump
 allocator **reset to the first scratch index at the start of every statement**.
@@ -899,12 +900,15 @@ register of the sender above the slots may hold what the callee left
 there: its header's words and its temporaries, and in a shipped method's
 scratch the VM mirror. `bytecode::leftovers` derives, from a body's code
 alone, which scratch registers -- those at and above `local_count` -- may
-hold a word the body did not write, at each instruction. It is the base of
-three readers still to come:
+hold a word the body did not write, at each instruction. It has three
+readers, the last still to come:
 
 - the image decoder, which refuses a read of such a register (`check`,
-  which keeps nothing);
-- a debug build, which checks every compiled body;
+  which keeps nothing; `DecodeError::LeftoverRead`, and
+  `VerificationPastTheBound` for a body past the bounds below;
+  [image-format.md](image-format.md), "Verification");
+- a debug build, which checks every compiled body
+  (`reference::check_leftovers`);
 - the collector's pre-pass, which nils those registers so that neither a
   push nor a pop need write them. It asks `tainted_at` for every frame pc
   of a code it meets, answered as sorted disjoint ranges from one pass.

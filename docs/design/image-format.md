@@ -1335,6 +1335,28 @@ reference lowering's sources are their own slots, and the optimized one's
 are their own slots or registers outside the slots -- named locals, copied
 values, or scratch the value was produced in.
 
+**No instruction reads what its body did not write.** A send's callee is
+laid on its slots, so once it returns every register of the sender's above
+the slots holds what the callee left there -- its header's words, its
+temporaries, and in a shipped method's scratch the VM mirror -- and a
+scratch register the body has not written holds whatever the push left
+there. No compiled body reads either ([compiler.md](compiler.md), "What a
+callee leaves"), so `verify_body` runs the leftover analysis
+(`bytecode::leftovers::check`) last, on a body whose every register and
+target it has found in range, and refuses a read of a register the body may
+not have written (`LeftoverRead`). Without it a crafted method sending to a
+shipped method that holds the mirror in its scratch could read the register
+the mirror was in
+(`an_image_reading_the_mirror_a_kernel_method_left_is_refused`,
+`an_image_reading_unwritten_scratch_is_refused`). The analysis is bounded
+before it allocates: a body past what no compiled body passes -- more than
+257 jump targets pending at once, more than 128 loops open, loops that
+cross, a jump into a loop past its head -- is refused
+(`VerificationPastTheBound`;
+`an_image_past_the_verification_bound_is_refused`), so it holds at most 258
+bitsets, 2.02 MiB, of one body at a time, and 3.02 MiB in a debug build
+([memory.md](memory.md), "The amplification bound of a rejected load").
+
 **A frame record's register file matches its body.** Every reified frame is
 allocated with its code's full register file but the header's numbers -- its
 arguments, then its registers above the header

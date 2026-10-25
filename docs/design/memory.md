@@ -1303,6 +1303,19 @@ not by the input. The figures above stand: about 10.7x of the graph section's
 bytes in a release build and 16x in a debug one, plus at most 4x of the
 symbol section's and 6x of the text table's, plus that constant.
 
+**The leftover analysis adds a fixed term, not a factor.** `verify_code_table`
+runs it on every decoded body ([image-format.md](image-format.md),
+"Verification"), and it is bounded before it allocates: at most 258 bitsets
+of at most 8 KiB, 2.02 MiB, in a release build, and 386, 3.02 MiB, in a
+debug one, which also keeps each open loop's head state
+([compiler.md](compiler.md), "What a callee leaves", "The bound"). It holds
+them for one body at a time, freed before the next, and all of it before
+the graph pass: `decode_described` verifies the code table before
+`decode_graph_phase` reads the graph section (`image/mod.rs`), so no bitset
+lives beside a placeholder. So the peak of a rejected load is the figures
+above, plus at most 2.02 MiB (3.02 MiB in a debug build) while the code
+table is verified.
+
 **What the figures do not count**: the Rust allocator's own overhead per
 allocation of the decoder's tables; a table's `Vec` that doubles while the
 decoder fills it, which holds both buffers for a moment; the object space's
