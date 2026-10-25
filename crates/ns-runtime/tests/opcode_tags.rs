@@ -410,6 +410,15 @@ fn retired_class_and_hashed_tags_are_never_reused() {
             "frame kind {retired} is retired"
         );
     }
+    // Each live code kind's tag is pinned, as every other family's is.
+    for (kind, tag) in [
+        (CodeKind::Method, 5),
+        (CodeKind::Block, 6),
+        (CodeKind::Initializer, 7),
+        (CodeKind::SuperclassClause, 8),
+    ] {
+        assert_eq!(ns_runtime::image::encode::code_kind_tag(kind), tag);
+    }
     for retired in RETIRED_CODE_KIND_TAGS {
         for kind in [
             CodeKind::Method,
