@@ -8261,6 +8261,14 @@ impl<'gc> Heap<'gc> {
     /// kept, the common case once a program has run a while, allocates
     /// nothing but the claimed windows, which merge as the walk goes down,
     /// since a frame starts at or below every frame above it.
+    ///
+    /// Out of line, once per tracer: inlined, it grew the scavenge by
+    /// about four fifths and changed what the full collection inlines, and
+    /// the functions linked after them -- `pop_activation`, `resume_caller`
+    /// and the polymorphic inline cache's hit among them -- moved to other
+    /// offsets, which measured `RichardsTon80` about 1.3% slower with
+    /// nothing of the collector in its profile.
+    #[inline(never)]
     fn trace_stack<T: crate::trace::Tracer>(
         stack: &mut ActivationStack,
         tables: &Tables,
