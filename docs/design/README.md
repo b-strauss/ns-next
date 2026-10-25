@@ -429,6 +429,17 @@ the size the hot path was measured at run only without debug assertions;
 unit -- a type's size does not depend on either, and the build takes well
 under a minute instead of minutes. Nothing is measured with it.
 
+`cargo xtask gates codegen` reads the machine code instead of running it:
+`cargo asm` (`cargo-show-asm`) writes the listing of `ns-runtime`'s lib in
+the `release` profile for `x86_64-pc-windows-msvc`, into `target/codegen`,
+and each out-of-line function of the send, push and return path is held to
+a budget of instructions and of 16- or 32-byte stack loads over narrower
+stores (`xtask/src/codegen.rs`, whose table says which functions and why
+each budget is what it is). A function over its budget fails the gate; a
+change that passes one for a reason is measured and raises the budget in
+the same commit. `cargo xtask codegen <tree>` checks another checkout,
+an older commit exported there, against the same budgets.
+
 ## Deviations from the language specification
 
 Places where the implementation differs from

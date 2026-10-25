@@ -33,8 +33,9 @@ groups (CLAUDE.md, \"The gates\", says when each runs):
   benchmarks           the benchmark programs verified at full size (profile benchmarks-verify)
   stress               the six stress modes over the suite, then run-corpus plain and under each
   release-checks       the suite without debug assertions (cargo profile release-checks)
+  codegen              the hot path's machine code against its budgets (cargo asm, release)
   plugin-verification  the plugin against several IDEs (verifyPlugin buildPlugin)
-  end-of-batch         images, caches, benchmarks, release-checks and stress, for a batch that changed the runtime";
+  end-of-batch         images, caches, benchmarks, release-checks, codegen and stress, for a batch that changed the runtime";
 
 /// The stress switches the runtime reads in a debug build
 /// (`docs/design/README.md`, "Gates").
@@ -101,6 +102,8 @@ enum Part {
     /// Rust sources, so it runs after the one step that rewrites them,
     /// `cargo fmt --all`, or else formatting would leave it stale.
     ShippedCode,
+    /// The codegen budgets over this checkout (`codegen.rs`).
+    Codegen,
 }
 
 /// `cargo xtask shipped-code`, run as a fresh process built in a target
@@ -231,14 +234,22 @@ fn group(name: &str) -> Option<Vec<Part>> {
                 "release-checks",
             ],
         )]),
+        "codegen" => vec![Part::Codegen],
         "plugin-verification" => steps(vec![Step::gradle(
             "plugin verification",
             &["-p", "editors/jetbrains", "verifyPlugin", "buildPlugin"],
         )]),
-        "end-of-batch" => ["images", "caches", "benchmarks", "release-checks", "stress"]
-            .iter()
-            .flat_map(|name| group(name).expect("a group"))
-            .collect(),
+        "end-of-batch" => [
+            "images",
+            "caches",
+            "benchmarks",
+            "release-checks",
+            "codegen",
+            "stress",
+        ]
+        .iter()
+        .flat_map(|name| group(name).expect("a group"))
+        .collect(),
         _ => return None,
     })
 }
@@ -300,6 +311,7 @@ fn main() -> ExitCode {
                 .iter()
                 .try_for_each(|step| run(step, &root, &mut times)),
             Part::StressSuites => run_stress_suites(&root, &mut times),
+            Part::Codegen => run_codegen(&root, &mut times),
         };
         if let Err(failure) = outcome {
             report(&times);
@@ -409,6 +421,18 @@ fn run(step: &Step, root: &Path, times: &mut Vec<(String, Duration)>) -> Result<
     }
 }
 
+/// The codegen budgets over the checkout at `root`, timed as a step is.
+fn run_codegen(root: &Path, times: &mut Vec<(String, Duration)>) -> Result<(), String> {
+    println!(
+        "
+==> codegen"
+    );
+    let started = Instant::now();
+    let outcome = codegen::check(root);
+    times.push(("codegen".to_string(), started.elapsed()));
+    outcome
+}
+
 /// The suite under each stress mode at once, each into its own log under
 /// `.temp/`; then each log's summary line.
 fn run_stress_suites(root: &Path, times: &mut Vec<(String, Duration)>) -> Result<(), String> {
@@ -497,7 +521,7 @@ mod tests {
             .iter()
             .filter_map(|part| match part {
                 Part::Steps(steps) => Some(steps.iter().map(|step| step.label.as_str())),
-                Part::StressSuites | Part::ShippedCode => None,
+                Part::StressSuites | Part::ShippedCode | Part::Codegen => None,
             })
             .flatten()
             .collect();
@@ -511,6 +535,7 @@ mod tests {
             ]
         );
         assert!(parts.contains(&Part::StressSuites));
+        assert!(parts.contains(&Part::Codegen));
         assert_eq!(
             labels
                 .iter()
@@ -528,6 +553,7 @@ mod tests {
                 Part::Steps(steps) => steps.iter().map(|step| step.label.as_str()).collect(),
                 Part::StressSuites => vec!["stress suites"],
                 Part::ShippedCode => vec!["shipped code"],
+                Part::Codegen => vec!["codegen"],
             })
             .collect()
     }
@@ -558,6 +584,15 @@ mod tests {
             labels_of(&parts),
             ["shipped code", "image round trips", "cache contention"]
         );
+    }
+
+    /// The codegen budgets are a group of their own, and the end of a batch
+    /// runs them after the release checks and before the stress runs.
+    #[test]
+    fn the_codegen_group_runs_the_budgets() {
+        assert_eq!(group("codegen"), Some(vec![Part::Codegen]));
+        let labels = labels_of(&group("end-of-batch").expect("a group")).join(",");
+        assert!(labels.contains("release checks,codegen,stress suites"));
     }
 
     #[test]
