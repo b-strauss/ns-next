@@ -944,30 +944,45 @@ impl<'code> LastSet<'code> {
     /// Checks that a callee lies on the frame's slots, where
     /// `callee_header` says one does, only while the frame stands at the
     /// send whose slots end at that header -- decoding the instruction
-    /// once per body and program counter, never once per frame.
+    /// once per body and program counter, never once per frame. Inline,
+    /// so that a frame whose answer is decoded costs a comparison.
     #[cfg(debug_assertions)]
+    #[inline(always)]
     fn check_callee(&mut self, start: usize, callee_header: Option<usize>) {
         let Some(callee_header) = callee_header else {
             return;
         };
-        let code = self.code;
-        let program_counter = self.program_counter as usize;
-        let slot_end = *self.slot_end.get_or_insert_with(|| {
-            code.instruction(program_counter)
-                .argument_slots()
-                .map(|(base, sources)| usize::from(base) + sources.len())
-        });
+        let slot_end = match self.slot_end {
+            Some(slot_end) => slot_end,
+            None => self.decode_slot_end(),
+        };
         debug_assert!(
             slot_end.is_some_and(|slot_end| start + slot_end == callee_header),
             "internal: a callee lies on its sender's slots only while the sender stands at \
              the send"
         );
     }
+
+    /// Decodes where the slots of the send at the program counter end,
+    /// for `check_callee`, and keeps the answer.
+    #[cfg(debug_assertions)]
+    #[inline(never)]
+    fn decode_slot_end(&mut self) -> Option<usize> {
+        let slot_end = self
+            .code
+            .instruction(self.program_counter as usize)
+            .argument_slots()
+            .map(|(base, sources)| usize::from(base) + sources.len());
+        self.slot_end = Some(slot_end);
+        slot_end
+    }
 }
 
 /// Adds `window` to `claimed` (`nil_unclaimed`), merging every window it
 /// touches: one that starts at or below every window there, as a frame
-/// does below the frames above it.
+/// does below the frames above it. Inline, so that a frame of a deep
+/// recursion costs a comparison and a store (`claim_merging`).
+#[inline(always)]
 fn claim(claimed: &mut Vec<Range<usize>>, window: Range<usize>) {
     debug_assert!(
         claimed
@@ -984,6 +999,13 @@ fn claim(claimed: &mut Vec<Range<usize>>, window: Range<usize>) {
             return;
         }
     }
+    claim_merging(claimed, window);
+}
+
+/// `claim`'s other case, out of line: `window` pushed, merged with every
+/// window it touches.
+#[inline(never)]
+fn claim_merging(claimed: &mut Vec<Range<usize>>, window: Range<usize>) {
     let mut merged = window;
     while let Some(lowest) = claimed.last() {
         if lowest.start > merged.end {
