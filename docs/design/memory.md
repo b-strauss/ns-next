@@ -771,8 +771,20 @@ check").
   walk the missing sets are filled body by body, each body's from one
   pass, so a collection analyses a body once however many frames run
   it, and the deferred frames are nilled against the windows recorded
-  for them and traced. Last, the words below the top in no frame's
-  window are traced as they lie. The walk keeps the set it looked up
+  for them and traced. Last, as a net, a word below the top in no
+  frame's window would be traced as it lies; none is, since the bottom
+  frame starts at 0 and the top is always some live frame's window end
+  -- a push raises it to its frame's, a pop gives back the top its frame
+  was pushed at -- and a debug build refuses one. A deferred frame costs
+  the walk a `DeferredFrame` of 72 bytes, its body and program counter
+  among the missing ones, 16, and at most one recorded claim, 16, since
+  at most one merged window above reaches into a frame -- one not laid
+  on its sender's slots starts at the top, at or past every window end
+  below it, so what reaches in lies on the slots, merged: at most 104
+  bytes, freed when the trace ends, no more than the 13 header words the
+  frame has of its own on the stack. The first collection of a
+  101,000-frame recursion, every frame deferred, holds about 10.5 MB of
+  it for the length of the trace. The walk keeps the set it looked up
   last, so a frame of the same body at the same program counter as the
   frame above it -- a deep recursion's frames -- costs the reads of its
   header, its writes and its trace, no lookup. Nilling and tracing in
@@ -1787,8 +1799,8 @@ index, not an object.
 
 The activation stack is a root, and nothing there is reclaimed: a frame is
 popped when its activation returns, so the stack is bounded by the deepest the
-program has been. Marking traces every word of every live frame as one range
--- the header's receiver, `current_class`, operand and `reified` words among
+program has been. Marking traces every word of every live frame, frame by
+frame as `Heap::trace_stack` walks the stack -- the header's receiver, `current_class`, operand and `reified` words among
 them, every other header word a `SmallInteger` or nil, then the registers --
 and every row of the side table of continuations, which a frame whose
 continuation is not `Deliver` names by row.
@@ -1847,10 +1859,11 @@ Pinned by `heap.rs`'s
 `a_young_value_written_into_a_suspended_old_frame_is_remembered` and
 `the_reclaim_keeps_the_entered_level_of_a_suspended_activation`.
 
-The stack is frames of tagged words in one reservation, which the
-collector traces as one linear range ([execution.md](execution.md),
+The stack is frames of tagged words in one reservation, every word of
+`[0, top)` of which the collector traces, with no stack map, walked
+frame by frame (`Heap::trace_stack`; [execution.md](execution.md),
 "Representation"), pinned by `heap.rs`'s
-`the_stack_is_traced_as_one_range_of_tagged_words` and
+`every_word_of_the_stack_is_a_tagged_value` and
 `a_collection_after_a_deep_pop_reads_nothing_above_the_top`.
 
 What keeps a frame alive past its return is a closure's captured frame, or

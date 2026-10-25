@@ -44,7 +44,8 @@ the landing point of every later deoptimization, and a sixth stress mode
 runs every golden on from suspended frames
 ([execution.md](design/execution.md), "Suspending and resuming"); every
 running activation is a frame of tagged words in one reservation of the
-heap's, traced as one linear range, and measured no slower than the stack
+heap's, every word of which is traced, with no stack map, walked frame by
+frame (`Heap::trace_stack`), and measured no slower than the stack
 of entries before it -- nineteen of twenty-four programs faster, the rest
 level, with three builds a side that vary the block layout inside
 `vm::run` ([execution.md](design/execution.md), "What frames as words

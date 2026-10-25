@@ -858,7 +858,10 @@ impl FrameWindow {
 }
 
 /// A frame the pre-pass's walk met before its body kept the set the frame
-/// needs (`Heap::trace_stack`), nilled once the fill has kept it.
+/// needs (`Heap::trace_stack`), nilled once the fill has kept it. 72
+/// bytes, which `docs/design/memory.md`'s bound of the walk's transient
+/// memory counts ("What the collector traces"), pinned by
+/// `a_deferred_frame_is_72_bytes`.
 struct DeferredFrame {
     code_index: usize,
     program_counter: u32,
@@ -8248,9 +8251,12 @@ impl<'gc> Heap<'gc> {
     /// through it, the first collection of a run -- decodes and analyses
     /// it once rather than once per program counter; then each deferred
     /// frame is nilled against the windows recorded for it, exactly as the
-    /// walk would have nilled it, and traced. Last, the words below the
-    /// top in no frame's window -- where a frame was pushed at a top past
-    /// its caller's window end -- are traced as they lie.
+    /// walk would have nilled it, and traced. Last, as a net, a word below
+    /// the top in no frame's window would be traced as it lies. None is:
+    /// the bottom frame starts at 0, a push raises the top to its frame's
+    /// window end and a pop gives back the top its frame was pushed at,
+    /// so the top is always some live frame's window end and the windows
+    /// cover `[0, top)`; a debug build refuses such a word.
     ///
     /// A frame costs the reads of its header, the writes of its nils and
     /// the trace of its words, and a lookup of its set only where its body
@@ -8375,10 +8381,19 @@ impl<'gc> Heap<'gc> {
                 frame.window.trace(words, claims, tracer);
             }
         }
-        // The words no frame's window holds: `claimed` is now every
-        // window's, merged.
+        // The words no frame's window holds, which the windows' cover of
+        // `[0, top)` says are none: `claimed` is now every window's,
+        // merged.
         let words = stack.frames.words_mut();
-        for_each_unclaimed(&claimed, 0..top, |run| trace_words(&mut words[run], tracer));
+        for_each_unclaimed(&claimed, 0..top, |run| {
+            debug_assert!(
+                run.is_empty(),
+                "internal: the stack words {}..{} lie in no frame's window",
+                run.start,
+                run.end
+            );
+            trace_words(&mut words[run], tracer)
+        });
     }
 
     /// One scavenge (`scavenge.rs`): every young object the roots, the
@@ -11832,9 +11847,10 @@ mod tests {
     /// Every word of the frame stack is a valid tagged value -- a
     /// `SmallInteger`, nil, a Boolean or the offset of an object in the
     /// space -- whatever kind of activation pushed it, which is what lets
-    /// the collector trace `[0, top)` as one range with no stack map.
+    /// the collector trace every word of `[0, top)` with no stack map
+    /// (`Heap::trace_stack`).
     #[test]
-    fn the_stack_is_traced_as_one_range_of_tagged_words() {
+    fn every_word_of_the_stack_is_a_tagged_value() {
         let mut heap = frame_heap();
         let class = named_class(&mut heap, "Framed");
         let method = Rc::new(crate::mixin::MixinMethod {
@@ -17399,19 +17415,23 @@ mod tests {
                 FIRST + 5,
             );
             // Bottom to top; the walk meets them the other way round.
-            let layout: [(&Rc<CompiledCode>, usize); 6] = [
+            // The top two share a program counter but not a body, so that
+            // a memo keyed on the program counter alone fails.
+            let layout: [(&Rc<CompiledCode>, usize); 7] = [
                 (&sending, 4),
                 (&sending, 4),
                 (&sending, 3),
                 (&looping, 2),
                 (&sending, 3),
                 (&sending, 4),
+                (&looping, 4),
             ];
             let expected = |code: &Rc<CompiledCode>, program_counter: usize| -> Vec<u16> {
                 match (Rc::ptr_eq(code, &sending), program_counter) {
                     (true, 4) => vec![FIRST + 2, FIRST + 4, FIRST + 5],
                     (true, 3) => vec![FIRST + 2, FIRST + 3, FIRST + 4, FIRST + 5],
                     (false, 2) => vec![FIRST + 2, FIRST + 3, FIRST + 4],
+                    (false, 4) => vec![FIRST + 3, FIRST + 4],
                     _ => unreachable!("a frame of the layout"),
                 }
             };
@@ -17597,6 +17617,52 @@ mod tests {
             }
             heap.pop_activation(callee);
             heap.pop_activation(sender);
+        }
+
+        /// A forward that is the first trace of the stack -- the bulk
+        /// forward behind `become:`, with no marking before it -- meets
+        /// every set missing and defers the frames: it nils their tainted
+        /// registers all the same, and forwards the claimed word. Then
+        /// again with every set kept.
+        #[test]
+        fn a_forward_with_every_set_missing_nils_the_deferred_frames() {
+            let mut heap = Heap::new();
+            let (sender, callee, tainted, claimed) = sender_with_a_claiming_callee(&mut heap);
+            let sender_code = heap.activation_code(sender);
+            let callee_code = heap.activation_code(callee);
+            assert!(sender_code.kept_tainted_before(2).is_none());
+            assert!(callee_code.kept_tainted_before(1).is_none());
+            for round in ["every set missing", "every set kept"] {
+                let held = objects(&mut heap, 3);
+                write_word(&mut heap, tainted, held[0]);
+                write_word(&mut heap, claimed, held[1]);
+
+                let forwarder = heap
+                    .forward_identity(&held[1..2], &held[2..3])
+                    .expect("the forward is allowed");
+                drop(forwarder);
+
+                assert_eq!(
+                    heap.stack.frames.word(tainted),
+                    dead_register().bits(),
+                    "{round}: the deferred sender's tainted register is nilled"
+                );
+                assert_eq!(
+                    heap.stack.frames.word(claimed),
+                    heap.store(Value::object(held[2])).bits(),
+                    "{round}: the claimed word names the forward's replacement"
+                );
+                assert!(sender_code.kept_tainted_before(2).is_some());
+            }
+            heap.pop_activation(callee);
+            heap.pop_activation(sender);
+        }
+
+        /// The walk's transient memory per deferred frame, which
+        /// `docs/design/memory.md` bounds ("What the collector traces").
+        #[test]
+        fn a_deferred_frame_is_72_bytes() {
+            assert_eq!(std::mem::size_of::<DeferredFrame>(), 72);
         }
     }
 }

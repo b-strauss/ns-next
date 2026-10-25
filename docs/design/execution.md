@@ -199,10 +199,13 @@ pub struct ActivationReference {
   skips by offset (`interp.c:57557-57596`) and Soup turns into indexes
   around every collection (`interpreter.cc:1875-1905`). Here every link is
   an index, since `ns-runtime` forbids `unsafe`, so nothing needs either:
-  **the collector traces the stack as one linear range of tagged words**,
-  `[0, top)`, as Soup scans `[sp_, stack_base_)`, and the table of
-  continuations beside it; no stack map, no per-frame walk
-  ([memory.md](memory.md), "What the collector traces"). A married frame
+  **the collector traces every tagged word of the stack**, `[0, top)`, as
+  Soup scans `[sp_, stack_base_)`, and the table of continuations beside
+  it, with no stack map: it walks the frames by their caller words and
+  traces each frame's words as it meets the frame, once it has nilled
+  the registers the frame does not read before writing them
+  (`Heap::trace_stack`; [memory.md](memory.md), "What the collector
+  traces"). A married frame
   object still skips its own registers, which are nil while the stack
   holds the live ones. The flags word packs the kind's tag in bits 0-7,
   the argument count in bits 8-23 -- every argument is a register, so the
