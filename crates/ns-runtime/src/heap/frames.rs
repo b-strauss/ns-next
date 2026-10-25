@@ -423,11 +423,12 @@ impl FrameStack {
 
     /// Sets the top to `top` -- above the current top when the callee's
     /// window was the shorter, below it when the callee's was the longer --
-    /// and every word from `dead` up to it to `filler`: a pop of a callee
-    /// that lay on its sender's slots from `dead`, its header's offset,
-    /// gives the sender back its window up to `top`, its registers above
-    /// the slots dead. Each is written, since a
-    /// word the callee or a frame above it left there would otherwise be
+    /// and every word from `dead` up to it to `filler`, and up to three
+    /// words past it inside the committed stack, which are no frame's: a
+    /// pop of a callee that lay on its sender's slots from `dead`, its
+    /// header's offset, gives the sender back its window up to `top`, its
+    /// registers above the slots dead. Each is written, since a word the
+    /// callee or a frame above it left there would otherwise be
     /// traced again -- keeping alive what nothing reaches, or naming,
     /// after a collection that ran while it lay above the top, an object
     /// since moved or reclaimed.
@@ -438,7 +439,19 @@ impl FrameStack {
             "internal: a sender's dead registers lie inside the committed stack"
         );
         self.top = top;
-        self.reservation.accessible_mut()[dead..top].fill(filler);
+        // In whole blocks of four words, past the top where the committed
+        // stack allows: a word above the top is no frame's and is written
+        // before it is read, and a fill that ends anywhere took a
+        // word-by-word tail after its four-word stores on every pop.
+        let end = dead + (top - dead).next_multiple_of(4);
+        let words = self.reservation.accessible_mut();
+        if end <= self.committed {
+            for block in words[dead..end].as_chunks_mut::<4>().0 {
+                *block = [filler; 4];
+            }
+        } else {
+            words[dead..top].fill(filler);
+        }
     }
 
     /// `push`, but a frame may end anywhere in the reservation, the reserve
