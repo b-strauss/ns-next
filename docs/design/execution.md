@@ -238,7 +238,7 @@ pub struct ActivationReference {
   writes it (`bytecode::leftovers`, which both lowerings check and the
   decoder holds an image to; [compiler.md](compiler.md), "What a callee
   leaves"), and the collector's pre-pass nils what the stack held there
-  before every trace (`Heap::nil_leftovers`).
+  before every trace (`Heap::trace_stack`).
   The frame names its body by its code id, found through the
   body's one-entry cache ([memory.md](memory.md), "A closure's code id
   without the map") and kept by a full collection while the activation

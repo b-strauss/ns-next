@@ -167,8 +167,9 @@ protective copies").
 the collector's pre-pass makes it safe to trace.** Neither a push nor a
 pop writes a scratch register -- at or above its body's `local_count` --
 nor the registers a callee that lay on its sender's slots gives back, so
-such a word may be one a callee or a popped frame left. The pre-pass
-before every trace (`Heap::nil_leftovers`) nils every register
+such a word may be one a callee or a popped frame left. The pre-pass,
+which every trace of the stack makes over each frame before it traces
+the frame's words (`Heap::trace_stack`), nils every register
 `bytecode::leftovers` finds tainted before the program counter the frame
 stores; a suspension nils the same in its copy, a divorce every scratch
 register. The decoder refuses image code that reads a tainted register,

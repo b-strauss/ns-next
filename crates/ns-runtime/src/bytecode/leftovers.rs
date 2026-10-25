@@ -34,7 +34,7 @@
 //!
 //! The decoder's refusal (`image::decode`'s `verify_body`) and a debug
 //! build's check of every compiled body call `check`; the collector's
-//! pre-pass (`Heap::nil_leftovers`) asks `tainted_at` through each body's
+//! pre-pass (`Heap::trace_stack`) asks `tainted_at` through each body's
 //! `TaintedSets`, which keeps what it answered.
 
 use std::cell::{Cell, Ref, RefCell};

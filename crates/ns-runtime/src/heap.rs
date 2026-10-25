@@ -656,21 +656,15 @@ struct ActivationStack {
     next_generation: u32,
 }
 
-/// The stack is traced as the one linear range `[0, top)`: every word of
-/// every live frame, header and registers alike, is a tagged value, so no
-/// stack map and no walk of frames is needed. A push writes no scratch
-/// register and a pop none it gives back, so a word below the top may be
-/// one a callee or a popped frame left; the pre-pass before every trace
-/// nils each of them (`Heap::nil_leftovers`; `docs/design/memory.md`,
-/// "What the collector traces"). A frame's continuation is a row of
-/// `Heap::continuations`, traced there.
-impl crate::trace::Trace for ActivationStack {
-    fn trace<T: crate::trace::Tracer>(&mut self, tracer: &mut T) {
-        for bits in self.frames.words_mut() {
-            let mut word = Word::from_bits(*bits);
-            tracer.word(&mut word);
-            *bits = word.bits();
-        }
+/// Hands every word of `words` to `tracer`: words of the activation
+/// stack, each a tagged value, so that no stack map is needed
+/// (`Heap::trace_stack`).
+#[inline(always)]
+fn trace_words<T: crate::trace::Tracer>(words: &mut [u64], tracer: &mut T) {
+    for bits in words {
+        let mut word = Word::from_bits(*bits);
+        tracer.word(&mut word);
+        *bits = word.bits();
     }
 }
 
@@ -689,7 +683,7 @@ const _: () = assert!(crate::bytecode::HEADER_REGISTERS as usize == frame_header
 const NO_FRAME: u32 = u32::MAX;
 
 /// What the collector's pre-pass writes into every register no frame reads
-/// before it writes it (`Heap::nil_leftovers`), and what a frame object
+/// before it writes it (`Heap::trace_stack`), and what a frame object
 /// takes for such a register when an activation is suspended or divorced:
 /// nil in a release build, so that nothing a callee or a popped frame left
 /// there is traced again. A debug build writes `Word::DEAD_REGISTER`
@@ -732,7 +726,7 @@ fn assert_live_register(offset: u32, index: u16, bits: u64) {
 /// writes them, and nothing into the scratch, which no body reads before
 /// it writes it (`bytecode::leftovers`, which the lowerings check and the
 /// decoder holds an image to) and which the collector's pre-pass nils
-/// before a trace (`Heap::nil_leftovers`). A debug build writes
+/// before a trace (`Heap::trace_stack`). A debug build writes
 /// `dead_register`'s word into the scratch, so that a read of one is
 /// refused. A `local_count` below the arguments and the header's numbers,
 /// which an image may carry, names no temporary.
@@ -749,10 +743,15 @@ fn fill_temporaries(temporaries: &mut [u64], local_count: u16, argument_count: u
     let _ = scratch;
 }
 
-/// Writes `filler` into the words of `range` that no window of `claimed`
-/// covers: `claimed` is disjoint, ordered by start, the lowest last
-/// (`Heap::nil_leftovers`).
-fn nil_unclaimed(words: &mut [u64], claimed: &[Range<usize>], range: Range<usize>, filler: u64) {
+/// Hands `visit` each run of the words of `range` that no window of
+/// `claimed` covers, lowest first: `claimed` is disjoint, ordered by
+/// start, the lowest last (`Heap::trace_stack`).
+#[inline(always)]
+fn for_each_unclaimed(
+    claimed: &[Range<usize>],
+    range: Range<usize>,
+    mut visit: impl FnMut(Range<usize>),
+) {
     let mut from = range.start;
     for window in claimed.iter().rev() {
         if window.start >= range.end || from >= range.end {
@@ -762,17 +761,23 @@ fn nil_unclaimed(words: &mut [u64], claimed: &[Range<usize>], range: Range<usize
             continue;
         }
         if window.start > from {
-            words[from..window.start].fill(filler);
+            visit(from..window.start);
         }
         from = window.end;
     }
     if from < range.end {
-        words[from..range.end].fill(filler);
+        visit(from..range.end);
     }
 }
 
-/// The part of a frame's window the collector's pre-pass may write
-/// (`Heap::nil_leftovers`).
+/// Writes `filler` into the words of `range` that no window of `claimed`
+/// covers (`for_each_unclaimed`).
+fn nil_unclaimed(words: &mut [u64], claimed: &[Range<usize>], range: Range<usize>, filler: u64) {
+    for_each_unclaimed(claimed, range, |run| words[run].fill(filler));
+}
+
+/// The part of a frame's window the collector's pre-pass may write, and
+/// the frame's words it traces (`Heap::trace_stack`).
 struct FrameWindow {
     /// The stack word of the frame's register 0, its first argument.
     start: usize,
@@ -833,10 +838,27 @@ impl FrameWindow {
             );
         }
     }
+
+    /// Hands `tracer` every word of the window below the top -- its
+    /// arguments, header and registers -- but those of `claimed`, which
+    /// the frames above trace: called once `nil` has run, after which no
+    /// frame writes these words, since a frame below writes only words its
+    /// frames above do not claim.
+    #[inline(always)]
+    fn trace<T: crate::trace::Tracer>(
+        &self,
+        words: &mut [u64],
+        claimed: &[Range<usize>],
+        tracer: &mut T,
+    ) {
+        for_each_unclaimed(claimed, self.start..self.until, |run| {
+            trace_words(&mut words[run], tracer)
+        });
+    }
 }
 
 /// A frame the pre-pass's walk met before its body kept the set the frame
-/// needs (`Heap::nil_leftovers`), nilled once the fill has kept it.
+/// needs (`Heap::trace_stack`), nilled once the fill has kept it.
 struct DeferredFrame {
     code_index: usize,
     program_counter: u32,
@@ -847,7 +869,7 @@ struct DeferredFrame {
 }
 
 /// The set the pre-pass looked up last, by body and program counter
-/// (`Heap::nil_leftovers`): a deep recursion's frames run one body at one
+/// (`Heap::trace_stack`): a deep recursion's frames run one body at one
 /// program counter, so each but the first skips the lookup of its code
 /// row, the borrow of the body's sets and their search.
 struct LastSet<'code> {
@@ -1110,7 +1132,7 @@ impl ActivationStack {
     /// top goes back to `top_without`'s, and nothing is written. A caller's
     /// registers a callee that lay on its slots gives back -- from the
     /// callee's header up -- are dead, and the collector's pre-pass nils
-    /// them before any trace (`Heap::nil_leftovers`); a debug build writes
+    /// them before any trace (`Heap::trace_stack`); a debug build writes
     /// `dead_register`'s word there, so that a read of one is refused.
     #[inline(always)]
     fn take_off_words(&mut self, offset: u32) {
@@ -7053,7 +7075,7 @@ impl<'gc> Heap<'gc> {
                 unreachable!("internal: a running frame names a live code row")
             };
             // The registers the frame does not read before it writes them,
-            // as the pre-pass decides them (`nil_leftovers`): what a callee
+            // as the pre-pass decides them (`trace_stack`): what a callee
             // or a popped frame left there, which the frame object, traced
             // as it lies, must not keep.
             let tainted = entry
@@ -8165,15 +8187,17 @@ impl<'gc> Heap<'gc> {
         old.top - old.start
     }
 
-    /// Writes `dead_register`'s word into every register of every frame on
-    /// the stack that its frame does not read before it writes it -- what
-    /// a callee left above a send's slots, a word a popped frame left in
-    /// scratch -- so that the trace that follows keeps nothing alive
-    /// through a dead register, and meets no handle to an object a
+    /// Traces the activation stack, every word below the top, through
+    /// `tracer`, and writes `dead_register`'s word first into every
+    /// register of every frame that its frame does not read before it
+    /// writes it -- what a callee left above a send's slots, a word a
+    /// popped frame left in scratch -- so that the trace keeps nothing
+    /// alive through a dead register, and meets no handle to an object a
     /// collection moved or reclaimed while the word lay above the top
-    /// (`docs/design/memory.md`, "What the collector traces"). Runs first
-    /// in every trace of the stack: the scavenge, marking, and every
-    /// forward (`forward_everything`).
+    /// (`docs/design/memory.md`, "What the collector traces"). Every trace
+    /// of the stack is this one: the scavenge's, marking's, and every
+    /// forward's (`forward_everything`). An associated function over the
+    /// heap's fields, since a tracer borrows others of them.
     ///
     /// It walks the frames from the top by their caller words. Each frame
     /// loses the registers its body's analysis says are tainted before the
@@ -8189,32 +8213,41 @@ impl<'gc> Heap<'gc> {
     /// arguments and header, which no analysis taints: a callee's
     /// arguments are its sender's slots.
     ///
-    /// The stack is walked once. A frame whose body keeps its set already
-    /// is nilled as the walk meets it; one whose body keeps none yet is
-    /// deferred, with the windows above it that reach into its own. Once
-    /// the walk is done, the missing sets are filled body by body, each
-    /// body's from one pass over it (`CompiledCode::fill_tainted_before`),
-    /// so that a collection that meets a body at many new program counters
-    /// -- a deep recursion through it, the first collection of a run --
-    /// decodes and analyses it once rather than once per program counter;
-    /// then each deferred frame is nilled against the windows recorded for
-    /// it, exactly as the walk would have nilled it.
+    /// The stack is walked once, and each frame's words are traced as the
+    /// walk nils them, while its header's lines are still in the cache: a
+    /// frame's words but those of the windows above, which the frames
+    /// above traced and no frame below writes. A frame whose body keeps
+    /// its set already is nilled and traced as the walk meets it; one
+    /// whose body keeps none yet is deferred, with the windows above it
+    /// that reach into its own. Once the walk is done, the missing sets
+    /// are filled body by body, each body's from one pass over it
+    /// (`CompiledCode::fill_tainted_before`), so that a collection that
+    /// meets a body at many new program counters -- a deep recursion
+    /// through it, the first collection of a run -- decodes and analyses
+    /// it once rather than once per program counter; then each deferred
+    /// frame is nilled against the windows recorded for it, exactly as the
+    /// walk would have nilled it, and traced. Last, the words below the
+    /// top in no frame's window -- where a frame was pushed at a top past
+    /// its caller's window end -- are traced as they lie.
     ///
-    /// A frame costs the reads of its header and the writes of its nils,
-    /// and a lookup of its set only where its body or program counter
-    /// differs from the frame's above (`LastSet`), which a deep
-    /// recursion's frames rarely do; one whose every word it may write
-    /// lies in the window above it, as such a frame's do, writes nothing
-    /// (`FrameWindow::untouched`). A walk that finds every set kept, the
-    /// common case once a program has run a while, allocates nothing but
-    /// the claimed windows, which merge as the walk goes down, since a
-    /// frame starts at or below every frame above it.
-    fn nil_leftovers(&mut self) {
-        let Heap { stack, tables, .. } = self;
+    /// A frame costs the reads of its header, the writes of its nils and
+    /// the trace of its words, and a lookup of its set only where its body
+    /// or program counter differs from the frame's above (`LastSet`),
+    /// which a deep recursion's frames rarely do; one whose every word it
+    /// may write lies in the window above it, as such a frame's do, writes
+    /// nothing (`FrameWindow::untouched`). A walk that finds every set
+    /// kept, the common case once a program has run a while, allocates
+    /// nothing but the claimed windows, which merge as the walk goes down,
+    /// since a frame starts at or below every frame above it.
+    fn trace_stack<T: crate::trace::Tracer>(
+        stack: &mut ActivationStack,
+        tables: &Tables,
+        tracer: &mut T,
+    ) {
         if stack.innermost == NO_FRAME {
+            trace_words(stack.frames.words_mut(), tracer);
             return;
         }
-        let tables = &*tables;
         let top = stack.frames.top();
         let filler = dead_register().bits();
         // The windows of the frames walked so far, merged, ordered by
@@ -8240,6 +8273,7 @@ impl<'gc> Heap<'gc> {
             // at most `INSTRUCTION_LIMIT` of them.
             let program_counter =
                 frames::number_of(stack.header_word(offset, frame_header::PROGRAM_COUNTER)) as u32;
+            let caller = stack.caller(offset);
             let window = FrameWindow {
                 start,
                 registers: header + frame_header::COUNT,
@@ -8253,9 +8287,11 @@ impl<'gc> Heap<'gc> {
             set.check_callee(start, window.callee_header);
             match &set.tainted {
                 Some(tainted) => {
+                    let words = stack.frames.words_mut();
                     if !window.untouched(&claimed, set.first_tainted) {
-                        window.nil(stack.frames.words_mut(), &claimed, tainted, filler);
+                        window.nil(words, &claimed, tainted, filler);
                     }
+                    window.trace(words, &claimed, tracer);
                 }
                 None => {
                     // Every window above starts at or above this frame's
@@ -8273,43 +8309,46 @@ impl<'gc> Heap<'gc> {
             }
             claim(&mut claimed, start..end);
             callee = Some((start, header));
-            match stack.caller(offset) {
+            match caller {
                 Some(caller) => offset = caller,
                 None => break,
             }
         }
-        if deferred.is_empty() {
-            return;
-        }
-        // The fill changes the sets the last lookup borrowed.
-        last = None;
-        let mut missing: Vec<(usize, u32)> = deferred
-            .iter()
-            .map(|frame| (frame.code_index, frame.program_counter))
-            .collect();
-        missing.sort_unstable();
-        missing.dedup();
-        for body in missing.chunk_by(|first, second| first.0 == second.0) {
-            let program_counters: Vec<u32> = body
+        if !deferred.is_empty() {
+            // The fill changes the sets the last lookup borrowed.
+            last = None;
+            let mut missing: Vec<(usize, u32)> = deferred
                 .iter()
-                .map(|(_, program_counter)| *program_counter)
+                .map(|frame| (frame.code_index, frame.program_counter))
                 .collect();
-            if let Some(entry) = tables.codes.get(body[0].0).and_then(Option::as_ref) {
-                entry.code.fill_tainted_before(&program_counters);
+            missing.sort_unstable();
+            missing.dedup();
+            for body in missing.chunk_by(|first, second| first.0 == second.0) {
+                let program_counters: Vec<u32> = body
+                    .iter()
+                    .map(|(_, program_counter)| *program_counter)
+                    .collect();
+                if let Some(entry) = tables.codes.get(body[0].0).and_then(Option::as_ref) {
+                    entry.code.fill_tainted_before(&program_counters);
+                }
+            }
+            for frame in &deferred {
+                let set = LastSet::of(&mut last, tables, frame.code_index, frame.program_counter);
+                let Some(tainted) = &set.tainted else {
+                    unreachable!("internal: the fill keeps every set the walk deferred")
+                };
+                let claims = &deferred_claims[frame.claims.clone()];
+                let words = stack.frames.words_mut();
+                if !frame.window.untouched(claims, set.first_tainted) {
+                    frame.window.nil(words, claims, tainted, filler);
+                }
+                frame.window.trace(words, claims, tracer);
             }
         }
-        for frame in &deferred {
-            let set = LastSet::of(&mut last, tables, frame.code_index, frame.program_counter);
-            let Some(tainted) = &set.tainted else {
-                unreachable!("internal: the fill keeps every set the walk deferred")
-            };
-            let claims = &deferred_claims[frame.claims.clone()];
-            if !frame.window.untouched(claims, set.first_tainted) {
-                frame
-                    .window
-                    .nil(stack.frames.words_mut(), claims, tainted, filler);
-            }
-        }
+        // The words no frame's window holds: `claimed` is now every
+        // window's, merged.
+        let words = stack.frames.words_mut();
+        for_each_unclaimed(&claimed, 0..top, |run| trace_words(&mut words[run], tracer));
     }
 
     /// One scavenge (`scavenge.rs`): every young object the roots, the
@@ -8330,7 +8369,6 @@ impl<'gc> Heap<'gc> {
         step_roots: impl FnOnce(&mut Scavenger<'_>),
     ) {
         use crate::trace::{Trace, Tracer};
-        self.nil_leftovers();
         // Committed for the worst case first, so that a promotion never meets a
         // refused commit halfway through (`docs/design/memory.md`).
         let [past, eden, _] = self.space.occupied();
@@ -8357,6 +8395,7 @@ impl<'gc> Heap<'gc> {
             host_roots,
             canonical_symbols,
             symbol_of,
+            tables,
             ..
         } = self;
         let mut scavenger = Scavenger::new(
@@ -8377,7 +8416,7 @@ impl<'gc> Heap<'gc> {
         for object in mixin_objects.iter_mut().flatten() {
             scavenger.object(object);
         }
-        stack.trace(&mut scavenger);
+        Self::trace_stack(stack, tables, &mut scavenger);
         suspensions.trace(&mut scavenger);
         continuations.trace(&mut scavenger);
         let roots = host_roots.get_mut();
@@ -8801,10 +8840,6 @@ impl<'gc> Heap<'gc> {
     /// one level up).
     fn forward_everything<M: Relocation>(&mut self, forwarder: &mut Forwarder<M>) {
         use crate::trace::{Trace, Tracer};
-        // A full collection runs the pre-pass twice, before its marking and
-        // again here: idempotent on purpose, since nothing runs between the
-        // two and a second pass writes only the words the first wrote.
-        self.nil_leftovers();
         // A married frame's registers are its stack frame's, traced below
         // with the stack; its married field is a stack offset, and no stack
         // frame moves. Walks the objects where they lie now, after the move.
@@ -8838,7 +8873,11 @@ impl<'gc> Heap<'gc> {
         for object in self.mixin_objects.iter_mut().flatten() {
             forwarder.object(object);
         }
-        self.stack.trace(forwarder);
+        // A full collection nils the stack's leftovers twice, in its
+        // marking's trace and again here: idempotent on purpose, since
+        // nothing runs between the two and a second pass writes only the
+        // words the first wrote.
+        Self::trace_stack(&mut self.stack, &self.tables, forwarder);
         self.suspensions.trace(forwarder);
         self.continuations.trace(forwarder);
         // The table is weak -- `begin_marking` deliberately does not walk it
@@ -9018,7 +9057,6 @@ impl<'gc> Heap<'gc> {
     /// itself is never a root, only what the roots reach.
     pub(crate) fn begin_marking(&mut self) -> mark::Marker {
         use crate::trace::{Trace, Tracer};
-        self.nil_leftovers();
         // A mark left set would make this marking skip that object's edges
         // and so collect what only it reaches.
         #[cfg(debug_assertions)]
@@ -9044,7 +9082,7 @@ impl<'gc> Heap<'gc> {
         if let Some(class) = &mut self.activation_class {
             marker.object(class);
         }
-        self.stack.trace(&mut marker);
+        Self::trace_stack(&mut self.stack, &self.tables, &mut marker);
         self.suspensions.trace(&mut marker);
         self.continuations.trace(&mut marker);
         let roots = self.host_roots.get_mut();
@@ -16722,7 +16760,7 @@ mod tests {
     // ---------- The collector's pre-pass ----------
 
     /// What a collection nils before it traces the stack
-    /// (`Heap::nil_leftovers`). Each test builds its frames through the
+    /// (`Heap::trace_stack`). Each test builds its frames through the
     /// push API and its code by hand, and writes into a register the word
     /// a callee or an earlier frame would have left there: an object only
     /// that register holds, which a weak array then shows kept or gone.
@@ -17371,6 +17409,164 @@ mod tests {
             for activation in activations.into_iter().rev() {
                 heap.pop_activation(activation);
             }
+        }
+
+        /// A sender stopped at its send, its unwritten r14 tainted, and a
+        /// callee on its slots from r15 whose named temporary lies in the
+        /// registers the send taints for the sender -- claimed, so the
+        /// callee's to decide, and live. Answers the stack words of the
+        /// sender's tainted register and of the callee's named one.
+        fn sender_with_a_claiming_callee(
+            heap: &mut Heap<'_>,
+        ) -> (ActivationReference, ActivationReference, usize, usize) {
+            let sender_code = body(
+                vec![
+                    Instruction::LoadSelf { destination: FIRST },
+                    load(FIRST + 2),
+                    send(FIRST, FIRST + 2, vec![FIRST + 2], FIRST),
+                    Instruction::Return { register: FIRST },
+                ],
+                0,
+                0,
+                FIRST + 27,
+            );
+            let callee_code = body(
+                vec![
+                    Instruction::LoadSelf {
+                        destination: 1 + FIRST,
+                    },
+                    Instruction::Return {
+                        register: 1 + FIRST,
+                    },
+                ],
+                1,
+                1,
+                1 + FIRST + 2,
+            );
+            let sender = pushed(heap, sender_code, &[]);
+            heap.activation_set_program_counter(sender, 2);
+            let base = heap.activation_register_base(sender);
+            heap.set_register(base, FIRST + 2, Value::nil());
+            let temporaries = callee_code.registers_above_header();
+            let callee = heap
+                .push_overlapped_activation(
+                    &mut running(callee_code),
+                    base,
+                    FIRST + 2,
+                    1,
+                    temporaries,
+                )
+                .expect("the stack holds the frame");
+            heap.activation_set_program_counter(callee, 1);
+            let callee_base = heap.activation_register_base(callee);
+            let tainted = base.index as usize + usize::from(FIRST + 1);
+            let claimed = callee_base.index as usize + usize::from(1 + FIRST);
+            assert!(
+                claimed > callee.offset as usize,
+                "the callee's named register lies above its header, in the registers the send \
+                 taints for the sender"
+            );
+            (sender, callee, tainted, claimed)
+        }
+
+        /// Writes `object` into the stack word `index`, as a frame's
+        /// register.
+        fn write_word<'gc>(heap: &mut Heap<'gc>, index: usize, object: ObjectReference<'gc>) {
+            let bits = heap.store(Value::object(object)).bits();
+            heap.stack.frames.set_word(index, bits);
+        }
+
+        /// The scavenge's trace of the stack nils a frame's tainted
+        /// register before it traces the frame, so the object only that
+        /// register holds is not kept, and leaves the word a frame above
+        /// claims, whose object it keeps: when every set is missing and the
+        /// frames are deferred, and when every set is kept.
+        #[test]
+        fn the_scavenge_traces_no_tainted_register_and_keeps_a_claimed_one() {
+            let mut heap = Heap::new();
+            let (sender, callee, tainted, claimed) = sender_with_a_claiming_callee(&mut heap);
+            for round in ["every set missing", "every set kept"] {
+                let held = objects(&mut heap, 2);
+                write_word(&mut heap, tainted, held[0]);
+                write_word(&mut heap, claimed, held[1]);
+                let mut weak = weak_over(&mut heap, &held);
+
+                scavenge_bare(&mut heap, false, &mut [&mut weak]);
+
+                assert_eq!(kept(&heap, weak), [false, true], "{round}");
+                assert_eq!(heap.stack.frames.word(tainted), dead_register().bits());
+                assert_ne!(heap.stack.frames.word(claimed), dead_register().bits());
+            }
+            heap.pop_activation(callee);
+            heap.pop_activation(sender);
+        }
+
+        /// Marking's trace of the stack nils a frame's tainted register
+        /// before it marks through the frame, and leaves a claimed one.
+        #[test]
+        fn marking_traces_no_tainted_register_and_keeps_a_claimed_one() {
+            let mut heap = Heap::new();
+            let (sender, callee, tainted, claimed) = sender_with_a_claiming_callee(&mut heap);
+            for round in ["every set missing", "every set kept"] {
+                let held = objects(&mut heap, 2);
+                write_word(&mut heap, tainted, held[0]);
+                write_word(&mut heap, claimed, held[1]);
+                let mut weak = weak_over(&mut heap, &held);
+
+                heap.collect_for_test(&mut [&mut weak]);
+
+                assert_eq!(kept(&heap, weak), [false, true], "{round}");
+                assert_eq!(heap.stack.frames.word(tainted), dead_register().bits());
+                assert_ne!(heap.stack.frames.word(claimed), dead_register().bits());
+            }
+            heap.pop_activation(callee);
+            heap.pop_activation(sender);
+        }
+
+        /// A forward's trace of the stack nils a frame's tainted register
+        /// before it forwards the frame's words: a handle there to an
+        /// object marking left unmarked -- stale once the compaction
+        /// reclaims it -- is never forwarded, which a debug build's
+        /// forwarding table would refuse, while the claimed word is
+        /// forwarded to its object's new place.
+        #[test]
+        fn a_forward_traces_no_tainted_register_and_forwards_a_claimed_one() {
+            let mut heap = Heap::new();
+            let (sender, callee, tainted, claimed) = sender_with_a_claiming_callee(&mut heap);
+            for round in ["every set missing", "every set kept"] {
+                // Garbage below the two objects, so that the compaction
+                // moves them.
+                objects(&mut heap, 4);
+                let held = objects(&mut heap, 2);
+                write_word(&mut heap, claimed, held[1]);
+                let mut weak = weak_over(&mut heap, &held);
+
+                use crate::trace::Tracer;
+                let mut marker = heap.begin_marking();
+                marker.value(&mut weak);
+                heap.drain_marking(&mut marker);
+                heap.finish_marking(&mut marker);
+                heap.prune_canonical_symbols();
+                heap.prune_mixin_objects();
+                // Written after marking, which nilled the register, so that
+                // only the forward's own pass can nil it.
+                write_word(&mut heap, tainted, held[0]);
+                let mut forwarder = heap.compact();
+                forwarder.value(&mut weak);
+
+                assert_eq!(kept(&heap, weak), [false, true], "{round}");
+                assert_eq!(heap.stack.frames.word(tainted), dead_register().bits());
+                let elements = heap
+                    .weak_array_elements(rooted(weak))
+                    .expect("a weak array answers its elements");
+                assert_eq!(
+                    heap.stack.frames.word(claimed),
+                    heap.store(elements[1]).bits(),
+                    "{round}: the claimed word names its object where the compaction put it"
+                );
+            }
+            heap.pop_activation(callee);
+            heap.pop_activation(sender);
         }
     }
 }

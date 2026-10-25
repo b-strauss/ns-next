@@ -724,26 +724,27 @@ check").
   `vmMirror` slot and the kernel every builtin class's `enclosing` object,
   but a root of their own keeps both alive and forwarded whatever those
   links are.
-- The activation stack, as one linear range of tagged words, `[0, top)`:
-  every frame's header -- its receiver, `current_class`, the closure object
-  or class its kind's operand names, the frame object it is married to,
-  and numbers the tracer passes over -- and its registers, with no stack
-  map and no walk of frames. The words above the top are not traced, and
+- The activation stack, every tagged word of `[0, top)`: every frame's
+  header -- its receiver, `current_class`, the closure object or class its
+  kind's operand names, the frame object it is married to, and numbers
+  the tracer passes over -- and its registers, with no stack map. The
+  words above the top are not traced, and
   no push or pop writes a scratch register: a push writes its frame's
   header and named locals only, a pop nothing, and a push laid on its
   sender's slots never lowers the top, so a sender's registers past a
   shorter callee stay below it ([execution.md](execution.md),
   "Representation"). A word below the top may so be one a callee or a
-  popped frame left, and the pre-pass below nils each before the trace,
-  so that it neither keeps an object alive nor names one a collection
-  moved meanwhile. `ActivationStack`'s impl is in `heap.rs`, where its
-  fields are private.
+  popped frame left, and the pre-pass below nils each before the trace
+  reads it, so that it neither keeps an object alive nor names one a
+  collection moved meanwhile. The trace is `Heap::trace_stack`, in
+  `heap.rs`, where `ActivationStack`'s fields are private.
 
-  Before every trace of the stack -- the scavenge, marking, and every
-  forward (`forward_everything`: a compaction's, a stress move's, the
-  bulk forward's) -- a pre-pass (`Heap::nil_leftovers`) walks the frames
-  from the top by their caller words and writes `dead_register`'s word
-  into every register its frame does not read before writing it. That is
+  Every trace of the stack -- the scavenge, marking, and every forward
+  (`forward_everything`: a compaction's, a stress move's, the bulk
+  forward's) -- walks the frames from the top by their caller words and,
+  in a pre-pass over each frame before it traces the frame's words,
+  writes `dead_register`'s word into every register the frame does not
+  read before writing it. That is
   what `bytecode::leftovers` finds tainted before the program counter the
   frame's header stores ([compiler.md](compiler.md), "What a callee
   leaves"): for the top frame the instruction it runs next, which the run
@@ -763,17 +764,25 @@ check").
   collection that finds a frame there, after a `check` of the body, since
   the shipped code is decoded unverified and an answer for a body `check`
   refuses would nil live registers. The stack is walked once: a frame
-  whose set is kept is nilled as the walk meets it, and one whose set is
-  missing is deferred with the windows above it that reach into its own;
-  after the walk the missing sets are filled body by body, each body's
-  from one pass, so a collection analyses a body once however many frames
-  run it, and the deferred frames are nilled against the windows recorded
-  for them. The walk keeps the set it looked up last, so a frame of the
-  same body at the same program counter as the frame above it -- a deep
-  recursion's frames -- costs the reads of its header and its writes, no
-  lookup. It is the only guard: no push or pop writes the registers it nils. A full
-  collection runs it twice, before its marking and before its
-  forwarding, which is idempotent on purpose. A frame object traced as
+  whose set is kept is nilled as the walk meets it and then traced --
+  its words but those of the windows above, which the frames above
+  traced and no frame below writes -- and one whose set is missing is
+  deferred with the windows above it that reach into its own; after the
+  walk the missing sets are filled body by body, each body's from one
+  pass, so a collection analyses a body once however many frames run
+  it, and the deferred frames are nilled against the windows recorded
+  for them and traced. Last, the words below the top in no frame's
+  window are traced as they lie. The walk keeps the set it looked up
+  last, so a frame of the same body at the same program counter as the
+  frame above it -- a deep recursion's frames -- costs the reads of its
+  header, its writes and its trace, no lookup. Nilling and tracing in
+  one walk loads each frame's header lines once per trace: a separate
+  pre-pass, a walk of its own before a linear trace of `[0, top)`,
+  loaded them twice and cost a 99,000-frame recursion under about 30
+  scavenges 3.4% of its run, which the one walk removes. It is the only
+  guard: no push or pop writes the registers it nils. A full collection
+  runs it twice, in its marking's trace and in its forwarding's, which
+  is idempotent on purpose. A frame object traced as
   it lies takes no such register either: a suspension copies the frame's
   registers less those the pre-pass would nil, a divorce its named ones
   only. In a debug build the word it writes is `Word::DEAD_REGISTER`,

@@ -5,9 +5,10 @@
 //! sender's argument slots, which are its own arguments, every other frame
 //! above its sender's whole window. Every word a frame writes is a valid
 //! tagged `Word` -- a number a `SmallInteger`, an absent handle nil -- and
-//! the collector's pre-pass nils every register no frame reads before it
-//! writes it (`Heap::nil_leftovers`), so that the trace takes `[0, top)`
-//! as one linear range of values, with no stack map and no walk of frames.
+//! the collector's trace of the stack nils every register no frame reads
+//! before it writes it as it walks the frames, before it traces each
+//! frame's words (`Heap::trace_stack`), so that the trace takes every word
+//! below the top as a value, with no stack map.
 
 use super::space::reserve_falling_back;
 use super::{out_of_memory, Word};
@@ -350,7 +351,7 @@ pub(super) struct ReservationExhausted;
 /// writes the header and the registers the frame reads before it writes
 /// them, and no other: a scratch register keeps whatever the stack last
 /// held there, and so does a register a pop gives back, until the
-/// collector's pre-pass nils it before a trace (`Heap::nil_leftovers`).
+/// collector's pre-pass nils it before a trace (`Heap::trace_stack`).
 /// The top never stands below the innermost frame's window end, nor below
 /// the window end of a frame a callee lies on the slots of.
 pub(super) struct FrameStack {
@@ -444,7 +445,7 @@ impl FrameStack {
     /// ordinary room cannot hold them. The top becomes their end where that
     /// lies above it, and stays where it is otherwise: the sender's
     /// registers past a shorter callee's window stay below the top, traced
-    /// once the pre-pass has nilled them (`Heap::nil_leftovers`), so that
+    /// once the pre-pass has nilled them (`Heap::trace_stack`), so that
     /// no word comes below the top again that a collection never saw. One
     /// comparison against the committed end, as `push` makes.
     #[inline(always)]

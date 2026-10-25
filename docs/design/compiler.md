@@ -909,7 +909,7 @@ readers:
   [image-format.md](image-format.md), "Verification");
 - a debug build, which checks every compiled body
   (`reference::check_leftovers`);
-- the collector's pre-pass (`Heap::nil_leftovers`), which nils those
+- the collector's pre-pass (`Heap::trace_stack`), which nils those
   registers before every trace of the stack, so that neither a push nor
   a pop need write them. It asks `tainted_at`, answered as sorted
   disjoint ranges from one pass, the first time it meets a frame of a
