@@ -8205,9 +8205,11 @@ registers *are* the callee's first registers -- the pop restoring the
 caller's window, suspension keeping a sender's registers below its
 callee's header, frame objects and image records without the header's
 numbers, and the decoder's refusal of a register that names a header
-word and of argument slots below the header's end. To come: the
-decoder's refusal of a write to an argument register and of an outer
-store into another frame's scratch.
+word, of argument slots below the header's end or below the body's
+locals, of a send source that is another of its slots, of a write to an
+argument register, and of an outer load or store into another frame's
+scratch ([image-format.md](image-format.md), "Verification"). To come:
+the stage's measurement.
 
 **What a send copies today.** Each argument at most once, most of them
 never. A send names its arguments' contiguous slots, allocated after its

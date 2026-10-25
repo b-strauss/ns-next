@@ -415,7 +415,14 @@ locals. A body's `register_count` is one past its highest register number, so
 at least `argument_count + HEADER_REGISTERS`, but for a body past the register
 ceiling with too many arguments for that, whose registers are its arguments
 alone (`compiler::body_too_large`); the header's numbers count against the
-ceiling like any other.
+ceiling like any other. Its `local_count` is the first scratch register --
+one past the arguments, the header's numbers, the copied values, the
+temporaries and the vector register -- which both lowerings record and an
+image carries: every send's slots start at or above it, and every outer
+local a block names lies below it in the body that declares it, which is
+what lets the image decoder refuse an outer access into another frame's
+scratch, where a callee laid on its slots has its live header
+([image-format.md](image-format.md), "Verification").
 
 **A converted block's layout inserts its copied values after the header's
 numbers.** Under the optimized lowering a block's registers are its

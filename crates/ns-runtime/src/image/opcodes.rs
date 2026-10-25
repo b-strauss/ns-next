@@ -469,9 +469,14 @@ pub const FRAME_BODY_CODE: u8 = 1;
 pub const FRAME_BODY_DECLARED: u8 = 2;
 
 /// Code kind tag 4 was the body of a clause message's arguments, retired when
-/// those arguments were lowered into the initializers. The live code kind tags
-/// are written by `encode::code_kind_tag` and read by `decode`, not named here.
-pub const RETIRED_CODE_KIND_TAGS: [u8; 1] = [4];
+/// those arguments were lowered into the initializers. Tags 0-3 named the
+/// four live kinds while a code record carried no `local_count`, retired
+/// when it came to carry one, since the kind opens the record: a stale
+/// record meets a retired tag rather than having its source span read as
+/// its local count. The live code kind tags, 5-8, are written by
+/// `encode::code_kind_tag` and read by `decode`, not named here. Next free
+/// number: 9.
+pub const RETIRED_CODE_KIND_TAGS: [u8; 5] = [0, 1, 2, 3, 4];
 
 /// Which tag-named object an entry of the graph section's closing hash table
 /// names: an object of the shipped-name section, which is no record, so

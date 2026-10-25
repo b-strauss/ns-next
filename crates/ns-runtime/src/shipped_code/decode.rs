@@ -304,6 +304,7 @@ impl Decoder<'_> {
         let argument_count = self.reader.u16();
         let register_count = self.reader.u16();
         let copied_count = self.reader.u16();
+        let local_count = self.reader.u16();
         let statement_program_counter = (0..self.reader.length())
             .map(|_| {
                 let statement = self.reader.length();
@@ -325,6 +326,7 @@ impl Decoder<'_> {
             argument_count,
             register_count,
             copied_count,
+            local_count,
             statement_program_counter,
             source,
         );

@@ -883,7 +883,8 @@ fn every_instantiation_instruction() -> CompiledCode {
     const FIRST: u16 = 2 + HEADER_REGISTERS;
     let mut instructions = vec![Instruction::AllocateInstance { destination: FIRST }];
     for count in [0_u16, 1, 2, 300] {
-        let arguments: Vec<u16> = (0..count).map(|index| FIRST + index * 2 + 1).collect();
+        // Above every slot, since a source may be no other slot.
+        let arguments: Vec<u16> = (0..count).map(|index| FIRST + 301 + index).collect();
         instructions.push(Instruction::InitializeInstance {
             instance: FIRST,
             destination: FIRST + 600,
@@ -1124,6 +1125,7 @@ fn a_make_closure_code_id_out_of_range_is_a_decode_error_not_a_panic() {
     writer.write_u16(0); // argument_count
     writer.write_u16(1); // register_count
     writer.write_u16(0); // copied_count
+    writer.write_u16(0); // local_count
     writer.write_u32(0); // source.start
     writer.write_u32(0); // source.end
     writer.write_u32(0); // no statement_program_counter entries
@@ -1152,6 +1154,7 @@ fn a_forward_make_closure_code_id_is_a_decode_error_not_a_panic() {
     writer.write_u16(0);
     writer.write_u16(1);
     writer.write_u16(0); // copied_count
+    writer.write_u16(0); // local_count
     writer.write_u32(0);
     writer.write_u32(0);
     writer.write_u32(0);
@@ -1186,11 +1189,12 @@ fn an_invalid_code_kind_tag_is_a_decode_error_not_a_panic() {
     );
 }
 
-/// A code table naming the retired clause-message kind meets the refusal of
+/// A code table naming a retired code kind -- the clause-message kind, or a
+/// kind of the layout before `local_count` -- meets the refusal of
 /// a tag never assigned.
 #[test]
 fn a_retired_code_kind_tag_is_refused() {
-    assert_eq!(RETIRED_CODE_KIND_TAGS, [4]);
+    assert_eq!(RETIRED_CODE_KIND_TAGS, [0, 1, 2, 3, 4]);
     for tag in RETIRED_CODE_KIND_TAGS {
         let mut writer = encode::Writer::new();
         writer.write_u32(1);
@@ -1215,6 +1219,7 @@ fn an_invalid_instruction_tag_is_a_decode_error_not_a_panic() {
     writer.write_u16(0);
     writer.write_u16(0);
     writer.write_u16(0); // copied_count
+    writer.write_u16(0); // local_count
     writer.write_u32(0);
     writer.write_u32(0);
     writer.write_u32(0);
@@ -1246,6 +1251,7 @@ fn one_method_code_table(
     writer.write_u16(0); // argument_count
     writer.write_u16(2); // register_count
     writer.write_u16(0); // copied_count
+    writer.write_u16(0); // local_count
     writer.write_u32(0); // source.start
     writer.write_u32(0); // source.end
     writer.write_u32(0); // no statement_program_counter entries
@@ -1341,6 +1347,7 @@ fn an_invalid_or_retired_literal_tag_is_a_decode_error_not_a_panic() {
         writer.write_u16(0);
         writer.write_u16(1);
         writer.write_u16(0); // copied_count
+        writer.write_u16(0); // local_count
         writer.write_u32(0);
         writer.write_u32(0);
         writer.write_u32(0);
@@ -2402,6 +2409,7 @@ fn an_invalid_integer_operation_tag_is_a_decode_error_not_a_panic() {
     writer.write_u16(0);
     writer.write_u16(1);
     writer.write_u16(0); // copied_count
+    writer.write_u16(0); // local_count
     writer.write_u32(0);
     writer.write_u32(0);
     writer.write_u32(0);
@@ -2490,6 +2498,7 @@ fn a_copied_count_that_does_not_fit_the_register_file_is_a_decode_error() {
     writer.write_u16(1); // argument_count
     writer.write_u16(2); // register_count
     writer.write_u16(2); // copied_count -- one more than the file has room for
+    writer.write_u16(0); // local_count
     let bytes = writer.into_bytes();
     let mut reader = decode::Reader::new(&bytes);
     let error = decode::decode_code_table(&mut reader, &symbols::Table::empty())
@@ -2517,6 +2526,7 @@ fn a_backwards_source_span_is_a_decode_error_not_a_panic() {
     writer.write_u16(0); // argument_count
     writer.write_u16(0); // register_count
     writer.write_u16(0); // copied_count
+    writer.write_u16(0); // local_count
     writer.write_u32(9); // source.start ...
     writer.write_u32(4); // ... after source.end
     let bytes = writer.into_bytes();
@@ -2550,7 +2560,7 @@ fn a_huge_code_table_count_does_not_reserve_gigabytes() {
 /// Body 0 is the innermost block, each later body creates the one before it,
 /// and the last is the method -- the order the encoder writes, every block
 /// before the code that creates it. The innermost block sits `levels`
-/// `MakeClosure` hops below the method. Each level is 38 bytes, so the file
+/// `MakeClosure` hops below the method. Each level is 40 bytes, so the file
 /// grows linearly with the nesting it asks for.
 fn code_table_with_nested_blocks(levels: usize) -> Vec<u8> {
     let body = |writer: &mut encode::Writer, kind: u8, creates: Option<usize>| {
@@ -2558,6 +2568,7 @@ fn code_table_with_nested_blocks(levels: usize) -> Vec<u8> {
         writer.write_u16(0); // argument_count
         writer.write_u16(HEADER_REGISTERS + 1); // register_count: one past the header's numbers
         writer.write_u16(0); // copied_count
+        writer.write_u16(0); // local_count
         writer.write_u32(0); // source.start
         writer.write_u32(0); // source.end
         writer.write_u32(0); // no statement_program_counter entries
@@ -2578,11 +2589,19 @@ fn code_table_with_nested_blocks(levels: usize) -> Vec<u8> {
     };
     let mut writer = encode::Writer::new();
     writer.write_u32(u32::try_from(levels + 1).expect("a test-sized code table"));
-    body(&mut writer, 1, None); // CodeKind::Block
+    body(&mut writer, encode::code_kind_tag(CodeKind::Block), None);
     for id in 1..levels {
-        body(&mut writer, 1, Some(id - 1));
+        body(
+            &mut writer,
+            encode::code_kind_tag(CodeKind::Block),
+            Some(id - 1),
+        );
     }
-    body(&mut writer, 0, Some(levels - 1)); // CodeKind::Method
+    body(
+        &mut writer,
+        encode::code_kind_tag(CodeKind::Method),
+        Some(levels - 1),
+    );
     writer.into_bytes()
 }
 
@@ -7317,7 +7336,7 @@ fn a_send_whose_argument_slots_leave_the_body_is_refused() {
         error.to_string(),
         "2 argument slot(s) from r14 run past a body with 15 register(s)"
     );
-    assert_eq!(decode::verify_code_table(&send(13, vec![14, 13])), Ok(()));
+    assert_eq!(decode::verify_code_table(&send(13, vec![13, 14])), Ok(()));
 }
 
 /// The register numbers between a body's arguments and the rest of its
@@ -7391,6 +7410,438 @@ fn a_register_naming_the_frame_header_is_refused() {
     );
     assert_eq!(
         decode::verify_code_table(&send_below(HEADER_REGISTERS + 2)),
+        Ok(())
+    );
+}
+
+/// A callee lies on its sender's argument slots, so a register of the
+/// sender's above its named locals can be a live callee's header. A
+/// crafted `run` hands a block to `call:`, which runs it while lying on
+/// `run`'s slots, and the block stores into `run`'s register where
+/// `call:`'s header starts: the image is refused at load, before anything
+/// runs, rather than let the store overwrite the caller word the pop reads.
+#[test]
+fn a_block_storing_into_its_homes_scratch_under_a_live_callee_is_refused_at_load() {
+    let source = indoc! {"
+        class X = Object new (
+        ) (
+          public run = ( ^1 )
+          public call: block = ( ^block value )
+        ) : ()
+    "};
+    let block = HEADER_REGISTERS;
+    let receiver = HEADER_REGISTERS + 1;
+    let slot = HEADER_REGISTERS + 2;
+    // The callee's one argument is `slot`, its header the numbers after it;
+    // the header's last word is its register count, which the pop reads.
+    let callee_header = slot + 1;
+    let callee_register_count_word = callee_header + HEADER_REGISTERS - 1;
+    let block_body = Rc::new(CompiledCode::new(
+        CodeKind::Block,
+        vec![
+            Instruction::LoadSelf {
+                destination: HEADER_REGISTERS,
+            },
+            Instruction::StoreOuterLocal {
+                source: HEADER_REGISTERS,
+                depth: 1,
+                index: callee_register_count_word,
+            },
+            Instruction::ImplicitReturn {
+                register: HEADER_REGISTERS,
+            },
+        ],
+        0,
+        HEADER_REGISTERS + 1,
+        0,
+        vec![(0, 0..3)],
+        Span::new(0, 0),
+    ));
+    let run_body = Rc::new(CompiledCode::new(
+        CodeKind::Method,
+        vec![
+            Instruction::MakeClosure {
+                destination: block,
+                parameters: Rc::new(vec![]),
+                code: block_body,
+                copied: Vec::new(),
+            },
+            Instruction::LoadSelf {
+                destination: receiver,
+            },
+            Instruction::Move {
+                destination: slot,
+                source: block,
+            },
+            Instruction::SendPublic {
+                receiver_register: receiver,
+                selector: Symbol::intern("call:"),
+                argument_base: slot,
+                argument_sources: vec![slot],
+                destination: receiver,
+                call_site: CallSite { number: 0 },
+            },
+            Instruction::Return { register: receiver },
+        ],
+        0,
+        callee_header + HEADER_REGISTERS,
+        0,
+        vec![(0, 0..5)],
+        Span::new(0, 0),
+    ));
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let doctored = with_method_code(mixin_of(mutator.heap(), class), "run", run_body);
+        install_mixin(mutator, class, doctored);
+        let instance = mutator.fetch(&instance);
+        snapshot_one(
+            mutator,
+            false,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
+    let Err(error) = image::load(&bytes) else {
+        panic!("a store into the home's scratch must be refused at load")
+    };
+    let expected = decode::DecodeError::OuterLocalInScratch {
+        depth: 1,
+        index: callee_register_count_word,
+        local_count: HEADER_REGISTERS,
+    };
+    assert!(error.contains(&expected.to_string()), "{error}");
+}
+
+/// `[block, parent]` as the encoder writes them (post-order), where
+/// `parent` takes `parent_arguments` arguments in `parent_registers`
+/// registers, the first `parent_local_count` of them its locals, and
+/// `block` runs `access` -- an outer load or store -- and answers r13.
+fn outer_access_table(
+    parent_arguments: u16,
+    parent_registers: u16,
+    parent_local_count: u16,
+    access: Instruction,
+) -> decode::DecodedCodeTable {
+    let block = code_with(
+        CodeKind::Block,
+        0,
+        HEADER_REGISTERS + 1,
+        vec![
+            Instruction::LoadSelf {
+                destination: HEADER_REGISTERS,
+            },
+            access,
+            Instruction::ImplicitReturn {
+                register: HEADER_REGISTERS,
+            },
+        ],
+    );
+    let closure = parent_arguments + HEADER_REGISTERS;
+    let mut parent = (*code_with(
+        CodeKind::Method,
+        parent_arguments,
+        parent_registers,
+        vec![
+            Instruction::MakeClosure {
+                destination: closure,
+                parameters: Rc::new(vec![]),
+                code: block.clone(),
+                copied: Vec::new(),
+            },
+            Instruction::Return { register: closure },
+        ],
+    ))
+    .clone();
+    parent.local_count = parent_local_count;
+    table_of(vec![block, Rc::new(parent)])
+}
+
+/// No compiled body writes an argument register: parameters are immutable
+/// (§3.6), and the register is the sender's slot, which a setter's sender
+/// reads back after the send. A write there by its own body or by a block
+/// of it is refused; a read is not; and the load of the too-large error
+/// into the last argument, which the body a body past the register ceiling
+/// compiles to makes when its arguments leave no register above the
+/// header, is no write, since it raises before writing.
+#[test]
+fn a_write_to_an_argument_register_is_refused() {
+    let own = |instructions| {
+        table_of(vec![code_with(
+            CodeKind::Method,
+            1,
+            HEADER_REGISTERS + 2,
+            instructions,
+        )])
+    };
+    let error = decode::verify_code_table(&own(vec![
+        Instruction::LoadSelf { destination: 0 },
+        Instruction::Return { register: 0 },
+    ]))
+    .expect_err("r0 is the argument");
+    assert_eq!(
+        error,
+        decode::DecodeError::ArgumentRegisterWritten {
+            depth: 0,
+            register: 0,
+            argument_count: 1
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "register r0 at depth 0 is written, an argument of a body taking 1 argument(s)"
+    );
+    assert_eq!(
+        decode::verify_code_table(&own(vec![
+            Instruction::LoadSelf {
+                destination: HEADER_REGISTERS + 1,
+            },
+            Instruction::StoreLocal {
+                source: HEADER_REGISTERS + 1,
+                slot: 0,
+            },
+            Instruction::Return { register: 0 },
+        ])),
+        Err(decode::DecodeError::ArgumentRegisterWritten {
+            depth: 0,
+            register: 0,
+            argument_count: 1
+        })
+    );
+    let store = Instruction::StoreOuterLocal {
+        source: HEADER_REGISTERS,
+        depth: 1,
+        index: 0,
+    };
+    assert_eq!(
+        decode::verify_code_table(&outer_access_table(
+            1,
+            HEADER_REGISTERS + 2,
+            HEADER_REGISTERS + 1,
+            store
+        )),
+        Err(decode::DecodeError::ArgumentRegisterWritten {
+            depth: 1,
+            register: 0,
+            argument_count: 1
+        })
+    );
+    let load = Instruction::LoadOuterLocal {
+        destination: HEADER_REGISTERS,
+        depth: 1,
+        index: 0,
+    };
+    assert_eq!(
+        decode::verify_code_table(&outer_access_table(
+            1,
+            HEADER_REGISTERS + 2,
+            HEADER_REGISTERS + 1,
+            load
+        )),
+        Ok(())
+    );
+    // Past the ceiling: no register above the header, so the error is
+    // loaded into the last argument, and nothing else may be.
+    let arguments = u16::MAX - HEADER_REGISTERS + 1;
+    let too_large = |literal| {
+        table_of(vec![code_with(
+            CodeKind::Method,
+            arguments,
+            arguments,
+            vec![
+                Instruction::LoadLiteral {
+                    destination: arguments - 1,
+                    literal,
+                },
+                Instruction::ImplicitReturn {
+                    register: arguments - 1,
+                },
+            ],
+        )])
+    };
+    assert_eq!(
+        decode::verify_code_table(&too_large(Literal::BodyTooLarge)),
+        Ok(())
+    );
+    assert_eq!(
+        decode::verify_code_table(&too_large(Literal::Nil)),
+        Err(decode::DecodeError::ArgumentRegisterWritten {
+            depth: 0,
+            register: arguments - 1,
+            argument_count: arguments
+        })
+    );
+}
+
+/// A register of the enclosing frame at or past its `local_count` is
+/// scratch, where a callee it sends to lies with its header while the block
+/// runs: an outer load or store there is refused, one into a named local
+/// verifies.
+#[test]
+fn an_outer_local_in_the_enclosing_frames_scratch_is_refused() {
+    let local_count = HEADER_REGISTERS + 1;
+    let load = |index| Instruction::LoadOuterLocal {
+        destination: HEADER_REGISTERS,
+        depth: 1,
+        index,
+    };
+    let store = |index| Instruction::StoreOuterLocal {
+        source: HEADER_REGISTERS,
+        depth: 1,
+        index,
+    };
+    let table = |access| outer_access_table(0, HEADER_REGISTERS + 4, local_count, access);
+    assert_eq!(
+        decode::verify_code_table(&table(load(HEADER_REGISTERS))),
+        Ok(())
+    );
+    assert_eq!(
+        decode::verify_code_table(&table(store(HEADER_REGISTERS))),
+        Ok(())
+    );
+    let error = decode::verify_code_table(&table(load(local_count))).expect_err("a scratch load");
+    assert_eq!(
+        error,
+        decode::DecodeError::OuterLocalInScratch {
+            depth: 1,
+            index: local_count,
+            local_count
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "outer local r14 at depth 1 is a scratch register of the enclosing body, whose first is r14"
+    );
+    assert_eq!(
+        decode::verify_code_table(&table(store(local_count + 2))),
+        Err(decode::DecodeError::OuterLocalInScratch {
+            depth: 1,
+            index: local_count + 2,
+            local_count
+        })
+    );
+}
+
+/// What makes the refusal above sound: a send's slots, and so its callee's
+/// header, start at or above its body's `local_count`, which is itself
+/// inside the register file.
+#[test]
+fn a_send_whose_slots_start_below_the_scratch_is_refused() {
+    let body = |local_count, argument_base| {
+        let mut code = (*code_with(
+            CodeKind::Method,
+            0,
+            HEADER_REGISTERS + 3,
+            vec![
+                Instruction::SendLexical {
+                    depth: 0,
+                    selector: Symbol::intern("foo"),
+                    argument_base,
+                    argument_sources: vec![],
+                    destination: HEADER_REGISTERS + 2,
+                    call_site: CallSite { number: 0 },
+                },
+                Instruction::Return {
+                    register: HEADER_REGISTERS + 2,
+                },
+            ],
+        ))
+        .clone();
+        code.local_count = local_count;
+        table_of(vec![Rc::new(code)])
+    };
+    let error = decode::verify_code_table(&body(HEADER_REGISTERS + 1, HEADER_REGISTERS))
+        .expect_err("slots on a named local");
+    assert_eq!(
+        error,
+        decode::DecodeError::ArgumentSlotsBelowTheScratch {
+            argument_base: HEADER_REGISTERS,
+            local_count: HEADER_REGISTERS + 1
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "argument slots from r13 lie below the first scratch register r14"
+    );
+    assert_eq!(
+        decode::verify_code_table(&body(HEADER_REGISTERS + 1, HEADER_REGISTERS + 1)),
+        Ok(())
+    );
+    let error = decode::verify_code_table(&body(HEADER_REGISTERS + 4, HEADER_REGISTERS + 1))
+        .expect_err("a local count past the file");
+    assert_eq!(
+        error,
+        decode::DecodeError::LocalCountOutOfRange {
+            local_count: HEADER_REGISTERS + 4,
+            register_count: HEADER_REGISTERS + 3
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "a local count of 17 is past a body with 16 register(s)"
+    );
+}
+
+/// A send writes each source into its slot in turn, so a source that is
+/// another of its own slots would answer whatever the order of the writes
+/// left there: refused, while a source in its own slot, or outside the
+/// slots, verifies.
+#[test]
+fn a_send_whose_source_is_another_of_its_slots_is_refused() {
+    let send = |argument_sources: Vec<u16>| {
+        table_of(vec![code_with(
+            CodeKind::Method,
+            0,
+            HEADER_REGISTERS + 3,
+            vec![
+                Instruction::LoadSelf {
+                    destination: HEADER_REGISTERS,
+                },
+                Instruction::SendLexical {
+                    depth: 0,
+                    selector: Symbol::intern("foo:bar:"),
+                    argument_base: HEADER_REGISTERS + 1,
+                    argument_sources,
+                    destination: HEADER_REGISTERS,
+                    call_site: CallSite { number: 0 },
+                },
+                Instruction::Return {
+                    register: HEADER_REGISTERS,
+                },
+            ],
+        )])
+    };
+    let error = decode::verify_code_table(&send(vec![HEADER_REGISTERS + 2, HEADER_REGISTERS]))
+        .expect_err("the first source is the second slot");
+    assert_eq!(
+        error,
+        decode::DecodeError::SourceIsAnotherSlot {
+            argument_base: HEADER_REGISTERS + 1,
+            position: 0,
+            source: HEADER_REGISTERS + 2
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "the source of argument 0 of a send with slots from r14 is r15, another of its slots"
+    );
+    assert_eq!(
+        decode::verify_code_table(&send(vec![HEADER_REGISTERS, HEADER_REGISTERS + 1])),
+        Err(decode::DecodeError::SourceIsAnotherSlot {
+            argument_base: HEADER_REGISTERS + 1,
+            position: 1,
+            source: HEADER_REGISTERS + 1
+        })
+    );
+    assert_eq!(
+        decode::verify_code_table(&send(vec![HEADER_REGISTERS + 1, HEADER_REGISTERS])),
+        Ok(())
+    );
+    assert_eq!(
+        decode::verify_code_table(&send(vec![HEADER_REGISTERS, HEADER_REGISTERS])),
         Ok(())
     );
 }
@@ -7763,7 +8214,9 @@ fn outer_local_table(
             Instruction::ImplicitReturn { register: 13 },
         ],
     );
-    let parent = code_with(
+    // Every register of the parent a local, so that the bound the test
+    // asks about is its register file's.
+    let mut parent = (*code_with(
         CodeKind::Method,
         0,
         parent_registers,
@@ -7776,8 +8229,10 @@ fn outer_local_table(
             },
             Instruction::Return { register: 13 },
         ],
-    );
-    table_of(vec![block, parent])
+    ))
+    .clone();
+    parent.local_count = parent_registers;
+    table_of(vec![block, Rc::new(parent)])
 }
 
 #[test]

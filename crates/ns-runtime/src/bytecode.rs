@@ -501,6 +501,14 @@ pub struct CompiledCode {
     /// How many copied values a block's activation is handed, between its
     /// parameters and its temporaries. Zero for every other kind of body.
     pub copied_count: u16,
+    /// The first scratch register: one past the arguments, the header's
+    /// numbers, the copied values, the named temporaries and the
+    /// indirection vector's register. Every send's argument slots start at
+    /// or above it, so a callee laid on them has its header here or
+    /// higher, and a block reaching this body's registers by reference
+    /// reads and writes only those below it (`image::decode`'s
+    /// verification holds an image to both). At most `register_count`.
+    pub local_count: u16,
     /// How many frames out the deepest by-reference read or write this body
     /// or a block it creates can reach: `0` for converted code, `1` for a
     /// fallback closure that reads its own creator's registers, one more per
@@ -576,6 +584,7 @@ pub(crate) struct CompiledCodeFields<'code> {
     #[expect(dead_code, reason = "named so that a writer decides to leave it out")]
     pub(crate) family_size: &'code u32,
     pub(crate) copied_count: &'code u16,
+    pub(crate) local_count: &'code u16,
     #[expect(dead_code, reason = "named so that a writer decides to leave it out")]
     pub(crate) outer_reach: &'code u16,
     #[expect(dead_code, reason = "named so that a writer decides to leave it out")]
@@ -611,7 +620,10 @@ impl CompiledCode {
     /// `outer_reach` and `addresses_own_slots` are derived from them, as the
     /// compiler derives them.
     /// It carries no unwind marker: only the kernel's compilation
-    /// recognizes one.
+    /// recognizes one. Its `local_count` is that of a body with no named
+    /// temporaries and no indirection vector -- its arguments, the header's
+    /// numbers and its copied values, at most `register_count` -- which a
+    /// body built by hand with named temporaries sets itself.
     pub fn new(
         kind: CodeKind,
         instructions: Vec<Instruction>,
@@ -625,12 +637,16 @@ impl CompiledCode {
         for instruction in instructions {
             builder.emit(instruction);
         }
+        let named =
+            u32::from(argument_count) + u32::from(HEADER_REGISTERS) + u32::from(copied_count);
+        let local_count = u16::try_from(named).unwrap_or(u16::MAX).min(register_count);
         CompiledCode::from_builder(
             kind,
             builder,
             argument_count,
             register_count,
             copied_count,
+            local_count,
             statement_program_counter,
             source,
         )
@@ -641,12 +657,16 @@ impl CompiledCode {
     /// derived from it, read off its tables as `family_size_of`,
     /// `outer_reach_of` and `addresses_own_slots_of` read the decoded view,
     /// so that building a body decodes none of it.
+    // Every field a body is built with but its derived ones, each a
+    // different quantity, so a struct of them would only rename the list.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_builder(
         kind: CodeKind,
         builder: CodeBuilder,
         argument_count: u16,
         register_count: u16,
         copied_count: u16,
+        local_count: u16,
         statement_program_counter: Vec<(usize, Range<usize>)>,
         source: Span,
     ) -> CompiledCode {
@@ -659,6 +679,7 @@ impl CompiledCode {
             argument_count,
             register_count,
             copied_count,
+            local_count,
             statement_program_counter,
             unwind_marker: None,
             source,
@@ -680,6 +701,7 @@ impl CompiledCode {
             statement_program_counter,
             family_size,
             copied_count,
+            local_count,
             outer_reach,
             addresses_own_slots,
             unwind_marker,
@@ -695,6 +717,7 @@ impl CompiledCode {
             statement_program_counter,
             family_size,
             copied_count,
+            local_count,
             outer_reach,
             addresses_own_slots,
             unwind_marker,
@@ -817,6 +840,7 @@ impl PartialEq for CompiledCode {
             statement_program_counter,
             family_size,
             copied_count,
+            local_count,
             outer_reach,
             addresses_own_slots,
             unwind_marker,
@@ -833,6 +857,7 @@ impl PartialEq for CompiledCode {
             && *statement_program_counter == other.statement_program_counter
             && *family_size == other.family_size
             && *copied_count == other.copied_count
+            && *local_count == other.local_count
             && *outer_reach == other.outer_reach
             && *addresses_own_slots == other.addresses_own_slots
             && *unwind_marker == other.unwind_marker
@@ -1938,6 +1963,7 @@ method foo: (args 1, registers 4)
             1,
             300,
             0,
+            300,
             vec![(0, 0..instructions.len())],
             Span::new(0, 10),
         )

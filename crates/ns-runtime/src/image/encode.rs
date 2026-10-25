@@ -239,13 +239,15 @@ impl CodeIds {
 }
 
 /// Explicit wire tags for `CodeKind` -- never `as u8` on the enum, whose
-/// declaration order is not a wire format.
+/// declaration order is not a wire format. The kind opens a code record,
+/// so a record of a retired layout meets a retired tag
+/// (`opcodes::RETIRED_CODE_KIND_TAGS`).
 pub fn code_kind_tag(kind: CodeKind) -> u8 {
     match kind {
-        CodeKind::Method => 0,
-        CodeKind::Block => 1,
-        CodeKind::Initializer => 2,
-        CodeKind::SuperclassClause => 3,
+        CodeKind::Method => 5,
+        CodeKind::Block => 6,
+        CodeKind::Initializer => 7,
+        CodeKind::SuperclassClause => 8,
     }
 }
 
@@ -325,6 +327,7 @@ fn encode_code(
     // instructions, and `decode_code` recomputes it as the compiler did,
     // through `CompiledCode::from_builder`.
     writer.write_u16(code.copied_count);
+    writer.write_u16(code.local_count);
     writer.write_u32(code.source.start);
     writer.write_u32(code.source.end);
     writer.write_u32(u32_field(

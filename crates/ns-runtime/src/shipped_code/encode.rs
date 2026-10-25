@@ -384,6 +384,7 @@ impl Out {
             // `addresses_own_slots_of` decide them here too.
             family_size: _,
             copied_count,
+            local_count,
             outer_reach: _,
             addresses_own_slots: _,
             unwind_marker,
@@ -404,6 +405,7 @@ impl Out {
         self.u16(*argument_count);
         self.u16(*register_count);
         self.u16(*copied_count);
+        self.u16(*local_count);
         self.length(statement_program_counter.len());
         for (statement, range) in statement_program_counter {
             self.length(*statement);

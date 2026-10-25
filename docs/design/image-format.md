@@ -478,8 +478,13 @@ number the file claims, writing each into the decoded body in place through
 `EncodedBody::for_each_emitted_mut`. A code record carries one flag, whether its
 sends were compiled uncached (the reference lowering never numbers a send at
 all, so it marks the whole body rather than leaving each send to say so), and
-one count, `copied_count`, so that a block's register layout is known from its
-code alone. `outer_reach` is not on the wire either: the decoder derives it as
+two counts, `copied_count`, so that a block's register layout is known from its
+code alone, and `local_count`, its first scratch register, which the
+verification holds its sends and the outer accesses into it to ("Verification"
+below). The record opens with its kind, tags 5-8 (`encode::code_kind_tag`):
+0-3 named the kinds of the record before it carried `local_count` and are
+retired with 4 (`opcodes::RETIRED_CODE_KIND_TAGS`), so a stale record meets a
+retired tag rather than having its source span read as its local count. `outer_reach` is not on the wire either: the decoder derives it as
 the compiler does, in `CompiledCode::from_builder`, which works because a
 block's code precedes its parent's in the table. A body's `family_size` is not
 on the wire either way; both sides derive it from the sends' numbers and the
@@ -487,7 +492,7 @@ blocks' sizes the same way, read off the encoding as `bytecode::family_size_of`
 reads the decoded view. A block precedes its parent in the table, but its
 numbers depend on where its `MakeClosure` sits in its root's emission order, so
 the decoder numbers a family only once its root -- the body nothing else's
-`MakeClosure` creates -- has been read in full. The golden image is 1363 bytes.
+`MakeClosure` creates -- has been read in full. The golden image is 1677 bytes.
 
 Both lists are declared once, in `image/opcodes.rs`, and used by the encoder and
 the decoder alike rather than repeated as magic numbers on each side.
@@ -1263,12 +1268,45 @@ its argument slots, its header where they end
 ([execution.md](execution.md), "Planned: overlapping register windows"), so a
 send whose slots start below the end of its own body's header's numbers --
 among its arguments or on the header itself -- is refused too
-(`ArgumentSlotsBelowTheHeader`), even with no argument. These refusals do not
-yet keep every header out of reach: through the overlap, a register of a
-sender's above its slots is its callee's header, so an outer load or store
-into another frame's registers above its named locals -- its scratch, where a
-live callee may lie -- is still to be refused ([OPEN-WORK.md](../OPEN-WORK.md),
-"Next").
+(`ArgumentSlotsBelowTheHeader`), even with no argument.
+
+**No instruction reaches another frame's live callee.** Through the overlap,
+a register of a sender's above its slots is its callee's header while the
+callee runs, and a block the callee runs can reach the sender's registers by
+reference. A code record therefore carries its body's `local_count`, the
+first scratch register, which both lowerings record ([compiler.md](compiler.md),
+"Registers"), and the decoder holds the body to it: a `local_count` past the
+register file is refused (`LocalCountOutOfRange`), a send whose slots start
+below it is refused (`ArgumentSlotsBelowTheScratch`), so every callee's
+header lies at or above it, and an outer load or store whose index is at or
+past the `local_count` of the body `depth` levels out -- found through the
+`MakeClosure` nesting, as the bound on its register file is -- is refused
+(`OuterLocalInScratch`). Compiled code never names such a register: an outer
+local is a named local, a copied value or the vector register of the body
+that declares it, all below its scratch. Without the refusal a crafted block
+run by a callee lying on its home's slots could store over that callee's
+caller word or register count, which its pop reads
+(`a_block_storing_into_its_homes_scratch_under_a_live_callee_is_refused_at_load`).
+
+**No instruction writes an argument register.** Parameters are immutable
+(§3.6), so no compiled body writes one, and an argument register is its
+sender's slot, which a setter's sender reads back after the send: a
+destination or a `StoreLocal` slot below its body's `argument_count`, or an
+outer store below the `argument_count` of the body it addresses, is refused
+(`ArgumentRegisterWritten`). A read is not. One destination there is no
+write: the load of `Literal::BodyTooLarge`, which raises before it writes,
+into the last argument -- the body a body past the register ceiling
+compiles to names that register when its arguments leave none above the
+header (`compiler::body_too_large`), and the decoder leaves it so rather
+than the lowering moving it, since no number above the header exists there.
+
+**No send reads a source from another of its slots.** A send's sources are
+copied into its slots on the push path, one after another, so a source that
+is another of its own slots would answer whatever the earlier copies left
+there: refused (`SourceIsAnotherSlot`). Neither lowering emits one: the
+reference lowering's sources are their own slots, and the optimized one's
+are their own slots or registers outside the slots -- named locals, copied
+values, or scratch the value was produced in.
 
 **A frame record's register file matches its body.** Every reified frame is
 allocated with its code's full register file but the header's numbers -- its

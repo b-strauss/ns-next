@@ -439,6 +439,44 @@ pub enum DecodeError {
         argument_base: u16,
         argument_count: u16,
     },
+    /// A send's argument slots starting below its body's `local_count`, the
+    /// first scratch register: the callee's header would lie among the
+    /// registers a block reaches by reference.
+    ArgumentSlotsBelowTheScratch {
+        argument_base: u16,
+        local_count: u16,
+    },
+    /// A send one of whose sources is another of its own argument slots:
+    /// the send writes each source into its slot in turn, so what that
+    /// source answers would depend on the order of the writes.
+    SourceIsAnotherSlot {
+        argument_base: u16,
+        position: usize,
+        source: u16,
+    },
+    /// An instruction writing an argument register -- of its own frame at
+    /// depth 0, of the body `depth` closure hops out otherwise. Parameters
+    /// are immutable (§3.6), and an argument register is the sender's
+    /// argument slot, whose value the sender may read after the callee
+    /// returns.
+    ArgumentRegisterWritten {
+        depth: u16,
+        register: u16,
+        argument_count: u16,
+    },
+    /// An outer local at or past the `local_count` of the body `depth`
+    /// closure hops out: a scratch register of that frame, where a callee
+    /// it is sending to lies, its header among them.
+    OuterLocalInScratch {
+        depth: u16,
+        index: u16,
+        local_count: u16,
+    },
+    /// A `local_count` past its body's register file.
+    LocalCountOutOfRange {
+        local_count: u16,
+        register_count: u16,
+    },
     /// A jump target that is not an instruction index of its own body.
     JumpTargetOutOfRange {
         target: u32,
@@ -939,6 +977,44 @@ impl std::fmt::Display for DecodeError {
             } => write!(
                 f,
                 "argument slots from r{argument_base} lie below the frame header's end in a body taking {argument_count} argument(s)"
+            ),
+            DecodeError::ArgumentSlotsBelowTheScratch {
+                argument_base,
+                local_count,
+            } => write!(
+                f,
+                "argument slots from r{argument_base} lie below the first scratch register r{local_count}"
+            ),
+            DecodeError::SourceIsAnotherSlot {
+                argument_base,
+                position,
+                source,
+            } => write!(
+                f,
+                "the source of argument {position} of a send with slots from r{argument_base} is r{source}, another of its slots"
+            ),
+            DecodeError::ArgumentRegisterWritten {
+                depth,
+                register,
+                argument_count,
+            } => write!(
+                f,
+                "register r{register} at depth {depth} is written, an argument of a body taking {argument_count} argument(s)"
+            ),
+            DecodeError::OuterLocalInScratch {
+                depth,
+                index,
+                local_count,
+            } => write!(
+                f,
+                "outer local r{index} at depth {depth} is a scratch register of the enclosing body, whose first is r{local_count}"
+            ),
+            DecodeError::LocalCountOutOfRange {
+                local_count,
+                register_count,
+            } => write!(
+                f,
+                "a local count of {local_count} is past a body with {register_count} register(s)"
             ),
             DecodeError::JumpTargetOutOfRange { target, instructions } => write!(
                 f,
@@ -1806,8 +1882,12 @@ fn number_call_sites(
 /// Every decoded body checked against what the VM will do with it:
 /// its arity fits its register file, it cannot run past its last
 /// instruction, every jump target is one of its own instructions, every
-/// register operand is inside its own register file, and every outer local
-/// is inside the register file of the body it addresses.
+/// register operand is inside its own register file and off its header's
+/// numbers, no instruction writes an argument register, every send's slots
+/// start at or above its body's `local_count` and none of its sources is
+/// another of its slots, and every outer local is inside the register file
+/// of the body it addresses, off that body's header's numbers and below its
+/// `local_count` -- off the scratch a live callee of that frame may lie on.
 ///
 /// Each body is decoded here once, and both checks that read every
 /// instruction read that one view; everything else at load reads the
@@ -1829,6 +1909,12 @@ fn verify_body(code: &CompiledCode, instructions: &[Instruction]) -> Result<(), 
     if code.argument_count > code.register_count {
         return Err(DecodeError::ArgumentsExceedRegisters {
             argument_count: code.argument_count,
+            register_count: code.register_count,
+        });
+    }
+    if code.local_count > code.register_count {
+        return Err(DecodeError::LocalCountOutOfRange {
+            local_count: code.local_count,
             register_count: code.register_count,
         });
     }
@@ -1861,6 +1947,15 @@ fn verify_body(code: &CompiledCode, instructions: &[Instruction]) -> Result<(), 
                 });
             }
         }
+        if let Some(register) = written_register(instruction) {
+            if register < code.argument_count {
+                return Err(DecodeError::ArgumentRegisterWritten {
+                    depth: 0,
+                    register,
+                    argument_count: code.argument_count,
+                });
+            }
+        }
         // The base and every source are among `own_registers`; the slots
         // past the base are not, and the send writes each one it copies a
         // source into.
@@ -1881,6 +1976,25 @@ fn verify_body(code: &CompiledCode, instructions: &[Instruction]) -> Result<(), 
                     argument_count: code.argument_count,
                 });
             }
+            // A block of this body reaches its registers below
+            // `local_count` by reference, so a callee's header may lie only
+            // at or above it.
+            if argument_base < code.local_count {
+                return Err(DecodeError::ArgumentSlotsBelowTheScratch {
+                    argument_base,
+                    local_count: code.local_count,
+                });
+            }
+            for (position, source) in argument_sources.iter().enumerate() {
+                let slot = usize::from(*source).checked_sub(usize::from(argument_base));
+                if slot.is_some_and(|slot| slot < argument_sources.len() && slot != position) {
+                    return Err(DecodeError::SourceIsAnotherSlot {
+                        argument_base,
+                        position,
+                        source: *source,
+                    });
+                }
+            }
         }
         if let Some(target) = jump_target(instruction) {
             if target as usize >= instructions.len() {
@@ -1892,6 +2006,60 @@ fn verify_body(code: &CompiledCode, instructions: &[Instruction]) -> Result<(), 
         }
     }
     Ok(())
+}
+
+/// The register of the executing frame `instruction` writes, if any: its
+/// destination, or a `StoreLocal`'s slot. A send's argument slots are not
+/// answered -- `verify_body` holds them above the header -- and neither is
+/// the destination of a load of `Literal::BodyTooLarge`, which raises before
+/// it writes: the body a body past the register ceiling compiles to
+/// (`compiler::body_too_large`) names its last argument so when its
+/// arguments leave no register above the header. Exhaustive, so a new
+/// instruction decides here whether it writes a register.
+fn written_register(instruction: &Instruction) -> Option<u16> {
+    match instruction {
+        Instruction::LoadLiteral {
+            literal: Literal::BodyTooLarge,
+            ..
+        } => None,
+        Instruction::LoadLiteral { destination, .. }
+        | Instruction::LoadSelf { destination }
+        | Instruction::LoadEnclosingObject { destination, .. }
+        | Instruction::Move { destination, .. }
+        | Instruction::LoadOuterLocal { destination, .. }
+        | Instruction::SendLexical { destination, .. }
+        | Instruction::SendPublic { destination, .. }
+        | Instruction::SendInlinable { destination, .. }
+        | Instruction::SendSuper { destination, .. }
+        | Instruction::SendMirror { destination, .. }
+        | Instruction::MakeClosure { destination, .. }
+        | Instruction::MakeArray { destination, .. }
+        | Instruction::MakeVector { destination, .. }
+        | Instruction::LoadVector { destination, .. }
+        | Instruction::IntegerBinary { destination, .. }
+        | Instruction::MakeFuture { destination, .. }
+        | Instruction::ResolveFuture { destination, .. }
+        | Instruction::LoadOwnSlot { destination, .. }
+        | Instruction::AllocateInstance { destination }
+        | Instruction::InitializeInstance { destination, .. }
+        | Instruction::InitializeSuperclass { destination, .. }
+        | Instruction::InitializeAppliedLevel { destination, .. } => Some(*destination),
+        Instruction::StoreLocal { slot, .. } => Some(*slot),
+        Instruction::StoreOuterLocal { .. }
+        | Instruction::StoreVector { .. }
+        | Instruction::InitializeSlot { .. }
+        | Instruction::InitializeSlotProvisionally { .. }
+        | Instruction::ReturnSlotIfFilled { .. }
+        | Instruction::CheckAppliedClause { .. }
+        | Instruction::Return { .. }
+        | Instruction::ImplicitReturn { .. }
+        | Instruction::NonLocalReturn { .. }
+        | Instruction::SignalNonBoolean { .. }
+        | Instruction::Jump { .. }
+        | Instruction::JumpIfNotBoolean { .. }
+        | Instruction::BranchIfFalse { .. }
+        | Instruction::BranchIfTrue { .. } => None,
+    }
 }
 
 /// Every operand that addresses a register of the *executing* frame.
@@ -2103,9 +2271,9 @@ fn verify_outer_locals(
     instructions: &[Instruction],
 ) -> Result<(), DecodeError> {
     for instruction in instructions {
-        let (depth, local) = match instruction {
-            Instruction::LoadOuterLocal { depth, index, .. }
-            | Instruction::StoreOuterLocal { depth, index, .. } => (*depth, *index),
+        let (depth, local, writes) = match instruction {
+            Instruction::LoadOuterLocal { depth, index, .. } => (*depth, *index, false),
+            Instruction::StoreOuterLocal { depth, index, .. } => (*depth, *index, true),
             _ => continue,
         };
         let enclosing = &table.codes[enclosing_body(table, parents, index, depth)];
@@ -2121,6 +2289,23 @@ fn verify_outer_locals(
                 depth,
                 register: local,
                 argument_count: enclosing.argument_count,
+            });
+        }
+        if writes && local < enclosing.argument_count {
+            return Err(DecodeError::ArgumentRegisterWritten {
+                depth,
+                register: local,
+                argument_count: enclosing.argument_count,
+            });
+        }
+        // The enclosing frame's scratch is where a callee it sends to lies,
+        // header and all, while this body runs: a register there is none of
+        // its locals.
+        if local >= enclosing.local_count {
+            return Err(DecodeError::OuterLocalInScratch {
+                depth,
+                index: local,
+                local_count: enclosing.local_count,
             });
         }
     }
@@ -2171,11 +2356,13 @@ fn decode_code(
     codes: &[Rc<CompiledCode>],
     symbols: &symbols::Table,
 ) -> Result<CompiledCode, DecodeError> {
+    // `encode::code_kind_tag`'s numbers; a retired one
+    // (`opcodes::RETIRED_CODE_KIND_TAGS`) is refused as never assigned.
     let kind = match reader.read_u8()? {
-        0 => CodeKind::Method,
-        1 => CodeKind::Block,
-        2 => CodeKind::Initializer,
-        3 => CodeKind::SuperclassClause,
+        5 => CodeKind::Method,
+        6 => CodeKind::Block,
+        7 => CodeKind::Initializer,
+        8 => CodeKind::SuperclassClause,
         tag => {
             return Err(DecodeError::InvalidTag {
                 what: "code kind",
@@ -2186,6 +2373,7 @@ fn decode_code(
     let argument_count = reader.read_u16()?;
     let register_count = reader.read_u16()?;
     let copied_count = reader.read_u16()?;
+    let local_count = reader.read_u16()?;
     // The copied values' own half of the register layout. `argument_count`
     // alone exceeding the file is a different fault, reported as
     // `ArgumentsExceedRegisters` by `verify_body`, so this is asked only
@@ -2244,6 +2432,7 @@ fn decode_code(
         argument_count,
         register_count,
         copied_count,
+        local_count,
         statement_program_counter,
         source,
     ))

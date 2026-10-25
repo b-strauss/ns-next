@@ -831,6 +831,7 @@ impl<'a> Body<'a> {
             self.argument_count,
             self.next_register,
             0,
+            self.first_scratch,
             self.statement_program_counter,
             source,
         )

@@ -2319,6 +2319,9 @@ impl<'a> Lowerer<'a> {
             self.argument_count,
             self.max_register,
             self.layout.copied_count,
+            // Every named register is below `base`, and every scratch
+            // register -- a send's slots among them -- at or above it.
+            self.base,
             self.statement_program_counter,
             source,
         )
