@@ -24,8 +24,12 @@ instead of being copied. Designed with the user on 2026-10-24
 windows"): Cog's layout, the arguments, then the header, then the other
 registers, the header's words left out of the register numbering and 13
 words in every build; in two stages, each measured against the tree
-before it -- first a send's arguments become contiguous slots, the
-argument buffer goes and the push copies once, then the windows overlap. 7b and 7a are built: a
+before it. The first is built and measured -- a send's arguments are
+contiguous slots or consecutive sources read in place, the argument
+buffer is gone and the push copies once, no program slower with its
+builds separated and twelve of twenty-four faster
+([execution.md](design/execution.md), "What contiguous arguments
+moved"); the second, next, overlaps the windows. 7b and 7a are built: a
 running activation is suspended into its frame and resumed from it lazily,
 the landing point of every later deoptimization, and a sixth stress mode
 runs every golden on from suspended frames
@@ -283,7 +287,9 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
   that overlap, the caller's outgoing arguments being the callee's first
   registers, designed in Cog's layout and built in two measured stages
   ([execution.md](design/execution.md), "Planned: overlapping register
-  windows"); **7c**, the deoptimization
+  windows"), the first of them -- contiguous arguments read in place --
+  built and kept ("What contiguous arguments moved"), the second next;
+  **7c**, the deoptimization
   contract and the protocol between interpreted and compiled frames,
   written into [execution.md](design/execution.md).
 - **Between steps 7 and 8, real Newspeak bodies for `whileTrue:`, `whileFalse:` and
@@ -328,6 +334,32 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 
 ## Planned: performance and representation
 
+- **`vm::run` reloads the `Mutator` pointer from its frame** (2026-10-25).
+  Since the first stage of road step 7a′ the pointer arrives in a
+  callee-saved register (`r12`) but is also spilled to the frame and
+  reloaded at about 163 sites, one of them right before a public send's
+  cache guard compare; `master` keeps it in `rdi` throughout `vm::run`,
+  with no reload. A sampling profile of `bench_send.ns` puts 25 of 637
+  `vm::run` samples on or right after the reloads. Two experiments did not
+  change it -- dropping the two-argument send arms' call to
+  `place_arguments` (160 reloads) and `PendingSend::wide` out of line (186)
+  -- so it is not those calls alone. What would find out why: the
+  register allocator's spill remarks for `vm::run` (`-C
+  llvm-args=-pass-remarks-missed=regalloc`) at the merge base and at the
+  stage, and the stage's changes to `vm::run` reverted one at a time
+  until the pointer stays in its register, each build checked by
+  disassembly.
+  [execution.md](design/execution.md), "What contiguous arguments moved".
+- **`builtins::execute`'s result comes back through a store-forwarding
+  stall** (2026-10-25). Its `Option<Result<Step, Signal>>` is returned
+  through a sixteen-byte stack slot the callee writes as a qword and a
+  byte, which the caller copies out with one sixteen-byte load: a load the
+  store buffer cannot forward. On `master` already, 24% of Mandelbrot's
+  samples sit on that copy. A smaller result, or the value written
+  straight to the destination register, would remove it; the first stage
+  of road step 7a′ removed the same stall on the way in, for the argument
+  window. [execution.md](design/execution.md), "What contiguous arguments
+  moved", "No re-entry from Rust".
 - **`bench_megamorphic.ns` since road step 5b1** (2026-10-18): +1.3-2.1%
   against master after the private and super slot accessor check, on all
   three pinned builds a side, where every other program measured within
