@@ -12,6 +12,7 @@ use ns_syntax::Span;
 use crate::Symbol;
 
 mod compact;
+pub(crate) mod leftovers;
 
 pub(crate) use compact::CreatedBlock;
 pub use compact::{
@@ -1301,6 +1302,86 @@ pub(crate) fn register_written(instruction: &Instruction) -> Option<u16> {
         | Instruction::BranchIfFalse { .. }
         | Instruction::BranchIfTrue { .. } => None,
     }
+}
+
+/// Where `instruction` may go other than to the next instruction: a jump's
+/// or a branch's target, the fallback of an inlined integer operation, a
+/// mirror send's failure block. `None` for every other instruction.
+///
+/// **The match answers every instruction, with no `_` arm**, so that a new
+/// jump-carrying instruction must say where it goes rather than reach the
+/// VM's `program_counter` unchecked by the decoder.
+pub(crate) fn jump_target(instruction: &Instruction) -> Option<u32> {
+    match instruction {
+        Instruction::Jump { target }
+        | Instruction::JumpIfNotBoolean { target, .. }
+        | Instruction::BranchIfFalse { target, .. }
+        | Instruction::BranchIfTrue { target, .. }
+        | Instruction::IntegerBinary { target, .. } => Some(*target),
+        // Never decoded (it has no wire tag); its target is still one.
+        Instruction::SendMirror { failure, .. } => Some(*failure),
+        Instruction::LoadLiteral { .. }
+        | Instruction::LoadSelf { .. }
+        | Instruction::LoadEnclosingObject { .. }
+        | Instruction::Move { .. }
+        | Instruction::StoreLocal { .. }
+        | Instruction::LoadOuterLocal { .. }
+        | Instruction::StoreOuterLocal { .. }
+        | Instruction::SendLexical { .. }
+        | Instruction::SendPublic { .. }
+        | Instruction::SendInlinable { .. }
+        | Instruction::SendSuper { .. }
+        | Instruction::MakeClosure { .. }
+        | Instruction::MakeArray { .. }
+        | Instruction::MakeVector { .. }
+        | Instruction::LoadVector { .. }
+        | Instruction::StoreVector { .. }
+        | Instruction::InitializeSlot { .. }
+        | Instruction::ReturnSlotIfFilled { .. }
+        | Instruction::MakeFuture { .. }
+        | Instruction::ResolveFuture { .. }
+        | Instruction::LoadOwnSlot { .. }
+        | Instruction::InitializeSlotProvisionally { .. }
+        | Instruction::Return { .. }
+        | Instruction::ImplicitReturn { .. }
+        | Instruction::NonLocalReturn { .. }
+        | Instruction::SignalNonBoolean { .. }
+        | Instruction::AllocateInstance { .. }
+        | Instruction::InitializeInstance { .. }
+        | Instruction::CheckAppliedClause { .. }
+        | Instruction::InitializeSuperclass { .. }
+        | Instruction::InitializeAppliedLevel { .. } => None,
+    }
+}
+
+/// Whether control can pass from `instruction` to the instruction after
+/// it: every instruction but a return, the signal that ends an inlined
+/// loop's guard-failure path, and an unconditional jump.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn falls_through(instruction: &Instruction) -> bool {
+    !matches!(
+        instruction,
+        Instruction::Return { .. }
+            | Instruction::ImplicitReturn { .. }
+            | Instruction::NonLocalReturn { .. }
+            | Instruction::SignalNonBoolean { .. }
+            | Instruction::Jump { .. }
+    )
+}
+
+/// The instructions control can reach next from `instruction`, which
+/// stands at `index`: the next one when it falls through, then its jump
+/// target (`jump_target`). A send resumes at the next instruction however
+/// its callee returns, and an instruction that forces a future runs again
+/// from where it stands, so neither adds an edge.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn successors(index: u32, instruction: &Instruction) -> impl Iterator<Item = u32> {
+    let next = if falls_through(instruction) {
+        index.checked_add(1)
+    } else {
+        None
+    };
+    [next, jump_target(instruction)].into_iter().flatten()
 }
 
 /// Whether a body itself addresses a slot of the level it was entered at: it

@@ -1974,6 +1974,13 @@ Small, deliberately left, none affecting an outcome.
   `DecodeError::ByteArrayRecordMismatch` carries two meanings, told apart
   by its `body`, where two variants would name each.
 
+- Nested inlined conditionals compile to code that doubles with each
+  level: an inlined form's fallback closure holds its blocks compiled
+  again, with their own inlined forms and fallbacks. `a ifTrue: [b g: a.
+  X]` ten deep compiles to 1,024 bodies, and twenty deep took 4.7 s
+  where ten took 5 ms (measured 2026-10-25, a debug test build, while
+  bounding `bytecode::leftovers`). Every level is valid Newspeak, and a
+  fallback could instead share one closure body per block literal.
 - A fallback closure (an inlined conditional's, sent to a non-Boolean)
   reloads its scope's indirection vector (`LoadOuterLocal`, then
   `LoadVector`/`StoreVector`) on every access. The vector register is

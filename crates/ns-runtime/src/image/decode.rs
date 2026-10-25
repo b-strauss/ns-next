@@ -8,8 +8,8 @@ use std::rc::Rc;
 use ns_syntax::Span;
 
 use crate::bytecode::{
-    register_written, CallSite, CodeBuilder, CodeKind, CompiledCode, CreatedBlock, Emitted,
-    Instruction, IntegerOperation, Literal, HEADER_REGISTERS,
+    jump_target, register_written, CallSite, CodeBuilder, CodeKind, CompiledCode, CreatedBlock,
+    Emitted, Instruction, IntegerOperation, Literal, HEADER_REGISTERS,
 };
 use crate::heap::{
     record_size, FrameRecord, Heap, NewClass, PlaceholderFormat, IDENTITY_HASH_LIMIT,
@@ -2161,52 +2161,6 @@ fn own_registers(instruction: &Instruction) -> Vec<u16> {
             registers.push(*destination);
             registers
         }
-    }
-}
-
-/// Exhaustive, like `own_registers` and for the same reason: a new
-/// jump-carrying `Instruction` variant must fail to compile here rather than
-/// slip through a wildcard and reach the VM's `program_counter` unchecked.
-fn jump_target(instruction: &Instruction) -> Option<u32> {
-    match instruction {
-        Instruction::Jump { target }
-        | Instruction::JumpIfNotBoolean { target, .. }
-        | Instruction::BranchIfFalse { target, .. }
-        | Instruction::BranchIfTrue { target, .. }
-        | Instruction::IntegerBinary { target, .. } => Some(*target),
-        // Never decoded (it has no wire tag); its target is still one.
-        Instruction::SendMirror { failure, .. } => Some(*failure),
-        Instruction::LoadLiteral { .. }
-        | Instruction::LoadSelf { .. }
-        | Instruction::LoadEnclosingObject { .. }
-        | Instruction::Move { .. }
-        | Instruction::StoreLocal { .. }
-        | Instruction::LoadOuterLocal { .. }
-        | Instruction::StoreOuterLocal { .. }
-        | Instruction::SendLexical { .. }
-        | Instruction::SendPublic { .. }
-        | Instruction::SendInlinable { .. }
-        | Instruction::SendSuper { .. }
-        | Instruction::MakeClosure { .. }
-        | Instruction::MakeArray { .. }
-        | Instruction::MakeVector { .. }
-        | Instruction::LoadVector { .. }
-        | Instruction::StoreVector { .. }
-        | Instruction::InitializeSlot { .. }
-        | Instruction::ReturnSlotIfFilled { .. }
-        | Instruction::MakeFuture { .. }
-        | Instruction::ResolveFuture { .. }
-        | Instruction::LoadOwnSlot { .. }
-        | Instruction::InitializeSlotProvisionally { .. }
-        | Instruction::Return { .. }
-        | Instruction::ImplicitReturn { .. }
-        | Instruction::NonLocalReturn { .. }
-        | Instruction::SignalNonBoolean { .. }
-        | Instruction::AllocateInstance { .. }
-        | Instruction::InitializeInstance { .. }
-        | Instruction::CheckAppliedClause { .. }
-        | Instruction::InitializeSuperclass { .. }
-        | Instruction::InitializeAppliedLevel { .. } => None,
     }
 }
 
