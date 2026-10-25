@@ -43,7 +43,9 @@ lists everything that is still to be done.
 
 Rust 1.98.0, pinned by `rust-toolchain.toml` — `rustup` picks it up automatically.
 The test suites run under `cargo-nextest`, installed once per machine with
-`cargo install cargo-nextest --locked`. The project has no external runtime
+`cargo install cargo-nextest --locked`. The `codegen` gate needs `cargo-show-asm`
+(`cargo install cargo-show-asm --locked`) and the target `x86_64-pc-windows-msvc`;
+the `benchmarks` gate needs a JDK. The project has no external runtime
 dependencies.
 
 ## Build and test
@@ -93,6 +95,96 @@ under both lowerings, the optimized one and the reference lowering it is checked
 against (`docs/design/README.md`, "The goldens"). The corpus is a vendored set of real
 Newspeak modules, kept as a non-regression gate for the parser; the six on
 `corpus/runnable.toml` also run end to end, under both lowerings.
+
+## The gates and the repository's tasks
+
+`cargo xtask` runs the repository's own tasks (`xtask/`). Each gate group is
+one call; several groups also run in one call, one after another, and the
+first that fails stops it. `CLAUDE.md`, "The gates", says when each runs.
+
+Every commit: `cargo fmt --all`, clippy warning-free, the suite with every golden under both lowerings, the doctests, the parser corpus and the plugin's check:
+
+```bash
+cargo xtask gates commit
+```
+
+A commit touching `crates/ns-analyzer`: the hints' behaviour oracle:
+
+```bash
+cargo xtask gates analyzer
+```
+
+Every golden through `build` then `load`:
+
+```bash
+cargo xtask gates images
+```
+
+Every golden with a two-entry global cache:
+
+```bash
+cargo xtask gates caches
+```
+
+A commit touching `crates/ns-memory`: its clippy for Linux and macOS:
+
+```bash
+cargo xtask gates memory
+```
+
+The benchmark programs verified at full size, and their Java counterparts; needs a JDK:
+
+```bash
+cargo xtask gates benchmarks
+```
+
+The suite without debug assertions, which runs the size tests:
+
+```bash
+cargo xtask gates release-checks
+```
+
+The hot path's machine code against its budgets; needs `cargo-show-asm`:
+
+```bash
+cargo xtask gates codegen
+```
+
+The suite under the six stress modes, each into `.temp/stress-<MODE>.log`, then `run-corpus` plain and under each:
+
+```bash
+cargo xtask gates stress
+```
+
+The JetBrains plugin against several IDEs; downloads them:
+
+```bash
+cargo xtask gates plugin-verification
+```
+
+`images`, `caches`, `benchmarks`, `release-checks`, `codegen` and `stress`, for a batch that changed the runtime:
+
+```bash
+cargo xtask gates end-of-batch
+```
+
+Write the embedded shipped code (every gate call also does this first):
+
+```bash
+cargo xtask shipped-code
+```
+
+Only say whether the embedded shipped code is current:
+
+```bash
+cargo xtask shipped-code --check
+```
+
+The codegen budgets against another checkout, for example an exported older commit:
+
+```bash
+cargo xtask codegen .temp/stage2
+```
 
 ## Usage
 
