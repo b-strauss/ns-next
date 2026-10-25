@@ -45,7 +45,7 @@ that lowering is mostly a transliteration rather than a translation.
 
 - `LoadLiteral { destination, literal }` — the literal is already lowered:
   `Nil | Boolean | SmallInteger | Float | String | Symbol | LargeInteger |
-  UnresolvedIdentifier | BodyTooLarge`, with integer and float text parsed at
+  UnresolvedIdentifier | BodyTooLarge(limit)`, with integer and float text parsed at
   compile time rather than at each execution. `LargeInteger` carries an
   integer literal beyond a `SmallInteger`'s 61 bits as its digits (an
   `ArbitraryInteger`); `UnresolvedIdentifier` and `BodyTooLarge` are the
@@ -381,15 +381,13 @@ here. A host's `Interpreter::instantiate` runs `factory_body` of its
 argument count, so a class object a host built by hand, with no
 metaclass, instantiates too.
 
-**The `u16` ceilings.** A step count is a `u16`, so a declaration with
-more than 65,534 `<:` clauses -- valid up to the clause index's 2^23 --
-compiles its full and standalone bodies to `body_too_large`, which raises
-"initializer too large" when the class is instantiated, as every other
-body past a ceiling does ("Compilation cannot fail" below); a passed
-level never passes such a chain, so the too-large body runs. A factory
-of 65,534 or more parameters has no room for its two registers after its
-arguments, and its body is `body_too_large`'s too, raising "factory too
-large".
+**The `u16` ceilings.** A step count is a `u16`. It never overflows,
+because the resolver refuses more than 1,024 `<:` clauses ("Limits"
+below) and `compiler::superclass_steps` asserts it. A factory of more than
+255 parameters is past the argument limit. A factory of 65,534 or more has
+no room for its two registers after its arguments either. In both cases its
+body is `body_too_large`'s and raises "factory too large" with the limit
+it passed, the register ceiling first.
 
 ## Registers
 
@@ -1096,7 +1094,11 @@ unbound, a module root's clause receiver, which the root rule decides and
 which never runs ([object-model.md](object-model.md), "The root rule").
 Every other name is bound, a predefined class name included.
 
-`Literal::BodyTooLarge` is the register ceiling. A register is numbered by a
+`Literal::BodyTooLarge(limit)` is a body past one of the compiler's limits
+("Limits" below), `limit` naming which one: `BodyLimit::Registers`, the
+register ceiling; `Arguments`, more than 255 parameters, or a send or a
+clause message of more than 255 arguments; `Instructions`, more than 2^20
+instructions. A register is numbered by a
 `u16`, so a body can use at most `u16::MAX` (65,535) of them: its
 parameters, the values a block is handed, its named temporaries, the vector
 register and the scratch registers its expressions need. Both lowerings count
@@ -1115,7 +1117,13 @@ the literal raises before anything is written. When it runs it raises
 `method too large: it needs more than 65535 registers`, with `block`,
 `initializer`, `factory` or `superclass clause` in place of
 `method` for the other kinds (`interpreter/literals.rs`,
-`body_too_large_error`, which `vm::make_value` only calls). Each body is judged
+`body_too_large_error`, which `vm::make_value` only calls). Past the other
+two limits the message ends `it takes or sends more than 255 arguments` or
+`it needs more than 1048576 instructions`. The image carries the limit, one
+literal tag for each, so a loaded body raises what it raised from source.
+When a body passes several limits, the first one its lowering meets is the
+one named. That is the register ceiling for a body whose named locals do
+not fit, which is judged before anything else. Each body is judged
 on its own: a block past the ceiling makes only that block raise, its creator
 hands it no copied value and compiles as it would around any block, and a
 sibling method still runs. A block with more parameters than a `u16` counts
@@ -1126,15 +1134,18 @@ parameters compiles and raises the same way; its factory body and its
 initializers, whose arity saturates too, are still handed every factory
 argument, since they raise before they read one
 (`CompiledCode::stands_for_too_many_arguments`, which `push_step` asks of
-a factory body). An image cannot carry such a method or
-factory, nor a register list of more than 65,535 entries -- a send or a tuple
-whose operands all read one parameter's register fits the ceiling under the
-optimized lowering -- since the wire stores those counts in 16 bits:
-`image::snapshot`, and so `ns-next build`, refuses the program with
-`image encoding cannot write a method arity of 65536: it does not fit the
-image format's 16-bit field` (or the register list's, the factory arity's)
-rather than aborting ([image-format.md](image-format.md), "The instruction
-encoding").
+a factory body). An image cannot carry a method, factory or block of more
+than 255 parameters. `image::snapshot`, and so `ns-next build`, refuses
+the program with `image encoding cannot write a method arity of 256: it is
+past the limit of 255 arguments` (or the factory arity's, the closure
+parameter count's), and the decoder refuses such a record where it reads
+the count. Past 65,535 the 16-bit field is what refuses, `image encoding
+cannot write a method arity of 65536: it does not fit the image format's
+16-bit field`, as it refuses a register list of more than 65,535 entries.
+Under the optimized lowering, a tuple whose operands all read one
+parameter's register fits the ceiling and still meets that refusal. Both
+refusals are errors, never aborts ([image-format.md](image-format.md), "The
+instruction encoding", "Verification").
 
 The two lowerings meet the ceiling at different sizes. The reference lowering
 never reuses a register, so every value costs it one; the optimized lowering
@@ -1161,6 +1172,44 @@ or digit that denotes nothing is a parse error, and a fraction or exponent makes
 a float, so `parse_integer_literal` (`interpreter/literals.rs`) refusing a
 literal the parser accepted is a compiler invariant, and `lower_literal` panics
 on it.
+
+## Limits
+
+These are the limits a construct of Newspeak source meets in this
+implementation. The specification states none (its text searched for
+"limit", "maximum", "at most" and "implementation-defined"), so each one
+is a property of this implementation, set well above everything measured.
+The measured maximum is the largest over `corpus/modules`, the benchmarks
+and the core library; a golden that probes a limit is named where it goes
+further. Past a compile-side limit a body compiles to
+`Literal::BodyTooLarge(limit)` and raises only when it runs ("Compilation
+cannot fail"). Past a source-side limit the program is refused before it
+compiles. The image decoder refuses each one where it reads the count, before it
+reserves anything for it ([image-format.md](image-format.md),
+"Verification").
+
+| Construct | Limit | Enforced by | Measured maximum |
+|---|---|---|---|
+| Instructions per body | 2^20 = 1,048,576, `bytecode::INSTRUCTION_LIMIT` | both lowerings, `compiler::emitting_passes_a_limit` before every emit: `BodyTooLarge(Instructions)`; `CodeBuilder::emit` asserts it; decoder `InstructionCountTooLarge` | 990, both lowerings (`NewspeakGrammar.ns`) |
+| Parameters of a method, block or factory; arguments of a send or a clause message | 255, `bytecode::ARGUMENT_LIMIT` | both lowerings, `compiler::parameter_limit_passed` and `emitting_passes_a_limit` (every `Instruction::argument_slots` list): `BodyTooLarge(Arguments)`; `factory_body`; encoder `arity_field`; decoder `ArgumentCountTooLarge` | method 12 and send 13 (`CAPI.ns`), block 12 (`NewspeakParsing.ns`), factory 7 |
+| `<:` clauses per superclass clause | 1,024, `mixin::CLAUSE_INDEX_LIMIT` | a resolve error (`resolver/classes.rs`, `clause_count_error`); decoder `ClauseCountTooLarge`, `ClauseIndexTooLarge` | 1 (core library); goldens 3 |
+| Registers per body | 65,535, the `u16` that numbers them | both lowerings: `BodyTooLarge(Registers)` ("Compilation cannot fail"); decoder: the `u16` header field and `verify_body` | 329 optimized (`LanguageUiDescriptionRegistry.ns`, a tuple of 306), 956 reference (`KernelTests.ns`) |
+| Source nesting depth | 128, `ns-syntax`'s `MAX_DEPTH` | a parse error ([frontend.md](frontend.md)); block nesting, outer reach and class nesting derive from it, and the decoder's `MAX_BLOCK_NESTING` | 14 (`Newspeak2V8Compilation.ns`) |
+| Literals and constants per body | none | each is an instruction, so the instruction limit bounds them; a table past 16 bits takes the wide form | 152 table literals (`LanguageUiDescriptionRegistry.ns`) |
+| Slots per class | none | an `own_index` is a `u32`, and an object's word count has an overflow word | 147 (`NewspeakGrammar.ns`) |
+| Cascade length | none | a cascade holds one receiver register, and the instruction limit bounds its messages | 86 (`Browsing.ns`) |
+| Message chain length | none | every length is valid Newspeak, and the instruction limit bounds it. The compiler still recurses along a chain and overflows at about 20,000 links, so the instruction limit is not yet the real bound there (`OPEN-WORK.md`) | 17 (`NewspeakGrammar.ns`) |
+| String and symbol literal length | none | only the module's size, which a `Span`'s `u32` offsets bound, and the image's `u32` length | 36,775 bytes (`DeploymentManager.ns`) |
+
+The instruction limit keeps every instruction index, jump target and table
+index within 20 bits, and it bounds the work of every pass over one body. A
+nested inlined conditional's fallback closure compiles its blocks again,
+so a small source can reach the limit. There it is not yet the real bound
+either (`OPEN-WORK.md`). With the argument limit, an argument count fits a
+byte, and every program that compiles can be packaged. The clause limit
+replaces the two ceilings that existed before it: the class object's
+23-bit clause field, which keeps its headroom, and the initializer's
+`u16` step count.
 
 ## Reading the output
 

@@ -29,7 +29,7 @@ use std::rc::Rc;
 use ns_syntax::ast::{self, Expression, Statement, StatementKind};
 use ns_syntax::Span;
 
-use crate::bytecode::{CodeKind, CompiledCode, Instruction, Literal};
+use crate::bytecode::{BodyLimit, CodeKind, CompiledCode, Instruction, Literal};
 use crate::mixin::Mixin;
 use crate::types::Binding;
 use crate::Symbol;
@@ -40,7 +40,8 @@ use lower::{Enclosing, Lowerer};
 /// A method's parameter count, `instantiate::pattern_parameter_count`'s one
 /// definition, shared with the interpreter's factory-arity guard. Left
 /// unnarrowed: a pattern can declare more parameters than a `u16` counts,
-/// and each lowering judges that against the register ceiling itself.
+/// and each lowering judges that against the register ceiling and the
+/// argument limit itself.
 fn argument_count_of(pattern: &ast::MessagePattern) -> usize {
     crate::interpreter::instantiate::pattern_parameter_count(pattern)
 }
@@ -85,7 +86,45 @@ fn temporary_index(argument_count: u16, offset: usize) -> u16 {
     local_index(usize::from(argument_count) + offset)
 }
 
-/// What a body past the register ceiling compiles to: the smallest
+/// The limit a body taking `argument_count` parameters passes by them
+/// alone: `ARGUMENT_LIMIT` (`docs/design/compiler.md`, "Limits"). Both
+/// lowerings ask it once the body's named locals are known to fit the
+/// registers, which a body past the register ceiling fails first.
+fn parameter_limit_passed(argument_count: usize) -> Option<BodyLimit> {
+    (argument_count > usize::from(crate::bytecode::ARGUMENT_LIMIT)).then_some(BodyLimit::Arguments)
+}
+
+/// The limit a body passes by emitting `instruction` after `emitted`
+/// others: `INSTRUCTION_LIMIT`, or `ARGUMENT_LIMIT` for a send's or a
+/// clause message's arguments (`Instruction::argument_slots`). Both
+/// lowerings ask it of every instruction before they emit it, and emit
+/// nothing once a limit is passed, so that both judge the same body alike
+/// and no body grows past the instruction limit.
+fn emitting_passes_a_limit(emitted: usize, instruction: &Instruction) -> Option<BodyLimit> {
+    if emitted >= crate::bytecode::INSTRUCTION_LIMIT as usize {
+        return Some(BodyLimit::Instructions);
+    }
+    instruction
+        .argument_slots()
+        .filter(|(_, sources)| sources.len() > usize::from(crate::bytecode::ARGUMENT_LIMIT))
+        .map(|_| BodyLimit::Arguments)
+}
+
+/// How many steps up an initializer's superclass clause names the class it
+/// initializes: one per `<:` clause, `clause_count`, and one for the
+/// declaration's own level when it has a body, `own_level`. It fits a `u16`
+/// for every resolved declaration: the resolver refuses more than
+/// `CLAUSE_INDEX_LIMIT` clauses, and the image decoder a row of more, and
+/// that limit plus one is far below `u16::MAX`.
+fn superclass_steps(clause_count: usize, own_level: usize) -> u16 {
+    const _: () = assert!(crate::mixin::CLAUSE_INDEX_LIMIT < u16::MAX as usize);
+    debug_assert!(clause_count <= crate::mixin::CLAUSE_INDEX_LIMIT && own_level <= 1);
+    u16::try_from(clause_count + own_level)
+        .expect("internal: more `<:` clauses than CLAUSE_INDEX_LIMIT reached the compiler")
+}
+
+/// What a body past one of the compiler's limits compiles to, `limit`
+/// naming the one it passed: the smallest
 /// well-formed body of its kind and arity, which raises the too-large error
 /// before it does anything else -- the deferral `Literal::UnresolvedIdentifier`
 /// uses, so that compiling never fails and a body never run never fails
@@ -97,7 +136,12 @@ fn temporary_index(argument_count: u16, offset: usize) -> u16 {
 /// anything is written to it, and the body's registers are its arguments
 /// alone. Both lowerings build it here, so the two cannot disagree on its
 /// shape.
-fn body_too_large(kind: CodeKind, argument_count: u16, source: Span) -> CompiledCode {
+fn body_too_large(
+    kind: CodeKind,
+    argument_count: u16,
+    source: Span,
+    limit: BodyLimit,
+) -> CompiledCode {
     let first_above_header =
         u32::from(argument_count) + u32::from(crate::bytecode::HEADER_REGISTERS);
     let (destination, register_count) = match u16::try_from(first_above_header + 1) {
@@ -111,7 +155,7 @@ fn body_too_large(kind: CodeKind, argument_count: u16, source: Span) -> Compiled
         vec![
             Instruction::LoadLiteral {
                 destination,
-                literal: Literal::BodyTooLarge,
+                literal: Literal::BodyTooLarge(limit),
             },
             Instruction::ImplicitReturn {
                 register: destination,
@@ -142,14 +186,23 @@ fn body_too_large(kind: CodeKind, argument_count: u16, source: Span) -> Compiled
 /// arity runs the same body. Both lowerings, the embedded shipped code and
 /// the image decoder reach it through `mixin::factory_entry`, and an image
 /// never carries one, so none can be forged. A factory whose two registers
-/// do not fit after its arguments gets `body_too_large`'s body, which
-/// raises the too-large error when the factory is sent.
+/// do not fit after its arguments, or whose arguments are past
+/// `ARGUMENT_LIMIT`, gets `body_too_large`'s body, which raises the
+/// too-large error when the factory is sent.
 pub fn factory_body(argument_count: u16) -> CompiledCode {
     let source = Span::new(0, 0);
     let Some(register_count) = argument_count.checked_add(crate::bytecode::HEADER_REGISTERS + 2)
     else {
-        return body_too_large(CodeKind::Method, argument_count, source);
+        return body_too_large(
+            CodeKind::Method,
+            argument_count,
+            source,
+            BodyLimit::Registers,
+        );
     };
+    if let Some(limit) = parameter_limit_passed(usize::from(argument_count)) {
+        return body_too_large(CodeKind::Method, argument_count, source, limit);
+    }
     let instance = argument_count + crate::bytecode::HEADER_REGISTERS;
     let answer = instance + 1;
     CompiledCode::new(

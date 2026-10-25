@@ -1375,9 +1375,12 @@ classes and a class from source with no predecessor are not edited
   that is one chain of 20,000 `+ 1` overflows the interpreter thread's 8 MiB
   and aborts the process (release; 10,000 compile and run), where the
   program should run. Walking the chain from `Send::receiver_chain`, as the
-  language server does, would close it. [frontend.md](design/frontend.md),
-  "Recovery", rule 7; [execution.md](design/execution.md), "What the
-  trampoline moved". Noted 2026-10-04.
+  language server does, would close it. Until it is closed, the overflow at
+  about 20,000 links sits below the instruction limit of 2^20, so that limit
+  is not yet the real bound on a chain ([compiler.md](design/compiler.md),
+  "Limits"). [frontend.md](design/frontend.md), "Recovery", rule 7;
+  [execution.md](design/execution.md), "What the trampoline moved". Noted
+  2026-10-04.
 - **The AST's derived `PartialEq` and `Debug` recurse along a chain of
   messages** (`crates/ns-syntax/src/ast.rs`), as the compiler does: only
   `Send`'s `Drop` and `Clone` and `Send::receiver_chain` take a chain link
@@ -1756,15 +1759,6 @@ that only answers `isKindOfArray` or `isKindOfString`, the error of a
   id to the current version. [object-model.md](design/object-model.md),
   "An application has two ids".
 
-- **Instantiation's `u16` ceilings** (2026-10-22). An initializer
-  counts levels in a `u16`, so a declaration with more than 65,534 `<:`
-  clauses -- valid up to the clause index's 2^23 -- compiles its full and
-  standalone initializers to the too-large body and raises "initializer too
-  large" when it is instantiated, and a factory of 65,534 or more
-  parameters raises "factory too large", where a smaller one instantiates.
-  An implementation limit as the register ceiling is, which no program
-  comes near. [compiler.md](design/compiler.md), "The three initializer
-  bodies".
 - **A host's `Interpreter::instantiate` with more than 65,535 arguments
   raises "factory too large" rather than the arity error** a send with a
   wrong count gets (2026-10-22): `decide_instantiation` builds
@@ -1980,7 +1974,14 @@ Small, deliberately left, none affecting an outcome.
   X]` ten deep compiles to 1,024 bodies, and twenty deep took 4.7 s
   where ten took 5 ms (measured 2026-10-25, a debug test build, while
   bounding `bytecode::leftovers`). Every level is valid Newspeak, and a
-  fallback could instead share one closure body per block literal.
+  fallback could instead share one closure body per block literal. A
+  source of about 400 bytes, `(a and: [(b g: a) or: [...]])` ten deep,
+  compiles to 1,048,576 bodies and 18,175,273 instructions under the
+  optimized lowering, against 21 bodies and 106 instructions under the
+  reference one. So the instruction limit of 2^20 per body, which this
+  duplication can reach from small source, is not yet the real bound there.
+  It refuses a body the duplication made, not one the source wrote
+  ([compiler.md](design/compiler.md), "Limits").
 - A fallback closure (an inlined conditional's, sent to a non-Boolean)
   reloads its scope's indirection vector (`LoadOuterLocal`, then
   `LoadVector`/`StoreVector`) on every access. The vector register is

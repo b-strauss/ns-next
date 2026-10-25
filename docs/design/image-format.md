@@ -446,9 +446,13 @@ Literals:
 - 10 `LargeInteger`: an integer literal beyond `i64`, in the same wire form
   as value tag 9 below -- a sign byte, a `u32` digit count and that many
   `u64` digits, least significant first -- so the decoder parses no text.
-- 11 `BodyTooLarge`: no payload; what the body standing in for one past the
-  register ceiling loads first. It raises its error when it runs
-  ([compiler.md](compiler.md), "Compilation cannot fail").
+- 11 `BodyTooLarge(Registers)`: no payload; what the body standing in for
+  one past the register ceiling loads first. It raises its error when it
+  runs ([compiler.md](compiler.md), "Compilation cannot fail").
+- 12 `BodyTooLarge(Arguments)`: the same, for a body past the argument
+  limit of 255 ([compiler.md](compiler.md), "Limits").
+- 13 `BodyTooLarge(Instructions)`: the same, for a body past the
+  instruction limit of 2^20.
 
 **A count past its field refuses the image, never aborts it, except the
 count of heap objects.** A count a
@@ -783,8 +787,8 @@ a `u32` index into the list. The section's reader refuses more than
 `MAX_SHIPPED_NAMES` (65,536) entries (`TooManyShippedNames`), a count past
 the bytes left at the 9 bytes of the smallest entry, a symbol id past the
 symbol table (`BadSymbolId`), a kind byte no kind has (`InvalidTag`) and a
-clause index at or past `CLAUSE_INDEX_LIMIT`, which no class object can
-number (`UnknownShippedName`); it asks no world, so `inspect` reads the
+clause index at or past `CLAUSE_INDEX_LIMIT` (1,024), which no resolved
+declaration numbers (`UnknownShippedName`); it asks no world, so `inspect` reads the
 section the same way. How the loader resolves the names, and what a name
 may stand for where, is "Shipped names" below. A started image names only
 the kernel's classes and levels, never a module instance; an image
@@ -1228,6 +1232,23 @@ so it refuses texts that do not hold to the rows, but runs no
 disagree; only `load` refuses it. A corrupt but version-matching image is an
 error there, never a panic in the VM later.
 
+**Every compiler limit is a decoder refusal.** No compiled body passes a
+limit of [compiler.md](compiler.md), "Limits": past one it compiles to a
+body that raises, and the encoder refuses a body whose arity is past the
+argument limit. So the decoder refuses a count past a limit where it reads
+the count, before it reserves anything for it. That covers a body's
+instruction count past 2^20 (`InstructionCountTooLarge`, read before any
+instruction), a body's arity past 255, and likewise a method record's,
+a factory's, a closure's parameter count and the argument list of a send or
+a clause message (`ArgumentCountTooLarge`, naming the record), and a
+mixin-table row of more than 1,024 `<:` clauses (`ClauseCountTooLarge`).
+Every decoded body is then one a compiler could have written, and a pass
+over one is bounded by the limits as a compiled one is
+(`an_image_with_a_body_past_the_instruction_limit_is_refused`,
+`an_image_with_a_method_of_256_parameters_is_refused`,
+`an_image_with_a_send_of_256_arguments_is_refused`,
+`an_image_applying_1025_mixins_is_refused`).
+
 **The loader builds before the graph, and only what the binary has.** After
 the first passes and before the tenure, the loader builds the shipped modules
 and classes the shipped-name section names that the boot did not
@@ -1382,9 +1403,8 @@ has a standalone initializer and every other row none
 row with `<:` clauses but no superclass clause is refused
 (`MixinApplicationWithoutSuperclass`). A level's record names an applying row
 and a position that must exist (`BadMixinId`, `BadMixinApplicationClause`) and
-fit the 23 bits a class object's packed applied clause gives it
-(`ClauseIndexTooLarge`, at 2^23 or more, the limit the resolver holds a
-source to; [object-model.md](object-model.md), "The object layout"), and
+lie below the clause limit, 1,024, which the resolver holds a source to
+(`ClauseIndexTooLarge`; [compiler.md](compiler.md), "Limits"), and
 a module's root class record is held to that module's own root row and to
 the root rule -- never another module's (`a_module_root_is_held_to_its_own_modules_row`;
 "Module section" above).

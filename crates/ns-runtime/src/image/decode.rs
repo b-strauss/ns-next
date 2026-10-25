@@ -8,8 +8,9 @@ use std::rc::Rc;
 use ns_syntax::Span;
 
 use crate::bytecode::{
-    jump_target, register_written, CallSite, CodeBuilder, CodeKind, CompiledCode, CreatedBlock,
-    Emitted, Instruction, IntegerOperation, Literal, HEADER_REGISTERS,
+    jump_target, register_written, BodyLimit, CallSite, CodeBuilder, CodeKind, CompiledCode,
+    CreatedBlock, Emitted, Instruction, IntegerOperation, Literal, ARGUMENT_LIMIT,
+    HEADER_REGISTERS, INSTRUCTION_LIMIT,
 };
 use crate::heap::{
     record_size, FrameRecord, Heap, NewClass, PlaceholderFormat, IDENTITY_HASH_LIMIT,
@@ -285,12 +286,32 @@ pub enum DecodeError {
         index: u32,
     },
     /// A class record's `<:` clause index at or past
-    /// `CLAUSE_INDEX_LIMIT`. The resolver refuses such a source, and a class
-    /// object's applied-clause field cannot number one, so refusing it is the
-    /// only answer that does not truncate it into another clause.
+    /// `CLAUSE_INDEX_LIMIT`. The resolver refuses such a source, so refusing
+    /// it is the only answer that does not truncate it into another clause.
     ClauseIndexTooLarge {
         row: u32,
         index: u32,
+    },
+    /// A mixin-table row of more `<:` clauses than `CLAUSE_INDEX_LIMIT`,
+    /// refused where its count is read: the resolver refuses such a source
+    /// (`docs/design/compiler.md`, "Limits").
+    ClauseCountTooLarge {
+        count: usize,
+    },
+    /// A body's arity, a method's or factory's, a closure's parameter count,
+    /// or a send's or clause message's argument count past
+    /// `ARGUMENT_LIMIT`, refused where it is read: the compiler makes such a
+    /// body one that raises, and the encoder refuses to write it
+    /// (`docs/design/compiler.md`, "Limits"). `what` names the record.
+    ArgumentCountTooLarge {
+        what: &'static str,
+        count: usize,
+    },
+    /// A body of more instructions than `INSTRUCTION_LIMIT`, refused where
+    /// its count is read, before any instruction is: no compiled body is
+    /// longer (`docs/design/compiler.md`, "Limits").
+    InstructionCountTooLarge {
+        count: u32,
     },
     /// A mixin-table row declares `<:` clauses but no superclass clause. The
     /// grammar admits `<:` only after a superclass clause, and it is the
@@ -859,8 +880,21 @@ impl std::fmt::Display for DecodeError {
             ),
             DecodeError::ClauseIndexTooLarge { row, index } => write!(
                 f,
-                "mixin application clause index {index} of row {row} is past the 2^23 \
-                 clauses a class object can name"
+                "mixin application clause index {index} of row {row} is past the limit of {} clauses",
+                crate::mixin::CLAUSE_INDEX_LIMIT
+            ),
+            DecodeError::ClauseCountTooLarge { count } => write!(
+                f,
+                "a mixin-table row applies {count} mixins, more than the limit of {}",
+                crate::mixin::CLAUSE_INDEX_LIMIT
+            ),
+            DecodeError::ArgumentCountTooLarge { what, count } => write!(
+                f,
+                "a {what} in the image takes {count} arguments, more than the limit of {ARGUMENT_LIMIT}"
+            ),
+            DecodeError::InstructionCountTooLarge { count } => write!(
+                f,
+                "a body in the image holds {count} instructions, more than the limit of {INSTRUCTION_LIMIT}"
             ),
             DecodeError::MixinApplicationWithoutSuperclass => write!(
                 f,
@@ -2271,6 +2305,7 @@ fn decode_code(
         }
     };
     let argument_count = reader.read_u16()?;
+    check_argument_count("body", usize::from(argument_count))?;
     let register_count = reader.read_u16()?;
     let copied_count = reader.read_u16()?;
     let local_count = reader.read_u16()?;
@@ -2311,7 +2346,12 @@ fn decode_code(
     // `number_call_site_families` overwrites the placeholder with the real
     // number once every body in the table is read.
     let uncached = reader.read_boolean()?;
-    let instruction_count = reader.read_u32()? as usize;
+    let instruction_count = reader.read_u32()?;
+    if instruction_count > INSTRUCTION_LIMIT {
+        return Err(DecodeError::InstructionCountTooLarge {
+            count: instruction_count,
+        });
+    }
     let mut builder = CodeBuilder::new();
     for _ in 0..instruction_count {
         builder.emit(decode_instruction(reader, codes, symbols, uncached)?);
@@ -2338,8 +2378,31 @@ fn decode_code(
     ))
 }
 
+/// Refuses an arity or argument count past `ARGUMENT_LIMIT`, `what` naming
+/// the record it was read from (`DecodeError::ArgumentCountTooLarge`).
+pub(crate) fn check_argument_count(what: &'static str, count: usize) -> Result<(), DecodeError> {
+    if count > usize::from(ARGUMENT_LIMIT) {
+        return Err(DecodeError::ArgumentCountTooLarge { what, count });
+    }
+    Ok(())
+}
+
 fn decode_registers(reader: &mut Reader) -> Result<Vec<u16>, DecodeError> {
     let count = reader.read_u16()? as usize;
+    read_registers(reader, count)
+}
+
+/// A send's or a clause message's argument registers, `what` naming it:
+/// a register list whose count is refused past `ARGUMENT_LIMIT` before
+/// anything is reserved for it.
+fn decode_arguments(reader: &mut Reader, what: &'static str) -> Result<Vec<u16>, DecodeError> {
+    let count = reader.read_u16()? as usize;
+    check_argument_count(what, count)?;
+    read_registers(reader, count)
+}
+
+/// `count` registers, reserved for as the bytes left allow.
+fn read_registers(reader: &mut Reader, count: usize) -> Result<Vec<u16>, DecodeError> {
     let mut registers = reserve_for(count, reader);
     for _ in 0..count {
         registers.push(reader.read_u16()?);
@@ -2424,7 +2487,7 @@ fn decode_instruction(
             let depth = reader.read_u16()?;
             let selector = decode_symbol(reader, symbols)?;
             let argument_base = reader.read_u16()?;
-            let argument_sources = decode_registers(reader)?;
+            let argument_sources = decode_arguments(reader, "send")?;
             let destination = reader.read_u16()?;
             Instruction::SendLexical {
                 depth,
@@ -2439,7 +2502,7 @@ fn decode_instruction(
             let selector = decode_symbol(reader, symbols)?;
             let receiver_register = reader.read_u16()?;
             let argument_base = reader.read_u16()?;
-            let argument_sources = decode_registers(reader)?;
+            let argument_sources = decode_arguments(reader, "send")?;
             let destination = reader.read_u16()?;
             Instruction::SendPublic {
                 selector,
@@ -2454,7 +2517,7 @@ fn decode_instruction(
             let selector = decode_symbol(reader, symbols)?;
             let receiver_register = reader.read_u16()?;
             let argument_base = reader.read_u16()?;
-            let argument_sources = decode_registers(reader)?;
+            let argument_sources = decode_arguments(reader, "send")?;
             let destination = reader.read_u16()?;
             Instruction::SendInlinable {
                 selector,
@@ -2468,7 +2531,7 @@ fn decode_instruction(
         OPCODE_SEND_SUPER => {
             let selector = decode_symbol(reader, symbols)?;
             let argument_base = reader.read_u16()?;
-            let argument_sources = decode_registers(reader)?;
+            let argument_sources = decode_arguments(reader, "send")?;
             let destination = reader.read_u16()?;
             Instruction::SendSuper {
                 selector,
@@ -2481,6 +2544,7 @@ fn decode_instruction(
         OPCODE_MAKE_CLOSURE => {
             let destination = reader.read_u16()?;
             let count = reader.read_u16()? as usize;
+            check_argument_count("closure", count)?;
             let mut parameters = reserve_for(count, reader);
             for _ in 0..count {
                 parameters.push(decode_symbol(reader, symbols)?);
@@ -2637,7 +2701,7 @@ fn decode_instruction(
             let steps = reader.read_u16()?;
             let selector = decode_symbol(reader, symbols)?;
             let argument_base = reader.read_u16()?;
-            let argument_sources = decode_registers(reader)?;
+            let argument_sources = decode_arguments(reader, "clause message")?;
             Instruction::InitializeSuperclass {
                 steps,
                 selector,
@@ -2649,7 +2713,7 @@ fn decode_instruction(
         OPCODE_INITIALIZE_APPLIED_LEVEL => {
             let steps = reader.read_u16()?;
             let argument_base = reader.read_u16()?;
-            let argument_sources = decode_registers(reader)?;
+            let argument_sources = decode_arguments(reader, "clause message")?;
             Instruction::InitializeAppliedLevel {
                 steps,
                 argument_base,
@@ -2752,7 +2816,9 @@ fn decode_literal(reader: &mut Reader, symbols: &symbols::Table) -> Result<Liter
         LITERAL_SYMBOL => Literal::Symbol(decode_symbol(reader, symbols)?),
         LITERAL_UNRESOLVED_IDENTIFIER => Literal::UnresolvedIdentifier(reader.read_str()?),
         LITERAL_LARGE_INTEGER => Literal::LargeInteger(read_large_integer(reader)?),
-        LITERAL_BODY_TOO_LARGE => Literal::BodyTooLarge,
+        LITERAL_BODY_TOO_LARGE => Literal::BodyTooLarge(BodyLimit::Registers),
+        LITERAL_BODY_PAST_THE_ARGUMENT_LIMIT => Literal::BodyTooLarge(BodyLimit::Arguments),
+        LITERAL_BODY_PAST_THE_INSTRUCTION_LIMIT => Literal::BodyTooLarge(BodyLimit::Instructions),
         tag => {
             return Err(DecodeError::InvalidTag {
                 what: "literal",

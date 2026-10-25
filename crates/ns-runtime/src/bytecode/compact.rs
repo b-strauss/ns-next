@@ -573,7 +573,7 @@ fn literal_form(literal: &Literal) -> LiteralForm {
         | Literal::Symbol(_)
         | Literal::LargeInteger(_)
         | Literal::UnresolvedIdentifier(_)
-        | Literal::BodyTooLarge => LiteralForm::Allocated,
+        | Literal::BodyTooLarge(_) => LiteralForm::Allocated,
     }
 }
 
@@ -628,8 +628,17 @@ impl CodeBuilder {
     }
 
     /// Encodes `instruction` into the next slot and answers its index.
+    /// Never past `INSTRUCTION_LIMIT` instructions: both lowerings stop
+    /// emitting there and compile the body to `Literal::BodyTooLarge`, and
+    /// the image decoder refuses a longer body before it reads one, so a
+    /// longer one is a defect -- and every index into a table this body
+    /// appends to fits a `u32`.
     pub fn emit(&mut self, instruction: Instruction) -> usize {
         let index = self.slots.len();
+        assert!(
+            index < crate::bytecode::INSTRUCTION_LIMIT as usize,
+            "internal: a body past the instruction limit was emitted"
+        );
         let narrow = !self.always_wide && self.fits_narrow(&instruction);
         let slot = self.encode(instruction, narrow);
         self.slots.push(slot);
@@ -873,7 +882,7 @@ impl CodeBuilder {
             other if narrow => self.encode_narrow(other),
             other => {
                 let index = u32::try_from(self.wide.len())
-                    .expect("internal: a body has fewer than 2^32 instructions");
+                    .expect("internal: a body holds at most INSTRUCTION_LIMIT instructions");
                 self.wide.push(other);
                 CompactInstruction::Wide { index }
             }
@@ -897,7 +906,7 @@ impl CodeBuilder {
         };
         if !narrow {
             let index = u32::try_from(self.send_sites.len())
-                .expect("internal: a body has fewer than 2^32 instructions");
+                .expect("internal: a body holds at most INSTRUCTION_LIMIT instructions");
             site.wide = Some(Box::new(registers));
             self.send_sites.push(site);
             return match kind {
@@ -2637,7 +2646,9 @@ mod tests {
                 crate::ArbitraryInteger::parse("99999999999999999999", 10).expect("digits"),
             ),
             Literal::UnresolvedIdentifier("missing".to_string()),
-            Literal::BodyTooLarge,
+            Literal::BodyTooLarge(crate::bytecode::BodyLimit::Registers),
+            Literal::BodyTooLarge(crate::bytecode::BodyLimit::Arguments),
+            Literal::BodyTooLarge(crate::bytecode::BodyLimit::Instructions),
         ];
         round_trip(
             literals

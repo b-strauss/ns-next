@@ -41,10 +41,13 @@ pub use compact::{
 /// `ast::Literal` but the payload of a `LoadLiteral` that raises instead of
 /// producing a value.
 ///
-/// `BodyTooLarge` is the other deferral: a body that needs more registers
-/// than a `u16` names compiles to a body that loads it first and raises
-/// `interpreter::literals::body_too_large_error` (`docs/design/compiler.md`,
-/// "Compilation cannot fail"), so a body never run never fails.
+/// `BodyTooLarge` is the other deferral: a body past one of the compiler's
+/// limits -- more registers than a `u16` names, more than `ARGUMENT_LIMIT`
+/// arguments taken or sent, more than `INSTRUCTION_LIMIT` instructions --
+/// compiles to a body that loads it first and raises
+/// `interpreter::literals::body_too_large_error`, which names the limit
+/// (`docs/design/compiler.md`, "Compilation cannot fail", "Limits"), so a
+/// body never run never fails.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Literal {
     Nil,
@@ -55,8 +58,38 @@ pub enum Literal {
     Symbol(Symbol),
     LargeInteger(crate::ArbitraryInteger),
     UnresolvedIdentifier(String),
-    BodyTooLarge,
+    BodyTooLarge(BodyLimit),
 }
+
+/// The limit a body that compiled to `Literal::BodyTooLarge` passed, which
+/// its error names (`docs/design/compiler.md`, "Limits"). When a body
+/// passes several, it is the first its lowering met; a body whose named
+/// locals do not fit the registers is judged before anything else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BodyLimit {
+    /// It needs more registers than a `u16` numbers.
+    Registers,
+    /// It takes, or one of its sends or clause messages passes, more than
+    /// `ARGUMENT_LIMIT` arguments.
+    Arguments,
+    /// It holds more than `INSTRUCTION_LIMIT` instructions.
+    Instructions,
+}
+
+/// The most instructions one body holds (`docs/design/compiler.md`,
+/// "Limits"). Past it a body compiles to `Literal::BodyTooLarge`, and an
+/// image's body is refused where its count is read. It keeps every
+/// instruction index, jump target and table index within 20 bits, and
+/// bounds the work any pass over one body does.
+pub(crate) const INSTRUCTION_LIMIT: u32 = 1 << 20;
+
+/// The most parameters a method, block or factory takes, and the most
+/// arguments a send or a clause message passes (`docs/design/compiler.md`,
+/// "Limits"). Past it a body compiles to `Literal::BodyTooLarge`; the image
+/// encoder refuses to write such a body and the decoder refuses to read
+/// one, so that every program that runs from source can be packaged. An
+/// argument count fits a byte.
+pub(crate) const ARGUMENT_LIMIT: u16 = 255;
 
 /// One send's identity within its code family (`docs/design/dispatch.md`,
 /// "Code families"): its number among every send of one root body and the
@@ -778,7 +811,7 @@ impl CompiledCode {
             && matches!(
                 self.instruction(0),
                 Instruction::LoadLiteral {
-                    literal: Literal::BodyTooLarge,
+                    literal: Literal::BodyTooLarge(_),
                     ..
                 }
             )
@@ -1261,7 +1294,7 @@ pub(crate) fn registers_read(instruction: &Instruction) -> impl Iterator<Item = 
 pub(crate) fn register_written(instruction: &Instruction) -> Option<u16> {
     match instruction {
         Instruction::LoadLiteral {
-            literal: Literal::BodyTooLarge,
+            literal: Literal::BodyTooLarge(_),
             ..
         } => None,
         Instruction::LoadLiteral { destination, .. }
@@ -1753,7 +1786,9 @@ fn format_literal(literal: &Literal) -> String {
         Literal::Symbol(symbol) => format!("#{symbol}"),
         Literal::LargeInteger(integer) => format!("large-int {}", integer.to_bounded_text()),
         Literal::UnresolvedIdentifier(name) => format!("unresolved-ident '{name}'"),
-        Literal::BodyTooLarge => "body-too-large".to_string(),
+        Literal::BodyTooLarge(BodyLimit::Registers) => "body-too-large".to_string(),
+        Literal::BodyTooLarge(BodyLimit::Arguments) => "body-too-large arguments".to_string(),
+        Literal::BodyTooLarge(BodyLimit::Instructions) => "body-too-large instructions".to_string(),
     }
 }
 

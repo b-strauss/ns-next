@@ -15,7 +15,7 @@ use super::control_flow::{self, InlineForm};
 use super::simultaneous;
 use crate::builtins::primitive::MirrorPrimitive;
 use crate::bytecode::{
-    CallSite, CodeBuilder, CodeKind, CompiledCode, Instruction, IntegerOperation,
+    BodyLimit, CallSite, CodeBuilder, CodeKind, CompiledCode, Instruction, IntegerOperation,
     Literal as BytecodeLiteral, HEADER_REGISTERS,
 };
 use crate::interpreter::literals::{parse_float_literal, parse_integer_literal, IntegerLiteral};
@@ -293,13 +293,16 @@ pub(crate) struct Lowerer<'a> {
     /// Saturated at `u16::MAX`: only a body that is `too_large` meets a
     /// count past it.
     argument_count: u16,
-    /// Whether this body needs more registers than a `u16` numbers: its
-    /// named registers do not fit (it is never laid out, and lowers
-    /// nothing), or its scratch registers ran past `u16::MAX`
-    /// (`allocate_scratch`). From then on nothing emitted is kept: `finish`
-    /// answers `super::body_too_large`, never a body whose register indices
-    /// wrapped.
-    too_large: bool,
+    /// The limit this body passed, if any (`docs/design/compiler.md`,
+    /// "Limits"): more registers than a `u16` numbers -- its named
+    /// registers do not fit (it is never laid out, and lowers nothing), or
+    /// its scratch registers ran past `u16::MAX` (`allocate_scratch`) --,
+    /// more than `ARGUMENT_LIMIT` parameters, or an instruction that would
+    /// pass `INSTRUCTION_LIMIT` or send more than `ARGUMENT_LIMIT`
+    /// arguments (`emit`). The first one met is kept, and from then on
+    /// nothing is emitted: `finish` answers `super::body_too_large`, never
+    /// a body whose register indices wrapped or that grew past a limit.
+    too_large: Option<BodyLimit>,
     /// The capture analysis of the whole code family, shared by every body
     /// of it (`compiler/capture.rs`).
     captures: Rc<Captures>,
@@ -403,11 +406,18 @@ impl<'a> Lowerer<'a> {
         } else {
             None
         };
-        let too_large = layout.is_none();
+        let too_large = match layout {
+            None => Some(BodyLimit::Registers),
+            Some(_) => super::parameter_limit_passed(argument_count),
+        };
         let argument_count = super::saturated_count(argument_count);
         let layout = layout.unwrap_or_else(|| Layout::past_the_ceiling(key));
         // A body past the ceiling has no register table to fill.
-        let named_temporaries = if too_large { &[][..] } else { temporaries };
+        let named_temporaries = if too_large == Some(BodyLimit::Registers) {
+            &[][..]
+        } else {
+            temporaries
+        };
         let base = layout.base;
         // Indexed by *register*, not by resolver index. A parameter and an
         // immutable local slot are read-only because nothing but their
@@ -434,7 +444,7 @@ impl<'a> Lowerer<'a> {
             for (register, read_only) in read_only_locals.iter().enumerate() {
                 reachable_by_a_fallback_closure[register] = !read_only;
             }
-        } else if !too_large {
+        } else if too_large != Some(BodyLimit::Registers) {
             // A body past the ceiling was never analysed, and has no
             // register to mark.
             let body = captures.body(key);
@@ -491,20 +501,36 @@ impl<'a> Lowerer<'a> {
                 self.next_scratch = next;
                 self.max_register = self.max_register.max(next);
             }
-            None => self.too_large = true,
+            None => self.pass_a_limit(BodyLimit::Registers),
         }
         register
     }
 
+    /// Records that the body passed `limit`, unless it passed one before.
+    fn pass_a_limit(&mut self, limit: BodyLimit) {
+        self.too_large.get_or_insert(limit);
+    }
+
+    /// Emits `instruction` and answers its index, unless the body is too
+    /// large already or the instruction would make it so
+    /// (`super::emitting_passes_a_limit`): then nothing is emitted, and
+    /// the index answered names no instruction, which `patch_target`
+    /// leaves alone and `finish` never keeps.
     fn emit(&mut self, instruction: Instruction) -> usize {
-        self.code.emit(instruction)
+        if self.too_large.is_none() {
+            match super::emitting_passes_a_limit(self.code.len(), &instruction) {
+                Some(limit) => self.pass_a_limit(limit),
+                None => return self.code.emit(instruction),
+            }
+        }
+        self.code.len()
     }
 
     /// Lowers a body's own statements, then its end (`finish_body`). The
     /// last statement's value is read only when falling off the end answers
     /// it; every other statement's value is discarded.
     pub(crate) fn lower_body(&mut self, statements: &[Statement]) {
-        if self.too_large {
+        if self.too_large.is_some() {
             return;
         }
         let last_use = if self.answers_last_value() {
@@ -513,7 +539,7 @@ impl<'a> Lowerer<'a> {
             ValueUse::Discarded
         };
         for (index, statement) in statements.iter().enumerate() {
-            if self.too_large {
+            if self.too_large.is_some() {
                 // Nothing more is kept (`finish`): stop lowering.
                 return;
             }
@@ -557,8 +583,7 @@ impl<'a> Lowerer<'a> {
     /// counted from: the level `<:` clause `k` of `n` adds is `n - k + 1`
     /// steps up, the superclass clause's class `n + 1`. A body-less
     /// declaration's class is the level its last clause adds, one step
-    /// lower. A chain of more levels than a `u16` counts leaves the body
-    /// too large.
+    /// lower. The step counts fit a `u16` (`super::superclass_steps`).
     ///
     /// One statement for the checks, one for the superclass and one for
     /// each applied level, each with its own scratch registers: nothing is
@@ -569,18 +594,11 @@ impl<'a> Lowerer<'a> {
         applied: &[ast::SuperclassClause],
         has_body: bool,
     ) {
-        if self.too_large {
+        if self.too_large.is_some() {
             return;
         }
         let own_level = usize::from(has_body);
-        let Some(superclass_steps) = applied
-            .len()
-            .checked_add(own_level)
-            .and_then(|steps| u16::try_from(steps).ok())
-        else {
-            self.too_large = true;
-            return;
-        };
+        let superclass_steps = super::superclass_steps(applied.len(), own_level);
         // The level clause `position` (from 0) adds; below the superclass
         // clause's, so it fits a `u16` too.
         let steps_of = |position: usize| superclass_steps - 1 - position as u16;
@@ -608,7 +626,7 @@ impl<'a> Lowerer<'a> {
         });
         self.record_statement(start);
         for (position, clause) in applied.iter().enumerate() {
-            if self.too_large {
+            if self.too_large.is_some() {
                 // Nothing more is kept (`finish`): stop lowering.
                 return;
             }
@@ -634,7 +652,7 @@ impl<'a> Lowerer<'a> {
     /// VM turns it into an absolute field index at run time via the executing
     /// activation's slot base (`Heap::activation_slot_base`).
     pub(crate) fn lower_slot_initializer(&mut self, initializer: &Expression, own_index: u32) {
-        if self.too_large {
+        if self.too_large.is_some() {
             return;
         }
         self.next_scratch = self.base;
@@ -654,7 +672,7 @@ impl<'a> Lowerer<'a> {
         block: &Expression,
         own_index: u32,
     ) {
-        if self.too_large {
+        if self.too_large.is_some() {
             return;
         }
         self.next_scratch = self.base;
@@ -680,7 +698,7 @@ impl<'a> Lowerer<'a> {
     /// only register live across it is this statement's own scratch
     /// register, which no send can write. One statement.
     pub(crate) fn lower_simultaneous_slot_end(&mut self, own_index: u32) {
-        if self.too_large {
+        if self.too_large.is_some() {
             return;
         }
         self.next_scratch = self.base;
@@ -720,7 +738,7 @@ impl<'a> Lowerer<'a> {
     /// (`Heap::activation_slot_base`), the class whose slot this is. The
     /// test precedes the one statement, as a prologue.
     pub(crate) fn lower_lazy_slot_getter(&mut self, initializer: &Expression, own_index: u32) {
-        if self.too_large {
+        if self.too_large.is_some() {
             return;
         }
         self.next_scratch = self.base;
@@ -750,11 +768,11 @@ impl<'a> Lowerer<'a> {
     /// each of those temporaries back and stores it resolved, one statement
     /// apiece, in declaration order.
     pub(crate) fn lower_local_initializers(&mut self, temporaries: &[ast::SlotDeclaration]) {
-        if self.too_large {
+        if self.too_large.is_some() {
             return;
         }
         for (position, temporary) in temporaries.iter().enumerate() {
-            if self.too_large {
+            if self.too_large.is_some() {
                 // Nothing more is kept (`finish`): stop lowering.
                 return;
             }
@@ -784,7 +802,7 @@ impl<'a> Lowerer<'a> {
             self.record_statement(start);
         }
         for (position, temporary) in temporaries.iter().enumerate() {
-            if self.too_large {
+            if self.too_large.is_some() {
                 // Nothing more is kept (`finish`): stop lowering.
                 return;
             }
@@ -970,7 +988,7 @@ impl<'a> Lowerer<'a> {
         // family, never restarting at each `MakeClosure`
         // (`docs/design/dispatch.md`, "Code families").
         let after = inner.next_call_site;
-        let too_large = inner.too_large;
+        let too_large = inner.too_large.is_some();
         let code = inner.finish(block.span);
         // A block past the register ceiling is `super::body_too_large`,
         // which takes no copied values and makes no send, so its creator
@@ -1782,7 +1800,7 @@ impl<'a> Lowerer<'a> {
             self.base
         );
         debug_assert!(
-            self.too_large
+            self.too_large.is_some()
                 || receivers
                     .iter()
                     .all(|receiver| *receiver < self.base || *receiver < argument_base),
@@ -1917,17 +1935,19 @@ impl<'a> Lowerer<'a> {
     }
 
     /// The index the next emitted instruction will get -- a forward label.
-    /// Passing `u32::MAX` would take a body of gigabytes of source, near
-    /// the four gibibytes a `Span`'s `u32` offsets address; were one to, a
-    /// wrapped label would be a jump to the wrong instruction, so it panics
-    /// instead.
+    /// At most `INSTRUCTION_LIMIT`, since `emit` emits nothing past it.
     fn here(&self) -> u32 {
         u32::try_from(self.code.len())
-            .expect("internal: more instructions in one body than a u32 numbers")
+            .expect("internal: a body holds at most INSTRUCTION_LIMIT instructions")
     }
 
+    /// Patches the jump at `instruction_index`. A body too large emits
+    /// nothing more, so a jump it did not emit is not patched; its code is
+    /// never kept.
     fn patch_target(&mut self, instruction_index: usize, target: u32) {
-        self.code.patch_target(instruction_index, target);
+        if instruction_index < self.code.len() {
+            self.code.patch_target(instruction_index, target);
+        }
     }
 
     /// Lowers `block`'s statements directly into the current instruction stream
@@ -2270,8 +2290,8 @@ impl<'a> Lowerer<'a> {
     }
 
     pub(crate) fn finish(self, source: Span) -> CompiledCode {
-        if self.too_large {
-            return super::body_too_large(self.kind, self.argument_count, source);
+        if let Some(limit) = self.too_large {
+            return super::body_too_large(self.kind, self.argument_count, source, limit);
         }
         // Control-flow inlining and the integer leaves' fast path are the two
         // sources of a patched target, and every one of their labels is a
@@ -4716,6 +4736,55 @@ mod tests {
         )
     }
 
+    /// The instruction limit, on the counter the lowerer keeps: a body of
+    /// `INSTRUCTION_LIMIT` instructions is still one, the next instruction
+    /// is not emitted and makes it too large, and it compiles to the
+    /// raising body that names the limit. Emitted directly, since a source
+    /// of 2^20 instructions is too slow to compile in the suite.
+    #[test]
+    fn a_body_past_the_instruction_limit_is_too_large() {
+        let bindings = Rc::new(HashMap::new());
+        let captures = Rc::new(analyze(
+            RootBody {
+                argument_count: 0,
+                temporaries: &[],
+                slot_initializers: Vec::new(),
+                statements: &[],
+            },
+            &bindings,
+        ));
+        let mut lowerer = Lowerer::new(
+            CodeKind::Method,
+            BodyKey::Root,
+            0,
+            &[],
+            &bindings,
+            captures,
+            false,
+            Enclosing::default(),
+            0,
+        );
+        let destination = lowerer.allocate_scratch();
+        let limit = crate::bytecode::INSTRUCTION_LIMIT as usize;
+        for _ in 0..limit {
+            lowerer.emit(Instruction::LoadSelf { destination });
+        }
+        assert_eq!(lowerer.too_large, None);
+        assert_eq!(lowerer.here() as usize, limit);
+        lowerer.emit(Instruction::LoadSelf { destination });
+        assert_eq!(lowerer.too_large, Some(BodyLimit::Instructions));
+        assert_eq!(lowerer.here() as usize, limit);
+        let code = lowerer.finish(Span::new(0, 0));
+        assert_eq!(
+            code.instruction(0),
+            Instruction::LoadLiteral {
+                destination: HEADER_REGISTERS,
+                literal: BytecodeLiteral::BodyTooLarge(BodyLimit::Instructions),
+            }
+        );
+        assert_eq!(code.instruction_count(), 2);
+    }
+
     /// The body `compiler::body_too_large` builds for a body of `kind`
     /// taking `argument_count` arguments: its one register is the first
     /// above the header's numbers.
@@ -4727,7 +4796,7 @@ mod tests {
             vec![
                 Instruction::LoadLiteral {
                     destination: register,
-                    literal: BytecodeLiteral::BodyTooLarge,
+                    literal: BytecodeLiteral::BodyTooLarge(BodyLimit::Registers),
                 },
                 Instruction::ImplicitReturn { register },
             ]
@@ -4743,7 +4812,7 @@ mod tests {
             matches!(
                 instruction,
                 Instruction::LoadLiteral {
-                    literal: BytecodeLiteral::BodyTooLarge,
+                    literal: BytecodeLiteral::BodyTooLarge(_),
                     ..
                 }
             )
@@ -4843,7 +4912,7 @@ mod tests {
             vec![
                 Instruction::LoadLiteral {
                     destination: u16::MAX - 1,
-                    literal: BytecodeLiteral::BodyTooLarge,
+                    literal: BytecodeLiteral::BodyTooLarge(BodyLimit::Registers),
                 },
                 Instruction::ImplicitReturn {
                     register: u16::MAX - 1

@@ -8,7 +8,8 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use ns_runtime::bytecode::{
-    CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal, HEADER_REGISTERS,
+    BodyLimit, CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal,
+    HEADER_REGISTERS,
 };
 use ns_runtime::image;
 use ns_runtime::image::opcodes::*;
@@ -876,13 +877,14 @@ fn every_instruction_variant_round_trips() {
 }
 
 /// The instructions of a compiled `new` in an initializer body: one of each
-/// for none, one, two and three hundred argument registers, and for `steps`
+/// for none, one, two and 255 argument registers, the most a message takes
+/// (`docs/design/compiler.md`, "Limits"), and for `steps`
 /// 0, 1 and the most a `u16` holds. Every register lies above the header's
 /// numbers of a body of two arguments, `FIRST` on, and so of one of none.
 fn every_instantiation_instruction() -> CompiledCode {
     const FIRST: u16 = 2 + HEADER_REGISTERS;
     let mut instructions = vec![Instruction::AllocateInstance { destination: FIRST }];
-    for count in [0_u16, 1, 2, 300] {
+    for count in [0_u16, 1, 2, 255] {
         // Above every slot, since a source may be no other slot.
         let arguments: Vec<u16> = (0..count).map(|index| FIRST + 301 + index).collect();
         instructions.push(Instruction::InitializeInstance {
@@ -1336,7 +1338,7 @@ fn the_retired_load_builtin_class_tag_is_refused() {
 /// decoding as whatever literal takes the next free number.
 #[test]
 fn an_invalid_or_retired_literal_tag_is_a_decode_error_not_a_panic() {
-    let mut payloads = vec![vec![LITERAL_BODY_TOO_LARGE + 1]];
+    let mut payloads = vec![vec![LITERAL_BODY_PAST_THE_INSTRUCTION_LIMIT + 1]];
     for tag in RETIRED_LITERALS {
         payloads.push(vec![tag, 0x41, 0x00, 0x00, 0x00]);
     }
@@ -1522,6 +1524,90 @@ fn a_body_past_the_register_ceiling_round_trips_and_still_raises() {
     assert_eq!(integer_of(&mut loaded.interpreter, &answer), 7);
 }
 
+/// A body past the argument limit -- here one sending 256 arguments --
+/// travels as its raising body too, and raises the message it raises from
+/// source, the limit named.
+#[test]
+fn a_body_past_the_argument_limit_round_trips_and_still_raises() {
+    let arguments = "k: 1 ".repeat(256);
+    let source = formatdoc! {"
+        class X = Object new (
+        ) (
+          public run = ( ^self {arguments})
+          public answer = ( ^7 )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(&source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let message = "method too large: it takes or sends more than 255 arguments";
+    assert_eq!(
+        expect_error(
+            interpreter.send(&instance, Symbol::intern("run"), &[]),
+            "run from source"
+        ),
+        message
+    );
+    let bytes = interpreter.enter(|mutator| {
+        let instance = mutator.fetch(&instance);
+        let class = class_reference(mutator, &class);
+        snapshot_one(
+            mutator,
+            false,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
+    let mut loaded = image::load(&bytes).expect("load");
+    assert_eq!(
+        expect_error(
+            loaded
+                .interpreter
+                .send(&loaded.roots[0], Symbol::intern("run"), &[]),
+            "run",
+        ),
+        message
+    );
+}
+
+/// Each reason a body is too large has a literal tag of its own, and
+/// decodes to the literal that names it.
+#[test]
+fn each_too_large_literal_decodes_to_its_reason() {
+    for (tag, limit) in [
+        (LITERAL_BODY_TOO_LARGE, BodyLimit::Registers),
+        (LITERAL_BODY_PAST_THE_ARGUMENT_LIMIT, BodyLimit::Arguments),
+        (
+            LITERAL_BODY_PAST_THE_INSTRUCTION_LIMIT,
+            BodyLimit::Instructions,
+        ),
+    ] {
+        let mut writer = encode::Writer::new();
+        writer.write_u32(1); // one code entry
+        code_header(&mut writer, CodeKind::Method, 0, HEADER_REGISTERS + 1);
+        writer.write_u32(2); // two instructions
+        writer.write_u8(OPCODE_LOAD_LITERAL);
+        writer.write_u16(HEADER_REGISTERS);
+        writer.write_u8(tag);
+        writer.write_u8(OPCODE_IMPLICIT_RETURN);
+        writer.write_u16(HEADER_REGISTERS);
+        let bytes = writer.into_bytes();
+        let mut reader = decode::Reader::new(&bytes);
+        let table = match decode::decode_code_table(&mut reader, &table_with(&[])) {
+            Ok(table) => table,
+            Err(error) => panic!("tag {tag}: {error}"),
+        };
+        assert_eq!(
+            table.codes[0].instruction(0),
+            Instruction::LoadLiteral {
+                destination: HEADER_REGISTERS,
+                literal: Literal::BodyTooLarge(limit),
+            }
+        );
+    }
+}
+
 /// An image may carry the instructions of a compiled `new`, and a crafted
 /// one can put one where no compiler does: in an ordinary method, on a
 /// receiver that is no class, in a class with no level a `<:` clause added.
@@ -1665,6 +1751,24 @@ fn a_method_of_more_parameters_than_the_format_counts_is_refused_not_a_panic() {
     assert_eq!(
         snapshot_error(&source),
         "image encoding cannot write a method arity of 65536: it does not fit the image format's 16-bit field"
+    );
+}
+
+/// A method of 256 parameters compiles to the raising body, but no image
+/// carries a body past the argument limit: building one is refused, so
+/// that `build` refuses what `load` would.
+#[test]
+fn a_method_of_256_parameters_is_refused_by_the_encoder() {
+    let pattern: String = (0..256).map(|index| format!("k: p{index} ")).collect();
+    let source = formatdoc! {"
+        class X = Object new (
+        ) (
+          public {pattern}= ( ^p0 )
+        ) : ()
+    "};
+    assert_eq!(
+        snapshot_error(&source),
+        "image encoding cannot write a method arity of 256: it is past the limit of 255 arguments"
     );
 }
 
@@ -7663,7 +7767,7 @@ fn a_write_to_an_argument_register_is_refused() {
         )])
     };
     assert_eq!(
-        decode::verify_code_table(&too_large(Literal::BodyTooLarge)),
+        decode::verify_code_table(&too_large(Literal::BodyTooLarge(BodyLimit::Registers))),
         Ok(())
     );
     assert_eq!(
@@ -14432,14 +14536,15 @@ fn an_applied_levels_clause_its_row_does_not_declare_is_a_decode_error() {
     }
 }
 
-/// A clause index the applied-clause field cannot number is refused before
-/// it is looked up, so it is never truncated into another clause.
+/// A clause index at or past the clause limit of 1,024, which no resolved
+/// declaration numbers, is refused before it is looked up, so it is never
+/// truncated into another clause.
 #[test]
-fn an_applied_levels_clause_index_past_twenty_three_bits_is_refused() {
+fn an_applied_levels_clause_index_past_the_clause_limit_is_refused() {
     let mut fixture = GraphFixture::with_source(APPLYING_MODULE);
     let marker = row_named(&fixture, "Marker");
     let applied = row_named(&fixture, "Applied");
-    for index in [1u32 << 23, u32::MAX] {
+    for index in [1024, 1u32 << 23, u32::MAX] {
         let bytes = class_records(2, |writer| {
             applied_level_record(writer, (1, marker), None, (applied, index));
             metaclass_record(writer, 0);
@@ -14455,8 +14560,7 @@ fn an_applied_levels_clause_index_past_twenty_three_bits_is_refused() {
         assert_eq!(
             error.to_string(),
             format!(
-                "mixin application clause index {index} of row {applied} is past the 2^23 \
-                 clauses a class object can name"
+                "mixin application clause index {index} of row {applied} is past the limit of 1024 clauses"
             )
         );
     }
@@ -17893,4 +17997,176 @@ fn a_body_less_value_class_is_refused_alike_after_build_and_load() {
             expected
         );
     });
+}
+
+/// A code record's header, for a body of `kind` taking `argument_count`
+/// arguments in `register_count` registers, with no copied value, no
+/// statement map and its sends cached: what the limit tests vary.
+fn code_header(
+    writer: &mut encode::Writer,
+    kind: CodeKind,
+    argument_count: u16,
+    register_count: u16,
+) {
+    writer.write_u8(encode::code_kind_tag(kind));
+    writer.write_u16(argument_count);
+    writer.write_u16(register_count);
+    writer.write_u16(0); // copied_count
+    writer.write_u16(register_count); // local_count
+    writer.write_u32(0); // source.start
+    writer.write_u32(0); // source.end
+    writer.write_u32(0); // no statement_program_counter entries
+    writer.write_boolean(false); // not compiled uncached
+}
+
+/// The decode error of a code table of one record, which `write` writes
+/// after the table's count.
+fn code_table_error(write: impl FnOnce(&mut encode::Writer)) -> decode::DecodeError {
+    let mut writer = encode::Writer::new();
+    writer.write_u32(1); // one code entry
+    write(&mut writer);
+    let bytes = writer.into_bytes();
+    let mut reader = decode::Reader::new(&bytes);
+    match decode::decode_code_table(&mut reader, &table_with(&["foo"])) {
+        Ok(_) => panic!("expected the code table to be refused"),
+        Err(error) => error,
+    }
+}
+
+/// A body claiming one instruction past the limit of 2^20 is refused where
+/// its count is read, before any instruction is: the bytes hold none.
+#[test]
+fn an_image_with_a_body_past_the_instruction_limit_is_refused() {
+    let error = code_table_error(|writer| {
+        code_header(writer, CodeKind::Method, 0, HEADER_REGISTERS + 1);
+        writer.write_u32((1 << 20) + 1); // the instruction count, and no instruction
+    });
+    assert_eq!(
+        error,
+        decode::DecodeError::InstructionCountTooLarge {
+            count: (1 << 20) + 1
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "a body in the image holds 1048577 instructions, more than the limit of 1048576"
+    );
+}
+
+/// A body taking 256 arguments is refused at its header, and so is a
+/// method record of 256 parameters in the mixin table: no compiled program
+/// has either.
+#[test]
+fn an_image_with_a_method_of_256_parameters_is_refused() {
+    let error = code_table_error(|writer| {
+        code_header(writer, CodeKind::Method, 256, 256 + HEADER_REGISTERS + 1);
+        writer.write_u32(0);
+    });
+    assert_eq!(
+        error,
+        decode::DecodeError::ArgumentCountTooLarge {
+            what: "body",
+            count: 256
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "a body in the image takes 256 arguments, more than the limit of 255"
+    );
+    let mut writer = encode::Writer::new();
+    writer.write_u32(1);
+    write_mixin_row_with_method_shapes(
+        &mut writer,
+        0,
+        &[],
+        &[MethodShape {
+            selector: 0,
+            access: AccessModifier::Public,
+            argument_count: 256,
+            code: 0,
+        }],
+        &[],
+    );
+    let bytes = writer.into_bytes();
+    let mut reader = decode::Reader::new(&bytes);
+    match mixins::decode(&mut reader, &table_with(&["foo"]), &[]) {
+        Err(error) => assert_eq!(
+            error,
+            decode::DecodeError::ArgumentCountTooLarge {
+                what: "method",
+                count: 256
+            }
+        ),
+        Ok(_) => panic!("expected the method of 256 parameters to be refused"),
+    }
+}
+
+/// A send of 256 arguments, and a closure of 256 parameters, are refused
+/// where their list's count is read.
+#[test]
+fn an_image_with_a_send_of_256_arguments_is_refused() {
+    let error = code_table_error(|writer| {
+        code_header(writer, CodeKind::Method, 0, 300);
+        writer.write_u32(1); // one instruction ...
+        writer.write_u8(OPCODE_SEND_PUBLIC);
+        writer.write_u32(0); // selector `foo`
+        writer.write_u16(HEADER_REGISTERS); // receiver
+        writer.write_u16(HEADER_REGISTERS + 1); // argument base
+        writer.write_u16(256); // ... of 256 arguments
+    });
+    assert_eq!(
+        error,
+        decode::DecodeError::ArgumentCountTooLarge {
+            what: "send",
+            count: 256
+        }
+    );
+    let error = code_table_error(|writer| {
+        code_header(writer, CodeKind::Method, 0, HEADER_REGISTERS + 1);
+        writer.write_u32(1); // one instruction ...
+        writer.write_u8(OPCODE_MAKE_CLOSURE);
+        writer.write_u16(HEADER_REGISTERS); // destination
+        writer.write_u16(256); // ... naming 256 parameters
+    });
+    assert_eq!(
+        error,
+        decode::DecodeError::ArgumentCountTooLarge {
+            what: "closure",
+            count: 256
+        }
+    );
+}
+
+/// A mixin-table row of 1,025 `<:` clauses is refused where the count is
+/// read, before a clause is reserved for.
+#[test]
+fn an_image_applying_1025_mixins_is_refused() {
+    let mut writer = encode::Writer::new();
+    writer.write_u32(1); // one row
+    writer.write_u32(0); // name
+    writer.write_u8(mixins::access_tag(AccessModifier::Protected));
+    writer.write_u32(0); // span.start
+    writer.write_u32(0); // span.end
+    writer.write_u32(0); // no slots
+    writer.write_boolean(false); // no factory
+    writer.write_boolean(false); // no initExprs
+    writer.write_boolean(true); // a superclass clause ...
+    writer.write_u32(0); // ... sending `foo`
+    writer.write_boolean(false); // without arguments
+    writer.write_u32(1025); // the clause count, and no clause
+    let bytes = writer.into_bytes();
+    let mut reader = decode::Reader::new(&bytes);
+    match mixins::decode(&mut reader, &table_with(&["foo"]), &[]) {
+        Err(error) => {
+            assert_eq!(
+                error,
+                decode::DecodeError::ClauseCountTooLarge { count: 1025 }
+            );
+            assert_eq!(
+                error.to_string(),
+                "a mixin-table row applies 1025 mixins, more than the limit of 1024"
+            );
+        }
+        Ok(_) => panic!("expected the row of 1,025 clauses to be refused"),
+    }
 }

@@ -1361,7 +1361,8 @@ impl<'gc> Mutator<'gc> {
         receiver: Value<'gc>,
         then: Continuation<'gc>,
     ) -> Signal<'gc> {
-        let refusal = literals::body_too_large_error(kind, receiver);
+        let refusal =
+            literals::body_too_large_error(kind, receiver, crate::bytecode::BodyLimit::Registers);
         // As `refuse_exhausted_push` undoes it: a refused activation never
         // runs, so a future it was to compute is unresolved again.
         if let Continuation::Future(forcing) = then {

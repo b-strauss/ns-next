@@ -17,8 +17,8 @@ use super::control_flow;
 use super::lower::{lower_literal, selector_of};
 use super::simultaneous;
 use crate::bytecode::{
-    register_written, registers_read, CallSite, CodeBuilder, CodeKind, CompiledCode, Instruction,
-    Literal as BytecodeLiteral, HEADER_REGISTERS,
+    register_written, registers_read, BodyLimit, CallSite, CodeBuilder, CodeKind, CompiledCode,
+    Instruction, Literal as BytecodeLiteral, HEADER_REGISTERS,
 };
 use crate::mixin::Mixin;
 use crate::types::Binding;
@@ -203,11 +203,14 @@ struct Body<'a> {
     /// first: what maps an outer local's resolver index onto the register
     /// it sits in, in the frame that declares it.
     enclosing_argument_counts: Vec<u16>,
-    /// Whether the body needs more registers than a `u16` numbers. Set the
-    /// moment it is known, and from then on nothing emitted is kept:
-    /// `finish` answers `super::body_too_large` instead, never a body whose
-    /// register indices wrapped.
-    too_large: bool,
+    /// The limit the body passed, if any: more registers than a `u16`
+    /// numbers, more than `ARGUMENT_LIMIT` arguments taken or sent, more
+    /// than `INSTRUCTION_LIMIT` instructions (`docs/design/compiler.md`,
+    /// "Limits"). Set the moment it is known, the first one met kept, and
+    /// from then on nothing is emitted: `finish` answers
+    /// `super::body_too_large` instead, never a body whose register indices
+    /// wrapped or that grew past a limit.
+    too_large: Option<BodyLimit>,
     code: CodeBuilder,
     statement_program_counter: Vec<(usize, Range<usize>)>,
 }
@@ -229,7 +232,10 @@ impl<'a> Body<'a> {
                 u16::try_from(argument_count + usize::from(HEADER_REGISTERS) + temporary_count).ok()
             })
             .flatten();
-        let too_large = first_scratch.is_none();
+        let too_large = match first_scratch {
+            None => Some(BodyLimit::Registers),
+            Some(_) => super::parameter_limit_passed(argument_count),
+        };
         let first_scratch = first_scratch.unwrap_or(u16::MAX);
         Body {
             bindings,
@@ -269,13 +275,28 @@ impl<'a> Body<'a> {
         let register = self.next_register;
         match register.checked_add(1) {
             Some(next) => self.next_register = next,
-            None => self.too_large = true,
+            None => self.pass_a_limit(BodyLimit::Registers),
         }
         register
     }
 
+    /// Records that the body passed `limit`, unless it passed one before.
+    fn pass_a_limit(&mut self, limit: BodyLimit) {
+        self.too_large.get_or_insert(limit);
+    }
+
+    /// Emits `instruction`, unless the body is too large already or the
+    /// instruction would make it so (`super::emitting_passes_a_limit`).
     fn emit(&mut self, instruction: Instruction) {
-        self.code.emit(instruction);
+        if self.too_large.is_some() {
+            return;
+        }
+        match super::emitting_passes_a_limit(self.code.len(), &instruction) {
+            Some(limit) => self.pass_a_limit(limit),
+            None => {
+                self.code.emit(instruction);
+            }
+        }
     }
 
     fn binding(&self, span: Span) -> Option<Binding> {
@@ -297,8 +318,7 @@ impl<'a> Body<'a> {
     /// clause `k` (from 1) of `n` names the level `n - k + 1` steps up and
     /// the superclass clause the class `n + 1` steps up -- one step fewer
     /// each for a body-less declaration (`has_body` false), whose body runs
-    /// at the level its last clause adds; past what a `u16` counts, the
-    /// body is too large.
+    /// at the level its last clause adds (`super::superclass_steps`).
     fn prologue(
         &mut self,
         superclass: Option<&ast::SuperclassClause>,
@@ -307,10 +327,7 @@ impl<'a> Body<'a> {
     ) {
         let count = applied.len();
         let own_level = usize::from(has_body);
-        let Ok(superclass_steps) = u16::try_from(count + own_level) else {
-            self.too_large = true;
-            return;
-        };
+        let superclass_steps = super::superclass_steps(count, own_level);
         // The level clause `index` (from 0) adds: below the superclass
         // clause's class, whose steps fit a `u16`.
         let steps_of = |index: usize| (count + own_level - 1 - index) as u16;
@@ -358,11 +375,11 @@ impl<'a> Body<'a> {
     /// future instead, and the clause's end reads each one back and stores
     /// it resolved, in declaration order.
     fn local_initializers(&mut self, temporaries: &[ast::SlotDeclaration]) {
-        if self.too_large {
+        if self.too_large.is_some() {
             return;
         }
         for (position, temporary) in temporaries.iter().enumerate() {
-            if self.too_large {
+            if self.too_large.is_some() {
                 // Nothing more is kept (`finish`): stop lowering.
                 return;
             }
@@ -388,7 +405,7 @@ impl<'a> Body<'a> {
             self.record_statement(start);
         }
         for (position, temporary) in temporaries.iter().enumerate() {
-            if self.too_large {
+            if self.too_large.is_some() {
                 // Nothing more is kept (`finish`): stop lowering.
                 return;
             }
@@ -417,12 +434,12 @@ impl<'a> Body<'a> {
     }
 
     fn statements_and_end(&mut self, statements: &[Statement]) {
-        if self.too_large {
+        if self.too_large.is_some() {
             return;
         }
         let mut last_value = None;
         for statement in statements {
-            if self.too_large {
+            if self.too_large.is_some() {
                 // Nothing more is kept (`finish`): stop lowering.
                 return;
             }
@@ -552,7 +569,7 @@ impl<'a> Body<'a> {
         for (slot, argument) in slots.iter().zip(arguments) {
             let value = self.value_to(argument, Some(*slot));
             debug_assert!(
-                self.too_large || value == *slot,
+                self.too_large.is_some() || value == *slot,
                 "internal: the reference lowering produced an argument in r{value}, not its slot r{slot}"
             );
         }
@@ -817,8 +834,8 @@ impl<'a> Body<'a> {
     }
 
     fn finish(self, source: Span) -> CompiledCode {
-        if self.too_large {
-            return super::body_too_large(self.kind, self.argument_count, source);
+        if let Some(limit) = self.too_large {
+            return super::body_too_large(self.kind, self.argument_count, source, limit);
         }
         if cfg!(debug_assertions) {
             let instructions = self.code.instructions();
@@ -1500,6 +1517,33 @@ mod tests {
         );
     }
 
+    /// The instruction limit, on the counter the reference lowering keeps,
+    /// as `lower.rs`'s test of the same name holds the optimized one to it.
+    #[test]
+    fn a_body_past_the_instruction_limit_is_too_large() {
+        let bindings: Bindings = Rc::new(HashMap::new());
+        let mut body = Body::new(CodeKind::Method, 0, 0, &bindings);
+        let destination = body.fresh();
+        let limit = crate::bytecode::INSTRUCTION_LIMIT as usize;
+        for _ in 0..limit {
+            body.emit(Instruction::LoadSelf { destination });
+        }
+        assert_eq!(body.too_large, None);
+        assert_eq!(body.code.len(), limit);
+        body.emit(Instruction::LoadSelf { destination });
+        assert_eq!(body.too_large, Some(BodyLimit::Instructions));
+        assert_eq!(body.code.len(), limit);
+        let code = body.finish(Span::new(0, 0));
+        assert_eq!(
+            code.instruction(0),
+            Instruction::LoadLiteral {
+                destination: HEADER_REGISTERS,
+                literal: BytecodeLiteral::BodyTooLarge(BodyLimit::Instructions),
+            }
+        );
+        assert_eq!(code.instruction_count(), 2);
+    }
+
     /// The body `compiler::body_too_large` builds for a body of `kind`
     /// taking `argument_count` arguments: its one register is the first
     /// above the header's numbers.
@@ -1511,7 +1555,7 @@ mod tests {
             vec![
                 Instruction::LoadLiteral {
                     destination: register,
-                    literal: BytecodeLiteral::BodyTooLarge,
+                    literal: BytecodeLiteral::BodyTooLarge(BodyLimit::Registers),
                 },
                 Instruction::ImplicitReturn { register },
             ]
@@ -1527,7 +1571,7 @@ mod tests {
             matches!(
                 instruction,
                 Instruction::LoadLiteral {
-                    literal: BytecodeLiteral::BodyTooLarge,
+                    literal: BytecodeLiteral::BodyTooLarge(_),
                     ..
                 }
             )
@@ -1615,7 +1659,7 @@ mod tests {
             vec![
                 Instruction::LoadLiteral {
                     destination: u16::MAX - 1,
-                    literal: BytecodeLiteral::BodyTooLarge,
+                    literal: BytecodeLiteral::BodyTooLarge(BodyLimit::Registers),
                 },
                 Instruction::ImplicitReturn {
                     register: u16::MAX - 1

@@ -826,7 +826,9 @@ impl Out {
                 self.u8(7);
                 self.str(name);
             }
-            Literal::BodyTooLarge => self.u8(8),
+            Literal::BodyTooLarge(crate::bytecode::BodyLimit::Registers) => self.u8(8),
+            Literal::BodyTooLarge(crate::bytecode::BodyLimit::Arguments) => self.u8(9),
+            Literal::BodyTooLarge(crate::bytecode::BodyLimit::Instructions) => self.u8(10),
         }
     }
 }

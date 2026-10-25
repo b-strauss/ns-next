@@ -708,7 +708,9 @@ impl Decoder<'_> {
                 Literal::LargeInteger(ArbitraryInteger::from_parts(negative, digits))
             }
             7 => Literal::UnresolvedIdentifier(self.reader.str().to_owned()),
-            8 => Literal::BodyTooLarge,
+            8 => Literal::BodyTooLarge(crate::bytecode::BodyLimit::Registers),
+            9 => Literal::BodyTooLarge(crate::bytecode::BodyLimit::Arguments),
+            10 => Literal::BodyTooLarge(crate::bytecode::BodyLimit::Instructions),
             tag => panic!("internal: the embedded shipped code has literal tag {tag}"),
         }
     }

@@ -4,7 +4,7 @@ use indoc::indoc;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use ns_runtime::bytecode::{CallSite, CodeKind, Instruction, Literal, HEADER_REGISTERS};
+use ns_runtime::bytecode::{BodyLimit, CallSite, CodeKind, Instruction, Literal, HEADER_REGISTERS};
 use ns_runtime::dispatch::Lookup;
 use ns_runtime::{Interpreter, Mixin, Mutator, Root, SourceOrigin, Symbol, ValueKind};
 
@@ -541,10 +541,19 @@ fn the_factory_body_allocates_initializes_and_returns_the_instance() {
             Instruction::Return { register: 15 },
         ]
     );
-    // An arity read off an image cannot make the body grow with it.
-    let widest = ns_runtime::compiler::factory_body(u16::MAX - 2 - HEADER_REGISTERS);
+    // Three instructions at the argument limit, whatever the arity.
+    let widest = ns_runtime::compiler::factory_body(255);
     assert_eq!(widest.instructions().len(), 3);
-    assert_eq!(widest.register_count, u16::MAX);
+    assert_eq!(widest.register_count, 255 + HEADER_REGISTERS + 2);
+    // Past it, the factory raises the too-large error when it is sent.
+    let past = ns_runtime::compiler::factory_body(256);
+    assert_eq!(
+        past.instructions()[0],
+        Instruction::LoadLiteral {
+            destination: 256 + HEADER_REGISTERS,
+            literal: Literal::BodyTooLarge(BodyLimit::Arguments),
+        }
+    );
 }
 
 /// A clause argument is lowered inside the initializer, so a block in one
@@ -582,7 +591,7 @@ fn a_block_in_a_clause_argument_captures_the_factory_parameter() {
             instructions.iter().all(|instruction| !matches!(
                 instruction,
                 Instruction::LoadLiteral {
-                    literal: Literal::BodyTooLarge,
+                    literal: Literal::BodyTooLarge(_),
                     ..
                 }
             )),

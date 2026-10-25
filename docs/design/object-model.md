@@ -1483,8 +1483,9 @@ applying declaration's mixin id and the clause's position in it, packed into
 one `SmallInteger` with the builtin the clause names ("The object layout"
 below), rather than carrying a copy, because two clauses of one declaration
 can be identical and the image names a level's clause by row and position.
-A superclass clause of more than 2^23 `<:` clauses is a resolve error, since
-the position has 23 bits.
+A superclass clause of more than 1,024 `<:` clauses is a resolve error
+([compiler.md](compiler.md), "Limits"), well within the position's 23
+bits.
 
 **So lookup, `super`, `outer`, the dispatch ids and the inline caches need
 nothing new.** A level is a class object in the class-object chain and an
@@ -2447,16 +2448,16 @@ The applied clause packs the mixin id into bits 0-31, the clause index into
 bits 32-54 and the named builtin's tag plus one into bits 55-60, 0 meaning
 none, which fills the `SmallInteger`'s 61 bits; the 61-bit pattern is
 sign-extended, so a tag that sets bit 60 packs into a negative
-`SmallInteger` (`AppliedClause::pack`, `unpack`, `mixin.rs`). A superclass
-clause of more than 2^23 `<:` clauses is therefore refused by the resolver,
-as an ordinary resolve error naming the limit (`CLAUSE_INDEX_LIMIT`), and an
-image whose clause index reaches 2^23 by the decoder
-(`ClauseIndexTooLarge`). This is a limit a valid program can reach, against
-the rule that no valid construct is carved out because it is rare
-([README.md](README.md), "Principles"), taken deliberately (decided with
-the user on 2026-10-03): no source near eight million clauses in one
-superclass clause is in prospect, and a second field would cost every class
-object eight bytes for it.
+`SmallInteger` (`AppliedClause::pack`, `unpack`, `mixin.rs`). The clause
+limit, 1,024 `<:` clauses in one superclass clause (`CLAUSE_INDEX_LIMIT`;
+[compiler.md](compiler.md), "Limits"), sits far below the 23 bits, which
+keep their headroom: the resolver refuses a source past it with an ordinary
+resolve error naming the limit, and the decoder an image whose clause count
+passes it or whose clause index reaches it (`ClauseCountTooLarge`,
+`ClauseIndexTooLarge`). It is a stated limit of this implementation, set
+340 times above the largest golden, and the one bound on a clause count:
+the class object's field and the initializer's `u16` step count are never
+reached.
 
 The application cache is keyed by the mixin's id and the superclass
 application's full-width index rather than by `Rc` addresses, which lets a

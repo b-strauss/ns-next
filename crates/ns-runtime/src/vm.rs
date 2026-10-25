@@ -2819,10 +2819,10 @@ fn make_value<'gc>(
             let receiver = mutator.heap.activation_receiver(activation);
             return Err(unresolved_identifier_error(name, receiver));
         }
-        Literal::BodyTooLarge => {
+        Literal::BodyTooLarge(limit) => {
             let receiver = mutator.heap.activation_receiver(activation);
             let kind = mutator.heap.activation_kind(activation);
-            return Err(body_too_large_error(kind, receiver));
+            return Err(body_too_large_error(kind, receiver, *limit));
         }
     })
 }

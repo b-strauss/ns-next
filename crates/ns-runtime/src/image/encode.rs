@@ -4,7 +4,9 @@
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use crate::bytecode::{CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal};
+use crate::bytecode::{
+    BodyLimit, CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal,
+};
 use crate::heap::{Heap, MixinId, ObjectShape};
 use crate::interpreter::future;
 use crate::interpreter::shipped_world::{ShippedEntry, ShippedWorld};
@@ -211,6 +213,23 @@ pub(crate) fn u16_field(what: &str, value: usize) -> Result<u16, String> {
     u16::try_from(value).map_err(|_| {
         format!("image encoding cannot write a {what} of {value}: it does not fit the image format's 16-bit field")
     })
+}
+
+/// A closure's parameter count, a method's or factory's arity, narrowed to
+/// the wire's `u16` field (`u16_field`) and refused past
+/// `bytecode::ARGUMENT_LIMIT`: the body compiled to one that raises
+/// (`docs/design/compiler.md`, "Limits"), and the decoder refuses it, so
+/// the write is refused with an error, and `build` refuses what `load`
+/// would.
+pub(crate) fn arity_field(what: &str, value: usize) -> Result<u16, String> {
+    let arity = u16_field(what, value)?;
+    if arity > crate::bytecode::ARGUMENT_LIMIT {
+        return Err(format!(
+            "image encoding cannot write a {what} of {value}: it is past the limit of {} arguments",
+            crate::bytecode::ARGUMENT_LIMIT
+        ));
+    }
+    Ok(arity)
 }
 
 /// `Rc<CompiledCode>` pointer -> code-table id, assigned by
@@ -507,7 +526,7 @@ fn encode_instruction(
         } => {
             writer.write_u8(OPCODE_MAKE_CLOSURE);
             writer.write_u16(*destination);
-            writer.write_u16(u16_field("closure parameter count", parameters.len())?);
+            writer.write_u16(arity_field("closure parameter count", parameters.len())?);
             for parameter in parameters.iter() {
                 writer.write_u32(symbols.intern(parameter.as_str()));
             }
@@ -758,7 +777,13 @@ fn encode_literal(
             writer.write_u8(LITERAL_UNRESOLVED_IDENTIFIER);
             writer.write_str(name);
         }
-        Literal::BodyTooLarge => writer.write_u8(LITERAL_BODY_TOO_LARGE),
+        Literal::BodyTooLarge(BodyLimit::Registers) => writer.write_u8(LITERAL_BODY_TOO_LARGE),
+        Literal::BodyTooLarge(BodyLimit::Arguments) => {
+            writer.write_u8(LITERAL_BODY_PAST_THE_ARGUMENT_LIMIT)
+        }
+        Literal::BodyTooLarge(BodyLimit::Instructions) => {
+            writer.write_u8(LITERAL_BODY_PAST_THE_INSTRUCTION_LIMIT)
+        }
     }
     Ok(())
 }

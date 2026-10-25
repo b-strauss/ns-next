@@ -274,24 +274,6 @@ fn an_initializer_past_the_register_ceiling_raises_when_it_runs() {
     }
 }
 
-/// A superclass clause answers its superclass and every `<:` clause's
-/// class together, in a tuple: 65,535 of them pass the ceiling, and the
-/// clause raises when the class is first reached.
-#[test]
-fn a_superclass_clause_past_the_register_ceiling_raises_when_it_runs() {
-    let applications: String = (0..usize::from(u16::MAX)).map(|_| " <: Marker").collect();
-    let nested = format!(
-        "    class Marker = Object new () () : ()
-    class Big = Object{applications}."
-    );
-    for lowering in [Lowering::Optimized, Lowering::Reference] {
-        assert_eq!(
-            make_error(&nested, "^Big", lowering),
-            "superclass clause too large: it needs more than 65535 registers"
-        );
-    }
-}
-
 /// A clause message's arguments, one tuple of 65,535 values, which the
 /// class's initializer evaluates: the initializer is past the ceiling.
 #[test]
@@ -397,6 +379,90 @@ fn a_message_of_more_arguments_than_registers_raises_the_too_large_error() {
                 "sendTo:"
             ),
             METHOD_TOO_LARGE
+        );
+    }
+}
+
+/// A pattern of `count` keyword parts, `k: p0 k: p1 ...`: a method's or a
+/// factory's parameters.
+fn keyword_pattern(count: usize) -> String {
+    (0..count).map(|index| format!("k: p{index} ")).collect()
+}
+
+/// A method of 256 parameters is past the argument limit: it compiles to
+/// the raising body, which the host's send of 256 arguments runs, with the
+/// limit in its message.
+#[test]
+fn a_method_of_256_parameters_raises_when_run() {
+    let pattern = keyword_pattern(256);
+    let source = formatdoc! {"
+        class Generated = Object new () (
+          public {pattern}= ( ^p0 )
+          public answer = ( ^7 )
+        ) : ()
+    "};
+    let selector = "k:".repeat(256);
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let (mut interpreter, class) = load(&source, lowering);
+        let instance = new_instance(&mut interpreter, &class);
+        let arguments: Vec<Root> = (0..256)
+            .map(|_| interpreter.stash(Value::small_integer(1)))
+            .collect();
+        assert_eq!(
+            expect_error(
+                send(&mut interpreter, &instance, &selector, &arguments),
+                "the wide method"
+            ),
+            "method too large: it takes or sends more than 255 arguments",
+            "{lowering:?}"
+        );
+        let answer = expect_ok(send(&mut interpreter, &instance, "answer", &[]), "answer");
+        assert_eq!(
+            interpreter.enter(|mutator| integer_of(mutator.fetch(&answer))),
+            7
+        );
+    }
+}
+
+/// A send of 256 arguments makes the body that holds it too large: the
+/// method raises when it runs, never when it compiles.
+#[test]
+fn a_send_of_256_arguments_raises_when_run() {
+    let arguments = "k: 1 ".repeat(256);
+    let source = formatdoc! {"
+        class Generated = Object new () (
+          public run = ( ^self {arguments})
+        ) : ()
+    "};
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        assert_eq!(
+            run_error(&source, lowering),
+            "method too large: it takes or sends more than 255 arguments",
+            "{lowering:?}"
+        );
+    }
+}
+
+/// At the limit, 255 parameters and a send of 255 arguments, the method
+/// runs.
+#[test]
+fn a_method_of_255_parameters_runs() {
+    let pattern = keyword_pattern(255);
+    let arguments: String = (0..255).map(|index| format!("k: {index} ")).collect();
+    let source = formatdoc! {"
+        class Generated = Object new () (
+          public {pattern}= ( ^p254 - p1 )
+          public run = ( ^self {arguments})
+        ) : ()
+    "};
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let (mut interpreter, class) = load(&source, lowering);
+        let instance = new_instance(&mut interpreter, &class);
+        let answer = expect_ok(send(&mut interpreter, &instance, "run", &[]), "run");
+        assert_eq!(
+            interpreter.enter(|mutator| integer_of(mutator.fetch(&answer))),
+            253,
+            "{lowering:?}"
         );
     }
 }
