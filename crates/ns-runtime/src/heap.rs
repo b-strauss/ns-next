@@ -5912,8 +5912,13 @@ impl<'gc> Heap<'gc> {
         temporary_count: usize,
     ) -> Result<ActivationReference, StackExhausted<'gc>> {
         let register_count = arguments.len() + temporary_count;
-        let argument_count =
-            u32::try_from(arguments.len()).expect("more than u32::MAX arguments to one activation");
+        // Checked by a comparison rather than `u32::try_from`, whose
+        // `Result` the push built and took apart on every activation.
+        assert!(
+            arguments.len() <= u32::MAX as usize,
+            "more than u32::MAX arguments to one activation"
+        );
+        let argument_count = arguments.len() as u32;
         let words = frame_header::COUNT + register_count;
         // Every word is computed before the frame is pushed, and the push is
         // the last thing that can refuse, so a refused push has changed
@@ -6027,46 +6032,54 @@ impl<'gc> Heap<'gc> {
         } else {
             stack.frames.push(words)
         };
-        let start = match pushed {
-            Ok((start, _)) => start,
+        // The push answers the frame's own words and every word below it,
+        // which is where a send's slots lie -- in the sender's window -- so
+        // the copy reads the one and writes the other, and nothing indexes
+        // the whole stack, nor reads its top and length again, once the
+        // frame is pushed.
+        let (start, below, frame) = match pushed {
+            Ok(pushed) => pushed,
             Err(frames::ReservationExhausted) => return Err(StackExhausted::of(header)),
         };
         if let Some(row) = continuations.store(header.then) {
             header_words.continuation = frames::number_word(u64::from(row.0));
         }
-        let words = stack.frames.words_mut();
-        let registers_start = start + frame_header::COUNT;
-        let temporaries_start = registers_start + argument_count as usize;
+        let (fixed, registers) = frame.split_at_mut(frame_header::COUNT);
+        header_words.write(fixed);
+        let (argument_registers, temporaries) = registers.split_at_mut(argument_count as usize);
         match arguments {
-            // The slots lie in the sender's window, below the frame just
-            // pushed, so the copy reads none of the words it writes.
-            // One argument or two are copied word by word: `copy_within`
-            // is a call out of line, on every push.
+            // One argument or two are copied word by word, more by a loop
+            // the compiler keeps inline: `copy_from_slice` would call out
+            // of line on every push.
             Arguments::Slots(slots) => {
                 let source = slots.first_word();
-                match slots.count() {
-                    0 => {}
-                    1 => words[registers_start] = words[source],
-                    2 => {
-                        words[registers_start] = words[source];
-                        words[registers_start + 1] = words[source + 1];
+                match argument_registers {
+                    [] => {}
+                    [only] => *only = below[source],
+                    [first, second] => {
+                        *first = below[source];
+                        *second = below[source + 1];
                     }
-                    count => {
-                        words.copy_within(source..source + usize::from(count), registers_start);
+                    registers => {
+                        for (register, word) in registers.iter_mut().zip(&below[source..]) {
+                            *register = *word;
+                        }
                     }
                 }
             }
-            Arguments::Values(values) => {
-                for (register, argument) in words[registers_start..temporaries_start]
-                    .iter_mut()
-                    .zip(values.iter())
-                {
-                    *register = argument.word().bits();
+            // As few as the slots': a decision's own value, the element of a
+            // native loop's next block, is one.
+            Arguments::Values(values) => match argument_registers {
+                [] => {}
+                [only] => *only = values[0].word().bits(),
+                registers => {
+                    for (register, argument) in registers.iter_mut().zip(values.iter()) {
+                        *register = argument.word().bits();
+                    }
                 }
-            }
+            },
         }
-        header_words.write(&mut words[start..registers_start]);
-        words[temporaries_start..].fill(Word::NIL.bits());
+        temporaries.fill(Word::NIL.bits());
         // The reservation holds at most `MAXIMUM_STACK_WORDS`, 2^31 words,
         // so an offset is exact in 32 bits.
         let offset = start as u32;
@@ -6522,7 +6535,7 @@ impl<'gc> Heap<'gc> {
         let space_words = space.words_mut();
         let range = block_range(space_words, header_index(frame.offset));
         let words_of_frame = &mut space_words[range][FIELDS..];
-        let (_, stack_frame) = stack
+        let (_, _, stack_frame) = stack
             .frames
             .push(words)
             .expect("internal: a resumed activation fits on the stack it was suspended from");
@@ -10162,7 +10175,7 @@ mod tests {
     /// `Arguments::Slots` copies exactly the slots it names out of the
     /// frame below into the new frame's first registers, the neighbouring
     /// registers left behind, and a push from `Arguments::Values` copies
-    /// the slice.
+    /// the slice, for each of the counts the push copies differently.
     #[test]
     fn a_push_takes_its_arguments_from_the_slots_below_or_from_values() {
         let mut heap = Heap::new();
@@ -10177,8 +10190,8 @@ mod tests {
             );
         }
         let register_base = heap.activation_register_base(sender);
-        // One, two and three: the push copies the first two word by word
-        // and more through `copy_within`.
+        // One, two and three: the push copies one or two word by word and
+        // more by a loop.
         for count in 1..=3_u16 {
             let from_slots = heap
                 .push_activation(
@@ -10197,23 +10210,27 @@ mod tests {
             assert!(heap.activation_local(from_slots, count).is_nil());
             heap.pop_activation(from_slots);
         }
-        let from_values = heap
-            .push_activation(
-                header(),
-                Arguments::Values(&[Value::small_integer(7), Value::small_integer(8)].as_slice()),
-                1,
-            )
-            .expect("the stack holds the frame");
-        assert_eq!(
-            heap.activation_local(from_values, 0).as_small_integer(),
-            Some(7)
-        );
-        assert_eq!(
-            heap.activation_local(from_values, 1).as_small_integer(),
-            Some(8)
-        );
-        assert!(heap.activation_local(from_values, 2).is_nil());
-        heap.pop_activation(from_values);
+        // The same three counts from values: one is copied on its own,
+        // more by a loop.
+        let values = [7, 8, 9].map(Value::small_integer);
+        for count in 1..=3_u16 {
+            let from_values = heap
+                .push_activation(
+                    header(),
+                    Arguments::Values(&&values[..usize::from(count)]),
+                    1,
+                )
+                .expect("the stack holds the frame");
+            for register in 0..count {
+                assert_eq!(
+                    heap.activation_local(from_values, register)
+                        .as_small_integer(),
+                    Some(7 + i64::from(register))
+                );
+            }
+            assert!(heap.activation_local(from_values, count).is_nil());
+            heap.pop_activation(from_values);
+        }
         for register in 0..5 {
             assert_eq!(
                 heap.activation_local(sender, register).as_small_integer(),

@@ -302,27 +302,29 @@ impl FrameStack {
         self.limit
     }
 
-    /// Pushes a frame of `words` words and answers its word offset and its
-    /// words; `ReservationExhausted`, the top untouched, when the
-    /// reservation cannot hold it. The frame's words are whatever the stack
-    /// last held there -- a popped frame's, or zero where nothing was yet --
-    /// so the caller writes every one of them before anything reads the
-    /// stack again: a word a popped frame left could name an object since
-    /// moved or reclaimed. One comparison against the committed end and the
-    /// slice's one, with nothing written twice; committing more is the cold
-    /// path's.
+    /// Pushes a frame of `words` words and answers its word offset, the
+    /// words of every frame below it, which a send's arguments are copied
+    /// from, and its own words; `ReservationExhausted`, the top untouched,
+    /// when the reservation cannot hold it. The frame's words are whatever
+    /// the stack last held there -- a popped frame's, or zero where nothing
+    /// was yet -- so the caller writes every one of them before anything
+    /// reads the stack again: a word a popped frame left could name an
+    /// object since moved or reclaimed. One comparison against the
+    /// committed end and the slices' own, with nothing written twice;
+    /// committing more is the cold path's.
     #[inline(always)]
     pub(super) fn push(
         &mut self,
         words: usize,
-    ) -> Result<(usize, &mut [u64]), ReservationExhausted> {
+    ) -> Result<(usize, &[u64], &mut [u64]), ReservationExhausted> {
         let start = self.top;
         let end = start + words;
         if end > self.ordinary_end {
             self.grow(words, self.ordinary_limit)?;
         }
         self.top = end;
-        Ok((start, &mut self.reservation.accessible_mut()[start..end]))
+        let (below, frame) = self.reservation.accessible_mut()[..end].split_at_mut(start);
+        Ok((start, below, frame))
     }
 
     /// `push`, but a frame may end anywhere in the reservation, the reserve
@@ -333,14 +335,15 @@ impl FrameStack {
     pub(super) fn push_reserved(
         &mut self,
         words: usize,
-    ) -> Result<(usize, &mut [u64]), ReservationExhausted> {
+    ) -> Result<(usize, &[u64], &mut [u64]), ReservationExhausted> {
         let start = self.top;
         let end = start + words;
         if end > self.committed {
             self.grow(words, self.limit)?;
         }
         self.top = end;
-        Ok((start, &mut self.reservation.accessible_mut()[start..end]))
+        let (below, frame) = self.reservation.accessible_mut()[..end].split_at_mut(start);
+        Ok((start, below, frame))
     }
 
     /// Whether the top is within the reserve of the end of the ordinary
@@ -546,7 +549,7 @@ mod tests {
         let frame_words = usize::from(u16::MAX) + frame_header::COUNT;
         assert!(frame_words * 8 > Reservation::page_size());
         let before = stack.top();
-        let (offset, _) = stack.push(frame_words).expect("push");
+        let (offset, _, _) = stack.push(frame_words).expect("push");
         assert_eq!(offset, before);
         assert_eq!(stack.top(), before + frame_words);
         stack.words_mut()[offset..].fill(Word::NIL.bits());
@@ -561,7 +564,7 @@ mod tests {
         loop {
             let before = stack.top();
             match stack.push(frame_words) {
-                Ok((offset, frame)) => {
+                Ok((offset, _, frame)) => {
                     assert_eq!(offset, before);
                     assert_eq!(frame.len(), frame_words);
                     pushed += 1;
@@ -591,7 +594,7 @@ mod tests {
         loop {
             let before = stack.top();
             match stack.push_reserved(frame_words) {
-                Ok((offset, _)) => {
+                Ok((offset, _, _)) => {
                     assert_eq!(offset, before);
                     reserved += 1;
                 }
@@ -616,14 +619,14 @@ mod tests {
         let mut stack = FrameStack::new(1 << 20).expect("reserve");
         let frame_words = frame_header::COUNT + 4;
         stack.push(frame_words).expect("push");
-        let (offset, _) = stack.push(frame_words).expect("push");
+        let (offset, _, _) = stack.push(frame_words).expect("push");
         for word in &mut stack.words_mut()[offset..] {
             *word = number_word(7).bits();
         }
         stack.truncate(offset);
         assert_eq!(stack.top(), offset);
         assert_eq!(stack.words().len(), offset);
-        let (again, _) = stack.push(frame_words).expect("push");
+        let (again, _, _) = stack.push(frame_words).expect("push");
         assert_eq!(again, offset);
         assert_eq!(stack.words().len(), offset + frame_words);
     }

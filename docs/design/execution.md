@@ -205,11 +205,13 @@ pub struct ActivationReference {
   operand and the code word hold; the push registers a method's body with
   its method, so `reify` rebuilds `FrameKind::Method` from the code row.
 - **A push** (`Heap::push_activation`) takes a frame of the header's size
-  plus its window from the frame stack, writes every word of the header,
-  copies the arguments into the first registers -- a send's out of its
-  window in the frame below, one or two word by word and more with one
-  `copy_within` of the stack's words, other arguments from the values a decision or the host built
-  (`interpreter::Arguments`) -- and fills the temporaries with nil; the frame names its body by its code id, found through the
+  plus its window from the frame stack, which answers the frame's words
+  and every word below it, writes every word of the header into the
+  frame, copies the arguments into the first registers -- a send's out of
+  its window in the frame below, other arguments from the values a
+  decision or the host built (`interpreter::Arguments`); one or two word
+  by word, more by a loop kept inline -- and fills the temporaries with
+  nil, never indexing the whole stack once the frame is pushed; the frame names its body by its code id, found through the
   body's one-entry cache ([memory.md](memory.md), "A closure's code id
   without the map") and kept by a full collection while the activation
   runs ([object-model.md](object-model.md), "An application has two ids");
@@ -8049,8 +8051,9 @@ argument came from, the slot only where the value was produced there. The
 decision, the native and the push then read the arguments where they are,
 through an argument window (`interpreter::Arguments`, a tag and one word,
 "No re-entry from Rust"), and `Heap::push_activation_in` copies it into
-the callee's first registers, one or two word by word and more with one
-`copy_within` of the stack's words ("Representation" above). So
+the callee's first registers, one or two word by word and more by a loop
+kept inline, out of the words below the frame the frame stack answers
+with the frame ("Representation" above). So
 placement happens before the decision only for a send whose sources are
 not consecutive; the second stage, whose push lays the callee's frame on
 the slots, places every argument whose source is not its slot on the push
