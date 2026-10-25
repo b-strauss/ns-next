@@ -102,87 +102,39 @@ Newspeak modules, kept as a non-regression gate for the parser; the six on
 one call; several groups also run in one call, one after another, and the
 first that fails stops it. `CLAUDE.md`, "The gates", says when each runs.
 
-Every commit: `cargo fmt --all`, clippy warning-free, the suite with every golden under both lowerings, the doctests, the parser corpus and the plugin's check:
-
 ```bash
+# every commit: cargo fmt --all, clippy warning-free, the suite with every
+# golden under both lowerings, the doctests, the parser corpus and the
+# plugin's check
 cargo xtask gates commit
-```
-
-A commit touching `crates/ns-analyzer`: the hints' behaviour oracle:
-
-```bash
+# a commit touching crates/ns-analyzer: the hints' behaviour oracle
 cargo xtask gates analyzer
-```
-
-Every golden through `build` then `load`:
-
-```bash
+# every golden through build then load
 cargo xtask gates images
-```
-
-Every golden with a two-entry global cache:
-
-```bash
+# every golden with a two-entry global cache
 cargo xtask gates caches
-```
-
-A commit touching `crates/ns-memory`: its clippy for Linux and macOS:
-
-```bash
+# a commit touching crates/ns-memory: its clippy for Linux and macOS
 cargo xtask gates memory
-```
-
-The benchmark programs verified at full size, and their Java counterparts; needs a JDK:
-
-```bash
+# the benchmark programs verified at full size, and their Java counterparts;
+# needs a JDK
 cargo xtask gates benchmarks
-```
-
-The suite without debug assertions, which runs the size tests:
-
-```bash
+# the suite without debug assertions, which runs the size tests
 cargo xtask gates release-checks
-```
-
-The hot path's machine code against its budgets; needs `cargo-show-asm`:
-
-```bash
+# the hot path's machine code against its budgets; needs cargo-show-asm
 cargo xtask gates codegen
-```
-
-The suite under the six stress modes, each into `.temp/stress-<MODE>.log`, then `run-corpus` plain and under each:
-
-```bash
+# the suite under the six stress modes, each into .temp/stress-<MODE>.log,
+# then run-corpus plain and under each
 cargo xtask gates stress
-```
-
-The JetBrains plugin against several IDEs; downloads them:
-
-```bash
+# the JetBrains plugin against several IDEs, which it downloads
 cargo xtask gates plugin-verification
-```
-
-`images`, `caches`, `benchmarks`, `release-checks`, `codegen` and `stress`, for a batch that changed the runtime:
-
-```bash
+# images, caches, benchmarks, release-checks, codegen and stress, for a batch
+# that changed the runtime
 cargo xtask gates end-of-batch
-```
-
-Write the embedded shipped code (every gate call also does this first):
-
-```bash
+# write the embedded shipped code (every gate call also does this first)
 cargo xtask shipped-code
-```
-
-Only say whether the embedded shipped code is current:
-
-```bash
+# only say whether the embedded shipped code is current
 cargo xtask shipped-code --check
-```
-
-The codegen budgets against another checkout, for example an exported older commit:
-
-```bash
+# the codegen budgets against another checkout, e.g. an exported older commit
 cargo xtask codegen .temp/stage2
 ```
 
