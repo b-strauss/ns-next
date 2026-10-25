@@ -1185,6 +1185,16 @@ impl<'gc> Mutator<'gc> {
         arguments: Arguments<'_, 'gc>,
         temporaries: usize,
     ) -> Result<ActivationReference, Signal<'gc>> {
+        // Only a list of values can pass the register ceiling: a send's
+        // window counts its slots in 16 bits, so for `Slots` the test is
+        // the variant's alone and folds away where the variant is known.
+        if matches!(arguments, Arguments::Values(values) if values.len() > usize::from(u16::MAX)) {
+            return Err(self.refuse_past_the_register_ceiling(
+                header.kind,
+                header.receiver,
+                header.then,
+            ));
+        }
         if header.counted && self.heap.counted_depth() >= MAX_ACTIVATION_DEPTH {
             // Boxed, so that only this path keeps the header in memory: the
             // header the push below copies is then never written there
@@ -1197,6 +1207,33 @@ impl<'gc> Mutator<'gc> {
                 self.push_into_the_stack_reserve(exhausted.header, arguments, temporaries)
             }
         }
+    }
+
+    /// The refusal of a push handed more arguments than the register
+    /// ceiling, `u16::MAX`, which a frame cannot record: the too-large
+    /// error the callee's body would raise. Every arity check holds a body
+    /// that compiled to at most `u16::MAX` parameters, so only a body past
+    /// the register ceiling -- compiled to one that raises before it reads
+    /// anything (`compiler::body_too_large`) -- can be handed more, by a
+    /// host's send or `Message>>sendTo:`. Refusing it here signals the
+    /// same error and delivers a resumed value to the same send; only the
+    /// signalling activation differs, the sender instead of a
+    /// one-instruction callee.
+    #[cold]
+    #[inline(never)]
+    fn refuse_past_the_register_ceiling(
+        &mut self,
+        kind: ActivationKind<'gc>,
+        receiver: Value<'gc>,
+        then: Continuation<'gc>,
+    ) -> Signal<'gc> {
+        let refusal = literals::body_too_large_error(kind, receiver);
+        // As `refuse_exhausted_push` undoes it: a refused activation never
+        // runs, so a future it was to compute is unresolved again.
+        if let Continuation::Future(forcing) = then {
+            self.future_abandoned(*forcing);
+        }
+        refusal
     }
 
     /// A push the ordinary room of the activation stack's reservation could

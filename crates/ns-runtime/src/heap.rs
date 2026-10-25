@@ -532,8 +532,6 @@ struct FrameHeaderWords {
     guard: Word,
     entered_level: Word,
     register_count: Word,
-    #[cfg(debug_assertions)]
-    generation: Word,
 }
 
 impl FrameHeaderWords {
@@ -555,8 +553,6 @@ impl FrameHeaderWords {
             guard,
             entered_level,
             register_count,
-            #[cfg(debug_assertions)]
-            generation,
         } = self;
         let header = &mut header[..frame_header::COUNT];
         header[frame_header::RECEIVER] = receiver.bits();
@@ -572,10 +568,6 @@ impl FrameHeaderWords {
         header[frame_header::GUARD] = guard.bits();
         header[frame_header::ENTERED_LEVEL] = entered_level.bits();
         header[frame_header::REGISTER_COUNT] = register_count.bits();
-        #[cfg(debug_assertions)]
-        {
-            header[frame_header::GENERATION] = generation.bits();
-        }
     }
 }
 
@@ -2932,7 +2924,10 @@ impl<'gc> Heap<'gc> {
         if !caller_below {
             return None;
         }
-        u32::try_from(number(frame_header::GENERATION)?).ok()
+        let flags = Word::from_bits(header[frame_header::FLAGS]);
+        flags
+            .is_non_negative_small_integer()
+            .then(|| FrameFlags::of(flags).generation)
     }
 
     /// The handle for the live frame at `offset`, minted with that frame's
@@ -3875,7 +3870,7 @@ impl<'gc> Heap<'gc> {
         let copied = &words[closure_field::COUNT..];
         let flags = stack.flags(activation.offset);
         let registers = activation.offset as usize + frame_header::COUNT;
-        let first = registers + flags.argument_count as usize;
+        let first = registers + usize::from(flags.argument_count);
         // The activation's own window, so a list longer than its register
         // file stops at the end of it rather than writing into whatever
         // sits above.
@@ -5912,13 +5907,17 @@ impl<'gc> Heap<'gc> {
         temporary_count: usize,
     ) -> Result<ActivationReference, StackExhausted<'gc>> {
         let register_count = arguments.len() + temporary_count;
-        // Checked by a comparison rather than `u32::try_from`, whose
-        // `Result` the push built and took apart on every activation.
+        // Checked by a comparison rather than `u16::try_from`, whose
+        // `Result` the push built and took apart on every activation. Every
+        // argument is a register, so a count past the register ceiling is
+        // a caller's defect: a send's window holds at most `u16::MAX`, and
+        // a longer list of values is refused before it pushes
+        // (`Interpreter::push`).
         assert!(
-            arguments.len() <= u32::MAX as usize,
-            "more than u32::MAX arguments to one activation"
+            arguments.len() <= usize::from(u16::MAX),
+            "internal: no activation is handed more arguments than the register ceiling, u16::MAX"
         );
-        let argument_count = arguments.len() as u32;
+        let argument_count = arguments.len() as u16;
         let words = frame_header::COUNT + register_count;
         // Every word is computed before the frame is pushed, and the push is
         // the last thing that can refuse, so a refused push has changed
@@ -5997,18 +5996,15 @@ impl<'gc> Heap<'gc> {
             }
             None => self.code_id(&header.code),
         };
+        let flags = FrameFlags::new(kind_tag, argument_count, header.counted, false);
+        #[cfg(debug_assertions)]
+        let flags = flags.with_generation(self.peek_next_generation());
         let mut header_words = FrameHeaderWords {
             receiver,
             current_class,
             operand,
             reified: Word::NIL,
-            flags: FrameFlags {
-                kind_tag,
-                argument_count,
-                counted: header.counted,
-                retains_registers: false,
-            }
-            .word(),
+            flags: flags.word(),
             code: frames::number_word(code.index() as u64),
             program_counter: frames::number_word(0),
             feedback_base: frames::number_word(u64::from(header.feedback_base.raw())),
@@ -6019,8 +6015,6 @@ impl<'gc> Heap<'gc> {
             guard: frames::number_word(u64::from(recorded_guard.bits())),
             entered_level: frames::number_word(entered_level.index() as u64),
             register_count: frames::number_word(register_count as u64),
-            #[cfg(debug_assertions)]
-            generation: self.peek_next_generation(),
         };
         let Heap {
             stack,
@@ -6046,7 +6040,7 @@ impl<'gc> Heap<'gc> {
         }
         let (fixed, registers) = frame.split_at_mut(frame_header::COUNT);
         header_words.write(fixed);
-        let (argument_registers, temporaries) = registers.split_at_mut(argument_count as usize);
+        let (argument_registers, temporaries) = registers.split_at_mut(usize::from(argument_count));
         match arguments {
             // One argument or two are copied word by word, more by a loop
             // the compiler keeps inline: `copy_from_slice` would call out
@@ -6110,10 +6104,8 @@ impl<'gc> Heap<'gc> {
     /// The generation the next frame pushed takes: one past the counter's,
     /// which the push advances only once it has succeeded.
     #[cfg(debug_assertions)]
-    fn peek_next_generation(&self) -> Word {
-        frames::number_word(u64::from(
-            self.stack.next_generation.wrapping_add(1) & GENERATION_MASK,
-        ))
+    fn peek_next_generation(&self) -> u32 {
+        self.stack.next_generation.wrapping_add(1) & GENERATION_MASK
     }
 
     /// The kind tag and the operand word a frame of `kind` records: the
@@ -6508,19 +6500,21 @@ impl<'gc> Heap<'gc> {
         // The reservation holds at most `MAXIMUM_STACK_WORDS`, 2^31 words,
         // so an offset is exact in 32 bits.
         let offset = start as u32;
+        let flags = FrameFlags::new(
+            kind_tag,
+            u16::try_from(argument_count)
+                .expect("internal: a frame's arguments are its code's, at most u16::MAX"),
+            suspension.counted,
+            suspension.retains_registers,
+        );
+        #[cfg(debug_assertions)]
+        let flags = flags.with_generation(self.peek_next_generation());
         let header_words = FrameHeaderWords {
             receiver,
             current_class,
             operand,
             reified: Word::with_object_offset(frame.offset),
-            flags: FrameFlags {
-                kind_tag,
-                argument_count: u32::try_from(argument_count)
-                    .expect("internal: a frame's arguments fit its register count"),
-                counted: suspension.counted,
-                retains_registers: suspension.retains_registers,
-            }
-            .word(),
+            flags: flags.word(),
             code: frames::number_word(code.index() as u64),
             program_counter: frames::number_word(program_counter as u64),
             feedback_base: frames::number_word(u64::from(feedback_base.raw())),
@@ -6530,8 +6524,6 @@ impl<'gc> Heap<'gc> {
             guard: frames::number_word(u64::from(DispatchId::NONE.bits())),
             entered_level: frames::number_word(suspension.entered_level.index() as u64),
             register_count: frames::number_word(register_count as u64),
-            #[cfg(debug_assertions)]
-            generation: self.peek_next_generation(),
         };
         // The frame's own registers go back to nil, as every married
         // frame's are: the live ones are the stack's again.

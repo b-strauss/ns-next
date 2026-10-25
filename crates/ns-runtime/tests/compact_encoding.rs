@@ -14,6 +14,8 @@
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use indoc::formatdoc;
+
 use ns_runtime::bytecode::{CompiledCode, Instruction, Literal};
 use ns_runtime::{
     HostResult, HostSignal, Interpreter, Lowering, Root, SourceOrigin, Symbol, Value, ValueKind,
@@ -307,12 +309,14 @@ fn a_clause_message_past_the_register_ceiling_raises_when_it_runs() {
     }
 }
 
-/// A factory of 65,536 parameters: its body, whose arity saturates at
-/// 65,535, is handed all 65,536 arguments and raises the too-large error,
-/// not an arity mismatch, before its initializer runs. No send instruction
-/// can hand it them: a send names its arguments' contiguous slots, so
-/// `build:`, which sends the factory 65,536 arguments, is itself past the
-/// ceiling under both lowerings. The host sends them instead.
+/// A factory of 65,536 parameters: its declared arity is 65,536, so the
+/// host's send of 65,536 arguments passes the arity check and is refused at
+/// the push, which a frame of that many arguments cannot record, with the
+/// too-large error its body would raise -- not an arity mismatch, before
+/// its initializer runs. No send instruction can hand it them: a send names
+/// its arguments' contiguous slots, so `build:`, which sends the factory
+/// 65,536 arguments, is itself past the ceiling under both lowerings. The
+/// host sends them instead.
 #[test]
 fn a_factory_of_more_parameters_than_registers_raises_the_too_large_error() {
     let pattern: String = (0..=usize::from(u16::MAX))
@@ -346,6 +350,53 @@ fn a_factory_of_more_parameters_than_registers_raises_the_too_large_error() {
                 "the factory"
             ),
             "factory too large: it needs more than 65535 registers"
+        );
+    }
+}
+
+/// A method of 65,536 parameters sent its 65,536 arguments by a program's
+/// `Message>>sendTo:`, the one way Newspeak code hands a body a list of
+/// values longer than any send's window: refused at the push with the
+/// method's too-large error, never an abort. The message comes from the
+/// program's own `doesNotUnderstand:`; the host fills in its selector and
+/// its arguments, which no body under the ceiling could build.
+#[test]
+fn a_message_of_more_arguments_than_registers_raises_the_too_large_error() {
+    let pattern: String = (0..=usize::from(u16::MAX))
+        .map(|index| format!("k: p{index} "))
+        .collect();
+    let selector: String = (0..=usize::from(u16::MAX)).map(|_| "k:").collect();
+    let source = formatdoc! {"
+        class Generated = Object new () (
+          public {pattern}= ( ^p0 )
+          public grab = ( ^self missing )
+          public doesNotUnderstand: message = ( ^message )
+        ) : ()
+    "};
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let (mut interpreter, class) = load(&source, lowering);
+        let instance = new_instance(&mut interpreter, &class);
+        let message = expect_ok(send(&mut interpreter, &instance, "grab", &[]), "grab");
+        let (selector_root, arguments_root) = interpreter.enter(|mutator| {
+            let symbol = mutator.new_symbol(Symbol::intern(&selector));
+            let elements = vec![Value::small_integer(1); usize::from(u16::MAX) + 1];
+            let array = Value::object(mutator.new_array(elements));
+            (mutator.stash(symbol), mutator.stash(array))
+        });
+        expect_ok(
+            send(&mut interpreter, &message, "selector:", &[selector_root]),
+            "selector:",
+        );
+        expect_ok(
+            send(&mut interpreter, &message, "arguments:", &[arguments_root]),
+            "arguments:",
+        );
+        assert_eq!(
+            expect_error(
+                send(&mut interpreter, &message, "sendTo:", &[instance]),
+                "sendTo:"
+            ),
+            METHOD_TOO_LARGE
         );
     }
 }

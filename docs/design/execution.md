@@ -133,14 +133,14 @@ a frame on the stack           // heap/frames.rs's frame_header; every word tagg
                                // frame as a SmallInteger; nil otherwise
     3 reified                  // the married frame object, or nil
     4 flags                    // SmallInteger: the kind's tag, argument_count,
-                               // counted, retains_registers
+                               // counted, retains_registers; in a debug
+                               // build the generation too
     5 code  6 program counter  7 feedback base          // SmallIntegers
     8 caller                   // the frame below's offset; nil in the bottom one
     9 continuation             // nil for Deliver, else its row in the heap's
                                // side table of continuations
     10 guard  11 entered level // recorded_guard and entered_level, SmallIntegers
     12 register count          // the window the push wrote
-    13 generation              // debug builds only
     then the registers         // arguments first, then temporaries
 
 a frame object                 // heap/object.rs's frame_field; an object of the frame format
@@ -174,8 +174,8 @@ pub struct ActivationReference {
   committed, by at least 64 KiB and at most 16 MiB at a time unless a push
   needs more (`FrameStack::grow`) -- and never decommitted while the heap
   lives. Frames lie back to back, innermost highest: the header,
-  `frame_header::COUNT` words -- 13 in a release build, 14 in a debug one,
-  which adds the generation -- then the registers. An
+  `frame_header::COUNT` words, 13 in every build, a debug build's
+  generation riding in the flags word -- then the registers. An
   `ActivationReference` is the word offset of its frame's header, and a
   married frame object's married word holds the same offset.
 - **Every word of a frame is a valid tagged value**: a number a
@@ -196,7 +196,12 @@ pub struct ActivationReference {
   ([memory.md](memory.md), "What the collector traces"). A married frame
   object still skips its own registers, which are nil while the stack
   holds the live ones. The flags word packs the kind's tag in bits 0-7,
-  the argument count in bits 8-39 and the two booleans above them; the
+  the argument count in bits 8-23 -- every argument is a register, so the
+  register ceiling, `u16::MAX`, bounds it: `Interpreter::push` refuses a
+  longer list of values with the too-large error the only body that
+  declares more parameters, the raising one, would raise -- `counted` at 24, `retains_registers` at 25 and, in
+  a debug build, the 31-bit generation in bits 26-56, 57 bits inside a
+  `SmallInteger`'s 61; the
   kind tags are `heap/frames.rs`'s own numbering, never written to an
   image.
 - **The code is an id, not an `Rc`**: a return reads the caller's code from
@@ -280,7 +285,7 @@ pub struct ActivationReference {
   silent failure class the handles' private field was built to exclude.
 - **An `ActivationReference` is 4 bytes in a release build.** In a debug build it
   carries `origin`, like every handle, and a `generation` drawn from a counter at
-  each push and recorded in the frame's `generation` word. A handle read
+  each push and recorded in the frame's flags word. A handle read
   after its frame was popped and the offset reused would otherwise answer a
   different, perfectly valid activation; the generation check turns that
   into a panic at the read.
@@ -6780,10 +6785,9 @@ below it, so a chain of them descends the lexical nesting — and blocks nest at
 most 128 deep, the parser's ceiling in source and the decoder's, derived from
 it, in an artifact ([image-format.md](image-format.md), "Verification"). So the
 stack holds at most 129 × (L + `DEPTH_RESERVE`) frames, the reserve below
-included, 13.0 million, whose headers alone take about 1.36 GB in a release
-build (`frame_header::COUNT`, 13 words, 104 bytes, each) and 1.46 GB in a
-debug one (14 words, 112 bytes, the generation added), before their
-registers, a suspended activation's frame object counted in its frame's
+included, 13.0 million, whose headers alone take about 1.36 GB
+(`frame_header::COUNT`, 13 words, 104 bytes, each, in every build), before
+their registers, a suspended activation's frame object counted in its frame's
 place; the reservation the frames lie in is the net beneath L (below). Only
 code that carries `SendInlinable` gets there — the reference lowering's, or an
 artifact's — recursing through 128 nested control-flow blocks at every level;
@@ -8226,8 +8230,11 @@ callee                      | r0 .. r(argc-1)       | header (13) | r(argc+13) .
   release one: the debug build's generation moves into the flags word,
   whose argument count narrows to 16 bits -- 8 + 16 + 2 + 31 bits, inside
   61. The register ceiling bounds the count: a body with more parameters
-  compiles to the raising body ("Compilation cannot fail"), and a host's
-  arguments past it fail the arity check before the push.
+  compiles to the raising body ("Compilation cannot fail"), whose declared
+  arity still passes the arity check, so a longer list of values -- a
+  host's send or `Message>>sendTo:` -- is refused at the push instead:
+  `Interpreter::push` raises the error the raising body would, without
+  pushing, the sender the signalling activation (built).
 - **A send's arguments are contiguous slots at the top of the caller's
   live registers.** Both lowerings allocate the `argc` slots right after
   the receiver and lower each argument into its slot: a literal or a send

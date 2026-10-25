@@ -123,14 +123,10 @@ pub(super) mod frame_header {
     /// factory is handed as many arguments as its send has keywords,
     /// which no field of the flags could bound.
     pub const REGISTER_COUNT: usize = 12;
-    /// The activation's generation, a `SmallInteger`; debug builds only.
-    #[cfg(debug_assertions)]
-    pub const GENERATION: usize = 13;
-    /// The header's size: the first register's offset.
-    #[cfg(debug_assertions)]
-    pub const COUNT: usize = 14;
-    /// The header's size: the first register's offset.
-    #[cfg(not(debug_assertions))]
+    /// The header's size: the first register's offset. The same in every
+    /// build, a debug build's generation riding in the flags word, so that
+    /// the register numbering the compiler decides past the header holds
+    /// in both.
     pub const COUNT: usize = 13;
 }
 
@@ -163,12 +159,17 @@ pub(super) mod kind_tag {
 
 /// Where each field of `FrameFlags` sits in the flags word's
 /// `SmallInteger`: the kind tag in bits 0-7, the argument count in bits
-/// 8-39, then the two booleans; 42 bits, far inside 61.
+/// 8-23, `counted` at 24, `retains_registers` at 25 and, in a debug build,
+/// the 31-bit generation in bits 26-56; 57 bits, inside 61.
 const KIND_TAG_MASK: u64 = 0xFF;
 const ARGUMENT_COUNT_SHIFT: u32 = 8;
-const ARGUMENT_COUNT_MASK: u64 = 0xFFFF_FFFF;
-const COUNTED_BIT: u64 = 1 << 40;
-const RETAINS_REGISTERS_BIT: u64 = 1 << 41;
+const ARGUMENT_COUNT_MASK: u64 = 0xFFFF;
+const COUNTED_BIT: u64 = 1 << 24;
+const RETAINS_REGISTERS_BIT: u64 = 1 << 25;
+#[cfg(debug_assertions)]
+const GENERATION_SHIFT: u32 = 26;
+#[cfg(debug_assertions)]
+const GENERATION_MASK: u64 = 0x7FFF_FFFF;
 /// The bits below a `SmallInteger`'s payload.
 const SMALL_INTEGER_TAG_BITS: u32 = 3;
 /// A `SmallInteger`'s tag.
@@ -180,16 +181,53 @@ const SMALL_INTEGER_TAG: u64 = 0b001;
 pub(super) struct FrameFlags {
     /// One of `kind_tag`'s constants.
     pub(super) kind_tag: u8,
-    /// The arguments copied into the first registers.
-    pub(super) argument_count: u32,
+    /// The arguments copied into the first registers: at most the
+    /// register ceiling, `u16::MAX`, since every argument is a register.
+    pub(super) argument_count: u16,
     /// Whether the activation counts against the depth limit.
     pub(super) counted: bool,
     /// Whether a frame object married to the activation keeps its
     /// registers when the activation returns.
     pub(super) retains_registers: bool,
+    /// The activation's generation, which a debug build checks every
+    /// `ActivationReference` against; 31 bits.
+    #[cfg(debug_assertions)]
+    pub(super) generation: u32,
 }
 
 impl FrameFlags {
+    /// The flags of an activation of kind `kind_tag` handed
+    /// `argument_count` arguments; a debug build's generation is 0 until
+    /// `with_generation` names it.
+    #[inline(always)]
+    pub(super) fn new(
+        kind_tag: u8,
+        argument_count: u16,
+        counted: bool,
+        retains_registers: bool,
+    ) -> FrameFlags {
+        FrameFlags {
+            kind_tag,
+            argument_count,
+            counted,
+            retains_registers,
+            #[cfg(debug_assertions)]
+            generation: 0,
+        }
+    }
+
+    /// These flags with the generation `generation`, which must fit 31
+    /// bits.
+    #[cfg(debug_assertions)]
+    #[inline(always)]
+    pub(super) fn with_generation(self, generation: u32) -> FrameFlags {
+        debug_assert!(
+            u64::from(generation) <= GENERATION_MASK,
+            "internal: a generation fits 31 bits"
+        );
+        FrameFlags { generation, ..self }
+    }
+
     /// The flags as the `SmallInteger` word the header stores.
     #[inline(always)]
     pub(super) fn word(self) -> Word {
@@ -201,6 +239,10 @@ impl FrameFlags {
         if self.retains_registers {
             payload |= RETAINS_REGISTERS_BIT;
         }
+        #[cfg(debug_assertions)]
+        {
+            payload |= (u64::from(self.generation) & GENERATION_MASK) << GENERATION_SHIFT;
+        }
         number_word(payload)
     }
 
@@ -211,9 +253,11 @@ impl FrameFlags {
         let payload = number_of(word);
         FrameFlags {
             kind_tag: (payload & KIND_TAG_MASK) as u8,
-            argument_count: ((payload >> ARGUMENT_COUNT_SHIFT) & ARGUMENT_COUNT_MASK) as u32,
+            argument_count: ((payload >> ARGUMENT_COUNT_SHIFT) & ARGUMENT_COUNT_MASK) as u16,
             counted: payload & COUNTED_BIT != 0,
             retains_registers: payload & RETAINS_REGISTERS_BIT != 0,
+            #[cfg(debug_assertions)]
+            generation: ((payload >> GENERATION_SHIFT) & GENERATION_MASK) as u32,
         }
     }
 }
@@ -491,25 +535,70 @@ mod tests {
         assert!(words.iter().all(|&word| word == Word::NIL.bits()));
     }
 
+    /// The generations a debug build's flags word must carry: the least
+    /// and the most the 31-bit counter reaches.
+    #[cfg(debug_assertions)]
+    const GENERATIONS: [u32; 2] = [0, 0x7FFF_FFFF];
+    #[cfg(not(debug_assertions))]
+    const GENERATIONS: [u32; 1] = [0];
+
     #[test]
     fn flags_round_trip_through_a_small_integer_word() {
         for kind_tag in ALL_KIND_TAGS {
-            for argument_count in [0, 1, u32::MAX] {
+            for argument_count in [0, 1, u16::MAX] {
                 for counted in [false, true] {
                     for retains_registers in [false, true] {
-                        let flags = FrameFlags {
-                            kind_tag,
-                            argument_count,
-                            counted,
-                            retains_registers,
-                        };
-                        let word = flags.word();
-                        assert!(word.is_small_integer());
-                        assert_eq!(FrameFlags::of(word), flags);
+                        for generation in GENERATIONS {
+                            let flags = FrameFlags::new(
+                                kind_tag,
+                                argument_count,
+                                counted,
+                                retains_registers,
+                            );
+                            #[cfg(debug_assertions)]
+                            let flags = flags.with_generation(generation);
+                            let _ = generation;
+                            let word = flags.word();
+                            assert!(word.is_non_negative_small_integer());
+                            assert_eq!(FrameFlags::of(word), flags);
+                        }
                     }
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_flags_word_packs_its_fields_where_the_layout_says() {
+        let payload = |flags: FrameFlags| number_of(flags.word());
+        assert_eq!(
+            payload(FrameFlags::new(kind_tag::FACTORY, 0, false, false)),
+            7
+        );
+        assert_eq!(
+            payload(FrameFlags::new(kind_tag::METHOD, u16::MAX, false, false)),
+            0xFFFF << 8
+        );
+        assert_eq!(
+            payload(FrameFlags::new(kind_tag::METHOD, 0, true, false)),
+            1 << 24
+        );
+        assert_eq!(
+            payload(FrameFlags::new(kind_tag::METHOD, 0, false, true)),
+            1 << 25
+        );
+        #[cfg(debug_assertions)]
+        assert_eq!(
+            payload(
+                FrameFlags::new(kind_tag::METHOD, 0, false, false).with_generation(0x7FFF_FFFF)
+            ),
+            0x7FFF_FFFF << 26
+        );
+    }
+
+    #[test]
+    fn the_header_is_thirteen_words_in_every_build() {
+        assert_eq!(frame_header::COUNT, 13);
     }
 
     #[test]
@@ -529,8 +618,6 @@ mod tests {
             frame_header::ENTERED_LEVEL,
             frame_header::REGISTER_COUNT,
         ];
-        #[cfg(debug_assertions)]
-        offsets.push(frame_header::GENERATION);
         offsets.sort_unstable();
         assert_eq!(offsets, (0..frame_header::COUNT).collect::<Vec<_>>());
     }
