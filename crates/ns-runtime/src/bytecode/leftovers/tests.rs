@@ -4,9 +4,7 @@ use std::rc::Rc;
 
 use super::*;
 use crate::builtins::primitive::MirrorPrimitive;
-use crate::bytecode::{
-    falls_through, jump_target, register_written, successors, CallSite, CompiledCode, Literal,
-};
+use crate::bytecode::{jump_target, register_written, successors, CallSite, CompiledCode, Literal};
 use crate::{Lowering, Symbol};
 
 fn send(argument_base: u16, argument_sources: Vec<u16>, destination: u16) -> Instruction {
@@ -27,213 +25,227 @@ fn load(destination: u16) -> Instruction {
     }
 }
 
-fn tainted(leftovers: &Leftovers, program_counter: u32) -> Vec<u16> {
-    leftovers.tainted_before(program_counter).collect()
+/// Loads into every register of `registers`, which cleans them.
+fn loads(registers: std::ops::Range<u16>) -> Vec<Instruction> {
+    registers.map(load).collect()
 }
 
-fn analyzed(instructions: &[Instruction], local_count: u16, register_count: u16) -> Leftovers {
-    match analyze(instructions, local_count, register_count) {
-        Ok(leftovers) => leftovers,
-        Err(refusal) => panic!("refused: {refusal:?}"),
+fn branch_if_false(target: u32) -> Instruction {
+    Instruction::BranchIfFalse {
+        register: 0,
+        target,
     }
 }
 
-#[test]
-fn a_send_taints_the_registers_from_its_slot_end() {
-    let body = [send(5, vec![5, 6], 5), Instruction::Return { register: 5 }];
-    let leftovers = analyzed(&body, 5, 10);
-    assert_eq!(tainted(&leftovers, 0), Vec::<u16>::new());
-    assert_eq!(tainted(&leftovers, 1), vec![7, 8, 9]);
+/// The registers of `ranges`, one by one.
+fn flattened(ranges: &[std::ops::Range<u16>]) -> Vec<u16> {
+    ranges.iter().flat_map(|range| range.clone()).collect()
+}
+
+/// Ranges of registers, each `(start, end)`.
+fn spans(pairs: &[(u16, u16)]) -> Vec<std::ops::Range<u16>> {
+    pairs.iter().map(|&(start, end)| start..end).collect()
+}
+
+/// The registers tainted before `program_counter` of a body `check`
+/// accepts.
+fn tainted(
+    instructions: &[Instruction],
+    local_count: u16,
+    register_count: u16,
+    program_counter: u32,
+) -> Vec<u16> {
+    if let Err(refusal) = check(instructions, local_count, register_count) {
+        panic!("refused: {refusal:?}");
+    }
+    let answers = tainted_at(
+        instructions,
+        local_count,
+        register_count,
+        &[program_counter],
+    );
+    assert_eq!(answers.len(), 1);
+    flattened(&answers[0])
 }
 
 #[test]
-fn a_write_cleans_a_register() {
-    let body = [
-        send(5, vec![5, 6], 5),
-        load(8),
-        Instruction::Return { register: 8 },
-    ];
-    let leftovers = analyzed(&body, 5, 10);
-    assert_eq!(tainted(&leftovers, 2), vec![7, 9]);
+fn scratch_is_tainted_at_entry() {
+    let body = [Instruction::Return { register: 7 }];
+    assert_eq!(
+        check(&body, 6, 10),
+        Err(LeftoverRefusal::Read {
+            instruction: 0,
+            register: 7
+        })
+    );
+    let mut body = loads(6..10);
+    body.push(Instruction::Return { register: 7 });
+    assert_eq!(tainted(&body, 6, 10, 0), vec![6, 7, 8, 9]);
+    assert_eq!(tainted(&body, 6, 10, 2), vec![8, 9]);
+    assert_eq!(tainted(&body, 6, 10, 4), Vec::<u16>::new());
+}
+
+#[test]
+fn a_send_taints_from_its_slot_end_and_writes_none_of_its_slots() {
+    let mut body = loads(10..14);
+    // Its slot is r10, so it taints r11 and up; its destination is r10.
+    body.push(send(10, vec![10], 10));
+    // Consecutive named sources are read where they stand, and a primitive
+    // answers without a push: slots r10 and r11 are never written, so r10
+    // stays clean and r11 tainted.
+    body.push(send(10, vec![0, 1], 12));
+    body.push(Instruction::Return { register: 10 });
+    assert_eq!(tainted(&body, 5, 14, 4), vec![5, 6, 7, 8, 9]);
+    assert_eq!(tainted(&body, 5, 14, 5), vec![5, 6, 7, 8, 9, 11, 12, 13]);
+    assert_eq!(tainted(&body, 5, 14, 6), vec![5, 6, 7, 8, 9, 11, 13]);
+    let mut refused = body.clone();
+    refused[6] = Instruction::Return { register: 11 };
+    assert_eq!(
+        check(&refused, 5, 14),
+        Err(LeftoverRefusal::Read {
+            instruction: 6,
+            register: 11
+        })
+    );
 }
 
 #[test]
 fn a_mirror_send_taints_nothing() {
-    let body = [
-        Instruction::SendMirror {
-            primitive: MirrorPrimitive::from_index(0),
-            mirror_register: 0,
-            subject_register: 1,
-            argument_base: 5,
-            argument_sources: vec![5],
-            destination: 5,
-            failure: 2,
-        },
-        Instruction::Return { register: 5 },
-        Instruction::Return { register: 6 },
-    ];
-    let leftovers = analyzed(&body, 5, 10);
-    assert_eq!(tainted(&leftovers, 1), Vec::<u16>::new());
-    assert_eq!(tainted(&leftovers, 2), Vec::<u16>::new());
-}
-
-#[test]
-fn a_send_writes_none_of_its_slots() {
-    let body = [
-        load(10),
-        // Its slot is r10, so it taints r11 and up.
-        send(10, vec![10], 10),
-        // Consecutive named sources are read where they stand, and a
-        // primitive answers without a push: slots r10 and r11 are never
-        // written, so r10 stays clean and r11 tainted.
-        send(10, vec![0, 1], 12),
-        Instruction::Return { register: 11 },
-    ];
-    assert_eq!(
-        analyze(&body, 5, 14).err(),
-        Some(LeftoverRefusal::Read {
-            instruction: 3,
-            register: 11
-        })
-    );
-    let body = [
-        load(10),
-        send(10, vec![10], 10),
-        send(10, vec![0, 1], 12),
-        Instruction::Return { register: 10 },
-    ];
-    let leftovers = analyzed(&body, 5, 14);
-    assert_eq!(tainted(&leftovers, 3), vec![11, 13]);
+    let mut body = loads(5..10);
+    body.push(Instruction::SendMirror {
+        primitive: MirrorPrimitive::from_index(0),
+        mirror_register: 0,
+        subject_register: 1,
+        argument_base: 5,
+        argument_sources: vec![5],
+        destination: 5,
+        failure: 7,
+    });
+    body.push(Instruction::Return { register: 5 });
+    body.push(Instruction::Return { register: 6 });
+    assert_eq!(tainted(&body, 5, 10, 6), Vec::<u16>::new());
+    assert_eq!(tainted(&body, 5, 10, 7), Vec::<u16>::new());
 }
 
 #[test]
 fn named_locals_are_never_tainted() {
-    let body = [send(2, vec![2], 2), Instruction::Return { register: 2 }];
-    let leftovers = analyzed(&body, 6, 9);
-    assert_eq!(tainted(&leftovers, 1), vec![6, 7, 8]);
+    let mut body = loads(6..9);
+    body.push(send(2, vec![2], 2));
+    body.push(Instruction::Return { register: 2 });
+    assert_eq!(tainted(&body, 6, 9, 0), vec![6, 7, 8]);
+    assert_eq!(tainted(&body, 6, 9, 3), Vec::<u16>::new());
+    assert_eq!(tainted(&body, 6, 9, 4), vec![6, 7, 8]);
 }
 
 #[test]
 fn a_join_is_tainted_where_either_arm_is() {
-    let body = [
+    let mut body = loads(5..10);
+    body.extend([
+        // Taints r6 and up, cleans r5.
         send(5, vec![5], 5),
         Instruction::BranchIfFalse {
             register: 5,
-            target: 4,
+            target: 9,
         },
-        // One arm sends with its slot at 6, so taints 7 and up and cleans 6.
+        // One arm sends with its slot at r6, so taints r7 and up and
+        // cleans r6.
         send(6, vec![0], 6),
-        Instruction::Jump { target: 5 },
-        // The other writes 7, which the first send had tainted.
+        Instruction::Jump { target: 10 },
+        // The other writes r7, which the first send had tainted.
         load(7),
         Instruction::Return { register: 5 },
-    ];
-    let leftovers = analyzed(&body, 5, 10);
-    assert_eq!(tainted(&leftovers, 3), vec![7, 8, 9]);
-    assert_eq!(tainted(&leftovers, 4), vec![6, 7, 8, 9]);
-    assert_eq!(tainted(&leftovers, 5), vec![6, 7, 8, 9]);
-}
-
-#[test]
-fn a_loop_body_taints_its_head() {
-    let body = [
-        load(5),
-        Instruction::BranchIfFalse {
-            register: 5,
-            target: 4,
-        },
-        send(6, vec![6], 6),
-        Instruction::Jump { target: 1 },
-        Instruction::Return { register: 5 },
-    ];
-    let leftovers = analyzed(&body, 5, 10);
-    let head = tainted(&leftovers, 1);
-    for register in [7, 8, 9] {
-        assert!(head.contains(&register), "{head:?}");
-    }
-    assert!(!head.contains(&5));
-}
-
-#[test]
-fn a_read_of_a_tainted_register_is_refused() {
-    let body = [send(5, vec![5, 6], 5), Instruction::Return { register: 8 }];
-    assert_eq!(
-        analyze(&body, 5, 10).err(),
-        Some(LeftoverRefusal::Read {
-            instruction: 1,
-            register: 8
-        })
-    );
-}
-
-#[test]
-fn a_read_after_rewriting_is_accepted() {
-    let body = [
-        send(5, vec![5, 6], 5),
-        load(8),
-        Instruction::Return { register: 8 },
-    ];
-    assert!(analyze(&body, 5, 10).is_ok());
+    ]);
+    assert_eq!(tainted(&body, 5, 10, 8), vec![7, 8, 9]);
+    assert_eq!(tainted(&body, 5, 10, 9), vec![6, 7, 8, 9]);
+    assert_eq!(tainted(&body, 5, 10, 10), vec![6, 7, 8, 9]);
 }
 
 #[test]
 fn a_read_a_join_brings_back_is_refused() {
     // Tainted on one arm only: the join keeps it tainted.
-    let body = [
-        load(7),
-        Instruction::BranchIfFalse {
-            register: 5,
-            target: 3,
-        },
-        send(5, vec![5], 5),
+    let mut body = loads(5..10);
+    body.extend([
+        branch_if_false(7),
+        send(5, vec![0], 5),
         Instruction::Return { register: 7 },
-    ];
+    ]);
     assert_eq!(
-        analyze(&body, 5, 10).err(),
-        Some(LeftoverRefusal::Read {
-            instruction: 3,
+        check(&body, 5, 10),
+        Err(LeftoverRefusal::Read {
+            instruction: 7,
             register: 7
         })
     );
 }
 
 #[test]
-fn a_crafted_body_past_the_bound_is_refused() {
-    // More forward jumps open at once than any compiled body keeps.
-    let open = OPEN_ENTRY_LIMIT as u32 + 1;
-    let mut body: Vec<Instruction> = (0..open)
-        .map(|_| Instruction::BranchIfFalse {
-            register: 0,
-            target: open,
-        })
-        .collect();
-    body.push(Instruction::Return { register: 0 });
-    assert_eq!(
-        analyze(&body, 5, 10).err(),
-        Some(LeftoverRefusal::PastTheBound {
-            instruction: open - 1
-        })
-    );
-    // At the limit, the same body is accepted.
-    let mut body: Vec<Instruction> = (0..open - 1)
-        .map(|_| Instruction::BranchIfFalse {
-            register: 0,
-            target: open - 1,
-        })
-        .collect();
-    body.push(Instruction::Return { register: 0 });
-    assert!(analyze(&body, 5, 10).is_ok());
+fn crossing_forward_jumps_join_exactly() {
+    let mut body = loads(4..8);
+    body.extend([
+        // 4: carries the clean state to 8.
+        branch_if_false(8),
+        // 5: taints r5 to r7.
+        send(4, vec![0], 4),
+        // 6: carries r5 to r7 over 8, to 10.
+        branch_if_false(10),
+        // 7
+        load(5),
+        // 8: the clean state joins r6 and r7.
+        load(6),
+        // 9
+        load(7),
+        // 10: r5 to r7 join the clean state.
+        Instruction::Move {
+            destination: 4,
+            source: 1,
+        },
+        Instruction::Return { register: 0 },
+    ]);
+    assert_eq!(tainted(&body, 4, 8, 8), vec![6, 7]);
+    assert_eq!(tainted(&body, 4, 8, 9), vec![7]);
+    assert_eq!(tainted(&body, 4, 8, 10), vec![5, 6, 7]);
+    assert_eq!(tainted(&body, 4, 8, 11), vec![5, 6, 7]);
+    if let Err(message) = agrees_with_the_oracle(&body, 4, 8) {
+        panic!("{message}");
+    }
 }
 
 #[test]
-fn a_loop_entered_past_its_head_is_refused() {
+fn a_loop_head_takes_the_floor() {
     let body = [
-        Instruction::BranchIfFalse {
-            register: 0,
-            target: 2,
-        },
         load(5),
-        send(6, vec![6], 6),
+        load(7),
+        load(8),
+        load(9),
+        // 4: the head; r6 is tainted since entry.
+        branch_if_false(8),
+        // 5: the loop's least slot end is r8.
+        send(7, vec![0], 7),
+        load(8),
+        // 7: the back edge.
+        Instruction::Jump { target: 4 },
+        Instruction::Return { register: 0 },
+    ];
+    assert_eq!(tainted(&body, 5, 10, 4), vec![6, 8, 9]);
+    assert_eq!(tainted(&body, 5, 10, 7), vec![6, 9]);
+    assert_eq!(tainted(&body, 5, 10, 8), vec![6, 8, 9]);
+    // A loop without a send adds nothing at its head.
+    let body = [
+        load(5),
+        branch_if_false(4),
+        load(6),
+        Instruction::Jump { target: 1 },
+        Instruction::Return { register: 5 },
+    ];
+    assert_eq!(tainted(&body, 5, 8, 1), vec![6, 7]);
+}
+
+#[test]
+fn a_jump_into_a_loop_past_its_head_is_past_the_bound() {
+    let body = [
+        branch_if_false(2),
+        load(5),
+        send(6, vec![0], 6),
         Instruction::BranchIfTrue {
             register: 0,
             target: 1,
@@ -241,13 +253,37 @@ fn a_loop_entered_past_its_head_is_refused() {
         Instruction::Return { register: 0 },
     ];
     assert_eq!(
-        analyze(&body, 5, 10).err(),
-        Some(LeftoverRefusal::PastTheBound { instruction: 0 })
+        check(&body, 5, 10),
+        Err(LeftoverRefusal::PastTheBound { instruction: 0 })
+    );
+    // Into the inner of two nested loops, from inside the outer one.
+    let body = [
+        load(5),
+        // 1: the outer head.
+        load(6),
+        branch_if_false(4),
+        // 3: the inner head.
+        load(7),
+        // 4: past the inner head, from 2.
+        load(8),
+        Instruction::BranchIfTrue {
+            register: 0,
+            target: 3,
+        },
+        Instruction::BranchIfTrue {
+            register: 0,
+            target: 1,
+        },
+        Instruction::Return { register: 0 },
+    ];
+    assert_eq!(
+        check(&body, 5, 10),
+        Err(LeftoverRefusal::PastTheBound { instruction: 2 })
     );
 }
 
 #[test]
-fn crossing_loops_are_refused() {
+fn crossing_loops_are_past_the_bound() {
     let body = [
         load(5),
         load(6),
@@ -262,15 +298,143 @@ fn crossing_loops_are_refused() {
         Instruction::Return { register: 0 },
     ];
     assert!(matches!(
-        analyze(&body, 5, 10),
+        check(&body, 5, 10),
         Err(LeftoverRefusal::PastTheBound { .. })
     ));
 }
 
+/// `count` forward branches, each to a target of its own, nested, then the
+/// targets.
+fn nested_branches(count: u32) -> Vec<Instruction> {
+    let mut body: Vec<Instruction> = (0..count)
+        .map(|index| branch_if_false(2 * count - 1 - index))
+        .collect();
+    body.extend((0..count).map(|_| load(1)));
+    body.push(Instruction::Return { register: 0 });
+    body
+}
+
+#[test]
+fn more_than_257_pending_targets_are_past_the_bound() {
+    assert_eq!(PENDING_LIMIT, 257);
+    let limit = PENDING_LIMIT as u32;
+    assert_eq!(
+        check(&nested_branches(limit + 1), 5, 10),
+        Err(LeftoverRefusal::PastTheBound { instruction: limit })
+    );
+    assert_eq!(check(&nested_branches(limit), 5, 10), Ok(()));
+    // Jumps to one target share its pending state.
+    let mut body: Vec<Instruction> = (0..2 * limit).map(|_| branch_if_false(2 * limit)).collect();
+    body.push(Instruction::Return { register: 0 });
+    assert_eq!(check(&body, 5, 10), Ok(()));
+}
+
+#[test]
+fn a_load_that_raises_ends_its_path() {
+    // The body a body past a limit compiles to: its load raises, so its
+    // return, which reads a scratch register nothing wrote, never runs.
+    let body = [
+        Instruction::LoadLiteral {
+            destination: 15,
+            literal: Literal::BodyTooLarge(crate::bytecode::BodyLimit::Arguments),
+        },
+        Instruction::ImplicitReturn { register: 15 },
+    ];
+    assert_eq!(tainted(&body, 15, 16, 0), vec![15]);
+    assert_eq!(tainted(&body, 15, 16, 1), Vec::<u16>::new());
+}
+
+#[test]
+fn the_most_a_body_holds_is_258_bitsets_of_the_widest_register_file() {
+    let analysis = match analyze(&nested_branches(PENDING_LIMIT as u32), 5, u16::MAX, &[]) {
+        Ok(analysis) => analysis,
+        Err(refusal) => panic!("refused: {refusal:?}"),
+    };
+    let spent = analysis.spent;
+    eprintln!(
+        "{} bitsets, {} bytes, {} word operations per instruction",
+        spent.peak_bitsets, spent.peak_bytes, spent.most_word_operations
+    );
+    assert_eq!(spent.words, 1024);
+    assert_eq!(spent.peak_pending, PENDING_LIMIT);
+    assert_eq!(spent.peak_bitsets, PENDING_LIMIT + 1);
+    assert_eq!(spent.peak_bytes, 258 * 1024 * 8);
+    assert!(spent.peak_bytes as f64 <= 2.02 * f64::from(1u32 << 20));
+    assert!(spent.most_word_operations <= 3 * spent.words as u64);
+}
+
+#[test]
+fn a_body_past_the_instruction_limit_is_past_the_bound() {
+    let body = vec![Instruction::Return { register: 0 }; INSTRUCTION_LIMIT as usize + 1];
+    assert_eq!(
+        check(&body, 5, 10),
+        Err(LeftoverRefusal::PastTheBound {
+            instruction: INSTRUCTION_LIMIT
+        })
+    );
+}
+
+#[test]
+fn tainted_at_answers_each_program_counter() {
+    let mut body = loads(5..9);
+    body.extend([
+        // 4
+        send(6, vec![0], 6),
+        // 5
+        Instruction::Jump { target: 7 },
+        // 6: unreachable.
+        load(5),
+        // 7
+        load(8),
+        Instruction::Return { register: 5 },
+    ]);
+    assert_eq!(check(&body, 5, 9), Ok(()));
+    let answers = tainted_at(&body, 5, 9, &[0, 4, 5, 5, 6, 7, 8, 100]);
+    assert_eq!(
+        answers,
+        vec![
+            spans(&[(5, 9)]),
+            spans(&[]),
+            spans(&[(7, 9)]),
+            spans(&[(7, 9)]),
+            spans(&[]),
+            spans(&[(7, 9)]),
+            spans(&[(7, 8)]),
+            spans(&[]),
+        ]
+    );
+    for (program_counter, answer) in [0u32, 4, 5, 6, 7, 8].into_iter().zip([
+        spans(&[(5, 9)]),
+        spans(&[]),
+        spans(&[(7, 9)]),
+        spans(&[]),
+        spans(&[(7, 9)]),
+        spans(&[(7, 8)]),
+    ]) {
+        assert_eq!(tainted_at(&body, 5, 9, &[program_counter]), vec![answer]);
+    }
+    assert_eq!(tainted_at(&body, 5, 9, &[]), Vec::<Vec<_>>::new());
+}
+
+#[test]
+fn the_bitsets_cross_word_boundaries() {
+    let mut body = loads(3..200);
+    // Taints r63 to r199 in a body of 200 registers.
+    body.push(send(62, vec![0], 62));
+    body.push(load(64));
+    body.push(load(127));
+    body.push(load(128));
+    body.push(Instruction::Return { register: 0 });
+    let answers = tainted_at(&body, 3, 200, &[198, 200, 201]);
+    assert_eq!(answers[0], spans(&[(63, 200)]));
+    assert_eq!(answers[1], spans(&[(63, 64), (65, 127), (128, 200)]));
+    assert_eq!(answers[2], spans(&[(63, 64), (65, 127), (129, 200)]));
+}
+
 /// The analysis as a plain fixpoint over one explicit set of tainted
-/// registers per instruction: quadratic, and obviously what the
-/// representation stands for. A loop's head is where the analysis may say
-/// more than this; everywhere else the two agree.
+/// registers per instruction: quadratic, and obviously what the bitsets
+/// stand for. A loop's head is where the analysis may say more than this;
+/// everywhere else the two agree.
 fn oracle(
     instructions: &[Instruction],
     local_count: u16,
@@ -282,7 +446,7 @@ fn oracle(
     if count == 0 {
         return states;
     }
-    states[0] = Some(BTreeSet::new());
+    states[0] = Some((local_count..register_count).collect());
     let mut worklist = vec![0usize];
     while let Some(index) = worklist.pop() {
         let instruction = &instructions[index];
@@ -334,24 +498,22 @@ fn has_back_edge(instructions: &[Instruction]) -> bool {
     })
 }
 
-/// Holds the analysis to the oracle at every instruction of `instructions`:
-/// equal without a loop, never less with one.
+/// Holds the analysis to the oracle at every instruction of `instructions`,
+/// a body `check` accepted: equal without a loop, never less with one.
 fn agrees_with_the_oracle(
-    leftovers: &Leftovers,
     instructions: &[Instruction],
     local_count: u16,
     register_count: u16,
 ) -> Result<(), String> {
     let expected = oracle(instructions, local_count, register_count);
     let looping = has_back_edge(instructions);
-    // Every program counter from one pass, in reverse to hold the answers
-    // to the order asked; the last one through the single query as well.
-    let program_counters: Vec<u32> = (0..instructions.len() as u32).rev().collect();
-    let mut every = leftovers.tainted_before_each(&program_counters);
-    every.reverse();
-    if let Some(last) = program_counters.first() {
-        let single: Vec<u16> = leftovers.tainted_before(*last).collect();
-        if every.last() != Some(&single) {
+    // Every program counter from one pass; the last one asked alone as
+    // well.
+    let program_counters: Vec<u32> = (0..instructions.len() as u32).collect();
+    let every = tainted_at(instructions, local_count, register_count, &program_counters);
+    if let Some(&last) = program_counters.last() {
+        let single = tainted_at(instructions, local_count, register_count, &[last]);
+        if every.last() != single.first() {
             return Err(format!(
                 "at {last}: one query answers {single:?}, the pass {:?}",
                 every.last()
@@ -359,7 +521,13 @@ fn agrees_with_the_oracle(
         }
     }
     for (index, expected) in expected.iter().enumerate() {
-        let found: BTreeSet<u16> = every[index].iter().copied().collect();
+        let ranges = &every[index];
+        let sorted_and_disjoint = ranges.windows(2).all(|pair| pair[0].end < pair[1].start)
+            && ranges.iter().all(|range| range.start < range.end);
+        if !sorted_and_disjoint {
+            return Err(format!("at {index}: ranges {ranges:?} overlap or touch"));
+        }
+        let found: BTreeSet<u16> = flattened(ranges).into_iter().collect();
         let expected = expected.clone().unwrap_or_default();
         let agrees = if looping {
             found.is_superset(&expected)
@@ -408,10 +576,7 @@ fn crafted_body(generator: &mut Generator, length: u32, register_count: u16) -> 
                 send(base, sources, scratch(generator))
             }
             2 | 3 => load(scratch(generator)),
-            4 | 5 => Instruction::BranchIfFalse {
-                register: 0,
-                target: index + 1 + generator.next(length - index - 1),
-            },
+            4 | 5 => branch_if_false(index + 1 + generator.next(length - index - 1)),
             6 => Instruction::Jump {
                 target: index + 1 + generator.next(length - index - 1),
             },
@@ -439,10 +604,10 @@ fn crafted_bodies_agree_with_the_oracle() {
         let length = 4 + generator.next(40);
         let register_count = 6 + generator.next(10) as u16;
         let body = crafted_body(&mut generator, length, register_count);
-        match analyze(&body, 4, register_count) {
-            Ok(leftovers) => {
+        match check(&body, 4, register_count) {
+            Ok(()) => {
                 accepted += 1;
-                if let Err(message) = agrees_with_the_oracle(&leftovers, &body, 4, register_count) {
+                if let Err(message) = agrees_with_the_oracle(&body, 4, register_count) {
                     panic!("round {round}: {message}\n{body:#?}");
                 }
             }
@@ -451,6 +616,22 @@ fn crafted_bodies_agree_with_the_oracle() {
         }
     }
     assert!(accepted > 1000, "only {accepted} accepted");
+}
+
+#[test]
+fn crafted_bodies_of_many_registers_agree_with_the_oracle() {
+    // Wider than a word, so that every bitset operation crosses words.
+    let mut generator = Generator(0x00B1_75E7);
+    for round in 0..300 {
+        let length = 4 + generator.next(60);
+        let register_count = 60 + generator.next(200) as u16;
+        let body = crafted_body(&mut generator, length, register_count);
+        if check(&body, 4, register_count).is_ok() {
+            if let Err(message) = agrees_with_the_oracle(&body, 4, register_count) {
+                panic!("round {round}: {message}\n{body:#?}");
+            }
+        }
+    }
 }
 
 fn compile_first_method(source: &str, lowering: Lowering) -> CompiledCode {
@@ -529,32 +710,68 @@ fn sources_under(directory: &Path, into: &mut Vec<PathBuf>) {
     }
 }
 
-/// What the analysis spent on one body, against its size.
-struct Measured {
-    ratio: f64,
-    memory_ratio: f64,
-    open_entries: usize,
-    /// The peak against the fewest bytes the body can take on the wire --
-    /// an instruction's tag and one register, two bytes for each register
-    /// it reads -- for a body of at least `LARGE` of them.
-    memory_per_byte: Option<f64>,
+/// The largest figures the pass reached over a set of bodies, each with the
+/// body it was reached on.
+#[derive(Default)]
+struct Largest {
+    bytes: (u64, String),
+    bitsets: (usize, String),
+    pending: (usize, String),
+    word_operations: (u64, String),
+    /// Word operations per instruction against the words of a bitset.
+    operations_per_word: (f64, String),
 }
 
-/// A body this large on the wire is measured against its bytes: below it,
-/// the allowance's fixed costs dominate.
-const LARGE: u64 = 1024;
+impl Largest {
+    fn record(&mut self, spent: &Spent, label: &str) {
+        if spent.peak_bytes > self.bytes.0 {
+            self.bytes = (spent.peak_bytes, label.to_string());
+        }
+        if spent.peak_bitsets > self.bitsets.0 {
+            self.bitsets = (spent.peak_bitsets, label.to_string());
+        }
+        if spent.peak_pending > self.pending.0 {
+            self.pending = (spent.peak_pending, label.to_string());
+        }
+        if spent.most_word_operations > self.word_operations.0 {
+            self.word_operations = (spent.most_word_operations, label.to_string());
+        }
+        let per_word = spent.most_word_operations as f64 / spent.words.max(1) as f64;
+        if per_word > self.operations_per_word.0 {
+            self.operations_per_word = (per_word, label.to_string());
+        }
+    }
 
-fn measure(code: &CompiledCode) -> Result<Measured, String> {
+    fn report(&self, what: &str) {
+        eprintln!(
+            "{what}: largest memory {} bytes ({}), most bitsets {} ({}), most pending {} ({}), most word operations per instruction {} ({}), per word of a bitset {:.2} ({})",
+            self.bytes.0,
+            self.bytes.1,
+            self.bitsets.0,
+            self.bitsets.1,
+            self.pending.0,
+            self.pending.1,
+            self.word_operations.0,
+            self.word_operations.1,
+            self.operations_per_word.0,
+            self.operations_per_word.1,
+        );
+    }
+}
+
+/// Runs the pass over `code` and holds it to the bound: at most
+/// `PENDING_LIMIT + 1` bitsets, and at most three bitset operations per
+/// instruction.
+fn measure(code: &CompiledCode) -> Result<Spent, String> {
     let instructions = code.instructions();
-    let spent = check(&instructions, code.local_count, code.register_count)
+    let spent = analyze(&instructions, code.local_count, code.register_count, &[])
+        .map(|analysis| analysis.spent)
         .map_err(|refusal| format!("{refusal:?}"))?;
-    let bytes = spent.bytes;
-    Ok(Measured {
-        ratio: spent.work as f64 / spent.units as f64,
-        memory_ratio: spent.peak_memory as f64 / spent.bytes as f64,
-        open_entries: spent.peak_open_entries,
-        memory_per_byte: (bytes >= LARGE).then(|| spent.peak_memory as f64 / bytes as f64),
-    })
+    assert!(spent.peak_pending <= PENDING_LIMIT);
+    assert!(spent.peak_bitsets <= PENDING_LIMIT + 1);
+    assert!(spent.peak_bytes <= ((PENDING_LIMIT + 1) * spent.words * 8) as u64);
+    assert!(spent.most_word_operations <= 3 * spent.words as u64);
+    Ok(spent)
 }
 
 #[test]
@@ -565,10 +782,7 @@ fn every_golden_body_stays_within_the_bound() {
     sources_under(&root.join("benchmarks"), &mut files);
     let mut bodies = 0usize;
     let mut modules = 0usize;
-    let mut worst_ratio = (0.0f64, String::new());
-    let mut worst_memory = (0.0f64, String::new());
-    let mut most_open = (0usize, String::new());
-    let mut worst_per_byte = (0.0f64, String::new());
+    let mut largest = Largest::default();
     let mut failures = Vec::new();
     let mut skipped: Vec<PathBuf> = Vec::new();
     for lowering in [Lowering::Optimized, Lowering::Reference] {
@@ -612,35 +826,21 @@ fn every_golden_body_stays_within_the_bound() {
             for code in codes {
                 bodies += 1;
                 let instructions = code.instructions();
-                let label = format!("{name} {lowering:?} ({} instructions)", instructions.len());
+                let label = format!(
+                    "{name} {lowering:?} ({} instructions, {} registers)",
+                    instructions.len(),
+                    code.register_count
+                );
                 match measure(&code) {
-                    Ok(measured) => {
-                        if measured.ratio > worst_ratio.0 {
-                            worst_ratio = (measured.ratio, label.clone());
-                        }
-                        if measured.memory_ratio > worst_memory.0 {
-                            worst_memory = (measured.memory_ratio, label.clone());
-                        }
-                        if measured.open_entries > most_open.0 {
-                            most_open = (measured.open_entries, label.clone());
-                        }
-                        if let Some(per_byte) = measured.memory_per_byte {
-                            if per_byte > worst_per_byte.0 {
-                                worst_per_byte = (per_byte, label.clone());
-                            }
-                        }
-                        if let Ok(leftovers) =
-                            analyze(&instructions, code.local_count, code.register_count)
-                        {
-                            if instructions.len() <= 400 {
-                                if let Err(message) = agrees_with_the_oracle(
-                                    &leftovers,
-                                    &instructions,
-                                    code.local_count,
-                                    code.register_count,
-                                ) {
-                                    failures.push(format!("{label}: {message}"));
-                                }
+                    Ok(spent) => {
+                        largest.record(&spent, &label);
+                        if instructions.len() <= 400 {
+                            if let Err(message) = agrees_with_the_oracle(
+                                &instructions,
+                                code.local_count,
+                                code.register_count,
+                            ) {
+                                failures.push(format!("{label}: {message}"));
                             }
                         }
                     }
@@ -652,14 +852,8 @@ fn every_golden_body_stays_within_the_bound() {
             }
         }
     }
-    eprintln!(
-        "{modules} modules, {bodies} bodies; largest work ratio {:.2} ({}), largest memory ratio {:.2} ({}), most open entries {} ({})",
-        worst_ratio.0, worst_ratio.1, worst_memory.0, worst_memory.1, most_open.0, most_open.1
-    );
-    eprintln!(
-        "largest memory per encoded byte of a large body {:.2} ({})",
-        worst_per_byte.0, worst_per_byte.1
-    );
+    eprintln!("{modules} modules, {bodies} bodies");
+    largest.report("every compiled body");
     for failure in failures.iter().take(3) {
         eprintln!("{failure}");
     }
@@ -686,62 +880,62 @@ fn method_source(body: &str) -> String {
     format!("class Shapes = () (\n  run: a with: b = (\n    {body}\n  )\n) : ()\n")
 }
 
-/// The flat worst case of the state's size: one keyword send of `width`
-/// parts, each an inlined conditional over a value an inner send left a
-/// tainted register beside.
+/// The flat worst case of a state stored per jump target: one tuple of
+/// `width` elements, each an inlined conditional over a value an inner send
+/// left a tainted register beside. A tuple, since a send passes no more
+/// than `ARGUMENT_LIMIT` arguments.
 fn flat(width: usize) -> String {
-    let argument = "((a f: (b g: a)) ifTrue: [a] ifFalse: [b])";
-    let mut expression = String::from("b");
-    for _ in 0..width {
-        expression.push_str(&format!(" f: {argument}"));
-    }
-    method_source(&format!("^{expression}"))
+    let element = "((a f: (b g: a)) ifTrue: [a] ifFalse: [b])";
+    let elements = vec![element; width].join(". ");
+    method_source(&format!("^{{b. {elements}}}"))
 }
 
 /// Compiles `source`'s method under both lowerings and holds it, and every
-/// block it creates, to the bound; answers the largest work ratio and the
-/// most forward jumps open at once.
-fn assert_within_the_bound(source: &str, what: &str) -> (f64, usize) {
-    let mut worst = (0.0f64, 0usize);
+/// block it creates, to the bound; answers the most pending targets.
+fn assert_within_the_bound(source: &str, what: &str) -> usize {
+    let mut most_pending = 0;
     for lowering in [Lowering::Optimized, Lowering::Reference] {
         let mut codes = Vec::new();
         collect(&Rc::new(compile_first_method(source, lowering)), &mut codes);
+        let mut largest = Largest::default();
         let mut instructions = 0;
-        let mut lowering_worst = (0.0f64, 0.0f64, 0usize);
-        let mut per_byte = 0.0f64;
         for code in &codes {
             instructions += code.instruction_count();
-            let measured = match measure(code) {
-                Ok(measured) => measured,
-                Err(refusal) => panic!("{what} {lowering:?}: {refusal}"),
+            let spent = match measure(code) {
+                Ok(spent) => spent,
+                Err(refusal) => panic!(
+                    "{what} {lowering:?}: {refusal}
+{}",
+                    crate::bytecode::disassemble(code, "body")
+                ),
             };
-            assert!(measured.ratio <= WORK_PER_UNIT as f64);
-            assert!(measured.memory_per_byte.unwrap_or(0.0) <= MEMORY_PER_BYTE as f64);
-            assert!(measured.open_entries <= OPEN_ENTRY_LIMIT);
-            per_byte = per_byte.max(measured.memory_per_byte.unwrap_or(0.0));
-            lowering_worst = (
-                lowering_worst.0.max(measured.ratio),
-                lowering_worst.1.max(measured.memory_ratio),
-                lowering_worst.2.max(measured.open_entries),
+            largest.record(
+                &spent,
+                &format!("{} instructions", code.instruction_count()),
             );
         }
-        eprintln!(
-            "{what} {lowering:?}: {} bodies, {instructions} instructions, work ratio {:.2}, memory ratio {:.2}, memory per byte {:.2}, open entries {}",
-            codes.len(),
-            lowering_worst.0,
-            lowering_worst.1,
-            per_byte,
-            lowering_worst.2
-        );
-        worst = (worst.0.max(lowering_worst.0), worst.1.max(lowering_worst.2));
+        largest.report(&format!(
+            "{what} {lowering:?}, {} bodies, {instructions} instructions",
+            codes.len()
+        ));
+        most_pending = most_pending.max(largest.pending.0);
     }
-    worst
+    most_pending
 }
 
 #[test]
 fn the_flat_worst_case_stays_within_the_bound() {
     for width in [500, 2000] {
-        assert_within_the_bound(&flat(width), &format!("flat {width}"));
+        let source = flat(width);
+        for lowering in [Lowering::Optimized, Lowering::Reference] {
+            let code = compile_first_method(&source, lowering);
+            assert!(
+                code.instruction_count() > width,
+                "flat {width} {lowering:?} compiled to {} instructions",
+                code.instruction_count()
+            );
+        }
+        assert_within_the_bound(&source, &format!("flat {width}"));
     }
 }
 
@@ -802,11 +996,11 @@ fn the_deepest_nesting_stays_within_the_bound() {
         } else {
             8 / shape.matches("{inner}").count().max(1) + 2
         };
-        let (ratio, open) = assert_within_the_bound(
+        let pending = assert_within_the_bound(
             &nested(depth, shape, innermost),
             &format!("{shape} x{depth}"),
         );
-        assert!(open <= OPEN_ENTRY_LIMIT, "{shape}: {open} open, {ratio}");
+        assert!(pending <= PENDING_LIMIT, "{shape}: {pending} pending");
     }
 }
 

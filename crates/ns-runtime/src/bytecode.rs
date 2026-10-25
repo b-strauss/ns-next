@@ -1389,7 +1389,9 @@ pub(crate) fn jump_target(instruction: &Instruction) -> Option<u32> {
 
 /// Whether control can pass from `instruction` to the instruction after
 /// it: every instruction but a return, the signal that ends an inlined
-/// loop's guard-failure path, and an unconditional jump.
+/// loop's guard-failure path, a load of `Literal::BodyTooLarge`, which
+/// always raises, and an unconditional jump. An `Error` is not resumable,
+/// so nothing continues after the two that raise (`vm::run`).
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn falls_through(instruction: &Instruction) -> bool {
     !matches!(
@@ -1398,6 +1400,10 @@ pub(crate) fn falls_through(instruction: &Instruction) -> bool {
             | Instruction::ImplicitReturn { .. }
             | Instruction::NonLocalReturn { .. }
             | Instruction::SignalNonBoolean { .. }
+            | Instruction::LoadLiteral {
+                literal: Literal::BodyTooLarge(_),
+                ..
+            }
             | Instruction::Jump { .. }
     )
 }
