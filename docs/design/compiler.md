@@ -1210,8 +1210,9 @@ fallback closure compiles its blocks again, which multiplies the bodies and
 call sites of one code family with each level of nesting, but each body
 stays small: about 17 instructions in the ten-deep construct of
 `OPEN-WORK.md`. So a small source can compile to a family of a million
-bodies that no limit on one body refuses. With the argument limit, an argument count fits a
-byte, and every program that compiles can be packaged. The clause limit
+bodies that no limit on one body refuses. With the argument limit, an
+argument count fits a byte, and every program that compiles can be
+packaged. The clause limit
 replaces the two ceilings that existed before it: the class object's
 23-bit clause field, which keeps its headroom, and the initializer's
 `u16` step count.

@@ -1751,7 +1751,7 @@ fn a_method_of_more_parameters_than_the_format_counts_is_refused_not_a_panic() {
     "};
     assert_eq!(
         snapshot_error(&source),
-        "image encoding cannot write a body arity of 65535: it is past the limit of 255 arguments"
+        "image encoding cannot write a body arity of 65535 or more: it is past the limit of 255 arguments"
     );
 }
 

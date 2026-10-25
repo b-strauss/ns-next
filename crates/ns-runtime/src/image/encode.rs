@@ -343,7 +343,15 @@ fn encode_code(
     // Refused past the argument limit as the decoder refuses it
     // (`decode::check_argument_count`), so that `build` refuses what `load`
     // would. A body past the register ceiling saturates its arity at
-    // `u16::MAX`, which this refuses too.
+    // `u16::MAX`, which this refuses too, naming it as the least count it
+    // stands for.
+    if code.argument_count == u16::MAX {
+        return Err(format!(
+            "image encoding cannot write a body arity of {} or more: it is past the limit of {} arguments",
+            u16::MAX,
+            crate::bytecode::ARGUMENT_LIMIT
+        ));
+    }
     writer.write_u16(arity_field("body arity", usize::from(code.argument_count))?);
     writer.write_u16(code.register_count);
     // `outer_reach` is deliberately absent: it follows from the
