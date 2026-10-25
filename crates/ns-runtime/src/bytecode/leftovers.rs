@@ -221,13 +221,15 @@ impl TaintedSets {
         Ref::map(self.sets.borrow(), |sets| &*sets[position].registers)
     }
 
-    /// Whether the set before `program_counter` is kept already, so that
-    /// `before` answers it without a pass.
-    pub(crate) fn has(&self, program_counter: u32) -> bool {
-        self.sets
-            .borrow()
-            .binary_search_by_key(&program_counter, |set| set.program_counter)
-            .is_ok()
+    /// The set before `program_counter` if it is kept already, so that
+    /// asking it runs no pass; `None` if no fill has kept it.
+    pub(crate) fn kept(&self, program_counter: u32) -> Option<Ref<'_, [Range<u16>]>> {
+        Ref::filter_map(self.sets.borrow(), |sets| {
+            sets.binary_search_by_key(&program_counter, |set| set.program_counter)
+                .ok()
+                .map(|position| &*sets[position].registers)
+        })
+        .ok()
     }
 
     /// Keeps the sets of `code` before each of `program_counters`, which

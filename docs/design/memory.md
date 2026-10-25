@@ -762,10 +762,16 @@ check").
   the analysis runs once per body and program counter, at the first
   collection that finds a frame there, after a `check` of the body, since
   the shipped code is decoded unverified and an answer for a body `check`
-  refuses would nil live registers. The walk gathers the program counters
-  it finds no set for by body first and fills each body's from one pass,
-  so a collection analyses a body once however many frames run it. It is
-  the only guard: no push or pop writes the registers it nils. A full
+  refuses would nil live registers. The stack is walked once: a frame
+  whose set is kept is nilled as the walk meets it, and one whose set is
+  missing is deferred with the windows above it that reach into its own;
+  after the walk the missing sets are filled body by body, each body's
+  from one pass, so a collection analyses a body once however many frames
+  run it, and the deferred frames are nilled against the windows recorded
+  for them. The walk keeps the set it looked up last, so a frame of the
+  same body at the same program counter as the frame above it -- a deep
+  recursion's frames -- costs the reads of its header and its writes, no
+  lookup. It is the only guard: no push or pop writes the registers it nils. A full
   collection runs it twice, before its marking and before its
   forwarding, which is idempotent on purpose. A frame object traced as
   it lies takes no such register either: a suspension copies the frame's

@@ -771,6 +771,178 @@ fn nil_unclaimed(words: &mut [u64], claimed: &[Range<usize>], range: Range<usize
     }
 }
 
+/// The part of a frame's window the collector's pre-pass may write
+/// (`Heap::nil_leftovers`).
+struct FrameWindow {
+    /// The stack word of the frame's register 0, its first argument.
+    start: usize,
+    /// The stack word of the first register above the header: no word
+    /// below it is written.
+    registers: usize,
+    /// The window's end, or the top where that is lower: no word at or
+    /// past it is written.
+    until: usize,
+    /// The header of the callee lying on the frame's slots, if one does:
+    /// the frame stopped at that send, which taints every register from
+    /// there up.
+    callee_header: Option<usize>,
+}
+
+impl FrameWindow {
+    /// Whether `nil` would write nothing: every word it may write -- from
+    /// the lower of the first tainted register, `first_tainted`, and the
+    /// callee's header up -- lies in the lowest window of `claimed`, as a
+    /// deep recursion's frames, each covered by its callee's window, do.
+    #[inline(always)]
+    fn untouched(&self, claimed: &[Range<usize>], first_tainted: Option<u16>) -> bool {
+        let tainted = first_tainted.map(|register| self.start + usize::from(register));
+        let lowest = match (tainted, self.callee_header) {
+            (Some(tainted), Some(callee_header)) => tainted.min(callee_header),
+            (Some(lowest), None) | (None, Some(lowest)) => lowest,
+            (None, None) => return true,
+        };
+        let from = lowest.max(self.registers);
+        from >= self.until
+            || claimed
+                .last()
+                .is_some_and(|window| window.start <= from && window.end >= self.until)
+    }
+
+    /// Writes `filler` into the registers of `tainted` and, where a callee
+    /// lies on the slots, into every register from its header up, but
+    /// never into a word of `claimed`, the windows of the frames above
+    /// that reach into this one (`nil_unclaimed`).
+    fn nil(
+        &self,
+        words: &mut [u64],
+        claimed: &[Range<usize>],
+        tainted: &[Range<u16>],
+        filler: u64,
+    ) {
+        for range in tainted {
+            let from = (self.start + usize::from(range.start)).max(self.registers);
+            let until = (self.start + usize::from(range.end)).min(self.until);
+            nil_unclaimed(words, claimed, from..until, filler);
+        }
+        if let Some(callee_header) = self.callee_header {
+            nil_unclaimed(
+                words,
+                claimed,
+                callee_header.max(self.registers)..self.until,
+                filler,
+            );
+        }
+    }
+}
+
+/// A frame the pre-pass's walk met before its body kept the set the frame
+/// needs (`Heap::nil_leftovers`), nilled once the fill has kept it.
+struct DeferredFrame {
+    code_index: usize,
+    program_counter: u32,
+    window: FrameWindow,
+    /// Where the windows above that reached into this frame's when the
+    /// walk met it lie among the walk's recorded claims.
+    claims: Range<usize>,
+}
+
+/// The set the pre-pass looked up last, by body and program counter
+/// (`Heap::nil_leftovers`): a deep recursion's frames run one body at one
+/// program counter, so each but the first skips the lookup of its code
+/// row, the borrow of the body's sets and their search.
+struct LastSet<'code> {
+    code_index: usize,
+    program_counter: u32,
+    #[cfg(debug_assertions)]
+    code: &'code CompiledCode,
+    /// The kept set, `None` if no fill has kept it yet.
+    tainted: Option<std::cell::Ref<'code, [Range<u16>]>>,
+    /// The first register of the kept set, `None` if it is empty or not
+    /// kept (`FrameWindow::untouched`).
+    first_tainted: Option<u16>,
+    /// Where the slots of the send at the program counter end, relative
+    /// to a frame's start, `None` if the instruction there sends nothing;
+    /// decoded the first time a callee on the slots asks.
+    #[cfg(debug_assertions)]
+    slot_end: Option<Option<usize>>,
+}
+
+impl<'code> LastSet<'code> {
+    /// The set of the body in code row `code_index` before
+    /// `program_counter`, kept in `last` for the frame below.
+    #[inline(always)]
+    fn of<'last>(
+        last: &'last mut Option<LastSet<'code>>,
+        tables: &'code Tables,
+        code_index: usize,
+        program_counter: u32,
+    ) -> &'last mut LastSet<'code> {
+        let hit = last.as_ref().is_some_and(|set| {
+            set.code_index == code_index && set.program_counter == program_counter
+        });
+        if !hit {
+            LastSet::look_up(last, tables, code_index, program_counter);
+        }
+        match last {
+            Some(set) => set,
+            None => unreachable!("internal: the set was just looked up"),
+        }
+    }
+
+    /// Looks the set up afresh: `of`'s miss, out of line so that a hit
+    /// stays a comparison.
+    #[inline(never)]
+    fn look_up(
+        last: &mut Option<LastSet<'code>>,
+        tables: &'code Tables,
+        code_index: usize,
+        program_counter: u32,
+    ) {
+        let Some(entry) = tables.codes.get(code_index).and_then(Option::as_ref) else {
+            unreachable!("internal: a running frame names a live code row")
+        };
+        let code: &'code CompiledCode = &entry.code;
+        let tainted = code.kept_tainted_before(program_counter);
+        let first_tainted = tainted
+            .as_ref()
+            .and_then(|tainted| tainted.first())
+            .map(|range| range.start);
+        *last = Some(LastSet {
+            code_index,
+            program_counter,
+            #[cfg(debug_assertions)]
+            code,
+            tainted,
+            first_tainted,
+            #[cfg(debug_assertions)]
+            slot_end: None,
+        });
+    }
+
+    /// Checks that a callee lies on the frame's slots, where
+    /// `callee_header` says one does, only while the frame stands at the
+    /// send whose slots end at that header -- decoding the instruction
+    /// once per body and program counter, never once per frame.
+    #[cfg(debug_assertions)]
+    fn check_callee(&mut self, start: usize, callee_header: Option<usize>) {
+        let Some(callee_header) = callee_header else {
+            return;
+        };
+        let code = self.code;
+        let program_counter = self.program_counter as usize;
+        let slot_end = *self.slot_end.get_or_insert_with(|| {
+            code.instruction(program_counter)
+                .argument_slots()
+                .map(|(base, sources)| usize::from(base) + sources.len())
+        });
+        debug_assert!(
+            slot_end.is_some_and(|slot_end| start + slot_end == callee_header),
+            "internal: a callee lies on its sender's slots only while the sender stands at \
+             the send"
+        );
+    }
+}
+
 /// Adds `window` to `claimed` (`nil_unclaimed`), merging every window it
 /// touches: one that starts at or below every window there, as a frame
 /// does below the frames above it.
@@ -781,6 +953,15 @@ fn claim(claimed: &mut Vec<Range<usize>>, window: Range<usize>) {
             .is_none_or(|lowest| lowest.start >= window.start),
         "internal: a frame starts at or below every frame above it"
     );
+    // A frame that ends inside the lowest window -- a sender whose callee
+    // lies on its slots, as down a deep recursion -- only lowers its start:
+    // the window above it begins past the lowest's end.
+    if let Some(lowest) = claimed.last_mut() {
+        if lowest.start <= window.end && window.end <= lowest.end {
+            lowest.start = window.start;
+            return;
+        }
+    }
     let mut merged = window;
     while let Some(lowest) = claimed.last() {
         if lowest.start > merged.end {
@@ -8008,63 +8189,86 @@ impl<'gc> Heap<'gc> {
     /// arguments and header, which no analysis taints: a callee's
     /// arguments are its sender's slots.
     ///
-    /// A frame's cost is a lookup of its set and the writes of its nils;
-    /// the claimed windows merge as the walk goes down, since a frame
-    /// starts at or below every frame above it.
+    /// The stack is walked once. A frame whose body keeps its set already
+    /// is nilled as the walk meets it; one whose body keeps none yet is
+    /// deferred, with the windows above it that reach into its own. Once
+    /// the walk is done, the missing sets are filled body by body, each
+    /// body's from one pass over it (`CompiledCode::fill_tainted_before`),
+    /// so that a collection that meets a body at many new program counters
+    /// -- a deep recursion through it, the first collection of a run --
+    /// decodes and analyses it once rather than once per program counter;
+    /// then each deferred frame is nilled against the windows recorded for
+    /// it, exactly as the walk would have nilled it.
+    ///
+    /// A frame costs the reads of its header and the writes of its nils,
+    /// and a lookup of its set only where its body or program counter
+    /// differs from the frame's above (`LastSet`), which a deep
+    /// recursion's frames rarely do; one whose every word it may write
+    /// lies in the window above it, as such a frame's do, writes nothing
+    /// (`FrameWindow::untouched`). A walk that finds every set kept, the
+    /// common case once a program has run a while, allocates nothing but
+    /// the claimed windows, which merge as the walk goes down, since a
+    /// frame starts at or below every frame above it.
     fn nil_leftovers(&mut self) {
-        self.fill_missing_tainted_sets();
         let Heap { stack, tables, .. } = self;
         if stack.innermost == NO_FRAME {
             return;
         }
+        let tables = &*tables;
         let top = stack.frames.top();
         let filler = dead_register().bits();
         // The windows of the frames walked so far, merged, ordered by
         // start, the lowest last.
         let mut claimed: Vec<Range<usize>> = Vec::new();
+        // The frames whose set no fill has kept yet, each with the part of
+        // `claimed` that reached into its window when the walk met it,
+        // recorded in `deferred_claims`.
+        let mut deferred: Vec<DeferredFrame> = Vec::new();
+        let mut deferred_claims: Vec<Range<usize>> = Vec::new();
         // The start and the header of the frame walked just before: the
         // callee of the frame walked now.
         let mut callee: Option<(usize, usize)> = None;
+        let mut last: Option<LastSet<'_>> = None;
         let mut offset = stack.innermost;
         loop {
             let start = stack.frame_start(offset);
             let header = offset as usize;
             let end = stack.window_end(offset);
-            let registers = header + frame_header::COUNT;
             let code_index =
                 frames::number_of(stack.header_word(offset, frame_header::CODE)) as usize;
             // A program counter is an instruction's index, and a body has
             // at most `INSTRUCTION_LIMIT` of them.
             let program_counter =
                 frames::number_of(stack.header_word(offset, frame_header::PROGRAM_COUNTER)) as u32;
-            let Some(entry) = tables.codes.get(code_index).and_then(Option::as_ref) else {
-                unreachable!("internal: a running frame names a live code row")
+            let window = FrameWindow {
+                start,
+                registers: header + frame_header::COUNT,
+                until: end.min(top),
+                callee_header: callee
+                    .filter(|(callee_start, _)| *callee_start < end)
+                    .map(|(_, callee_header)| callee_header),
             };
-            let code = &entry.code;
-            let tainted = code.tainted_before(program_counter);
-            for range in tainted.iter() {
-                let from = (start + usize::from(range.start)).max(registers);
-                let until = (start + usize::from(range.end)).min(end).min(top);
-                nil_unclaimed(stack.frames.words_mut(), &claimed, from..until, filler);
-            }
-            drop(tainted);
-            if let Some((callee_start, callee_header)) = callee {
-                if callee_start < end {
-                    debug_assert!(
-                        code.instruction(program_counter as usize)
-                            .argument_slots()
-                            .is_some_and(|(base, sources)| {
-                                start + usize::from(base) + sources.len() == callee_header
-                            }),
-                        "internal: a callee lies on its sender's slots only while the sender \
-                         stands at the send"
-                    );
-                    nil_unclaimed(
-                        stack.frames.words_mut(),
-                        &claimed,
-                        callee_header.max(registers)..end.min(top),
-                        filler,
-                    );
+            let set = LastSet::of(&mut last, tables, code_index, program_counter);
+            #[cfg(debug_assertions)]
+            set.check_callee(start, window.callee_header);
+            match &set.tainted {
+                Some(tainted) => {
+                    if !window.untouched(&claimed, set.first_tainted) {
+                        window.nil(stack.frames.words_mut(), &claimed, tainted, filler);
+                    }
+                }
+                None => {
+                    // Every window above starts at or above this frame's
+                    // start, so those that reach into it are the lowest.
+                    let reaching = claimed.partition_point(|above| above.start >= end);
+                    let first_claim = deferred_claims.len();
+                    deferred_claims.extend_from_slice(&claimed[reaching..]);
+                    deferred.push(DeferredFrame {
+                        code_index,
+                        program_counter,
+                        window,
+                        claims: first_claim..deferred_claims.len(),
+                    });
                 }
             }
             claim(&mut claimed, start..end);
@@ -8074,35 +8278,15 @@ impl<'gc> Heap<'gc> {
                 None => break,
             }
         }
-    }
-
-    /// Keeps the tainted set of every frame on the stack whose body has
-    /// none yet for the program counter the frame stores, before
-    /// `nil_leftovers` walks them: the misses are gathered by body first
-    /// and each body's are filled from one pass over it
-    /// (`CompiledCode::fill_tainted_before`), so that a collection that
-    /// meets a body at many new program counters -- a deep recursion
-    /// through it, the first collection of a run -- decodes and analyses
-    /// it once rather than once per program counter. A walk that finds
-    /// every set kept, the common case once a program has run a while,
-    /// allocates nothing.
-    fn fill_missing_tainted_sets(&mut self) {
-        let Heap { stack, tables, .. } = self;
-        let mut missing: Vec<(usize, u32)> = Vec::new();
-        for offset in stack.offsets() {
-            let code_index =
-                frames::number_of(stack.header_word(offset, frame_header::CODE)) as usize;
-            // A program counter is an instruction's index, and a body has
-            // at most `INSTRUCTION_LIMIT` of them.
-            let program_counter =
-                frames::number_of(stack.header_word(offset, frame_header::PROGRAM_COUNTER)) as u32;
-            let Some(entry) = tables.codes.get(code_index).and_then(Option::as_ref) else {
-                unreachable!("internal: a running frame names a live code row")
-            };
-            if !entry.code.has_tainted_before(program_counter) {
-                missing.push((code_index, program_counter));
-            }
+        if deferred.is_empty() {
+            return;
         }
+        // The fill changes the sets the last lookup borrowed.
+        last = None;
+        let mut missing: Vec<(usize, u32)> = deferred
+            .iter()
+            .map(|frame| (frame.code_index, frame.program_counter))
+            .collect();
         missing.sort_unstable();
         missing.dedup();
         for body in missing.chunk_by(|first, second| first.0 == second.0) {
@@ -8112,6 +8296,18 @@ impl<'gc> Heap<'gc> {
                 .collect();
             if let Some(entry) = tables.codes.get(body[0].0).and_then(Option::as_ref) {
                 entry.code.fill_tainted_before(&program_counters);
+            }
+        }
+        for frame in &deferred {
+            let set = LastSet::of(&mut last, tables, frame.code_index, frame.program_counter);
+            let Some(tainted) = &set.tainted else {
+                unreachable!("internal: the fill keeps every set the walk deferred")
+            };
+            let claims = &deferred_claims[frame.claims.clone()];
+            if !frame.window.untouched(claims, set.first_tainted) {
+                frame
+                    .window
+                    .nil(stack.frames.words_mut(), claims, tainted, filler);
             }
         }
     }
@@ -16975,6 +17171,206 @@ mod tests {
 
             assert_eq!(kept(&heap, weak), [true, false, false, false]);
             heap.pop_activation(activation);
+        }
+
+        /// Writes into each of `registers` of `activation` an integer, a
+        /// word the pre-pass may nil without any object depending on it.
+        fn write_integers(heap: &mut Heap<'_>, activation: ActivationReference, registers: &[u16]) {
+            let base = heap.activation_register_base(activation);
+            for register in registers {
+                heap.set_register(base, *register, Value::small_integer(i64::from(*register)));
+            }
+        }
+
+        /// Which of `registers` of `activation` hold the pre-pass's word.
+        fn dead_registers(
+            heap: &Heap<'_>,
+            activation: ActivationReference,
+            registers: &[u16],
+        ) -> Vec<u16> {
+            let base = heap.activation_register_base(activation);
+            registers
+                .iter()
+                .copied()
+                .filter(|register| {
+                    heap.stack
+                        .frames
+                        .word(base.index as usize + usize::from(*register))
+                        == dead_register().bits()
+                })
+                .collect()
+        }
+
+        /// A frame whose body keeps no set yet is nilled once the walk is
+        /// done, against the windows above it as the walk met them: here
+        /// the sender is deferred below a callee on its slots whose set is
+        /// kept, and it loses exactly what it loses once its own set is
+        /// kept as well -- never a word of the callee's window, its
+        /// argument the sender's slot.
+        #[test]
+        fn a_deferred_frame_below_a_claiming_frame_is_nilled_as_a_kept_one() {
+            let mut heap = Heap::new();
+            let sender_code = body(
+                vec![
+                    Instruction::LoadSelf { destination: FIRST },
+                    load(FIRST + 2),
+                    send(FIRST, FIRST + 2, vec![FIRST + 2], FIRST),
+                    Instruction::Return { register: FIRST },
+                ],
+                0,
+                0,
+                FIRST + 27,
+            );
+            let callee_code = body(
+                vec![Instruction::Return { register: 0 }],
+                1,
+                0,
+                1 + FIRST + 2,
+            );
+            // A frame of the callee's body at the program counter the
+            // callee will stand at, so that its set is kept before the
+            // sender's.
+            let warm = pushed(&mut heap, Rc::clone(&callee_code), &[Value::nil()]);
+            heap.collect_for_test(&mut []);
+            heap.pop_activation(warm);
+            assert!(callee_code.kept_tainted_before(0).is_some());
+            assert!(sender_code.kept_tainted_before(2).is_none());
+
+            let sender = pushed(&mut heap, Rc::clone(&sender_code), &[]);
+            heap.activation_set_program_counter(sender, 2);
+            // The send's slot, the callee's argument, written before the
+            // push reads it.
+            write_integers(&mut heap, sender, &[FIRST + 2]);
+            let base = heap.activation_register_base(sender);
+            let temporaries = callee_code.registers_above_header();
+            let callee = heap
+                .push_overlapped_activation(
+                    &mut running(Rc::clone(&callee_code)),
+                    base,
+                    FIRST + 2,
+                    1,
+                    temporaries,
+                )
+                .expect("the stack holds the frame");
+            assert_eq!(
+                heap.stack.frames.top(),
+                heap.stack.window_end(sender.offset),
+                "the top stands at the sender's window end, above the callee's"
+            );
+            // Every register of the sender but those of the callee's
+            // header, which lies on the sender's registers from r16.
+            let callee_registers = FIRST + 3 + FIRST;
+            let registers: Vec<u16> = (FIRST..FIRST + 3)
+                .chain(callee_registers..FIRST + 27)
+                .collect();
+            let expected: Vec<u16> = std::iter::once(FIRST + 1)
+                .chain(callee_registers..FIRST + 27)
+                .collect();
+
+            write_integers(&mut heap, sender, &registers);
+            heap.collect_for_test(&mut []);
+            assert_eq!(
+                dead_registers(&heap, sender, &registers),
+                expected,
+                "deferred: the unwritten r14, the callee's scratch and the sender's registers \
+                 above the callee are nilled; the receiver and the slot are kept"
+            );
+            assert!(sender_code.kept_tainted_before(2).is_some());
+
+            write_integers(&mut heap, sender, &registers);
+            heap.collect_for_test(&mut []);
+            assert_eq!(
+                dead_registers(&heap, sender, &registers),
+                expected,
+                "kept: the same registers"
+            );
+            heap.pop_activation(callee);
+            heap.pop_activation(sender);
+        }
+
+        /// Frames that repeat a body and program counter share one lookup,
+        /// and one that differs in either looks its own set up: the frames
+        /// of one body at two program counters, interleaved with another
+        /// body's, each lose what their own set says, both when every set
+        /// is missing and when every set is kept.
+        #[test]
+        fn repeated_and_interleaved_frames_take_their_own_sets() {
+            let mut heap = Heap::new();
+            let sending = body(
+                vec![
+                    Instruction::LoadSelf { destination: FIRST },
+                    load(FIRST + 1),
+                    send(FIRST, FIRST + 1, vec![FIRST + 1], FIRST),
+                    Instruction::Move {
+                        destination: FIRST + 3,
+                        source: FIRST,
+                    },
+                    Instruction::Return {
+                        register: FIRST + 3,
+                    },
+                ],
+                0,
+                0,
+                FIRST + 6,
+            );
+            let looping = body(
+                vec![
+                    Instruction::LoadSelf { destination: FIRST },
+                    load(FIRST + 1),
+                    Instruction::BranchIfFalse {
+                        register: FIRST + 1,
+                        target: 6,
+                    },
+                    load(FIRST + 2),
+                    send(FIRST, FIRST + 2, vec![FIRST + 2], FIRST + 2),
+                    Instruction::Jump { target: 2 },
+                    Instruction::Return { register: FIRST },
+                ],
+                0,
+                0,
+                FIRST + 5,
+            );
+            // Bottom to top; the walk meets them the other way round.
+            let layout: [(&Rc<CompiledCode>, usize); 6] = [
+                (&sending, 4),
+                (&sending, 4),
+                (&sending, 3),
+                (&looping, 2),
+                (&sending, 3),
+                (&sending, 4),
+            ];
+            let expected = |code: &Rc<CompiledCode>, program_counter: usize| -> Vec<u16> {
+                match (Rc::ptr_eq(code, &sending), program_counter) {
+                    (true, 4) => vec![FIRST + 2, FIRST + 4, FIRST + 5],
+                    (true, 3) => vec![FIRST + 2, FIRST + 3, FIRST + 4, FIRST + 5],
+                    (false, 2) => vec![FIRST + 2, FIRST + 3, FIRST + 4],
+                    _ => unreachable!("a frame of the layout"),
+                }
+            };
+            let mut activations = Vec::new();
+            for (code, program_counter) in layout {
+                let activation = pushed(&mut heap, Rc::clone(code), &[]);
+                heap.activation_set_program_counter(activation, program_counter);
+                activations.push(activation);
+            }
+            for round in ["every set missing", "every set kept"] {
+                for (activation, (code, _)) in activations.iter().zip(layout) {
+                    let registers: Vec<u16> = (FIRST..code.register_count).collect();
+                    write_integers(&mut heap, *activation, &registers);
+                }
+                heap.collect_for_test(&mut []);
+                for (activation, (code, program_counter)) in activations.iter().zip(layout) {
+                    let registers: Vec<u16> = (FIRST..code.register_count).collect();
+                    assert_eq!(
+                        dead_registers(&heap, *activation, &registers),
+                        expected(code, program_counter),
+                        "{round}: the frame at {program_counter}"
+                    );
+                }
+            }
+            for activation in activations.into_iter().rev() {
+                heap.pop_activation(activation);
+            }
         }
     }
 }

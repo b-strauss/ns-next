@@ -801,10 +801,13 @@ impl CompiledCode {
         self.tainted_sets.before(self, program_counter)
     }
 
-    /// Whether the set before `program_counter` is kept already
-    /// (`tainted_before` answers it without a pass).
-    pub(crate) fn has_tainted_before(&self, program_counter: u32) -> bool {
-        self.tainted_sets.has(program_counter)
+    /// The set before `program_counter` if it is kept already, which
+    /// `tainted_before` would answer without a pass; `None` otherwise.
+    pub(crate) fn kept_tainted_before(
+        &self,
+        program_counter: u32,
+    ) -> Option<std::cell::Ref<'_, [Range<u16>]>> {
+        self.tainted_sets.kept(program_counter)
     }
 
     /// Keeps the sets before each of `program_counters`, ascending, from
