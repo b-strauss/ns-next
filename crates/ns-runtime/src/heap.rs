@@ -12035,6 +12035,29 @@ mod tests {
         assert_eq!(std::mem::size_of::<Option<FrameReference<'static>>>(), 8);
     }
 
+    /// A running activation's handle is its frame's word offset, and the
+    /// argument window packs its base, start and count into one word, so
+    /// that each travels in a register (`interpreter`'s
+    /// `what_the_hot_path_passes_by_value_is_at_most_two_scalars` says
+    /// why).
+    #[cfg(all(target_pointer_width = "64", not(debug_assertions)))]
+    #[test]
+    fn an_activation_handle_and_an_argument_window_are_one_scalar_each() {
+        assert_eq!(std::mem::size_of::<ActivationReference>(), 4);
+        assert_eq!(std::mem::size_of::<ArgumentSlots>(), 8);
+    }
+
+    /// What `pop_activation` answers on every return is a continuation and
+    /// a flag, 24 bytes: one more than two scalars, so it comes back
+    /// through memory. Pinned at the size it was measured at, so that it
+    /// does not grow; whether it can come back in two scalars is open
+    /// (`docs/OPEN-WORK.md`).
+    #[cfg(all(target_pointer_width = "64", not(debug_assertions)))]
+    #[test]
+    fn what_a_pop_answers_stays_the_size_it_was_measured_at() {
+        assert_eq!(std::mem::size_of::<Popped<'static>>(), 24);
+    }
+
     /// Marks from the heap's own roots, answers whether each of `objects` was
     /// reached, and clears every mark again, so that the test can go on to
     /// collect: a mark left set would make the next marking skip that object's

@@ -3573,6 +3573,49 @@ mod tests {
         assert_eq!(std::mem::size_of::<EvaluationResult>(), 40);
     }
 
+    /// What the send, push and return path passes by value between
+    /// functions the compiler keeps apart -- the argument window, the
+    /// sender, the feedback base, a popped frame's continuation -- is at
+    /// most two scalars. Rust's ABI passes at most two scalars in
+    /// registers; a larger aggregate goes through memory, a copy built by
+    /// narrow stores and read back wide, which stalled every send while
+    /// `Arguments` was one (`docs/design/execution.md`, "Keeping the hot
+    /// path in registers"). The size is what this holds; whether the layout
+    /// stays a pair the codegen gate's count of wide loads sees. The window
+    /// and the activation's handle are pinned in `heap`'s tests. Release
+    /// only: a debug build's handles carry an origin and a move epoch.
+    #[cfg(all(target_pointer_width = "64", not(debug_assertions)))]
+    #[test]
+    fn what_the_hot_path_passes_by_value_is_at_most_two_scalars() {
+        // A tag and one word: the packed window, or a reference to a slice.
+        assert_eq!(std::mem::size_of::<Arguments>(), 16);
+        assert_eq!(std::mem::size_of::<Option<ActivationReference>>(), 8);
+        assert_eq!(std::mem::size_of::<FeedbackBase>(), 4);
+        // A tag and a box: every variant that owns more is boxed.
+        assert_eq!(std::mem::size_of::<Continuation>(), 16);
+    }
+
+    /// The three values of the path that are larger than two scalars and
+    /// still cross between its functions by value, through memory: the
+    /// decided `Step` that `push_sent` and `push_step` take, and the
+    /// pushes' results, as large as the `Signal` they may carry (the
+    /// decision itself and the `Signal` are pinned above). Pinned at the size they were measured
+    /// at, so that they do not grow; whether to lend them instead is open
+    /// (`docs/OPEN-WORK.md`).
+    #[cfg(all(target_pointer_width = "64", not(debug_assertions)))]
+    #[test]
+    fn what_the_hot_path_passes_through_memory_stays_the_size_it_was_measured_at() {
+        assert_eq!(std::mem::size_of::<Step>(), 56);
+        assert_eq!(
+            std::mem::size_of::<Result<ActivationReference, Signal>>(),
+            40
+        );
+        assert_eq!(
+            std::mem::size_of::<Result<(ActivationReference, usize), Signal>>(),
+            40
+        );
+    }
+
     /// A recursion whose frames fill the stack's reservation long before the
     /// depth limit is reached. The transcript writes to the process's
     /// stdout, which a unit test cannot read, so `probe` answers what

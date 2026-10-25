@@ -371,6 +371,20 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   of road step 7a′ removed the same stall on the way in, for the argument
   window. [execution.md](design/execution.md), "What contiguous arguments
   moved", "No re-entry from Rust".
+- **Three values of the send, push and return path cross by value
+  through memory** (2026-10-25). Everything else the path passes between
+  functions the compiler keeps apart is at most two scalars, which Rust's
+  ABI passes in registers; these are larger and go through a stack slot:
+  the decided `Step` (56 bytes) that `Mutator::push_sent` and `push_step`
+  take, the pushes' `Result<ActivationReference, Signal>` (40), and the
+  `Popped` (24) that `Heap::pop_activation` answers on every return. The
+  release-only size tests pin them where they are
+  (`what_the_hot_path_passes_through_memory_stays_the_size_it_was_measured_at`,
+  `what_a_pop_answers_stays_the_size_it_was_measured_at`), and the codegen
+  gate counts the wide loads over narrower stores in the functions that
+  pass them. Whether lending them, or answering them in two scalars,
+  removes a measurable cost is unmeasured. [execution.md](design/execution.md),
+  "Keeping the hot path in registers".
 - **`bench_megamorphic.ns` since road step 5b1** (2026-10-18): +1.3-2.1%
   against master after the private and super slot accessor check, on all
   three pinned builds a side, where every other program measured within
