@@ -2832,9 +2832,10 @@ impl<'gc> Heap<'gc> {
 
     /// A returned top-level frame no activation produced, built from values:
     /// `temporaries` are its registers above the header, register
-    /// `HEADER_REGISTERS + index` being `temporaries[index]`. Test support, public only for `tests/image.rs`'s `sender` round trip:
-    /// the runtime never sets a frame's `sender`, so only a hand-made frame
-    /// carries one into the encoder.
+    /// `HEADER_REGISTERS + index` being `temporaries[index]`. Test support,
+    /// public only for `tests/image.rs`'s `sender` round trip: the runtime
+    /// never sets a frame's `sender`, so only a hand-made frame carries one
+    /// into the encoder.
     ///
     /// A handle from another interpreter's heap carries another brand and
     /// does not compile here. A debug build also checks every handle's
@@ -7513,7 +7514,7 @@ impl<'gc> Heap<'gc> {
     /// words take, which no instruction names, has none. A frame object
     /// holds the registers a stack frame does, without the header between
     /// them, so its fields are its arguments and then its registers above
-    /// the header (`docs/design/object-model.md`, "Frame objects").
+    /// the header (`docs/design/object-model.md`, "The object layout").
     #[inline]
     pub fn frame_field_of_register(argument_count: u16, register: u16) -> Option<usize> {
         let (argument_count, register) = (usize::from(argument_count), usize::from(register));
