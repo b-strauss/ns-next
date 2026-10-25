@@ -17,8 +17,8 @@ use super::control_flow;
 use super::lower::{lower_literal, selector_of};
 use super::simultaneous;
 use crate::bytecode::{
-    CallSite, CodeBuilder, CodeKind, CompiledCode, Instruction, Literal as BytecodeLiteral,
-    HEADER_REGISTERS,
+    register_written, registers_read, CallSite, CodeBuilder, CodeKind, CompiledCode, Instruction,
+    Literal as BytecodeLiteral, HEADER_REGISTERS,
 };
 use crate::mixin::Mixin;
 use crate::types::Binding;
@@ -842,8 +842,7 @@ impl<'a> Body<'a> {
 /// "What it emits"), checked on every body in a debug build, which is what
 /// the test suite runs: no branch, since only inlining emits one; every
 /// register above the named locals written by exactly one instruction; a
-/// named local written only by `StoreLocal`, which `destination` does not
-/// count; and a named local read only by `Move`, every other operand being a
+/// named local written only by `StoreLocal`; and a named local read only by `Move`, every other operand being a
 /// scratch register. The last is rule 3, "every read of a local is copied",
 /// which is what keeps a value from changing under its consumer -- the
 /// property the optimized lowering has to earn with copies of its own
@@ -873,7 +872,13 @@ fn check_shape(instructions: &[Instruction], first_scratch: u16) {
             ),
             "internal: the reference lowering emitted a branch: {instruction:?}"
         );
-        if let Some(written_register) = destination(instruction) {
+        // A `StoreLocal` writes a named local, the one way this lowering
+        // may, and is checked below.
+        let written_by_destination = match instruction {
+            Instruction::StoreLocal { .. } => None,
+            other => register_written(other),
+        };
+        if let Some(written_register) = written_by_destination {
             assert!(
                 written_register >= first_scratch,
                 "internal: the reference lowering wrote named local r{written_register} other than by StoreLocal"
@@ -889,7 +894,7 @@ fn check_shape(instructions: &[Instruction], first_scratch: u16) {
                 "internal: the reference lowering stored into scratch register r{slot}: {instruction:?}"
             );
         }
-        for operand in operands(instruction) {
+        for operand in registers_read(instruction) {
             match instruction {
                 Instruction::Move { .. } => assert!(
                     operand < first_scratch,
@@ -923,7 +928,7 @@ pub(super) fn check_registers_above_sends_are_dead(instructions: &[Instruction])
     let mut holding = BTreeSet::new();
     let mut dead = HashSet::new();
     for instruction in instructions {
-        for operand in operands(instruction) {
+        for operand in registers_read(instruction) {
             assert!(
                 !dead.contains(&operand),
                 "internal: r{operand} is read after a send whose callee was laid over it: {instruction:?}"
@@ -951,143 +956,10 @@ pub(super) fn check_registers_above_sends_are_dead(instructions: &[Instruction])
             }
         }
         // Written once the send has returned, so after the callee is gone.
-        if let Some(written) = destination(instruction) {
+        if let Some(written) = register_written(instruction) {
             dead.remove(&written);
             holding.insert(written);
         }
-    }
-}
-
-/// The registers of this body that `instruction` reads. Exhaustive on purpose,
-/// like `destination`: a new instruction has to decide here what it reads. The
-/// `index` of an outer-local access names a register of another frame, so it is
-/// not one of them.
-fn operands(instruction: &Instruction) -> Vec<u16> {
-    match instruction {
-        Instruction::Move { source, .. }
-        | Instruction::StoreLocal { source, .. }
-        | Instruction::StoreOuterLocal { source, .. }
-        | Instruction::InitializeSlot { source, .. }
-        | Instruction::InitializeSlotProvisionally { source, .. } => vec![*source],
-        Instruction::MakeFuture { closure, .. } => vec![*closure],
-        Instruction::ResolveFuture { source, .. } => vec![*source],
-        Instruction::Return { register }
-        | Instruction::ImplicitReturn { register }
-        | Instruction::NonLocalReturn { register }
-        | Instruction::JumpIfNotBoolean { register, .. }
-        | Instruction::BranchIfFalse { register, .. }
-        | Instruction::BranchIfTrue { register, .. } => vec![*register],
-        Instruction::SendPublic {
-            receiver_register,
-            argument_sources,
-            ..
-        }
-        | Instruction::SendInlinable {
-            receiver_register,
-            argument_sources,
-            ..
-        } => std::iter::once(*receiver_register)
-            .chain(argument_sources.iter().copied())
-            .collect(),
-        Instruction::SendLexical {
-            argument_sources, ..
-        }
-        | Instruction::SendSuper {
-            argument_sources, ..
-        } => argument_sources.clone(),
-        Instruction::MakeArray {
-            element_registers, ..
-        } => element_registers.clone(),
-        Instruction::InitializeInstance { instance, .. } => vec![*instance],
-        Instruction::InitializeSuperclass {
-            argument_sources, ..
-        }
-        | Instruction::InitializeAppliedLevel {
-            argument_sources, ..
-        } => argument_sources.clone(),
-        // Unreachable in reference-lowered code: closure conversion, which
-        // is what emits these, does not run under the reference lowering.
-        // Named here anyway, so a real fifth-instruction addition still has
-        // to say what it reads.
-        Instruction::LoadVector { vector, .. } => vec![*vector],
-        Instruction::StoreVector { vector, source, .. } => vec![*vector, *source],
-        // Unreachable in reference-lowered code: the reference lowering emits
-        // only the ordinary send for every integer leaf (`docs/design/compiler.md`,
-        // "The reference lowering"), never this instruction. Named here anyway,
-        // so a real addition still has to say what it reads.
-        Instruction::IntegerBinary { left, right, .. } => vec![*left, *right],
-        // Unreachable in reference-lowered code: the reference lowering
-        // inlines no loop, but sends `whileTrue:`/`whileFalse:` to a real
-        // closure, whose native loop signals the error itself. Named so an
-        // addition still decides.
-        Instruction::SignalNonBoolean { register } => vec![*register],
-        // Unreachable in reference-lowered code: the reference lowering
-        // sends a mirror send as `SendInlinable`, its failure block a real
-        // closure. Named so an addition still decides.
-        Instruction::SendMirror {
-            mirror_register,
-            subject_register,
-            argument_sources,
-            ..
-        } => [*mirror_register, *subject_register]
-            .into_iter()
-            .chain(argument_sources.iter().copied())
-            .collect(),
-        Instruction::LoadLiteral { .. }
-        | Instruction::LoadSelf { .. }
-        | Instruction::LoadEnclosingObject { .. }
-        | Instruction::LoadOuterLocal { .. }
-        | Instruction::MakeClosure { .. }
-        | Instruction::MakeVector { .. }
-        | Instruction::ReturnSlotIfFilled { .. }
-        | Instruction::LoadOwnSlot { .. }
-        | Instruction::Jump { .. }
-        | Instruction::AllocateInstance { .. }
-        | Instruction::CheckAppliedClause { .. } => vec![],
-    }
-}
-
-/// The register `instruction` writes, if any. Exhaustive on purpose: a new
-/// instruction has to decide here whether it writes a register.
-fn destination(instruction: &Instruction) -> Option<u16> {
-    match instruction {
-        Instruction::LoadLiteral { destination, .. }
-        | Instruction::LoadSelf { destination }
-        | Instruction::LoadEnclosingObject { destination, .. }
-        | Instruction::Move { destination, .. }
-        | Instruction::LoadOuterLocal { destination, .. }
-        | Instruction::SendLexical { destination, .. }
-        | Instruction::SendPublic { destination, .. }
-        | Instruction::SendInlinable { destination, .. }
-        | Instruction::SendSuper { destination, .. }
-        | Instruction::MakeClosure { destination, .. }
-        | Instruction::MakeArray { destination, .. }
-        | Instruction::MakeVector { destination, .. }
-        | Instruction::LoadVector { destination, .. }
-        | Instruction::IntegerBinary { destination, .. }
-        | Instruction::SendMirror { destination, .. }
-        | Instruction::MakeFuture { destination, .. }
-        | Instruction::ResolveFuture { destination, .. }
-        | Instruction::LoadOwnSlot { destination, .. }
-        | Instruction::AllocateInstance { destination }
-        | Instruction::InitializeInstance { destination, .. }
-        | Instruction::InitializeSuperclass { destination, .. }
-        | Instruction::InitializeAppliedLevel { destination, .. } => Some(*destination),
-        Instruction::CheckAppliedClause { .. }
-        | Instruction::StoreLocal { .. }
-        | Instruction::StoreOuterLocal { .. }
-        | Instruction::StoreVector { .. }
-        | Instruction::InitializeSlot { .. }
-        | Instruction::ReturnSlotIfFilled { .. }
-        | Instruction::InitializeSlotProvisionally { .. }
-        | Instruction::Return { .. }
-        | Instruction::ImplicitReturn { .. }
-        | Instruction::NonLocalReturn { .. }
-        | Instruction::SignalNonBoolean { .. }
-        | Instruction::Jump { .. }
-        | Instruction::JumpIfNotBoolean { .. }
-        | Instruction::BranchIfFalse { .. }
-        | Instruction::BranchIfTrue { .. } => None,
     }
 }
 

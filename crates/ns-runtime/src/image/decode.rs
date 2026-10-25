@@ -8,8 +8,8 @@ use std::rc::Rc;
 use ns_syntax::Span;
 
 use crate::bytecode::{
-    CallSite, CodeBuilder, CodeKind, CompiledCode, CreatedBlock, Emitted, Instruction,
-    IntegerOperation, Literal, HEADER_REGISTERS,
+    register_written, CallSite, CodeBuilder, CodeKind, CompiledCode, CreatedBlock, Emitted,
+    Instruction, IntegerOperation, Literal, HEADER_REGISTERS,
 };
 use crate::heap::{
     record_size, FrameRecord, Heap, NewClass, PlaceholderFormat, IDENTITY_HASH_LIMIT,
@@ -1947,7 +1947,7 @@ fn verify_body(code: &CompiledCode, instructions: &[Instruction]) -> Result<(), 
                 });
             }
         }
-        if let Some(register) = written_register(instruction) {
+        if let Some(register) = register_written(instruction) {
             if register < code.argument_count {
                 return Err(DecodeError::ArgumentRegisterWritten {
                     depth: 0,
@@ -2006,60 +2006,6 @@ fn verify_body(code: &CompiledCode, instructions: &[Instruction]) -> Result<(), 
         }
     }
     Ok(())
-}
-
-/// The register of the executing frame `instruction` writes, if any: its
-/// destination, or a `StoreLocal`'s slot. A send's argument slots are not
-/// answered -- `verify_body` holds them above the header -- and neither is
-/// the destination of a load of `Literal::BodyTooLarge`, which raises before
-/// it writes: the body a body past the register ceiling compiles to
-/// (`compiler::body_too_large`) names its last argument so when its
-/// arguments leave no register above the header. Exhaustive, so a new
-/// instruction decides here whether it writes a register.
-fn written_register(instruction: &Instruction) -> Option<u16> {
-    match instruction {
-        Instruction::LoadLiteral {
-            literal: Literal::BodyTooLarge,
-            ..
-        } => None,
-        Instruction::LoadLiteral { destination, .. }
-        | Instruction::LoadSelf { destination }
-        | Instruction::LoadEnclosingObject { destination, .. }
-        | Instruction::Move { destination, .. }
-        | Instruction::LoadOuterLocal { destination, .. }
-        | Instruction::SendLexical { destination, .. }
-        | Instruction::SendPublic { destination, .. }
-        | Instruction::SendInlinable { destination, .. }
-        | Instruction::SendSuper { destination, .. }
-        | Instruction::SendMirror { destination, .. }
-        | Instruction::MakeClosure { destination, .. }
-        | Instruction::MakeArray { destination, .. }
-        | Instruction::MakeVector { destination, .. }
-        | Instruction::LoadVector { destination, .. }
-        | Instruction::IntegerBinary { destination, .. }
-        | Instruction::MakeFuture { destination, .. }
-        | Instruction::ResolveFuture { destination, .. }
-        | Instruction::LoadOwnSlot { destination, .. }
-        | Instruction::AllocateInstance { destination }
-        | Instruction::InitializeInstance { destination, .. }
-        | Instruction::InitializeSuperclass { destination, .. }
-        | Instruction::InitializeAppliedLevel { destination, .. } => Some(*destination),
-        Instruction::StoreLocal { slot, .. } => Some(*slot),
-        Instruction::StoreOuterLocal { .. }
-        | Instruction::StoreVector { .. }
-        | Instruction::InitializeSlot { .. }
-        | Instruction::InitializeSlotProvisionally { .. }
-        | Instruction::ReturnSlotIfFilled { .. }
-        | Instruction::CheckAppliedClause { .. }
-        | Instruction::Return { .. }
-        | Instruction::ImplicitReturn { .. }
-        | Instruction::NonLocalReturn { .. }
-        | Instruction::SignalNonBoolean { .. }
-        | Instruction::Jump { .. }
-        | Instruction::JumpIfNotBoolean { .. }
-        | Instruction::BranchIfFalse { .. }
-        | Instruction::BranchIfTrue { .. } => None,
-    }
 }
 
 /// Every operand that addresses a register of the *executing* frame.

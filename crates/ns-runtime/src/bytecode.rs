@@ -1163,6 +1163,146 @@ pub(crate) fn outer_reach_of(instructions: &[Instruction]) -> u16 {
         .unwrap_or(0)
 }
 
+/// The registers of the executing frame that `instruction` reads. The
+/// `index` of an outer-local access names a register of another frame, so
+/// it is not one of them; neither are the factory arguments
+/// `InitializeInstance` hands on, which are its body's named arguments and
+/// which it names by no operand, nor the argument slots a send copies its
+/// sources into, which its callee reads, not the send.
+///
+/// **The match answers every instruction, with no `_` arm**, as
+/// `register_written` and `outer_reach_of` do, so that a new instruction
+/// must decide what it reads. One that read a register but answered none of
+/// it would be read past every check that holds a body to what its
+/// callees may have left (`docs/design/compiler.md`, "What a callee
+/// leaves").
+pub(crate) fn registers_read(instruction: &Instruction) -> impl Iterator<Item = u16> + '_ {
+    let (fixed, listed): ([Option<u16>; 2], &[u16]) = match instruction {
+        Instruction::Move { source, .. }
+        | Instruction::StoreLocal { source, .. }
+        | Instruction::StoreOuterLocal { source, .. }
+        | Instruction::InitializeSlot { source, .. }
+        | Instruction::InitializeSlotProvisionally { source, .. }
+        | Instruction::ResolveFuture { source, .. } => ([Some(*source), None], &[]),
+        Instruction::MakeFuture { closure, .. } => ([Some(*closure), None], &[]),
+        Instruction::Return { register }
+        | Instruction::ImplicitReturn { register }
+        | Instruction::NonLocalReturn { register }
+        | Instruction::SignalNonBoolean { register }
+        | Instruction::JumpIfNotBoolean { register, .. }
+        | Instruction::BranchIfFalse { register, .. }
+        | Instruction::BranchIfTrue { register, .. } => ([Some(*register), None], &[]),
+        Instruction::SendPublic {
+            receiver_register,
+            argument_sources,
+            ..
+        }
+        | Instruction::SendInlinable {
+            receiver_register,
+            argument_sources,
+            ..
+        } => ([Some(*receiver_register), None], argument_sources),
+        Instruction::SendMirror {
+            mirror_register,
+            subject_register,
+            argument_sources,
+            ..
+        } => (
+            [Some(*mirror_register), Some(*subject_register)],
+            argument_sources,
+        ),
+        Instruction::SendLexical {
+            argument_sources, ..
+        }
+        | Instruction::SendSuper {
+            argument_sources, ..
+        }
+        | Instruction::InitializeSuperclass {
+            argument_sources, ..
+        }
+        | Instruction::InitializeAppliedLevel {
+            argument_sources, ..
+        } => ([None, None], argument_sources),
+        Instruction::MakeArray {
+            element_registers, ..
+        } => ([None, None], element_registers),
+        // The values a converted closure is handed are read out of this
+        // frame when the closure is made.
+        Instruction::MakeClosure { copied, .. } => ([None, None], copied),
+        Instruction::InitializeInstance { instance, .. } => ([Some(*instance), None], &[]),
+        Instruction::LoadVector { vector, .. } => ([Some(*vector), None], &[]),
+        Instruction::StoreVector { vector, source, .. } => ([Some(*vector), Some(*source)], &[]),
+        Instruction::IntegerBinary { left, right, .. } => ([Some(*left), Some(*right)], &[]),
+        Instruction::LoadLiteral { .. }
+        | Instruction::LoadSelf { .. }
+        | Instruction::LoadEnclosingObject { .. }
+        | Instruction::LoadOuterLocal { .. }
+        | Instruction::MakeVector { .. }
+        | Instruction::ReturnSlotIfFilled { .. }
+        | Instruction::LoadOwnSlot { .. }
+        | Instruction::Jump { .. }
+        | Instruction::AllocateInstance { .. }
+        | Instruction::CheckAppliedClause { .. } => ([None, None], &[]),
+    };
+    fixed.into_iter().flatten().chain(listed.iter().copied())
+}
+
+/// The register of the executing frame `instruction` writes, if any: its
+/// destination, or a `StoreLocal`'s slot. A send's argument slots are not
+/// answered (`Instruction::argument_slots` names them), and neither is the
+/// destination of a load of `Literal::BodyTooLarge`, which raises before it
+/// writes: the body a body past the register ceiling compiles to
+/// (`compiler::body_too_large`) names its last argument so when its
+/// arguments leave no register above the header.
+///
+/// **The match answers every instruction, with no `_` arm**, so that a new
+/// instruction must decide whether it writes a register.
+pub(crate) fn register_written(instruction: &Instruction) -> Option<u16> {
+    match instruction {
+        Instruction::LoadLiteral {
+            literal: Literal::BodyTooLarge,
+            ..
+        } => None,
+        Instruction::LoadLiteral { destination, .. }
+        | Instruction::LoadSelf { destination }
+        | Instruction::LoadEnclosingObject { destination, .. }
+        | Instruction::Move { destination, .. }
+        | Instruction::LoadOuterLocal { destination, .. }
+        | Instruction::SendLexical { destination, .. }
+        | Instruction::SendPublic { destination, .. }
+        | Instruction::SendInlinable { destination, .. }
+        | Instruction::SendSuper { destination, .. }
+        | Instruction::SendMirror { destination, .. }
+        | Instruction::MakeClosure { destination, .. }
+        | Instruction::MakeArray { destination, .. }
+        | Instruction::MakeVector { destination, .. }
+        | Instruction::LoadVector { destination, .. }
+        | Instruction::IntegerBinary { destination, .. }
+        | Instruction::MakeFuture { destination, .. }
+        | Instruction::ResolveFuture { destination, .. }
+        | Instruction::LoadOwnSlot { destination, .. }
+        | Instruction::AllocateInstance { destination }
+        | Instruction::InitializeInstance { destination, .. }
+        | Instruction::InitializeSuperclass { destination, .. }
+        | Instruction::InitializeAppliedLevel { destination, .. } => Some(*destination),
+        Instruction::StoreLocal { slot, .. } => Some(*slot),
+        Instruction::StoreOuterLocal { .. }
+        | Instruction::StoreVector { .. }
+        | Instruction::InitializeSlot { .. }
+        | Instruction::InitializeSlotProvisionally { .. }
+        | Instruction::ReturnSlotIfFilled { .. }
+        | Instruction::CheckAppliedClause { .. }
+        | Instruction::Return { .. }
+        | Instruction::ImplicitReturn { .. }
+        | Instruction::NonLocalReturn { .. }
+        | Instruction::SignalNonBoolean { .. }
+        | Instruction::Jump { .. }
+        | Instruction::JumpIfNotBoolean { .. }
+        | Instruction::BranchIfFalse { .. }
+        | Instruction::BranchIfTrue { .. } => None,
+    }
+}
+
 /// Whether a body itself addresses a slot of the level it was entered at: it
 /// contains an instruction that reads or writes the receiver's field at the
 /// activation's slot base plus an `own_index`. A block a body creates is a
