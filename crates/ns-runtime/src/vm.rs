@@ -91,11 +91,6 @@ struct Handoff {
     code: Option<Rc<CompiledCode>>,
     program_counter: usize,
     feedback_base: FeedbackBase,
-    /// The register window of `activation`, found once per switch: the
-    /// switch's own writer -- a return writing its value into the caller
-    /// -- and the loop that runs the frame next share the one read of the
-    /// frame's argument count it takes.
-    register_base: RegisterBase,
     exit: Option<HostResult>,
 }
 
@@ -121,22 +116,6 @@ impl Handoff {
         code: Rc<CompiledCode>,
         program_counter: usize,
     ) -> Transfer {
-        let register_base = mutator.heap.activation_register_base(activation);
-        self.switch_with_base(mutator, activation, code, program_counter, register_base)
-    }
-
-    /// `switch_with_code`, for a caller that already holds `activation`'s
-    /// register window.
-    #[inline(always)]
-    fn switch_with_base(
-        &mut self,
-        mutator: &Mutator<'_>,
-        activation: ActivationReference,
-        code: Rc<CompiledCode>,
-        program_counter: usize,
-        register_base: RegisterBase,
-    ) -> Transfer {
-        self.register_base = register_base;
         self.activation = activation;
         self.code = Some(code);
         self.program_counter = program_counter;
@@ -257,7 +236,6 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
         code: None,
         program_counter: 0,
         feedback_base,
-        register_base,
         exit: None,
     };
     'run: loop {
@@ -1263,7 +1241,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                     .expect("internal: a switch names its code");
                 program_counter = handoff.program_counter;
                 feedback_base = handoff.feedback_base;
-                register_base = handoff.register_base;
+                register_base = mutator.heap.activation_register_base(activation);
                 if mutator.heap.safepoint_requested() {
                     break 'run;
                 }
@@ -2338,14 +2316,13 @@ fn resume_caller<'gc>(
 ) -> Transfer {
     let code = mutator.heap.activation_code(caller);
     let program_counter = mutator.heap.activation_program_counter(caller);
-    // Found once, for the write and for the loop that runs the caller next.
-    let register_base = mutator.heap.activation_register_base(caller);
-    mutator.heap.set_register(
-        register_base,
+    write_local(
+        &mut mutator.heap,
+        caller,
         send_destination(&code, program_counter),
         value,
     );
-    handoff.switch_with_base(mutator, caller, code, program_counter + 1, register_base)
+    handoff.switch_with_code(mutator, caller, code, program_counter + 1)
 }
 
 /// The instruction the popped activation's caller is stopped at, run again
