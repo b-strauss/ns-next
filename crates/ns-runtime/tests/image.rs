@@ -18357,7 +18357,7 @@ fn an_image_reading_unwritten_scratch_is_refused() {
             Instruction::LoadSelf { destination: above },
             Instruction::SendPublic {
                 receiver_register: receiver,
-                selector: Symbol::intern("foo"),
+                selector: Symbol::intern("foo:"),
                 argument_base: HEADER_REGISTERS + 1,
                 argument_sources: vec![receiver],
                 destination: receiver,

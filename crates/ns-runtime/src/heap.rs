@@ -687,7 +687,9 @@ const _: () = assert!(crate::bytecode::HEADER_REGISTERS as usize == frame_header
 const NO_FRAME: u32 = u32::MAX;
 
 /// What a pop leaves in a sender's dead registers, from its slots' end to
-/// its window's (`Heap::pop_activation`): nil in a release build, so that
+/// its window's (`Heap::pop_activation`), and what the collector's
+/// pre-pass writes into every register no frame reads before it writes it
+/// (`Heap::nil_leftovers`): nil in a release build, so that
 /// nothing the callee left there is traced again, and in a debug build the
 /// `SmallInteger` `0x5EAD_5EAD`, a number no program prints by chance, so
 /// that a lowering reading a register the callee overwrote shows as wrong
@@ -698,6 +700,49 @@ fn dead_register() -> Word {
     return frames::number_word(0x5EAD_5EAD);
     #[cfg(not(debug_assertions))]
     return Word::NIL;
+}
+
+/// Writes `filler` into the words of `range` that no window of `claimed`
+/// covers: `claimed` is disjoint, ordered by start, the lowest last
+/// (`Heap::nil_leftovers`).
+fn nil_unclaimed(words: &mut [u64], claimed: &[Range<usize>], range: Range<usize>, filler: u64) {
+    let mut from = range.start;
+    for window in claimed.iter().rev() {
+        if window.start >= range.end || from >= range.end {
+            break;
+        }
+        if window.end <= from {
+            continue;
+        }
+        if window.start > from {
+            words[from..window.start].fill(filler);
+        }
+        from = window.end;
+    }
+    if from < range.end {
+        words[from..range.end].fill(filler);
+    }
+}
+
+/// Adds `window` to `claimed` (`nil_unclaimed`), merging every window it
+/// touches: one that starts at or below every window there, as a frame
+/// does below the frames above it.
+fn claim(claimed: &mut Vec<Range<usize>>, window: Range<usize>) {
+    debug_assert!(
+        claimed
+            .last()
+            .is_none_or(|lowest| lowest.start >= window.start),
+        "internal: a frame starts at or below every frame above it"
+    );
+    let mut merged = window;
+    while let Some(lowest) = claimed.last() {
+        if lowest.start > merged.end {
+            break;
+        }
+        merged.end = merged.end.max(lowest.end);
+        claimed.pop();
+    }
+    claimed.push(merged);
 }
 
 /// Copies the registers of the frame whose arguments start at stack word
@@ -7824,6 +7869,97 @@ impl<'gc> Heap<'gc> {
         old.top - old.start
     }
 
+    /// Writes `dead_register`'s word into every register of every frame on
+    /// the stack that its frame does not read before it writes it -- what
+    /// a callee left above a send's slots, a word a popped frame left in
+    /// scratch -- so that the trace that follows keeps nothing alive
+    /// through a dead register, and meets no handle to an object a
+    /// collection moved or reclaimed while the word lay above the top
+    /// (`docs/design/memory.md`, "What the collector traces"). Runs first
+    /// in every trace of the stack: the scavenge, marking, and every
+    /// forward (`forward_everything`).
+    ///
+    /// It walks the frames from the top by their caller words. Each frame
+    /// loses the registers its body's analysis says are tainted before the
+    /// program counter its header stores (`CompiledCode::tainted_before`;
+    /// which instruction that is, `leftovers::tainted_at` says): the top
+    /// frame the instruction it runs next, every other frame the one it
+    /// stopped at. A frame whose callee lies on its slots stopped at that
+    /// send, which it resumes after and never runs again, so it loses as
+    /// well every register from the slots' end -- the callee's header --
+    /// to its own window's end: a send taints all of them. A word inside
+    /// the window of a frame above is that frame's to decide, and one at or
+    /// past the top no frame's, so neither is written, nor a frame's
+    /// arguments and header, which no analysis taints: a callee's
+    /// arguments are its sender's slots.
+    ///
+    /// A frame's cost is a lookup of its set and the writes of its nils;
+    /// the claimed windows merge as the walk goes down, since a frame
+    /// starts at or below every frame above it.
+    fn nil_leftovers(&mut self) {
+        let Heap { stack, tables, .. } = self;
+        if stack.innermost == NO_FRAME {
+            return;
+        }
+        let top = stack.frames.top();
+        let filler = dead_register().bits();
+        // The windows of the frames walked so far, merged, ordered by
+        // start, the lowest last.
+        let mut claimed: Vec<Range<usize>> = Vec::new();
+        // The start and the header of the frame walked just before: the
+        // callee of the frame walked now.
+        let mut callee: Option<(usize, usize)> = None;
+        let mut offset = stack.innermost;
+        loop {
+            let start = stack.frame_start(offset);
+            let header = offset as usize;
+            let end = stack.window_end(offset);
+            let registers = header + frame_header::COUNT;
+            let code_index =
+                frames::number_of(stack.header_word(offset, frame_header::CODE)) as usize;
+            // A program counter is an instruction's index, and a body has
+            // at most `INSTRUCTION_LIMIT` of them.
+            let program_counter =
+                frames::number_of(stack.header_word(offset, frame_header::PROGRAM_COUNTER)) as u32;
+            let Some(entry) = tables.codes.get(code_index).and_then(Option::as_ref) else {
+                unreachable!("internal: a running frame names a live code row")
+            };
+            let code = &entry.code;
+            let tainted = code.tainted_before(program_counter);
+            for range in tainted.iter() {
+                let from = (start + usize::from(range.start)).max(registers);
+                let until = (start + usize::from(range.end)).min(end).min(top);
+                nil_unclaimed(stack.frames.words_mut(), &claimed, from..until, filler);
+            }
+            drop(tainted);
+            if let Some((callee_start, callee_header)) = callee {
+                if callee_start < end {
+                    debug_assert!(
+                        code.instruction(program_counter as usize)
+                            .argument_slots()
+                            .is_some_and(|(base, sources)| {
+                                start + usize::from(base) + sources.len() == callee_header
+                            }),
+                        "internal: a callee lies on its sender's slots only while the sender \
+                         stands at the send"
+                    );
+                    nil_unclaimed(
+                        stack.frames.words_mut(),
+                        &claimed,
+                        callee_header.max(registers)..end.min(top),
+                        filler,
+                    );
+                }
+            }
+            claim(&mut claimed, start..end);
+            callee = Some((start, header));
+            match stack.caller(offset) {
+                Some(caller) => offset = caller,
+                None => break,
+            }
+        }
+    }
+
     /// One scavenge (`scavenge.rs`): every young object the roots, the
     /// remembered set and the copies themselves reach is copied, the rest of
     /// the nursery is reclaimed, and every handle the heap holds is rewritten
@@ -7842,6 +7978,7 @@ impl<'gc> Heap<'gc> {
         step_roots: impl FnOnce(&mut Scavenger<'_>),
     ) {
         use crate::trace::{Trace, Tracer};
+        self.nil_leftovers();
         // Committed for the worst case first, so that a promotion never meets a
         // refused commit halfway through (`docs/design/memory.md`).
         let [past, eden, _] = self.space.occupied();
@@ -8312,6 +8449,7 @@ impl<'gc> Heap<'gc> {
     /// one level up).
     fn forward_everything<M: Relocation>(&mut self, forwarder: &mut Forwarder<M>) {
         use crate::trace::{Trace, Tracer};
+        self.nil_leftovers();
         // A married frame's registers are its stack frame's, traced below
         // with the stack; its married field is a stack offset, and no stack
         // frame moves. Walks the objects where they lie now, after the move.
@@ -8525,6 +8663,7 @@ impl<'gc> Heap<'gc> {
     /// itself is never a root, only what the roots reach.
     pub(crate) fn begin_marking(&mut self) -> mark::Marker {
         use crate::trace::{Trace, Tracer};
+        self.nil_leftovers();
         // A mark left set would make this marking skip that object's edges
         // and so collect what only it reaches.
         #[cfg(debug_assertions)]
@@ -9206,12 +9345,14 @@ mod tests {
         )
     }
 
-    /// A body of `argument_count` arguments in `register_count` registers.
+    /// A body of `argument_count` arguments in `register_count` registers,
+    /// every one above the header a named temporary: what a test writes
+    /// there is the body's own, which no collection nils.
     fn shaped_code(
         argument_count: u16,
         register_count: u16,
     ) -> std::rc::Rc<crate::bytecode::CompiledCode> {
-        std::rc::Rc::new(crate::bytecode::CompiledCode::new(
+        let mut code = crate::bytecode::CompiledCode::new(
             crate::bytecode::CodeKind::Method,
             vec![crate::bytecode::Instruction::Return { register: 0 }],
             argument_count,
@@ -9219,7 +9360,9 @@ mod tests {
             0,
             Vec::new(),
             ns_syntax::Span::new(0, 0),
-        ))
+        );
+        code.local_count = code.local_count.max(register_count);
+        std::rc::Rc::new(code)
     }
 
     /// A dead initializer frame with a distinct value in each of
@@ -10735,11 +10878,42 @@ mod tests {
     fn a_pop_writes_the_senders_dead_registers_it_gives_back() {
         let mut heap = frame_heap();
         let class = named_class(&mut heap, "Dead");
+        let argument_base = first_above_header(0);
+        // A sender standing at the send whose one slot, its named r13, the
+        // callee lies on.
+        let mut code = crate::bytecode::CompiledCode::new(
+            crate::bytecode::CodeKind::Method,
+            vec![
+                crate::bytecode::Instruction::SendPublic {
+                    selector: Symbol::intern("m"),
+                    receiver_register: argument_base,
+                    argument_base,
+                    argument_sources: vec![argument_base],
+                    destination: argument_base,
+                    call_site: crate::bytecode::CallSite::UNCACHED,
+                },
+                crate::bytecode::Instruction::Return {
+                    register: argument_base,
+                },
+            ],
+            0,
+            argument_base + 40,
+            0,
+            Vec::new(),
+            ns_syntax::Span::new(0, 0),
+        );
+        code.local_count = argument_base + 1;
         let sender = heap
-            .push_activation(header(), Arguments::NONE, 40)
+            .push_activation(
+                ActivationHeader {
+                    code: Rc::new(code),
+                    ..header()
+                },
+                Arguments::NONE,
+                40,
+            )
             .expect("the stack holds the frame");
         let base = heap.activation_register_base(sender);
-        let argument_base = first_above_header(0);
         heap.set_register(base, argument_base, Value::small_integer(7));
         let dead = first_above_header(0) + 30;
         let unreachable = heap.allocate_instance(class, 0);
@@ -15996,5 +16170,454 @@ mod tests {
                 "nothing runs at the level any more"
             );
         });
+    }
+
+    // ---------- The collector's pre-pass ----------
+
+    /// What a collection nils before it traces the stack
+    /// (`Heap::nil_leftovers`). Each test builds its frames through the
+    /// push API and its code by hand, and writes into a register the word
+    /// a callee or an earlier frame would have left there: an object only
+    /// that register holds, which a weak array then shows kept or gone.
+    mod nil_leftovers {
+        use super::*;
+        use crate::bytecode::{
+            leftovers, CallSite, CodeKind, CompiledCode, Instruction, Literal, HEADER_REGISTERS,
+        };
+
+        /// The first register above the header of a frame that takes no
+        /// arguments.
+        const FIRST: u16 = HEADER_REGISTERS;
+
+        /// A body of `instructions` taking `argument_count` arguments,
+        /// whose first `named` registers above the header are named
+        /// temporaries and the rest of its `register_count` scratch. The
+        /// analysis accepts it, as it accepts every compiled body.
+        fn body(
+            instructions: Vec<Instruction>,
+            argument_count: u16,
+            named: u16,
+            register_count: u16,
+        ) -> Rc<CompiledCode> {
+            let mut code = CompiledCode::new(
+                CodeKind::Method,
+                instructions,
+                argument_count,
+                register_count,
+                0,
+                Vec::new(),
+                ns_syntax::Span::new(0, 0),
+            );
+            code.local_count = argument_count + HEADER_REGISTERS + named;
+            assert_eq!(
+                leftovers::check(&code.instructions(), code.local_count, code.register_count),
+                Ok(())
+            );
+            Rc::new(code)
+        }
+
+        fn send(
+            receiver: u16,
+            argument_base: u16,
+            argument_sources: Vec<u16>,
+            destination: u16,
+        ) -> Instruction {
+            Instruction::SendPublic {
+                selector: Symbol::intern("m"),
+                receiver_register: receiver,
+                argument_base,
+                argument_sources,
+                destination,
+                call_site: CallSite::UNCACHED,
+            }
+        }
+
+        fn load(destination: u16) -> Instruction {
+            Instruction::LoadLiteral {
+                destination,
+                literal: Literal::Nil,
+            }
+        }
+
+        /// The header of an activation running `code`.
+        fn running<'gc>(code: Rc<CompiledCode>) -> ActivationHeader<'gc> {
+            ActivationHeader { code, ..header() }
+        }
+
+        /// A frame running `code`, its whole window pushed above the top.
+        fn pushed<'gc>(
+            heap: &mut Heap<'gc>,
+            code: Rc<CompiledCode>,
+            arguments: &[Value<'gc>],
+        ) -> ActivationReference {
+            let temporaries = code.registers_above_header();
+            heap.push_activation(running(code), Arguments::Values(&arguments), temporaries)
+                .expect("the stack holds the frame")
+        }
+
+        /// `count` fresh objects, each held by nothing yet.
+        fn objects<'gc>(heap: &mut Heap<'gc>, count: usize) -> Vec<ObjectReference<'gc>> {
+            let class = old_instance_class(heap);
+            (0..count)
+                .map(|_| heap.allocate_instance(class, 0))
+                .collect()
+        }
+
+        /// A weak array over `objects`, as the value that roots it.
+        fn weak_over<'gc>(heap: &mut Heap<'gc>, objects: &[ObjectReference<'gc>]) -> Value<'gc> {
+            let class = old_instance_class(heap);
+            let weak = heap.allocate_weak_array(class, objects.len());
+            for (index, object) in objects.iter().enumerate() {
+                assert!(heap.weak_array_set_element(weak, index, Value::object(*object)));
+            }
+            Value::object(weak)
+        }
+
+        /// Which of the weak array's elements still name an object.
+        fn kept<'gc>(heap: &Heap<'gc>, weak: Value<'gc>) -> Vec<bool> {
+            heap.weak_array_elements(rooted(weak))
+                .expect("a weak array answers its elements")
+                .iter()
+                .map(|element| element.as_object().is_some())
+                .collect()
+        }
+
+        /// A sender that sent with its receiver in r13 and its one slot in
+        /// r14: from r15 up, its registers were the callee's window, and
+        /// once the callee returned they hold what it left there.
+        #[test]
+        fn a_collection_nils_what_a_returned_callee_left() {
+            let mut heap = Heap::new();
+            let code = body(
+                vec![
+                    Instruction::LoadSelf { destination: FIRST },
+                    load(FIRST + 1),
+                    send(FIRST, FIRST + 1, vec![FIRST + 1], FIRST),
+                    Instruction::Return { register: FIRST },
+                ],
+                0,
+                0,
+                FIRST + 6,
+            );
+            let sender = pushed(&mut heap, code, &[]);
+            heap.activation_set_program_counter(sender, 3);
+            let left = objects(&mut heap, 1);
+            let base = heap.activation_register_base(sender);
+            heap.set_register(base, FIRST + 3, Value::object(left[0]));
+            let mut weak = weak_over(&mut heap, &left);
+
+            scavenge_bare(&mut heap, false, &mut [&mut weak]);
+
+            assert_eq!(
+                kept(&heap, weak),
+                [false],
+                "what the returned callee left is gone"
+            );
+            assert_eq!(
+                heap.stack
+                    .frames
+                    .word(base.index as usize + usize::from(FIRST + 3)),
+                dead_register().bits()
+            );
+            heap.pop_activation(sender);
+        }
+
+        /// A register the sender wrote after its send is its own again;
+        /// one it has not written yet still holds the callee's leftover.
+        #[test]
+        fn a_collection_keeps_a_register_written_after_the_send() {
+            let mut heap = Heap::new();
+            let code = body(
+                vec![
+                    Instruction::LoadSelf { destination: FIRST },
+                    load(FIRST + 1),
+                    send(FIRST, FIRST + 1, vec![FIRST + 1], FIRST),
+                    Instruction::Move {
+                        destination: FIRST + 3,
+                        source: FIRST,
+                    },
+                    Instruction::Return {
+                        register: FIRST + 3,
+                    },
+                ],
+                0,
+                0,
+                FIRST + 6,
+            );
+            let sender = pushed(&mut heap, code, &[]);
+            heap.activation_set_program_counter(sender, 4);
+            let held = objects(&mut heap, 2);
+            let base = heap.activation_register_base(sender);
+            heap.set_register(base, FIRST + 3, Value::object(held[0]));
+            heap.set_register(base, FIRST + 4, Value::object(held[1]));
+            let mut weak = weak_over(&mut heap, &held);
+
+            scavenge_bare(&mut heap, false, &mut [&mut weak]);
+
+            assert_eq!(kept(&heap, weak), [true, false]);
+            heap.pop_activation(sender);
+        }
+
+        /// A named temporary is never tainted, whatever the body has
+        /// written: the push fills it, and only the body writes it.
+        #[test]
+        fn a_collection_keeps_the_named_locals() {
+            let mut heap = Heap::new();
+            let code = body(
+                vec![
+                    Instruction::LoadSelf {
+                        destination: FIRST + 2,
+                    },
+                    Instruction::Return {
+                        register: FIRST + 2,
+                    },
+                ],
+                0,
+                2,
+                FIRST + 4,
+            );
+            let activation = pushed(&mut heap, code, &[]);
+            let held = objects(&mut heap, 3);
+            let base = heap.activation_register_base(activation);
+            for (register, object) in (FIRST..).zip(&held) {
+                heap.set_register(base, register, Value::object(*object));
+            }
+            let mut weak = weak_over(&mut heap, &held);
+
+            heap.collect_for_test(&mut [&mut weak]);
+
+            assert_eq!(
+                kept(&heap, weak),
+                [true, true, false],
+                "the named temporaries r13 and r14 are kept, the unwritten scratch r15 is not"
+            );
+            heap.pop_activation(activation);
+        }
+
+        /// A frame stopped at its send with the callee on its slots keeps
+        /// what it wrote below them and the slots themselves, which are
+        /// its callee's arguments; it loses a register below them it never
+        /// wrote. The callee loses its own unwritten scratch, and a frame
+        /// pushed above the callee, inside the sender's window past the
+        /// callee's, is that frame's alone.
+        #[test]
+        fn a_frame_in_flight_keeps_its_registers_below_its_slots() {
+            let mut heap = Heap::new();
+            let sender_code = body(
+                vec![
+                    Instruction::LoadSelf { destination: FIRST },
+                    load(FIRST + 2),
+                    send(FIRST, FIRST + 2, vec![FIRST + 2], FIRST),
+                    Instruction::Return { register: FIRST },
+                ],
+                0,
+                0,
+                FIRST + 27,
+            );
+            let callee_code = body(
+                vec![Instruction::Return { register: 0 }],
+                1,
+                0,
+                1 + FIRST + 2,
+            );
+            let top_code = body(vec![Instruction::Return { register: 0 }], 1, 0, 1 + FIRST);
+            let held = objects(&mut heap, 5);
+            let sender = pushed(&mut heap, sender_code, &[]);
+            heap.activation_set_program_counter(sender, 2);
+            let base = heap.activation_register_base(sender);
+            heap.set_register(base, FIRST, Value::object(held[0]));
+            heap.set_register(base, FIRST + 1, Value::object(held[1]));
+            heap.set_register(base, FIRST + 2, Value::object(held[2]));
+            let temporaries = callee_code.registers_above_header();
+            let callee = heap
+                .push_overlapped_activation(
+                    &mut running(callee_code),
+                    base,
+                    FIRST + 2,
+                    1,
+                    temporaries,
+                )
+                .expect("the stack holds the frame");
+            let callee_base = heap.activation_register_base(callee);
+            heap.set_register(callee_base, 1 + FIRST, Value::object(held[3]));
+            let callee_end = heap.stack.window_end(callee.offset);
+            assert!(
+                callee_end < heap.stack.window_end(sender.offset),
+                "the callee's window ends inside its sender's"
+            );
+            let above = pushed(&mut heap, top_code, &[Value::object(held[4])]);
+            assert_eq!(heap.activation_position(above), callee_end);
+            let mut weak = weak_over(&mut heap, &held);
+
+            heap.collect_for_test(&mut [&mut weak]);
+
+            assert_eq!(
+                kept(&heap, weak),
+                [true, false, true, false, true],
+                "the receiver and the slot are kept, the unwritten r14 and the callee's scratch \
+                 are not, and the frame above the callee keeps its argument"
+            );
+            heap.pop_activation(above);
+            heap.pop_activation(callee);
+            heap.pop_activation(sender);
+        }
+
+        /// Where the top stands above a callee shorter than its sender,
+        /// the sender's registers between the two window ends are the
+        /// sender's, dead after its send: nilled, even one the sender
+        /// wrote before the send.
+        #[test]
+        fn a_collection_nils_a_senders_registers_above_a_shorter_callee() {
+            let mut heap = Heap::new();
+            let written = FIRST + 22;
+            let sender_code = body(
+                vec![
+                    Instruction::LoadSelf { destination: FIRST },
+                    Instruction::Move {
+                        destination: written,
+                        source: FIRST,
+                    },
+                    load(FIRST + 1),
+                    send(FIRST, FIRST + 1, vec![FIRST + 1], FIRST),
+                    Instruction::Return { register: FIRST },
+                ],
+                0,
+                0,
+                FIRST + 27,
+            );
+            let callee_code = body(vec![Instruction::Return { register: 0 }], 1, 0, 1 + FIRST);
+            let held = objects(&mut heap, 1);
+            let sender = pushed(&mut heap, sender_code, &[]);
+            heap.activation_set_program_counter(sender, 3);
+            let base = heap.activation_register_base(sender);
+            let callee = heap
+                .push_overlapped_activation(&mut running(callee_code), base, FIRST + 1, 1, 0)
+                .expect("the stack holds the frame");
+            let callee_end = heap.stack.window_end(callee.offset);
+            let sender_end = heap.stack.window_end(sender.offset);
+            assert!(callee_end < base.index as usize + usize::from(written));
+            // The top a push that never lowers it leaves: the sender's
+            // window end, its registers above the callee's holding a word
+            // they held before.
+            let stale = heap.store(Value::object(held[0])).bits();
+            heap.stack
+                .frames
+                .set_top_over_dead_registers(callee_end, sender_end, stale);
+            let mut weak = weak_over(&mut heap, &held);
+
+            heap.collect_for_test(&mut [&mut weak]);
+
+            assert_eq!(kept(&heap, weak), [false]);
+            assert!((callee_end..sender_end)
+                .all(|word| heap.stack.frames.word(word) == dead_register().bits()));
+            heap.pop_activation(callee);
+            heap.pop_activation(sender);
+        }
+
+        /// A frame standing at a loop's head, after a backward jump from a
+        /// body that sends: what the head reads, and the receiver, are
+        /// kept; what the body's send left above its slot is not, nor the
+        /// slot, which the first iteration had not written yet.
+        #[test]
+        fn a_loop_head_keeps_what_it_reads() {
+            let mut heap = Heap::new();
+            let code = body(
+                vec![
+                    Instruction::LoadSelf { destination: FIRST },
+                    load(FIRST + 1),
+                    Instruction::BranchIfFalse {
+                        register: FIRST + 1,
+                        target: 6,
+                    },
+                    load(FIRST + 2),
+                    send(FIRST, FIRST + 2, vec![FIRST + 2], FIRST + 2),
+                    Instruction::Jump { target: 2 },
+                    Instruction::Return { register: FIRST },
+                ],
+                0,
+                0,
+                FIRST + 5,
+            );
+            let activation = pushed(&mut heap, code, &[]);
+            heap.activation_set_program_counter(activation, 2);
+            let held = objects(&mut heap, 4);
+            let base = heap.activation_register_base(activation);
+            for (register, object) in (FIRST..).zip(&held) {
+                heap.set_register(base, register, Value::object(*object));
+            }
+            let mut weak = weak_over(&mut heap, &held);
+
+            heap.collect_for_test(&mut [&mut weak]);
+
+            assert_eq!(kept(&heap, weak), [true, true, false, false]);
+            heap.pop_activation(activation);
+        }
+
+        /// A frame stopped at a send it runs again once a future is forced
+        /// -- the forcing above its whole window -- keeps the source above
+        /// the send's slot that the send reads again.
+        #[test]
+        fn a_rerun_instruction_takes_the_set_before_it() {
+            let mut heap = Heap::new();
+            let code = body(
+                vec![
+                    Instruction::LoadSelf { destination: FIRST },
+                    load(FIRST + 3),
+                    send(FIRST, FIRST + 1, vec![FIRST + 3], FIRST),
+                    Instruction::Return { register: FIRST },
+                ],
+                0,
+                0,
+                FIRST + 5,
+            );
+            let stopped = pushed(&mut heap, code, &[]);
+            heap.activation_set_program_counter(stopped, 2);
+            let held = objects(&mut heap, 4);
+            let base = heap.activation_register_base(stopped);
+            heap.set_register(base, FIRST, Value::object(held[0]));
+            heap.set_register(base, FIRST + 3, Value::object(held[1]));
+            heap.set_register(base, FIRST + 2, Value::object(held[2]));
+            heap.set_register(base, FIRST + 4, Value::object(held[3]));
+            let forcing = heap
+                .push_activation(header(), Arguments::NONE, 0)
+                .expect("the stack holds the frame");
+            let mut weak = weak_over(&mut heap, &held);
+
+            heap.collect_for_test(&mut [&mut weak]);
+
+            assert_eq!(
+                kept(&heap, weak),
+                [true, true, false, false],
+                "the receiver and the source the send reads again are kept, unwritten scratch \
+                 is not"
+            );
+            heap.pop_activation(forcing);
+            heap.pop_activation(stopped);
+        }
+
+        /// A frame just pushed has written none of its scratch, so a word
+        /// a popped frame left there is gone; its arguments are kept.
+        #[test]
+        fn a_collection_nils_unwritten_scratch() {
+            let mut heap = Heap::new();
+            let code = body(
+                vec![load(1 + FIRST), Instruction::Return { register: 0 }],
+                1,
+                0,
+                1 + FIRST + 3,
+            );
+            let held = objects(&mut heap, 4);
+            let activation = pushed(&mut heap, code, &[Value::object(held[0])]);
+            let base = heap.activation_register_base(activation);
+            for (register, object) in (1 + FIRST..).zip(&held[1..]) {
+                heap.set_register(base, register, Value::object(*object));
+            }
+            let mut weak = weak_over(&mut heap, &held);
+
+            scavenge_bare(&mut heap, false, &mut [&mut weak]);
+
+            assert_eq!(kept(&heap, weak), [true, false, false, false]);
+            heap.pop_activation(activation);
+        }
     }
 }

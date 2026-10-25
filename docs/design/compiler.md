@@ -901,7 +901,7 @@ there: its header's words and its temporaries, and in a shipped method's
 scratch the VM mirror. `bytecode::leftovers` derives, from a body's code
 alone, which scratch registers -- those at and above `local_count` -- may
 hold a word the body did not write, at each instruction. It has three
-readers, the last still to come:
+readers:
 
 - the image decoder, which refuses a read of such a register (`check`,
   which keeps nothing; `DecodeError::LeftoverRead`, and
@@ -909,9 +909,13 @@ readers, the last still to come:
   [image-format.md](image-format.md), "Verification");
 - a debug build, which checks every compiled body
   (`reference::check_leftovers`);
-- the collector's pre-pass, which nils those registers so that neither a
-  push nor a pop need write them. It asks `tainted_at` for every frame pc
-  of a code it meets, answered as sorted disjoint ranges from one pass.
+- the collector's pre-pass (`Heap::nil_leftovers`), which nils those
+  registers before every trace of the stack, so that neither a push nor
+  a pop need write them. It asks `tainted_at`, answered as sorted
+  disjoint ranges from one pass, the first time it meets a frame of a
+  body at a program counter, and the body keeps the answer
+  (`leftovers::TaintedSets`; [memory.md](memory.md), "What the collector
+  traces").
 
 **The rule.**
 

@@ -590,6 +590,11 @@ pub struct CompiledCode {
     /// closure or frame made of it finds its id without the heap's map.
     /// Never on any wire; a copy starts empty.
     pub(crate) code_id_cache: crate::heap::CodeIdCache,
+    /// The registers the collector's pre-pass nils in a frame running this
+    /// body, by program counter, filled the first time a frame stands
+    /// there (`leftovers::TaintedSets`). Never on any wire; a copy starts
+    /// empty.
+    tainted_sets: leftovers::TaintedSets,
     /// Whether this body is a body-less declaration's own code: its full
     /// initializer (`Mixin::has_body`), or a block created in it at any
     /// depth. Such code runs only at the declaration's class object, and
@@ -627,6 +632,8 @@ pub(crate) struct CompiledCodeFields<'code> {
     pub(crate) source: &'code Span,
     #[expect(dead_code, reason = "named so that a writer decides to leave it out")]
     pub(crate) code_id_cache: &'code crate::heap::CodeIdCache,
+    #[expect(dead_code, reason = "named so that a writer decides to leave it out")]
+    pub(crate) tainted_sets: &'code leftovers::TaintedSets,
     #[expect(dead_code, reason = "named so that a writer decides to leave it out")]
     pub(crate) declaration_code: &'code std::cell::Cell<bool>,
 }
@@ -718,6 +725,7 @@ impl CompiledCode {
             unwind_marker: None,
             source,
             code_id_cache: crate::heap::CodeIdCache::default(),
+            tainted_sets: leftovers::TaintedSets::default(),
             declaration_code: std::cell::Cell::new(false),
         }
     }
@@ -741,6 +749,7 @@ impl CompiledCode {
             unwind_marker,
             source,
             code_id_cache,
+            tainted_sets,
             declaration_code,
         } = self;
         CompiledCodeFields {
@@ -757,6 +766,7 @@ impl CompiledCode {
             unwind_marker,
             source,
             code_id_cache,
+            tainted_sets,
             declaration_code,
         }
     }
@@ -782,6 +792,13 @@ impl CompiledCode {
             }
             pending.extend(code.body.created_blocks().map(|block| &**block.code));
         }
+    }
+
+    /// The registers tainted before `program_counter` -- which a frame
+    /// running this body stores -- that the collector's pre-pass nils
+    /// (`leftovers::tainted_at`, kept by `leftovers::TaintedSets`).
+    pub(crate) fn tainted_before(&self, program_counter: u32) -> std::cell::Ref<'_, [Range<u16>]> {
+        self.tainted_sets.before(self, program_counter)
     }
 
     /// The instruction at `index`, decoded: what was emitted there.
@@ -880,6 +897,8 @@ impl PartialEq for CompiledCode {
             unwind_marker,
             source,
             code_id_cache: _,
+            // What the collector asked of the body, not the body.
+            tainted_sets: _,
             // Derived from the mixin the body is attached to, not from the
             // body: a body compiled alone and the same body attached to a
             // body-less mixin mean the same instructions.

@@ -392,6 +392,9 @@ impl Out {
             // A heap's answer, valid only in that heap; the decoded body
             // starts with none.
             code_id_cache: _,
+            // What the collector asked of the body; the decoded body asks
+            // afresh.
+            tainted_sets: _,
             // Derived from the mixin the body is attached to, as the
             // decoder attaches it (`Mixin::mark_declaration_code`).
             declaration_code: _,

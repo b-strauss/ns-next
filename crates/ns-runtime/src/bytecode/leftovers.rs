@@ -34,12 +34,15 @@
 //!
 //! The decoder's refusal (`image::decode`'s `verify_body`) and a debug
 //! build's check of every compiled body call `check`; the collector's
-//! pre-pass, which will ask `tainted_at`, is still to come.
+//! pre-pass (`Heap::nil_leftovers`) asks `tainted_at` through each body's
+//! `TaintedSets`, which keeps what it answered.
 
+use std::cell::{Cell, Ref, RefCell};
 use std::ops::Range;
 
 use super::{
-    falls_through, jump_target, register_written, registers_read, Instruction, INSTRUCTION_LIMIT,
+    falls_through, jump_target, register_written, registers_read, CompiledCode, Instruction,
+    INSTRUCTION_LIMIT,
 };
 
 /// The parser's nesting limit (`ns_syntax`'s `MAX_DEPTH`): how many guarded
@@ -109,20 +112,30 @@ pub(crate) fn check(
 /// The registers that may hold a callee's leftover, or a word the push
 /// left there, just before each instruction of `program_counters`, which
 /// is ascending: sorted disjoint ranges, none for an instruction no path
-/// reaches, from one pass. What the collector's pre-pass asks of a code
-/// once for all the frames it meets running it.
+/// reaches, from one pass. What the collector's pre-pass asks of a body,
+/// through its `TaintedSets`, the first time it meets a frame running the
+/// body at a program counter.
 ///
-/// A frame suspended in a send is asked at the program counter it stores,
-/// the send's own: the answer is the state before the send, and the
-/// registers at and above its slot end are its callee's window meanwhile.
-/// The frame resumes at the next instruction once the send's destination
-/// is written.
+/// A frame is asked at the program counter its header stores. Every
+/// instruction that hands control to a frame above its own stores its
+/// own index first -- a send (`vm::send`, `vm::send_mirror`), and an
+/// instruction that forces a future (`vm::force_and_reexecute`) -- so a
+/// frame below the top is asked before the instruction it stopped at,
+/// and the registers at and above a send's slot end are its callee's
+/// window meanwhile. It resumes after a send once the send's destination
+/// is written (`vm::resume_caller`), or runs the instruction again once
+/// the future is resolved (`vm::reexecute`); a restarted target starts
+/// at 0 (`interpreter::unwind`'s `arrive`). The frame on top stores the
+/// instruction it runs next when it leaves for a safepoint (`vm::run_stretch`'s
+/// write-back). Either way the answer is what the frame does not read
+/// before it writes it.
 ///
 /// It is asked only of a body `check` accepted, at program counters within
-/// it. Of any other body, and at a program counter past the body, which a
-/// debug build refuses, it answers every scratch register, which is never
-/// less than the truth.
-#[cfg_attr(not(test), allow(dead_code))]
+/// it: the pre-pass nils what it answers, so an answer past the truth
+/// would nil a live register, and `TaintedSets` checks a body before it
+/// asks. Of any other body, and at a program counter past the body, which
+/// a debug build refuses, it answers every scratch register, what the
+/// decoder may assume.
 pub(crate) fn tainted_at(
     instructions: &[Instruction],
     local_count: u16,
@@ -152,6 +165,101 @@ pub(crate) fn tainted_at(
             analysis.answers
         }
         Err(_) => vec![every; program_counters.len()],
+    }
+}
+
+/// The tainted sets the collector's pre-pass has asked of one body, each
+/// under the program counter it was asked at, filled from `tainted_at` the
+/// first time a frame stands there and kept for every collection after:
+/// a frame's cost is then a lookup and the writes of its nils. Only the
+/// sets are kept, never a pass's bitsets.
+///
+/// What it can reach: an entry per program counter asked, at most one per
+/// instruction, each 24 bytes and 4 per range of its set, which holds at
+/// most half the body's scratch registers plus one range -- in practice
+/// one or two. It lives as long as its body, which a full collection gives
+/// back once nothing names it (`heap/tables.rs`).
+#[derive(Default)]
+pub(crate) struct TaintedSets {
+    /// Whether `check` accepted the body, asked at the first fill: the
+    /// shipped code is decoded from the embedded artifact unverified, and
+    /// a set of a body `check` refuses would nil live registers.
+    checked: Cell<bool>,
+    /// Each program counter asked, ascending, and the set before it.
+    sets: RefCell<Vec<TaintedSet>>,
+}
+
+/// The registers tainted before one program counter.
+struct TaintedSet {
+    program_counter: u32,
+    registers: Box<[Range<u16>]>,
+}
+
+impl TaintedSets {
+    /// The registers of `code` -- whose sets these are -- tainted before
+    /// `program_counter`, as `tainted_at` answers them.
+    pub(crate) fn before(
+        &self,
+        code: &CompiledCode,
+        program_counter: u32,
+    ) -> Ref<'_, [Range<u16>]> {
+        let found = self
+            .sets
+            .borrow()
+            .binary_search_by_key(&program_counter, |set| set.program_counter);
+        let position = match found {
+            Ok(position) => position,
+            Err(position) => {
+                self.fill(code, program_counter, position);
+                position
+            }
+        };
+        Ref::map(self.sets.borrow(), |sets| &*sets[position].registers)
+    }
+
+    /// Asks `tainted_at` for `program_counter` and keeps the answer at
+    /// `position`, checking the body first if no fill has.
+    #[cold]
+    #[inline(never)]
+    fn fill(&self, code: &CompiledCode, program_counter: u32, position: usize) {
+        let instructions = code.instructions();
+        if !self.checked.get() {
+            if let Err(refusal) = check(&instructions, code.local_count, code.register_count) {
+                panic!(
+                    "internal: the leftover analysis refuses a running body ({refusal:?}), \
+                     which every compiled, decoded and shipped body passes"
+                );
+            }
+            self.checked.set(true);
+        }
+        let registers = tainted_at(
+            &instructions,
+            code.local_count,
+            code.register_count,
+            &[program_counter],
+        )
+        .pop()
+        .unwrap_or_default();
+        self.sets.borrow_mut().insert(
+            position,
+            TaintedSet {
+                program_counter,
+                registers: registers.into_boxed_slice(),
+            },
+        );
+    }
+}
+
+/// A copy of a body is asked afresh.
+impl Clone for TaintedSets {
+    fn clone(&self) -> TaintedSets {
+        TaintedSets::default()
+    }
+}
+
+impl std::fmt::Debug for TaintedSets {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("TaintedSets")
     }
 }
 

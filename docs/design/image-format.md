@@ -1348,8 +1348,9 @@ not have written (`LeftoverRead`). Without it a crafted method sending to a
 shipped method that holds the mirror in its scratch could read the register
 the mirror was in
 (`an_image_reading_the_mirror_a_kernel_method_left_is_refused`,
-`an_image_reading_unwritten_scratch_is_refused`). The analysis is bounded
-before it allocates: a body past what no compiled body passes -- more than
+`an_image_reading_unwritten_scratch_is_refused`). The analysis's bitsets
+are bounded before it allocates them: a body past what any compiled body
+reaches -- more than
 257 jump targets pending at once, more than 128 loops open, loops that
 cross, a jump into a loop past its head -- is refused
 (`VerificationPastTheBound`;

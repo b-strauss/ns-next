@@ -737,6 +737,33 @@ check").
   "Representation"), so that what the callee left there neither keeps an
   object alive nor names one a collection moved meanwhile.
   `ActivationStack`'s impl is in `heap.rs`, where its fields are private.
+
+  Before every trace of the stack -- the scavenge, marking, and every
+  forward (`forward_everything`: a compaction's, a stress move's, the
+  bulk forward's) -- a pre-pass (`Heap::nil_leftovers`) walks the frames
+  from the top by their caller words and writes `dead_register`'s word
+  into every register its frame does not read before writing it. That is
+  what `bytecode::leftovers` finds tainted before the program counter the
+  frame's header stores ([compiler.md](compiler.md), "What a callee
+  leaves"): for the top frame the instruction it runs next, which the run
+  loop writes back as it leaves for the safepoint; for every other the
+  instruction it stopped at, which stored its own index before it handed
+  control on -- a send, which the frame resumes after, or an instruction
+  that met an unresolved future, which it runs again (`tainted_at`'s doc
+  comment names each write). A frame whose callee lies on its slots
+  stopped at that send, which taints every register from its slot end, so
+  it loses as well every register from there to its own window's end. A
+  word inside the window of a frame above is left to that frame, a word at
+  or past the top to none, and a frame's arguments and header are never
+  written: a callee's arguments are its sender's slots. Each body keeps
+  the sets the pre-pass asked of it, by program counter
+  (`leftovers::TaintedSets`), so a frame costs a lookup and its writes;
+  the analysis runs once per body and program counter, at the first
+  collection that finds a frame there, after a `check` of the body, since
+  the shipped code is decoded unverified and an answer for a body `check`
+  refuses would nil live registers. The push still fills a frame's
+  temporaries and the pop the sender's registers it gives back, so that
+  today the pre-pass finds most of what it writes nil already.
 - The side table of continuations (`Heap`'s `continuations`): each running
   activation's continuation other than `Deliver`, which its stack frame
   names by row (a frame that delivers names none), and the state it
@@ -1327,7 +1354,10 @@ set ("The object space"); the old space the load's tenure commits before
 it copies, for the worst case of everything young being promoted, which
 the nursery bounds rather than the input; and the decoded `Vec<Instruction>` of
 one compiled body at a time while the code table is verified ("The trigger
-and the growth policy" below); the text table's `Vec`, reserved for the
+and the growth policy" below); the leftover analysis's list of that body's
+loops, one 12-byte `Region` per backward jump, and in a debug build a
+16-byte slot per loop for its head's state, of one body at a time and
+smaller than its decoded `Vec<Instruction>`; the text table's `Vec`, reserved for the
 count the table claims, at most 8 bytes for every 16 that follow the count
 and dropped before the graph pass, the refusal coming as soon as the
 records run out; and what the first pass keeps
