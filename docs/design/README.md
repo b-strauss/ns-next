@@ -437,8 +437,12 @@ a budget of instructions and of 16- or 32-byte stack loads over narrower
 stores (`xtask/src/codegen.rs`, whose table says which functions and why
 each budget is what it is). A function over its budget fails the gate; a
 change that passes one for a reason is measured and raises the budget in
-the same commit. `cargo xtask codegen <tree>` checks another checkout,
-an older commit exported there, against the same budgets.
+the same commit, and a toolchain update re-measures every budget by the
+same rule in the commit that bumps the toolchain. The listing is the
+rlib's, before the binary's fat LTO, so where LTO inlines across crates
+the shipped binary's code can differ; the gate holds the code the crate
+itself decides. `cargo xtask codegen <tree>` checks another checkout, an
+older commit exported there, against the same budgets.
 
 ## Deviations from the language specification
 

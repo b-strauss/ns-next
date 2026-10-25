@@ -15,7 +15,11 @@
 //! the `release` profile, for `x86_64-pc-windows-msvc` whatever the host,
 //! so that the budgets mean the same machine code everywhere; the build
 //! lives in a target directory of its own, `target/codegen`, so that it
-//! never invalidates the other builds' artifacts.
+//! never invalidates the other builds' artifacts. It is the rlib's code,
+//! before the binary's fat LTO: what `ns-next` runs can differ where LTO
+//! inlines across crates (`ns-runtime` calls into `ns-memory` and the
+//! standard library), so the gate holds the shape of the code the crate
+//! itself decides, not the shipped binary's bytes.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader};
@@ -61,7 +65,9 @@ struct Budget {
 /// it had 6,588 instructions and 79 wide loads against 4,793 and 12 once
 /// fixed. A change that passes a budget for a reason is a decision:
 /// measure it (the `measuring-performance` skill), then raise the budget
-/// with the reason in the same commit.
+/// with the reason in the same commit. A toolchain update changes LLVM and
+/// so the counts: it re-measures every budget by the same rule, in the
+/// commit that bumps the toolchain.
 ///
 /// `builtins::execute`'s wide loads include the stall `docs/OPEN-WORK.md`
 /// keeps open (its result comes back through memory, and `vm::run` copies
@@ -141,11 +147,11 @@ const BUDGETS: &[Budget] = &[
         instructions: 180,
         wide_loads: 2,
     },
-    // Measured 16,985 and 169.
+    // Measured 16,985 and 96.
     Budget {
         function: "ns_runtime::builtins::execute",
         instructions: 18_690,
-        wide_loads: 186,
+        wide_loads: 106,
     },
 ];
 
@@ -179,19 +185,30 @@ pub(crate) fn check(tree: &Path) -> Result<(), String> {
     let listing_path = target_directory.join("ns-runtime.s");
     let listing = std::fs::File::create(&listing_path)
         .map_err(|error| format!("create {}: {error}", listing_path.display()))?;
-    let status = Command::new(super::cargo())
+    println!("building the release listing of ns-runtime for {TARGET}");
+    let output = Command::new(super::cargo())
         .args(["asm", "--package", "ns-runtime", "--lib", "--release"])
         .args(["--target", TARGET, "--target-dir"])
         .arg(&target_directory)
         .args(["--intel", "--everything"])
         .current_dir(tree)
         .stdout(Stdio::from(listing))
-        .status()
+        .output()
         .map_err(|error| format!("cargo asm: could not start: {error}"))?;
-    if !status.success() {
-        return Err(format!(
-            "cargo asm ({status}); a host other than Windows needs `rustup target add {TARGET}`"
-        ));
+    let messages = String::from_utf8_lossy(&output.stderr);
+    eprint!("{messages}");
+    if !output.status.success() {
+        // Only a target whose standard library is not installed fails
+        // this way; any other failure is the build's own.
+        let missing_target = messages.contains("target may not be installed")
+            || messages.contains("can't find crate for `core`")
+            || messages.contains("can't find crate for `std`");
+        let hint = if missing_target {
+            format!(": the target is not installed, run `rustup target add {TARGET}`")
+        } else {
+            String::new()
+        };
+        return Err(format!("cargo asm ({}){hint}", output.status));
     }
     let listing = std::fs::File::open(&listing_path)
         .map_err(|error| format!("open {}: {error}", listing_path.display()))?;
@@ -259,11 +276,15 @@ fn judge(measured: &HashMap<String, Measured>) -> Vec<String> {
 /// Measures the functions `names` in `listing`, an Intel-syntax COFF
 /// listing as `cargo asm --everything` writes it. A function's code is
 /// every instruction in the sections of its COMDAT symbol -- its body and
-/// the cleanup funclets that follow it, which run in its frame -- so it is
-/// what `cargo asm <function>` shows.
+/// the cleanup funclets that follow it -- so it is what
+/// `cargo asm <function>` shows. Each section is a stretch of its own for
+/// the wide loads: a funclet runs on a stack of its own, its `rsp` another
+/// frame's, so a store in the body says nothing about a load there. Its
+/// `rbp` is the body's frame, but a funclet is a cleanup path, cold, so
+/// what it reads back from the body through `rbp` is left out with it.
 fn measure(listing: impl BufRead, names: &[&str]) -> std::io::Result<HashMap<String, Measured>> {
     let wanted: HashSet<&str> = names.iter().copied().collect();
-    let mut lines: HashMap<String, Vec<String>> = HashMap::new();
+    let mut stretches: HashMap<String, Vec<Vec<String>>> = HashMap::new();
     let mut sections: HashMap<String, HashSet<u32>> = HashMap::new();
     let mut current: Option<String> = None;
     for line in listing.lines() {
@@ -275,6 +296,10 @@ fn measure(listing: impl BufRead, names: &[&str]) -> std::io::Result<HashMap<Str
                         .entry(symbol.to_string())
                         .or_default()
                         .insert(unique);
+                    stretches
+                        .entry(symbol.to_string())
+                        .or_default()
+                        .push(Vec::new());
                     symbol.to_string()
                 })
             });
@@ -282,16 +307,25 @@ fn measure(listing: impl BufRead, names: &[&str]) -> std::io::Result<HashMap<Str
         }
         if let Some(function) = &current {
             if is_instruction(&line) {
-                lines.entry(function.clone()).or_default().push(line);
+                if let Some(stretch) = stretches
+                    .get_mut(function)
+                    .and_then(|stretches| stretches.last_mut())
+                {
+                    stretch.push(line);
+                }
             }
         }
     }
-    Ok(lines
+    Ok(stretches
         .into_iter()
-        .map(|(function, instructions)| {
+        .filter(|(_, stretches)| stretches.iter().any(|stretch| !stretch.is_empty()))
+        .map(|(function, stretches)| {
             let measured = Measured {
-                instructions: instructions.len(),
-                wide_loads: wide_loads_over_narrower_stores(&instructions),
+                instructions: stretches.iter().map(Vec::len).sum(),
+                wide_loads: stretches
+                    .iter()
+                    .map(|stretch| wide_loads_over_narrower_stores(stretch))
+                    .sum(),
                 sections: sections.remove(&function).unwrap_or_default(),
             };
             (function, measured)
@@ -333,45 +367,124 @@ impl StackAccess<'_> {
     }
 }
 
-/// The moves that store a value to memory and can write a narrow piece of
-/// a stack temporary.
-const STORES: [&str; 9] = [
-    "mov", "movups", "movaps", "movdqu", "movdqa", "vmovups", "vmovaps", "vmovdqu", "vmovdqa",
-];
+/// The instructions whose first operand, when it is memory, they only
+/// read, jump through or ignore: every other instruction with a memory
+/// destination writes it -- a `mov`, a `movq`/`movsd`/`movhps` from a
+/// vector register, a `setcc`, an arithmetic update -- at the operand's
+/// width.
+const READS_ITS_FIRST_OPERAND: [&str; 6] = ["cmp", "test", "bt", "call", "nop", "push"];
 
 /// The moves that load 16 or 32 bytes into a vector register.
-const WIDE_LOADS: [&str; 8] = [
-    "movups", "movaps", "movdqu", "movdqa", "vmovups", "vmovaps", "vmovdqu", "vmovdqa",
+const WIDE_LOADS: [&str; 14] = [
+    "movups", "movaps", "movupd", "movapd", "movdqu", "movdqa", "lddqu", "vmovups", "vmovaps",
+    "vmovupd", "vmovapd", "vmovdqu", "vmovdqa", "vlddqu",
 ];
+
+/// Whether `mnemonic` with a memory first operand writes it.
+fn writes_its_first_operand(mnemonic: &str) -> bool {
+    !READS_ITS_FIRST_OPERAND.contains(&mnemonic)
+        && !mnemonic.starts_with('j')
+        && !mnemonic.starts_with("prefetch")
+}
+
+/// How far `rsp` lies below where it was at the start of the stretch, kept
+/// so that `rsp`-relative accesses compare in one frame: a `push` and a
+/// `sub rsp` move it down, a `pop` and an `add rsp` up. After a `ret` the
+/// next instruction is reached from elsewhere in the body, where `rsp` is
+/// where the prologue left it.
+#[derive(Debug, Default)]
+struct StackDepth {
+    current: i64,
+    /// The depth at the first instruction after the prologue's pushes and
+    /// its `sub rsp`.
+    body: Option<i64>,
+}
+
+impl StackDepth {
+    /// Follows `mnemonic` with `operands`; answers whether it only moved
+    /// `rsp`.
+    fn follow(&mut self, mnemonic: &str, operands: &str) -> bool {
+        let adjustment = |operands: &str| {
+            operands
+                .strip_prefix("rsp, ")
+                .and_then(|amount| amount.parse::<i64>().ok())
+        };
+        match mnemonic {
+            "push" => self.current += 8,
+            "pop" => self.current -= 8,
+            "sub" if adjustment(operands).is_some() => {
+                self.current += adjustment(operands).unwrap_or(0);
+            }
+            "add" if adjustment(operands).is_some() => {
+                self.current -= adjustment(operands).unwrap_or(0);
+            }
+            _ => {
+                let body = *self.body.get_or_insert(self.current);
+                if mnemonic == "ret" {
+                    self.current = body;
+                }
+                return false;
+            }
+        }
+        true
+    }
+
+    /// `access` with an `rsp`-relative offset taken from the start of the
+    /// stretch.
+    fn normalized<'a>(&self, access: StackAccess<'a>) -> StackAccess<'a> {
+        if access.base == "rsp" {
+            StackAccess {
+                offset: access.offset - self.current,
+                ..access
+            }
+        } else {
+            access
+        }
+    }
+}
 
 /// How many of `instructions`' 16- or 32-byte loads from the stack read
 /// bytes an earlier instruction of the listing stored narrower -- the
 /// pattern of both incidents, an aggregate built field by field and moved
 /// as a whole. When the store is still in flight the load cannot be
-/// forwarded from it and waits for it to retire. The count is static: it
-/// follows the listing's order, not the control flow, and never forgets a
-/// store, so it counts candidate sites, some on cold paths; what the budget
-/// holds is that their number does not jump.
+/// forwarded from it and waits for it to retire. A store is any write to
+/// the stack (`writes_its_first_operand`, and a `push`'s), at its
+/// operand's width. The count is static: it follows the listing's order,
+/// not the control flow, and never forgets a store, so it counts candidate
+/// sites, some on cold paths; what the budget holds is that their number
+/// does not jump.
 fn wide_loads_over_narrower_stores(instructions: &[String]) -> usize {
     let mut stores: Vec<StackAccess<'_>> = Vec::new();
+    let mut depth = StackDepth::default();
     let mut count = 0;
     for instruction in instructions {
-        let Some((mnemonic, operands)) = instruction.trim().split_once([' ', '\t']) else {
+        let instruction = instruction.trim();
+        let (mnemonic, operands) = instruction
+            .split_once([' ', '\t'])
+            .map_or((instruction, ""), |(mnemonic, operands)| {
+                (mnemonic, operands.trim())
+            });
+        if depth.follow(mnemonic, operands) {
+            if mnemonic == "push" {
+                stores.push(StackAccess {
+                    base: "rsp",
+                    offset: -depth.current,
+                    width: 8,
+                });
+            }
             continue;
-        };
-        let Some((destination, source)) = operands.trim().split_once(", ") else {
-            continue;
-        };
-        if STORES.contains(&mnemonic) {
+        }
+        let (destination, source) = operands.split_once(", ").unwrap_or((operands, ""));
+        if writes_its_first_operand(mnemonic) {
             if let Some(store) = stack_operand(destination) {
-                stores.push(store);
+                stores.push(depth.normalized(store));
                 continue;
             }
         }
         if WIDE_LOADS.contains(&mnemonic)
             && (destination.starts_with("xmm") || destination.starts_with("ymm"))
         {
-            if let Some(load) = stack_operand(source) {
+            if let Some(load) = stack_operand(source).map(|load| depth.normalized(load)) {
                 if load.width >= 16
                     && stores
                         .iter()
@@ -447,6 +560,45 @@ mod tests {
         // `[rbp + 40]` spans the qword at 40, `[rbp + 56]` the byte and the
         // dword, `[rbp + 72]` the two qwords; `[rbp + 96]` nothing stored.
         assert_eq!(wide_loads_over_narrower_stores(&instructions), 3);
+    }
+
+    /// A narrow store from a vector register, a `setcc` and an arithmetic
+    /// update are stores too, and so is a `push`, at the depth it moved
+    /// `rsp` to.
+    #[test]
+    fn every_narrow_write_to_the_stack_is_a_store() {
+        let instructions = lines(
+            "\tmovq qword ptr [rsp + 32], xmm0\n\
+             \tmovups xmm1, xmmword ptr [rsp + 32]\n\
+             \tsete byte ptr [rbp + 8]\n\
+             \tadd dword ptr [rbp + 20], 1\n\
+             \tmovdqa xmm2, xmmword ptr [rbp + 8]\n\
+             \tmovhps qword ptr [rbp + 40], xmm3\n\
+             \tlddqu xmm4, xmmword ptr [rbp + 32]",
+        );
+        assert_eq!(wide_loads_over_narrower_stores(&instructions), 3);
+        let pushed = lines(
+            "\tpush rax\n\
+             \tpush rcx\n\
+             \tmovups xmm0, xmmword ptr [rsp]\n\
+             \tsub rsp, 32\n\
+             \tmovups xmm1, xmmword ptr [rsp]\n\
+             \tmovups xmm2, xmmword ptr [rsp + 32]",
+        );
+        // The two pushes are the sixteen bytes at `[rsp]` after them, and
+        // at `[rsp + 32]` once 32 more are taken; `[rsp]` then is new.
+        assert_eq!(wide_loads_over_narrower_stores(&pushed), 2);
+    }
+
+    /// A comparison and a call through the stack read it: not stores.
+    #[test]
+    fn a_read_of_the_stack_is_no_store() {
+        let instructions = lines(
+            "\tcmp qword ptr [rbp + 8], 0\n\
+             \tcall qword ptr [rbp + 16]\n\
+             \tmovups xmm0, xmmword ptr [rbp + 8]",
+        );
+        assert_eq!(wide_loads_over_narrower_stores(&instructions), 0);
     }
 
     /// A 16-byte store read back by a 16-byte load forwards: not counted,

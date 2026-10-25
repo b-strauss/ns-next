@@ -423,10 +423,7 @@ fn run(step: &Step, root: &Path, times: &mut Vec<(String, Duration)>) -> Result<
 
 /// The codegen budgets over the checkout at `root`, timed as a step is.
 fn run_codegen(root: &Path, times: &mut Vec<(String, Duration)>) -> Result<(), String> {
-    println!(
-        "
-==> codegen"
-    );
+    println!("\n==> codegen");
     let started = Instant::now();
     let outcome = codegen::check(root);
     times.push(("codegen".to_string(), started.elapsed()));
