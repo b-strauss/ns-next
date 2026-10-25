@@ -510,6 +510,18 @@ impl<'gc> StackExhausted<'gc> {
     }
 }
 
+/// A push the activation stack's reservation cannot hold, refused by a push
+/// that borrows its header (`Heap::push_activation_from`,
+/// `Heap::push_overlapped_activation`): nothing was pushed, and the header
+/// is still the caller's, untouched.
+///
+/// The header is borrowed rather than moved so that the run loop's pushes
+/// never copy it whole: moved, it was copied into the push's own place,
+/// sixteen bytes at a time, right after the narrow stores that built it --
+/// a store-forwarding stall on every send.
+#[derive(Debug)]
+pub(crate) struct PushRefused;
+
 /// Names the refusal and nothing of the header, which holds a value.
 impl std::fmt::Debug for StackExhausted<'_> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -5986,10 +5998,27 @@ impl<'gc> Heap<'gc> {
     #[inline(always)]
     pub fn push_activation(
         &mut self,
-        header: ActivationHeader<'gc>,
+        mut header: ActivationHeader<'gc>,
         arguments: Arguments<'_, 'gc>,
         temporary_count: usize,
     ) -> Result<ActivationReference, StackExhausted<'gc>> {
+        match self.push_activation_in::<false>(&mut header, arguments, temporary_count) {
+            Ok(activation) => Ok(activation),
+            Err(PushRefused) => Err(StackExhausted::of(header)),
+        }
+    }
+
+    /// `push_activation` of a header the caller keeps: on a refusal it is
+    /// still the caller's, untouched; once pushed, its continuation is the
+    /// frame's and `Continuation::Deliver` is left in its place
+    /// (`PushRefused` says why it is borrowed).
+    #[inline(always)]
+    pub(crate) fn push_activation_from(
+        &mut self,
+        header: &mut ActivationHeader<'gc>,
+        arguments: Arguments<'_, 'gc>,
+        temporary_count: usize,
+    ) -> Result<ActivationReference, PushRefused> {
         self.push_activation_in::<false>(header, arguments, temporary_count)
     }
 
@@ -6001,11 +6030,14 @@ impl<'gc> Heap<'gc> {
     #[inline(never)]
     pub(crate) fn push_reserved_activation(
         &mut self,
-        header: ActivationHeader<'gc>,
+        mut header: ActivationHeader<'gc>,
         arguments: Arguments<'_, 'gc>,
         temporary_count: usize,
     ) -> Result<ActivationReference, StackExhausted<'gc>> {
-        self.push_activation_in::<true>(header, arguments, temporary_count)
+        match self.push_activation_in::<true>(&mut header, arguments, temporary_count) {
+            Ok(activation) => Ok(activation),
+            Err(PushRefused) => Err(StackExhausted::of(header)),
+        }
     }
 
     /// Whether the activation stack is within the reserve of the end of the
@@ -6118,10 +6150,10 @@ impl<'gc> Heap<'gc> {
     #[inline(always)]
     fn push_activation_in<const RESERVED: bool>(
         &mut self,
-        header: ActivationHeader<'gc>,
+        header: &mut ActivationHeader<'gc>,
         arguments: Arguments<'_, 'gc>,
         temporary_count: usize,
-    ) -> Result<ActivationReference, StackExhausted<'gc>> {
+    ) -> Result<ActivationReference, PushRefused> {
         // Checked by a comparison rather than `u16::try_from`, whose
         // `Result` the push built and took apart on every activation. Every
         // argument is a register, so a count past the register ceiling is
@@ -6153,7 +6185,7 @@ impl<'gc> Heap<'gc> {
                 }
             }
         }
-        let mut header_words = self.header_words(&header, argument_count, temporary_count);
+        let mut header_words = self.header_words(header, argument_count, temporary_count);
         let Heap {
             stack,
             continuations,
@@ -6174,9 +6206,12 @@ impl<'gc> Heap<'gc> {
         // written.
         let (start, below, frame) = match pushed {
             Ok(pushed) => pushed,
-            Err(frames::ReservationExhausted) => return Err(StackExhausted::of(header)),
+            Err(frames::ReservationExhausted) => return Err(PushRefused),
         };
-        if let Some(row) = continuations.store(header.then) {
+        // Taken only now, so that a refused push leaves the header whole.
+        if let Some(row) =
+            continuations.store(std::mem::replace(&mut header.then, Continuation::Deliver))
+        {
             header_words.continuation = frames::number_word(u64::from(row.0));
         }
         let (argument_registers, rest) = frame.split_at_mut(usize::from(argument_count));
@@ -6275,16 +6310,17 @@ impl<'gc> Heap<'gc> {
     /// windows") -- so that the slots are the callee's arguments, copied
     /// nowhere: its header goes where the slots end, then
     /// `temporary_count` nils. Every slot must hold its argument already.
-    /// Refuses as `push_activation` does, pushing nothing.
+    /// Refuses as `push_activation_from` does, pushing nothing and leaving
+    /// the header the caller's.
     #[inline(always)]
     pub(crate) fn push_overlapped_activation(
         &mut self,
-        header: ActivationHeader<'gc>,
+        header: &mut ActivationHeader<'gc>,
         register_base: RegisterBase,
         argument_base: u16,
         argument_count: u16,
         temporary_count: usize,
-    ) -> Result<ActivationReference, StackExhausted<'gc>> {
+    ) -> Result<ActivationReference, PushRefused> {
         #[cfg(debug_assertions)]
         {
             let sender = register_base.activation;
@@ -6309,7 +6345,7 @@ impl<'gc> Heap<'gc> {
             offset <= self.stack.window_end(self.stack.innermost),
             "internal: a send's slots end inside its sender's window"
         );
-        let mut header_words = self.header_words(&header, argument_count, temporary_count);
+        let mut header_words = self.header_words(header, argument_count, temporary_count);
         let Heap {
             stack,
             continuations,
@@ -6320,9 +6356,12 @@ impl<'gc> Heap<'gc> {
             .push_from(offset, frame_header::COUNT + temporary_count)
         {
             Ok(frame) => frame,
-            Err(frames::ReservationExhausted) => return Err(StackExhausted::of(header)),
+            Err(frames::ReservationExhausted) => return Err(PushRefused),
         };
-        if let Some(row) = continuations.store(header.then) {
+        // Taken only now, so that a refused push leaves the header whole.
+        if let Some(row) =
+            continuations.store(std::mem::replace(&mut header.then, Continuation::Deliver))
+        {
             header_words.continuation = frames::number_word(u64::from(row.0));
         }
         let (fixed, temporaries) = frame.split_at_mut(frame_header::COUNT);
@@ -10590,7 +10629,7 @@ mod tests {
         assert_eq!(heap.stack.frames.top(), sender_end);
 
         let callee = heap
-            .push_overlapped_activation(header(), base, argument_base, 2, 1)
+            .push_overlapped_activation(&mut header(), base, argument_base, 2, 1)
             .expect("the stack holds the frame");
         let callee_base = heap.activation_register_base(callee);
         assert_eq!(
@@ -10687,7 +10726,7 @@ mod tests {
         let unreachable = heap.allocate_instance(class, 0);
         heap.set_register(base, dead, Value::object(unreachable));
         let callee = heap
-            .push_overlapped_activation(header(), base, argument_base, 1, 0)
+            .push_overlapped_activation(&mut header(), base, argument_base, 1, 0)
             .expect("the stack holds the frame");
         let dead_word = base.index as usize + usize::from(dead);
         assert!(
@@ -10741,7 +10780,7 @@ mod tests {
         heap.set_register(base, argument_base + 1, Value::small_integer(8));
         let callee = heap
             .push_overlapped_activation(
-                suspendable_header(class, 2, first_above_header(2) + 1),
+                &mut suspendable_header(class, 2, first_above_header(2) + 1),
                 base,
                 argument_base,
                 2,

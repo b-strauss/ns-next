@@ -245,15 +245,23 @@ pub struct ActivationReference {
   a slot access checks"). Taking the frame is one comparison of its end
   against what may be used without committing more, and the reservation
   stays committed across pops, so once it has grown to the program's depth
-  a push commits nothing. A push the reservation cannot hold answers
-  `StackExhausted`, which `Mutator::push` raises as the depth limit's
+  a push commits nothing. A push the reservation cannot hold is refused
+  (`PushRefused`; `StackExhausted` from the public `Heap::push_activation`),
+  which `Mutator::push_placed` raises as the depth limit's
   `stack overflow: recursion too deep` ("The depth limit" below). Every
   activation the runtime pushes goes through one function,
-  `Mutator::push`, which refuses a push past the depth limit before it
+  `Mutator::push_placed` (`Mutator::push` is it for a push above the
+  sender's window), which refuses a push past the depth limit before it
   reaches the heap, so no new push site can skip the check. It is called
   from `Mutator::push_step`, for the method, block or body a decision
   answered, and for the initializer a factory entered past its first
-  instructions decides (`Mutator::enter_factory_body`). Every word is
+  instructions decides (`Mutator::enter_factory_body`). It lends the
+  header to the heap's push rather than moving it, and hands it on whole
+  only to a refusal's cold path (`Mutator::push_refused`): moved through
+  the push's inlined layers, the header, built by narrow stores, was
+  copied into each layer's own place sixteen bytes at a time and so read
+  back wide right after it was written, a store-forwarding stall on every
+  send. Every word is
   computed before the frame is taken, so a refused push changes nothing;
   the header is then written in place, every word once. A pop reads the
   words it needs and sets the top to its caller's window end -- the

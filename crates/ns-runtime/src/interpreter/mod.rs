@@ -29,7 +29,7 @@ use std::rc::Rc;
 
 use crate::compiler::Lowering;
 use crate::hash::IdentityMap;
-use crate::heap::{ActivationHeader, ActivationReference, ArgumentSlots, Heap, Root};
+use crate::heap::{ActivationHeader, ActivationReference, ArgumentSlots, Heap, PushRefused, Root};
 use crate::shipped_code::ShippedCodePath;
 use crate::types::*;
 use crate::Symbol;
@@ -309,6 +309,17 @@ pub enum Arguments<'values, 'gc> {
     /// a decision's own -- named through a reference to the slice, which
     /// keeps this case one word.
     Values(&'values &'values [Value<'gc>]),
+}
+
+/// Why a push refused before it pushed anything, for its cold path
+/// (`Mutator::push_refused`), with the arguments that path pushes from.
+enum Refusal<'values, 'gc> {
+    /// A list of values longer than the register ceiling, `u16::MAX`.
+    PastTheRegisterCeiling,
+    /// A counted push at the depth limit.
+    AtTheLimit(Arguments<'values, 'gc>),
+    /// A frame the ordinary room of the stack's reservation cannot hold.
+    StackFull(Arguments<'values, 'gc>),
 }
 
 impl<'values, 'gc> Arguments<'values, 'gc> {
@@ -1175,7 +1186,8 @@ impl<'gc> Mutator<'gc> {
 
     /// Pushes an activation, refusing one that would take the counted depth
     /// past `MAX_ACTIVATION_DEPTH`. Every activation in the runtime is pushed
-    /// here, so the count and the check cannot be skipped by a new site.
+    /// here or by `push_placed`, which this calls, so the count and the
+    /// check cannot be skipped by a new site.
     ///
     /// The check is the one compare it always was: the reserve is looked at
     /// only once the depth has reached L (`push_past_the_limit`), so an
@@ -1187,28 +1199,7 @@ impl<'gc> Mutator<'gc> {
         arguments: Arguments<'_, 'gc>,
         temporaries: usize,
     ) -> Result<ActivationReference, Signal<'gc>> {
-        // Only a list of values can pass the register ceiling: a send's
-        // window counts its slots in 16 bits, so for `Slots` the test is
-        // the variant's alone and folds away where the variant is known.
-        if matches!(arguments, Arguments::Values(values) if values.len() > usize::from(u16::MAX)) {
-            return Err(self.refuse_past_the_register_ceiling(
-                header.kind,
-                header.receiver,
-                header.then,
-            ));
-        }
-        if header.counted && self.heap.counted_depth() >= MAX_ACTIVATION_DEPTH {
-            // Boxed, so that only this path keeps the header in memory: the
-            // header the push below copies is then never written there
-            // first and read back.
-            return self.push_past_the_limit(Box::new(header), arguments, temporaries);
-        }
-        match self.heap.push_activation(header, arguments, temporaries) {
-            Ok(activation) => Ok(activation),
-            Err(exhausted) => {
-                self.push_into_the_stack_reserve(exhausted.header, arguments, temporaries)
-            }
-        }
+        self.push_placed(header, arguments, None, temporaries)
     }
 
     /// `push`, or for a send's own callee `push_on_slots`: `slots` is the
@@ -1216,26 +1207,77 @@ impl<'gc> Mutator<'gc> {
     /// activation takes the run loop's send's own arguments, `arguments`
     /// then its window, and `None` for every other push, which lands above
     /// the sender's whole window.
+    ///
+    /// The header is lent to the push, never moved, and handed on whole
+    /// only to a refusal's cold path (`push_refused`): moved through the
+    /// push's inlined layers, it was copied into each one's own place
+    /// sixteen bytes at a time, right after the narrow stores that built
+    /// it -- a store-forwarding stall on every send.
     #[inline(always)]
     fn push_placed(
         &mut self,
-        header: ActivationHeader<'gc>,
+        mut header: ActivationHeader<'gc>,
         arguments: Arguments<'_, 'gc>,
         slots: Option<u16>,
         temporaries: usize,
     ) -> Result<ActivationReference, Signal<'gc>> {
-        match (arguments, slots) {
+        let pushed = match (arguments, slots) {
             (Arguments::Slots(window), Some(argument_base)) => {
-                self.push_on_slots(header, window, argument_base, temporaries)
+                self.push_on_slots(&mut header, window, argument_base, temporaries)
             }
             _ => {
                 debug_assert!(
                     slots.is_none(),
                     "internal: a send's own callee is handed the send's window"
                 );
-                self.push(header, arguments, temporaries)
+                self.push_above(&mut header, arguments, temporaries)
             }
+        };
+        match pushed {
+            Ok(activation) => {
+                // What the frame did not take is released here, inline: the
+                // method and the code, and the continuation's place, which
+                // the push left `Deliver` -- tested here, so that a frame
+                // that took no continuation calls no drop glue.
+                let ActivationHeader {
+                    method, code, then, ..
+                } = header;
+                drop(method);
+                drop(code);
+                if matches!(then, Continuation::Deliver) {
+                    std::mem::forget(then);
+                } else {
+                    drop(then);
+                }
+                Ok(activation)
+            }
+            Err(refusal) => self.push_refused(refusal, header, temporaries),
         }
+    }
+
+    /// Pushes an activation above every live frame's whole window
+    /// (`Heap::push_activation_from`), refusing, pushing nothing, a list of
+    /// values past the register ceiling, a push at the depth limit and one
+    /// the reservation cannot hold.
+    #[inline(always)]
+    fn push_above<'values>(
+        &mut self,
+        header: &mut ActivationHeader<'gc>,
+        arguments: Arguments<'values, 'gc>,
+        temporaries: usize,
+    ) -> Result<ActivationReference, Refusal<'values, 'gc>> {
+        // Only a list of values can pass the register ceiling: a send's
+        // window counts its slots in 16 bits, so for `Slots` the test is
+        // the variant's alone and folds away where the variant is known.
+        if matches!(arguments, Arguments::Values(values) if values.len() > usize::from(u16::MAX)) {
+            return Err(Refusal::PastTheRegisterCeiling);
+        }
+        if header.counted && self.heap.counted_depth() >= MAX_ACTIVATION_DEPTH {
+            return Err(Refusal::AtTheLimit(arguments));
+        }
+        self.heap
+            .push_activation_from(header, arguments, temporaries)
+            .map_err(|PushRefused| Refusal::StackFull(arguments))
     }
 
     /// Pushes a send's own callee on the send's argument slots, from
@@ -1248,15 +1290,16 @@ impl<'gc> Mutator<'gc> {
     /// register above the slots, a source there included. From then on
     /// the slots are the arguments, so that the depth limit's and the
     /// reservation's cold paths, which push above the sender's window,
-    /// copy them from there. The depth limit is checked as `push` checks it.
+    /// copy them from there. The depth limit is checked as `push_above`
+    /// checks it.
     #[inline(always)]
-    fn push_on_slots(
+    fn push_on_slots<'values>(
         &mut self,
-        header: ActivationHeader<'gc>,
+        header: &mut ActivationHeader<'gc>,
         window: ArgumentSlots,
         argument_base: u16,
         temporaries: usize,
-    ) -> Result<ActivationReference, Signal<'gc>> {
+    ) -> Result<ActivationReference, Refusal<'values, 'gc>> {
         let register_base = window.register_base();
         let count = window.count();
         if window.start() != argument_base {
@@ -1264,18 +1307,37 @@ impl<'gc> Mutator<'gc> {
         }
         let slots = Arguments::Slots(ArgumentSlots::new(register_base, argument_base, count));
         if header.counted && self.heap.counted_depth() >= MAX_ACTIVATION_DEPTH {
-            return self.push_past_the_limit(Box::new(header), slots, temporaries);
+            return Err(Refusal::AtTheLimit(slots));
         }
-        match self.heap.push_overlapped_activation(
-            header,
-            register_base,
-            argument_base,
-            count,
-            temporaries,
-        ) {
-            Ok(activation) => Ok(activation),
-            Err(exhausted) => {
-                self.push_into_the_stack_reserve(exhausted.header, slots, temporaries)
+        self.heap
+            .push_overlapped_activation(header, register_base, argument_base, count, temporaries)
+            .map_err(|PushRefused| Refusal::StackFull(slots))
+    }
+
+    /// The cold path of a push `refusal` refused, `header` the activation
+    /// it was to push: the register ceiling's error, the depth limit's
+    /// reserve or error (`push_past_the_limit`), or the stack's reserve or
+    /// the depth limit's error (`push_into_the_stack_reserve`). Boxed from
+    /// here on, so that only these paths keep the header whole in memory.
+    #[cold]
+    #[inline(never)]
+    fn push_refused(
+        &mut self,
+        refusal: Refusal<'_, 'gc>,
+        header: ActivationHeader<'gc>,
+        temporaries: usize,
+    ) -> Result<ActivationReference, Signal<'gc>> {
+        match refusal {
+            Refusal::PastTheRegisterCeiling => Err(self.refuse_past_the_register_ceiling(
+                header.kind,
+                header.receiver,
+                header.then,
+            )),
+            Refusal::AtTheLimit(arguments) => {
+                self.push_past_the_limit(Box::new(header), arguments, temporaries)
+            }
+            Refusal::StackFull(arguments) => {
+                self.push_into_the_stack_reserve(Box::new(header), arguments, temporaries)
             }
         }
     }
