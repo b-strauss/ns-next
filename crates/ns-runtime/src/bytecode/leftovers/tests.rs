@@ -389,7 +389,7 @@ fn tainted_at_answers_each_program_counter() {
         Instruction::Return { register: 5 },
     ]);
     assert_eq!(check(&body, 5, 9), Ok(()));
-    let answers = tainted_at(&body, 5, 9, &[0, 4, 5, 5, 6, 7, 8, 100]);
+    let answers = tainted_at(&body, 5, 9, &[0, 4, 5, 5, 6, 7, 8]);
     assert_eq!(
         answers,
         vec![
@@ -400,7 +400,6 @@ fn tainted_at_answers_each_program_counter() {
             spans(&[]),
             spans(&[(7, 9)]),
             spans(&[(7, 8)]),
-            spans(&[]),
         ]
     );
     for (program_counter, answer) in [0u32, 4, 5, 6, 7, 8].into_iter().zip([
@@ -414,6 +413,40 @@ fn tainted_at_answers_each_program_counter() {
         assert_eq!(tainted_at(&body, 5, 9, &[program_counter]), vec![answer]);
     }
     assert_eq!(tainted_at(&body, 5, 9, &[]), Vec::<Vec<_>>::new());
+}
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "a program counter past a body")]
+fn a_program_counter_past_the_body_is_refused() {
+    let body = [Instruction::Return { register: 0 }];
+    tainted_at(&body, 5, 9, &[1]);
+}
+
+/// `count` loops, each nested in the one after it: the heads first, then
+/// the back edges, innermost first.
+fn nested_loops(count: u32) -> Vec<Instruction> {
+    let mut body: Vec<Instruction> = (0..count).map(|_| load(1)).collect();
+    body.extend((0..count).map(|index| Instruction::BranchIfTrue {
+        register: 0,
+        target: count - 1 - index,
+    }));
+    body.push(Instruction::Return { register: 0 });
+    body
+}
+
+#[test]
+fn more_than_128_open_loops_are_past_the_bound() {
+    assert_eq!(LOOP_LIMIT, 128);
+    let limit = LOOP_LIMIT as u32;
+    assert_eq!(
+        check(&nested_loops(limit + 1), 5, 10),
+        Err(LeftoverRefusal::PastTheBound { instruction: limit })
+    );
+    match analyze(&nested_loops(limit), 5, 10, &[]) {
+        Ok(analysis) => assert_eq!(analysis.spent.peak_open_loops, LOOP_LIMIT),
+        Err(refusal) => panic!("refused: {refusal:?}"),
+    }
 }
 
 #[test]
@@ -492,21 +525,31 @@ fn oracle(
     states
 }
 
-fn has_back_edge(instructions: &[Instruction]) -> bool {
-    instructions.iter().enumerate().any(|(index, instruction)| {
-        successors(index as u32, instruction).any(|target| target as usize <= index)
-    })
+/// The first instruction a backward jump targets; past the body for none.
+/// Before it, no state depends on a loop.
+fn first_loop_head(instructions: &[Instruction]) -> usize {
+    instructions
+        .iter()
+        .enumerate()
+        .flat_map(|(index, instruction)| {
+            successors(index as u32, instruction)
+                .map(|target| target as usize)
+                .filter(move |target| *target <= index)
+        })
+        .min()
+        .unwrap_or(instructions.len())
 }
 
 /// Holds the analysis to the oracle at every instruction of `instructions`,
-/// a body `check` accepted: equal without a loop, never less with one.
+/// a body `check` accepted: equal before the first loop head, never less
+/// from there.
 fn agrees_with_the_oracle(
     instructions: &[Instruction],
     local_count: u16,
     register_count: u16,
 ) -> Result<(), String> {
     let expected = oracle(instructions, local_count, register_count);
-    let looping = has_back_edge(instructions);
+    let first_head = first_loop_head(instructions);
     // Every program counter from one pass; the last one asked alone as
     // well.
     let program_counters: Vec<u32> = (0..instructions.len() as u32).collect();
@@ -529,7 +572,7 @@ fn agrees_with_the_oracle(
         }
         let found: BTreeSet<u16> = flattened(ranges).into_iter().collect();
         let expected = expected.clone().unwrap_or_default();
-        let agrees = if looping {
+        let agrees = if index >= first_head {
             found.is_superset(&expected)
         } else {
             found == expected
@@ -717,6 +760,7 @@ struct Largest {
     bytes: (u64, String),
     bitsets: (usize, String),
     pending: (usize, String),
+    open_loops: (usize, String),
     word_operations: (u64, String),
     /// Word operations per instruction against the words of a bitset.
     operations_per_word: (f64, String),
@@ -733,6 +777,9 @@ impl Largest {
         if spent.peak_pending > self.pending.0 {
             self.pending = (spent.peak_pending, label.to_string());
         }
+        if spent.peak_open_loops > self.open_loops.0 {
+            self.open_loops = (spent.peak_open_loops, label.to_string());
+        }
         if spent.most_word_operations > self.word_operations.0 {
             self.word_operations = (spent.most_word_operations, label.to_string());
         }
@@ -744,13 +791,15 @@ impl Largest {
 
     fn report(&self, what: &str) {
         eprintln!(
-            "{what}: largest memory {} bytes ({}), most bitsets {} ({}), most pending {} ({}), most word operations per instruction {} ({}), per word of a bitset {:.2} ({})",
+            "{what}: largest memory {} bytes ({}), most bitsets {} ({}), most pending {} ({}), most open loops {} ({}), most word operations per instruction {} ({}), per word of a bitset {:.2} ({})",
             self.bytes.0,
             self.bytes.1,
             self.bitsets.0,
             self.bitsets.1,
             self.pending.0,
             self.pending.1,
+            self.open_loops.0,
+            self.open_loops.1,
             self.word_operations.0,
             self.word_operations.1,
             self.operations_per_word.0,
@@ -768,6 +817,7 @@ fn measure(code: &CompiledCode) -> Result<Spent, String> {
         .map(|analysis| analysis.spent)
         .map_err(|refusal| format!("{refusal:?}"))?;
     assert!(spent.peak_pending <= PENDING_LIMIT);
+    assert!(spent.peak_open_loops <= LOOP_LIMIT);
     assert!(spent.peak_bitsets <= PENDING_LIMIT + 1);
     assert!(spent.peak_bytes <= ((PENDING_LIMIT + 1) * spent.words * 8) as u64);
     assert!(spent.most_word_operations <= 3 * spent.words as u64);

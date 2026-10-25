@@ -27,8 +27,8 @@
 //! An image is untrusted input, and the decoder runs this on every body it
 //! reads, so the pass is bounded before it allocates: it refuses a body of
 //! more than `INSTRUCTION_LIMIT` instructions, more than `PENDING_LIMIT`
-//! targets pending at once, loops that cross, and a jump into a loop past
-//! its head. None of them refuses a body either lowering emits (the proof
+//! targets pending at once, more than `LOOP_LIMIT` loops open at once,
+//! loops that cross, and a jump into a loop past its head. None of them refuses a body either lowering emits (the proof
 //! is `docs/design/compiler.md`, "What a callee leaves").
 //!
 //! Its readers -- the decoder's refusal, a debug build's check of every
@@ -64,6 +64,20 @@ pub(crate) const PARSER_NESTING_LIMIT: usize = 128;
 /// (`docs/design/compiler.md`, "What a callee leaves").
 pub(crate) const PENDING_LIMIT: usize = 2 * (PARSER_NESTING_LIMIT - 1) + 3;
 
+/// How many loops a compiled body has open at once -- nested, each inside
+/// the one around it -- at most.
+///
+/// Every loop either lowering emits is an inlined `whileTrue:` or one of
+/// its relatives (`lower_while`, one back edge each); the reference
+/// lowering emits none. A loop's code is its condition's and its body's
+/// block literals, so a loop nested in another lies inside one of the
+/// outer one's block literals, and the innermost of `depth` nested loops
+/// lies inside `depth - 1` of them. Its own instructions lie inside at most
+/// `PARSER_NESTING_LIMIT - 1` block literals (`PENDING_LIMIT`), so at most
+/// `PARSER_NESTING_LIMIT` loops are open (`docs/design/compiler.md`, "What
+/// a callee leaves").
+pub(crate) const LOOP_LIMIT: usize = PARSER_NESTING_LIMIT;
+
 /// A loop's floor that stands for none: a loop without a send. No slot end
 /// the pass keeps reaches it, since a slot end is below `register_count`.
 const NO_FLOOR: u16 = u16::MAX;
@@ -76,8 +90,8 @@ pub(crate) enum LeftoverRefusal {
     Read { instruction: u32, register: u16 },
     /// At `instruction` the body passes what no compiled body reaches:
     /// more instructions than `INSTRUCTION_LIMIT`, more than
-    /// `PENDING_LIMIT` targets pending, loops that cross, or a jump into a
-    /// loop past its head.
+    /// `PENDING_LIMIT` targets pending, more than `LOOP_LIMIT` loops open,
+    /// loops that cross, or a jump into a loop past its head.
     PastTheBound { instruction: u32 },
 }
 
@@ -95,28 +109,48 @@ pub(crate) fn check(
 /// The registers that may hold a callee's leftover, or a word the push
 /// left there, just before each instruction of `program_counters`, which
 /// is ascending: sorted disjoint ranges, none for an instruction no path
-/// reaches or past the body, from one pass. What the collector's pre-pass
-/// asks of a code once for all the frames it meets running it.
+/// reaches, from one pass. What the collector's pre-pass asks of a code
+/// once for all the frames it meets running it.
 ///
-/// It is asked only of a body `check` accepted. Of any other it answers
-/// every scratch register, which is never less than the truth.
+/// A frame suspended in a send is asked at the program counter it stores,
+/// the send's own: the answer is the state before the send, and the
+/// registers at and above its slot end are its callee's window meanwhile.
+/// The frame resumes at the next instruction once the send's destination
+/// is written.
+///
+/// It is asked only of a body `check` accepted, at program counters within
+/// it. Of any other body, and at a program counter past the body, which a
+/// debug build refuses, it answers every scratch register, which is never
+/// less than the truth.
 pub(crate) fn tainted_at(
     instructions: &[Instruction],
     local_count: u16,
     register_count: u16,
     program_counters: &[u32],
 ) -> Vec<Vec<Range<u16>>> {
+    debug_assert!(
+        program_counters
+            .iter()
+            .all(|program_counter| (*program_counter as usize) < instructions.len()),
+        "internal: a program counter past a body of {} instructions",
+        instructions.len()
+    );
+    let scratch = local_count.min(register_count)..register_count;
+    let every: Vec<Range<u16>> = if scratch.is_empty() {
+        Vec::new()
+    } else {
+        vec![scratch]
+    };
     match analyze(instructions, local_count, register_count, program_counters) {
-        Ok(analysis) => analysis.answers,
-        Err(_) => {
-            let scratch = local_count.min(register_count)..register_count;
-            let every: Vec<Range<u16>> = if scratch.is_empty() {
-                Vec::new()
-            } else {
-                vec![scratch]
-            };
-            vec![every; program_counters.len()]
+        Ok(mut analysis) => {
+            for (answer, program_counter) in analysis.answers.iter_mut().zip(program_counters) {
+                if *program_counter as usize >= instructions.len() {
+                    answer.clone_from(&every);
+                }
+            }
+            analysis.answers
         }
+        Err(_) => vec![every; program_counters.len()],
     }
 }
 
@@ -129,6 +163,8 @@ pub(crate) struct Spent {
     pub(crate) peak_bitsets: usize,
     /// The most targets pending at once.
     pub(crate) peak_pending: usize,
+    /// The most loops open at once.
+    pub(crate) peak_open_loops: usize,
     /// The most bytes of bitsets held at once.
     pub(crate) peak_bytes: u64,
     /// The most word operations on bitsets one instruction took.
@@ -167,7 +203,17 @@ pub(crate) fn analyze(
         usize::from(register_count),
     );
     let mut reachable = count > 0;
-    let mut open_loops: Vec<OpenLoop> = Vec::new();
+    // The loops the pass is inside, innermost last, at most `LOOP_LIMIT`.
+    let mut open_loops: Vec<usize> = Vec::new();
+    // In a debug build, the state each open loop took at its head, indexed
+    // by its loop, which every back edge's state is within.
+    let mut head_states: Vec<Option<Box<[u64]>>> = if cfg!(debug_assertions) {
+        std::iter::repeat_with(|| None)
+            .take(regions.len())
+            .collect()
+    } else {
+        Vec::new()
+    };
     let mut next_region = 0;
     let mut next_answer = 0;
     let mut answers = Vec::with_capacity(program_counters.len());
@@ -176,9 +222,13 @@ pub(crate) fn analyze(
         let mut operations = 0;
         while open_loops
             .last()
-            .is_some_and(|open| regions[open.region].end < here)
+            .is_some_and(|&innermost| regions[innermost].end < here)
         {
-            open_loops.pop();
+            if let Some(closed) = open_loops.pop() {
+                if let Some(head_state) = head_states.get_mut(closed) {
+                    *head_state = None;
+                }
+            }
         }
         if pass
             .pending
@@ -188,8 +238,8 @@ pub(crate) fn analyze(
             if let Some(entry) = pass.pending.pop() {
                 // Every path into a loop passes its head: a jump to a point
                 // inside it comes from inside it.
-                if let Some(innermost) = open_loops.last() {
-                    if regions[innermost.region].head > entry.earliest_source {
+                if let Some(&innermost) = open_loops.last() {
+                    if regions[innermost].head > entry.earliest_source {
                         return Err(LeftoverRefusal::PastTheBound {
                             instruction: entry.earliest_source,
                         });
@@ -216,10 +266,13 @@ pub(crate) fn analyze(
                     usize::from(register_count),
                 );
             }
-            open_loops.push(OpenLoop {
-                region: next_region,
-                head_state: (cfg!(debug_assertions) && reachable).then(|| current.clone()),
-            });
+            if reachable {
+                if let Some(head_state) = head_states.get_mut(next_region) {
+                    *head_state = Some(current.clone());
+                }
+            }
+            open_loops.push(next_region);
+            pass.spent.peak_open_loops = pass.spent.peak_open_loops.max(open_loops.len());
             next_region += 1;
         }
         while program_counters.get(next_answer) == Some(&here) {
@@ -248,7 +301,7 @@ pub(crate) fn analyze(
             if target > here && (target as usize) < count {
                 operations += pass.open(target, here, &current)?;
             } else if cfg!(debug_assertions) && target <= here {
-                check_back_edge(&open_loops, &regions, target, &current);
+                check_back_edge(&head_states, &regions, target, &current);
             }
         }
         if !falls_through(instruction) {
@@ -292,16 +345,11 @@ struct Region {
     floor: u16,
 }
 
-/// A loop the pass is inside, and in a debug build the state it took at
-/// its head, which every back edge's state is within.
-struct OpenLoop {
-    region: usize,
-    head_state: Option<Box<[u64]>>,
-}
-
 /// The loops of a body, ordered by head, each with its floor. Refuses
 /// loops that cross: a loop's floor stands for every iteration only when
-/// the loops inside it lie wholly inside it.
+/// the loops inside it lie wholly inside it. Refuses more than
+/// `LOOP_LIMIT` open at once, which bounds what a debug build keeps of
+/// them.
 fn loops(
     instructions: &[Instruction],
     local_count: u16,
@@ -346,6 +394,11 @@ fn loops(
                         instruction: regions[next].end,
                     });
                 }
+            }
+            if open.len() >= LOOP_LIMIT {
+                return Err(LeftoverRefusal::PastTheBound {
+                    instruction: regions[next].head,
+                });
             }
             open.push(next);
             next += 1;
@@ -435,13 +488,18 @@ impl Pass {
 }
 
 /// A back edge's state is within its head's: what the head's floor stands
-/// for. Loops nest, so the loop of every back edge is open.
-fn check_back_edge(open_loops: &[OpenLoop], regions: &[Region], head: u32, current: &[u64]) {
-    let Some(head_state) = open_loops
-        .iter()
-        .rev()
-        .find(|open| regions[open.region].head == head)
-        .and_then(|open| open.head_state.as_ref())
+/// for. Its loop is found by its head, among the loops ordered by head.
+fn check_back_edge(
+    head_states: &[Option<Box<[u64]>>],
+    regions: &[Region],
+    head: u32,
+    current: &[u64],
+) {
+    let Some(head_state) = regions
+        .binary_search_by_key(&head, |region| region.head)
+        .ok()
+        .and_then(|region| head_states.get(region))
+        .and_then(Option::as_ref)
     else {
         return;
     };

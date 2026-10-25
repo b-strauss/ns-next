@@ -954,8 +954,8 @@ pending jump target is bounded by how many can be pending at once.
   reached with ORed with `[floor, register_count)`, where `floor` is the
   least slot end of a non-mirror send between the head and its last back
   edge.
-  - Loops must nest, and a jump into a loop other than at its head is
-    `PastTheBound`. So the loop's code cannot taint below the floor, and
+  - Loops must nest, no more than `LOOP_LIMIT` may be open at once, and
+    a jump into a loop other than at its head is `PastTheBound`. So the loop's code cannot taint below the floor, and
     every later iteration's state is within the head's: the back edge
     needs no second pass. A debug build asserts it at every back edge.
   - Over-tainting the head is sound. Neither lowering reads a register at
@@ -1004,6 +1004,21 @@ so no more targets are pending than jumps are open:
   nested in the body of another 125 deep, the deepest the parser accepts,
   keeps 250 pending (`the_deepest_nesting_stays_within_the_bound`).
 
+**The bound on open loops.** The analysis refuses a body that keeps more
+than `LOOP_LIMIT` loops open at once, nested each in the next, stated and
+derived once, in `leftovers.rs`:
+
+- Every loop either lowering emits is `lower_while`'s, with one back edge;
+  the reference lowering emits none.
+- A loop's code is its condition's and its body's block literals, so a
+  loop nested in another lies inside one of the outer loop's block
+  literals, and the innermost of `depth` nested loops inside `depth - 1`
+  of them.
+- Its own instructions lie inside at most 127 block literals, as above. So
+  `LOOP_LIMIT = PARSER_NESTING_LIMIT = 128`.
+- Measured: 2 open at once over every compiled body, and 125 for the
+  125-deep `whileTrue:` nesting.
+
 **The bound**, for a body of at most 65,535 registers, so of at most
 1,024 words a bitset:
 
@@ -1011,9 +1026,10 @@ so no more targets are pending than jumps are open:
   and the current one, of `ceil(register_count / 64)` words each: at most
   258 × 8 KiB = 2,064 KiB, 2.02 MiB, per body, freed with it. Beside them
   the pass keeps the body's loops, one twelve-byte entry per backward jump,
-  smaller than the instructions it is read from, and the loops it is
-  inside; a debug build keeps a copy of each open loop's head state for
-  its back edges' assertion.
+  smaller than the instructions it is read from, and the at most 128 loops
+  it is inside. A debug build also keeps a copy of each open loop's head
+  state for its back edges' assertion, found by binary search among the
+  loops: at most `258 + 128 = 386` bitsets, 3.02 MiB, per body.
 - **Work:** at most `3 × ceil(register_count / 64) + c` word operations per
   instruction. An instruction takes at most three bitset operations: the
   OR of a reached target's bitset (taking it over is a swap); a loop

@@ -1954,7 +1954,9 @@ fn verify_body(code: &CompiledCode, instructions: &[Instruction]) -> Result<(), 
     }
     // The VM fetches the instruction at `program_counter` at the top of the
     // loop and again after every fall-through, so an empty body -- or one
-    // whose last instruction falls through -- indexes past its end.
+    // whose last instruction falls through -- indexes past its end. Not
+    // `bytecode::falls_through`'s list, on purpose: a load that always
+    // raises ends a path there, but no body may end with it.
     match instructions.last() {
         Some(
             Instruction::Return { .. }
