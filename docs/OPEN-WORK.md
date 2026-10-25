@@ -1039,9 +1039,25 @@ classes and a class from source with no predecessor are not edited
   surprises, typically 1.3-2x on interpreter-bound code (`vm::run` holds
   about 60-70% of `bench_send.ns`'s samples). A hand-written interpreter,
   as LuaJIT's, is not the option: beside a generated JIT it is a second
-  implementation of every instruction, which drifts. Decided only once the
-  instruction set and the frame layout settle and the macro assembler
-  exists. [execution.md](design/execution.md), "Planned: JIT tiers".
+  implementation of every instruction, which drifts. A cheaper measurement
+  can come first: a tail-call interpreter, one Rust function per
+  instruction, each ending in a guaranteed tail call to the next
+  instruction's handler, keeps the program counter, the register base and
+  the mutator in argument registers across handlers with no generated
+  tier. In a published experiment on a stack machine (Zack Radisic,
+  "Template interpreters", zackoverflow.dev, 2025-11-08, aarch64 only) it
+  was nearly as fast as a template interpreter, which ran `fibonacci(46)`
+  about 2.5x faster than direct threading; those benchmarks have no
+  objects and no sends, so they say nothing of the send path, where most
+  of this interpreter's time goes. Rust guarantees such a call only with
+  `become` (feature `explicit_tail_calls`), which in October 2026 is
+  unstable and incomplete, aimed at stabilization in 2027 together with
+  `loop_match`; without the guarantee every handler deepens the native
+  stack. Once it is stable, the experiment shows how much of the 1.3-2x
+  fixed registers give here before road step 8 builds its macro
+  assembler. Decided only once the instruction set and the frame layout
+  settle and the macro assembler exists.
+  [execution.md](design/execution.md), "Planned: JIT tiers".
 - **The resolver as a crate of its own.** It lives in `ns-runtime`
   (`resolver/`). A crate of its own would separate the front end from the VM
   and let a tool that needs only bindings — a lighter language server —

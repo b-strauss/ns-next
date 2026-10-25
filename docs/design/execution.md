@@ -8578,6 +8578,10 @@ The interpreter would instead be emitted by the macro assembler road step
 8 builds. It is decided only once the instruction set and the frame
 layout settle and that macro assembler exists
 ([OPEN-WORK.md](../OPEN-WORK.md), "Open design questions").
+Before that, a tail-call interpreter -- a handler per instruction, each
+ending in a guaranteed tail call to the next, which Rust gives only with
+`become`, unstable in October 2026 -- would measure the gain of fixed
+registers without a generated tier (the same question in OPEN-WORK.md).
 
 Steps 1 to 6 of the road give a very good interpreter on a modern object
 representation; road step 8 reaches Cog's class, and road step 9 Strongtalk's and
