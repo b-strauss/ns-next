@@ -842,7 +842,6 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                     index,
                                 } => match load_vector_into(
                                     mutator,
-                                    activation,
                                     register_base,
                                     u16::from(destination),
                                     u16::from(vector),
@@ -859,7 +858,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                     index,
                                 } => match store_vector(
                                     &mut mutator.heap,
-                                    activation,
+                                    register_base,
                                     u16::from(vector),
                                     index,
                                     u16::from(source),
@@ -1507,14 +1506,7 @@ fn run_wide<'gc>(
             destination,
             vector,
             index,
-        } => match load_vector_into(
-            mutator,
-            activation,
-            register_base,
-            *destination,
-            *vector,
-            *index,
-        ) {
+        } => match load_vector_into(mutator, register_base, *destination, *vector, *index) {
             Ok(()) => return WideOutcome::Next,
             Err(signal) => unwind(mutator, signal, floor, handoff),
         },
@@ -1522,7 +1514,7 @@ fn run_wide<'gc>(
             vector,
             index,
             source,
-        } => match store_vector(&mut mutator.heap, activation, *vector, *index, *source) {
+        } => match store_vector(&mut mutator.heap, register_base, *vector, *index, *source) {
             Ok(()) => return WideOutcome::Next,
             Err(signal) => unwind(mutator, signal, floor, handoff),
         },
@@ -1918,13 +1910,12 @@ fn make_vector_into(
 #[inline(always)]
 fn load_vector_into<'gc>(
     mutator: &mut Mutator<'gc>,
-    activation: ActivationReference,
     register_base: RegisterBase,
     destination: u16,
     vector: u16,
     index: u16,
 ) -> Result<(), Signal<'gc>> {
-    let value = load_vector(&mutator.heap, activation, vector, index)?;
+    let value = load_vector(&mutator.heap, register_base, vector, index)?;
     mutator.heap.set_register(register_base, destination, value);
     Ok(())
 }

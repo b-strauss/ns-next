@@ -2,7 +2,7 @@
 //! every own-slot instruction makes first, and the helper `InitializeSlot`
 //! writes through.
 
-use crate::heap::{ActivationReference, Heap};
+use crate::heap::{ActivationReference, Heap, RegisterBase};
 use crate::mixin::DispatchId;
 use crate::types::*;
 use crate::Symbol;
@@ -87,14 +87,16 @@ pub(crate) fn write_outer_local<'gc>(
 /// The VM's `LoadVector`. A value that is not the `Array` the compiler put
 /// there, or an index past its end, can only come from a crafted image
 /// (`CLAUDE.md`, "An image is untrusted input"), so this reports rather than
-/// indexes.
+/// indexes. `register_base` is the running activation's window, which the
+/// run loop holds: read through it, the vector's register costs no read of
+/// the frame's argument count.
 pub(crate) fn load_vector<'gc>(
     heap: &Heap<'gc>,
-    activation: ActivationReference,
+    register_base: RegisterBase,
     vector: u16,
     index: u16,
 ) -> EvaluationResult<'gc> {
-    let value = heap.activation_local(activation, vector);
+    let value = heap.register(register_base, vector);
     match value.as_object() {
         Some(object) => match heap.array_element(object, index as usize) {
             Some(element) => Ok(element),
@@ -108,15 +110,15 @@ pub(crate) fn load_vector<'gc>(
 /// `Heap::array_set_element`.
 pub(crate) fn store_vector<'gc>(
     heap: &mut Heap<'gc>,
-    activation: ActivationReference,
+    register_base: RegisterBase,
     vector: u16,
     index: u16,
     source: u16,
 ) -> Result<(), Signal<'gc>> {
-    let value = heap.activation_local(activation, vector);
+    let value = heap.register(register_base, vector);
     let written = match value.as_object() {
         Some(object) => {
-            let source_value = heap.activation_local(activation, source);
+            let source_value = heap.register(register_base, source);
             heap.array_set_element(object, index as usize, source_value)
         }
         _ => false,
