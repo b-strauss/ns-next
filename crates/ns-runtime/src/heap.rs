@@ -947,9 +947,9 @@ impl<'gc> Continuations<'gc> {
     /// Stores `continuation`, never a `Deliver`, in the smallest free row.
     /// A native loop over a block that is not inlined takes a row and
     /// gives it back on every step, and its row is the last one, so the
-    /// common case appends to a table with no free row and is inline; only
-    /// a table with holes takes the free list's way.
-    #[inline]
+    /// common case appends to a table with no free row and is inline in
+    /// the push; only a table with holes takes the free list's way.
+    #[inline(always)]
     fn insert(&mut self, continuation: Continuation<'gc>) -> ContinuationRow {
         debug_assert!(
             !matches!(continuation, Continuation::Deliver),
@@ -976,6 +976,7 @@ impl<'gc> Continuations<'gc> {
         Self::row_of(row)
     }
 
+    #[inline(always)]
     fn row_of(index: usize) -> ContinuationRow {
         ContinuationRow(
             u32::try_from(index).expect("more than u32::MAX continuations live at once"),
@@ -3972,7 +3973,8 @@ impl<'gc> Heap<'gc> {
     /// nothing: the space and the stack are borrowed field by field rather
     /// than through `closure`, which borrows the whole `Heap`, so each value
     /// goes straight from the object into its register with no intermediate
-    /// buffer.
+    /// buffer; and it is inline into that push, so that it costs no call.
+    #[inline(always)]
     pub(crate) fn fill_copied_values(
         &mut self,
         activation: ActivationReference,
