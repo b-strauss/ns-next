@@ -403,8 +403,9 @@ HEADER_REGISTERS`. On the activation stack it is one window, the header's words
 where those numbers are, so every register is one addition from the frame's
 start, and a send's argument slots are its callee's arguments, the callee's
 header laid where they end ([execution.md](execution.md), "Planned:
-overlapping register windows"); a frame object has a field for every number,
-the header's nil. The resolver's `Binding::Local` numbers the arguments and
+overlapping register windows"); a frame object has a field for every number
+but the header's, its arguments and then its registers above the header
+(`Heap::frame_field_of_register`). The resolver's `Binding::Local` numbers the arguments and
 then the temporaries with no gap, so a temporary's register is its resolver
 index plus the header's numbers, which `Layout` and the reference lowering's
 `local_register` add; a block's `OuterLocal` index is mapped the same way,

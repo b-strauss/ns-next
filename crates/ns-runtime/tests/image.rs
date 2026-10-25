@@ -4216,11 +4216,14 @@ fn a_closure_and_its_paused_home_frame_round_trip() {
                     .heap()
                     .closure_home(object(closure_value))
                     .expect("expected a closure");
-                let (_, _, register_count) = mutator.heap().frame_register_shape(home);
+                let (_, argument_count, register_count) = mutator.heap().frame_register_shape(home);
+                assert_eq!(argument_count, 0, "`mk` takes no argument");
                 assert!(register_count > 0, "`mk` has a register to write");
+                // Its last register: every register field past the
+                // arguments is a register above the header.
                 mutator.heap_mut().frame_set_local(
                     home,
-                    (register_count - 1) as u16,
+                    register_count as u16 - 1 + HEADER_REGISTERS,
                     Value::small_integer(9),
                 );
                 mutator.heap_mut().frame_set_program_counter(home, 1);
@@ -4254,7 +4257,7 @@ fn a_closure_and_its_paused_home_frame_round_trip() {
         let (_, argument_count, register_count) = heap.frame_register_shape(closure_home);
         assert_eq!(register_count - argument_count, home.temporaries.len());
         assert_eq!(
-            heap.frame_local(closure_home, (register_count - 1) as u16)
+            heap.frame_local(closure_home, register_count as u16 - 1 + HEADER_REGISTERS)
                 .as_small_integer(),
             Some(9)
         );
@@ -6179,12 +6182,17 @@ fn a_closure_capturing_a_block_activation_round_trips() {
             panic!("the captured frame is a block activation")
         };
         // Every reified frame travels with its whole register file, so the
-        // decoded one has every register its body declares.
+        // decoded one has every register its body declares but the header's
+        // numbers.
         let outer_code = heap.closure_code(*outer).expect("the outer block");
         assert_eq!(
             captured.arguments.len() + captured.temporaries.len(),
-            usize::from(outer_code.register_count),
+            outer_code.frame_register_count(),
             "the captured frame carries its full register file"
+        );
+        assert_eq!(
+            captured.temporaries.len(),
+            outer_code.registers_above_header()
         );
         // The optimized lowering converts `[ x ]`: `x` is copied into the
         // inner closure when it is created, so the outer block's activation
@@ -8142,27 +8150,40 @@ const ONE_METHOD: &str = indoc! {"
 /// A world whose code table is `[block, foo]` -- `foo`'s body is the one
 /// `MakeClosure` that creates `block` -- with the class's `foo` carrying
 /// that body. Everything a decoded closure over `block`
-/// needs to verify: its lexical parent is `foo`, which has two registers.
+/// needs to verify: its lexical parent is `foo`, which has two registers
+/// above its header.
 fn closure_world() -> (GraphFixture, decode::DecodedCodeTable) {
-    let (mut interpreter, class) = load(ONE_METHOD);
-    let block = code_with(
+    closure_world_over(code_with(
         CodeKind::Block,
         0,
-        1,
-        vec![Instruction::ImplicitReturn { register: 0 }],
-    );
+        HEADER_REGISTERS + 1,
+        vec![Instruction::ImplicitReturn {
+            register: HEADER_REGISTERS,
+        }],
+    ))
+}
+
+/// `closure_world` with the block `foo` creates given.
+fn closure_world_over(block: Rc<CompiledCode>) -> (GraphFixture, decode::DecodedCodeTable) {
+    let (mut interpreter, class) = load(ONE_METHOD);
+    // Two registers above the header, so two register fields in a frame.
     let parent = code_with(
         CodeKind::Method,
         0,
-        2,
+        HEADER_REGISTERS + 2,
         vec![
             Instruction::MakeClosure {
-                destination: 0,
-                parameters: Rc::new(vec![]),
+                destination: HEADER_REGISTERS,
+                parameters: Rc::new(vec![
+                    Symbol::intern("parameter");
+                    usize::from(block.argument_count)
+                ]),
                 code: block.clone(),
                 copied: Vec::new(),
             },
-            Instruction::Return { register: 0 },
+            Instruction::Return {
+                register: HEADER_REGISTERS,
+            },
         ],
     );
     let table = decode::DecodedCodeTable {
@@ -8321,7 +8342,8 @@ fn a_frame_with_no_registers_for_a_body_that_has_some_is_refused() {
                     arguments: 0,
                     locals: 0,
                     argument_count: 0,
-                    register_count: 2
+                    expected_locals: 2,
+                    register_count: HEADER_REGISTERS + 2
                 })
             );
         },
@@ -8330,10 +8352,10 @@ fn a_frame_with_no_registers_for_a_body_that_has_some_is_refused() {
 
 #[test]
 fn a_frame_whose_register_file_is_too_small_for_its_code_is_refused() {
-    // `foo`'s body has two registers; this activation has one. A
-    // `LoadOuterLocal` of r1 from the closure would index `temporaries[1]` of a
-    // one-element `temporaries` -- an unchecked out-of-bounds index in
-    // `locals::read_local`, reached from a version-matching image.
+    // `foo`'s body has two registers above its header; this activation has
+    // one. A `LoadOuterLocal` of the second from the closure would index
+    // past the frame's one register field, reached from a version-matching
+    // image.
     let (mut fixture, table) = closure_world();
     fixture.decoded(&closure_over_frame(foo_frame(1)), "decode", |heap, graph| {
         let error = decode::verify_graph(heap, graph, &table).expect_err("undersized frame");
@@ -8343,12 +8365,85 @@ fn a_frame_whose_register_file_is_too_small_for_its_code_is_refused() {
                 arguments: 0,
                 locals: 1,
                 argument_count: 0,
-                register_count: 2
+                expected_locals: 2,
+                register_count: HEADER_REGISTERS + 2
             }
         );
         assert_eq!(
             error.to_string(),
-            "a decoded frame holds 0 argument(s) and 1 local(s), but the code that runs in it takes 0 argument(s) in 2 register(s)"
+            "a decoded frame holds 0 argument(s) and 1 local(s), but the code that runs in it takes 0 argument(s) and 2 local(s) beside its header in 15 register(s)"
+        );
+    });
+}
+
+/// A frame record written with a field for each of the header's numbers,
+/// as frame objects were laid out before they left them out, holds 13
+/// registers too many for its body: refused rather than read with its
+/// registers above the header shifted by 13.
+#[test]
+fn a_frame_with_fields_for_the_header_numbers_is_refused() {
+    let (mut fixture, table) = closure_world();
+    let stale = u32::from(HEADER_REGISTERS) + 2;
+    fixture.decoded(
+        &closure_over_frame(foo_frame(stale)),
+        "decode",
+        |heap, graph| {
+            assert_eq!(
+                decode::verify_graph(heap, graph, &table),
+                Err(decode::DecodeError::FrameRegisterFile {
+                    arguments: 0,
+                    locals: usize::from(HEADER_REGISTERS) + 2,
+                    argument_count: 0,
+                    expected_locals: 2,
+                    register_count: HEADER_REGISTERS + 2
+                })
+            );
+        },
+    );
+}
+
+/// A body past the register ceiling whose arguments leave no number above
+/// the header has its arguments as its whole register file
+/// (`compiler::body_too_large`), and a frame of it holds exactly those: an
+/// image carrying one -- here a block of `u16::MAX` parameters, whose
+/// activation is object 1 -- verifies.
+#[test]
+fn a_frame_of_a_body_whose_arguments_fill_the_register_ceiling_verifies() {
+    let block = code_with(
+        CodeKind::Block,
+        u16::MAX,
+        u16::MAX,
+        vec![Instruction::ImplicitReturn { register: 0 }],
+    );
+    assert_eq!(block.frame_register_count(), usize::from(u16::MAX));
+    let (mut fixture, table) = closure_world_over(block);
+    fixture.module_roots = vec![3];
+    let mut writer = encode::Writer::new();
+    graph_counts(&mut writer, 5);
+    writer.write_shipped(CLOSURE_NAME);
+    writer.write_u32(1); // identity hash
+    writer.write_u8(OBJECT_CLOSURE); // object body: Closure
+    writer.write_u32(0); // code id 0 -- the block body
+    writer.write_u32(2); // captured frame -- object 2, `foo`'s activation
+    writer.write_u16(0); // copying nothing
+    frame_header(&mut writer, 0);
+    writer.write_u8(FRAME_CLOSURE); // frame kind: a closure...
+    writer.write_u32(0); // ...object 0
+    runs_body(&mut writer, 0); // code id 0 -- the block's body
+    frame_tail_marked(&mut writer, 0, u32::from(u16::MAX), true, Some(2));
+    frame_header(&mut writer, 0);
+    foo_frame(2)(&mut writer);
+    root_class_records(&mut writer, 3);
+    writer.write_u32(1); // one root...
+    writer.write_u8(VALUE_OBJECT_ID);
+    writer.write_u32(1); // ...the block's activation
+    fixture.decoded(&writer.into_bytes(), "decode", |heap, graph| {
+        decode::verify_graph(heap, graph, &table)
+            .expect("the frame holds the block's arguments, its whole register file");
+        let frame = graph.frames[0];
+        assert_eq!(
+            heap.frame_register_shape(frame),
+            (0, usize::from(u16::MAX), usize::from(u16::MAX))
         );
     });
 }

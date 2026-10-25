@@ -2483,7 +2483,14 @@ and resuming"). The `Activation` object the exception machinery holds is
 this frame object itself, so the same activation answers the same object
 every time; a running activation is a stack frame, or is suspended into
 its frame until something returns into it. A frame object is allocated at
-`reify` with its code's full register count, whatever the code; whether the
+`reify` with its code's full register count but the header's numbers,
+whatever the code: a field for each argument, then one for each register
+above the header, so register `r` is field `r` below the argument count
+and field `r - HEADER_REGISTERS` above the header, and a number the
+header's words take, which no instruction names, has none
+(`Heap::frame_field_of_register`; [compiler.md](compiler.md), "Registers").
+A frame of a body past the register ceiling whose arguments leave no
+number above the header holds its arguments alone. Whether the
 divorce copies the registers into it is decided per activation from the
 block's `outer_reach` ([execution.md](execution.md), "Closure conversion").
 So no frame object ever grows, and suspension, the debugger and

@@ -719,8 +719,10 @@ pub(in crate::heap) mod frame_field {
     /// table of suspensions, while its activation is suspended into it
     /// (`Heap::suspend_activations`); nil once it has returned.
     pub(in crate::heap) const MARRIED: usize = 9;
-    /// How many fixed fields there are: register `index` is word
-    /// `COUNT + index`.
+    /// How many fixed fields there are: register field `index` is word
+    /// `COUNT + index`, the arguments first and then the registers above
+    /// the header, which register each holds being
+    /// `Heap::frame_field_of_register`'s.
     pub(in crate::heap) const COUNT: usize = 10;
 }
 

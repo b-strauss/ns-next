@@ -1989,7 +1989,8 @@ Soup's `List` (`prior-art/primordialsoup/newspeak/Collections.ns`) holds
 (`prior-art/somns/core-lib/Kernel.ns`) allocates `Array new: 2 * storage size`
 and copies. ns-next's `List` in the shipped `CollectionsFactory.ns` does the
 same. **Every object is fixed-size once allocated: no block grows in
-place** -- a frame object is allocated with its code's full register file,
+place** -- a frame object is allocated with its code's full register file
+but the header's numbers,
 and an image's frame record carries exactly that many registers
 ([image-format.md](image-format.md), "Verification") -- so the object
 space needs no growth-in-place case. What changes an
@@ -2302,7 +2303,8 @@ objects lie end to end from the region's start up to its top.
 - **Frames stay objects of the frame format** in the space, with their
   registers inline. Married and divorced frames, and suspended ones, keep
   their meaning ("Frames, the activation stack and the marriage"); a frame
-  object is allocated with its code's full register count, so none ever
+  object is allocated with its code's full register count but the header's
+  numbers, so none ever
   grows, and whether a divorce copies the registers stays decided per
   activation from the block's `outer_reach`. The activation stack's layout
   stays as it is until road step 7a lays frames out as words in one

@@ -155,8 +155,10 @@ a frame object                 // heap/object.rs's frame_field; an object of the
     9 married                  // SmallInteger: >= 0 the stack frame's offset,
                                // < 0 -(row + 1) of a suspended frame's
                                // side-table row; nil once divorced
-    10.. the registers         // one per register number, the header's
-                               // thirteen included, which stay nil
+    10.. the registers         // the arguments, then the registers above the
+                               // header: register r is field 10 + r below
+                               // argument_count, 10 + r - 13 above the header;
+                               // the header's thirteen numbers have none
 
 pub struct ActivationReference {
     offset: u32,               // the word offset of the frame's header
@@ -342,8 +344,9 @@ pub struct ActivationReference {
 **Reify.** `Heap::reify(activation) -> FrameReference` is idempotent: the first call
 allocates the frame object — receiver, `kind` and its operand, `current_class`,
 `program_counter`, the code id, and `home` when the activation is a
-closure's, with a field for every register number of the activation's
-window, the header's thirteen included, all nil —
+closure's, with a field for every register of the activation's window but
+the header's thirteen words -- its arguments, then its registers above the
+header (`Heap::frame_field_of_register`) -- all nil —
 marries it to the stack frame, and records it in the frame's `reified`
 word; every later call
 answers the same handle. Its callers are closure creation, the VM's
@@ -8200,12 +8203,11 @@ callee's frame laid on its caller's slots -- a send's arguments are no
 longer copied into the callee's window; the caller's outgoing argument
 registers *are* the callee's first registers -- the pop restoring the
 caller's window, suspension keeping a sender's registers below its
-callee's header, and the decoder's refusal of a register that names a
-header word and of argument slots below the header's end. To come: frame
-objects and image records without the header's numbers, which a frame
-object still holds as nil fields, and the decoder's refusal of a write to
-an argument register and of an outer store into another frame's
-scratch.
+callee's header, frame objects and image records without the header's
+numbers, and the decoder's refusal of a register that names a header
+word and of argument slots below the header's end. To come: the
+decoder's refusal of a write to an argument register and of an outer
+store into another frame's scratch.
 
 **What a send copies today.** Each argument at most once, most of them
 never. A send names its arguments' contiguous slots, allocated after its
@@ -8320,8 +8322,13 @@ callee                      | r0 .. r(argc-1)       | header (13) | r(argc+13) .
   `SmallInteger` in a debug one ("Representation" above).
   Suspending a sender copies its registers below its callee's header only
   and leaves the rest nil, so a frame object holds no stale header word
-  (built); a frame object and an image record are to keep the registers
-  without the header's numbers, which they still hold as nil fields.
+  (built). A frame object and an image record hold the registers without
+  the header's numbers (built): register `r` is field `r` below the
+  argument count and field `r - 13` above the header, and a number the
+  header takes has no field (`Heap::frame_field_of_register`), so a frame
+  of a body past the register ceiling whose arguments leave no number
+  above the header holds its arguments alone, and an image carrying one
+  decodes.
 - **Parameter slots are immutable (§3.6, §6.3.2)**, so a callee never
   writes the caller's slots: a setter assignment's value, read from the
   slot after the send, is still there (pinned by

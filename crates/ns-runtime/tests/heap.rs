@@ -438,8 +438,8 @@ fn a_returning_activation_keeps_its_registers_only_when_it_was_marked() {
         heap.pop_activation(unmarked);
         assert_eq!(
             heap.frame_register_shape(forgetful),
-            (0, 1, usize::from(TEMPORARY) + 1),
-            "a frame has its code's registers whether or not they were kept"
+            (0, 1, 2),
+            "a frame has its code's registers, the header's numbers left out, whether or not they were kept"
         );
         assert!(
             heap.frame_local(forgetful, 0).is_nil()
@@ -469,7 +469,7 @@ fn a_returning_activation_keeps_its_registers_only_when_it_was_marked() {
         heap.pop_activation(marked);
         assert_eq!(
             heap.frame_register_shape(kept),
-            (0, 1, usize::from(TEMPORARY) + 1),
+            (0, 1, 2),
             "a marked activation hands its registers to its frame"
         );
         assert_eq!(heap.frame_local(kept, 0).as_small_integer(), Some(1));

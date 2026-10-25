@@ -690,11 +690,11 @@ fn dead_register() -> Word {
 
 /// Copies the registers of the frame whose arguments start at stack word
 /// `start` and whose header is at `offset` -- its window, or the part of
-/// it below `end` -- into `fields`, a frame object's register fields,
-/// numbered as its code numbers them: the arguments, then the header's
-/// numbers, which hold nil, then the registers above the header; every
-/// field past `end` nil. Answers whether a copied word names a young
-/// object, which an old frame object must then be remembered for.
+/// it below `end` -- into `fields`, a frame object's register fields
+/// (`Heap::frame_field_of_register`): the arguments, then the registers
+/// above the header, the header itself left out; every field past `end`
+/// nil. Answers whether a copied word names a young object, which an old
+/// frame object must then be remembered for.
 fn copy_registers_out(
     stack_words: &[u64],
     start: usize,
@@ -707,11 +707,8 @@ fn copy_registers_out(
     for (index, field) in fields.iter_mut().enumerate() {
         let word = if index < argument_count {
             stack_words[start + index]
-        } else if index < argument_count + frame_header::COUNT {
-            Word::NIL.bits()
         } else {
-            let slot =
-                offset + frame_header::COUNT + (index - argument_count - frame_header::COUNT);
+            let slot = offset + frame_header::COUNT + (index - argument_count);
             if slot < end {
                 stack_words[slot]
             } else {
@@ -2833,8 +2830,9 @@ impl<'gc> Heap<'gc> {
         )
     }
 
-    /// A returned top-level frame no activation produced, built from values.
-    /// Test support, public only for `tests/image.rs`'s `sender` round trip:
+    /// A returned top-level frame no activation produced, built from values:
+    /// `temporaries` are its registers above the header, register
+    /// `HEADER_REGISTERS + index` being `temporaries[index]`. Test support, public only for `tests/image.rs`'s `sender` round trip:
     /// the runtime never sets a frame's `sender`, so only a hand-made frame
     /// carries one into the encoder.
     ///
@@ -5705,10 +5703,14 @@ impl<'gc> Heap<'gc> {
 
     /// How many of `frame`'s registers are arguments: its code's argument
     /// count, never more than it has registers. A top-level frame takes none.
+    /// Read on every register access to a frame whose activation is not on
+    /// the stack, so it reads the code's row in place rather than taking the
+    /// code out.
     fn frame_argument_count(&self, frame: FrameReference<'gc>) -> usize {
         let registers = self.frame_words(frame).len() - frame_field::COUNT;
-        self.frame_code(frame)
-            .map_or(0, |code| usize::from(code.argument_count))
+        self.frame_code_id_field(frame)
+            .and_then(|id| self.tables.codes.get(id.index())?.as_ref())
+            .map_or(0, |entry| usize::from(entry.code.argument_count))
             .min(registers)
     }
 
@@ -5819,9 +5821,11 @@ impl<'gc> Heap<'gc> {
     }
 
     /// `program_counter`, how many of a frame's registers are arguments and
-    /// how many registers it has, read together. `image::decode::verify_graph`
-    /// checks them against the shape of the compiled body it reconciles
-    /// every decoded frame against.
+    /// how many registers it holds -- its arguments and its registers above
+    /// the header (`frame_field_of_register`) -- read together.
+    /// `image::decode::verify_graph` checks them against the shape of the
+    /// compiled body it reconciles every decoded frame against
+    /// (`CompiledCode::frame_register_count`).
     pub fn frame_register_shape(&self, frame: FrameReference<'gc>) -> (usize, usize, usize) {
         debug_assert!(
             self.frame_activation(frame).is_none(),
@@ -6483,10 +6487,10 @@ impl<'gc> Heap<'gc> {
 
     /// The frame object for a live activation, created married to it on the
     /// first call and answered again on every later one. It has a field for
-    /// every register number of the activation's window, the header's
-    /// included, every one nil while the activation runs, since the live
-    /// registers are the stack's: so no frame object ever grows, and the
-    /// divorce copies the registers in place.
+    /// every register of the activation's window but the header's words
+    /// (`frame_field_of_register`), every one nil while the activation
+    /// runs, since the live registers are the stack's: so no frame object
+    /// ever grows, and the divorce copies the registers in place.
     pub fn reify(&mut self, activation: ActivationReference) -> FrameReference<'gc> {
         self.check_activation(activation);
         let offset = activation.offset;
@@ -6500,10 +6504,9 @@ impl<'gc> Heap<'gc> {
         let (receiver, current_class) = self.activation_receiver_and_current_class(activation);
         let program_counter = self.activation_program_counter(activation);
         let code = self.activation_code_id(activation);
-        // Every register number the frame's code can name: its arguments,
-        // the header's numbers, which stay nil, and the registers above.
+        // Every register the frame's code can name: its arguments and the
+        // registers above the header.
         let register_count = usize::from(self.stack.flags(offset).argument_count)
-            + frame_header::COUNT
             + self.stack.register_count(offset);
         let kind = self.activation_kind(activation);
         let home = match kind {
@@ -6533,6 +6536,14 @@ impl<'gc> Heap<'gc> {
         );
         self.frame_words_mut(handle)[frame_field::MARRIED] =
             frames::number_word(u64::from(offset)).bits();
+        // A returned or suspended frame finds where its registers above the
+        // header begin from its code's argument count (`frame_argument_count`),
+        // so it must be the count the activation was handed.
+        debug_assert_eq!(
+            self.frame_argument_count(handle),
+            usize::from(self.stack.flags(offset).argument_count),
+            "internal: an activation is handed as many arguments as its code takes"
+        );
         self.stack.set_header_word(
             offset,
             frame_header::REIFIED,
@@ -6739,14 +6750,10 @@ impl<'gc> Heap<'gc> {
         };
         let continuation = self.continuations.store(then);
         // The frame was reified from the activation's window, so it has a
-        // field for each of its arguments, the header's numbers and the
-        // registers above them (`reify`).
+        // field for each of its arguments and each register above the
+        // header (`reify`).
         let fields = self.frame_words(frame).len() - frame_field::COUNT;
-        debug_assert!(
-            fields >= argument_count + frame_header::COUNT,
-            "internal: a suspended frame has a field for every register number of its window"
-        );
-        let register_count = fields.saturating_sub(argument_count + frame_header::COUNT);
+        let register_count = fields - argument_count;
         let words = argument_count + frame_header::COUNT + register_count;
         let start = self.stack.frames.top();
         // The reservation holds at most `MAXIMUM_STACK_WORDS`, 2^31 words,
@@ -6791,15 +6798,9 @@ impl<'gc> Heap<'gc> {
         let (fixed, registers) = rest.split_at_mut(frame_header::COUNT);
         header_words.write(fixed);
         let own_registers = &mut words_of_frame[frame_field::COUNT..];
-        for (register, own) in arguments.iter_mut().chain(registers.iter_mut()).zip(
-            own_registers[..argument_count].iter().chain(
-                own_registers
-                    .get(argument_count + frame_header::COUNT..)
-                    .unwrap_or_default(),
-            ),
-        ) {
-            *register = *own;
-        }
+        let (own_arguments, own_above) = own_registers.split_at(argument_count);
+        arguments.copy_from_slice(own_arguments);
+        registers.copy_from_slice(own_above);
         own_registers.fill(Word::NIL.bits());
         words_of_frame[frame_field::SENDER] = Word::NIL.bits();
         words_of_frame[frame_field::MARRIED] = frames::number_word(u64::from(offset)).bits();
@@ -7505,6 +7506,26 @@ impl<'gc> Heap<'gc> {
         )
     }
 
+    /// The field of a frame object of a body taking `argument_count`
+    /// arguments that holds `register`, counted from the frame's first
+    /// register field: an argument is its own field, a register above the
+    /// header `HEADER_REGISTERS` fields lower, and a number the header's
+    /// words take, which no instruction names, has none. A frame object
+    /// holds the registers a stack frame does, without the header between
+    /// them, so its fields are its arguments and then its registers above
+    /// the header (`docs/design/object-model.md`, "Frame objects").
+    #[inline]
+    pub fn frame_field_of_register(argument_count: u16, register: u16) -> Option<usize> {
+        let (argument_count, register) = (usize::from(argument_count), usize::from(register));
+        if register < argument_count {
+            Some(register)
+        } else {
+            register
+                .checked_sub(argument_count + frame_header::COUNT)
+                .map(|above| argument_count + above)
+        }
+    }
+
     /// A register of a reified frame: the live stack slot while its
     /// activation runs, the frame's own copy while it is suspended and
     /// after it has returned. This is
@@ -7514,22 +7535,33 @@ impl<'gc> Heap<'gc> {
     /// A returned activation that was never marked kept no registers at all
     /// (`pop_activation`), and a decoded frame's register file is whatever
     /// the image said. No code the compiler produces reaches a register
-    /// either one lacks -- `MakeClosure` marks every activation a
-    /// by-reference block is created in -- so an index past the file is
-    /// either a crafted image or a compiler defect, and answering `Nil`
-    /// rather than panicking is what keeps the first from aborting the
-    /// process.
+    /// either one lacks, nor names a number the header's words take --
+    /// `MakeClosure` marks every activation a by-reference block is created
+    /// in -- so an index past the file, or one the header takes, which no
+    /// field holds (`frame_field_of_register`), is either a crafted image
+    /// or a compiler defect, and answering `Nil` rather than panicking is
+    /// what keeps the first from aborting the process.
     pub fn frame_local(&self, frame: FrameReference<'gc>, index: u16) -> Value<'gc> {
         let words = self.frame_words(frame);
         let word = match self.married_offset(words) {
             Some(offset) => {
                 Word::from_bits(self.stack.frames.word(self.register_slot(offset, index)))
             }
-            None => words
-                .get(frame_field::COUNT + index as usize)
+            None => self
+                .dead_frame_field(frame, index)
+                .and_then(|field| words.get(frame_field::COUNT + field))
                 .map_or(Word::NIL, |bits| Word::from_bits(*bits)),
         };
         self.load(word)
+    }
+
+    /// The field of `frame`, whose activation is not on the stack, that
+    /// holds register `index`, counted from its first register field.
+    fn dead_frame_field(&self, frame: FrameReference<'gc>, index: u16) -> Option<usize> {
+        // A frame's argument count is its code's, inside `u16` like the
+        // count it was read from.
+        let argument_count = self.frame_argument_count(frame) as u16;
+        Self::frame_field_of_register(argument_count, index)
     }
 
     /// `frame_local`'s twin, and silently a no-op for an index a dead
@@ -7545,9 +7577,12 @@ impl<'gc> Heap<'gc> {
                 self.stack.frames.set_word(slot, word.bits());
             }
             None => {
+                let Some(field) = self.dead_frame_field(frame, index) else {
+                    return;
+                };
                 if let Some(slot) = self
                     .frame_words_mut(frame)
-                    .get_mut(frame_field::COUNT + index as usize)
+                    .get_mut(frame_field::COUNT + field)
                 {
                     *slot = word.bits();
                     self.write_barrier(frame.offset, word);
@@ -10724,14 +10759,25 @@ mod tests {
             .expect("the callee returns to the sender");
         let small = |value: i64| Value::small_integer(value).word().bits();
         let nil = Word::NIL.bits();
-        let mut expected = vec![nil; usize::from(sender_registers)];
-        expected[usize::from(below_slots)] = small(1);
-        expected[usize::from(argument_base)] = small(7);
-        expected[usize::from(argument_base) + 1] = small(8);
+        // The sender takes no arguments, so its fields are its six
+        // registers above the header, each `HEADER_REGISTERS` below its
+        // number.
+        let field = |register: u16| {
+            Heap::frame_field_of_register(0, register).expect("a register above the header")
+        };
+        let mut expected = vec![nil; 6];
+        expected[field(below_slots)] = small(1);
+        expected[field(argument_base)] = small(7);
+        expected[field(argument_base + 1)] = small(8);
         assert_eq!(
             own_registers(&heap, sender_frame),
             expected,
             "the sender keeps its registers below the callee's header, the rest nil"
+        );
+        assert_eq!(
+            own_registers(&heap, callee_frame),
+            [small(7), small(8), small(42)],
+            "the callee holds its arguments, the slots' values, and its register above the header"
         );
 
         let resumed = heap.resume_activation(callee_frame, FeedbackBase::NOT_ASSIGNED);
@@ -10806,9 +10852,10 @@ mod tests {
     #[test]
     fn a_married_frame_reads_and_writes_the_live_registers() {
         let mut heap = frame_heap();
+        let class = named_class(&mut heap, "Married");
         let activation = heap
             .push_activation(
-                header(),
+                suspendable_header(class, 1, first_above_header(1) + 1),
                 Arguments::Values(&[Value::small_integer(1)].as_slice()),
                 1,
             )
@@ -10872,7 +10919,8 @@ mod tests {
         );
         assert_eq!(
             heap.frame_register_shape(frame),
-            (4, 1, usize::from(temporary) + 1)
+            (4, 1, 2),
+            "the argument and the temporary, the header's numbers left out"
         );
         assert!(heap.frame_is_uncontinuable(frame));
         assert!(heap.frame_sender(frame).is_none());
@@ -10998,17 +11046,24 @@ mod tests {
                 ActivationKind::TopLevel => None,
                 _ => Some(class),
             };
+            // A top-level activation takes no arguments; every other kind
+            // is handed as many as its code takes.
+            let arguments = [Value::small_float(1.5), Value::object(closure)];
+            let arguments = match kind {
+                ActivationKind::TopLevel => &arguments[..0],
+                _ => &arguments[..],
+            };
+            let argument_count = arguments.len() as u16;
             let activation = heap
                 .push_activation(
                     ActivationHeader {
                         receiver: Value::small_integer(-4),
                         current_class,
                         kind,
+                        code: shaped_code(argument_count, first_above_header(argument_count) + 1),
                         ..header()
                     },
-                    Arguments::Values(
-                        &[Value::small_float(1.5), Value::object(closure)].as_slice(),
-                    ),
+                    Arguments::Values(&arguments),
                     1,
                 )
                 .expect("the stack holds the frame");
@@ -11773,7 +11828,7 @@ mod tests {
             .as_object()
             .is_some_and(|receiver| receiver.same(string)));
         assert!(heap
-            .frame_local(captured_frame, 0)
+            .frame_local(captured_frame, first_above_header(0))
             .as_object()
             .is_some_and(|register| register.same(array)));
         let activation_class = heap.activation_class.expect("recorded");
@@ -12066,11 +12121,12 @@ mod tests {
     #[test]
     fn a_married_frame_survives_a_collection_and_reads_its_live_registers() {
         let mut heap = frame_heap();
+        let class = named_class(&mut heap, "Collected");
         // Garbage below the frame, so that compaction moves it.
         top_level_frame(&mut heap, 2);
         let activation = heap
             .push_activation(
-                header(),
+                suspendable_header(class, 1, first_above_header(1) + 2),
                 Arguments::Values(&[Value::small_integer(7)].as_slice()),
                 2,
             )
@@ -12105,10 +12161,11 @@ mod tests {
     #[test]
     fn a_frame_divorced_after_a_collection_holds_its_registers_only_when_retained() {
         let mut heap = frame_heap();
+        let class = named_class(&mut heap, "Divorced");
         top_level_frame(&mut heap, 2);
         let retained = heap
             .push_activation(
-                header(),
+                suspendable_header(class, 1, first_above_header(1) + 1),
                 Arguments::Values(&[Value::small_integer(7)].as_slice()),
                 1,
             )
@@ -12118,7 +12175,7 @@ mod tests {
         heap.activation_set_local(retained, first_above_header(1), Value::small_integer(8));
         let unretained = heap
             .push_activation(
-                header(),
+                suspendable_header(class, 1, first_above_header(1) + 1),
                 Arguments::Values(&[Value::small_integer(5)].as_slice()),
                 1,
             )
@@ -12177,10 +12234,11 @@ mod tests {
     #[cfg(debug_assertions)]
     fn a_married_frame_survives_a_move_and_is_divorced_into_its_moved_object() {
         let mut heap = frame_heap();
+        let class = named_class(&mut heap, "Moved");
         top_level_frame(&mut heap, 2);
         let activation = heap
             .push_activation(
-                header(),
+                suspendable_header(class, 1, first_above_header(1) + 1),
                 Arguments::Values(&[Value::small_integer(7)].as_slice()),
                 1,
             )
@@ -12372,8 +12430,9 @@ mod tests {
             allocation_words(1 + frame_field::COUNT + 250),
             2 + frame_field::COUNT + 251
         );
-        heap.frame_set_local(frame, 249, Value::small_integer(7));
-        assert_eq!(heap.frame_local(frame, 249).as_small_integer(), Some(7));
+        let last = first_above_header(0) + 249;
+        heap.frame_set_local(frame, last, Value::small_integer(7));
+        assert_eq!(heap.frame_local(frame, last).as_small_integer(), Some(7));
     }
 
     #[test]
@@ -12584,7 +12643,7 @@ mod tests {
         let dead_object = heap.frame_object(dead);
         assert!(!space::is_young(dead_object.offset));
         forget(&mut heap, dead_object);
-        heap.frame_set_local(dead, 0, Value::object(young));
+        heap.frame_set_local(dead, first_above_header(0), Value::object(young));
         assert!(heap.header(dead_object).remembered());
 
         let activation = heap
@@ -12799,11 +12858,17 @@ mod tests {
         let closure_class = named_class(&mut heap, "Closure");
         set_guards_from(&mut heap, closure_class, activation_class);
         let arguments = [Value::small_integer(1), Value::object(closure_class)];
+        // One body for both, so that both frames name the same code.
+        let code = shaped_code(2, first_above_header(2) + 3);
+        let framed = || ActivationHeader {
+            code: code.clone(),
+            ..suspendable_header(closure_class, 2, 0)
+        };
         let first = heap
-            .push_activation(header(), Arguments::Values(&arguments.as_slice()), 3)
+            .push_activation(framed(), Arguments::Values(&arguments.as_slice()), 3)
             .expect("the stack holds the frame");
         let second = heap
-            .push_activation(header(), Arguments::Values(&arguments.as_slice()), 3)
+            .push_activation(framed(), Arguments::Values(&arguments.as_slice()), 3)
             .expect("the stack holds the frame");
         let (fast, fast_bumps) = counting_fast_bumps(&mut heap, |heap| heap.reify(first));
         let (cold, cold_bumps) = counting_fast_bumps_refused(&mut heap, |heap| heap.reify(second));
@@ -13196,9 +13261,10 @@ mod tests {
     #[test]
     fn a_married_frame_is_copied_and_its_entry_follows_it() {
         let mut heap = frame_heap();
+        let class = named_class(&mut heap, "Scavenged");
         let activation = heap
             .push_activation(
-                header(),
+                suspendable_header(class, 1, first_above_header(1) + 1),
                 Arguments::Values(&[Value::small_integer(1)].as_slice()),
                 1,
             )
@@ -15116,6 +15182,172 @@ mod tests {
     /// A frame object's own register words, read past the marriage.
     fn own_registers<'gc>(heap: &Heap<'gc>, frame: FrameReference<'gc>) -> Vec<u64> {
         heap.frame_words(frame)[frame_field::COUNT..].to_vec()
+    }
+
+    /// The activation of a body with two arguments, 1 and 2, and three
+    /// temporaries, 10, 11 and 12, reified: its frame object.
+    fn two_arguments_three_temporaries<'gc>(
+        heap: &mut Heap<'gc>,
+        class: ClassReference<'gc>,
+    ) -> (ActivationReference, FrameReference<'gc>) {
+        let activation = heap
+            .push_activation(
+                suspendable_header(class, 2, first_above_header(2) + 3),
+                Arguments::Values(&[Value::small_integer(1), Value::small_integer(2)].as_slice()),
+                3,
+            )
+            .expect("the stack holds the frame");
+        for (position, value) in (10..13).enumerate() {
+            heap.activation_set_local(
+                activation,
+                first_above_header(2) + position as u16,
+                Value::small_integer(value),
+            );
+        }
+        let frame = heap.reify(activation);
+        (activation, frame)
+    }
+
+    /// The register words of a frame holding 1, 2, 10, 11 and 12.
+    fn one_two_ten_eleven_twelve() -> Vec<u64> {
+        [1, 2, 10, 11, 12]
+            .map(|value| Value::small_integer(value).word().bits())
+            .to_vec()
+    }
+
+    /// A register below the arguments' end is its own field, one the header
+    /// takes has none, and one above the header is 13 fields lower.
+    #[test]
+    fn a_register_maps_to_its_frame_field_past_the_header_numbers() {
+        let header = frame_header::COUNT as u16;
+        assert_eq!(Heap::frame_field_of_register(2, 0), Some(0));
+        assert_eq!(Heap::frame_field_of_register(2, 1), Some(1));
+        assert_eq!(Heap::frame_field_of_register(2, 2), None);
+        assert_eq!(Heap::frame_field_of_register(2, 1 + header), None);
+        assert_eq!(Heap::frame_field_of_register(2, 2 + header), Some(2));
+        assert_eq!(Heap::frame_field_of_register(0, 0), None);
+        assert_eq!(Heap::frame_field_of_register(0, header), Some(0));
+        // A body past the register ceiling whose arguments leave no number
+        // above the header: its arguments are its whole register file.
+        assert_eq!(
+            Heap::frame_field_of_register(u16::MAX, u16::MAX - 1),
+            Some(usize::from(u16::MAX) - 1)
+        );
+        assert_eq!(Heap::frame_field_of_register(u16::MAX - 5, u16::MAX), None);
+    }
+
+    /// A frame object holds a field for each argument and each register
+    /// above the header, none for the header's numbers: a body with two
+    /// arguments and three temporaries has five, and its first temporary,
+    /// register `2 + HEADER_REGISTERS`, is its third field once the
+    /// activation returned.
+    #[test]
+    fn a_reified_frame_leaves_the_header_numbers_out() {
+        let mut heap = frame_heap();
+        let class = named_class(&mut heap, "Windowed");
+        let (activation, frame) = two_arguments_three_temporaries(&mut heap, class);
+        assert_eq!(own_registers(&heap, frame).len(), 5);
+        let first_temporary = 2 + crate::bytecode::HEADER_REGISTERS;
+        assert_eq!(
+            heap.frame_local(frame, first_temporary).as_small_integer(),
+            Some(10),
+            "married, the frame reads the live register"
+        );
+        heap.retain_registers(activation);
+        heap.pop_activation(activation);
+        assert_eq!(own_registers(&heap, frame), one_two_ten_eleven_twelve());
+        assert_eq!(heap.frame_register_shape(frame), (0, 2, 5));
+        assert_eq!(heap.frame_local(frame, 0).as_small_integer(), Some(1));
+        assert_eq!(heap.frame_local(frame, 1).as_small_integer(), Some(2));
+        for (position, value) in (10..13).enumerate() {
+            assert_eq!(
+                heap.frame_local(frame, first_temporary + position as u16)
+                    .as_small_integer(),
+                Some(value)
+            );
+        }
+        // A header number names no field: read as nil, written nowhere.
+        assert!(heap.frame_local(frame, 2).is_nil());
+        heap.frame_set_local(frame, 2, Value::small_integer(99));
+        heap.frame_set_local(frame, first_temporary - 1, Value::small_integer(99));
+        assert_eq!(own_registers(&heap, frame), one_two_ten_eleven_twelve());
+        heap.frame_set_local(frame, first_temporary + 2, Value::small_integer(13));
+        assert_eq!(
+            heap.frame_local(frame, first_temporary + 2)
+                .as_small_integer(),
+            Some(13)
+        );
+    }
+
+    /// A body past the register ceiling whose arguments leave no number
+    /// above the header has its arguments as its whole register file, and a
+    /// frame of it holds exactly those: the register file the image decoder
+    /// holds a decoded frame of the body to (`CompiledCode::frame_register_count`).
+    #[test]
+    fn a_frame_of_a_body_whose_arguments_fill_the_ceiling_holds_its_arguments_alone() {
+        let mut heap = frame_heap();
+        let class = named_class(&mut heap, "Ceiling");
+        let header = suspendable_header(class, u16::MAX, u16::MAX);
+        let code = header.code.clone();
+        let arguments = vec![Value::small_integer(3); usize::from(u16::MAX)];
+        let activation = heap
+            .push_activation(header, Arguments::Values(&arguments.as_slice()), 0)
+            .expect("the stack holds the frame");
+        let frame = heap.reify(activation);
+        heap.retain_registers(activation);
+        heap.pop_activation(activation);
+        assert_eq!(
+            heap.frame_register_shape(frame),
+            (0, usize::from(u16::MAX), code.frame_register_count())
+        );
+        assert_eq!(
+            heap.frame_local(frame, u16::MAX - 1).as_small_integer(),
+            Some(3)
+        );
+    }
+
+    /// Suspended, the same activation's frame holds its five registers
+    /// without the header's numbers, and resuming it gives every register
+    /// back where its code numbers it.
+    #[test]
+    fn suspending_and_resuming_round_trips_every_register_past_the_header() {
+        let mut heap = frame_heap();
+        let class = named_class(&mut heap, "Windowed");
+        let (activation, frame) = two_arguments_three_temporaries(&mut heap, class);
+        let floor = heap.activation_position(activation);
+        let suspended = heap.suspend_activations(floor);
+        assert!(suspended.is_some_and(|suspended| suspended.same(frame)));
+        assert_eq!(own_registers(&heap, frame), one_two_ten_eleven_twelve());
+        let first_temporary = first_above_header(2);
+        assert_eq!(
+            heap.frame_local(frame, first_temporary + 1)
+                .as_small_integer(),
+            Some(11)
+        );
+        let resumed = heap.resume_activation(frame, FeedbackBase::NOT_ASSIGNED);
+        assert_eq!(
+            heap.activation_local(resumed, 0).as_small_integer(),
+            Some(1)
+        );
+        assert_eq!(
+            heap.activation_local(resumed, 1).as_small_integer(),
+            Some(2)
+        );
+        for (position, value) in (10..13).enumerate() {
+            assert_eq!(
+                heap.activation_local(resumed, first_temporary + position as u16)
+                    .as_small_integer(),
+                Some(value)
+            );
+        }
+        assert_eq!(
+            heap.stack.frames.top(),
+            heap.stack.window_end(resumed.offset),
+            "the resumed window has the arguments, the header and three registers"
+        );
+        assert_eq!(heap.stack.register_count(resumed.offset), 3);
+        heap.pop_activation(resumed);
+        assert_eq!(heap.activation_depth(), 0);
     }
 
     #[test]

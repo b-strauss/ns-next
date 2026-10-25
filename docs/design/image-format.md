@@ -1271,15 +1271,29 @@ live callee may lie -- is still to be refused ([OPEN-WORK.md](../OPEN-WORK.md),
 "Next").
 
 **A frame record's register file matches its body.** Every reified frame is
-allocated with its code's full register file ([object-model.md](object-model.md),
-"The object layout"), and the encoder writes every register it has, `nil`
-where its activation copied none ([execution.md](execution.md),
-"Lifecycle"), so `verify_graph` refuses a frame record whose register count
-is anything but its body's `register_count` (`FrameRegisterFile`; a frame
-record with no registers for a body that has some is refused,
+allocated with its code's full register file but the header's numbers -- its
+arguments, then its registers above the header
+([object-model.md](object-model.md), "The object layout") -- and the encoder
+writes every register it has, `nil` where its activation copied none
+([execution.md](execution.md), "Lifecycle"), so `verify_graph` refuses a
+frame record whose register count is anything but its body's
+`argument_count` plus its registers above the header
+(`CompiledCode::frame_register_count`; `FrameRegisterFile`; a frame record
+with no registers for a body that has some is refused,
 `a_frame_with_no_registers_for_a_body_that_has_some_is_refused`). A crafted
 image therefore cannot pair a by-reference closure with a frame too small
-for the registers its code reads, and no frame object ever grows.
+for the registers its code reads, and no frame object ever grows. A body
+past the register ceiling whose arguments leave no number above the header
+has frames of its arguments alone, which decode
+(`a_frame_of_a_body_whose_arguments_fill_the_register_ceiling_verifies`).
+
+A frame record with a field for each of the header's numbers, as a stale
+image written while frame objects held them carries, is refused by the same
+check, never read with its registers shifted: it holds thirteen fields more
+than its body's register file, whatever the body
+(`a_frame_with_fields_for_the_header_numbers_is_refused`). That is why the
+frame record's tag (`OBJECT_FRAME`) needs no new number for the layout
+("A wire tag is assigned once" in `image/opcodes.rs`).
 
 **A frame's body is one its kind runs.** Since a program frame names its
 body by code id ("A frame names its body" above), nothing but this check

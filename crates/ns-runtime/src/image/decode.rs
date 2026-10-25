@@ -465,12 +465,16 @@ pub enum DecodeError {
     /// body it would start them there too.
     SharedDeclarationCode,
     /// A decoded frame's register file does not match the body that runs in
-    /// it, so a register index the body considers in range would index
-    /// `arguments`/`temporaries` out of range.
+    /// it -- its arguments and then its registers above the header
+    /// (`CompiledCode::frame_register_count`) -- so a register index the
+    /// body considers in range would index past the frame's fields.
+    /// `expected_locals` is how many registers the body has above its
+    /// header, `register_count` its whole numbering, the header's included.
     FrameRegisterFile {
         arguments: usize,
         locals: usize,
         argument_count: u16,
+        expected_locals: usize,
         register_count: u16,
     },
     /// A decoded closure's captured frame is not an activation of the body
@@ -962,10 +966,11 @@ impl std::fmt::Display for DecodeError {
                 arguments,
                 locals,
                 argument_count,
+                expected_locals,
                 register_count,
             } => write!(
                 f,
-                "a decoded frame holds {arguments} argument(s) and {locals} local(s), but the code that runs in it takes {argument_count} argument(s) in {register_count} register(s)"
+                "a decoded frame holds {arguments} argument(s) and {locals} local(s), but the code that runs in it takes {argument_count} argument(s) and {expected_locals} local(s) beside its header in {register_count} register(s)"
             ),
             DecodeError::CapturedFrameMismatch => write!(
                 f,
@@ -5329,9 +5334,11 @@ fn frame_body<'gc>(heap: &Heap<'gc>, frame: FrameReference<'gc>) -> Option<Rc<Co
 ///    image carries only bytecode), but which body it counts them in is only
 ///    known once the decoded mixins carry their code.
 /// 1. A frame's register file must be the body's, register for register:
-///    every reified frame has its body's whole register file and the
-///    encoder writes all of it. Its arguments are its code's, so the record
-///    carries no split of its own.
+///    every reified frame has a field for each of its body's arguments and
+///    each of its registers above the header -- none for the header's
+///    numbers, which no instruction names -- and the encoder writes all of
+///    them. Its arguments are its code's, so the record carries no split of
+///    its own.
 /// 2. A closure's `captured_frame` must be an activation of the body its
 ///    own body is lexically nested in. Nothing else in the format ties the
 ///    two together, and `verify_code_table`'s outer-local bound -- which
@@ -5379,11 +5386,12 @@ pub fn verify_graph<'gc>(
                 instructions: code.instruction_count(),
             });
         }
-        if register_count != code.register_count as usize {
+        if register_count != code.frame_register_count() {
             return Err(DecodeError::FrameRegisterFile {
                 arguments: argument_count,
                 locals: register_count.saturating_sub(argument_count),
                 argument_count: code.argument_count,
+                expected_locals: code.registers_above_header(),
                 register_count: code.register_count,
             });
         }

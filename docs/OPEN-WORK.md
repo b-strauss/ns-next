@@ -31,11 +31,8 @@ builds separated and twelve of twenty-four faster
 ([execution.md](design/execution.md), "What contiguous arguments
 moved"); the second, being built, overlaps the windows: the callee's
 frame lies on its caller's slots, the header's numbers are left out of the
-numbering and the decoder refuses a register naming a header word. Still
-open in it: frame objects and image records without the header's numbers,
-whose fields for them a frame object still holds as nil -- until then an
-image holding a frame of a body past the register ceiling whose arguments
-leave no number above the header is refused (`FrameRegisterFile`); the
+numbering, of frame objects and of image records, and the decoder refuses a
+register naming a header word. Still open in it: the
 decoder's refusal of a write to an argument register and of an outer load
 or store into another frame's registers above its named locals, its
 scratch, where a callee laid on its slots has its live header; and the stage's measurement, which is to say

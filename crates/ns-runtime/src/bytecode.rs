@@ -598,6 +598,15 @@ impl CompiledCode {
             .saturating_sub(usize::from(self.argument_count) + usize::from(HEADER_REGISTERS))
     }
 
+    /// How many registers a frame object of this body holds: its arguments
+    /// and its registers above the header, the header's numbers left out
+    /// (`Heap::frame_field_of_register`). Its arguments alone for a body
+    /// whose registers are its arguments alone.
+    #[inline]
+    pub fn frame_register_count(&self) -> usize {
+        usize::from(self.argument_count) + self.registers_above_header()
+    }
+
     /// A body from its instructions, encoded at once; `family_size` and
     /// `outer_reach` and `addresses_own_slots` are derived from them, as the
     /// compiler derives them.
