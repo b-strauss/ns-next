@@ -394,7 +394,8 @@ impl FrameStack {
     }
 
     /// The end of the committed range, in words: no frame's window reaches
-    /// past it.
+    /// past it. Only a debug build's stale-handle check reads it.
+    #[cfg(debug_assertions)]
     pub(super) fn committed(&self) -> usize {
         self.committed
     }
