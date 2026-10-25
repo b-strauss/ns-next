@@ -45,24 +45,27 @@ struct Budget {
     wide_loads: usize,
 }
 
-/// The out-of-line functions of the send, push and return path, which the
-/// profiles of the two incidents named, with their budgets.
+/// The out-of-line functions of the send, push and return path, with their
+/// budgets: those the profiles of the two incidents named, and the rest of
+/// the path the compiler keeps out of line (`place_arguments`, a native
+/// loop's `resume`).
 ///
 /// Each budget is the count measured at `d7488e20` with a headroom: 10% on
 /// the instructions, rounded up to a multiple of ten, and 10% but at least
-/// two on the wide loads. An ordinary change to one of these functions moves
-/// its size by a few percent (a refactor of `push_sent` +2%, a reverted
-/// change to the switch sites +1% on `vm::run`), and its wide loads by one or
-/// two, so the headroom absorbs it; the incidents moved `push_sent` by 26x
-/// and by 37% (4,793 to 6,588 instructions between `6d7da106` and
-/// `0037350d`) and its wide loads from 12 to 79, far past it. A change that
-/// passes a budget for a reason is a decision: measure it (the
-/// `measuring-performance` skill), then raise the budget with the reason in
-/// the same commit.
+/// two on the wide loads. An ordinary change moves a function's size by a
+/// few percent (`push_sent` grew 2% over the four commits after
+/// `6d7da106`; a change to the switch sites, reverted, grew `vm::run` 1%)
+/// and its wide loads by one or two, which the headroom absorbs. The
+/// incidents went far past it: `push_sent` grew from 276 to 7,265
+/// instructions when a push chain was inlined into it, and at `0037350d`
+/// it had 6,588 instructions and 79 wide loads against 4,793 and 12 once
+/// fixed. A change that passes a budget for a reason is a decision:
+/// measure it (the `measuring-performance` skill), then raise the budget
+/// with the reason in the same commit.
 ///
-/// `vm::run`'s and `builtins::execute`'s wide loads are the one stall
-/// `docs/OPEN-WORK.md` keeps open (`builtins::execute`'s result comes back
-/// through memory); the budget keeps it from growing. The cold refusals
+/// `builtins::execute`'s wide loads include the stall `docs/OPEN-WORK.md`
+/// keeps open (its result comes back through memory, and `vm::run` copies
+/// it out); the budgets keep their number from growing. The cold refusals
 /// (`push_refused`, `push_past_the_limit`) are not on the path and are not
 /// held.
 const BUDGETS: &[Budget] = &[
@@ -113,6 +116,12 @@ const BUDGETS: &[Budget] = &[
         function: "ns_runtime::vm::resume_caller",
         instructions: 300,
         wide_loads: 2,
+    },
+    // A native loop's return: measured 312 and 1.
+    Budget {
+        function: "<ns_runtime::interpreter::Mutator>::resume",
+        instructions: 350,
+        wide_loads: 3,
     },
     // Measured 55 and 0.
     Budget {
