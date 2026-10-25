@@ -728,10 +728,15 @@ check").
   every frame's header -- its receiver, `current_class`, the closure object
   or class its kind's operand names, the frame object it is married to,
   and numbers the tracer passes over -- and its registers, with no stack
-  map and no walk of frames; the words a pop left above the top are never
-  read ([execution.md](execution.md), "Representation"). `ActivationStack`'s
-  impl is in `heap.rs`, where its
-  fields are private.
+  map and no walk of frames. The words above the top are not traced: a
+  push writes every word of its frame but the arguments its sender's slots
+  already hold, and the one pop that puts words below the top again -- a
+  callee's that lay on its sender's slots, giving the sender back its dead
+  registers above them -- writes every one of them, nil in a release build
+  (`FrameStack::raise_top_over_dead_registers`; [execution.md](execution.md),
+  "Representation"), so that what the callee left there neither keeps an
+  object alive nor names one a collection moved meanwhile.
+  `ActivationStack`'s impl is in `heap.rs`, where its fields are private.
 - The side table of continuations (`Heap`'s `continuations`): each running
   activation's continuation other than `Deliver`, which its stack frame
   names by row (a frame that delivers names none), and the state it

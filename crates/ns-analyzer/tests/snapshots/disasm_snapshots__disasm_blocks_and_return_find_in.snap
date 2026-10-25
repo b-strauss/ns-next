@@ -1,30 +1,30 @@
 ---
 source: crates/ns-analyzer/tests/disasm_snapshots.rs
-expression: "disasm(\"language/blocks_and_return\", &[\"find:in:\"])"
+expression: "disasm(\"language/block/blocks_and_return\", &[\"find:in:\"])"
 ---
-method find:in: (args 2, registers 4)
-   0   stmt 0  MakeClosure r2, [:each] -> copying r0
-        block block (args 1, registers 7)
-           0   stmt 0  IntegerBinary Equal r3 <- r0, r1 else -> 2
+method find:in: (args 2, registers 17)
+   0   stmt 0  MakeClosure r15, [:each] -> copying r0
+        block block (args 1, registers 20)
+           0   stmt 0  IntegerBinary Equal r16 <- r0, r14 else -> 2
            1   stmt 0  Jump -> 3
-           2   stmt 0  SendPublic r3 <- r0 #= (r2 <- r1) @0
-           3   stmt 0  JumpIfNotBoolean r3 -> 13
-           4   stmt 0  BranchIfFalse r3 -> 10
-           5   stmt 0  LoadLiteral r5, 'found'
-           6   stmt 0  NonLocalReturn r5
-           7   stmt 0  LoadLiteral r6, nil
-           8   stmt 0  Move r4, r6
+           2   stmt 0  SendPublic r16 <- r0 #= (r15 <- r14) @0
+           3   stmt 0  JumpIfNotBoolean r16 -> 13
+           4   stmt 0  BranchIfFalse r16 -> 10
+           5   stmt 0  LoadLiteral r18, 'found'
+           6   stmt 0  NonLocalReturn r18
+           7   stmt 0  LoadLiteral r19, nil
+           8   stmt 0  Move r17, r19
            9   stmt 0  Jump -> 16
-          10   stmt 0  LoadLiteral r5, nil
-          11   stmt 0  Move r4, r5
+          10   stmt 0  LoadLiteral r18, nil
+          11   stmt 0  Move r17, r18
           12   stmt 0  Jump -> 16
-          13   stmt 0  MakeClosure r5, [] ->
-                block block (args 0, registers 1)
-                   0   stmt 0  LoadLiteral r0, 'found'
-                   1   stmt 0  NonLocalReturn r0
-          14   stmt 0  SendPublic r6 <- r3 #ifTrue: (r5) @1
-          15   stmt 0  Move r4, r6
-          16        -  ImplicitReturn r4
-   1   stmt 0  SendPublic r3 <- r1 #do: (r2) @2
-   2   stmt 1  LoadLiteral r2, 'not found'
-   3   stmt 1  Return r2
+          13   stmt 0  MakeClosure r18, [] ->
+                block block (args 0, registers 14)
+                   0   stmt 0  LoadLiteral r13, 'found'
+                   1   stmt 0  NonLocalReturn r13
+          14   stmt 0  SendPublic r19 <- r16 #ifTrue: (r18) @1
+          15   stmt 0  Move r17, r19
+          16        -  ImplicitReturn r17
+   1   stmt 0  SendPublic r16 <- r1 #do: (r15) @2
+   2   stmt 1  LoadLiteral r15, 'not found'
+   3   stmt 1  Return r15

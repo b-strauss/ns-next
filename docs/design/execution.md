@@ -125,7 +125,10 @@ struct ActivationStack {
                                // count against the depth limit
 }
 
-a frame on the stack           // heap/frames.rs's frame_header; every word tagged
+a frame on the stack           // every word tagged
+    the arguments              // registers 0 .. argument_count, below the header;
+                               // a send's own callee's are its sender's slots
+the header                     // heap/frames.rs's frame_header, from the frame's offset
     0 receiver                 // a value
     1 current class            // the class object; nil at top level
     2 operand                  // the closure of a block frame, the class of a
@@ -140,8 +143,9 @@ a frame on the stack           // heap/frames.rs's frame_header; every word tagg
     9 continuation             // nil for Deliver, else its row in the heap's
                                // side table of continuations
     10 guard  11 entered level // recorded_guard and entered_level, SmallIntegers
-    12 register count          // the window the push wrote
-    then the registers         // arguments first, then temporaries
+    12 register count          // the registers above the header
+    then the registers         // copied values, temporaries, vector, scratch:
+                               // registers argument_count + 13 on
 
 a frame object                 // heap/object.rs's frame_field; an object of the frame format
     0 sender  1 home  2 receiver  3 current class   // objects or nil
@@ -151,10 +155,11 @@ a frame object                 // heap/object.rs's frame_field; an object of the
     9 married                  // SmallInteger: >= 0 the stack frame's offset,
                                // < 0 -(row + 1) of a suspended frame's
                                // side-table row; nil once divorced
-    10.. the registers         // the code's whole register file
+    10.. the registers         // one per register number, the header's
+                               // thirteen included, which stay nil
 
 pub struct ActivationReference {
-    offset: u32,               // the frame's word offset on the stack
+    offset: u32,               // the word offset of the frame's header
     #[cfg(debug_assertions)] origin: u32,
     #[cfg(debug_assertions)] generation: u32,
 }
@@ -173,9 +178,11 @@ pub struct ActivationReference {
   It is committed from its base as the stack deepens -- doubling what is
   committed, by at least 64 KiB and at most 16 MiB at a time unless a push
   needs more (`FrameStack::grow`) -- and never decommitted while the heap
-  lives. Frames lie back to back, innermost highest: the header,
-  `frame_header::COUNT` words, 13 in every build, a debug build's
-  generation riding in the flags word -- then the registers. An
+  lives. A frame is its arguments, the header -- `frame_header::COUNT`
+  words, 13 in every build, a debug build's generation riding in the flags
+  word -- then the rest of its registers, innermost highest; a send's own
+  callee lies on its sender's argument slots, which are its arguments,
+  every other frame above its sender's whole window. An
   `ActivationReference` is the word offset of its frame's header, and a
   married frame object's married word holds the same offset.
 - **Every word of a frame is a valid tagged value**: a number a
@@ -209,14 +216,22 @@ pub struct ActivationReference {
   `MixinMethod` is needed only for its selector and its code, which the
   operand and the code word hold; the push registers a method's body with
   its method, so `reify` rebuilds `FrameKind::Method` from the code row.
-- **A push** (`Heap::push_activation`) takes a frame of the header's size
-  plus its window from the frame stack, which answers the frame's words
-  and every word below it, writes every word of the header into the
-  frame, copies the arguments into the first registers -- a send's out of
-  its window in the frame below, other arguments from the values a
-  decision or the host built (`interpreter::Arguments`); one or two word
-  by word, more by a loop kept inline -- and fills the temporaries with
-  nil, never indexing the whole stack once the frame is pushed; the frame names its body by its code id, found through the
+- **A push** comes in two kinds. A send's own callee
+  (`Heap::push_overlapped_activation`) takes the header and the registers
+  above it from the end of the send's argument slots, which are its
+  arguments and are copied nowhere, writes every word of the header and
+  fills the registers above it with nil. Every other push
+  (`Heap::push_activation`) -- a host's, a `doesNotUnderstand:` handler's,
+  `Message>>sendTo:`'s, a native loop's block, an unwind block, the
+  initializer a factory enters, a resumed or forcing activation -- takes
+  its arguments, the header and the registers above from the top, above
+  the sender's whole window: the frame stack answers the frame's words and
+  every word below it, and the push copies the arguments into the first
+  registers -- out of their window in the frame below, or from the values
+  a decision or the host built (`interpreter::Arguments`); one or two word
+  by word, more by a loop kept inline -- writes the header and fills the
+  rest with nil, never indexing the whole stack once the frame is pushed.
+  The frame names its body by its code id, found through the
   body's one-entry cache ([memory.md](memory.md), "A closure's code id
   without the map") and kept by a full collection while the activation
   runs ([object-model.md](object-model.md), "An application has two ids");
@@ -238,27 +253,39 @@ pub struct ActivationReference {
   answered, and for the initializer a factory entered past its first
   instructions decides (`Mutator::enter_factory_body`). Every word is
   computed before the frame is taken, so a refused push changes nothing;
-  the header is then written in place, every word once, and a pop reads
-  the words it needs and lowers the top: the words it leaves above the top
-  are never read again. The window is recorded in its own word rather than
-  read off the code, since a factory is handed as many arguments as its
-  send has keywords whatever its register count. An activation nothing
+  the header is then written in place, every word once. A pop reads the
+  words it needs and sets the top to its caller's window end -- the
+  caller's registers above its slots are its own again, dead, and a debug
+  build fills them with the `SmallInteger` `0x5EAD_5EAD`, so that a read
+  of one shows as wrong output -- or, for the bottom frame, to its start.
+  A release build writes them with nil: whatever the callee or a frame
+  above it left there would otherwise be traced again, keeping alive what
+  nothing reaches -- a `WeakArray` would not forget it -- or, after a
+  collection that ran while those words lay above the top, untraced, naming
+  an object since moved or reclaimed (`FrameStack::raise_top_over_dead_registers`). The registers above the header are
+  recorded in their own word rather than read off the code, and the
+  arguments in the flags, since a factory is handed as many arguments as
+  its send has keywords whatever its register count. An activation nothing
   reifies leaves nothing behind; only a block the compiler did not inline
   reifies one, since an inlined `ifTrue:`/`and:`/`whileTrue:` argument
   creates no closure.
-- **The arguments are copied** into the callee's first registers, once,
-  from where the send's window names them; overlapping the caller's
-  outgoing arguments with the callee's window is the second stage of road
-  step 7a′, behind its own measurement ("Planned: overlapping register
-  windows" below).
+- **A send's arguments are not copied** when its callee is the one it
+  decided: the caller's argument slots are the callee's first registers.
+  A send whose window names its sources rather than its slots copies them
+  into the slots first, on the push path (`Mutator::push_on_slots`); a
+  decision answering without a push reads them in place and writes
+  nothing ("Planned: overlapping register windows" below).
 - **Register access through an `ActivationReference`** is the stack's word
-  at the frame's offset plus the header's size plus `r`, with no branch on
-  the handle's kind or on an args/temps split, and one bounds check, of
+  at the frame's start -- its offset less its argument count -- plus `r`,
+  the register numbering leaving the header's numbers out
+  ([compiler.md](compiler.md), "Registers"), with no branch on the
+  handle's kind or on an args/temps split, and one bounds check, of
   that index against the reservation's committed end (`FrameStack::word`,
   through `Reservation::accessible`). A debug build also checks that the
-  index lies below the top and inside the frame's own window: the
-  neighbouring activation's header and registers are in bounds of the
-  stack, so reading them would not otherwise fail. A release build makes
+  index lies below the top and inside the frame's own window, and names
+  no header word: the neighbouring activation's header and registers, and
+  the frame's own header, are in bounds of the stack, so reading them
+  would not otherwise fail. A release build makes
   that trade knowingly, since the run loop makes this access on nearly
   every instruction: a register index past its window but below the
   committed end reads or writes a stale word of the stack -- never another
@@ -268,11 +295,14 @@ pub struct ActivationReference {
   ([image-format.md](image-format.md), "Verification"). A frame's offset
   is fixed for its whole life and everything is addressed by index, so the
   reservation committing more moves nothing anyone holds. The activation
-  above a frame starts where its window ends, and the one below is its
-  caller word; an offset grows with depth, so a run's floor and every
-  comparison of positions stay an ordering, and the run's base has
-  returned once the top is back at its offset
-  (`Heap::activation_stack_top`).
+  below a frame is its caller word, and the one above is found by walking
+  the caller words down from the innermost, since a callee on its
+  sender's slots starts inside the sender's window. A frame's position is
+  its start, which grows with depth -- a callee on its sender's slots
+  starts above the sender's header, any other above its window -- so a
+  run's floor and every comparison of positions stay an ordering, and the
+  run's base has returned once the top is back at its position
+  (`Heap::activation_position`, `Heap::activation_stack_top`).
 - **Two handle types, not one tagged handle.** `ActivationReference` names a live
   stack frame; `FrameReference` names a frame object and is the only
   activation handle anything *stores*: a closure's captured frame, a frame's
@@ -312,7 +342,8 @@ pub struct ActivationReference {
 **Reify.** `Heap::reify(activation) -> FrameReference` is idempotent: the first call
 allocates the frame object — receiver, `kind` and its operand, `current_class`,
 `program_counter`, the code id, and `home` when the activation is a
-closure's, with room for the activation's whole register file, all nil —
+closure's, with a field for every register number of the activation's
+window, the header's thirteen included, all nil —
 marries it to the stack frame, and records it in the frame's `reified`
 word; every later call
 answers the same handle. Its callers are closure creation, the VM's
@@ -335,7 +366,8 @@ the activation's value ("The VM" below). If the activation was reified,
 its frame object is **divorced**: its `program_counter` takes the stack
 frame's last stored one, the
 married field becomes nil, `uncontinuable` becomes true and `sender` becomes
-nil. Then the stack's top is lowered to the frame's offset.
+nil. Then the stack's top is set to the caller's window end, the caller's
+registers above its slots its own again ("Representation" above).
 
 **The registers are copied into the frame object's registers only when the
 frame asks for it**, the `retains_registers` flag of its header, which
@@ -501,9 +533,13 @@ mistakes it for a live one.
 or above `floor` first, so that each sender is a frame by the time the
 activation above it is suspended, then works from the top down. It copies
 every register into the frame, whatever `retains_registers` says, since the
-frame is now their only copy; writes the program counter and the sender;
-moves the rest of the header into a side-table row; and lowers the stack's
-top to the frame's offset. The row holds what a frame object cannot -- the
+frame is now their only copy -- a sender's only below the header of the
+callee that lay on its slots, the rest nil, so that no frame holds a word of
+another's header -- writes the program counter and the sender; moves the
+rest of the header into a side-table row; and sets the stack's top as a
+pop does. The slots the callee shared come back in both: the callee never
+writes its arguments (§3.6), so the sender's copy holds them as the
+callee's does. The row holds what a frame object cannot -- the
 activation's `Continuation`,
 whether it counts against the depth limit, the level it was entered at and
 `retains_registers` -- and the frame itself, which makes the table a root
@@ -8157,14 +8193,22 @@ position, since `onUnwind value` follows `self value`.
 **Status: road step 7a′, decided with the user on 2026-10-24, in two
 stages. The first is built and measured** -- a send's arguments are
 contiguous slots or consecutive sources, read in place through an argument
-window, the argument buffer gone and the push copying once ("What
-contiguous arguments moved"). **The second is next**, not built. It would
-change: a send's arguments are no longer copied into the callee's window;
-the caller's outgoing argument registers *are* the callee's first
-registers.
+window, the argument buffer gone ("What contiguous arguments moved").
+**The second is being built, and not yet measured.** Built: the header 13
+words in every build, its numbers left out of the register numbering, the
+callee's frame laid on its caller's slots -- a send's arguments are no
+longer copied into the callee's window; the caller's outgoing argument
+registers *are* the callee's first registers -- the pop restoring the
+caller's window, suspension keeping a sender's registers below its
+callee's header, and the decoder's refusal of a register that names a
+header word and of argument slots below the header's end. To come: frame
+objects and image records without the header's numbers, which a frame
+object still holds as nil fields, and the decoder's refusal of a write to
+an argument register and of an outer store into another frame's
+scratch.
 
-**What a send copies today.** Each argument at most twice, most of them
-once. A send names its arguments' contiguous slots, allocated after its
+**What a send copies today.** Each argument at most once, most of them
+never. A send names its arguments' contiguous slots, allocated after its
 receiver, and each argument's source. A send's value, an inlined integer
 operation's, a literal or a closure is produced in its slot, a setter's
 value as any argument; a named local passed as an argument, and an
@@ -8174,24 +8218,28 @@ cascade answered, is not ([compiler.md](compiler.md), "Sends"). The send
 reads its arguments where they are whenever its sources are consecutive
 registers -- none or one always are, and so are sources that all are their
 slots -- and only otherwise copies each source that is not its slot into
-it first, out of line (`vm::argument_window`, `vm::place_arguments`). A
-copy into a slot nothing reads would be pure cost, and nothing but the
-send reads a slot: a setter assignment's value is the register its
-argument came from, the slot only where the value was produced there. The
-decision, the native and the push then read the arguments where they are,
-through an argument window (`interpreter::Arguments`, a tag and one word,
-"No re-entry from Rust"), and `Heap::push_activation_in` copies it into
-the callee's first registers, one or two word by word and more by a loop
-kept inline, out of the words below the frame the frame stack answers
-with the frame ("Representation" above). So
-placement happens before the decision only for a send whose sources are
-not consecutive; the second stage, whose push lays the callee's frame on
-the slots, places every argument whose source is not its slot on the push
-path, after the decision and before the push, where the push's copy is
-now. The first stage measured what the copies cost: the window built in
-memory up to +24% (Mandelbrot), the placement inlined into every send
-path and its eager copies +2% to +9% on every send-heavy program, before
-both went.
+it first, out of line (`vm::argument_window`, `vm::place_arguments`). The
+decision and the native then read the arguments where they are, through an
+argument window (`interpreter::Arguments`, a tag and one word, "No
+re-entry from Rust"), and a decision that answers without a push -- a
+primitive, a slot accessor, a cache hit's value -- writes no slot. The
+push of the send's own callee lays its frame on the slots
+(`Mutator::push_on_slots`, `Heap::push_overlapped_activation`): a window
+that names consecutive sources rather than the slots is copied into the
+slots first, on the push path, after the decision (`Heap::place_in_slots`;
+one or two word by word, more by a loop kept inline), and a window that is
+the slots is copied nowhere. Every other push copies the window from
+wherever it is, above the sender's whole window. A copy into a slot
+nothing reads would be pure cost, and nothing but the send reads a slot
+but a setter assignment: its value is the register its argument came
+from, a named local's below the slots, or else the slot -- where the value
+was produced there, or copied there by the lowering when it was left in a
+register above the slot, an inner assignment's (`a:: b:: 4`) or an inlined
+conditional's, which the callee's header goes over
+(`compiler::lower`'s `lower_setter_assign`). The first stage measured what
+the copies cost: the window built in memory up to +24% (Mandelbrot), the
+placement inlined into every send path and its eager copies +2% to +9% on
+every send-heavy program, before both went.
 
 **The prior art overlaps them, and puts the header between the arguments
 and the temporaries.** Cog's stack frame is the caller's pushed receiver
@@ -8218,14 +8266,14 @@ caller   ... live registers | slot 0 .. slot argc-1 | dead above
 callee                      | r0 .. r(argc-1)       | header (13) | r(argc+13) ..
 ```
 
-- **The callee's register numbering skips the header**: registers `0 ..
+- **The callee's register numbering skips the header** (built): registers `0 ..
   argc` are the arguments, `argc .. argc + COUNT` name the header's words
   and no instruction names them, and copied values, temporaries, the vector
   register and scratch start at `argc + COUNT` ([compiler.md](compiler.md),
   "Registers"). Every register is still `base + r`, one addition and no
   branch on an args/temps split; the header sits at `base + argc`, and an
   `ActivationReference` is its offset, as it is now.
-- **The header is 13 words in every build**, since its size is in the
+- **The header is 13 words in every build** (built), since its size is in the
   compiled code and a debug build's artifact or image must run in a
   release one: the debug build's generation moves into the flags word,
   whose argument count narrows to 16 bits -- 8 + 16 + 2 + 31 bits, inside
@@ -8236,13 +8284,16 @@ callee                      | r0 .. r(argc-1)       | header (13) | r(argc+13) .
   `Interpreter::push` raises the error the raising body would, without
   pushing, so the sender is the activation that signals it (built).
 - **A send's arguments are contiguous slots at the top of the caller's
-  live registers.** Both lowerings allocate the `argc` slots right after
-  the receiver and lower each argument into its slot: a literal or a send
-  writes it directly, so nothing copies it. Every register numbered above
-  the slots is dead when the send executes -- the callee's header and
-  window overwrite them -- which the bump allocator already makes true and
-  which becomes a stated invariant, checked by the lowerings' debug
-  assertions and by `check_shape`.
+  live registers** (built). Both lowerings allocate the `argc` slots right
+  after the receiver and lower each argument into its slot: a literal or a
+  send writes it directly, so nothing copies it. Every register numbered
+  above the slots is dead when the send executes -- the callee's header and
+  window overwrite them -- which the bump allocator makes true: nothing is
+  allocated below a slot after it, and what an argument is computed with
+  lands above. Both lowerings check it on every body in a debug build
+  (`compiler::reference::check_registers_above_sends_are_dead`): no
+  instruction after a send reads a register above its slots before
+  something writes it again.
 - **A named local passed as an argument is copied by the send itself**:
   the send names its slot base and, for each argument, the register it
   comes from, and copies only those not already in their slot -- one copy,
@@ -8252,25 +8303,35 @@ callee                      | r0 .. r(argc-1)       | header (13) | r(argc+13) .
   optimized lowering's in-send copy is what the two are compared on
   ([compiler.md](compiler.md), "The reference lowering").
 - **A push without the arguments in the caller's registers copies them**
-  to the top of the stack, above the caller's whole window: a
+  (built) to the top of the stack, above the caller's whole window: a
   `doesNotUnderstand:` handler's message, `Message>>sendTo:`, `cull:`, a
   native loop's next block, an unwind block, a host's entry, a resumed
   frame, and the initializer a factory enters, whose arguments are the
   factory's own and lie below its header. A future forced before a send
   is re-run lands above the caller's window too, so the slots it re-reads
-  are untouched.
-- **A pop restores the top to the caller's window end**, not to the
-  callee's offset, since the caller's registers above its slots are its
-  own again. Suspending a sender copies its registers below its callee's
-  header only and leaves the rest nil, so a frame object holds no stale
-  header word; a frame object and an image record keep the registers
-  without the header's numbers.
+  are untouched. Only an activation that takes the run loop's send's own
+  arguments (`StepArguments::Send`) is laid on the slots; a mirror send's
+  leaf and `InitializeInstance` hand theirs on from elsewhere, and land
+  above too (pinned by
+  `goldens/language/evaluation-order/a_push_that_is_not_the_senders_callee_leaves_its_window.ns`).
+- **A pop restores the top to the caller's window end** (built), not to
+  the callee's offset, since the caller's registers above its slots are its
+  own again; the pop writes them, nil in a release build and a poison
+  `SmallInteger` in a debug one ("Representation" above).
+  Suspending a sender copies its registers below its callee's header only
+  and leaves the rest nil, so a frame object holds no stale header word
+  (built); a frame object and an image record are to keep the registers
+  without the header's numbers, which they still hold as nil fields.
 - **Parameter slots are immutable (§3.6, §6.3.2)**, so a callee never
   writes the caller's slots: a setter assignment's value, read from the
-  slot after the send, is still there. The decoder takes this from the
-  compiler as a check, refusing an instruction that writes an argument
-  register or names one of the header's numbers, and an outer store into
-  another frame's scratch, which would write a live frame above it
+  slot after the send, is still there (pinned by
+  `goldens/language/evaluation-order/a_setter_value_read_after_its_send_survives_the_callee.ns`).
+  The decoder refuses an instruction that names one of the header's
+  numbers and a send whose slots start below the header's end, whose
+  callee's header would go over its sender's (built); it is to take the
+  rest from the compiler as a check too, refusing an instruction that
+  writes an argument register and an outer store into another frame's
+  scratch, which would write a live frame above it
   ([image-format.md](image-format.md), "Verification").
 - **The decision reads the arguments where they are**, through an
   argument window -- the frame, the slot base and the count, read through

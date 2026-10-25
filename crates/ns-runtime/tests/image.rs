@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use ns_runtime::bytecode::{
-    CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal,
+    CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal, HEADER_REGISTERS,
 };
 use ns_runtime::image;
 use ns_runtime::image::opcodes::*;
@@ -516,10 +516,10 @@ fn every_instruction_once() -> CompiledCode {
         CodeKind::Block,
         vec![Instruction::NonLocalReturn { register: 0 }],
         1,
-        // One parameter, two copied values, one temporary: the widest
-        // register layout a block can have, so the round trip covers
-        // `copied_count` too.
-        4,
+        // One parameter, the header's numbers, two copied values, one
+        // temporary: the widest register layout a block can have, so the
+        // round trip covers `copied_count` too.
+        1 + HEADER_REGISTERS + 3,
         2,
         vec![(0, 0..1)],
         Span::new(1, 2),
@@ -877,14 +877,16 @@ fn every_instruction_variant_round_trips() {
 
 /// The instructions of a compiled `new` in an initializer body: one of each
 /// for none, one, two and three hundred argument registers, and for `steps`
-/// 0, 1 and the most a `u16` holds.
+/// 0, 1 and the most a `u16` holds. Every register lies above the header's
+/// numbers of a body of two arguments, `FIRST` on, and so of one of none.
 fn every_instantiation_instruction() -> CompiledCode {
-    let mut instructions = vec![Instruction::AllocateInstance { destination: 0 }];
+    const FIRST: u16 = 2 + HEADER_REGISTERS;
+    let mut instructions = vec![Instruction::AllocateInstance { destination: FIRST }];
     for count in [0_u16, 1, 2, 300] {
-        let arguments: Vec<u16> = (0..count).map(|index| index * 2 + 1).collect();
+        let arguments: Vec<u16> = (0..count).map(|index| FIRST + index * 2 + 1).collect();
         instructions.push(Instruction::InitializeInstance {
-            instance: 0,
-            destination: 600,
+            instance: FIRST,
+            destination: FIRST + 600,
         });
         for steps in [0, 1, u16::MAX] {
             instructions.push(Instruction::CheckAppliedClause {
@@ -894,25 +896,25 @@ fn every_instantiation_instruction() -> CompiledCode {
             instructions.push(Instruction::InitializeSuperclass {
                 steps,
                 selector: Symbol::intern("new"),
-                argument_base: 1,
+                argument_base: FIRST + 1,
                 argument_sources: arguments.clone(),
-                destination: 2,
+                destination: FIRST + 2,
             });
             instructions.push(Instruction::InitializeAppliedLevel {
                 steps,
-                argument_base: 1,
+                argument_base: FIRST + 1,
                 argument_sources: arguments.clone(),
-                destination: 300,
+                destination: FIRST + 300,
             });
         }
     }
-    instructions.push(Instruction::Return { register: 0 });
+    instructions.push(Instruction::Return { register: FIRST });
     let count = instructions.len();
     CompiledCode::new(
         CodeKind::Initializer,
         instructions,
         2,
-        601,
+        FIRST + 601,
         0,
         vec![(0, 0..count)],
         Span::new(10, 20),
@@ -1531,11 +1533,16 @@ fn an_instantiation_instruction_a_crafted_image_runs_raises_an_error() {
     "};
     // A destination past what the eight-byte form addresses makes the wide
     // form.
-    for destination in [0_u16, 600] {
+    for destination in [HEADER_REGISTERS, HEADER_REGISTERS + 600] {
         let doctored_body = |instruction: Instruction| {
             Rc::new(CompiledCode::new(
                 CodeKind::Method,
-                vec![instruction, Instruction::Return { register: 0 }],
+                vec![
+                    instruction,
+                    Instruction::Return {
+                        register: HEADER_REGISTERS,
+                    },
+                ],
                 0,
                 destination + 1,
                 0,
@@ -1552,7 +1559,7 @@ fn an_instantiation_instruction_a_crafted_image_runs_raises_an_error() {
             (Instruction::AllocateInstance { destination }, not_a_class),
             (
                 Instruction::InitializeInstance {
-                    instance: 0,
+                    instance: HEADER_REGISTERS,
                     destination,
                 },
                 not_a_class,
@@ -2549,7 +2556,7 @@ fn code_table_with_nested_blocks(levels: usize) -> Vec<u8> {
     let body = |writer: &mut encode::Writer, kind: u8, creates: Option<usize>| {
         writer.write_u8(kind);
         writer.write_u16(0); // argument_count
-        writer.write_u16(1); // register_count
+        writer.write_u16(HEADER_REGISTERS + 1); // register_count: one past the header's numbers
         writer.write_u16(0); // copied_count
         writer.write_u32(0); // source.start
         writer.write_u32(0); // source.end
@@ -2558,16 +2565,16 @@ fn code_table_with_nested_blocks(levels: usize) -> Vec<u8> {
         match creates {
             Some(block) => {
                 writer.write_u32(2); // two instructions ...
-                writer.write_u8(OPCODE_MAKE_CLOSURE); // ... r0 <- the next block in,
-                writer.write_u16(0);
+                writer.write_u8(OPCODE_MAKE_CLOSURE); // ... r13 <- the next block in,
+                writer.write_u16(HEADER_REGISTERS);
                 writer.write_u16(0); // taking no parameters,
                 writer.write_u32(u32::try_from(block).expect("a test-sized code id"));
                 writer.write_u16(0); // copying nothing
             }
             None => writer.write_u32(1), // the innermost: one instruction ...
         }
-        writer.write_u8(OPCODE_RETURN); // ... then ^r0
-        writer.write_u16(0);
+        writer.write_u8(OPCODE_RETURN); // ... then ^r13
+        writer.write_u16(HEADER_REGISTERS);
     };
     let mut writer = encode::Writer::new();
     writer.write_u32(u32::try_from(levels + 1).expect("a test-sized code table"));
@@ -7138,30 +7145,30 @@ fn every_conditional_jump_target_is_checked_too() {
     // `Jump` would leave three unchecked `program_counter` writes in the VM.
     for instruction in [
         Instruction::JumpIfNotBoolean {
-            register: 0,
+            register: 13,
             target: 9,
         },
         Instruction::BranchIfFalse {
-            register: 0,
+            register: 13,
             target: 9,
         },
         Instruction::BranchIfTrue {
-            register: 0,
+            register: 13,
             target: 9,
         },
         Instruction::IntegerBinary {
             operation: IntegerOperation::Add,
-            destination: 0,
-            left: 0,
-            right: 0,
+            destination: 13,
+            left: 13,
+            right: 13,
             target: 9,
         },
     ] {
         let table = table_of(vec![code_with(
             CodeKind::Method,
             0,
-            1,
-            vec![instruction, Instruction::Return { register: 0 }],
+            14,
+            vec![instruction, Instruction::Return { register: 13 }],
         )]);
         assert_eq!(
             decode::verify_code_table(&table),
@@ -7209,24 +7216,24 @@ fn a_register_in_a_send_argument_list_is_checked_too() {
     let table = table_of(vec![code_with(
         CodeKind::Method,
         0,
-        1,
+        14,
         vec![
             Instruction::SendPublic {
                 selector: Symbol::intern("foo:"),
-                receiver_register: 0,
-                argument_base: 0,
-                argument_sources: vec![0, 4],
-                destination: 0,
+                receiver_register: 13,
+                argument_base: 13,
+                argument_sources: vec![13, 17],
+                destination: 13,
                 call_site: CallSite { number: 0 },
             },
-            Instruction::Return { register: 0 },
+            Instruction::Return { register: 13 },
         ],
     )]);
     assert_eq!(
         decode::verify_code_table(&table),
         Err(decode::DecodeError::RegisterOutOfRange {
-            register: 4,
-            register_count: 1
+            register: 17,
+            register_count: 14
         })
     );
 }
@@ -7267,42 +7274,117 @@ fn a_send_whose_argument_slots_leave_the_body_is_refused() {
         table_of(vec![code_with(
             CodeKind::Method,
             0,
-            2,
+            15,
             vec![
                 Instruction::SendLexical {
                     depth: 0,
                     selector: Symbol::intern("foo:bar:"),
                     argument_base,
                     argument_sources,
-                    destination: 0,
+                    destination: 13,
+                    call_site: CallSite { number: 0 },
+                },
+                Instruction::Return { register: 13 },
+            ],
+        )])
+    };
+    assert_eq!(
+        decode::verify_code_table(&send(15, vec![])),
+        Err(decode::DecodeError::RegisterOutOfRange {
+            register: 15,
+            register_count: 15
+        })
+    );
+    let error = decode::verify_code_table(&send(14, vec![13, 14]))
+        .expect_err("the second slot is r15, past fifteen registers");
+    assert_eq!(
+        error,
+        decode::DecodeError::ArgumentSlotsOutOfRange {
+            argument_base: 14,
+            argument_count: 2,
+            register_count: 15
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "2 argument slot(s) from r14 run past a body with 15 register(s)"
+    );
+    assert_eq!(decode::verify_code_table(&send(13, vec![14, 13])), Ok(()));
+}
+
+/// The register numbers between a body's arguments and the rest of its
+/// registers are its frame header's words, which no instruction may name:
+/// a write there would overwrite a live frame's caller or register count.
+/// An own register, an outer local's index and a send's slots below the
+/// header's end are each refused, in a body taking arguments too.
+#[test]
+fn a_register_naming_the_frame_header_is_refused() {
+    let own = table_of(vec![code_with(
+        CodeKind::Method,
+        1,
+        HEADER_REGISTERS + 2,
+        vec![
+            Instruction::LoadSelf { destination: 5 },
+            Instruction::Return { register: 0 },
+        ],
+    )]);
+    let error = decode::verify_code_table(&own).expect_err("r5 is a header word");
+    assert_eq!(
+        error,
+        decode::DecodeError::HeaderRegister {
+            depth: 0,
+            register: 5,
+            argument_count: 1
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "register r5 at depth 0 names the frame header of a body taking 1 argument(s)"
+    );
+    assert_eq!(
+        decode::verify_code_table(&outer_local_table(17, 1, 4)),
+        Err(decode::DecodeError::HeaderRegister {
+            depth: 1,
+            register: 4,
+            argument_count: 0
+        })
+    );
+    let send_below = |argument_base| {
+        table_of(vec![code_with(
+            CodeKind::Method,
+            2,
+            HEADER_REGISTERS + 4,
+            vec![
+                Instruction::SendLexical {
+                    depth: 0,
+                    selector: Symbol::intern("foo"),
+                    argument_base,
+                    argument_sources: vec![],
+                    destination: HEADER_REGISTERS + 3,
                     call_site: CallSite { number: 0 },
                 },
                 Instruction::Return { register: 0 },
             ],
         )])
     };
-    assert_eq!(
-        decode::verify_code_table(&send(2, vec![])),
-        Err(decode::DecodeError::RegisterOutOfRange {
-            register: 2,
-            register_count: 2
-        })
-    );
-    let error = decode::verify_code_table(&send(1, vec![0, 1]))
-        .expect_err("the second slot is r2, past two registers");
+    // Among the arguments, so no own register names the header, but the
+    // callee's header would lie over the sender's.
+    let error = decode::verify_code_table(&send_below(1)).expect_err("slots in the arguments");
     assert_eq!(
         error,
-        decode::DecodeError::ArgumentSlotsOutOfRange {
+        decode::DecodeError::ArgumentSlotsBelowTheHeader {
             argument_base: 1,
-            argument_count: 2,
-            register_count: 2
+            argument_count: 2
         }
     );
     assert_eq!(
         error.to_string(),
-        "2 argument slot(s) from r1 run past a body with 2 register(s)"
+        "argument slots from r1 lie below the frame header's end in a body taking 2 argument(s)"
     );
-    assert_eq!(decode::verify_code_table(&send(0, vec![1, 0])), Ok(()));
+    assert_eq!(
+        decode::verify_code_table(&send_below(HEADER_REGISTERS + 2)),
+        Ok(())
+    );
 }
 
 /// The loop's signal reads its register like any other operand, so a
@@ -7331,8 +7413,8 @@ fn a_body_that_ends_in_a_non_boolean_signal_is_terminated() {
     let table = table_of(vec![code_with(
         CodeKind::Method,
         0,
-        1,
-        vec![Instruction::SignalNonBoolean { register: 0 }],
+        14,
+        vec![Instruction::SignalNonBoolean { register: 13 }],
     )]);
     assert_eq!(decode::verify_code_table(&table), Ok(()));
 }
@@ -7363,8 +7445,13 @@ fn a_body_with_an_instantiation_instruction_is_accepted() {
         let table = table_of(vec![code_with(
             CodeKind::Initializer,
             0,
-            601,
-            vec![instruction.clone(), Instruction::Return { register: 0 }],
+            2 + HEADER_REGISTERS + 601,
+            vec![
+                instruction.clone(),
+                Instruction::Return {
+                    register: HEADER_REGISTERS,
+                },
+            ],
         )]);
         assert_eq!(decode::verify_code_table(&table), Ok(()), "{instruction:?}");
     }
@@ -7504,30 +7591,30 @@ fn a_make_closure_copying_a_register_its_own_body_lacks_is_refused() {
     let block = code_with_copied(
         CodeKind::Block,
         0,
-        2,
+        15,
         1,
-        vec![Instruction::ImplicitReturn { register: 0 }],
+        vec![Instruction::ImplicitReturn { register: 13 }],
     );
     let parent = code_with(
         CodeKind::Method,
         0,
-        1,
+        14,
         vec![
             Instruction::MakeClosure {
-                destination: 0,
+                destination: 13,
                 parameters: Rc::new(vec![]),
                 code: block.clone(),
-                copied: vec![4],
+                copied: vec![17],
             },
-            Instruction::Return { register: 0 },
+            Instruction::Return { register: 13 },
         ],
     );
     let table = table_of(vec![block, parent]);
     assert_eq!(
         decode::verify_code_table(&table),
         Err(decode::DecodeError::RegisterOutOfRange {
-            register: 4,
-            register_count: 1
+            register: 17,
+            register_count: 14
         })
     );
 }
@@ -7658,14 +7745,14 @@ fn outer_local_table(
     let block = code_with(
         CodeKind::Block,
         0,
-        1,
+        14,
         vec![
             Instruction::LoadOuterLocal {
-                destination: 0,
+                destination: 13,
                 depth: outer_depth,
                 index: outer_index,
             },
-            Instruction::ImplicitReturn { register: 0 },
+            Instruction::ImplicitReturn { register: 13 },
         ],
     );
     let parent = code_with(
@@ -7674,12 +7761,12 @@ fn outer_local_table(
         parent_registers,
         vec![
             Instruction::MakeClosure {
-                destination: 0,
+                destination: 13,
                 parameters: Rc::new(vec![]),
                 code: block.clone(),
                 copied: Vec::new(),
             },
-            Instruction::Return { register: 0 },
+            Instruction::Return { register: 13 },
         ],
     );
     table_of(vec![block, parent])
@@ -7687,7 +7774,8 @@ fn outer_local_table(
 
 #[test]
 fn an_outer_local_within_its_lexical_parents_register_file_verifies() {
-    decode::verify_code_table(&outer_local_table(4, 1, 3)).expect("r3 of a four-register parent");
+    decode::verify_code_table(&outer_local_table(17, 1, 16))
+        .expect("r16 of a seventeen-register parent");
 }
 
 #[test]
@@ -7695,18 +7783,18 @@ fn an_outer_local_past_its_lexical_parents_register_file_is_refused() {
     // `LoadOuterLocal`'s index addresses the *outer* frame, so the body's
     // own `register_count` says nothing about it: the bound is the register
     // file of the body one `MakeClosure` hop out.
-    let error = decode::verify_code_table(&outer_local_table(2, 1, 3)).expect_err("out of range");
+    let error = decode::verify_code_table(&outer_local_table(15, 1, 16)).expect_err("out of range");
     assert_eq!(
         error,
         decode::DecodeError::OuterLocalOutOfRange {
             depth: 1,
-            index: 3,
-            register_count: 2
+            index: 16,
+            register_count: 15
         }
     );
     assert_eq!(
         error.to_string(),
-        "outer local r3 at depth 1 is outside the enclosing body's 2 register(s)"
+        "outer local r16 at depth 1 is outside the enclosing body's 15 register(s)"
     );
 }
 
@@ -7714,11 +7802,11 @@ fn an_outer_local_past_its_lexical_parents_register_file_is_refused() {
 fn an_outer_local_at_depth_zero_is_bounded_by_its_own_register_file() {
     // `frame_at_depth(frame, 0)` is the frame itself.
     assert_eq!(
-        decode::verify_code_table(&outer_local_table(4, 0, 3)),
+        decode::verify_code_table(&outer_local_table(17, 0, 16)),
         Err(decode::DecodeError::OuterLocalOutOfRange {
             depth: 0,
-            index: 3,
-            register_count: 1
+            index: 16,
+            register_count: 14
         })
     );
 }
@@ -7729,11 +7817,11 @@ fn an_outer_local_deeper_than_the_lexical_nesting_is_bounded_by_the_outermost_bo
     // depth past the nesting lands on the outermost frame -- the method's,
     // with two registers here, not the block's own.
     assert_eq!(
-        decode::verify_code_table(&outer_local_table(2, 9, 3)),
+        decode::verify_code_table(&outer_local_table(15, 9, 16)),
         Err(decode::DecodeError::OuterLocalOutOfRange {
             depth: 9,
-            index: 3,
-            register_count: 2
+            index: 16,
+            register_count: 15
         })
     );
 }
@@ -7743,36 +7831,36 @@ fn a_store_to_an_outer_local_is_checked_like_a_load() {
     let block = code_with(
         CodeKind::Block,
         0,
-        1,
+        14,
         vec![
             Instruction::StoreOuterLocal {
-                source: 0,
+                source: 13,
                 depth: 1,
-                index: 6,
+                index: 19,
             },
-            Instruction::ImplicitReturn { register: 0 },
+            Instruction::ImplicitReturn { register: 13 },
         ],
     );
     let parent = code_with(
         CodeKind::Method,
         0,
-        2,
+        15,
         vec![
             Instruction::MakeClosure {
-                destination: 0,
+                destination: 13,
                 parameters: Rc::new(vec![]),
                 code: block.clone(),
                 copied: Vec::new(),
             },
-            Instruction::Return { register: 0 },
+            Instruction::Return { register: 13 },
         ],
     );
     assert_eq!(
         decode::verify_code_table(&table_of(vec![block, parent])),
         Err(decode::DecodeError::OuterLocalOutOfRange {
             depth: 1,
-            index: 6,
-            register_count: 2
+            index: 19,
+            register_count: 15
         })
     );
 }

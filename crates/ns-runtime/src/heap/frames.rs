@@ -1,10 +1,12 @@
 //! The stack of running activations as frames of tagged words in one
-//! reservation (`docs/design/execution.md`, "Representation"). Frames lie
-//! back to back, innermost highest; each is a header of
-//! `frame_header::COUNT` words followed by its registers, and every word
-//! of it is a valid tagged `Word` -- a number a `SmallInteger`, an absent
-//! handle nil -- so that the collector can trace `[0, top)` as one linear
-//! range of values, with no stack map and no walk of frames.
+//! reservation (`docs/design/execution.md`, "Representation"). Each frame
+//! is its arguments, a header of `frame_header::COUNT` words, then the rest
+//! of its registers, innermost highest; a callee a send pushes lies on its
+//! sender's argument slots, which are its own arguments, every other frame
+//! above its sender's whole window. Every word is a valid tagged `Word` --
+//! a number a `SmallInteger`, an absent handle nil -- so that the collector
+//! can trace `[0, top)` as one linear range of values, with no stack map
+//! and no walk of frames.
 
 use super::space::reserve_falling_back;
 use super::{out_of_memory, Word};
@@ -84,9 +86,10 @@ const MINIMUM_GROWTH: usize = 64 << 10;
 /// it uses.
 const MAXIMUM_GROWTH: usize = 16 << 20;
 
-/// The word offsets of a frame's header from the frame's start; its
-/// registers start at `COUNT`. Every word holds a tagged value
-/// (`docs/design/execution.md`, the table of header words).
+/// The word offsets of a frame's header from the header's start, which a
+/// frame's arguments precede and the rest of its registers follow from
+/// `COUNT` on. Every word holds a tagged value (`docs/design/execution.md`,
+/// the table of header words).
 pub(super) mod frame_header {
     /// The receiver, a value.
     pub const RECEIVER: usize = 0;
@@ -117,16 +120,17 @@ pub(super) mod frame_header {
     pub const GUARD: usize = 10;
     /// The entered level, a `SmallInteger`.
     pub const ENTERED_LEVEL: usize = 11;
-    /// How many registers follow the header, a `SmallInteger`: the window
-    /// the push wrote, arguments and temporaries together, so that the
-    /// frame above starts where they end. A word of its own, since
-    /// arguments and temporaries together can pass the 16 bits the flags
-    /// give the argument count.
+    /// How many registers follow the header, a `SmallInteger`: the frame's
+    /// window less its arguments, which lie below the header -- copied
+    /// values, temporaries and scratch -- so that the window ends at
+    /// `offset + COUNT + REGISTER_COUNT`. A word of its own, since a body's
+    /// registers can pass the 16 bits the flags give the argument count.
     pub const REGISTER_COUNT: usize = 12;
-    /// The header's size: the first register's offset. The same in every
-    /// build, a debug build's generation riding in the flags word, so that
-    /// the register numbering the compiler decides past the header holds
-    /// in both.
+    /// The header's size, and how many register numbers it takes between a
+    /// frame's arguments and the rest of its registers
+    /// (`bytecode::HEADER_REGISTERS`). The same in every build, a debug
+    /// build's generation riding in the flags word, so that the register
+    /// numbering the compiler decides around the header holds in both.
     pub const COUNT: usize = 13;
 }
 
@@ -292,9 +296,12 @@ pub(super) struct ReservationExhausted;
 
 /// The frames of the running activations: one reservation of words,
 /// committed from its base as the stack deepens and never decommitted
-/// while it lives. Everything it lends is `[0, top)`, so the words a
-/// truncation left above the top are never read again, and the caller of a
-/// push writes every word of the frame it hands out.
+/// while it lives. Everything it lends is `[0, top)`, and the caller of a
+/// push writes every word of the frame it hands out but the arguments a
+/// callee shares with its sender. The words above the top come below it
+/// again only when a pop gives a sender back its window above a callee
+/// that lay on its slots (`raise_top_over_dead_registers`), which writes
+/// every one of them.
 pub(super) struct FrameStack {
     reservation: Reservation,
     /// The first word past the innermost frame.
@@ -340,6 +347,12 @@ impl FrameStack {
         self.top
     }
 
+    /// The end of the committed range, in words: no frame's window reaches
+    /// past it.
+    pub(super) fn committed(&self) -> usize {
+        self.committed
+    }
+
     /// The most words the stack can ever hold.
     #[cfg(test)]
     pub(super) fn limit(&self) -> usize {
@@ -369,6 +382,61 @@ impl FrameStack {
         self.top = end;
         let (below, frame) = self.reservation.accessible_mut()[..end].split_at_mut(start);
         Ok((start, below, frame))
+    }
+
+    /// Pushes `words` words from `start`, which must not lie above the top
+    /// -- a callee's header laid on its sender's argument slots, over the
+    /// sender's registers above them, which are dead -- and answers them;
+    /// `ReservationExhausted`, the top untouched, when the reservation's
+    /// ordinary room cannot hold them. The top becomes their end, below
+    /// the sender's window end when the callee's window is the shorter: the
+    /// words between are dead, and untraced, until the callee's pop writes
+    /// them (`raise_top_over_dead_registers`). One comparison against the
+    /// committed end, as `push` makes.
+    #[inline(always)]
+    pub(super) fn push_from(
+        &mut self,
+        start: usize,
+        words: usize,
+    ) -> Result<&mut [u64], ReservationExhausted> {
+        debug_assert!(
+            start <= self.top,
+            "internal: a frame laid on its sender's slots starts below the top"
+        );
+        let end = start + words;
+        if end > self.ordinary_end {
+            self.grow_to(end, self.ordinary_limit)?;
+        }
+        self.top = end;
+        Ok(&mut self.reservation.accessible_mut()[start..end])
+    }
+
+    /// Lowers the top to `top`, which must not lie above it: a pop of a
+    /// frame pushed above its sender's window. The words above the new top
+    /// keep whatever they held, but nothing reads them: `words` lends only
+    /// below the top, and a push overwrites them.
+    #[inline(always)]
+    pub(super) fn lower_top(&mut self, top: usize) {
+        debug_assert!(top <= self.top, "internal: a pop never raises the top here");
+        self.top = top;
+    }
+
+    /// Sets the top to `top` and every word from `dead` up to it to
+    /// `filler`: a pop of a callee that lay on its sender's slots from
+    /// `dead`, its header's offset, gives the sender back its window up to
+    /// `top`, its registers above the slots dead. Each is written, since a
+    /// word the callee or a frame above it left there would otherwise be
+    /// traced again -- keeping alive what nothing reaches, or naming,
+    /// after a collection that ran while it lay above the top, an object
+    /// since moved or reclaimed.
+    #[inline(always)]
+    pub(super) fn raise_top_over_dead_registers(&mut self, dead: usize, top: usize, filler: u64) {
+        debug_assert!(
+            dead <= top && top <= self.committed,
+            "internal: a sender's dead registers lie inside the committed stack"
+        );
+        self.top = top;
+        self.reservation.accessible_mut()[dead..top].fill(filler);
     }
 
     /// `push`, but a frame may end anywhere in the reservation, the reserve
@@ -408,10 +476,19 @@ impl FrameStack {
     #[cold]
     #[inline(never)]
     fn grow(&mut self, words: usize, ceiling: usize) -> Result<(), ReservationExhausted> {
-        let needed = match self.top.checked_add(words) {
-            Some(end) if end <= ceiling => end,
-            _ => return Err(ReservationExhausted),
-        };
+        match self.top.checked_add(words) {
+            Some(end) => self.grow_to(end, ceiling),
+            None => Err(ReservationExhausted),
+        }
+    }
+
+    /// `grow`, for a frame that ends at `needed`.
+    #[cold]
+    #[inline(never)]
+    fn grow_to(&mut self, needed: usize, ceiling: usize) -> Result<(), ReservationExhausted> {
+        if needed > ceiling {
+            return Err(ReservationExhausted);
+        }
         let page = Reservation::page_size();
         let size = self.reservation.size();
         let committed_bytes = self.committed * 8;
@@ -439,18 +516,6 @@ impl FrameStack {
         self.committed = self.committed.max(end / 8);
         self.ordinary_end = self.committed.min(self.ordinary_limit);
         Ok(())
-    }
-
-    /// Pops every frame at and above `offset`, which must not lie above the
-    /// top. The words above the new top keep whatever they held, but
-    /// nothing reads them: `words` lends only below the top, and a push
-    /// overwrites them.
-    pub(super) fn truncate(&mut self, offset: usize) {
-        debug_assert!(
-            offset <= self.top,
-            "internal: a truncation never raises the top"
-        );
-        self.top = offset.min(self.top);
     }
 
     /// The words of every frame, `[0, top)`: one comparison, of the top
@@ -695,14 +760,14 @@ mod tests {
         assert!(reserved > 0);
         // Back below the ordinary room, an ordinary push is refused only at
         // the ordinary limit again, though the reserve has been committed.
-        stack.truncate(ordinary_top);
+        stack.lower_top(ordinary_top);
         assert!(stack.push(frame_words).is_err());
-        stack.truncate(ordinary_top - frame_words);
+        stack.lower_top(ordinary_top - frame_words);
         assert!(stack.push(frame_words).is_ok());
     }
 
     #[test]
-    fn truncate_then_push_reuses_the_offset() {
+    fn lowering_the_top_then_pushing_reuses_the_offset() {
         let mut stack = FrameStack::new(1 << 20).expect("reserve");
         let frame_words = frame_header::COUNT + 4;
         stack.push(frame_words).expect("push");
@@ -710,7 +775,7 @@ mod tests {
         for word in &mut stack.words_mut()[offset..] {
             *word = number_word(7).bits();
         }
-        stack.truncate(offset);
+        stack.lower_top(offset);
         assert_eq!(stack.top(), offset);
         assert_eq!(stack.words().len(), offset);
         let (again, _, _) = stack.push(frame_words).expect("push");

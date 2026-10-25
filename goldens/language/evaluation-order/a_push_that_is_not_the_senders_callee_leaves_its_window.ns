@@ -1,0 +1,94 @@
+/// Only a send's own callee lies on the send's argument slots; every other
+/// activation a send makes is pushed above the sender's whole window
+/// (`docs/design/execution.md`, "Planned: overlapping register windows"),
+/// so what the sender reads afterwards is where it left it. A future
+/// forced in the middle of `at:put:` -- its value is a sibling slot still
+/// being initialized (§6.3.2) -- runs, and the send runs again, reading
+/// its arguments afresh: a named local's, an operation's and a
+/// conditional's, none of them its slot at first. A `doesNotUnderstand:`
+/// handler forwards its message with `sendTo:` to a method of
+/// temporaries of its own, and `cull:` activates a block of fewer
+/// parameters than it is handed; each answer is a setter's argument read
+/// back after the send.
+class APushThatIsNotTheSendersCalleeLeavesItsWindow = Object new (
+  |
+    last ::= 0.
+  |
+) (
+  class Probe = Object new (
+    ||
+      public stored = store: (Array new: 3) at: 2.
+      public second = 20.
+    ||
+  ) (
+    store: array at: index = (
+      |
+        offset = 1.
+      |
+      array at: index + offset - 1 put: (offset = 1 ifTrue: [second] ifFalse: [0]).
+      array at: offset put: second.
+      array at: index + offset put: second + offset.
+      ^array.
+    )
+  )
+
+  class Target = Object new () (
+    public forwarded: value = (
+      |
+        first
+        second
+      |
+      first:: value.
+      second:: first + 1.
+      ^second - 1.
+    )
+  )
+
+  class Forwarder = Object new (
+    |
+      target = Target new.
+    |
+  ) (
+    protected doesNotUnderstand: message = (
+      ^message sendTo: target.
+    )
+  )
+
+  forward: forwarder = (
+    ^last:: forwarder forwarded: 5.
+  )
+
+  forwardInPlace: forwarder = (
+    ^last:: (forwarder forwarded: (last:: 6)) + last.
+  )
+
+  culled = (
+    ^last:: ([7] cull: 70) + ([:each | each] cull: 8).
+  )
+
+  public main: p args: a = (
+    |
+      transcript = p transcript.
+      probe = Probe new.
+      forwarder = Forwarder new.
+    |
+    1 to: 3 do: [:round |
+      transcript
+          show: (probe stored at: 1) printString;
+          show: ' ';
+          show: (probe stored at: 2) printString;
+          show: ' ';
+          show: (probe stored at: 3) printString;
+          show: ' ';
+          show: (self forward: forwarder) printString;
+          show: ' ';
+          show: (self forwardInPlace: forwarder) printString;
+          show: ' ';
+          show: self culled printString;
+          newLine.
+    ].
+    transcript
+        show: last printString;
+        newLine.
+  )
+)

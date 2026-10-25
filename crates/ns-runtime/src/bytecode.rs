@@ -454,6 +454,19 @@ pub enum CodeKind {
     SuperclassClause,
 }
 
+/// How many register numbers a frame's header takes, between its arguments
+/// and the rest of its registers: registers `0 .. argument_count` are the
+/// arguments, `argument_count .. argument_count + HEADER_REGISTERS` are
+/// never named by an instruction, and the copied values, the temporaries,
+/// the vector register and scratch start at `argument_count +
+/// HEADER_REGISTERS` (`docs/design/compiler.md`, "Registers"). So a send's
+/// slots, at the top of its sender's live registers, are its callee's
+/// arguments, the callee's header laid where they end, and every register
+/// is still one addition from the frame's start. The frame header's word
+/// count (`heap::frames::frame_header::COUNT`), which a compile-time
+/// assertion holds it to.
+pub const HEADER_REGISTERS: u16 = 13;
+
 #[derive(Debug, Clone)]
 pub struct CompiledCode {
     pub kind: CodeKind,
@@ -463,12 +476,16 @@ pub struct CompiledCode {
     /// view (`instruction`, `instructions`).
     body: EncodedBody,
     pub argument_count: u16,
-    /// Total register count, in the order the registers are laid out:
-    /// `argument_count`, then `copied_count`, then the named temporaries,
-    /// then one hidden register for the indirection vector when the body has
-    /// vector variables, then the compiler-allocated scratch registers
-    /// (`docs/design/compiler.md`, "Registers"). An activation is pushed with
-    /// `register_count - argument_count`.
+    /// One past the highest register number, in the order the registers
+    /// are laid out: `argument_count`, then the `HEADER_REGISTERS` numbers
+    /// of the frame's header, then `copied_count`, then the named
+    /// temporaries, then one hidden register for the indirection vector
+    /// when the body has vector variables, then the compiler-allocated
+    /// scratch registers (`docs/design/compiler.md`, "Registers"). Both
+    /// lowerings make it at least `argument_count + HEADER_REGISTERS`, but
+    /// for a body past the register ceiling with too many arguments for
+    /// that, whose registers are its arguments alone. An activation is
+    /// pushed with `registers_above_header` registers above its header.
     pub register_count: u16,
     /// Maps a statement index to the half-open instruction range it compiled
     /// to -- the safepoint boundary, and how an activation's instruction
@@ -572,6 +589,15 @@ pub(crate) struct CompiledCodeFields<'code> {
 }
 
 impl CompiledCode {
+    /// How many registers an activation of this body has above its header:
+    /// `register_count` less the arguments and the header's numbers, none
+    /// for a body whose registers are its arguments alone.
+    #[inline(always)]
+    pub fn registers_above_header(&self) -> usize {
+        usize::from(self.register_count)
+            .saturating_sub(usize::from(self.argument_count) + usize::from(HEADER_REGISTERS))
+    }
+
     /// A body from its instructions, encoded at once; `family_size` and
     /// `outer_reach` and `addresses_own_slots` are derived from them, as the
     /// compiler derives them.

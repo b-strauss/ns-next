@@ -418,6 +418,8 @@ fn a_returning_activation_keeps_its_registers_only_when_it_was_marked() {
     // it carries itself, so its own stay nil. One that was marked -- a
     // reference-lowering block, or an optimized fallback closure -- still
     // keeps them.
+    // The one temporary, past the argument and the header's numbers.
+    const TEMPORARY: u16 = 1 + ns_runtime::bytecode::HEADER_REGISTERS;
     let mut interpreter = Interpreter::bootstrap();
     interpreter.enter(|mutator| {
         let class = mutator.builtin_class(BuiltinClass::Object);
@@ -432,23 +434,24 @@ fn a_returning_activation_keeps_its_registers_only_when_it_was_marked() {
             .expect("the stack holds the frame");
         heap.activation_set_program_counter(unmarked, 0);
         let forgetful = heap.reify(unmarked);
-        heap.activation_set_local(unmarked, 1, Value::small_integer(2));
+        heap.activation_set_local(unmarked, TEMPORARY, Value::small_integer(2));
         heap.pop_activation(unmarked);
         assert_eq!(
             heap.frame_register_shape(forgetful),
-            (0, 1, 2),
+            (0, 1, usize::from(TEMPORARY) + 1),
             "a frame has its code's registers whether or not they were kept"
         );
         assert!(
-            heap.frame_local(forgetful, 0).is_nil() && heap.frame_local(forgetful, 1).is_nil(),
+            heap.frame_local(forgetful, 0).is_nil()
+                && heap.frame_local(forgetful, TEMPORARY).is_nil(),
             "an unmarked activation leaves its frame's registers nil"
         );
         // A crafted image can pair a by-reference closure with a frame that
         // has fewer registers, so a read past the file answers nil rather
         // than aborting the process.
-        assert!(heap.frame_local(forgetful, 2).is_nil());
-        heap.frame_set_local(forgetful, 2, Value::small_integer(9));
-        assert!(heap.frame_local(forgetful, 2).is_nil());
+        assert!(heap.frame_local(forgetful, TEMPORARY + 1).is_nil());
+        heap.frame_set_local(forgetful, TEMPORARY + 1, Value::small_integer(9));
+        assert!(heap.frame_local(forgetful, TEMPORARY + 1).is_nil());
 
         let marked = heap
             .push_activation(
@@ -462,15 +465,18 @@ fn a_returning_activation_keeps_its_registers_only_when_it_was_marked() {
         // What `MakeClosure` does for a block whose `outer_reach` is
         // non-zero.
         heap.retain_registers(marked);
-        heap.activation_set_local(marked, 1, Value::small_integer(2));
+        heap.activation_set_local(marked, TEMPORARY, Value::small_integer(2));
         heap.pop_activation(marked);
         assert_eq!(
             heap.frame_register_shape(kept),
-            (0, 1, 2),
+            (0, 1, usize::from(TEMPORARY) + 1),
             "a marked activation hands its registers to its frame"
         );
         assert_eq!(heap.frame_local(kept, 0).as_small_integer(), Some(1));
-        assert_eq!(heap.frame_local(kept, 1).as_small_integer(), Some(2));
+        assert_eq!(
+            heap.frame_local(kept, TEMPORARY).as_small_integer(),
+            Some(2)
+        );
     });
 }
 

@@ -2,54 +2,54 @@
 source: crates/ns-analyzer/tests/disasm_snapshots.rs
 expression: "disasm(\"language/control-flow/while_loop\", &[\"main:args:\"])"
 ---
-method main:args: (args 2, registers 13)
-   0   stmt 0  LoadLiteral r2, nil
-   1   stmt 0  SendLexical r3 <- depth 0 #n () @0
-   2   stmt 0  LoadLiteral r4, 5
-   3   stmt 0  IntegerBinary Less r5 <- r3, r4 else -> 5
+method main:args: (args 2, registers 26)
+   0   stmt 0  LoadLiteral r15, nil
+   1   stmt 0  SendLexical r16 <- depth 0 #n () @0
+   2   stmt 0  LoadLiteral r17, 5
+   3   stmt 0  IntegerBinary Less r18 <- r16, r17 else -> 5
    4   stmt 0  Jump -> 6
-   5   stmt 0  SendPublic r5 <- r3 #< (r4) @1
-   6   stmt 0  JumpIfNotBoolean r5 -> 21
-   7   stmt 0  BranchIfFalse r5 -> 22
-   8   stmt 0  SendLexical r7 <- depth 0 #sum () @2
-   9   stmt 0  SendLexical r8 <- depth 0 #n () @3
-  10   stmt 0  IntegerBinary Add r6 <- r7, r8 else -> 12
+   5   stmt 0  SendPublic r18 <- r16 #< (r17) @1
+   6   stmt 0  JumpIfNotBoolean r18 -> 21
+   7   stmt 0  BranchIfFalse r18 -> 22
+   8   stmt 0  SendLexical r20 <- depth 0 #sum () @2
+   9   stmt 0  SendLexical r21 <- depth 0 #n () @3
+  10   stmt 0  IntegerBinary Add r19 <- r20, r21 else -> 12
   11   stmt 0  Jump -> 13
-  12   stmt 0  SendPublic r6 <- r7 #+ (r8) @4
-  13   stmt 0  SendLexical r9 <- depth 0 #sum: (r6) @5
-  14   stmt 0  SendLexical r7 <- depth 0 #n () @6
-  15   stmt 0  LoadLiteral r8, 1
-  16   stmt 0  IntegerBinary Add r6 <- r7, r8 else -> 18
+  12   stmt 0  SendPublic r19 <- r20 #+ (r21) @4
+  13   stmt 0  SendLexical r22 <- depth 0 #sum: (r19) @5
+  14   stmt 0  SendLexical r20 <- depth 0 #n () @6
+  15   stmt 0  LoadLiteral r21, 1
+  16   stmt 0  IntegerBinary Add r19 <- r20, r21 else -> 18
   17   stmt 0  Jump -> 19
-  18   stmt 0  SendPublic r6 <- r7 #+ (r8) @7
-  19   stmt 0  SendLexical r9 <- depth 0 #n: (r6) @8
+  18   stmt 0  SendPublic r19 <- r20 #+ (r21) @7
+  19   stmt 0  SendLexical r22 <- depth 0 #n: (r19) @8
   20   stmt 0  Jump -> 1
-  21   stmt 0  SignalNonBoolean r5
-  22   stmt 1  LoadLiteral r2, nil
-  23   stmt 1  SendLexical r3 <- depth 0 #n () @9
-  24   stmt 1  LoadLiteral r4, 0
-  25   stmt 1  IntegerBinary Equal r5 <- r3, r4 else -> 27
+  21   stmt 0  SignalNonBoolean r18
+  22   stmt 1  LoadLiteral r15, nil
+  23   stmt 1  SendLexical r16 <- depth 0 #n () @9
+  24   stmt 1  LoadLiteral r17, 0
+  25   stmt 1  IntegerBinary Equal r18 <- r16, r17 else -> 27
   26   stmt 1  Jump -> 28
-  27   stmt 1  SendPublic r5 <- r3 #= (r4) @10
-  28   stmt 1  JumpIfNotBoolean r5 -> 37
-  29   stmt 1  BranchIfTrue r5 -> 38
-  30   stmt 1  SendLexical r7 <- depth 0 #n () @11
-  31   stmt 1  LoadLiteral r8, 1
-  32   stmt 1  IntegerBinary Subtract r6 <- r7, r8 else -> 34
+  27   stmt 1  SendPublic r18 <- r16 #= (r17) @10
+  28   stmt 1  JumpIfNotBoolean r18 -> 37
+  29   stmt 1  BranchIfTrue r18 -> 38
+  30   stmt 1  SendLexical r20 <- depth 0 #n () @11
+  31   stmt 1  LoadLiteral r21, 1
+  32   stmt 1  IntegerBinary Subtract r19 <- r20, r21 else -> 34
   33   stmt 1  Jump -> 35
-  34   stmt 1  SendPublic r6 <- r7 #- (r8) @12
-  35   stmt 1  SendLexical r9 <- depth 0 #n: (r6) @13
+  34   stmt 1  SendPublic r19 <- r20 #- (r21) @12
+  35   stmt 1  SendLexical r22 <- depth 0 #n: (r19) @13
   36   stmt 1  Jump -> 23
-  37   stmt 1  SignalNonBoolean r5
-  38   stmt 2  SendPublic r2 <- r0 #transcript () @14
-  39   stmt 2  SendLexical r4 <- depth 0 #sum () @15
-  40   stmt 2  SendPublic r3 <- r4 #printString () @16
-  41   stmt 2  SendPublic r5 <- r2 #show: (r3) @17
-  42   stmt 2  LoadLiteral r6, ' '
-  43   stmt 2  SendPublic r7 <- r2 #show: (r6) @18
-  44   stmt 2  SendLexical r9 <- depth 0 #n () @19
-  45   stmt 2  SendPublic r8 <- r9 #printString () @20
-  46   stmt 2  SendPublic r10 <- r2 #show: (r8) @21
-  47   stmt 2  SendPublic r11 <- r2 #newLine () @22
-  48        -  LoadSelf r12
-  49        -  ImplicitReturn r12
+  37   stmt 1  SignalNonBoolean r18
+  38   stmt 2  SendPublic r15 <- r0 #transcript () @14
+  39   stmt 2  SendLexical r17 <- depth 0 #sum () @15
+  40   stmt 2  SendPublic r16 <- r17 #printString () @16
+  41   stmt 2  SendPublic r18 <- r15 #show: (r16) @17
+  42   stmt 2  LoadLiteral r19, ' '
+  43   stmt 2  SendPublic r20 <- r15 #show: (r19) @18
+  44   stmt 2  SendLexical r22 <- depth 0 #n () @19
+  45   stmt 2  SendPublic r21 <- r22 #printString () @20
+  46   stmt 2  SendPublic r23 <- r15 #show: (r21) @21
+  47   stmt 2  SendPublic r24 <- r15 #newLine () @22
+  48        -  LoadSelf r25
+  49        -  ImplicitReturn r25

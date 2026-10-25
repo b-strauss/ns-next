@@ -302,6 +302,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                     },
                     program_counter,
                     window,
+                    Some($pending.slots),
                     floor,
                     &mut handoff,
                     |mutator, arguments| {
@@ -332,6 +333,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                     },
                     program_counter,
                     window,
+                    Some($pending.slots),
                     floor,
                     &mut handoff,
                     |mutator, arguments| mutator.decide_send(receiver, selector, arguments),
@@ -355,6 +357,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                     },
                     program_counter,
                     window,
+                    Some($pending.slots),
                     floor,
                     &mut handoff,
                     |mutator, arguments| {
@@ -388,6 +391,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                     },
                     program_counter,
                     window,
+                    Some($pending.slots),
                     floor,
                     &mut handoff,
                     |mutator, arguments| {
@@ -1286,6 +1290,9 @@ struct PendingSend {
     site: u32,
     /// The first register of the arguments' window (`argument_window`).
     window: u16,
+    /// The first of the send's argument slots, which its callee is laid
+    /// on.
+    slots: u16,
     /// How many arguments.
     count: u16,
 }
@@ -1322,6 +1329,7 @@ impl PendingSend {
             receiver: u16::from(receiver),
             site: u32::from(site),
             window,
+            slots: u16::from(argument_base),
             count: sources.len() as u16,
         }
     }
@@ -1349,6 +1357,7 @@ impl PendingSend {
                 wide.argument_base(),
                 wide.arguments(),
             ),
+            slots: wide.argument_base(),
             count: argument_count(wide.arguments()),
         }
     }
@@ -1836,6 +1845,10 @@ fn send_mirror(
                 },
                 decided,
                 arguments,
+                // A leaf's step takes the leaf's arguments, not the mirror
+                // send's, which carry the subject and the failure block
+                // too: its activation lands above the sender's window.
+                None,
                 floor,
                 handoff,
             )
@@ -2048,13 +2061,18 @@ struct Sender {
 /// or one always are -- or else the slots, the sources placed there
 /// (`place_arguments`).
 ///
-/// A window that names the sources leaves the slots unwritten, so it is
-/// only sound because nothing reads a slot after its send but the send
-/// itself: a setter assignment's value is the register its argument came
-/// from, which is the slot only where the value was produced there
-/// (`compiler::lower`'s `lower_setter_assign`), and the push copies the
-/// window into the callee's registers from wherever it is
-/// (`docs/design/execution.md`, "Planned: overlapping register windows").
+/// A window that names the sources leaves the slots unwritten while the
+/// send is decided, so that a decision answering without a push -- a
+/// primitive, a slot accessor -- reads the arguments in place and writes
+/// nothing. A push of the send's own callee copies the sources into the
+/// slots first, since the callee is laid on them and its header goes over
+/// every register above (`Mutator::push_on_slots`); any other push copies
+/// the window from wherever it is. It is sound because nothing reads a
+/// slot after its send but the send itself and a setter assignment, whose
+/// value is the slot only where it was produced or copied there, and
+/// otherwise the named local it came from, below the slots
+/// (`compiler::lower`'s `lower_setter_assign`; `docs/design/execution.md`,
+/// "Planned: overlapping register windows").
 #[inline(always)]
 fn argument_window(
     mutator: &mut Mutator<'_>,
@@ -2122,11 +2140,13 @@ fn place_arguments(
 /// factory's or an initializer's initializer go the same way: their
 /// decision is the body to run on the instance, or the instance itself
 /// when nothing runs.
+#[allow(clippy::too_many_arguments)]
 fn send<'gc>(
     mutator: &mut Mutator<'gc>,
     sender: Sender,
     program_counter: usize,
     window: ArgumentSlots,
+    slots: Option<u16>,
     floor: usize,
     handoff: &mut Handoff,
     decide: impl FnOnce(&mut Mutator<'gc>, Arguments<'_, 'gc>) -> Result<Step<'gc>, Signal<'gc>>,
@@ -2136,19 +2156,22 @@ fn send<'gc>(
         .heap
         .activation_set_program_counter(sender.activation, program_counter);
     let decided = decide(mutator, arguments);
-    deliver(mutator, sender, decided, arguments, floor, handoff)
+    deliver(mutator, sender, decided, arguments, slots, floor, handoff)
 }
 
 /// What a send decided, run: a value written to the sender's `destination`,
-/// or an activation pushed and switched to, its window filled from
-/// `send_arguments`, the send's window. Shared by `send` and `SendMirror`, so a mirror leaf's
-/// decision is delivered exactly as any send's is.
+/// or an activation pushed and switched to, laid on the send's argument
+/// slots from register `slots` when it takes the send's own arguments, or
+/// above the sender's window, filled from `send_arguments`, the send's
+/// window (`Mutator::push_sent`). Shared by `send` and `SendMirror`, so a
+/// mirror leaf's decision is delivered exactly as any send's is.
 #[inline(always)]
 fn deliver<'gc>(
     mutator: &mut Mutator<'gc>,
     sender: Sender,
     decided: Result<Step<'gc>, Signal<'gc>>,
     send_arguments: Arguments<'_, 'gc>,
+    slots: Option<u16>,
     floor: usize,
     handoff: &mut Handoff,
 ) -> Transfer {
@@ -2164,6 +2187,7 @@ fn deliver<'gc>(
             send_arguments,
             Some(sender.activation),
             sender.inlinable,
+            slots,
         ) {
             Ok((callee, program_counter)) => handoff.switch_to(mutator, callee, program_counter),
             Err(signal) => unwind(mutator, signal, floor, handoff),
@@ -2359,6 +2383,9 @@ fn initialize_instance(
         sender,
         program_counter,
         ArgumentSlots::new(sender.register_base, 0, argument_count),
+        // The factory's own arguments, below its header: the initializer
+        // lands above the factory's window.
+        None,
         floor,
         handoff,
         |mutator, arguments| mutator.initialize_instance(sender.activation, instance, arguments),
@@ -2394,6 +2421,7 @@ fn initialize_superclass(
         sender,
         program_counter,
         window,
+        Some(argument_base),
         floor,
         handoff,
         |mutator, arguments| {
@@ -2430,6 +2458,7 @@ fn initialize_applied_level(
         sender,
         program_counter,
         window,
+        Some(argument_base),
         floor,
         handoff,
         |mutator, arguments| {

@@ -238,9 +238,10 @@ CompiledCode {
 
 A method body, a block body and an instance initializer all compile to the same
 shape; `kind` tags which. An activation of it is pushed with
-`register_count - argument_count` temporaries, and a block's activation is
+`register_count - argument_count - HEADER_REGISTERS` registers above its
+header (`CompiledCode::registers_above_header`), and a block's activation is
 then handed its closure's `copied_count` values into the registers just above
-its parameters.
+its header's numbers.
 
 `outer_reach` is derived from the instructions, by the compiler and by the
 image decoder alike (`CompiledCode::from_builder`, off the encoding:
@@ -392,33 +393,56 @@ large".
 
 ## Registers
 
-Each activation carries `arguments ++ temporaries` as one unified register space addressed
-by a single `u16`: on the activation stack it is one window of registers, and in
-a divorced `Frame` index `< argument_count` is `arguments[index]`, index `>= argument_count` is
-`temporaries[index - argument_count]`. That is exactly the args-then-temps split the
-resolver's `Binding::Local` already used, so the compiler needs no separate
-renumbering, and a block's `OuterLocal` indices are untouched by the scratch
-registers a bytecode frame adds — scratch sits after the named locals.
+Each activation carries its arguments, then the thirteen numbers of its frame
+header (`bytecode::HEADER_REGISTERS`, held equal to `frame_header::COUNT`),
+then its temporaries and scratch, as one unified register space addressed by a
+single `u16`: registers `0 .. argument_count` are the arguments,
+`argument_count .. argument_count + HEADER_REGISTERS` are never named by an
+instruction, and everything else starts at `argument_count +
+HEADER_REGISTERS`. On the activation stack it is one window, the header's words
+where those numbers are, so every register is one addition from the frame's
+start, and a send's argument slots are its callee's arguments, the callee's
+header laid where they end ([execution.md](execution.md), "Planned:
+overlapping register windows"); a frame object has a field for every number,
+the header's nil. The resolver's `Binding::Local` numbers the arguments and
+then the temporaries with no gap, so a temporary's register is its resolver
+index plus the header's numbers, which `Layout` and the reference lowering's
+`local_register` add; a block's `OuterLocal` index is mapped the same way,
+against the argument count of the body that declares it, and is untouched by
+the scratch registers a bytecode frame adds — scratch sits after the named
+locals. A body's `register_count` is one past its highest register number, so
+at least `argument_count + HEADER_REGISTERS`, but for a body past the register
+ceiling with too many arguments for that, whose registers are its arguments
+alone (`compiler::body_too_large`); the header's numbers count against the
+ceiling like any other.
 
-**A converted block's layout inserts its copied values between the two.** Under
-the optimized lowering a block's registers are its parameters, then the values
-it was handed when the closure was created, then its temporaries, then one
-hidden register holding its indirection vector when it has one, then scratch; a
-method's, an initializer's or a clause's are the same without the copied values
+**A converted block's layout inserts its copied values after the header's
+numbers.** Under the optimized lowering a block's registers are its
+parameters, the header's numbers, then the values it was handed when the
+closure was created, then its temporaries, then one hidden register holding
+its indirection vector when it has one, then scratch; a method's, an
+initializer's or a clause's are the same without the copied values
 ([execution.md](execution.md), "Closure conversion"). A resolver index is no
 longer a register index, so `Layout` (`compiler/lower.rs`) is the one place
 that maps one to the other: `local_register` pushes every temporary up by the
-copied count, and a local the capture analysis put in the vector keeps its
-resolver index while its register simply stays nil, so every `Binding` stays
-valid. A fallback closure and anything nested in it get a by-reference
-`Layout` instead — no copied values, no vector, every local in the register its
-resolver index names — because such a closure reaches the frame whose common
-path it stands in for by reference.
+header's numbers and the copied count, and a local the capture analysis put
+in the vector keeps its resolver index while its register simply stays nil,
+so every `Binding` stays valid. A fallback closure and anything nested in it
+get a by-reference `Layout` instead — no copied values, no vector, every local
+in the register its resolver index names, a temporary's past the header's
+numbers — because such a closure reaches the frame whose common path it
+stands in for by reference.
 
-**Planned (road step 7a′):** the numbering skips the header's 13 words
-after the parameters, and a send's arguments become contiguous slots at
-the top of the live registers, which the callee's window overlaps
-([execution.md](execution.md), "Planned: overlapping register windows").
+**Every register above a send's argument slots is dead when the send
+executes**: the callee's header and window go over them. The bump allocator
+makes it true -- nothing is allocated below a slot after it, and what an
+argument is computed with lands above -- and both lowerings check it on every
+body in a debug build (`reference::check_registers_above_sends_are_dead`): no
+instruction after a send reads a register above its slots before something
+writes it again. The one value a lowering keeps across a send is a setter
+assignment's, which is the setter's slot or a named local below it: a value
+left in a register above the slot, an inner assignment's or an inlined
+conditional's, is copied into the slot (`lower_setter_assign`).
 
 Registers above the named locals are compiler-allocated scratch from a bump
 allocator **reset to the first scratch index at the start of every statement**.

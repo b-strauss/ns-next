@@ -283,10 +283,12 @@ impl<'gc> StepArguments<'gc> {
 /// registers, read where they are, or values a decision or the host built.
 ///
 /// A send's arguments stay in the sender's registers while the send is
-/// decided and its activation pushed, and the push copies them from there
-/// into the callee's window (`Heap::push_activation`), so nothing gathers
-/// them anywhere in between (`docs/design/execution.md`, "Planned:
-/// overlapping register windows"). Reading one is reading a register of a
+/// decided and its activation pushed, and the push lays a send's own callee
+/// on its argument slots, which then are the callee's arguments
+/// (`Mutator::push_on_slots`), or copies them into the window of any other
+/// activation (`Heap::push_activation`), so nothing gathers them anywhere
+/// in between (`docs/design/execution.md`, "Planned: overlapping register
+/// windows"). Reading one is reading a register of a
 /// live activation: good while the sender stays where it is, which it does
 /// from the send's start to its push -- no collection runs inside a
 /// decision, only at safepoints, and nothing pops the sender meanwhile.
@@ -1209,6 +1211,75 @@ impl<'gc> Mutator<'gc> {
         }
     }
 
+    /// `push`, or for a send's own callee `push_on_slots`: `slots` is the
+    /// first of the send's argument slots in its sender's window when the
+    /// activation takes the run loop's send's own arguments, `arguments`
+    /// then its window, and `None` for every other push, which lands above
+    /// the sender's whole window.
+    #[inline(always)]
+    fn push_placed(
+        &mut self,
+        header: ActivationHeader<'gc>,
+        arguments: Arguments<'_, 'gc>,
+        slots: Option<u16>,
+        temporaries: usize,
+    ) -> Result<ActivationReference, Signal<'gc>> {
+        match (arguments, slots) {
+            (Arguments::Slots(window), Some(argument_base)) => {
+                self.push_on_slots(header, window, argument_base, temporaries)
+            }
+            _ => {
+                debug_assert!(
+                    slots.is_none(),
+                    "internal: a send's own callee is handed the send's window"
+                );
+                self.push(header, arguments, temporaries)
+            }
+        }
+    }
+
+    /// Pushes a send's own callee on the send's argument slots, from
+    /// register `argument_base` of the sender's window, so that they are
+    /// its arguments (`Heap::push_overlapped_activation`;
+    /// `docs/design/execution.md`, "Planned: overlapping register windows").
+    /// `window` is where the decision read the arguments: the slots, or
+    /// their sources where those are consecutive registers, which are
+    /// copied into the slots first -- the callee's header goes over every
+    /// register above the slots, a source there included. From then on
+    /// the slots are the arguments, so that the depth limit's and the
+    /// reservation's cold paths, which push above the sender's window,
+    /// copy them from there. The depth limit is checked as `push` checks it.
+    #[inline(always)]
+    fn push_on_slots(
+        &mut self,
+        header: ActivationHeader<'gc>,
+        window: ArgumentSlots,
+        argument_base: u16,
+        temporaries: usize,
+    ) -> Result<ActivationReference, Signal<'gc>> {
+        let register_base = window.register_base();
+        let count = window.count();
+        if window.start() != argument_base {
+            self.heap.place_in_slots(window, argument_base);
+        }
+        let slots = Arguments::Slots(ArgumentSlots::new(register_base, argument_base, count));
+        if header.counted && self.heap.counted_depth() >= MAX_ACTIVATION_DEPTH {
+            return self.push_past_the_limit(Box::new(header), slots, temporaries);
+        }
+        match self.heap.push_overlapped_activation(
+            header,
+            register_base,
+            argument_base,
+            count,
+            temporaries,
+        ) {
+            Ok(activation) => Ok(activation),
+            Err(exhausted) => {
+                self.push_into_the_stack_reserve(exhausted.header, slots, temporaries)
+            }
+        }
+    }
+
     /// The refusal of a push handed more arguments than the register
     /// ceiling, `u16::MAX`, which a frame cannot record: the too-large
     /// error the callee's body would raise. Every arity check holds a body
@@ -1485,6 +1556,27 @@ impl<'gc> Mutator<'gc> {
         sender: Option<ActivationReference>,
         inlinable: bool,
     ) -> Result<ActivationReference, Signal<'gc>> {
+        self.push_step_placed(step, send_arguments, sender, inlinable, None)
+    }
+
+    /// `push_step`, an activation that takes the send's own arguments laid
+    /// on the send's slots from register `slots` of the sender's window
+    /// when it is given (`push_placed`): the run loop's sends give it.
+    #[inline(always)]
+    fn push_step_placed(
+        &mut self,
+        step: Step<'gc>,
+        send_arguments: Arguments<'_, 'gc>,
+        sender: Option<ActivationReference>,
+        inlinable: bool,
+        slots: Option<u16>,
+    ) -> Result<ActivationReference, Signal<'gc>> {
+        // Only an activation that takes the send's own arguments is the
+        // send's own callee; any other lands above the sender's window.
+        let on_slots = |arguments: &StepArguments<'gc>| match arguments {
+            StepArguments::Send => slots,
+            StepArguments::ControlFlow | StepArguments::Owned(_) => None,
+        };
         match step {
             Step::Value(_) => unreachable!("internal: a value needs no activation"),
             Step::Method {
@@ -1494,6 +1586,7 @@ impl<'gc> Mutator<'gc> {
                 arguments,
                 feedback_base,
             } => {
+                let slots = on_slots(&arguments);
                 let owned = arguments.owned();
                 let arguments = arguments.window(send_arguments, &owned);
                 check_method_arity(&method, receiver, arguments.len())?;
@@ -1507,8 +1600,8 @@ impl<'gc> Mutator<'gc> {
                 } else {
                     feedback_base
                 };
-                let temporaries = (code.register_count - code.argument_count) as usize;
-                self.push(
+                let temporaries = code.registers_above_header();
+                self.push_placed(
                     ActivationHeader {
                         receiver,
                         current_class: Some(defining_class),
@@ -1520,6 +1613,7 @@ impl<'gc> Mutator<'gc> {
                         feedback_base,
                     },
                     arguments,
+                    slots,
                     temporaries,
                 )
             }
@@ -1530,6 +1624,7 @@ impl<'gc> Mutator<'gc> {
                 then,
             } => {
                 let control_flow = matches!(arguments, StepArguments::ControlFlow);
+                let slots = on_slots(&arguments);
                 let owned = arguments.owned();
                 let arguments = arguments.window(send_arguments, &owned);
                 let (code, captured_frame, closure_feedback_base) = self
@@ -1577,8 +1672,8 @@ impl<'gc> Mutator<'gc> {
                 let counted = !(inlinable && control_flow && created_by_sender(&self.heap));
                 let receiver = self.heap.frame_receiver(captured_frame);
                 let current_class = self.heap.frame_current_class(captured_frame);
-                let temporaries = (code.register_count - code.argument_count) as usize;
-                let activation = self.push(
+                let temporaries = code.registers_above_header();
+                let activation = self.push_placed(
                     ActivationHeader {
                         receiver,
                         current_class,
@@ -1590,6 +1685,7 @@ impl<'gc> Mutator<'gc> {
                         feedback_base,
                     },
                     arguments,
+                    slots,
                     temporaries,
                 )?;
                 // The copied values sit between the block's parameters and
@@ -1607,6 +1703,7 @@ impl<'gc> Mutator<'gc> {
                 code,
                 arguments,
             } => {
+                let slots = on_slots(&arguments);
                 let owned = arguments.owned();
                 let arguments = arguments.window(send_arguments, &owned);
                 // The entry's arity is its selector's, which the send
@@ -1623,8 +1720,8 @@ impl<'gc> Mutator<'gc> {
                     ));
                 }
                 let feedback_base = self.caches.base_for(&code);
-                let temporaries = (code.register_count - code.argument_count) as usize;
-                self.push(
+                let temporaries = code.registers_above_header();
+                self.push_placed(
                     ActivationHeader {
                         receiver: Value::object(class),
                         current_class: Some(class),
@@ -1636,6 +1733,7 @@ impl<'gc> Mutator<'gc> {
                         feedback_base,
                     },
                     arguments,
+                    slots,
                     temporaries,
                 )
             }
@@ -1646,11 +1744,13 @@ impl<'gc> Mutator<'gc> {
                 body,
                 code,
             } => {
+                let slots = on_slots(&arguments);
                 let owned = arguments.owned();
-                self.push_initializer(
+                self.push_initializer_placed(
                     receiver,
                     level,
                     arguments.window(send_arguments, &owned),
+                    slots,
                     body,
                     code,
                 )
@@ -1658,7 +1758,7 @@ impl<'gc> Mutator<'gc> {
             Step::SuperclassClause(creation) => {
                 let code = nested::superclass_clause_code(&creation.nested);
                 let feedback_base = self.caches.base_for(&code);
-                let temporaries = (code.register_count - code.argument_count) as usize;
+                let temporaries = code.registers_above_header();
                 let (enclosing, index, serial) =
                     (creation.enclosing, creation.index, creation.serial);
                 let activation = self.push(
@@ -1729,12 +1829,19 @@ impl<'gc> Mutator<'gc> {
     /// since only they switch to what is answered: a host's run starts at
     /// the activation it pushed, and a continuation of the pushed
     /// activation is written by some other callers.
+    ///
+    /// `slots` is the first of the send's argument slots, for a send whose
+    /// callee is laid on them (`push_on_slots`); `None` for one whose
+    /// arguments are the sender's own -- `InitializeInstance`'s, the
+    /// factory's -- or a mirror send's, whose callee lands above the
+    /// sender's window.
     pub(crate) fn push_sent(
         &mut self,
         step: Step<'gc>,
         send_arguments: Arguments<'_, 'gc>,
         sender: Option<ActivationReference>,
         inlinable: bool,
+        slots: Option<u16>,
     ) -> Result<(ActivationReference, usize), Signal<'gc>> {
         let factory = match &step {
             Step::Factory {
@@ -1744,10 +1851,18 @@ impl<'gc> Mutator<'gc> {
             } => instantiate::factory_registers(code).map(|registers| (*class, registers)),
             _ => None,
         };
-        let pushed = self.push_step(step, send_arguments, sender, inlinable)?;
+        let pushed = self.push_step_placed(step, send_arguments, sender, inlinable, slots)?;
         match factory {
             Some((class, registers)) => {
-                self.enter_factory_body(pushed, class, registers, send_arguments)
+                // The factory's own arguments, where its initializer reads
+                // them: a source the window named above the slots is gone
+                // under the factory's header.
+                let arguments = ArgumentSlots::new(
+                    self.heap.activation_register_base(pushed),
+                    0,
+                    send_arguments.len() as u16,
+                );
+                self.enter_factory_body(pushed, class, registers, Arguments::Slots(arguments))
             }
             None => Ok((pushed, 0)),
         }
@@ -1764,6 +1879,20 @@ impl<'gc> Mutator<'gc> {
         body: instantiate::InitializerBody,
         code: Rc<crate::bytecode::CompiledCode>,
     ) -> Result<ActivationReference, Signal<'gc>> {
+        self.push_initializer_placed(receiver, level, arguments, None, body, code)
+    }
+
+    /// `push_initializer`, laid on the send's slots from register `slots`
+    /// when it is given (`push_placed`).
+    fn push_initializer_placed(
+        &mut self,
+        receiver: Value<'gc>,
+        level: ClassReference<'gc>,
+        arguments: Arguments<'_, 'gc>,
+        slots: Option<u16>,
+        body: instantiate::InitializerBody,
+        code: Rc<crate::bytecode::CompiledCode>,
+    ) -> Result<ActivationReference, Signal<'gc>> {
         // The decision checked the arguments against the level's factory,
         // whose arity `image::decode::verify_mixins` holds every body to.
         debug_assert!(
@@ -1772,8 +1901,8 @@ impl<'gc> Mutator<'gc> {
             "internal: an initializer is pushed with its own number of arguments"
         );
         let feedback_base = self.caches.base_for(&code);
-        let temporaries = (code.register_count - code.argument_count) as usize;
-        self.push(
+        let temporaries = code.registers_above_header();
+        self.push_placed(
             ActivationHeader {
                 receiver,
                 current_class: Some(level),
@@ -1785,6 +1914,7 @@ impl<'gc> Mutator<'gc> {
                 feedback_base,
             },
             arguments,
+            slots,
             temporaries,
         )
     }

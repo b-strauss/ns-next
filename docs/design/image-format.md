@@ -1241,8 +1241,9 @@ halves come off the wire independently, so a crafted image can make them
 disagree: a `MakeClosure`'s `copied` list against its block's `copied_count`
 (checked in `lexical_parents`), a closure record's own values against the same
 count (checked in `decode_closure_record`, before any of them is read), and
-`argument_count + copied_count` against `register_count` (checked in
-`decode_code`, in `u32` arithmetic, once the arity itself fits). Every register
+`argument_count + HEADER_REGISTERS + copied_count` against `register_count`
+when there are copied values (checked in `decode_code`, in `u32` arithmetic,
+once the arity itself fits). Every register
 a `MakeClosure` copies, and every register operand of `MakeVector`,
 `LoadVector` and `StoreVector`, is inside its own body's register file, like
 every other register operand; a vector slot is not a register and is checked at
@@ -1251,6 +1252,18 @@ and each of its sources are register operands too, and so is every slot from
 the base on, since the send writes a source into its slot: a body whose last
 slot runs past its register file is refused (`ArgumentSlotsOutOfRange`) even
 when the base and the sources are inside it.
+
+**No register names a live frame's header.** A body's register numbers
+`argument_count .. argument_count + HEADER_REGISTERS` are its frame header's
+words, which the register numbering skips ([compiler.md](compiler.md),
+"Registers"): a register operand there, or an outer local's index there in the
+body that declares it, would read or write a live frame's caller word or
+register count, so it is refused (`HeaderRegister`). A send's callee is laid on
+its argument slots, its header where they end
+([execution.md](execution.md), "Planned: overlapping register windows"), so a
+send whose slots start below the end of its own body's header's numbers --
+among its arguments or on the header itself -- is refused too
+(`ArgumentSlotsBelowTheHeader`), even with no argument.
 
 **A frame record's register file matches its body.** Every reified frame is
 allocated with its code's full register file ([object-model.md](object-model.md),

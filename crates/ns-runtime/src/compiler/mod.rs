@@ -91,13 +91,21 @@ fn temporary_index(argument_count: u16, offset: usize) -> u16 {
 /// uses, so that compiling never fails and a body never run never fails
 /// (`docs/design/compiler.md`, "Compilation cannot fail"). It takes no
 /// copied values: a too-large block's creator hands it none. Its one
-/// register follows the arguments; when every register is an argument the
-/// last argument's serves, since the literal raises before anything is
-/// written to it. Both lowerings build it here, so the two cannot disagree
-/// on its shape.
+/// register is the first above the header's numbers
+/// (`bytecode::HEADER_REGISTERS`); when the arguments leave no number for
+/// one there, the last argument's serves, since the literal raises before
+/// anything is written to it, and the body's registers are its arguments
+/// alone. Both lowerings build it here, so the two cannot disagree on its
+/// shape.
 fn body_too_large(kind: CodeKind, argument_count: u16, source: Span) -> CompiledCode {
-    let destination = argument_count.min(u16::MAX - 1);
-    let register_count = argument_count.max(destination + 1);
+    let first_above_header =
+        u32::from(argument_count) + u32::from(crate::bytecode::HEADER_REGISTERS);
+    let (destination, register_count) = match u16::try_from(first_above_header + 1) {
+        Ok(register_count) => (register_count - 1, register_count),
+        // Past the ceiling the arguments reach above `u16::MAX -
+        // HEADER_REGISTERS`, so there is a last one.
+        Err(_) => (argument_count - 1, argument_count),
+    };
     CompiledCode::new(
         kind,
         vec![
@@ -122,8 +130,9 @@ fn body_too_large(kind: CodeKind, argument_count: u16, source: Span) -> Compiled
 /// it): `AllocateInstance` of the class object the factory was sent to,
 /// `InitializeInstance` of it with the factory's arguments, which are this
 /// body's own, and `Return` of the instance -- never of what the initializer
-/// answers. The two registers after the arguments hold the instance and
-/// the initializer's answer. Three instructions whatever the arity:
+/// answers. The first two registers above the header's numbers
+/// (`bytecode::HEADER_REGISTERS`) hold the instance and the initializer's
+/// answer. Three instructions whatever the arity:
 /// `InitializeInstance` names no argument list, so an arity read off an
 /// image's two bytes cannot make the decoder build a body that grows with
 /// it.
@@ -137,11 +146,12 @@ fn body_too_large(kind: CodeKind, argument_count: u16, source: Span) -> Compiled
 /// raises the too-large error when the factory is sent.
 pub fn factory_body(argument_count: u16) -> CompiledCode {
     let source = Span::new(0, 0);
-    let Some(register_count) = argument_count.checked_add(2) else {
+    let Some(register_count) = argument_count.checked_add(crate::bytecode::HEADER_REGISTERS + 2)
+    else {
         return body_too_large(CodeKind::Method, argument_count, source);
     };
-    let instance = argument_count;
-    let answer = argument_count + 1;
+    let instance = argument_count + crate::bytecode::HEADER_REGISTERS;
+    let answer = instance + 1;
     CompiledCode::new(
         CodeKind::Method,
         vec![

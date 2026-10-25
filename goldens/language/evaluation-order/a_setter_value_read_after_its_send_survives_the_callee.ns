@@ -1,0 +1,134 @@
+/// A setter assignment answers its argument (`docs/design/dispatch.md`,
+/// "Setter sends"), which is read after the setter send has returned: from
+/// its argument slot when it was produced there -- `^x:: 3` -- or copied
+/// there -- the inner assignment of `a:: b:: 4`, an inlined conditional's
+/// value -- since the callee lies on the slot and never writes it, while
+/// its header and registers go over every register above
+/// (`docs/design/execution.md`, "Planned: overlapping register windows").
+/// Each setter is a slot's, a method's with temporaries of its own, and
+/// one nothing declares, which `doesNotUnderstand:` answers; each is sent
+/// a literal under `^`, a chain, two as the operands of `+`, and a
+/// conditional's value. Three rounds, so every send is cached; then the
+/// two slots' last values, and what the method and the handler were sent,
+/// 129 each: three rounds of 3, 4, 4, 5, 6, 6, 7 and 8.
+class ASetterValueReadAfterItsSendSurvivesTheCallee = Object new (
+  |
+    slot ::= 0.
+    other ::= 0.
+    total ::= 0.
+    seen ::= 0.
+  |
+) (
+  recorded: value = (
+    |
+      first
+      second
+      third
+    |
+    first:: value.
+    second:: first + 1.
+    third:: second + 1.
+    total:: total + third - 2.
+  )
+
+  protected doesNotUnderstand: message = (
+    seen:: seen + (message arguments at: 1).
+  )
+
+  slotLiteral = (
+    ^slot:: 3.
+  )
+
+  slotChain = (
+    ^other:: slot:: 4.
+  )
+
+  slotOperands = (
+    ^(slot:: 5) + (other:: slot:: 6).
+  )
+
+  slotConditional: flag = (
+    ^slot:: (flag ifTrue: [7] ifFalse: [8]).
+  )
+
+  methodLiteral = (
+    ^recorded:: 3.
+  )
+
+  methodChain = (
+    ^recorded:: recorded:: 4.
+  )
+
+  methodOperands = (
+    ^(recorded:: 5) + (recorded:: recorded:: 6).
+  )
+
+  methodConditional: flag = (
+    ^recorded:: (flag ifTrue: [7] ifFalse: [8]).
+  )
+
+  missingLiteral = (
+    ^unknown:: 3.
+  )
+
+  missingChain = (
+    ^unknown:: unknown:: 4.
+  )
+
+  missingOperands = (
+    ^(unknown:: 5) + (unknown:: unknown:: 6).
+  )
+
+  missingConditional: flag = (
+    ^unknown:: (flag ifTrue: [7] ifFalse: [8]).
+  )
+
+  public main: p args: a = (
+    |
+      transcript = p transcript.
+    |
+    1 to: 3 do: [:round |
+      transcript
+          show: self slotLiteral printString;
+          show: ' ';
+          show: self slotChain printString;
+          show: ' ';
+          show: self slotOperands printString;
+          show: ' ';
+          show: (self slotConditional: true) printString;
+          show: ' ';
+          show: (self slotConditional: false) printString;
+          show: ' ';
+          show: self methodLiteral printString;
+          show: ' ';
+          show: self methodChain printString;
+          show: ' ';
+          show: self methodOperands printString;
+          show: ' ';
+          show: (self methodConditional: true) printString;
+          show: ' ';
+          show: (self methodConditional: false) printString;
+          show: ' ';
+          show: self missingLiteral printString;
+          show: ' ';
+          show: self missingChain printString;
+          show: ' ';
+          show: self missingOperands printString;
+          show: ' ';
+          show: (self missingConditional: true) printString;
+          show: ' ';
+          show: (self missingConditional: false) printString;
+          newLine.
+    ].
+    transcript
+        show: slot printString;
+        show: ' ';
+        show: other printString;
+        newLine.
+    transcript
+        show: total printString;
+        show: ' ';
+        show: seen printString;
+        newLine.
+  )
+)

@@ -9,7 +9,7 @@ use ns_syntax::Span;
 
 use crate::bytecode::{
     CallSite, CodeBuilder, CodeKind, CompiledCode, CreatedBlock, Emitted, Instruction,
-    IntegerOperation, Literal,
+    IntegerOperation, Literal, HEADER_REGISTERS,
 };
 use crate::heap::{
     record_size, FrameRecord, Heap, NewClass, PlaceholderFormat, IDENTITY_HASH_LIMIT,
@@ -266,10 +266,11 @@ pub enum DecodeError {
         copied: usize,
         copied_count: u16,
     },
-    /// A code record's parameters and copied values together do not fit its
-    /// register file. `push_step` sizes an activation as `register_count -
-    /// argument_count`, so this would leave `fill_copied_values` writing
-    /// past the registers the body has.
+    /// A code record's parameters, the header's numbers and its copied
+    /// values together do not fit its register file. `push_step` sizes an
+    /// activation's registers above its header as `register_count -
+    /// argument_count - HEADER_REGISTERS`, so this would leave
+    /// `fill_copied_values` writing past the registers the body has.
     CopiedCountOutOfRange {
         argument_count: u16,
         copied_count: u16,
@@ -419,6 +420,24 @@ pub enum DecodeError {
         depth: u16,
         index: u16,
         register_count: u16,
+    },
+    /// A register operand -- of the body's own frame at depth 0, an outer
+    /// local of the body `depth` closure hops out otherwise -- that names
+    /// one of the frame header's numbers, `argument_count ..
+    /// argument_count + HEADER_REGISTERS`: the register would be a word of
+    /// a live frame's header, its caller or its register count among them.
+    HeaderRegister {
+        depth: u16,
+        register: u16,
+        argument_count: u16,
+    },
+    /// A send's argument slots starting below the first register above its
+    /// body's header: its callee is laid on them, its header where they
+    /// end, so slots among the sender's own arguments or header numbers
+    /// would put that header over the sender's.
+    ArgumentSlotsBelowTheHeader {
+        argument_base: u16,
+        argument_count: u16,
     },
     /// A jump target that is not an instruction index of its own body.
     JumpTargetOutOfRange {
@@ -901,6 +920,21 @@ impl std::fmt::Display for DecodeError {
             } => write!(
                 f,
                 "outer local r{index} at depth {depth} is outside the enclosing body's {register_count} register(s)"
+            ),
+            DecodeError::HeaderRegister {
+                depth,
+                register,
+                argument_count,
+            } => write!(
+                f,
+                "register r{register} at depth {depth} names the frame header of a body taking {argument_count} argument(s)"
+            ),
+            DecodeError::ArgumentSlotsBelowTheHeader {
+                argument_base,
+                argument_count,
+            } => write!(
+                f,
+                "argument slots from r{argument_base} lie below the frame header's end in a body taking {argument_count} argument(s)"
             ),
             DecodeError::JumpTargetOutOfRange { target, instructions } => write!(
                 f,
@@ -1814,6 +1848,13 @@ fn verify_body(code: &CompiledCode, instructions: &[Instruction]) -> Result<(), 
                     register_count: code.register_count,
                 });
             }
+            if names_the_header(code.argument_count, register) {
+                return Err(DecodeError::HeaderRegister {
+                    depth: 0,
+                    register,
+                    argument_count: code.argument_count,
+                });
+            }
         }
         // The base and every source are among `own_registers`; the slots
         // past the base are not, and the send writes each one it copies a
@@ -1825,6 +1866,14 @@ fn verify_body(code: &CompiledCode, instructions: &[Instruction]) -> Result<(), 
                     argument_base,
                     argument_count: argument_sources.len(),
                     register_count: code.register_count,
+                });
+            }
+            if u32::from(argument_base)
+                < u32::from(code.argument_count) + u32::from(HEADER_REGISTERS)
+            {
+                return Err(DecodeError::ArgumentSlotsBelowTheHeader {
+                    argument_base,
+                    argument_count: code.argument_count,
                 });
             }
         }
@@ -2062,8 +2111,23 @@ fn verify_outer_locals(
                 register_count: enclosing.register_count,
             });
         }
+        if names_the_header(enclosing.argument_count, local) {
+            return Err(DecodeError::HeaderRegister {
+                depth,
+                register: local,
+                argument_count: enclosing.argument_count,
+            });
+        }
     }
     Ok(())
+}
+
+/// Whether `register` is one of the numbers the frame header of a body
+/// taking `argument_count` arguments takes, which no instruction names
+/// (`bytecode::HEADER_REGISTERS`).
+fn names_the_header(argument_count: u16, register: u16) -> bool {
+    register >= argument_count
+        && u32::from(register) < u32::from(argument_count) + u32::from(HEADER_REGISTERS)
 }
 
 /// `locals::frame_at_depth`'s static counterpart: the body of the activation
@@ -2123,7 +2187,9 @@ fn decode_code(
     // once that holds -- and in `u32` arithmetic, so the sum cannot wrap
     // back into range.
     if argument_count <= register_count
-        && u32::from(argument_count) + u32::from(copied_count) > u32::from(register_count)
+        && copied_count > 0
+        && u32::from(argument_count) + u32::from(HEADER_REGISTERS) + u32::from(copied_count)
+            > u32::from(register_count)
     {
         return Err(DecodeError::CopiedCountOutOfRange {
             argument_count,

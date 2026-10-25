@@ -29,7 +29,21 @@ contiguous slots or consecutive sources read in place, the argument
 buffer is gone and the push copies once, no program slower with its
 builds separated and twelve of twenty-four faster
 ([execution.md](design/execution.md), "What contiguous arguments
-moved"); the second, next, overlaps the windows. 7b and 7a are built: a
+moved"); the second, being built, overlaps the windows: the callee's
+frame lies on its caller's slots, the header's numbers are left out of the
+numbering and the decoder refuses a register naming a header word. Still
+open in it: frame objects and image records without the header's numbers,
+whose fields for them a frame object still holds as nil -- until then an
+image holding a frame of a body past the register ceiling whose arguments
+leave no number above the header is refused (`FrameRegisterFile`); the
+decoder's refusal of a write to an argument register and of an outer store
+into another frame's scratch; and the stage's measurement, which is to say
+what the pop's writing of a sender's dead registers costs -- every return
+of a callee that lay on its caller's slots writes the caller's registers
+above them, nil in a release build, so that what the callee left there
+neither keeps an object alive nor names one a collection moved -- and
+whether bounding that write by the furthest the top reached since the
+last collection pays. 7b and 7a are built: a
 running activation is suspended into its frame and resumed from it lazily,
 the landing point of every later deoptimization, and a sixth stress mode
 runs every golden on from suspended frames

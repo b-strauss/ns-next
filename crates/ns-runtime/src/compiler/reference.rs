@@ -18,6 +18,7 @@ use super::lower::{lower_literal, selector_of};
 use super::simultaneous;
 use crate::bytecode::{
     CallSite, CodeBuilder, CodeKind, CompiledCode, Instruction, Literal as BytecodeLiteral,
+    HEADER_REGISTERS,
 };
 use crate::mixin::Mixin;
 use crate::types::Binding;
@@ -193,10 +194,15 @@ struct Body<'a> {
     /// Saturated at `u16::MAX`: only a body that is `too_large` meets a
     /// count past it.
     argument_count: u16,
-    /// The first register above the named locals. Every register from here
-    /// on is written by exactly one instruction.
+    /// The first register above the named locals, which follow the
+    /// parameters past the header's numbers (`HEADER_REGISTERS`). Every
+    /// register from here on is written by exactly one instruction.
     first_scratch: u16,
     next_register: u16,
+    /// The argument count of every body this one is nested in, outermost
+    /// first: what maps an outer local's resolver index onto the register
+    /// it sits in, in the frame that declares it.
+    enclosing_argument_counts: Vec<u16>,
     /// Whether the body needs more registers than a `u16` numbers. Set the
     /// moment it is known, and from then on nothing emitted is kept:
     /// `finish` answers `super::body_too_large` instead, never a body whose
@@ -218,21 +224,40 @@ impl<'a> Body<'a> {
         // not fit is too large before it lowers anything, and lowers
         // nothing (`local_initializers`, `statements_and_end`): the
         // resolver's indices for its locals past `u16::MAX` name nothing.
-        let too_large = !super::named_locals_fit(argument_count, temporary_count);
-        let first_scratch = if too_large {
-            u16::MAX
-        } else {
-            super::saturated_count(argument_count + temporary_count)
-        };
+        let first_scratch = super::named_locals_fit(argument_count, temporary_count)
+            .then(|| {
+                u16::try_from(argument_count + usize::from(HEADER_REGISTERS) + temporary_count).ok()
+            })
+            .flatten();
+        let too_large = first_scratch.is_none();
+        let first_scratch = first_scratch.unwrap_or(u16::MAX);
         Body {
             bindings,
             kind,
             argument_count: super::saturated_count(argument_count),
             first_scratch,
             next_register: first_scratch,
+            enclosing_argument_counts: Vec::new(),
             too_large,
             code: CodeBuilder::new(),
             statement_program_counter: Vec::new(),
+        }
+    }
+
+    /// The register the local at resolver index `index` of the body
+    /// `depth` levels out -- this one at 0 -- sits in: a parameter's is its
+    /// index, a temporary's is past the header's numbers.
+    fn local_register(&self, depth: u16, index: u16) -> u16 {
+        let argument_count = match usize::from(depth) {
+            0 => self.argument_count,
+            depth => self.enclosing_argument_counts[self.enclosing_argument_counts.len() - depth],
+        };
+        if index < argument_count {
+            index
+        } else {
+            index.checked_add(HEADER_REGISTERS).expect(
+                "internal: a local's register past u16::MAX in a body whose locals were checked",
+            )
         }
     }
 
@@ -357,7 +382,8 @@ impl<'a> Body<'a> {
                 }
                 None => self.value(initializer),
             };
-            let slot = super::temporary_index(self.argument_count, position);
+            let slot =
+                self.local_register(0, super::temporary_index(self.argument_count, position));
             self.emit(Instruction::StoreLocal { source, slot });
             self.record_statement(start);
         }
@@ -370,7 +396,8 @@ impl<'a> Body<'a> {
                 continue;
             }
             let start = self.code.len();
-            let slot = super::temporary_index(self.argument_count, position);
+            let slot =
+                self.local_register(0, super::temporary_index(self.argument_count, position));
             let copy = self.fresh();
             self.emit(Instruction::Move {
                 destination: copy,
@@ -548,7 +575,8 @@ impl<'a> Body<'a> {
             return destination;
         }
         match self.binding(id.span) {
-            Some(Binding::Local(source)) => {
+            Some(Binding::Local(index)) => {
+                let source = self.local_register(0, index);
                 let destination = self.target_register(into);
                 self.emit(Instruction::Move {
                     destination,
@@ -557,6 +585,7 @@ impl<'a> Body<'a> {
                 destination
             }
             Some(Binding::OuterLocal { depth, index }) => {
+                let index = self.local_register(depth, index);
                 let destination = self.target_register(into);
                 self.emit(Instruction::LoadOuterLocal {
                     destination,
@@ -616,8 +645,12 @@ impl<'a> Body<'a> {
     fn assign(&mut self, target: &ast::Identifier, value: &Expression, into: Option<u16>) -> u16 {
         let value_register = self.value_to(value, into);
         match self.binding(target.span) {
-            Some(Binding::Local(slot)) => self.emit(Instruction::StoreLocal { source: value_register, slot }),
+            Some(Binding::Local(index)) => {
+                let slot = self.local_register(0, index);
+                self.emit(Instruction::StoreLocal { source: value_register, slot });
+            }
             Some(Binding::OuterLocal { depth, index }) => {
+                let index = self.local_register(depth, index);
                 self.emit(Instruction::StoreOuterLocal { source: value_register, depth, index });
             }
             Some(Binding::LexicalSend { depth }) => {
@@ -752,6 +785,8 @@ impl<'a> Body<'a> {
             block.body.temporaries.len(),
             self.bindings,
         );
+        inner.enclosing_argument_counts = self.enclosing_argument_counts.clone();
+        inner.enclosing_argument_counts.push(self.argument_count);
         inner.local_initializers(&block.body.temporaries);
         inner.statements_and_end(&block.body.statements);
         let code = inner.finish(block.span);
@@ -786,7 +821,9 @@ impl<'a> Body<'a> {
             return super::body_too_large(self.kind, self.argument_count, source);
         }
         if cfg!(debug_assertions) {
-            check_shape(&self.code.instructions(), self.first_scratch);
+            let instructions = self.code.instructions();
+            check_shape(&instructions, self.first_scratch);
+            check_registers_above_sends_are_dead(&instructions);
         }
         CompiledCode::from_builder(
             self.kind,
@@ -862,6 +899,57 @@ fn check_shape(instructions: &[Instruction], first_scratch: u16) {
                     "internal: the reference lowering read named local r{operand} without copying it: {instruction:?}"
                 ),
             }
+        }
+    }
+}
+
+/// The invariant a callee laid on its sender's argument slots rests on
+/// (`docs/design/compiler.md`, "Sends"): every register above a send's
+/// slots is dead when the send executes -- the callee's header and window
+/// go over them, and a debug build's pop leaves a poison there -- so no
+/// instruction after the send reads one before an instruction writes it
+/// again. Both lowerings check it on every body in a debug build. The
+/// sends it holds to it are those whose callee is laid on their slots:
+/// every send with argument slots but a mirror send, whose leaf's
+/// activation lands above its sender's window. Walked in program order,
+/// which a straight-line body is, and an inlined form's arms in sequence;
+/// a read reached only through a backward jump is not covered.
+pub(super) fn check_registers_above_sends_are_dead(instructions: &[Instruction]) {
+    use std::collections::BTreeSet;
+    let mut holding = BTreeSet::new();
+    let mut dead = HashSet::new();
+    for instruction in instructions {
+        for operand in operands(instruction) {
+            assert!(
+                !dead.contains(&operand),
+                "internal: r{operand} is read after a send whose callee was laid over it: {instruction:?}"
+            );
+        }
+        if let Some((argument_base, argument_sources)) = instruction.argument_slots() {
+            let end = u32::from(argument_base) + argument_sources.len() as u32;
+            if !matches!(instruction, Instruction::SendMirror { .. }) {
+                let above: Vec<u16> = holding
+                    .iter()
+                    .copied()
+                    .filter(|register| u32::from(*register) >= end)
+                    .collect();
+                for register in above {
+                    holding.remove(&register);
+                    dead.insert(register);
+                }
+            }
+            // The send copies every source that is not its slot into it.
+            for offset in 0..argument_sources.len() as u32 {
+                if let Ok(slot) = u16::try_from(u32::from(argument_base) + offset) {
+                    dead.remove(&slot);
+                    holding.insert(slot);
+                }
+            }
+        }
+        // Written once the send has returned, so after the callee is gone.
+        if let Some(written) = destination(instruction) {
+            dead.remove(&written);
+            holding.insert(written);
         }
     }
 }
@@ -1200,28 +1288,34 @@ mod tests {
         assert_eq!(code.instructions().len(), 6, "{code:?}");
         assert!(matches!(
             code.instruction(0),
-            Instruction::SendLexical { destination: 1, .. }
+            Instruction::SendLexical {
+                destination: 14,
+                ..
+            }
         ));
         assert_eq!(
             code.instruction(1),
-            Instruction::LoadSelf { destination: 2 }
+            Instruction::LoadSelf { destination: 15 }
         );
         assert_eq!(
             code.instruction(2),
             Instruction::Move {
-                destination: 3,
+                destination: 16,
                 source: 0
             }
         );
         assert!(matches!(
             code.instruction(3),
-            Instruction::MakeClosure { destination: 4, .. }
+            Instruction::MakeClosure {
+                destination: 17,
+                ..
+            }
         ));
         assert_eq!(
             code.instruction(4),
-            inlinable("string:concatenate:ifFail:", 1, 2, vec![2, 3, 4], 5)
+            inlinable("string:concatenate:ifFail:", 14, 15, vec![15, 16, 17], 18)
         );
-        assert_eq!(code.instruction(5), Instruction::Return { register: 5 });
+        assert_eq!(code.instruction(5), Instruction::Return { register: 18 });
     }
 
     /// A failure argument that is not a literal block is not lowered inline
@@ -1248,13 +1342,13 @@ mod tests {
             code.instructions(),
             vec![
                 Instruction::Move {
-                    destination: 1,
+                    destination: 14,
                     source: 0
                 },
-                Instruction::Return { register: 1 }
+                Instruction::Return { register: 14 }
             ]
         );
-        assert_eq!(code.register_count, 2);
+        assert_eq!(code.register_count, 15);
     }
 
     #[test]
@@ -1264,19 +1358,19 @@ mod tests {
             code.instructions(),
             vec![
                 Instruction::LoadLiteral {
-                    destination: 0,
+                    destination: 13,
                     literal: BytecodeLiteral::SmallInteger(1)
                 },
                 Instruction::LoadLiteral {
-                    destination: 1,
+                    destination: 14,
                     literal: BytecodeLiteral::SmallInteger(2)
                 },
-                Instruction::LoadSelf { destination: 2 },
-                Instruction::ImplicitReturn { register: 2 },
+                Instruction::LoadSelf { destination: 15 },
+                Instruction::ImplicitReturn { register: 15 },
             ]
         );
         assert_eq!(code.statement_program_counter, vec![(0, 0..1), (1, 1..2)]);
-        assert_eq!(code.register_count, 3);
+        assert_eq!(code.register_count, 16);
     }
 
     #[test]
@@ -1287,31 +1381,37 @@ mod tests {
         assert_eq!(
             code.instruction(0),
             Instruction::Move {
-                destination: 1,
+                destination: 14,
                 source: 0
             }
         );
         assert!(matches!(
             code.instruction(1),
-            Instruction::MakeClosure { destination: 2, .. }
+            Instruction::MakeClosure {
+                destination: 15,
+                ..
+            }
         ));
         assert!(matches!(
             code.instruction(2),
-            Instruction::MakeClosure { destination: 3, .. }
+            Instruction::MakeClosure {
+                destination: 16,
+                ..
+            }
         ));
         assert_eq!(
             code.instruction(3),
-            inlinable("ifTrue:ifFalse:", 1, 2, vec![2, 3], 4)
+            inlinable("ifTrue:ifFalse:", 14, 15, vec![15, 16], 17)
         );
-        assert_eq!(code.instruction(4), Instruction::Return { register: 4 });
+        assert_eq!(code.instruction(4), Instruction::Return { register: 17 });
         assert_eq!(
             closure_code(&code.instruction(1)).instructions(),
             vec![
                 Instruction::LoadLiteral {
-                    destination: 0,
+                    destination: 13,
                     literal: BytecodeLiteral::SmallInteger(1)
                 },
-                Instruction::ImplicitReturn { register: 0 },
+                Instruction::ImplicitReturn { register: 13 },
             ]
         );
     }
@@ -1326,34 +1426,43 @@ mod tests {
         assert_eq!(
             code.instruction(0),
             Instruction::LoadLiteral {
-                destination: 1,
+                destination: 14,
                 literal: BytecodeLiteral::SmallInteger(0)
             }
         );
         assert_eq!(
             code.instruction(1),
-            Instruction::StoreLocal { source: 1, slot: 0 }
+            Instruction::StoreLocal {
+                source: 14,
+                slot: 13
+            }
         );
         assert!(matches!(
             code.instruction(2),
-            Instruction::MakeClosure { destination: 2, .. }
+            Instruction::MakeClosure {
+                destination: 15,
+                ..
+            }
         ));
         assert!(matches!(
             code.instruction(3),
-            Instruction::MakeClosure { destination: 3, .. }
+            Instruction::MakeClosure {
+                destination: 16,
+                ..
+            }
         ));
         assert_eq!(
             code.instruction(4),
-            inlinable("whileTrue:", 2, 3, vec![3], 4)
+            inlinable("whileTrue:", 15, 16, vec![16], 17)
         );
         assert_eq!(
             code.instruction(5),
             Instruction::Move {
-                destination: 5,
-                source: 0
+                destination: 18,
+                source: 13
             }
         );
-        assert_eq!(code.instruction(6), Instruction::Return { register: 5 });
+        assert_eq!(code.instruction(6), Instruction::Return { register: 18 });
         assert_eq!(
             code.statement_program_counter,
             vec![(0, 0..2), (1, 2..5), (2, 5..7)]
@@ -1362,37 +1471,37 @@ mod tests {
             closure_code(&code.instruction(2)).instructions(),
             vec![
                 Instruction::LoadOuterLocal {
-                    destination: 0,
+                    destination: 13,
                     depth: 1,
-                    index: 0
+                    index: 13
                 },
                 Instruction::LoadLiteral {
-                    destination: 1,
+                    destination: 14,
                     literal: BytecodeLiteral::SmallInteger(3)
                 },
-                send("<", 0, 1, vec![1], 2),
-                Instruction::ImplicitReturn { register: 2 },
+                send("<", 13, 14, vec![14], 15),
+                Instruction::ImplicitReturn { register: 15 },
             ]
         );
         assert_eq!(
             closure_code(&code.instruction(3)).instructions(),
             vec![
                 Instruction::LoadOuterLocal {
-                    destination: 0,
+                    destination: 13,
                     depth: 1,
-                    index: 0
+                    index: 13
                 },
                 Instruction::LoadLiteral {
-                    destination: 1,
+                    destination: 14,
                     literal: BytecodeLiteral::SmallInteger(1)
                 },
-                send("+", 0, 1, vec![1], 2),
+                send("+", 13, 14, vec![14], 15),
                 Instruction::StoreOuterLocal {
-                    source: 2,
+                    source: 15,
                     depth: 1,
-                    index: 0
+                    index: 13
                 },
-                Instruction::ImplicitReturn { register: 2 },
+                Instruction::ImplicitReturn { register: 15 },
             ]
         );
     }
@@ -1406,10 +1515,10 @@ mod tests {
             block.instructions(),
             vec![
                 Instruction::LoadLiteral {
-                    destination: 0,
+                    destination: 13,
                     literal: BytecodeLiteral::SmallInteger(1)
                 },
-                Instruction::NonLocalReturn { register: 0 },
+                Instruction::NonLocalReturn { register: 13 },
             ]
         );
     }
@@ -1421,11 +1530,14 @@ mod tests {
             code.instructions(),
             vec![
                 Instruction::LoadLiteral {
-                    destination: 1,
+                    destination: 14,
                     literal: BytecodeLiteral::SmallInteger(3)
                 },
-                Instruction::StoreLocal { source: 1, slot: 0 },
-                Instruction::Return { register: 1 },
+                Instruction::StoreLocal {
+                    source: 14,
+                    slot: 13
+                },
+                Instruction::Return { register: 14 },
             ]
         );
     }
@@ -1437,12 +1549,12 @@ mod tests {
             code.instructions(),
             vec![
                 Instruction::Move {
-                    destination: 1,
+                    destination: 14,
                     source: 0
                 },
-                send("foo", 1, 2, vec![], 2),
-                send("bar", 1, 3, vec![], 3),
-                Instruction::Return { register: 3 },
+                send("foo", 14, 15, vec![], 15),
+                send("bar", 14, 16, vec![], 16),
+                Instruction::Return { register: 16 },
             ]
         );
     }
@@ -1504,32 +1616,32 @@ mod tests {
             closure_code(&code.instruction(0)).instructions(),
             vec![
                 Instruction::LoadLiteral {
-                    destination: 0,
+                    destination: 13,
                     literal: BytecodeLiteral::Nil
                 },
-                Instruction::ImplicitReturn { register: 0 },
+                Instruction::ImplicitReturn { register: 13 },
             ]
         );
     }
 
     /// The body `compiler::body_too_large` builds for a body of `kind`
-    /// taking `argument_count` arguments: its one register follows them.
+    /// taking `argument_count` arguments: its one register is the first
+    /// above the header's numbers.
     fn assert_raises_too_large(code: &CompiledCode, kind: CodeKind, argument_count: u16) {
+        let register = argument_count + HEADER_REGISTERS;
         assert_eq!(code.kind, kind);
         assert_eq!(
             code.instructions(),
             vec![
                 Instruction::LoadLiteral {
-                    destination: argument_count,
+                    destination: register,
                     literal: BytecodeLiteral::BodyTooLarge,
                 },
-                Instruction::ImplicitReturn {
-                    register: argument_count
-                },
+                Instruction::ImplicitReturn { register },
             ]
         );
         assert_eq!(code.argument_count, argument_count);
-        assert_eq!(code.register_count, argument_count + 1);
+        assert_eq!(code.register_count, register + 1);
         assert_eq!(code.copied_count, 0);
         assert_eq!(code.statement_program_counter, vec![(0, 0..2)]);
     }
@@ -1552,22 +1664,18 @@ mod tests {
     }
 
     /// Every statement costs this lowering a register, and so does the
-    /// `self` a method falls off its end with: `u16::MAX - 1` statements
-    /// fill the ceiling exactly, and one more passes it -- which compiles to
-    /// the raising body rather than panicking.
+    /// `self` a method falls off its end with: past the header's numbers,
+    /// `u16::MAX - 1 - HEADER_REGISTERS` statements fill the ceiling
+    /// exactly, and one more passes it -- which compiles to the raising
+    /// body rather than panicking.
     #[test]
     fn a_body_past_the_register_ceiling_compiles_to_one_that_raises() {
-        let at_the_ceiling = compile(
-            &method(&format!("foo = ( {} )", ones(usize::from(u16::MAX) - 1))),
-            0,
-        );
+        let fitting = usize::from(u16::MAX - 1 - HEADER_REGISTERS);
+        let at_the_ceiling = compile(&method(&format!("foo = ( {} )", ones(fitting))), 0);
         assert_eq!(at_the_ceiling.register_count, u16::MAX);
         assert!(!loads_body_too_large(&at_the_ceiling));
 
-        let past = compile(
-            &method(&format!("foo: a = ( {} )", ones(usize::from(u16::MAX)))),
-            0,
-        );
+        let past = compile(&method(&format!("foo: a = ( {} )", ones(fitting))), 0);
         assert_raises_too_large(&past, CodeKind::Method, 1);
     }
 
@@ -1582,27 +1690,20 @@ mod tests {
         assert_raises_too_large(&code, CodeKind::Method, 0);
     }
 
-    /// A block is judged on its own: `u16::MAX` statements fill its
-    /// registers exactly, since it answers its last statement's register;
-    /// one more makes only the block raise, and the method creating it
-    /// compiles as it would around any block.
+    /// A block is judged on its own: past the header's numbers,
+    /// `u16::MAX - HEADER_REGISTERS` statements fill its registers exactly,
+    /// since it answers its last statement's register; one more makes only
+    /// the block raise, and the method creating it compiles as it would
+    /// around any block.
     #[test]
     fn a_block_past_the_register_ceiling_raises_on_its_own() {
-        let at_the_ceiling = compile(
-            &method(&format!("foo = ( ^[ {} ] )", ones(usize::from(u16::MAX)))),
-            0,
-        );
+        let fitting = usize::from(u16::MAX - HEADER_REGISTERS);
+        let at_the_ceiling = compile(&method(&format!("foo = ( ^[ {} ] )", ones(fitting))), 0);
         let block = closure_code(&at_the_ceiling.instruction(0));
         assert_eq!(block.register_count, u16::MAX);
         assert!(!loads_body_too_large(&block));
 
-        let code = compile(
-            &method(&format!(
-                "foo = ( ^[ {} ] )",
-                ones(usize::from(u16::MAX) + 1)
-            )),
-            0,
-        );
+        let code = compile(&method(&format!("foo = ( ^[ {} ] )", ones(fitting + 1))), 0);
         assert!(!loads_body_too_large(&code));
         assert_raises_too_large(&closure_code(&code.instruction(0)), CodeKind::Block, 0);
     }
