@@ -371,8 +371,12 @@ impl StackAccess<'_> {
 /// read, jump through or ignore: every other instruction with a memory
 /// destination writes it -- a `mov`, a `movq`/`movsd`/`movhps` from a
 /// vector register, a `setcc`, an arithmetic update -- at the operand's
-/// width.
-const READS_ITS_FIRST_OPERAND: [&str; 6] = ["cmp", "test", "bt", "call", "nop", "push"];
+/// width. A one-operand `mul`, `imul`, `div` or `idiv` reads its memory
+/// operand, as do the x87 loads and the control-word loads.
+const READS_ITS_FIRST_OPERAND: [&str; 14] = [
+    "cmp", "test", "bt", "call", "nop", "push", "mul", "imul", "div", "idiv", "fld", "fild",
+    "ldmxcsr", "fldcw",
+];
 
 /// The moves that load 16 or 32 bytes into a vector register.
 const WIDE_LOADS: [&str; 14] = [
@@ -389,9 +393,13 @@ fn writes_its_first_operand(mnemonic: &str) -> bool {
 
 /// How far `rsp` lies below where it was at the start of the stretch, kept
 /// so that `rsp`-relative accesses compare in one frame: a `push` and a
-/// `sub rsp` move it down, a `pop` and an `add rsp` up. After a `ret` the
-/// next instruction is reached from elsewhere in the body, where `rsp` is
-/// where the prologue left it.
+/// `sub rsp` move it down, a `pop` and an `add rsp` up. After a `ret` or
+/// an unconditional `jmp` (a tail call's epilogue) the next instruction is
+/// reached from elsewhere in the body, where `rsp` is where the prologue
+/// left it. A `sub rsp` by a register (the `__chkstk` prologue of a large
+/// frame) and a `lea rsp` or `mov rsp` are not followed; none of the
+/// budgeted functions has one, and a function that gains one counts its
+/// `rsp`-relative accesses against a shifted frame.
 #[derive(Debug, Default)]
 struct StackDepth {
     current: i64,
@@ -420,7 +428,7 @@ impl StackDepth {
             }
             _ => {
                 let body = *self.body.get_or_insert(self.current);
-                if mnemonic == "ret" {
+                if mnemonic == "ret" || mnemonic == "jmp" {
                     self.current = body;
                 }
                 return false;
