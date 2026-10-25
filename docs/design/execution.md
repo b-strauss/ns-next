@@ -8384,7 +8384,7 @@ callee                      | r0 .. r(argc-1)       | header (13) | r(argc+13) .
   window overwrite them -- which the bump allocator makes true: nothing is
   allocated below a slot after it, and what an argument is computed with
   lands above. Both lowerings check it on every body in a debug build
-  (`compiler::reference::check_registers_above_sends_are_dead`): no
+  (`compiler::reference::check_leftovers`): no
   instruction after a send reads a register above its slots before
   something writes it again.
 - **A named local passed as an argument is copied by the send itself**:

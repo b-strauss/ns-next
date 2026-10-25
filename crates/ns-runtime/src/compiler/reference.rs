@@ -16,6 +16,7 @@ use ns_syntax::Span;
 use super::control_flow;
 use super::lower::{lower_literal, selector_of};
 use super::simultaneous;
+use crate::bytecode::leftovers::{self, LeftoverRefusal};
 use crate::bytecode::{
     register_written, registers_read, BodyLimit, CallSite, CodeBuilder, CodeKind, CompiledCode,
     Instruction, Literal as BytecodeLiteral, HEADER_REGISTERS,
@@ -840,7 +841,7 @@ impl<'a> Body<'a> {
         if cfg!(debug_assertions) {
             let instructions = self.code.instructions();
             check_shape(&instructions, self.first_scratch);
-            check_registers_above_sends_are_dead(&instructions);
+            check_leftovers(&instructions, self.first_scratch, self.next_register);
         }
         CompiledCode::from_builder(
             self.kind,
@@ -929,54 +930,24 @@ fn check_shape(instructions: &[Instruction], first_scratch: u16) {
 /// The invariant a callee laid on its sender's argument slots rests on
 /// (`docs/design/compiler.md`, "Sends"): every register above a send's
 /// slots is dead when the send executes -- the callee's header and window
-/// go over them, and a debug build's pop leaves a poison there -- so no
-/// instruction after the send reads one before an instruction writes it
-/// again. Both lowerings check it on every body in a debug build. The
-/// sends it holds to it are those whose callee is laid on their slots:
-/// every send with argument slots but a mirror send, whose leaf's
-/// activation lands above its sender's window. Walked in program order,
-/// which a straight-line body is, and an inlined form's arms in sequence.
-/// A read reached only through a backward jump -- a loop's head reading a
-/// register a send in the loop's body went over -- is not checked; for it
-/// the debug build's poison is the net, which turns such a read into wrong
-/// output.
-pub(super) fn check_registers_above_sends_are_dead(instructions: &[Instruction]) {
-    use std::collections::BTreeSet;
-    let mut holding = BTreeSet::new();
-    let mut dead = HashSet::new();
-    for instruction in instructions {
-        for operand in registers_read(instruction) {
-            assert!(
-                !dead.contains(&operand),
-                "internal: r{operand} is read after a send whose callee was laid over it: {instruction:?}"
-            );
-        }
-        if let Some((argument_base, argument_sources)) = instruction.argument_slots() {
-            let end = u32::from(argument_base) + argument_sources.len() as u32;
-            if !matches!(instruction, Instruction::SendMirror { .. }) {
-                let above: Vec<u16> = holding
-                    .iter()
-                    .copied()
-                    .filter(|register| u32::from(*register) >= end)
-                    .collect();
-                for register in above {
-                    holding.remove(&register);
-                    dead.insert(register);
-                }
-            }
-            // The send copies every source that is not its slot into it.
-            for offset in 0..argument_sources.len() as u32 {
-                if let Ok(slot) = u16::try_from(u32::from(argument_base) + offset) {
-                    dead.remove(&slot);
-                    holding.insert(slot);
-                }
-            }
-        }
-        // Written once the send has returned, so after the callee is gone.
-        if let Some(written) = register_written(instruction) {
-            dead.remove(&written);
-            holding.insert(written);
-        }
+/// go over them -- so no instruction after the send reads one before an
+/// instruction writes it again, along any path. Both lowerings check it on
+/// every body in a debug build, through the leftover analysis, which
+/// follows the control flow, back edges and the entry state included.
+pub(super) fn check_leftovers(instructions: &[Instruction], local_count: u16, register_count: u16) {
+    match leftovers::check(instructions, local_count, register_count) {
+        Ok(()) => {}
+        Err(LeftoverRefusal::Read {
+            instruction,
+            register,
+        }) => debug_assert!(
+            false,
+            "internal: the body reads r{register} at instruction {instruction}, which a callee may have left over"
+        ),
+        Err(LeftoverRefusal::PastTheBound { instruction }) => debug_assert!(
+            false,
+            "internal: the body passes what the leftover analysis bounds at instruction {instruction}"
+        ),
     }
 }
 
@@ -1484,6 +1455,23 @@ mod tests {
                 Instruction::StoreLocal { source: 2, slot: 1 },
             ],
             1,
+        );
+    }
+
+    /// A loop head reads r3, which the send in the loop's body, laid over
+    /// every register from r1 up, left tainted for the next iteration. The
+    /// in-order check never saw a read reached only through a back edge.
+    #[test]
+    #[should_panic(expected = "internal: the body reads r3")]
+    fn a_loop_reading_what_its_body_sent_over_panics_in_debug() {
+        check_leftovers(
+            &[
+                Instruction::LoadSelf { destination: 3 },
+                send("foo", 3, 1, vec![], 1),
+                Instruction::Jump { target: 1 },
+            ],
+            1,
+            4,
         );
     }
 

@@ -6481,7 +6481,7 @@ impl<'gc> Heap<'gc> {
         // A sender's registers from its slots' end to its window's --
         // where a callee that lay on its slots had its header and window --
         // are dead, and every lowering writes them before it reads them
-        // again (`compiler::reference::check_registers_above_sends_are_dead`).
+        // again (`compiler::reference::check_leftovers`).
         self.stack.take_off_words(activation.offset);
         // An offset is below 2^31, so the conversion is exact.
         self.stack.innermost = if caller.is_small_integer() {

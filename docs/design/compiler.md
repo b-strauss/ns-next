@@ -443,9 +443,10 @@ stands in for by reference.
 executes**: the callee's header and window go over them. The bump allocator
 makes it true -- nothing is allocated below a slot after it, and what an
 argument is computed with lands above -- and both lowerings check it on every
-body in a debug build (`reference::check_registers_above_sends_are_dead`): no
-instruction after a send reads a register above its slots before something
-writes it again. The one value a lowering keeps across a send is a setter
+body in a debug build (`reference::check_leftovers`, which runs the leftover
+analysis, "What a callee leaves"): no instruction after a send reads a
+register above its slots before something writes it again, along any path --
+a loop's back edges and the entry state included. The one value a lowering keeps across a send is a setter
 assignment's, which is the setter's slot or a named local below it: a value
 left in a register above the slot, an inner assignment's or an inlined
 conditional's, is copied into the slot (`lower_setter_assign`).
@@ -955,9 +956,10 @@ pending jump target is bounded by how many can be pending at once.
   least slot end of a non-mirror send between the head and its last back
   edge.
   - Loops must nest, no more than `LOOP_LIMIT` may be open at once, and
-    a jump into a loop other than at its head is `PastTheBound`. So the loop's code cannot taint below the floor, and
-    every later iteration's state is within the head's: the back edge
-    needs no second pass. A debug build asserts it at every back edge.
+    a jump into a loop other than at its head is `PastTheBound`. So the
+    loop's code cannot taint below the floor, and every later iteration's
+    state is within the head's: the back edge needs no second pass. A
+    debug build asserts it at every back edge.
   - Over-tainting the head is sound. Neither lowering reads a register at
     or above the floor before rewriting it in the same iteration: every
     scratch register a loop reads across iterations was allocated before

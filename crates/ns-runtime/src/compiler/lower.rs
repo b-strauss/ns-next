@@ -2331,7 +2331,11 @@ impl<'a> Lowerer<'a> {
         // `lower_setter_assign`'s `Move` into the slot makes it true there.
         // The scan checks it.
         if cfg!(debug_assertions) {
-            super::reference::check_registers_above_sends_are_dead(&self.code.instructions());
+            super::reference::check_leftovers(
+                &self.code.instructions(),
+                self.base,
+                self.max_register,
+            );
         }
         CompiledCode::from_builder(
             self.kind,

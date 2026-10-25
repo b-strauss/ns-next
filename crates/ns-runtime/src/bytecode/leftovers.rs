@@ -28,13 +28,13 @@
 //! reads, so the pass is bounded before it allocates: it refuses a body of
 //! more than `INSTRUCTION_LIMIT` instructions, more than `PENDING_LIMIT`
 //! targets pending at once, more than `LOOP_LIMIT` loops open at once,
-//! loops that cross, and a jump into a loop past its head. None of them refuses a body either lowering emits (the proof
-//! is `docs/design/compiler.md`, "What a callee leaves").
+//! loops that cross, and a jump into a loop past its head. None of them
+//! refuses a body either lowering emits (the proof is
+//! `docs/design/compiler.md`, "What a callee leaves").
 //!
-//! Its readers -- the decoder's refusal, a debug build's check of every
-//! compiled body, the collector's pre-pass -- are still to come, so only
-//! the tests call it yet.
-#![cfg_attr(not(test), allow(dead_code))]
+//! Its readers -- the decoder's refusal and the collector's pre-pass -- are
+//! still to come; a debug build's check of every compiled body calls
+//! `check`.
 
 use std::ops::Range;
 
@@ -122,6 +122,7 @@ pub(crate) fn check(
 /// it. Of any other body, and at a program counter past the body, which a
 /// debug build refuses, it answers every scratch register, which is never
 /// less than the truth.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn tainted_at(
     instructions: &[Instruction],
     local_count: u16,
@@ -156,6 +157,7 @@ pub(crate) fn tainted_at(
 
 /// What the pass spent on one body.
 #[derive(Debug, Clone, Copy, Default)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct Spent {
     /// The words of one bitset: `register_count` rounded up to 64 bits.
     pub(crate) words: usize,
@@ -173,6 +175,7 @@ pub(crate) struct Spent {
 
 /// What one pass found: the answers to `tainted_at`'s program counters,
 /// and what it spent.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct Analysis {
     pub(crate) answers: Vec<Vec<Range<u16>>>,
     pub(crate) spent: Spent,
