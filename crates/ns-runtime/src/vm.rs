@@ -2168,6 +2168,12 @@ fn deliver<'gc>(
 ) -> Transfer {
     match decided {
         Ok(Step::Value(value)) => {
+            // A value owns nothing, so forgetting the step is dropping it.
+            // Written out because `Value` is `Copy`: the binding moves
+            // nothing out of `decided`, which would otherwise be dropped
+            // through `Step`'s out-of-line drop glue -- a call on every
+            // send a primitive or an accessor answers.
+            std::mem::forget(decided);
             mutator
                 .heap
                 .set_register(sender.register_base, sender.destination, value);
@@ -2253,7 +2259,12 @@ fn apply_continuation<'gc>(
             Err(signal) => return unwind(mutator, signal, floor, handoff),
         },
         then => match mutator.resume(then, value) {
-            Ok(Step::Value(value)) => value,
+            // Forgotten rather than dropped, as `deliver` forgets a value's
+            // step: a native loop's every step answers one.
+            resumed @ Ok(Step::Value(value)) => {
+                std::mem::forget(resumed);
+                value
+            }
             Ok(step) => {
                 return match mutator.push_continuation(step, counted) {
                     Ok(next) => handoff.switch_to(mutator, next, 0),
