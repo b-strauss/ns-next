@@ -37,7 +37,11 @@ outer load or store into another frame's scratch, where a callee laid on
 its slots has its live header. Neither a push nor a return writes a
 scratch register: the collector's pre-pass nils what a callee or a popped
 frame left there before every trace ([memory.md](design/memory.md), "What
-the collector traces"). Still open in it: the stage's measurement. 7b and
+the collector traces"). Still open in it: the stage's measurement, which
+also judges what the pre-pass costs -- each collection walks the stack
+twice, once to gather the program counters whose tainted sets are missing
+(`Heap::fill_missing_tainted_sets`) and once to nil (`Heap::nil_leftovers`),
+a binary search per frame each time, on every scavenge. 7b and
 7a are built: a
 running activation is suspended into its frame and resumed from it lazily,
 the landing point of every later deoptimization, and a sixth stress mode

@@ -6504,9 +6504,9 @@ impl<'gc> Heap<'gc> {
     }
 
     /// The caller word of a frame pushed now from stack word `start`, its
-    /// first argument: the innermost frame's offset and the top, which is
-    /// that frame's window end (`frames::caller_link_word`), or nil on an
-    /// empty stack.
+    /// first argument: the innermost frame's offset and the top, the
+    /// top it was pushed at -- that frame's window end or past it
+    /// (`frames::caller_link_word`) -- or nil on an empty stack.
     #[inline(always)]
     fn caller_word(&self, start: usize) -> Word {
         match self.stack.innermost {
@@ -16799,7 +16799,8 @@ mod tests {
             assert_eq!(
                 heap.activation_position(above),
                 heap.stack.window_end(sender.offset),
-                "a push never lowers the top, so a frame pushed above the callee starts past                  its sender's window"
+                "a push never lowers the top, so a frame pushed above the callee starts past \
+                 its sender's window"
             );
             let mut weak = weak_over(&mut heap, &held);
 

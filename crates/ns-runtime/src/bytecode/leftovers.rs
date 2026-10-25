@@ -246,7 +246,8 @@ impl TaintedSets {
         if !self.checked.get() {
             if let Err(refusal) = check(&instructions, code.local_count, code.register_count) {
                 panic!(
-                    "internal: the leftover analysis refuses a running body ({refusal:?}),                      which every compiled, decoded and shipped body passes"
+                    "internal: the leftover analysis refuses a running body ({refusal:?}), \
+                     which every compiled, decoded and shipped body passes"
                 );
             }
             self.checked.set(true);

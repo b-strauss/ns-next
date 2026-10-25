@@ -272,8 +272,8 @@ pub struct ActivationReference {
   send. Every word is computed before the frame is taken, so a refused
   push changes nothing; the header is then written in place, every word
   once. The caller word packs the caller's offset with the top the frame
-  was pushed at, which is the caller's window end, as a distance from the
-  frame's start (`frames::caller_link_word`), so that a pop finds the top
+  was pushed at -- its caller's window end or past it -- as a distance
+  from the frame's start (`frames::caller_link_word`), so that a pop finds the top
   it gives back without reading the caller's header. A push laid on its
   sender's slots never lowers the top (`FrameStack::push_from`), so the
   top stays at a live window end: the sender's registers past a shorter
@@ -402,11 +402,17 @@ the activation's value ("The VM" below). If the activation was reified,
 its frame object is **divorced**: its `program_counter` takes the stack
 frame's last stored one, the
 married field becomes nil, `uncontinuable` becomes true and `sender` becomes
-nil. Then the stack's top is set to the caller's window end, the caller's
-registers above its slots its own again ("Representation" above).
+nil. Then the stack's top is set back to the top the frame was pushed at,
+its caller's window end or past it, the caller's registers above its slots
+its own again ("Representation" above).
 
 **The registers are copied into the frame object's registers only when the
-frame asks for it**, the `retains_registers` flag of its header, which
+frame asks for it**, and then only those below its body's `local_count`
+-- the arguments, the copied values, the named temporaries and the
+indirection vector's register, all a block reaching the frame by
+reference can name -- every scratch register nil, since it may hold a
+word a callee left. The frame asks through the `retains_registers` flag
+of its header, which
 `Heap::retain_registers` sets and which `MakeClosure` sets when the block it
 creates can reach this frame by reference — `block.outer_reach > 0`
 ("Converted representation"). Under the reference lowering that is every
@@ -571,7 +577,11 @@ activation above it is suspended, then works from the top down. It copies
 every register into the frame, whatever `retains_registers` says, since the
 frame is now their only copy -- a sender's only below the header of the
 callee that lay on its slots, the rest nil, so that no frame holds a word of
-another's header -- writes the program counter and the sender; moves the
+another's header, and nil for every register the frame does not read
+before it writes it, the set the collector's pre-pass nils before the
+program counter the frame stores (`CompiledCode::tainted_before`), which
+may hold a word a callee or a popped frame left -- writes the program
+counter and the sender; moves the
 rest of the header into a side-table row; and sets the stack's top as a
 pop does. The slots the callee shared come back in both: the callee never
 writes its arguments (§3.6), so the sender's copy holds them as the

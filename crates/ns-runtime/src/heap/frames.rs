@@ -286,19 +286,22 @@ pub(super) fn number_word(number: u64) -> Word {
 /// caller's offset: every offset is below `MAXIMUM_STACK_WORDS`, 2^31.
 const CALLER_OFFSET_BITS: u32 = 31;
 
-/// The bits above the caller's offset, which hold how far the caller's
-/// window end lies above the frame's start: 29, so that the word stays a
-/// `number_word`. A frame is pushed either at the top, so the distance is
-/// 0, or on its caller's slots, so the distance is at most the caller's
-/// window, whose registers are numbered in 16 bits: far below 2^29.
+/// The bits above the caller's offset, which hold how far the top the
+/// frame was pushed at -- its caller's window end or past it -- lies above
+/// the frame's start: 29, so that the word stays a `number_word`. A frame
+/// is pushed either at the top, so the distance is 0, or on its caller's
+/// slots. Each frame of a chain laid on slots starts inside the window of
+/// every frame below it in the chain, and the top stands at the end of
+/// one of those windows, so the distance is at most the largest window in
+/// the chain, whose registers are numbered in 16 bits: far below 2^29.
 const CALLER_TOP_BITS: u32 = 60 - CALLER_OFFSET_BITS;
 
 const _: () = assert!(MAXIMUM_STACK_WORDS <= 1 << CALLER_OFFSET_BITS);
 
 /// The caller word of a frame pushed on `caller` from stack word `start`,
-/// its first argument, while the top stood at `top`: the caller's window
-/// end, which the frame's pop restores without reading the caller's
-/// header.
+/// its first argument, while the top stood at `top`: its caller's window
+/// end or past it, which the frame's pop restores without reading the
+/// caller's header.
 #[inline(always)]
 pub(super) fn caller_link_word(caller: u32, start: usize, top: usize) -> Word {
     debug_assert!(
