@@ -4,7 +4,7 @@
 /// there -- the inner assignment of `a:: b:: 4`, an inlined conditional's
 /// value -- since the callee lies on the slot and never writes it, while
 /// its header and registers go over every register above
-/// (`docs/design/execution.md`, "Planned: overlapping register windows").
+/// (`docs/design/execution.md`, "Overlapping register windows").
 /// Each setter is a slot's, a method's with temporaries of its own, and
 /// one nothing declares, which `doesNotUnderstand:` answers; each is sent
 /// a literal under `^`, a chain, two as the operands of `+`, and a

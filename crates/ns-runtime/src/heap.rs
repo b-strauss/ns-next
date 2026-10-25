@@ -409,7 +409,7 @@ pub struct RegisterBase {
 /// window is built in a register and travels in one: built in memory by
 /// narrow stores and read back wider, as three fields of their own were,
 /// each read waited for the stores to retire (`docs/design/execution.md`,
-/// "Planned: overlapping register windows"). A debug build carries the
+/// "Overlapping register windows"). A debug build carries the
 /// register base's activation beside it, checked on every read as any
 /// register access is.
 #[derive(Clone, Copy)]

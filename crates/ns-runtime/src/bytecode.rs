@@ -135,7 +135,7 @@ pub enum IntegerOperation {
 /// decides, the instruction copies `argument_sources[index]` into
 /// `argument_base + index` wherever the two differ -- a named local passed
 /// as an argument is copied by the send itself
-/// (`docs/design/execution.md`, "Planned: overlapping register windows").
+/// (`docs/design/execution.md`, "Overlapping register windows").
 /// `InitializeInstance` names `0 .. argument_count`, its body's own
 /// arguments.
 #[derive(Debug, Clone, PartialEq)]

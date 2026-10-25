@@ -2063,7 +2063,7 @@ struct Sender {
 /// value is the slot only where it was produced or copied there, and
 /// otherwise the named local it came from, below the slots
 /// (`compiler::lower`'s `lower_setter_assign`; `docs/design/execution.md`,
-/// "Planned: overlapping register windows").
+/// "Overlapping register windows").
 #[inline(always)]
 fn argument_window(
     mutator: &mut Mutator<'_>,
@@ -2091,7 +2091,7 @@ fn argument_count(argument_sources: &[u16]) -> u16 {
 /// otherwise copies every source that is not already its slot into it, in
 /// order, and answers the first slot. A named local passed as an argument
 /// is copied here, by the send itself, rather than by a `Move` before it
-/// (`docs/design/execution.md`, "Planned: overlapping register windows").
+/// (`docs/design/execution.md`, "Overlapping register windows").
 /// Running it again, as a send re-run after forcing a future is, reads the
 /// sources afresh, as the send read its arguments before; neither lowering
 /// makes a source another argument's slot, so the order of the copies

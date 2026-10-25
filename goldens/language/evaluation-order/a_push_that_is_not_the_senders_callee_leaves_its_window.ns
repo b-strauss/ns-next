@@ -1,6 +1,6 @@
 /// Only a send's own callee lies on the send's argument slots; every other
 /// activation a send makes is pushed above the sender's whole window
-/// (`docs/design/execution.md`, "Planned: overlapping register windows"),
+/// (`docs/design/execution.md`, "Overlapping register windows"),
 /// so what the sender reads afterwards is where it left it. A future
 /// forced in the middle of `at:put:` -- its value is a sibling slot still
 /// being initialized (§6.3.2) -- runs, and the send runs again, reading

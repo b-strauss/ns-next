@@ -1284,7 +1284,7 @@ impl<'gc> Mutator<'gc> {
     /// Pushes a send's own callee on the send's argument slots, from
     /// register `argument_base` of the sender's window, so that they are
     /// its arguments (`Heap::push_overlapped_activation`;
-    /// `docs/design/execution.md`, "Planned: overlapping register windows").
+    /// `docs/design/execution.md`, "Overlapping register windows").
     /// `window` is where the decision read the arguments: the slots, or
     /// their sources where those are consecutive registers, which are
     /// copied into the slots first -- the callee's header goes over every
