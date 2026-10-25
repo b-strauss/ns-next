@@ -6061,14 +6061,18 @@ impl<'gc> Heap<'gc> {
                         *second = below[source + 1];
                     }
                     registers => {
-                        for (register, word) in registers.iter_mut().zip(&below[source..]) {
+                        // Bounded to the window, so a window running past
+                        // the sender's top panics as the arms above do
+                        // instead of copying fewer words.
+                        let window = &below[source..source + registers.len()];
+                        for (register, word) in registers.iter_mut().zip(window) {
                             *register = *word;
                         }
                     }
                 }
             }
-            // As few as the slots': a decision's own value, the element of a
-            // native loop's next block, is one.
+            // One value is copied on its own, as one slot is: a native
+            // loop's next block takes one element per push.
             Arguments::Values(values) => match argument_registers {
                 [] => {}
                 [only] => *only = values[0].word().bits(),
