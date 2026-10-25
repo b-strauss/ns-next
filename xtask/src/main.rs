@@ -1,14 +1,19 @@
 //! The repository's own tasks, run as `cargo xtask <task>` (the alias is in
 //! `.cargo/config.toml`). Its main task is `gates`: each group of
 //! `CLAUDE.md`'s table "The gates" is a group here, so that the table says
-//! when a group runs and this says what it runs. The other task is
+//! when a group runs and this says what it runs. The other tasks are
 //! `shipped-code`, which writes the shipped modules' compiled code that the
-//! gates build and test against. Written in Rust rather than
+//! gates build and test against, and `codegen`, which holds the hot
+//! functions' machine code to its budgets (`codegen.rs`) in this checkout
+//! or in another, given as `<tree>`, so that an older commit exported
+//! there can be checked against the same budgets. Written in Rust rather than
 //! a shell script so that it runs alike on every platform and can grow the
 //! logic a script would make fragile -- choosing the groups from what a
 //! change touched, for one.
 
 #![forbid(unsafe_code)]
+
+mod codegen;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
@@ -17,6 +22,7 @@ use std::time::{Duration, Instant};
 const USAGE: &str = "\
 usage: cargo xtask gates <group>...
        cargo xtask shipped-code [--check]
+       cargo xtask codegen [<tree>]
 
 groups (CLAUDE.md, \"The gates\", says when each runs):
   commit               fmt, clippy, the suite, the doctests, parse-corpus, the plugin's check
@@ -250,6 +256,23 @@ fn main() -> ExitCode {
             _ => {
                 eprintln!("{USAGE}");
                 ExitCode::from(2)
+            }
+        };
+    }
+    if task == "codegen" {
+        let tree = match groups {
+            [] => repository_root(),
+            [tree] => PathBuf::from(tree),
+            _ => {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            }
+        };
+        return match codegen::check(&tree) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(failure) => {
+                eprintln!("\nFAILED: {failure}");
+                ExitCode::FAILURE
             }
         };
     }
