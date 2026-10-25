@@ -1156,6 +1156,20 @@ classes and a class from source with no predecessor are not edited
 
 ## Unexplained measurements and unmeasured decisions
 
+- **The send and return functions move with the collector's code size**
+  (2026-10-25). Inlining `Heap::trace_stack` into the scavenge grew
+  `World::scavenge` from 1,528 to 2,763 instructions and moved
+  `pop_activation`, `resume_caller` and `polymorphic_hit`, linked after
+  it, by `0x3380` to other offsets within their 4 KiB pages; RichardsTon80,
+  which spends no sample in the collector, measured +0.6% to +1.6% in four
+  timings, about 1.3%. `trace_stack` is kept out of line for it, but any
+  later growth of the collector's code, or of anything linked before the
+  hot functions, can move them again, and a Towers separation in one
+  sitting that did not reproduce looked the same. What would settle it:
+  which placement of those functions costs, found by pinning it with a
+  linker order file and measuring RichardsTon80 at each placement. [execution.md](design/execution.md), "What the
+  leftover analysis moved".
+
 - **`SendKey`'s word for `current_class`** (2026-10-22). A `super` send's
   key carries the running class beside S, so that a nested-class hit on a
   `super` site keeps its cached field for a receiver of the running

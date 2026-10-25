@@ -6557,6 +6557,125 @@ where `master` keeps it in a register, and `builtins::execute`'s result
 comes back through a stack copy written by narrow stores, which `master`
 pays as well.
 
+### What the leftover analysis moved
+
+The leftover analysis, `bytecode::leftovers`, finds from a body's code
+alone the scratch registers it may read before it writes them: what a
+callee laid on its slots left there, or what the stack held before the
+push ([compiler.md](compiler.md), "What a callee leaves", one pass over
+bitsets, bounded by the construct limits of "Limits" there). The decoder
+refuses image code that reads one, both lowerings check every body in a
+debug build, and every trace of the stack nils them in each frame before
+it traces the frame's words (`Heap::trace_stack`; [memory.md](memory.md),
+"What the collector traces"). That is what lets neither a push nor a pop
+write a scratch register: a push fills only its named locals, a pop
+writes nothing ("Representation" above). The tree before it, `c6a126b3`,
+filled them in both: a push every register above its header, a pop of a
+callee laid on its sender's slots every word from the callee's header to
+the sender's window end, the fill that kept those words from being traced
+stale. A profile of that tree put the two fills at 1.6-1.8% of a run on
+average and 3.0% at most (DeltaBlueTon80), the push's 0.7-0.8 points of
+it and the pop's 0.9-1.0. The fill also kept image code from reading what
+a callee left, the VM mirror among it; the decoder's refusal is that
+guard now ([image-format.md](image-format.md), "Verification").
+
+It was measured at `f2faa8f4` against `c6a126b3` on 2026-10-25, by the
+protocol of "What contiguous arguments moved" above: three release builds
+a side, the eight micro sources five rounds a sitting and the sixteen Are
+We Fast Yet programs three, two sittings, every run printing its recorded
+answer. `vm::run` is the same on both sides, 8,269 instructions apart from
+the padding and a `0x318`-byte frame in all three builds; what changed is
+in the functions it calls, the pushes, the pop and the collector's walk.
+Means of each build's medians, pooled over both sittings (n = 10 rounds a
+build for the micro sources, 6 for Are We Fast Yet), in ms:
+
+| Source | `c6a126b3` | the analysis | change | `c6a126b3` a, b, c | the analysis a, b, c | builds |
+|---|---|---|---|---|---|---|
+| `bench_block.ns` | 7.235 | 7.156 | -1.1% | 7.225, 7.229, 7.249 | 7.184, 7.163, 7.122 | faster |
+| `bench_loop.ns` | 2.126 | 2.145 | +0.9% | 2.123, 2.113, 2.143 | 2.139, 2.145, 2.150 | overlapping |
+| `bench_megamorphic.ns` | 4.702 | 4.634 | -1.4% | 4.729, 4.694, 4.682 | 4.619, 4.635, 4.649 | faster |
+| `bench_send.ns` | 3.308 | 3.226 | -2.5% | 3.307, 3.295, 3.322 | 3.204, 3.219, 3.255 | faster |
+| `bench_new.ns` | 2.745 | 2.690 | -2.0% | 2.730, 2.744, 2.761 | 2.716, 2.675, 2.680 | faster |
+| `bench_new2.ns` | 3.646 | 3.584 | -1.7% | 3.654, 3.658, 3.627 | 3.660, 3.545, 3.547 | overlapping |
+| `bench_newarg.ns` | 3.689 | 3.645 | -1.2% | 3.674, 3.711, 3.682 | 3.705, 3.611, 3.619 | overlapping |
+| `bench_do.ns` | 2.657 | 2.616 | -1.6% | 2.643, 2.653, 2.676 | 2.621, 2.613, 2.613 | faster |
+| Bounce | 0.902 | 0.888 | -1.5% | 0.901, 0.897, 0.908 | 0.899, 0.875, 0.890 | overlapping |
+| CD | 3451.8 | 3394.7 | -1.7% | 3454.6, 3460.9, 3439.8 | 3373.7, 3378.4, 3431.9 | faster |
+| DeltaBlue | 619.28 | 609.22 | -1.6% | 621.51, 616.99, 619.35 | 608.61, 608.29, 610.75 | faster |
+| DeltaBlueTon80 | 6.816 | 6.790 | -0.4% | 6.801, 6.812, 6.835 | 6.798, 6.758, 6.814 | overlapping |
+| Havlak | 3252.6 | 3211.1 | -1.3% | 3250.1, 3256.6, 3251.0 | 3212.9, 3203.7, 3216.6 | faster |
+| Json | 10.023 | 9.811 | -2.1% | 10.013, 9.989, 10.066 | 9.817, 9.779, 9.838 | faster |
+| List | 0.933 | 0.915 | -2.0% | 0.927, 0.941, 0.932 | 0.930, 0.907, 0.908 | overlapping |
+| Mandelbrot | 2763.9 | 2725.2 | -1.4% | 2719.3, 2847.4, 2724.9 | 2723.4, 2730.1, 2722.1 | overlapping |
+| NBody | 1980.5 | 1976.5 | -0.2% | 1972.5, 1988.3, 1980.8 | 1970.3, 1975.8, 1983.3 | overlapping |
+| Permute | 2.323 | 2.311 | -0.5% | 2.333, 2.306, 2.331 | 2.277, 2.328, 2.328 | overlapping |
+| Queens | 1.973 | 1.949 | -1.2% | 1.975, 1.963, 1.980 | 1.961, 1.942, 1.943 | faster |
+| Richards | 62.878 | 61.697 | -1.9% | 62.613, 62.915, 63.106 | 61.708, 61.696, 61.686 | faster |
+| RichardsTon80 | 4.330 | 4.273 | -1.3% | 4.343, 4.302, 4.344 | 4.257, 4.287, 4.274 | faster |
+| Sieve | 1.325 | 1.334 | +0.7% | 1.314, 1.319, 1.341 | 1.314, 1.359, 1.328 | overlapping |
+| Storage | 1.402 | 1.372 | -2.2% | 1.393, 1.410, 1.405 | 1.373, 1.377, 1.365 | faster |
+| Towers | 3.115 | 3.029 | -2.8% | 3.121, 3.124, 3.100 | 2.992, 3.020, 3.074 | faster |
+
+**No program is slower with its builds separated, and the geometric mean
+over the twenty-four is -1.34%** (-1.13% in the first sitting, -1.55% in
+the second), **so the analysis is kept**, the rule it was built under.
+Fourteen programs are faster with the builds separated, Towers by 2.8% and
+`bench_send.ns` by 2.5%; ten overlap. Of the two above `c6a126b3`,
+`bench_loop.ns` sends nothing -- an inlined `whileTrue:` over two slots,
+which pushes and pops no frame and collects nothing -- and its three
+functions are `c6a126b3`'s instruction for instruction, at addresses
+moved by about `0x2840`, and its debug-information twins run it equally
+fast: layout. Against the first stage of road step 7a′ with only the
+value-answered send's step forgotten (`f0bf0d00`, which removes a cost
+the first stage has too), the geometric mean is -0.09%.
+
+**The analysis's one cost is in the collector, and only a deep stack
+shows it.** A probe that recurses to 99,000 frames and allocates about
+240 MB at the bottom, so that about 30 scavenges each meet the whole
+stack, measured, with three builds a side:
+
+- **+7.9% against `c6a126b3`, builds separated, with a pre-pass of its
+  own** before a linear trace of the stack: it walked the frames twice,
+  once to fill the sets not yet kept and once to nil, 10.1% of the run,
+  at about 8-10 ns a frame;
+- **+3.4% with one walk**, which nils a frame whose set is kept as it
+  meets it and defers the others, keeps the set it looked up last and
+  skips a frame whose every writable word the window above it covers.
+  What was left was the walk itself: a variant that only read each
+  frame's header words and nilled nothing measured the same;
+- **+0.05%, the builds overlapping, with the nilling folded into the
+  stack's trace** (`51f1050e`), which nils each frame and then traces
+  it, so that each frame's header lines are loaded once a trace. At 1,000
+  and 10 frames the same probe is -0.5% and -1.0%.
+
+The twenty-four programs measured neutral at both steps: a geometric mean
+of +0.00% for the one walk against `f2faa8f4`, and -0.05% for the fold
+against the one walk, no program slower with its builds separated once
+re-timed. **`Heap::trace_stack` stays out of line** (`#[inline(never)]`,
+one instance per tracer): inlined, it grew `World::scavenge` from 1,528
+to 2,763 instructions and changed what `World::collect` inlines, which
+moved the send and return functions linked after them --
+`pop_activation`, `resume_caller`, `polymorphic_hit` -- by `0x3380`, to
+other offsets within their 4 KiB pages, and RichardsTon80, which spends
+no sample in the collector, measured about 1.3% slower (+0.6% to +1.6%
+in four timings); out of line it is level. That is placement, not code
+the change runs, and a later growth of the collector's code can move those
+functions again ([OPEN-WORK.md](../OPEN-WORK.md), "Unexplained
+measurements and unmeasured decisions").
+
+Under `NS_NEXT_STRESS_SCAVENGE`, which scavenges at nearly every
+safepoint, the walk costs about what the scavenge's own trace of the
+stack does: an optimized build with debug assertions runs a 99,000-frame
+probe that allocates on the way down and up in 127 ms against
+`c6a126b3`'s 88, 1.45x. Only the debug suite's stress runs pay it; a
+release build has no stress mode.
+
+What the measurement did not cover: one machine and operating system, not
+idle; data layout, which neither `-C metadata` nor the block alignment
+varies; the deep probes are one source, five runs a build, and the stress
+figure comes from a build with debug assertions, so it includes their
+checks.
+
 ### What `new` as compiled code moved
 
 "`new` as compiled code" (a synthesized factory body, three initializer
