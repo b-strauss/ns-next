@@ -15,30 +15,37 @@ when they were written.
 
 ## Next
 
-**Road step 7a′, overlapping register windows** ("The road to a
-high-performance VM" below; [execution.md](design/execution.md), "Planned:
-JIT tiers"), the next part of road step 7, an execution model for compiled
-code: the caller's outgoing arguments become the callee's first registers
-instead of being copied. Designed with the user on 2026-10-24
-([execution.md](design/execution.md), "Planned: overlapping register
-windows"): Cog's layout, the arguments, then the header, then the other
-registers, the header's words left out of the register numbering and 13
-words in every build; in two stages, each measured against the tree
-before it. The first is built and measured -- a send's arguments are
-contiguous slots or consecutive sources read in place, the argument
-buffer is gone and the push copies once, no program slower with its
-builds separated and twelve of twenty-four faster
-([execution.md](design/execution.md), "What contiguous arguments
-moved"); the second, being built, overlaps the windows: the callee's
-frame lies on its caller's slots, the header's numbers are left out of the
-numbering, of frame objects and of image records, and the decoder refuses a
-register naming a header word, a write to an argument register and an
-outer load or store into another frame's scratch, where a callee laid on
-its slots has its live header. Neither a push nor a return writes a
-scratch register: the collector's pre-pass nils what a callee or a popped
-frame left there before every trace ([memory.md](design/memory.md), "What
-the collector traces"). Still open in it: the stage's measurement. 7b and
-7a are built: a
+**First, a branch of its own adopts four clippy lints** ("Code quality
+follow-ups" below), decided with the user on 2026-10-26 to follow road
+step 7a′'s branch.
+
+**Road step 7c, the deoptimization contract and the protocol between
+interpreted and compiled frames** ("The road to a high-performance VM"
+below; [execution.md](design/execution.md), "Planned: JIT tiers"), the
+last part of road step 7, an execution model for compiled code, written
+into [execution.md](design/execution.md) for the baseline JIT of road
+step 8 to build on: how a compiled frame is turned back into interpreted
+ones, at which points, and what the two kinds of frame share. Not designed
+yet; it starts from the frame layout road steps 7a and 7a′ built and the
+landing point 7b built.
+
+7a′, 7b and 7a are built. The register windows overlap, in Cog's layout
+-- the arguments, then the header, then the other registers, the
+header's words left out of the register numbering and 13 words in every
+build -- so a send's own callee lies on its caller's slots, which are its
+first registers, and its arguments are copied into no window of its own
+([execution.md](design/execution.md), "Overlapping register windows").
+Built in two stages, each measured against the tree before it: the first
+-- a send's arguments contiguous slots or consecutive sources read in
+place, the argument buffer gone -- no program slower than `master` with
+its builds separated and twelve of twenty-four faster ("What contiguous
+arguments moved"); the second level with the first on the geometric
+mean, -0.09%, two programs slower with their builds separated by 0.5% and
+1.6% ("What overlapping windows moved"). Neither a push nor a pop writes
+a scratch register: the leftover analysis finds what a frame may read
+before writing it, the decoder refuses image code that reads it, and
+every trace of the stack nils it ("What the leftover analysis moved";
+[memory.md](design/memory.md), "What the collector traces"). A
 running activation is suspended into its frame and resumed from it lazily,
 the landing point of every later deoptimization, and a sixth stress mode
 runs every golden on from suspended frames
@@ -58,7 +65,7 @@ master (`733c15bd`) and task by task: every program within noise, but
 `bench_megamorphic.ns`, +1.3-2.1% after the private and super accessor
 check, at the edge of build noise and not diagnosed ("Planned: performance
 and representation" below). Everything up to road step 6 on the road
-is built, and `new` as compiled code and road steps 7b and 7a after it;
+is built, and `new` as compiled code and road steps 7b, 7a and 7a′ after it;
 each step has its entry in [PROGRESS.md](PROGRESS.md), and the whole road is below.
 
 **Measuring.** The protocol is [execution.md](design/execution.md)'s "What
@@ -292,16 +299,18 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
   ([execution.md](design/execution.md), "Representation", "The depth
   limit"), kept because the interpreter measures no slower in release --
   no program slower with its builds not overlapping `master`'s, nineteen
-  of twenty-four faster ("What frames as words moved"). What remains of
-  step 7: **7a′**, next, register windows
-  that overlap, the caller's outgoing arguments being the callee's first
-  registers, designed in Cog's layout and built in two measured stages
-  ([execution.md](design/execution.md), "Planned: overlapping register
-  windows"), the first of them -- contiguous arguments read in place --
-  built and kept ("What contiguous arguments moved"), the second next;
-  **7c**, the deoptimization
-  contract and the protocol between interpreted and compiled frames,
-  written into [execution.md](design/execution.md).
+  of twenty-four faster ("What frames as words moved"). **7a′ is built**:
+  register windows that overlap, the caller's outgoing arguments being
+  the callee's first registers, in Cog's layout, built in two measured
+  stages ([execution.md](design/execution.md), "Overlapping register
+  windows"), the first -- contiguous arguments read in place -- faster
+  than `master` on twelve of twenty-four programs ("What contiguous
+  arguments moved"), the second level with the first on the geometric
+  mean ("What overlapping windows moved"), with neither a push nor a pop
+  writing a scratch register ("What the leftover analysis moved"). What
+  remains of step 7: **7c**, next, the deoptimization contract and the
+  protocol between interpreted and compiled frames, written into
+  [execution.md](design/execution.md).
 - **Between steps 7 and 8, real Newspeak bodies for `whileTrue:`, `whileFalse:` and
   `do:`.** Making them Newspeak loops keeps what their leaves settle --
   `do:` reads each element as it goes and sends `value:` to a non-block,
@@ -1156,6 +1165,18 @@ classes and a class from source with no predecessor are not edited
 
 ## Unexplained measurements and unmeasured decisions
 
+- **DeltaBlueTon80 1.6% and Mandelbrot 0.5% slower after overlapping the
+  register windows** (2026-10-25), with their builds separated, against
+  the first stage of road step 7a′ with the value-answered send's step
+  forgotten; the other twenty-two are level or faster and the geometric
+  mean is -0.09%. Both were slower already before the leftover analysis
+  removed the pop's fill, by as much or more (DeltaBlueTon80 +1.9%), so
+  the cost is the overlap's, not the analysis's; neither was profiled.
+  The first candidate: the flags reads the register numbering adds
+  (`Heap::register_slot`, `resume_caller`'s `write_local`), which the
+  profiles of the second stage showed.
+  [execution.md](design/execution.md), "What overlapping windows moved".
+
 - **The send and return functions move with the collector's code size**
   (2026-10-25). Inlining `Heap::trace_stack` into the scavenge grew
   `World::scavenge` from 1,528 to 2,763 instructions and moved
@@ -1927,6 +1948,19 @@ that only answers `isKindOfArray` or `isKindOfString`, the error of a
 ## Code quality follow-ups
 
 Small, deliberately left, none affecting an outcome.
+
+- **Four clippy lints, adopted on a branch of their own** (decided with
+  the user on 2026-10-26, to follow road step 7a′'s branch):
+  - `undocumented_unsafe_blocks`, for `ns-memory`, the one crate with
+    `unsafe`; it has no hit today.
+  - `allow_attributes_without_reason`: its 29 sites rewritten as
+    `#[expect(.., reason = ..)]`.
+  - `cast_possible_truncation` and `cast_sign_loss`: about 290 sites
+    outside tests, the lints allowed in tests. Each site is audited: a
+    bound already guaranteed becomes `try_from` with an invariant panic,
+    or a helper that states the bound; bit arithmetic becomes
+    `cast_unsigned()`; a cast nothing bounds is a defect and is fixed.
+    The image decoder already has none.
 
 - Leftover of road step 7b (noted 2026-10-24): the format- and test-level
   frame accessors `Heap::frame_set_program_counter`, `frame_register_shape`,

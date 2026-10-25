@@ -1292,7 +1292,7 @@ header's words, which the register numbering skips ([compiler.md](compiler.md),
 body that declares it, would read or write that frame's caller word or
 register count, so it is refused (`HeaderRegister`). A send's callee is laid on
 its argument slots, its header where they end
-([execution.md](execution.md), "Planned: overlapping register windows"), so a
+([execution.md](execution.md), "Overlapping register windows"), so a
 send whose slots start below the end of its own body's header's numbers --
 among its arguments or on the header itself -- is refused too
 (`ArgumentSlotsBelowTheHeader`), even with no argument.
@@ -2746,7 +2746,7 @@ shipped world.
   46–51, which write the slots' base before the sources. A stale artifact's
   register list read as a base and a shorter list would be a different,
   valid program; under the retired numbers it meets an unknown tag
-  ([execution.md](execution.md), "Planned: overlapping register windows").
+  ([execution.md](execution.md), "Overlapping register windows").
 - **`FORMAT_VERSION` is not bumped**, because there are no external users and the
   safety property does not depend on it.
 - **Artifacts are readable but not writable as text.** A dump serves inspection;

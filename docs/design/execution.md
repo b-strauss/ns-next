@@ -12,7 +12,9 @@
 > runs every program on from suspended frames; every running activation is
 > a frame of tagged words in one reservation of the heap's, measured no
 > slower than the stack of entries before it (road step 7a, "What frames
-> as words moved").
+> as words moved"), and a send's own callee lies on its argument slots,
+> which are the callee's first registers (road step 7a′, "Overlapping
+> register windows").
 > **Code:** `crates/ns-runtime/src/heap.rs` (the activation stack, the frame
 > objects, the `ActivationReference` and `FrameReference` handles, every read and write of an
 > activation, the copied values a closure carries and whether a frame keeps its
@@ -312,7 +314,7 @@ pub struct ActivationReference {
   A send whose window names its sources rather than its slots copies them
   into the slots first, on the push path (`Mutator::push_on_slots`); a
   decision answering without a push reads them in place and writes
-  nothing ("Planned: overlapping register windows" below).
+  nothing ("Overlapping register windows" below).
 - **Register access through an `ActivationReference`** is the stack's word
   at the frame's start -- its offset less its argument count -- plus `r`,
   the register numbering leaving the header's numbers out
@@ -6443,7 +6445,7 @@ exceptions in its inner loop, since none of the twenty-three does.
 
 ### What contiguous arguments moved
 
-The first stage of road step 7a′ ("Planned: overlapping register windows"
+The first stage of road step 7a′ ("Overlapping register windows"
 below) -- a send's arguments in contiguous slots or read in place from
 consecutive sources, decisions reading them through an argument window, the
 argument buffer gone, the push copying once -- was measured whole against
@@ -6556,6 +6558,104 @@ representation"): `vm::run` reloads the `Mutator` pointer from its frame
 where `master` keeps it in a register, and `builtins::execute`'s result
 comes back through a stack copy written by narrow stores, which `master`
 pays as well.
+
+### What overlapping windows moved
+
+The second stage of road step 7a′ ("Overlapping register windows" below)
+-- a send's own callee laid on its sender's argument slots, the header 13
+words in every build and left out of the register numbering, the pop
+restoring the top it was pushed at, suspension, frame objects and image
+records without the header's numbers, and the decoder's checks -- was
+measured against the first by the protocol of "What contiguous arguments
+moved" above, on 2026-10-25, in three rounds.
+
+**As first built (`0037350d`), every program but `bench_loop.ns` was
+slower than the first stage with its builds separated**, by up to +19.2%
+(`bench_new.ns` +18.8%, `bench_send.ns` +12.7%, Richards +12.2%). What
+it taught, as reasons the current design stands on:
+
+- **A 72-byte header moved by value through the push's inlined layers is
+  copied into each of them.** `Mutator::push_sent` grew from 276 to 7,265
+  instructions, each move of the `ActivationHeader` a copy LLVM did not
+  elide, since the header escapes into the refusal's box, and each copy
+  read sixteen bytes wide right after the narrow stores that built it, a
+  store-forwarding stall on every send. So the header is lent to the
+  heap's push, and only the cold refusal takes it by value
+  ("Representation" above; "Keeping the hot path in registers" below).
+- **With the header's numbers left out, a register read through an
+  `ActivationReference` reads the frame's argument count**, from its
+  flags. So an indirection vector's loads and stores take the run loop's
+  register base, which it holds already.
+- **A larger push pushes small helpers past LLVM's inlining budget**:
+  `Continuations::insert`, `row_of` and `Heap::fill_copied_values` became
+  calls. They are `#[inline(always)]`.
+- **A send a primitive or an accessor answers dropped its `Step` through
+  out-of-line drop glue**, in both stages. `deliver` forgets it instead.
+  Since that removes a cost the first stage has too -- the first stage
+  with that change alone measured 0% to 5.5% faster than without, on one
+  build a side -- the second stage is judged against the first stage
+  with it, "stage 1 + forget" below.
+
+With those, and the caller word packing the top a frame was pushed at so
+that a pop reads no caller header, the second stage (`d7488e20`) was 14 of
+24 programs slower than stage 1 + forget with the builds separated, by
++1.1% to +2.3%, and faster on none. A return that wrote its value through
+the register base the switch finds, so that it read the flags once, grew
+`vm::run` from 8,269 to 8,351 instructions and its frame by sixteen bytes
+and measured 0.5-3% slower on seven of nine programs, and was reverted.
+What remained was mostly the pop's nil fill over the words a callee laid
+on its sender's slots gives back: a build without it, unsafe and only
+measured, was 0.4-2.8% faster. Decided with the user on 2026-10-25: the
+fill goes, replaced by the leftover analysis, rather than the cost being
+accepted or the stage reverted ("What the leftover analysis moved"
+below).
+
+**With the analysis (`f2faa8f4`), against stage 1 + forget**, three builds
+a side, both sittings pooled, in ms; "builds" compares the three build
+means as above:
+
+| Source | stage 1 + forget | second stage | change | builds |
+|---|---|---|---|---|
+| `bench_block.ns` | 7.121 | 7.156 | +0.5% | overlapping |
+| `bench_loop.ns` | 2.155 | 2.145 | -0.5% | overlapping |
+| `bench_megamorphic.ns` | 4.691 | 4.634 | -1.2% | faster |
+| `bench_send.ns` | 3.223 | 3.226 | +0.1% | overlapping |
+| `bench_new.ns` | 2.736 | 2.690 | -1.7% | faster |
+| `bench_new2.ns` | 3.597 | 3.584 | -0.3% | overlapping |
+| `bench_newarg.ns` | 3.625 | 3.645 | +0.5% | overlapping |
+| `bench_do.ns` | 2.599 | 2.616 | +0.7% | overlapping |
+| Bounce | 0.890 | 0.888 | -0.2% | overlapping |
+| CD | 3379.8 | 3394.7 | +0.4% | overlapping |
+| DeltaBlue | 609.08 | 609.22 | +0.0% | overlapping |
+| DeltaBlueTon80 | 6.686 | 6.790 | +1.6% | slower |
+| Havlak | 3215.0 | 3211.1 | -0.1% | overlapping |
+| Json | 9.763 | 9.811 | +0.5% | overlapping |
+| List | 0.931 | 0.915 | -1.7% | overlapping |
+| Mandelbrot | 2712.1 | 2725.2 | +0.5% | slower |
+| NBody | 1972.4 | 1976.5 | +0.2% | overlapping |
+| Permute | 2.325 | 2.311 | -0.6% | overlapping |
+| Queens | 1.938 | 1.949 | +0.6% | overlapping |
+| Richards | 61.578 | 61.697 | +0.2% | overlapping |
+| RichardsTon80 | 4.279 | 4.273 | -0.1% | overlapping |
+| Sieve | 1.317 | 1.334 | +1.3% | overlapping |
+| Storage | 1.406 | 1.372 | -2.4% | faster |
+| Towers | 3.032 | 3.029 | -0.1% | overlapping |
+
+**The geometric mean over the twenty-four is -0.09%**: three programs
+faster with the builds separated, nineteen overlapping, and two slower,
+DeltaBlueTon80 by 1.6% and Mandelbrot by 0.5%, neither diagnosed
+([OPEN-WORK.md](../OPEN-WORK.md), "Unexplained measurements and unmeasured
+decisions"). `vm::run` is 8,269 instructions apart from the padding with a
+`0x318`-byte frame, against the first stage's 8,296 and `0x368`. So
+overlapping the windows costs the interpreter nothing on the geometric
+mean; what it removes -- the copy of every argument into the callee's
+window -- is what compiled frames would otherwise pay too, and the
+header between the arguments and the temporaries is the frame layout road
+step 7c's protocol between interpreted and compiled frames starts from.
+
+What the measurement did not cover is what "What contiguous arguments
+moved" lists; stage 1 + forget is a tree built for the comparison, not a
+commit of the branch.
 
 ### What the leftover analysis moved
 
@@ -8432,27 +8532,30 @@ marks — `on:do:`, whose `^self value` is a tail send — is never skipped, or
 `signal` would no longer find its handler. `ensure:` is never in tail
 position, since `onUnwind value` follows `self value`.
 
-## Planned: overlapping register windows
+## Overlapping register windows
 
-**Status: road step 7a′, decided with the user on 2026-10-24, in two
-stages. The first is built and measured** -- a send's arguments are
-contiguous slots or consecutive sources, read in place through an argument
-window, the argument buffer gone ("What contiguous arguments moved").
-**The second is being built, and not yet measured.** Built: the header 13
-words in every build, its numbers left out of the register numbering, the
-callee's frame laid on its caller's slots -- a send's arguments are no
-longer copied into the callee's window; the caller's outgoing argument
-registers *are* the callee's first registers -- the pop restoring the
-caller's window, suspension keeping a sender's registers below its
-callee's header, frame objects and image records without the header's
-numbers, and the decoder's refusal of a register that names a header
-word, of argument slots below the header's end or below the body's
-locals, of a send source that is another of its slots, of a write to an
-argument register, and of an outer load or store into another frame's
-scratch ([image-format.md](image-format.md), "Verification"). To come:
-the stage's measurement.
+**Status: road step 7a′, decided with the user on 2026-10-24, built and
+measured in two stages.** The first makes a send's arguments contiguous
+slots or consecutive sources, read in place through an argument window,
+the argument buffer gone ("What contiguous arguments moved"). The second
+overlaps the windows: the header 13 words in every build, its numbers
+left out of the register numbering, a send's own callee laid on its
+caller's slots -- the caller's outgoing argument registers *are* the
+callee's first registers, so its arguments are copied into no window of
+the callee's -- the pop restoring the top the callee was pushed at,
+suspension keeping a sender's registers below its callee's header, frame
+objects and image records without the header's numbers, and the
+decoder's refusal of a register that names a header word, of argument
+slots below the header's end or below the body's locals, of a send source
+that is another of its slots, of a write to an argument register, and of
+an outer load or store into another frame's scratch
+([image-format.md](image-format.md), "Verification"). Neither a push nor
+a pop writes a scratch register; the leftover analysis decides what the
+collector nils instead ("What the leftover analysis moved"). The second
+stage costs nothing on the geometric mean against the first ("What
+overlapping windows moved").
 
-**What a send copies today.** Each argument at most once, most of them
+**What a send copies.** Each argument at most once, most of them
 never. A send names its arguments' contiguous slots, allocated after its
 receiver, and each argument's source. A send's value, an inlined integer
 operation's, a literal or a closure is produced in its slot, a setter's
@@ -8511,25 +8614,25 @@ caller   ... live registers | slot 0 .. slot argc-1 | dead above
 callee                      | r0 .. r(argc-1)       | header (13) | r(argc+13) ..
 ```
 
-- **The callee's register numbering skips the header** (built): registers `0 ..
+- **The callee's register numbering skips the header**: registers `0 ..
   argc` are the arguments, `argc .. argc + COUNT` name the header's words
   and no instruction names them, and copied values, temporaries, the vector
   register and scratch start at `argc + COUNT` ([compiler.md](compiler.md),
   "Registers"). Every register is still `base + r`, one addition and no
   branch on an args/temps split; the header sits at `base + argc`, and an
-  `ActivationReference` is its offset, as it is now.
-- **The header is 13 words in every build** (built), since its size is in the
+  `ActivationReference` is its offset.
+- **The header is 13 words in every build**, since its size is in the
   compiled code and a debug build's artifact or image must run in a
-  release one: the debug build's generation moves into the flags word,
-  whose argument count narrows to 16 bits -- 8 + 16 + 2 + 31 bits, inside
-  61. The register ceiling bounds the count: a body with more parameters
+  release one: the debug build's generation rides in the flags word,
+  whose argument count is 16 bits -- 8 + 16 + 2 + 31 bits, inside 61.
+  The register ceiling bounds the count: a body with more parameters
   compiles to the raising body ("Compilation cannot fail"), whose declared
   arity still passes the arity check, so a longer list of values -- a
   host's send or `Message>>sendTo:` -- is refused at the push instead:
   `Interpreter::push` raises the error the raising body would, without
-  pushing, so the sender is the activation that signals it (built).
+  pushing, so the sender is the activation that signals it.
 - **A send's arguments are contiguous slots at the top of the caller's
-  live registers** (built). Both lowerings allocate the `argc` slots right
+  live registers**. Both lowerings allocate the `argc` slots right
   after the receiver and lower each argument into its slot: a literal or a
   send writes it directly, so nothing copies it. Every register numbered
   above the slots is dead when the send executes -- the callee's header and
@@ -8538,16 +8641,18 @@ callee                      | r0 .. r(argc-1)       | header (13) | r(argc+13) .
   lands above. Both lowerings check it on every body in a debug build
   (`compiler::reference::check_leftovers`): no instruction after a send
   reads a register above its slots before something writes it again.
-- **A named local passed as an argument is copied by the send itself**:
-  the send names its slot base and, for each argument, the register it
-  comes from, and copies only those not already in their slot -- one copy,
-  inside the send's own dispatch, where a `Move` before it would cost an
-  instruction. The reference lowering never uses it: it `Move`s every
-  local into a fresh slot, as its rule 3 already asks, so that the
-  optimized lowering's in-send copy is what the two are compared on
+- **A named local passed as an argument is the send's to copy**: the
+  send names its slot base and, for each argument, the register it comes
+  from, reads consecutive sources in place and copies any other source
+  that is not its slot into it ("What a send copies" above) -- at most
+  one copy, inside the send's own handling, where a `Move` before it
+  would cost an instruction. The reference lowering never uses it: it
+  `Move`s every local into a fresh slot, as its rule 3 already asks, so
+  that the optimized lowering's in-send copy is what the two are compared
+  on
   ([compiler.md](compiler.md), "The reference lowering").
 - **A push without the arguments in the caller's registers copies them**
-  (built) to the top of the stack, above the caller's whole window: a
+  to the top of the stack, above the caller's whole window: a
   `doesNotUnderstand:` handler's message, `Message>>sendTo:`, `cull:`, a
   native loop's next block, an unwind block, a host's entry, a resumed
   frame, and the initializer a factory enters, whose arguments are the
@@ -8558,20 +8663,20 @@ callee                      | r0 .. r(argc-1)       | header (13) | r(argc+13) .
   leaf and `InitializeInstance` hand theirs on from elsewhere, and land
   above too (pinned by
   `goldens/language/evaluation-order/a_push_that_is_not_the_senders_callee_leaves_its_window.ns`).
-- **A pop restores the top it was pushed at** (built), not the callee's
+- **A pop restores the top it was pushed at**, not the callee's
   offset: the caller's window end, or past it where the caller lies on a
   longer frame's slots, since a push never lowers the top. The caller's
   registers above its slots are its own again, dead, and the pop writes
-  none of them in a release build, nor does a push write a scratch
-  register: the collector's pre-pass nils every register a frame does not
-  read before it writes it, before every trace ([memory.md](memory.md),
-  "What the collector traces"). A debug build writes a poison word no
-  value can be into both, and refuses an instruction's read of it
-  ("Representation" above). Suspending a sender copies its registers
-  below its callee's header only and leaves the rest nil, so a frame
-  object holds no stale header word, and nils every register the
-  pre-pass would (built). A frame object and an image record hold the registers without
-  the header's numbers (built): register `r` is field `r` below the
+  none of them, nor does a push write a scratch register: every trace of
+  the stack nils each register a frame does not read before it writes it
+  (`Heap::trace_stack`; [memory.md](memory.md), "What the collector
+  traces"; "What the leftover analysis moved"). A debug build writes a
+  poison word no value can be into both, and refuses an instruction's
+  read of it ("Representation" above). Suspending a sender copies its
+  registers below its callee's header only and leaves the rest nil, so a
+  frame object holds no stale header word, and nils every register the
+  trace would. A frame object and an image record hold the registers
+  without the header's numbers: register `r` is field `r` below the
   argument count and field `r - 13` above the header, and a number the
   header takes has no field (`Heap::frame_field_of_register`), so a frame
   of a body past the register ceiling whose arguments leave no number
@@ -8582,33 +8687,31 @@ callee                      | r0 .. r(argc-1)       | header (13) | r(argc+13) .
   slot after the send, is still there (pinned by
   `goldens/language/evaluation-order/a_setter_value_read_after_its_send_survives_the_callee.ns`).
   The decoder refuses an instruction that names one of the header's
-  numbers and a send whose slots start below the header's end, whose
-  callee's header would go over its sender's (built); it is to take the
-  rest from the compiler as a check too, refusing an instruction that
-  writes an argument register and an outer store into another frame's
-  scratch, which would write a live frame above it
+  numbers, a send whose slots start below the header's end, whose
+  callee's header would go over its sender's, an instruction that writes
+  an argument register, and an outer load or store into another frame's
+  scratch, which would reach a live frame above it
   ([image-format.md](image-format.md), "Verification").
 - **The decision reads the arguments where they are**, through an
   argument window -- the frame, the slot base and the count, read through
-  the `Heap` -- instead of a slice; the buffer goes.
+  the `Heap` -- instead of a slice; there is no argument buffer.
 
 **Two stages, each measured** as "What frames as words moved" was, with
 three builds a side. The first makes the arguments contiguous and drops
 the buffer: both lowerings lower a send's arguments into slots at the top
-of the live registers, new send forms name the slot base and each
-argument's source, decisions, primitives and builtins read the argument
-window, and the push copies once, from the slots. A window is a base and
-a count, so the slots come first: over today's arbitrary register lists
-the window would have to lend the instruction's list to every decision.
-The second overlaps the windows: the header left out of the numbering and
-13 words in every build, the callee's frame on the caller's slots, the
-pop, suspension and frame objects without the header's numbers, and the
-decoder's checks. Each is kept only if no program measures slower with
-its builds not overlapping those of the tree before it -- the second
-against the first, not only against `master` -- and the measurement says
-what each moved. The first was kept: no program slower with its builds
+of the live registers, the send forms name the slot base and each
+argument's source, and decisions, primitives and builtins read the
+argument window. A window is a base and a count, so the slots come
+first: over arbitrary register lists the window would have to lend the
+instruction's list to every decision. The second overlaps the windows.
+The first is kept: no program slower than `master` with its builds
 separated, twelve of twenty-four faster ("What contiguous arguments
-moved").
+moved"). The second, measured against the first with the change that
+forgets a value-answered send's step, which speeds both, is level on the
+geometric mean, -0.09%, with two programs slower with their builds
+separated, by 0.5% and 1.6%, and three faster. It is kept by the user's
+decision to remove its remaining cost, the pop's fill, rather than revert
+the stage ("What overlapping windows moved").
 
 ## Planned: JIT tiers
 
@@ -8658,14 +8761,18 @@ Each step gets its own design when it comes up.
   condition it was built under, without which it would have moved to
   step 8: measured with three builds a side that vary the block layout
   inside `vm::run`, nineteen of twenty-four programs are faster and the
-  rest level ("What frames as words moved"). **7a′**, next,
-  overlaps the register windows, the caller's outgoing arguments being
-  the callee's first registers, in Cog's layout and in two measured
-  stages ("Planned: overlapping register windows"), the first --
-  contiguous arguments read in place -- built and kept ("What contiguous
-  arguments moved"), the second next. **7c** writes
-  the deoptimization contract and the protocol between interpreted and
-  compiled frames into this document.
+  rest level ("What frames as words moved"). **7a′** is
+  built: the register windows overlap, the caller's outgoing arguments
+  being the callee's first registers, in Cog's layout, in two measured
+  stages ("Overlapping register windows"), the first -- contiguous
+  arguments read in place -- faster than `master` on twelve of
+  twenty-four programs ("What contiguous arguments moved"), the second
+  level with the first on the geometric mean ("What overlapping windows
+  moved"), neither a push nor a pop writing a scratch register since the
+  leftover analysis decides what the collector nils ("What the leftover
+  analysis moved"). **7c**, next, writes the deoptimization contract and
+  the protocol between interpreted and compiled frames into this
+  document.
 - **Step 8, a baseline JIT**, Cog's class: every method compiled without
   speculation, the inline caches and the allocation fast path emitted into
   the code, values kept in registers, for x64 and arm64, since images are
@@ -8833,3 +8940,17 @@ HotSpot's.
   registers by reference, its writes count as after every capture, and the
   divorce copy is decided per activation by whether it created such a
   closure — so the common path pays nothing and inlining stays unobservable.
+- **A send's own callee lies on its sender's argument slots** (decided
+  with the user on 2026-10-24, "Overlapping register windows"): Cog's
+  layout, the arguments, then the header, then the other registers, the
+  header's numbers left out of the register numbering and 13 words in
+  every build, so that a caller's outgoing arguments are its callee's
+  first registers and a debug build's artifact runs in a release one.
+- **Neither a push nor a pop writes a scratch register** (decided with
+  the user on 2026-10-25, "What the leftover analysis moved"): the
+  leftover analysis, derived from the code, says what a frame may read
+  before writing it, the decoder refuses image code that reads it, and
+  the collector nils it in its trace of the stack, rather than the pop
+  filling what its callee gave back, which cost 1-2% of a run, or
+  liveness maps declared in the image, which a flat send of inlined
+  conditionals makes quadratic.

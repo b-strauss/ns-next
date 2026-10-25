@@ -83,8 +83,8 @@ place. Nothing but the send reads a slot: a setter assignment's value is
 the register its argument came from. Both lowerings allocate the slots
 after every scratch register the send also reads -- its receiver, a mirror
 send's subject -- and before they lower any argument, then lower each
-argument into its slot ([execution.md](execution.md), "Planned:
-overlapping register windows"). An assignment through a setter is a send
+argument into its slot ([execution.md](execution.md), "Overlapping
+register windows"). An assignment through a setter is a send
 of one argument like any other: its slot is allocated before its value,
 which is lowered into it, so `sum:: sum + n` writes the sum into the slot,
 and the register the value is in is both the setter's source and the
@@ -400,8 +400,8 @@ instruction, and everything else starts at `argument_count +
 HEADER_REGISTERS`. On the activation stack it is one window, the header's words
 where those numbers are, so every register is one addition from the frame's
 start, and a send's argument slots are its callee's arguments, the callee's
-header laid where they end ([execution.md](execution.md), "Planned:
-overlapping register windows"); a frame object has a field for every number
+header laid where they end ([execution.md](execution.md), "Overlapping
+register windows"); a frame object has a field for every number
 but the header's, its arguments and then its registers above the header
 (`Heap::frame_field_of_register`). The resolver's `Binding::Local` numbers the arguments and
 then the temporaries with no gap, so a temporary's register is its resolver
