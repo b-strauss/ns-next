@@ -1167,6 +1167,17 @@ classes and a class from source with no predecessor are not edited
 
 ## Unexplained measurements and unmeasured decisions
 
+- **`vm::run`'s stack frame grew from 744 to 904 bytes** (2026-10-26)
+  when every raising instruction came to store its program counter
+  before it unwinds (`vm::raise`, which passes the index through the
+  `Handoff`). The change adds no local to `vm::run`; every variant that
+  stores the counter in the raising arms, an inline store included, gave
+  904 bytes, so it is likely LLVM's spill slots shifting. Measured with
+  three builds a side, the 24 programs are level (+0.07%, none slower
+  with its builds separated), and 904 bytes stays under a page, so no
+  stack probe is added; comparing the base's and the head's assembly of
+  `vm::run` would name it. [execution.md](design/execution.md), "Where
+  `program_counter` is stored".
 - **DeltaBlueTon80 0.9% slower after overlapping the register windows**
   (2026-10-26), with its builds separated, against the first stage of
   road step 7a′ with the value-answered send's step forgotten; it was
