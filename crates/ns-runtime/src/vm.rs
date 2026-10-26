@@ -85,7 +85,10 @@ enum Transfer {
     Exited,
 }
 
-/// What a `Transfer::Switched` or `Transfer::Exited` carries.
+/// What a `Transfer::Switched` or `Transfer::Exited` carries. Its
+/// `activation` is the running one from the stretch's start and every
+/// switch on, and its `program_counter` carries a raising instruction's
+/// index to `raise_from_handoff` too.
 struct Handoff {
     activation: ActivationReference,
     code: Option<Rc<CompiledCode>>,
