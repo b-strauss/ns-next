@@ -15,10 +15,6 @@ when they were written.
 
 ## Next
 
-**First, a branch of its own adopts four clippy lints** ("Code quality
-follow-ups" below), decided with the user on 2026-10-26 to follow road
-step 7a′'s branch.
-
 **Road step 7c, the deoptimization contract and the protocol between
 interpreted and compiled frames** ("The road to a high-performance VM"
 below; [execution.md](design/execution.md), "Planned: JIT tiers"), the
@@ -1969,18 +1965,18 @@ that only answers `isKindOfArray` or `isKindOfString`, the error of a
 
 Small, deliberately left, none affecting an outcome.
 
-- **Four clippy lints, adopted on a branch of their own** (decided with
-  the user on 2026-10-26, to follow road step 7a′'s branch):
-  - `undocumented_unsafe_blocks`, for `ns-memory`, the one crate with
-    `unsafe`; it has no hit today.
-  - `allow_attributes_without_reason`: its 29 sites rewritten as
-    `#[expect(.., reason = ..)]`.
-  - `cast_possible_truncation` and `cast_sign_loss`: about 290 sites
-    outside tests, the lints allowed in tests. Each site is audited: a
-    bound already guaranteed becomes `try_from` with an invariant panic,
-    or a helper that states the bound; bit arithmetic becomes
-    `cast_unsigned()`; a cast nothing bounds is a defect and is fixed.
-    The image decoder already has none.
+- Leftovers of the cast lints' reviews (noted 2026-10-26): no 32-bit
+  target is installed or gated, so the `cfg(not(target_pointer_width =
+  "64"))` paths and the 32-bit index fix (`builtins/collections.rs`'s
+  `element_position`, `builtins/value.rs`'s `SlotAt`) are never built,
+  only reasoned about; the analyzer's clamping test pins `lsp_number`
+  (`documents.rs`), not a `LineIndex` over a text past `u32`;
+  `bytecode/leftovers.rs` narrows an instruction index to `u32` with the
+  same `expect` in two places; `arbitrary_integer`'s `low_digit` also
+  narrows two values that are bounded rather than split (`division.rs`'s
+  `divide_wide`, `multiplication.rs`'s final carry), which its doc does
+  not say; and `conversion.rs`'s `radix_digit` checks every printed digit
+  against a radix the compiler cannot see is at most 36.
 
 - Leftover of road step 7b (noted 2026-10-24): the format- and test-level
   frame accessors `Heap::frame_set_program_counter`, `frame_register_shape`,

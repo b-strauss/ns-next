@@ -176,6 +176,11 @@ pub(crate) fn starts_its_line(source: &str, offset: usize) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::cast_possible_truncation,
+        reason = "a test's values are small literals and lengths it built"
+    )]
+
     use super::*;
 
     fn whole(kind: CommentKind, source: &str) -> String {

@@ -6,7 +6,10 @@
 //! allow below is here: a binary that uses only some of the helpers would
 //! otherwise warn about the rest.
 
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "a test binary that uses only some of the helpers would otherwise warn about the rest"
+)]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

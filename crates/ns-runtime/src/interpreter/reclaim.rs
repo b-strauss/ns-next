@@ -219,7 +219,13 @@ fn application_index(row: usize) -> ApplicationIndex {
 
 #[cfg(test)]
 mod tests {
-    #![cfg_attr(not(debug_assertions), allow(dead_code))]
+    #![cfg_attr(
+        not(debug_assertions),
+        allow(
+            dead_code,
+            reason = "the helpers are read only by tests gated to debug builds"
+        )
+    )]
 
     use crate::heap::MixinId;
     use crate::interpreter::edit::{Edit, MemberEdit};

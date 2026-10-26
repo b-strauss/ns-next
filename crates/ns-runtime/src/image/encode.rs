@@ -189,7 +189,7 @@ pub(crate) fn u32_field(what: &str, value: usize) -> u32 {
         u32::try_from(value).is_ok(),
         "image {what} of {value} does not fit the format's u32 field"
     );
-    value as u32
+    u32::try_from(value).expect("internal: the assertion above refused a value past u32")
 }
 
 /// A length a running program decides, narrowed to the wire's `u32` field:

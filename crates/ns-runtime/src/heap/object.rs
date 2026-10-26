@@ -327,6 +327,10 @@ impl<'a> PackedString<'a> {
     }
 
     /// The code point at the 0-based `index`; `None` past the end.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a wide string's word holds two 32-bit units, and the truncation keeps the one shifted down"
+    )]
     pub(in crate::heap) fn code_point_at(self, index: usize) -> Option<u32> {
         if index >= self.size {
             return None;
@@ -384,6 +388,15 @@ pub(in crate::heap) const ALIGNMENT_WORDS: usize = 4;
 /// data words.
 pub(in crate::heap) fn byte_array_field_count(size: usize) -> usize {
     ALIGNMENT_RESERVE + size.div_ceil(BYTES_PER_WORD)
+}
+
+/// The bytes the last data word of a `ByteArray` of `size` bytes leaves
+/// unused, 0 to 7, as its header records them.
+#[inline]
+pub(in crate::heap) fn unused_bytes(size: usize) -> u8 {
+    // The remainder is below 8, so the check folds away.
+    u8::try_from((BYTES_PER_WORD - size % BYTES_PER_WORD) % BYTES_PER_WORD)
+        .expect("internal: a remainder of a division by 8 fits a u8")
 }
 
 /// The absolute index of the first data word of the `AlignedBytes` object
@@ -580,6 +593,11 @@ impl<'a> ByteArrayDataMut<'a> {
     /// low bytes stored, since the leaf has checked it; a float32 is
     /// rounded to nearest, ties to even, a finite value past its range
     /// becoming an infinity and a NaN staying a NaN.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the leaf has held an integer to its kind's range (`builtins::elements::element_operand`), so its low bytes are exact, and a float32 is the binary64 rounded on purpose"
+    )]
     pub(crate) fn write_element(
         &mut self,
         offset: usize,

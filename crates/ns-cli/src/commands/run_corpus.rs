@@ -23,7 +23,10 @@ struct RunnableEntry {
     expected_stdout: String,
     /// Why this module is on the list. Required: the list is meant to grow
     /// one deliberate row at a time.
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "documentation for the list's reader: it is parsed but never read by the runner"
+    )]
     reason: String,
 }
 

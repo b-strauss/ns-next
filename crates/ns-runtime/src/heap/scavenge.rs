@@ -152,7 +152,10 @@ impl<'space> Scavenger<'space> {
     /// filled.
     fn stays(&self, offset: NonZeroU64) -> bool {
         let future = self.space.future_survivor();
-        !is_young(offset) || (future.base..future.end).contains(&(offset.get() as usize))
+        !is_young(offset)
+            || (future.base..future.end).contains(&usize::try_from(offset.get()).expect(
+                "internal: an offset lies inside the object space's reservation, DEFAULT_RESERVATION",
+            ))
     }
 
     /// Where the object `offset` names lives once the scavenge is done, if

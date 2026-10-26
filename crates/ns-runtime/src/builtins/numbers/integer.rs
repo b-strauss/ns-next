@@ -357,8 +357,11 @@ fn radix_argument<'gc>(
     radix: Value<'gc>,
 ) -> Result<u32, NewspeakError<'gc>> {
     let integer = integer_argument(mutator, receiver, selector, Some(radix))?;
-    match integer.to_u64() {
-        Some(radix_number @ 2..=36) => Ok(radix_number as u32),
+    match integer
+        .to_u64()
+        .and_then(|number| u32::try_from(number).ok())
+    {
+        Some(radix_number @ 2..=36) => Ok(radix_number),
         _ => Err(NewspeakError::argument_error(
             selector,
             receiver,

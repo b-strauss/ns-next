@@ -25,12 +25,21 @@ const HALF: i64 = 1 << 60;
 /// A magnitude modulo the modulus, from its most significant digit down.
 fn residue(magnitude: &[u64]) -> u64 {
     magnitude.iter().rev().fold(0, |accumulator, digit| {
-        (((u128::from(accumulator) << 64) | u128::from(*digit)) % u128::from(MODULUS)) as u64
+        reduce((u128::from(accumulator) << 64) | u128::from(*digit))
     })
 }
 
 fn multiply(left: u64, right: u64) -> u64 {
-    (u128::from(left) * u128::from(right) % u128::from(MODULUS)) as u64
+    reduce(u128::from(left) * u128::from(right))
+}
+
+/// `value` modulo the modulus.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a remainder modulo MODULUS lies below 2^61"
+)]
+fn reduce(value: u128) -> u64 {
+    (value % u128::from(MODULUS)) as u64
 }
 
 /// `value⁻¹` modulo the prime modulus, by Fermat: `value^(P - 2)`.

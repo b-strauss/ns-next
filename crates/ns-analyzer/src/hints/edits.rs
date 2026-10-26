@@ -58,8 +58,7 @@ fn line_end(text: &str, offset: usize) -> usize {
 }
 
 /// The column of `offset`, in bytes from its line's start.
-pub(super) fn column(text: &str, offset: u32) -> usize {
-    let offset = offset as usize;
+pub(super) fn column(text: &str, offset: usize) -> usize {
     offset - line_start(text, offset)
 }
 
@@ -84,8 +83,8 @@ pub(super) fn bare_period(text: &str, slot: &SlotDeclaration) -> Option<Span> {
     let from = declaration_end(slot) as usize;
     let (tokens, _) = ns_syntax::lexer::Lexer::new(&text[from..slot.span.end as usize]).run();
     let period = tokens.iter().find(|token| token.kind == TokenKind::Dot)?;
-    let start = from as u32 + period.span.start;
-    Some(Span::new(start, start + 1))
+    let start = from + period.span.start as usize;
+    Some(Span::from_offsets(start, start + 1))
 }
 
 /// Where a slot's text ends, its `.` included: what moving it takes along.
@@ -160,10 +159,10 @@ pub(super) fn delete_statement(text: &str, statement: &Statement) -> Option<Edit
     let before = &text[line_start(text, start)..start];
     let span = if before.trim().is_empty() && rest.trim().is_empty() {
         let finish = (line_end(text, end) + 1).min(text.len());
-        Span::new(line_start(text, start) as u32, finish as u32)
+        Span::from_offsets(line_start(text, start), finish)
     } else {
         let blanks = rest.len() - rest.trim_start_matches([' ', '\t']).len();
-        Span::new(start as u32, (end + blanks) as u32)
+        Span::from_offsets(start, end + blanks)
     };
     Some(Edit {
         span,
@@ -185,6 +184,6 @@ pub(super) fn assignment_operator(text: &str, slot: &SlotDeclaration) -> Option<
     let operator = tokens
         .iter()
         .find(|token| token.kind == TokenKind::ColonColonEquals)?;
-    let start = from as u32 + operator.span.start;
-    Some(Span::new(start, start + 3))
+    let start = from + operator.span.start as usize;
+    Some(Span::from_offsets(start, start + 3))
 }

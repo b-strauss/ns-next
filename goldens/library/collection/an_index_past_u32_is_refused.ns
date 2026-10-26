@@ -1,0 +1,18 @@
+/// An index past every 32-bit word, 2 ** 32 + 1, is still a SmallInteger,
+/// and `at:` and `at:put:` refuse it in the words of any other index out of
+/// range, never wrapping it to an index that fits a narrower word: on a
+/// target whose words are 32 bits wide, it would wrap to 1.
+class AnIndexPastU32IsRefused = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      index = (2 raisedTo: 32) + 1.
+    |
+    transcript
+        show: ([(Array new: 3) at: index] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: ([(Array new: 3) at: index put: 1] on: Error do: [:error | error messageText]);
+        newLine.
+  )
+)

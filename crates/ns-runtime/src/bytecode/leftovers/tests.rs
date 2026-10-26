@@ -1,3 +1,8 @@
+#![expect(
+    clippy::cast_possible_truncation,
+    reason = "a test's values are small literals and lengths it built"
+)]
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;

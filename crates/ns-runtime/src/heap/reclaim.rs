@@ -224,21 +224,30 @@ impl Heap<'_> {
 
     /// How many rows the mixin table has, free ones included.
     // Read by the tests that bound the tables' growth.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "read by the tests that bound the tables' growth")
+    )]
     pub(crate) fn mixin_rows(&self) -> usize {
         self.tables.mixins.len()
     }
 
     /// How many superseded versions the tables hold.
     // Read by the tests that bound the tables' growth.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "read by the tests that bound the tables' growth")
+    )]
     pub(crate) fn superseded_count(&self) -> usize {
         self.tables.superseded.len()
     }
 
     /// How many rows the code table has, free ones included.
     // Read by the tests that bound the tables' growth.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "read by the tests that bound the tables' growth")
+    )]
     pub(crate) fn code_rows(&self) -> usize {
         self.tables.codes.len()
     }

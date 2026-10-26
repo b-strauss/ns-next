@@ -23,7 +23,11 @@ pub struct Symbol(u32);
 /// the same order.
 macro_rules! well_known_symbols {
     ($($name:ident => $text:literal,)*) => {
-        #[allow(non_camel_case_types, clippy::upper_case_acronyms)]
+        #[expect(
+            non_camel_case_types,
+            clippy::upper_case_acronyms,
+            reason = "a variant is named after the text it stands for, which the table keeps in one list"
+        )]
         #[repr(u32)]
         enum WellKnown {
             $($name,)*
@@ -80,8 +84,15 @@ impl Interner {
         interner
     }
 
+    /// Interns `text` under the next number. A running program interns
+    /// symbols of its choosing (`asSymbol`), and no caller of `intern` can
+    /// answer an error, so a symbol past the number `u32::MAX` on one thread
+    /// exhausts the table and aborts, as an image field past `u32` does.
     fn insert(&mut self, text: &'static str) -> Symbol {
-        let symbol = Symbol(self.strings.len() as u32);
+        let symbol =
+            Symbol(u32::try_from(self.strings.len()).expect(
+                "the symbol table is exhausted: a thread numbers its symbols up to u32::MAX",
+            ));
         self.strings.push(text);
         self.lookup.insert(text, symbol);
         symbol

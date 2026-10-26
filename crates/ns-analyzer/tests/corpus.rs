@@ -13,6 +13,11 @@
 //! process of its own and a module's cuts cost less than starting one. The
 //! checks of whole modules are cheap and stay one trial each.
 
+#![expect(
+    clippy::cast_possible_truncation,
+    reason = "a test's values are small literals and lengths it built"
+)]
+
 use std::path::{Path, PathBuf};
 
 use libtest_mimic::{Arguments, Trial};

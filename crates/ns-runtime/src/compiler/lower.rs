@@ -374,7 +374,10 @@ impl<'a> Lowerer<'a> {
     /// of the family shares (`bindings`, `captures`), what makes it a
     /// fallback closure (`by_reference`), what it inherits from its creator
     /// (`enclosing`) and where its sends' numbering resumes.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each parameter is a distinct part of a body's identity, shape or inheritance, documented above"
+    )]
     pub(crate) fn new(
         kind: CodeKind,
         key: BodyKey,
@@ -601,7 +604,13 @@ impl<'a> Lowerer<'a> {
         let superclass_steps = super::superclass_steps(applied.len(), own_level);
         // The level clause `position` (from 0) adds; below the superclass
         // clause's, so it fits a `u16` too.
-        let steps_of = |position: usize| superclass_steps - 1 - position as u16;
+        let steps_of = |position: usize| {
+            superclass_steps
+                - 1
+                - u16::try_from(position).expect(
+                    "internal: more `<:` clauses than CLAUSE_INDEX_LIMIT reached the compiler",
+                )
+        };
         if !applied.is_empty() {
             let start = self.code.len();
             for (position, clause) in applied.iter().enumerate().rev() {
@@ -2395,6 +2404,11 @@ pub(super) fn lower_literal(literal: &ast::Literal) -> BytecodeLiteral {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::cast_possible_truncation,
+        reason = "a test's values are small literals and lengths it built"
+    )]
+
     use super::super::capture::{analyze, RootBody};
     use super::*;
     use indoc::{formatdoc, indoc};

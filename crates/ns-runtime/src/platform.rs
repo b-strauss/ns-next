@@ -25,6 +25,7 @@
 use crate::interpreter::Arguments;
 use std::io::Write;
 
+use crate::arbitrary_integer::{high_digit, low_digit};
 use crate::builtins::first_argument;
 use crate::builtins::primitive::PlatformPrimitive;
 use crate::types::*;
@@ -90,7 +91,7 @@ fn stream<'gc>(
             let nanoseconds = elapsed.as_nanos();
             Ok(mutator.new_integer(ArbitraryInteger::from_parts(
                 false,
-                vec![nanoseconds as u64, (nanoseconds >> u64::BITS) as u64],
+                vec![low_digit(nanoseconds), high_digit(nanoseconds)],
             )))
         }
     }

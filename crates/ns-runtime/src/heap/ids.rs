@@ -27,7 +27,13 @@ impl FreeIndices {
 
     /// Whether `index` is free. Read by the tests that check the
     /// collection's reclamation of dead rows.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "read by the tests that check the collection's reclamation of dead rows"
+        )
+    )]
     pub(crate) fn is_free(&self, index: u32) -> bool {
         self.free.contains(&index)
     }
@@ -40,7 +46,13 @@ impl FreeIndices {
 
     /// How many indices are free. Read by the tests that check the
     /// collection's reclamation of dead rows.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "read by the tests that check the collection's reclamation of dead rows"
+        )
+    )]
     pub(crate) fn len(&self) -> usize {
         self.free.len()
     }
@@ -94,7 +106,13 @@ impl DispatchIdAllocator {
 
     /// One past the largest id ever minted, for the tests that bound
     /// growth.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "read by the tests that check the collection's reclamation of dead rows"
+        )
+    )]
     pub(crate) fn high_water(&self) -> u32 {
         self.next
     }

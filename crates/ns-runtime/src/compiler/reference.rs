@@ -101,14 +101,14 @@ fn initializer(
                 });
                 body.emit(Instruction::InitializeSlotProvisionally {
                     source: future,
-                    own_index: own_index as u32,
+                    own_index: super::own_slot_index(own_index),
                 });
             }
             None => {
                 let source = body.value(initializer);
                 body.emit(Instruction::InitializeSlot {
                     source,
-                    own_index: own_index as u32,
+                    own_index: super::own_slot_index(own_index),
                 });
             }
         }
@@ -126,7 +126,7 @@ fn initializer(
         let slot_value = body.fresh();
         body.emit(Instruction::LoadOwnSlot {
             destination: slot_value,
-            own_index: own_index as u32,
+            own_index: super::own_slot_index(own_index),
         });
         let resolved = body.fresh();
         body.emit(Instruction::ResolveFuture {
@@ -135,7 +135,7 @@ fn initializer(
         });
         body.emit(Instruction::InitializeSlot {
             source: resolved,
-            own_index: own_index as u32,
+            own_index: super::own_slot_index(own_index),
         });
         body.record_statement(start);
     }
@@ -331,7 +331,10 @@ impl<'a> Body<'a> {
         let superclass_steps = super::superclass_steps(count, own_level);
         // The level clause `index` (from 0) adds: below the superclass
         // clause's class, whose steps fit a `u16`.
-        let steps_of = |index: usize| (count + own_level - 1 - index) as u16;
+        let steps_of = |index: usize| {
+            u16::try_from(count + own_level - 1 - index)
+                .expect("internal: more `<:` clauses than CLAUSE_INDEX_LIMIT reached the compiler")
+        };
         if count > 0 {
             let start = self.code.len();
             for (index, clause) in applied.iter().enumerate().rev() {
@@ -872,9 +875,9 @@ fn check_shape(instructions: &[Instruction], first_scratch: u16) {
     for instruction in instructions {
         if let Some((argument_base, argument_sources)) = instruction.argument_slots() {
             for (offset, source) in argument_sources.iter().enumerate() {
-                let slot = u32::from(argument_base) + offset as u32;
+                let slot = usize::from(argument_base) + offset;
                 assert!(
-                    u32::from(*source) == slot,
+                    usize::from(*source) == slot,
                     "internal: the reference lowering left argument slot r{slot} to the send to copy: {instruction:?}"
                 );
             }
@@ -953,6 +956,11 @@ pub(super) fn check_leftovers(instructions: &[Instruction], local_count: u16, re
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::cast_possible_truncation,
+        reason = "a test's values are small literals and lengths it built"
+    )]
+
     use super::*;
     use indoc::formatdoc;
     use std::path::PathBuf;

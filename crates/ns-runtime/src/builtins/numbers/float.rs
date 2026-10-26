@@ -297,13 +297,15 @@ fn digit_count<'gc>(
     arguments: Arguments<'_, 'gc>,
 ) -> Result<usize, NewspeakError<'gc>> {
     match collections::integer_argument(heap, arguments.first(heap)) {
-        Some(IntegerArgument::Small(count)) if range.contains(&count) => Ok(count as usize),
-        Some(IntegerArgument::Small(count)) => Err(NewspeakError::argument_error(
-            Symbol::intern(selector),
-            receiver,
-            Value::small_integer(count),
-            format!("{selector} {out_of_range}, got {count}"),
-        )),
+        Some(IntegerArgument::Small(count)) => match usize::try_from(count) {
+            Ok(digits) if range.contains(&count) => Ok(digits),
+            _ => Err(NewspeakError::argument_error(
+                Symbol::intern(selector),
+                receiver,
+                Value::small_integer(count),
+                format!("{selector} {out_of_range}, got {count}"),
+            )),
+        },
         Some(IntegerArgument::Large { .. }) => Err(NewspeakError::argument_error(
             Symbol::intern(selector),
             receiver,

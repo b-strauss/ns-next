@@ -87,6 +87,13 @@ fn rounded_decimal(magnitude: f64, significant: usize) -> Decimal {
     Decimal { digits, point }
 }
 
+/// A count of a decimal's digits as the `i32` its point is measured in.
+/// `shortest` writes at most 17 digits and `precision` at most 21, the
+/// most its leaf admits.
+fn digit_count(count: usize) -> i32 {
+    i32::try_from(count).expect("internal: a decimal written in decimal form has at most 21 digits")
+}
+
 fn push_digits(text: &mut String, digits: &[u8]) {
     text.push_str(std::str::from_utf8(digits).expect("ASCII digits"));
 }
@@ -107,7 +114,7 @@ fn decimal_form(
     digits_after_point: i32,
     trailing_zero: bool,
 ) {
-    let length = digits.len() as i32;
+    let length = digit_count(digits.len());
     if point <= 0 {
         text.push('0');
         if digits_after_point > 0 {
@@ -124,7 +131,8 @@ fn decimal_form(
             push_zeros(text, digits_after_point);
         }
     } else {
-        let split = point as usize;
+        let split = usize::try_from(point)
+            .expect("internal: the point lies between 0 and the digits' length here");
         push_digits(text, &digits[..split]);
         text.push('.');
         push_digits(text, &digits[split..]);
@@ -157,7 +165,7 @@ pub(crate) fn shortest(value: f64) -> String {
     let mut text = signed(value);
     let exponent = decimal.point - 1;
     if DECIMAL_EXPONENTS.contains(&exponent) {
-        let after_point = decimal.digits.len() as i32 - decimal.point;
+        let after_point = digit_count(decimal.digits.len()) - decimal.point;
         decimal_form(&mut text, &decimal.digits, decimal.point, after_point, true);
     } else {
         exponential_form(&mut text, &decimal.digits, exponent);
@@ -237,7 +245,7 @@ pub(crate) fn precision(value: f64, significant_digits: usize) -> String {
     }
     let decimal = rounded_decimal(value.abs(), significant_digits);
     let mut text = signed(value);
-    let wanted = significant_digits as i32;
+    let wanted = digit_count(significant_digits);
     if 1 - decimal.point > PRECISION_LEADING_ZEROS || decimal.point - wanted > 0 {
         exponential_form(&mut text, &decimal.digits, decimal.point - 1);
     } else {

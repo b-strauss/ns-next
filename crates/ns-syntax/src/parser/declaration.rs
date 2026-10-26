@@ -3553,6 +3553,11 @@ mod specification_tests {
 /// reach as surely as a release build.
 #[cfg(test)]
 mod recovery_work_tests {
+    #![expect(
+        clippy::cast_possible_truncation,
+        reason = "a test's values are small literals and lengths it built"
+    )]
+
     use super::*;
     use crate::parser::{Parser, RECOVERY_WORK_PER_TOKEN};
     use crate::span::Span;

@@ -146,6 +146,10 @@ impl Header {
 
     /// The units the last word leaves unused: 0 unless the format is
     /// `ThirtyTwoBit`, `Bytes` or `AlignedBytes`.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the format code's distance past its format is the unused count, below 8 (`Header::new`), and the mask keeps only the bits the format uses"
+    )]
     pub(super) fn unused(self) -> u8 {
         let format = self.format();
         (self.format_code() - format as u64) as u8 & format.unused_limit()
@@ -227,6 +231,13 @@ impl Header {
     /// count is in an overflow word.
     pub(super) fn word_count(self) -> usize {
         (self.0 >> WORD_COUNT_SHIFT) as usize
+    }
+
+    /// `word_count` as the eight bits the header holds it in: 255 when the
+    /// count is in an overflow word.
+    #[inline(always)]
+    pub(super) fn word_count_field(self) -> u8 {
+        (self.0 >> WORD_COUNT_SHIFT) as u8
     }
 }
 

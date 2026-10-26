@@ -802,7 +802,7 @@ impl Out {
             }
             Literal::SmallInteger(value) => {
                 self.u8(2);
-                self.u64(*value as u64);
+                self.u64(value.cast_unsigned());
             }
             Literal::Float(value) => {
                 self.u8(3);

@@ -700,6 +700,11 @@ fn contains(outer: Span, inner: Span) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::cast_possible_truncation,
+        reason = "a test's values are small literals and lengths it built"
+    )]
+
     use super::*;
 
     const MODULE: &str = indoc::indoc! {"

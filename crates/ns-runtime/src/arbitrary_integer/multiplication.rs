@@ -16,7 +16,7 @@ use super::addition::{
     subtract_magnitudes,
 };
 use super::number_theoretic_transform::multiply_accumulate_by_transform;
-use super::{trim_zero_top_digits, ArbitraryInteger};
+use super::{low_digit, trim_zero_top_digits, ArbitraryInteger};
 
 /// Below this many digits in the shorter operand, long multiplication wins.
 const LONG_MULTIPLICATION_LIMIT: usize = 32;
@@ -37,7 +37,7 @@ pub(super) fn multiply_accumulate_with_carry(
 ) -> u64 {
     *carry += u128::from(addend);
     *carry += u128::from(left) * u128::from(right);
-    let low = *carry as u64;
+    let low = low_digit(*carry);
     *carry >>= u64::BITS;
     low
 }
@@ -47,7 +47,7 @@ pub(super) fn multiply_accumulate_with_carry(
 #[inline]
 pub(super) fn multiply_with_carry(left: u64, right: u64, carry: &mut u128) -> u64 {
     *carry += u128::from(left) * u128::from(right);
-    let low = *carry as u64;
+    let low = low_digit(*carry);
     *carry >>= u64::BITS;
     low
 }
@@ -68,7 +68,7 @@ fn multiply_accumulate_digit(accumulator: &mut [u64], multiplicand: &[u64], mult
 
     // The carry out of a digit's multiply-accumulate fits one digit.
     debug_assert!(carry >> u64::BITS == 0);
-    let final_carry = add_in_place_with_carry(high, &[carry as u64]);
+    let final_carry = add_in_place_with_carry(high, &[low_digit(carry)]);
     assert_eq!(final_carry, 0, "carry overflow during multiplication");
 }
 

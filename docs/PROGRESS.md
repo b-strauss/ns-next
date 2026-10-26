@@ -53,6 +53,7 @@ first.
 | Road step 7b — resuming an activation from its frame: suspended frames and a side table, the lazy resume, unwinding and the sender walks through suspended frames, a sixth stress mode, the decoder refusing a continuable frame | Complete | 2026-10-24 | [resuming-frames](superpowers/plans/2026-10-24-0140-resuming-frames.md) |
 | Road step 7a — frames as words in one reservation: the code an id, the kind a copyable view, the continuation a side-table row, every activation a frame of tagged words with a fixed header in one `ns-memory` reservation, the reservation a net beneath the depth limit; the measuring protocol varying the block layout inside `vm::run` | Complete | 2026-10-24 | [frames-as-words](superpowers/plans/2026-10-24-1147-frames-as-words.md) |
 | Road step 7a′ — overlapping register windows: a send's arguments in contiguous slots read in place, its own callee laid on its slots, the header 13 words in every build and out of the register numbering, the leftover analysis that lets neither a push nor a pop write a scratch register, stated construct limits, the codegen gate | Complete | 2026-10-26 | [register-windows](superpowers/plans/2026-10-24-2054-register-windows.md), [leftover-analysis](superpowers/plans/2026-10-25-1248-leftover-analysis.md) (superseded from its Task 1 on), [leftover-bitsets](superpowers/plans/2026-10-25-1635-leftover-bitsets.md) |
+| Four clippy lints: every lint exception states its reason, every unsafe block its safety, and every narrowing cast outside tests the bound that makes it exact | Complete | 2026-10-26 | [clippy-lints](superpowers/plans/2026-10-26-1227-clippy-lints.md) |
 | Road step 7c — the deoptimization contract and the protocol between interpreted and compiled frames | Not started | — | — |
 | Between road steps 7 and 8 — real Newspeak bodies for `whileTrue:`, `whileFalse:` and `do:` | Not started | — | — |
 | Road step 8 (M5) — a baseline JIT | Not started | — | — |
@@ -6204,7 +6205,54 @@ stress modes and `run-corpus` under each. New tests in
 - `5836de89` -- what the leftover analysis measured.
 - This commit -- the second stage measured, and this entry.
 
-What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): a branch
-adopting four clippy lints, then road step 7c, next; DeltaBlueTon80 and
+What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): road step 7c,
+next; DeltaBlueTon80 and
 Mandelbrot slower after the overlap; the send and return functions'
 placement moving with the collector's code size.
+
+## Four clippy lints (2026-10-26)
+
+Plan: [clippy-lints](superpowers/plans/2026-10-26-1227-clippy-lints.md);
+[design/README.md](design/README.md), "Gates"; `Cargo.toml`,
+`[workspace.lints.clippy]`.
+
+Decided with the user on 2026-10-26, after road step 7a′: the workspace
+enables `undocumented_unsafe_blocks` (`ns-memory`, the one crate with
+`unsafe`, had no hit), `allow_attributes_without_reason`,
+`cast_possible_truncation` and `cast_sign_loss`. Every `#[allow]` became
+an `#[expect(.., reason = ..)]`, or stays an `allow` where an `expect`
+would be unfulfilled in some build. Every narrowing cast outside tests
+now takes one of five forms: a deliberate sign reinterpretation through
+`cast_unsigned()` / `cast_signed()`; a checked `try_from` with an
+invariant panic where an invariant bounds it off the hot path; a helper
+beside the bound's owner where it is on the hot path
+(`heap/frames.rs`'s `number_as_u32`, `number_as_usize`, `stack_offset`);
+a named helper for a deliberate truncation to low bits
+(`arbitrary_integer/`'s `low_digit` and `high_digit`); and, for a value a
+program, an image or an editor decides, an answer of the error or `None`
+the surrounding code already gives an out-of-range value. Test code is
+exempt, each test module or file naming the lints that fire there. The
+codegen budgets were not touched. No golden, `run-corpus` output or
+benchmark outcome changed.
+
+The audit found two defects, each fixed with a test that failed before
+it: an LSP position past `u32` was wrapped and is clamped
+(`e5950348`); an index past `usize` was wrapped on a 32-bit target and is
+refused (`cf789bf3`). `whole_file_edit_guarded` (part of `1f5824f3`) is
+a guard, not a fix: `changed_span` now runs only when the hints changed
+the text, which they never do to a text `parse` refused, so
+`Span::from_offsets` cannot panic there. Nothing else was found unbounded: `compact.rs`'s side
+tables, the typed-array stores, the symbol interner (which aborts with a
+stated message) and the numerics were all bounded.
+
+- `b4df6964` -- the plan.
+- `f40137e4` -- every lint exception states its reason, and every unsafe
+  block its safety.
+- `78ac87a9`, `e5950348`, `1f5824f3` -- the frontend and the analyzer
+  narrow through the bounds the source keeps.
+- `a47aaee9`, `cf789bf3`, `aef0d73a`, `fc723a36` -- the heap, the run
+  loop, the encoding, the compiler, the builtins and the numerics.
+- The commit that enables the cast lints and exempts test code.
+
+What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): road step
+7c, next.

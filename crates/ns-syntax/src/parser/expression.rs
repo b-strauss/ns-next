@@ -458,9 +458,9 @@ impl<'a> Parser<'a> {
             let name = self.text(keyword).trim_end_matches(':');
             let target = Identifier {
                 name: name.to_string(),
-                span: crate::span::Span::new(
-                    keyword.span.start,
-                    keyword.span.start + name.len() as u32,
+                span: crate::span::Span::from_offsets(
+                    keyword.span.start as usize,
+                    keyword.span.start as usize + name.len(),
                 ),
             };
             self.refuse_reserved_word(&target.name, target.span, "be assigned");

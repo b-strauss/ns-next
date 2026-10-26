@@ -140,8 +140,9 @@ fn whole_file_edit_guarded(
             return None;
         }
     };
-    let changed = changed_span(text, &applied);
-    (applied != text).then_some(changed)
+    // Only a changed text is compared: a text no hint can touch may be one
+    // an editor sent past what a span addresses, which no hint ever saw.
+    (applied != text).then(|| changed_span(text, &applied))
 }
 
 /// The smallest span of `before` whose replacement gives `after`, and that
@@ -168,7 +169,7 @@ fn changed_span(before: &str, after: &str) -> (Span, String) {
         suffix -= 1;
     }
     (
-        Span::new(prefix as u32, (before.len() - suffix) as u32),
+        Span::from_offsets(prefix, before.len() - suffix),
         after[prefix..after.len() - suffix].to_string(),
     )
 }

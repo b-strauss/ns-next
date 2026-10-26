@@ -370,7 +370,8 @@ impl InlineCaches {
         {
             Some(end) if end < FeedbackBase::NOT_ASSIGNED.0 => {
                 self.sites.resize(end as usize, CacheEntry::vacant());
-                FeedbackBase(start as u32)
+                // `end` fits 32 bits, and `start` lies `size` below it.
+                FeedbackBase(end - size)
             }
             _ => FeedbackBase::NOT_ASSIGNED,
         }
@@ -679,6 +680,10 @@ pub(crate) struct GlobalCache {
 
 impl GlobalCache {
     /// The first of the key's group's two adjacent slots.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the hash only picks a group, so folding it to the target's width keeps all the mask reads"
+    )]
     fn group(&self, guard: DispatchId, selector: Symbol, rule: CacheRule) -> usize {
         let hash = crate::hash::IdentityBuildHasher::default().hash_one((guard, selector, rule));
         (hash as usize & self.mask) * 2
@@ -1146,7 +1151,10 @@ pub(crate) fn send_public<'gc>(
 /// only calls its `lexical_of` closure on an actual miss, once N is needed
 /// for the `Lexical` rule's payload (`docs/design/dispatch.md`, "3b -- The
 /// caches").
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the site, its guard and the closures that decide a miss are passed separately so the hit path builds nothing"
+)]
 #[inline(always)]
 pub(crate) fn send_lexical<'gc>(
     mutator: &mut Mutator<'gc>,

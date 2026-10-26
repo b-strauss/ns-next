@@ -533,6 +533,24 @@ fn fits(register: u16) -> bool {
     register <= u16::from(u8::MAX)
 }
 
+/// `register` in a slot's byte. Only an instruction `fits_narrow`
+/// admitted is encoded in its eight-byte form, and it admits one only when
+/// every register that goes into the slot fits a byte.
+fn narrow_register(register: u16) -> u8 {
+    u8::try_from(register).expect(
+        "internal: fits_narrow admits an eight-byte form only when its registers fit a byte",
+    )
+}
+
+/// The sixteen-bit index the next entry of a side table of `length`
+/// entries takes. `fits_narrow` admits an eight-byte form that appends to
+/// a table only while the table holds fewer than `TABLE_LIMIT` entries.
+fn narrow_index(length: usize) -> u16 {
+    u16::try_from(length).expect(
+        "internal: fits_narrow admits an eight-byte form only while its table is below TABLE_LIMIT",
+    )
+}
+
 /// The four kinds of send that share one shape: a selector, a call site,
 /// a destination and up to two arguments in eight bytes.
 #[derive(Clone, Copy)]
@@ -796,8 +814,8 @@ impl CodeBuilder {
     }
 
     /// `instruction`'s slot: its eight-byte form when `narrow`, which
-    /// `fits_narrow` has decided -- so every `as` narrowing below is in
-    /// range -- and its wide form otherwise.
+    /// `fits_narrow` has decided -- so every `narrow_register` and
+    /// `narrow_index` below is in range -- and its wide form otherwise.
     fn encode(&mut self, instruction: Instruction, narrow: bool) -> CompactInstruction {
         match instruction {
             Instruction::SendPublic {
@@ -916,15 +934,15 @@ impl CodeBuilder {
                 SendKind::Super => CompactInstruction::SendSuperWide { site: index },
             };
         }
-        let index = self.send_sites.len() as u16;
+        let index = narrow_index(self.send_sites.len());
         self.send_sites.push(site);
-        let destination = registers.destination as u8;
-        let receiver = registers.receiver as u8;
-        let argument_base = registers.argument_base as u8;
+        let destination = narrow_register(registers.destination);
+        let receiver = narrow_register(registers.receiver);
+        let argument_base = narrow_register(registers.argument_base);
         let sources: Vec<u8> = registers
             .arguments
             .iter()
-            .map(|register| *register as u8)
+            .map(|register| narrow_register(*register))
             .collect();
         match (kind, &sources[..]) {
             (SendKind::Public, []) => CompactInstruction::SendPublic0 {
@@ -1012,7 +1030,7 @@ impl CodeBuilder {
                 destination,
                 literal,
             } => {
-                let destination = destination as u8;
+                let destination = narrow_register(destination);
                 match literal_form(&literal) {
                     LiteralForm::Nil => CompactInstruction::LoadNil { destination },
                     LiteralForm::Boolean(true) => CompactInstruction::LoadTrue { destination },
@@ -1021,7 +1039,7 @@ impl CodeBuilder {
                         CompactInstruction::LoadSmallInteger { destination, value }
                     }
                     LiteralForm::Constant(immediate) => {
-                        let constant = self.constants.len() as u16;
+                        let constant = narrow_index(self.constants.len());
                         self.constants.push(immediate);
                         CompactInstruction::LoadConstant {
                             destination,
@@ -1029,7 +1047,7 @@ impl CodeBuilder {
                         }
                     }
                     LiteralForm::Allocated => {
-                        let index = self.literals.len() as u16;
+                        let index = narrow_index(self.literals.len());
                         self.literals.push(literal);
                         CompactInstruction::LoadLiteral {
                             destination,
@@ -1039,11 +1057,11 @@ impl CodeBuilder {
                 }
             }
             Instruction::LoadSelf { destination } => CompactInstruction::LoadSelf {
-                destination: destination as u8,
+                destination: narrow_register(destination),
             },
             Instruction::LoadEnclosingObject { destination, depth } => {
                 CompactInstruction::LoadEnclosingObject {
-                    destination: destination as u8,
+                    destination: narrow_register(destination),
                     depth,
                 }
             }
@@ -1051,20 +1069,20 @@ impl CodeBuilder {
                 destination,
                 source,
             } => CompactInstruction::Move {
-                destination: destination as u8,
-                source: source as u8,
+                destination: narrow_register(destination),
+                source: narrow_register(source),
             },
             Instruction::StoreLocal { source, slot } => CompactInstruction::StoreLocal {
-                source: source as u8,
-                slot: slot as u8,
+                source: narrow_register(source),
+                slot: narrow_register(slot),
             },
             Instruction::LoadOuterLocal {
                 destination,
                 depth,
                 index,
             } => CompactInstruction::LoadOuterLocal {
-                destination: destination as u8,
-                index: index as u8,
+                destination: narrow_register(destination),
+                index: narrow_register(index),
                 depth,
             },
             Instruction::StoreOuterLocal {
@@ -1072,8 +1090,8 @@ impl CodeBuilder {
                 depth,
                 index,
             } => CompactInstruction::StoreOuterLocal {
-                source: source as u8,
-                index: index as u8,
+                source: narrow_register(source),
+                index: narrow_register(index),
                 depth,
             },
             Instruction::SendMirror {
@@ -1085,16 +1103,16 @@ impl CodeBuilder {
                 destination,
                 failure,
             } => {
-                let site = self.mirror_sites.len() as u16;
+                let site = narrow_index(self.mirror_sites.len());
                 self.mirror_sites.push(MirrorSite {
                     argument_base,
                     arguments: argument_sources.into_boxed_slice(),
                     failure,
                 });
                 CompactInstruction::SendMirror {
-                    destination: destination as u8,
-                    mirror: mirror_register as u8,
-                    subject: subject_register as u8,
+                    destination: narrow_register(destination),
+                    mirror: narrow_register(mirror_register),
+                    subject: narrow_register(subject_register),
                     primitive,
                     site,
                 }
@@ -1105,14 +1123,14 @@ impl CodeBuilder {
                 code,
                 copied,
             } => {
-                let block = self.blocks.len() as u16;
+                let block = narrow_index(self.blocks.len());
                 self.blocks.push(BlockSite {
                     code,
                     parameters,
                     copied: copied.into_boxed_slice(),
                 });
                 CompactInstruction::MakeClosure {
-                    destination: destination as u8,
+                    destination: narrow_register(destination),
                     block,
                 }
             }
@@ -1120,11 +1138,11 @@ impl CodeBuilder {
                 destination,
                 element_registers,
             } => CompactInstruction::MakeArray {
-                destination: destination as u8,
+                destination: narrow_register(destination),
                 elements: self.push_register_list(element_registers),
             },
             Instruction::MakeVector { destination, size } => CompactInstruction::MakeVector {
-                destination: destination as u8,
+                destination: narrow_register(destination),
                 size,
             },
             Instruction::LoadVector {
@@ -1132,8 +1150,8 @@ impl CodeBuilder {
                 vector,
                 index,
             } => CompactInstruction::LoadVector {
-                destination: destination as u8,
-                vector: vector as u8,
+                destination: narrow_register(destination),
+                vector: narrow_register(vector),
                 index,
             },
             Instruction::StoreVector {
@@ -1141,13 +1159,13 @@ impl CodeBuilder {
                 index,
                 source,
             } => CompactInstruction::StoreVector {
-                vector: vector as u8,
-                source: source as u8,
+                vector: narrow_register(vector),
+                source: narrow_register(source),
                 index,
             },
             Instruction::InitializeSlot { source, own_index } => {
                 CompactInstruction::InitializeSlot {
-                    source: source as u8,
+                    source: narrow_register(source),
                     own_index,
                 }
             }
@@ -1158,54 +1176,54 @@ impl CodeBuilder {
                 destination,
                 closure,
             } => CompactInstruction::MakeFuture {
-                destination: destination as u8,
-                closure: closure as u8,
+                destination: narrow_register(destination),
+                closure: narrow_register(closure),
             },
             Instruction::ResolveFuture {
                 destination,
                 source,
             } => CompactInstruction::ResolveFuture {
-                destination: destination as u8,
-                source: source as u8,
+                destination: narrow_register(destination),
+                source: narrow_register(source),
             },
             Instruction::LoadOwnSlot {
                 destination,
                 own_index,
             } => CompactInstruction::LoadOwnSlot {
-                destination: destination as u8,
+                destination: narrow_register(destination),
                 own_index,
             },
             Instruction::InitializeSlotProvisionally { source, own_index } => {
                 CompactInstruction::InitializeSlotProvisionally {
-                    source: source as u8,
+                    source: narrow_register(source),
                     own_index,
                 }
             }
             Instruction::Return { register } => CompactInstruction::Return {
-                register: register as u8,
+                register: narrow_register(register),
             },
             Instruction::ImplicitReturn { register } => CompactInstruction::ImplicitReturn {
-                register: register as u8,
+                register: narrow_register(register),
             },
             Instruction::NonLocalReturn { register } => CompactInstruction::NonLocalReturn {
-                register: register as u8,
+                register: narrow_register(register),
             },
             Instruction::SignalNonBoolean { register } => CompactInstruction::SignalNonBoolean {
-                register: register as u8,
+                register: narrow_register(register),
             },
             Instruction::Jump { target } => CompactInstruction::Jump { target },
             Instruction::JumpIfNotBoolean { register, target } => {
                 CompactInstruction::JumpIfNotBoolean {
-                    register: register as u8,
+                    register: narrow_register(register),
                     target,
                 }
             }
             Instruction::BranchIfFalse { register, target } => CompactInstruction::BranchIfFalse {
-                register: register as u8,
+                register: narrow_register(register),
                 target,
             },
             Instruction::BranchIfTrue { register, target } => CompactInstruction::BranchIfTrue {
-                register: register as u8,
+                register: narrow_register(register),
                 target,
             },
             Instruction::IntegerBinary {
@@ -1215,9 +1233,9 @@ impl CodeBuilder {
                 right,
                 target,
             } => {
-                let destination = destination as u8;
-                let left = left as u8;
-                let right = right as u8;
+                let destination = narrow_register(destination);
+                let left = narrow_register(left);
+                let right = narrow_register(right);
                 match operation {
                     IntegerOperation::Add => CompactInstruction::IntegerAdd {
                         destination,
@@ -1276,14 +1294,14 @@ impl CodeBuilder {
                 }
             }
             Instruction::AllocateInstance { destination } => CompactInstruction::AllocateInstance {
-                destination: destination as u8,
+                destination: narrow_register(destination),
             },
             Instruction::InitializeInstance {
                 instance,
                 destination,
             } => CompactInstruction::InitializeInstance {
-                destination: destination as u8,
-                instance: instance as u8,
+                destination: narrow_register(destination),
+                instance: narrow_register(instance),
             },
             Instruction::CheckAppliedClause { steps, selector } => {
                 CompactInstruction::CheckAppliedClause { steps, selector }
@@ -1295,7 +1313,7 @@ impl CodeBuilder {
                 argument_sources,
                 destination,
             } => {
-                let site = self.superclass_sites.len() as u16;
+                let site = narrow_index(self.superclass_sites.len());
                 self.superclass_sites.push(SuperclassSite {
                     steps,
                     selector,
@@ -1303,7 +1321,7 @@ impl CodeBuilder {
                     arguments: argument_sources.into_boxed_slice(),
                 });
                 CompactInstruction::InitializeSuperclass {
-                    destination: destination as u8,
+                    destination: narrow_register(destination),
                     site,
                 }
             }
@@ -1313,8 +1331,8 @@ impl CodeBuilder {
                 argument_sources,
                 destination,
             } => CompactInstruction::InitializeAppliedLevel {
-                destination: destination as u8,
-                argument_base: argument_base as u8,
+                destination: narrow_register(destination),
+                argument_base: narrow_register(argument_base),
                 steps,
                 arguments: self.push_register_list(argument_sources),
             },
@@ -1330,7 +1348,7 @@ impl CodeBuilder {
     /// Appends `registers` to `register_lists` and answers its index, which
     /// `fits_narrow` has bounded to sixteen bits.
     fn push_register_list(&mut self, registers: Vec<u16>) -> u16 {
-        let index = self.register_lists.len() as u16;
+        let index = narrow_index(self.register_lists.len());
         self.register_lists.push(registers.into_boxed_slice());
         index
     }
@@ -2459,6 +2477,11 @@ fn assemble_send(
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::cast_possible_truncation,
+        reason = "a test's values are small literals and lengths it built"
+    )]
+
     use super::*;
     use crate::bytecode::{CallSite, Instruction, IntegerOperation, Literal};
     use crate::Symbol;

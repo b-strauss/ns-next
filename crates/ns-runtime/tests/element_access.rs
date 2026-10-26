@@ -4,6 +4,12 @@
 //! (`Heap::byte_array_element`, `Heap::set_byte_array_element`), held to
 //! the standard library's own conversions at every offset modulo 8.
 
+#![expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "a test's values are small literals and lengths it built"
+)]
+
 use ns_runtime::builtins::primitive::{ElementAccess, ElementKind};
 use ns_runtime::heap::Element;
 use ns_runtime::Interpreter;

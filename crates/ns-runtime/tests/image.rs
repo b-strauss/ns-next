@@ -2,6 +2,11 @@
 //! scalars, the mixin table, the code table, the object and frame tables,
 //! whole-image `snapshot`/`load`, and the two verification passes.
 
+#![expect(
+    clippy::cast_possible_truncation,
+    reason = "a test's values are small literals and lengths it built"
+)]
+
 use indoc::{formatdoc, indoc};
 use ns_runtime::interpreter::Arguments;
 use std::path::PathBuf;

@@ -295,7 +295,13 @@ impl std::fmt::Debug for TaintedSets {
 
 /// What the pass spent on one body.
 #[derive(Debug, Clone, Copy, Default)]
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "read by the tests that bound what the pass spends"
+    )
+)]
 pub(crate) struct Spent {
     /// The words of one bitset: `register_count` rounded up to 64 bits.
     pub(crate) words: usize,
@@ -313,7 +319,13 @@ pub(crate) struct Spent {
 
 /// What one pass found: the answers to `tainted_at`'s program counters,
 /// and what it spent.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "read by the tests that bound what the pass spends"
+    )
+)]
 pub(crate) struct Analysis {
     pub(crate) answers: Vec<Vec<Range<u16>>>,
     pub(crate) spent: Spent,
@@ -359,7 +371,8 @@ pub(crate) fn analyze(
     let mut next_answer = 0;
     let mut answers = Vec::with_capacity(program_counters.len());
     for (index, instruction) in instructions.iter().enumerate() {
-        let here = index as u32;
+        let here = u32::try_from(index)
+            .expect("internal: analyze refuses a body past INSTRUCTION_LIMIT before it walks one");
         let mut operations = 0;
         while open_loops
             .last()
@@ -473,7 +486,7 @@ fn taint_end(instruction: &Instruction, local_count: u16, register_count: u16) -
                 (usize::from(base) + sources.len()).max(usize::from(local_count))
             })
             .filter(|end| *end < usize::from(register_count))
-            .map(|end| end as u16),
+            .map(crate::heap::register_number),
     }
 }
 
@@ -504,7 +517,9 @@ fn loops(
                 .filter(|target| *target as usize <= index)
                 .map(|head| Region {
                     head,
-                    end: index as u32,
+                    end: u32::try_from(index).expect(
+                        "internal: analyze refuses a body past INSTRUCTION_LIMIT before it walks one",
+                    ),
                     floor: NO_FLOOR,
                 })
         })
@@ -722,7 +737,7 @@ fn ranges(bits: &[u64]) -> Vec<Range<u16>> {
     let mut position = 0;
     while let Some(start) = next_with(bits, position, true) {
         let end = next_with(bits, start, false).unwrap_or(total);
-        found.push(start as u16..end as u16);
+        found.push(crate::heap::register_number(start)..crate::heap::register_number(end));
         position = end;
     }
     found

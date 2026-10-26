@@ -700,7 +700,10 @@ impl CompiledCode {
     /// so that building a body decodes none of it.
     // Every field a body is built with but its derived ones, each a
     // different quantity, so a struct of them would only rename the list.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each field a body is built with is a different quantity; a struct of them would only rename the list"
+    )]
     pub(crate) fn from_builder(
         kind: CodeKind,
         builder: CodeBuilder,
@@ -1449,7 +1452,13 @@ pub(crate) fn falls_through(instruction: &Instruction) -> bool {
 /// target (`jump_target`). A send resumes at the next instruction however
 /// its callee returns, and an instruction that forces a future runs again
 /// from where it stands, so neither adds an edge.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "read by the tests that walk a body's control flow"
+    )
+)]
 pub(crate) fn successors(index: u32, instruction: &Instruction) -> impl Iterator<Item = u32> {
     let next = if falls_through(instruction) {
         index.checked_add(1)
@@ -1570,8 +1579,8 @@ fn argument_slots(argument_base: u16, argument_sources: &[u16]) -> String {
         .iter()
         .enumerate()
         .map(|(offset, source)| {
-            let slot = u32::from(argument_base) + offset as u32;
-            if u32::from(*source) == slot {
+            let slot = usize::from(argument_base) + offset;
+            if usize::from(*source) == slot {
                 format!("r{slot}")
             } else {
                 format!("r{slot} <- r{source}")

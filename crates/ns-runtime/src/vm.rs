@@ -16,7 +16,7 @@ use std::rc::Rc;
 
 use crate::builtins::primitive::MirrorPrimitive;
 use crate::bytecode::{CompactInstruction, CompiledCode, Instruction, IntegerOperation, Literal};
-use crate::heap::{ActivationReference, ArgumentSlots, RegisterBase};
+use crate::heap::{register_number, ActivationReference, ArgumentSlots, RegisterBase};
 use crate::interpreter::future::{
     not_a_closure, resolve_for_instruction, value_for_a_value_slot, FutureOutcome, Resolution,
 };
@@ -1331,7 +1331,6 @@ impl PendingSend {
     /// source does not follow the first's is the one case that places
     /// anything, out of line.
     #[inline(always)]
-    #[allow(clippy::too_many_arguments)]
     fn inline(
         mutator: &mut Mutator<'_>,
         register_base: RegisterBase,
@@ -1359,7 +1358,7 @@ impl PendingSend {
             site: u32::from(site),
             window,
             slots: u16::from(argument_base),
-            count: sources.len() as u16,
+            count: argument_count(sources),
         }
     }
 
@@ -1403,7 +1402,10 @@ enum WideOutcome {
 /// wide operands cost `vm::run` one call, not a second copy of every arm. It
 /// calls the same effect functions the narrow arms do.
 #[inline(never)]
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the run loop's effect functions take the instruction's operands as they are, so a hit builds no argument struct"
+)]
 fn run_wide<'gc>(
     mutator: &mut Mutator<'gc>,
     instruction: &Instruction,
@@ -1847,7 +1849,10 @@ fn store_outer_local_from(
 /// any send's decision is. Which leaf, and whether the receiver is the
 /// mirror, is `interpreter::mirror`'s.
 #[inline(always)]
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the run loop's effect functions take the instruction's operands as they are, so a hit builds no argument struct"
+)]
 fn send_mirror(
     mutator: &mut Mutator<'_>,
     activation: ActivationReference,
@@ -1902,7 +1907,10 @@ fn send_mirror(
 }
 
 #[inline(always)]
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the run loop's effect functions take the instruction's operands as they are, so a hit builds no argument struct"
+)]
 fn make_closure_into(
     mutator: &mut Mutator<'_>,
     activation: ActivationReference,
@@ -2134,8 +2142,8 @@ fn argument_window(
 /// How many arguments `argument_sources` names: within the body's
 /// registers, a `u16` count, as the decoder verifies of every send.
 #[inline(always)]
-fn argument_count(argument_sources: &[u16]) -> u16 {
-    argument_sources.len() as u16
+fn argument_count<Source>(argument_sources: &[Source]) -> u16 {
+    register_number(argument_sources.len())
 }
 
 /// `argument_window` for sources no test inline found consecutive: out of
@@ -2160,14 +2168,13 @@ fn place_arguments(
         let consecutive = argument_sources
             .iter()
             .enumerate()
-            .all(|(offset, source)| u32::from(*source) == u32::from(first) + offset as u32);
+            .all(|(offset, source)| usize::from(*source) == usize::from(first) + offset);
         if consecutive {
             return first;
         }
     }
     for (offset, source) in argument_sources.iter().enumerate() {
-        // Below the body's register count, a `u16`.
-        let slot = argument_base + offset as u16;
+        let slot = argument_base + register_number(offset);
         if *source != slot {
             copy_register(mutator, register_base, slot, *source);
         }
@@ -2184,7 +2191,10 @@ fn place_arguments(
 /// factory's or an initializer's initializer go the same way: their
 /// decision is the body to run on the instance, or the instance itself
 /// when nothing runs.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the run loop's effect functions take the instruction's operands as they are, so a hit builds no argument struct"
+)]
 fn send<'gc>(
     mutator: &mut Mutator<'gc>,
     sender: Sender,
@@ -2449,7 +2459,10 @@ fn initialize_instance(
 
 /// `InitializeSuperclass`: the superclass's initializer on `self`.
 #[inline(never)]
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the run loop's effect functions take the instruction's operands as they are, so a hit builds no argument struct"
+)]
 fn initialize_superclass(
     mutator: &mut Mutator<'_>,
     sender: Sender,
@@ -2487,7 +2500,10 @@ fn initialize_superclass(
 
 /// `InitializeAppliedLevel`: an applied level's own part on `self`.
 #[inline(never)]
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the run loop's effect functions take the instruction's operands as they are, so a hit builds no argument struct"
+)]
 fn initialize_applied_level(
     mutator: &mut Mutator<'_>,
     sender: Sender,
@@ -2534,7 +2550,10 @@ fn initialize_applied_level(
 /// it stands for belongs there, stored and checked again, or forced first
 /// and the instruction run again (`future::value_for_a_value_slot`).
 #[inline(never)]
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the run loop's effect functions take the instruction's operands as they are, so a hit builds no argument struct"
+)]
 fn initialize_slot_refused<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,

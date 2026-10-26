@@ -340,6 +340,61 @@ pub(super) fn number_of(word: Word) -> u64 {
     word.bits() >> SMALL_INTEGER_TAG_BITS
 }
 
+/// The number of a header word that holds a 32-bit id, index or count --
+/// a code id, a feedback base, a continuation row, an entered level, a
+/// guard, a selector's index -- which `number_word`
+/// stored from that `u32`. A helper rather than `u32::try_from`, whose
+/// check the push and the run loop would pay on every read.
+#[inline(always)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the word was stored from a u32, so the number fits one"
+)]
+pub(super) fn number_as_u32(word: Word) -> u32 {
+    let number = number_of(word);
+    debug_assert!(
+        number <= u64::from(u32::MAX),
+        "internal: a frame's 32-bit number word holds a u32"
+    );
+    number as u32
+}
+
+/// The number of a header word that holds an index or a count of the
+/// target's width -- a code table's row, a register count, a program
+/// counter, a `usize` bounded by `INSTRUCTION_LIMIT` -- which `number_word` stored from a `usize` or narrower. A
+/// helper rather than `usize::try_from`, whose check a 32-bit target's
+/// run loop would pay on every read.
+#[inline(always)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the word was stored from a usize or narrower, so the number fits the target's width"
+)]
+pub(super) fn number_as_usize(word: Word) -> usize {
+    let number = number_of(word);
+    debug_assert!(
+        usize::try_from(number).is_ok(),
+        "internal: a frame's index or count fits the target's width"
+    );
+    number as usize
+}
+
+/// A word offset on the stack as the 32 bits a frame's offset is stored
+/// in -- an `ActivationReference`, a `RegisterBase`, a caller word. Every
+/// offset is below the reservation's words, which `MAXIMUM_STACK_WORDS`
+/// bounds to 2^31.
+#[inline(always)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a stack offset is below MAXIMUM_STACK_WORDS, 2^31, which the reservation's assertion keeps"
+)]
+pub(super) fn stack_offset(offset: usize) -> u32 {
+    debug_assert!(
+        offset < MAXIMUM_STACK_WORDS,
+        "internal: a stack offset lies inside the reservation"
+    );
+    offset as u32
+}
+
 /// A push the reservation cannot hold, which the caller raises as the
 /// depth limit's `stack overflow: recursion too deep`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -648,6 +703,11 @@ impl FrameStack {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::cast_possible_truncation,
+        reason = "a test's values are small literals and lengths it built"
+    )]
+
     use super::*;
 
     const ALL_KIND_TAGS: [u8; 8] = [

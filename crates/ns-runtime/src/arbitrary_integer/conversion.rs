@@ -18,16 +18,17 @@ const RADIX_BASES: [(u64, usize); 37] = radix_bases();
 
 const fn radix_bases() -> [(u64, usize); 37] {
     let mut bases = [(0, 0); 37];
-    let mut radix: u64 = 2;
-    while radix <= 36 {
+    let mut index: usize = 2;
+    while index <= 36 {
+        let radix = index as u64;
         let mut power = 1;
         let mut base = radix;
         while let Some(next) = base.checked_mul(radix) {
             base = next;
             power += 1;
         }
-        bases[radix as usize] = (base, power);
-        radix += 1;
+        bases[index] = (base, power);
+        index += 1;
     }
     bases
 }
@@ -36,6 +37,11 @@ const fn radix_bases() -> [(u64, usize); 37] {
 /// `"0"` for zero.
 pub(super) fn to_decimal(magnitude: &[u64]) -> String {
     to_radix(magnitude, 10)
+}
+
+/// The lowest digit of `value` in `radix`, 2 to 36, as a number.
+fn radix_digit(value: u64, radix: u64) -> u8 {
+    u8::try_from(value % radix).expect("internal: a remainder modulo a radix of at most 36")
 }
 
 /// The magnitude's digits in `radix` (2 to 36), upper case, most significant
@@ -59,7 +65,7 @@ pub(super) fn to_radix(magnitude: &[u64], radix: u32) -> String {
     while rest.len() > 1 {
         let (quotient, mut remainder) = divide_by_digit(&rest, base);
         for _ in 0..power {
-            digits.push((remainder % radix) as u8);
+            digits.push(radix_digit(remainder, radix));
             remainder /= radix;
         }
         rest = quotient;
@@ -67,7 +73,7 @@ pub(super) fn to_radix(magnitude: &[u64], radix: u32) -> String {
 
     let mut remainder = rest[0];
     while remainder != 0 {
-        digits.push((remainder % radix) as u8);
+        digits.push(radix_digit(remainder, radix));
         remainder /= radix;
     }
 
@@ -173,7 +179,9 @@ fn high_bits_to_u64(magnitude: &[u64]) -> u64 {
                 }
 
                 if digit_bits - bits_wanted != 0 {
-                    let dropped = digit << (64 - (digit_bits - bits_wanted) as u32);
+                    let dropped_bits = u32::try_from(digit_bits - bits_wanted)
+                        .expect("internal: at most a digit's 64 bits are dropped");
+                    let dropped = digit << (64 - dropped_bits);
                     high_bits |= u64::from(dropped != 0);
                 }
 
