@@ -16,7 +16,7 @@ use super::addition::{
     subtract_magnitudes,
 };
 use super::multiplication::multiply_magnitudes;
-use super::{significant_length, trim_zero_top_digits};
+use super::{high_digit, low_digit, significant_length, trim_zero_top_digits};
 
 /// Half a digit: a divisor at most this large goes through
 /// `divide_half_digits`.
@@ -30,7 +30,7 @@ fn divide_wide(high: u64, low: u64, divisor: u64) -> (u64, u64) {
 
     let dividend = (u128::from(high) << u64::BITS) | u128::from(low);
     let divisor = u128::from(divisor);
-    ((dividend / divisor) as u64, (dividend % divisor) as u64)
+    (low_digit(dividend / divisor), low_digit(dividend % divisor))
 }
 
 /// `[remainder, digit] / divisor` for a divisor of at most half a digit, in
@@ -93,8 +93,8 @@ fn subtract_multiple_same_length(minuend: &mut [u64], subtrahend: &[u64], multip
             + u128::from(offset_carry)
             - u128::from(subtrahend_digit) * u128::from(multiplier);
 
-        offset_carry = (offset_sum >> u64::BITS) as u64;
-        *digit = offset_sum as u64;
+        offset_carry = high_digit(offset_sum);
+        *digit = low_digit(offset_sum);
     }
 
     u64::MAX - offset_carry

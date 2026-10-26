@@ -17,6 +17,8 @@
 use std::cmp::max;
 use std::iter::zip;
 
+use super::{high_digit, low_digit};
+
 /// `(gcd, left_coefficient, right_coefficient)` with
 /// `left * left_coefficient + right * right_coefficient == gcd`: the
 /// extended Euclidean algorithm.
@@ -57,7 +59,16 @@ const fn inverse_modulo_any(value: u64, modulus: u64) -> u64 {
         coefficient += wide_modulus;
     }
     assert!(coefficient > 0 && coefficient < 1_i128 << 64);
-    coefficient as u64
+    low_digit(coefficient.cast_unsigned())
+}
+
+/// `value mod modulus` as a digit.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a remainder modulo a u64 modulus lies below the modulus"
+)]
+const fn remainder_modulo(value: u128, modulus: u64) -> u64 {
+    (value % modulus as u128) as u64
 }
 
 /// `value^-1 mod modulus`, for a modulus that is not zero.
@@ -82,10 +93,10 @@ struct Montgomery<const PRIME: u64>;
 
 impl<const PRIME: u64> Montgomery<PRIME> {
     /// 2^64 mod PRIME, which is one in Montgomery form.
-    const RADIX: u64 = ((1_u128 << 64) % PRIME as u128) as u64;
+    const RADIX: u64 = remainder_modulo(1_u128 << 64, PRIME);
     /// 2^128 mod PRIME: a Montgomery product with it brings a plain value
     /// into Montgomery form.
-    const RADIX_SQUARED: u64 = (Self::RADIX as u128 * Self::RADIX as u128 % PRIME as u128) as u64;
+    const RADIX_SQUARED: u64 = remainder_modulo(Self::RADIX as u128 * Self::RADIX as u128, PRIME);
     /// PRIME^-1 mod 2^64.
     const PRIME_INVERSE: u64 = inverse_modulo_two_to_the_64(PRIME);
 
@@ -136,9 +147,9 @@ impl<const PRIME: u64> Montgomery<PRIME> {
 
     /// Montgomery reduction, `value * 2^-64 mod PRIME`.
     const fn reduce(value: u128) -> u64 {
-        let factor = (value as u64).wrapping_mul(Self::PRIME_INVERSE);
-        let correction = ((factor as u128 * PRIME as u128) >> 64) as u64;
-        let (reduced, overflow) = ((value >> 64) as u64).overflowing_sub(correction);
+        let factor = low_digit(value).wrapping_mul(Self::PRIME_INVERSE);
+        let correction = high_digit(factor as u128 * PRIME as u128);
+        let (reduced, overflow) = high_digit(value).overflowing_sub(correction);
         if overflow {
             reduced.wrapping_add(PRIME)
         } else {
@@ -154,8 +165,8 @@ impl<const PRIME: u64> Montgomery<PRIME> {
     /// `left * right * 2^-64 - subtrahend mod PRIME`, fused.
     const fn multiply_subtract(left: u64, right: u64, subtrahend: u64) -> u64 {
         let product = left as u128 * right as u128;
-        let low = product as u64;
-        let high = Self::subtract((product >> 64) as u64, subtrahend);
+        let low = low_digit(product);
+        let high = Self::subtract(high_digit(product), subtrahend);
         Self::reduce(low as u128 | ((high as u128) << 64))
     }
 
@@ -177,7 +188,7 @@ impl<const PRIME: u64> Montgomery<PRIME> {
     /// and is responsible for.
     const fn multiply_unreduced(value: u128, factor: u64, factor_low: u64) -> u128 {
         let high_product = factor as u128 * (value >> 64);
-        let low_product = factor_low as u128 * (value as u64 as u128);
+        let low_product = factor_low as u128 * (low_digit(value) as u128);
         let (difference, overflow) = high_product.overflowing_sub(low_product);
         if overflow {
             difference.wrapping_add((PRIME as u128) << 64)
@@ -254,7 +265,9 @@ impl TransformPlan {
                     break;
                 }
 
-                let (mut length, mut twos) = (odd_length as usize, 0);
+                let odd_length = usize::try_from(odd_length)
+                    .expect("internal: below twice minimum_length, checked above");
+                let (mut length, mut twos) = (odd_length, 0);
                 while length < minimum_length && twos < Montgomery::<PRIME>::FACTORS_OF_TWO {
                     length *= 2;
                     twos += 1;
@@ -1034,7 +1047,7 @@ const FIRST_PRIME_INVERSE_MOD_SECOND: u64 = Montgomery::<SECOND_PRIME>::multiply
 const FIRST_TIMES_SECOND_INVERSE_MOD_THIRD: u64 = Montgomery::<THIRD_PRIME>::multiply(
     Montgomery::<THIRD_PRIME>::RADIX_SQUARED,
     inverse_modulo(
-        (FIRST_PRIME as u128 * SECOND_PRIME as u128 % THIRD_PRIME as u128) as u64,
+        remainder_modulo(FIRST_PRIME as u128 * SECOND_PRIME as u128, THIRD_PRIME),
         THIRD_PRIME,
     ),
 );
@@ -1044,8 +1057,8 @@ const FIRST_PRIME_MOD_THIRD: u64 =
     Montgomery::<THIRD_PRIME>::multiply(Montgomery::<THIRD_PRIME>::RADIX_SQUARED, FIRST_PRIME);
 
 /// `FIRST_PRIME * SECOND_PRIME`, as two digits.
-const FIRST_TIMES_SECOND_LOW: u64 = (FIRST_PRIME as u128 * SECOND_PRIME as u128) as u64;
-const FIRST_TIMES_SECOND_HIGH: u64 = ((FIRST_PRIME as u128 * SECOND_PRIME as u128) >> 64) as u64;
+const FIRST_TIMES_SECOND_LOW: u64 = low_digit(FIRST_PRIME as u128 * SECOND_PRIME as u128);
+const FIRST_TIMES_SECOND_HIGH: u64 = high_digit(FIRST_PRIME as u128 * SECOND_PRIME as u128);
 
 /// Adds `carry` into `accumulator` from its lowest digit up, answering the
 /// carry out of its top digit.
@@ -1100,6 +1113,13 @@ fn pack(source: &[u64], first_destination: &mut [u64], second_destination: &mut 
     }
 }
 
+/// How many values of `bits` bits, more than 32, the digits of an operand
+/// `length` digits long pack into.
+fn packed_length(length: usize, bits: u64) -> usize {
+    usize::try_from((64 * length as u64).div_ceil(bits))
+        .expect("internal: values of more than 32 bits pack a digit into fewer than two")
+}
+
 /// `accumulator += left * right` through two primes, `SECOND_PRIME` and
 /// `THIRD_PRIME`, with the operands repacked into values of `bits` bits:
 /// few enough that no term of the convolution reaches the primes' product
@@ -1111,8 +1131,8 @@ pub(super) fn multiply_accumulate_two_primes(
     bits: u64,
 ) {
     assert!(bits < 63);
-    let left_length = (64 * left.len() as u64).div_ceil(bits) as usize;
-    let right_length = (64 * right.len() as u64).div_ceil(bits) as usize;
+    let left_length = packed_length(left.len(), bits);
+    let right_length = packed_length(right.len(), bits);
     let product_length = left_length + right_length;
     let second_plan = TransformPlan::build::<SECOND_PRIME>(product_length);
     let third_plan = TransformPlan::build::<THIRD_PRIME>(product_length);
@@ -1171,7 +1191,7 @@ pub(super) fn multiply_accumulate_two_primes(
         }
         carry = value >> bits;
 
-        let packed = (value as u64) & mask;
+        let packed = low_digit(value) & mask;
         bit_buffer |= packed << buffered_bits;
         buffered_bits += bits;
         if buffered_bits >= 64 {
@@ -1293,16 +1313,21 @@ pub(super) fn multiply_accumulate_three_primes(
         );
         let (low_sum, overflow) =
             carry.overflowing_add(partial + FIRST_TIMES_SECOND_LOW as u128 * second_step as u128);
-        let low_digit = low_sum as u64;
+        let low_sum_digit = low_digit(low_sum);
         let high_part = FIRST_TIMES_SECOND_HIGH as u128 * second_step as u128
             + (low_sum >> 64)
             + if overflow { 1_u128 << 64 } else { 0 };
 
-        let (sum, overflow) = accumulator[index].overflowing_add(low_digit);
+        let (sum, overflow) = accumulator[index].overflowing_add(low_sum_digit);
         accumulator[index] = sum;
         carry = high_part + u128::from(overflow);
     }
-    propagate_carry(&mut accumulator[product_length..], carry as u64);
+    propagate_carry(
+        &mut accumulator[product_length..],
+        u64::try_from(carry).expect(
+            "internal: the product plus the accumulator's digits below it carry at most one past them",
+        ),
+    );
 }
 
 /// The most bits per packed value that keep every term of a convolution of

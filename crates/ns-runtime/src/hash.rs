@@ -71,7 +71,7 @@ pub type IdentityMap<K, V> = HashMap<K, V, IdentityBuildHasher>;
 /// answer the multiply's poorly mixed low bits.
 pub(crate) fn content_hash(value: impl std::hash::Hash) -> i64 {
     use std::hash::BuildHasher;
-    i64::from(IdentityBuildHasher::default().hash_one(value) as u32)
+    fold_to_32_bits(IdentityBuildHasher::default().hash_one(value))
 }
 
 /// `content_hash` of the text `characters` spell, without building it:
@@ -97,7 +97,16 @@ pub(crate) fn content_hash_of_characters(characters: impl Iterator<Item = char>)
         hasher.add(u64::from_le_bytes(word));
     }
     hasher.write_u8(0xff);
-    i64::from(hasher.finish() as u32)
+    fold_to_32_bits(hasher.finish())
+}
+
+/// The low 32 bits of `hash`, which `content_hash` explains.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "keeping the low half is the fold content_hash's comment argues for"
+)]
+fn fold_to_32_bits(hash: u64) -> i64 {
+    i64::from(hash as u32)
 }
 
 #[cfg(test)]

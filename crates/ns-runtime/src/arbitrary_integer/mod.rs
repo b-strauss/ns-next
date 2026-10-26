@@ -56,10 +56,7 @@ impl ArbitraryInteger {
 
     pub fn from_i128(value: i128) -> ArbitraryInteger {
         let magnitude = value.unsigned_abs();
-        ArbitraryInteger::from_parts(
-            value < 0,
-            vec![magnitude as u64, (magnitude >> u64::BITS) as u64],
-        )
+        ArbitraryInteger::from_parts(value < 0, vec![low_digit(magnitude), high_digit(magnitude)])
     }
 
     /// Trims zero top digits and clears the sign of a zero.
@@ -87,7 +84,12 @@ impl ArbitraryInteger {
         let truncated = value.trunc();
         // Below 2^63 in magnitude, `as` converts a whole `f64` exactly.
         if truncated.abs() < 9_223_372_036_854_775_808.0 {
-            return Some(ArbitraryInteger::from_i64(truncated as i64));
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "a whole value below 2^63 in magnitude, checked above, converts exactly"
+            )]
+            let whole = truncated as i64;
+            return Some(ArbitraryInteger::from_i64(whole));
         }
         // Beyond, the value is its 53-bit significand times a power of two
         // of at least 2^11, which `shift_left` multiplies out.
@@ -209,7 +211,7 @@ impl ArbitraryInteger {
                 return Vec::new();
             }
             let mut digits = magnitude[digit_shift..].to_vec();
-            shift_right_in_place(&mut digits, (count % u64::from(u64::BITS)) as u32);
+            shift_right_in_place(&mut digits, bit_offset(count));
             digits
         };
         if !self.negative {
@@ -223,7 +225,8 @@ impl ArbitraryInteger {
 
     /// How many base-256 digits the magnitude has; 0 for zero.
     pub fn base_256_length(&self) -> usize {
-        self.bit_length().div_ceil(8) as usize
+        usize::try_from(self.bit_length().div_ceil(8))
+            .expect("internal: the magnitude's bytes, which its allocation bounds by isize::MAX")
     }
 
     /// The magnitude's base-256 digit at zero-based `index`, least
@@ -232,8 +235,7 @@ impl ArbitraryInteger {
         if index >= self.base_256_length() {
             return None;
         }
-        let digit = self.magnitude[index / 8];
-        Some((digit >> ((index % 8) * 8)) as u8)
+        Some(self.magnitude[index / 8].to_le_bytes()[index % 8])
     }
 
     /// The text in `radix` (2 to 36), upper-case digits after a `-` for a
@@ -346,7 +348,7 @@ impl ArbitraryInteger {
             return Some(ArbitraryInteger::zero());
         }
         let digit_shift = usize::try_from(count / u64::from(u64::BITS)).ok()?;
-        let bit_shift = (count % u64::from(u64::BITS)) as u32;
+        let bit_shift = bit_offset(count);
         let length = digit_shift
             .checked_add(self.magnitude.len())?
             .checked_add(1)?;
@@ -489,7 +491,11 @@ impl ArbitraryInteger {
         }
         let values = digits
             .chars()
-            .map(|character| character.to_digit(radix).map(|value| value as u8))
+            .map(|character| {
+                character
+                    .to_digit(radix)
+                    .and_then(|value| u8::try_from(value).ok())
+            })
             .collect::<Option<Vec<u8>>>()?;
         Some(ArbitraryInteger::from_parts(
             negative,
@@ -546,6 +552,29 @@ impl PartialOrd for ArbitraryInteger {
     fn partial_cmp(&self, other: &ArbitraryInteger) -> Option<Ordering> {
         Some(self.cmp(other))
     }
+}
+
+/// The low digit of a double-digit `value`: a product, a sum or a
+/// remainder the digit algorithms split into two digits.
+#[inline(always)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "keeping the low 64 bits is the split; high_digit answers the rest"
+)]
+pub(crate) const fn low_digit(value: u128) -> u64 {
+    value as u64
+}
+
+/// The high digit of a double-digit `value`, the counterpart of
+/// `low_digit`.
+#[inline(always)]
+pub(crate) const fn high_digit(value: u128) -> u64 {
+    (value >> u64::BITS) as u64
+}
+
+/// The bit within its digit that the `count`th bit of a magnitude is.
+fn bit_offset(count: u64) -> u32 {
+    u32::try_from(count % u64::from(u64::BITS)).expect("internal: a remainder modulo 64")
 }
 
 /// Drops zero top digits, so that a magnitude is canonical.

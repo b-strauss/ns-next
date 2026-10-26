@@ -175,7 +175,7 @@ impl Rational {
         Some(if exponent >= 0 {
             Rational::from_integer(
                 numerator
-                    .shift_left(exponent as u64)
+                    .shift_left(exponent.cast_unsigned())
                     .expect("a double's integer has at most 1024 bits"),
             )
         } else {
@@ -243,7 +243,10 @@ fn scaled(
             .expect("a shift bounded by the double's exponent range")
     };
     if shift >= 0 {
-        (shifted(numerator, shift as u64), denominator.clone())
+        (
+            shifted(numerator, shift.cast_unsigned()),
+            denominator.clone(),
+        )
     } else {
         (
             numerator.clone(),
@@ -308,7 +311,9 @@ fn round_to_double(
 /// rounding error here would corrupt a correctly rounded conversion.
 fn power_of_two(exponent: i64) -> f64 {
     debug_assert!((-1022..=1023).contains(&exponent));
-    f64::from_bits(((exponent + 1023) as u64) << 52)
+    let biased = u64::try_from(exponent + 1023)
+        .expect("internal: round_to_double passes the exponent of a normal double");
+    f64::from_bits(biased << 52)
 }
 
 impl Ord for Rational {
