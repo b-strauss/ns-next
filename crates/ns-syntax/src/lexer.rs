@@ -101,7 +101,7 @@ impl<'a> Lexer<'a> {
                     if depth == 0 {
                         self.comments.push(Comment {
                             kind: CommentKind::Block,
-                            span: Span::new(start as u32, self.position as u32),
+                            span: Span::from_offsets(start, self.position),
                         });
                     }
                 }
@@ -113,12 +113,12 @@ impl<'a> Lexer<'a> {
                 }
                 (None, _) => {
                     self.diagnostics.push(Diagnostic::error(
-                        Span::new(start as u32, self.position as u32),
+                        Span::from_offsets(start, self.position),
                         "unterminated comment",
                     ));
                     self.comments.push(Comment {
                         kind: CommentKind::Block,
-                        span: Span::new(start as u32, self.position as u32),
+                        span: Span::from_offsets(start, self.position),
                     });
                     return;
                 }
@@ -151,7 +151,7 @@ impl<'a> Lexer<'a> {
         let start = self.position;
         self.position = first_line_break(&self.bytes[start..])
             .map_or(self.bytes.len(), |length| start + length);
-        let span = Span::new(start as u32, self.position as u32);
+        let span = Span::from_offsets(start, self.position);
         if let Some(previous) = self.comments.last_mut() {
             if previous.kind == CommentKind::Line
                 && continues_line_block(self.source, previous.span, start)
@@ -169,7 +169,7 @@ impl<'a> Lexer<'a> {
     fn push(&mut self, kind: TokenKind, start: usize, end: usize) {
         self.tokens.push(Token {
             kind,
-            span: Span::new(start as u32, end as u32),
+            span: Span::from_offsets(start, end),
         });
     }
 
@@ -201,7 +201,7 @@ impl<'a> Lexer<'a> {
             b'#' if self.peek_at(1) == Some(b'(') => {
                 self.position += 1;
                 self.diagnostics.push(Diagnostic::error(
-                    Span::new(start as u32, self.position as u32),
+                    Span::from_offsets(start, self.position),
                     "`#( ... )` is not Newspeak syntax; a tuple is written `{ element. element }`",
                 ));
             }
@@ -231,7 +231,7 @@ impl<'a> Lexer<'a> {
                     // further on.
                     self.position += 2;
                     self.diagnostics.push(Diagnostic::error(
-                        Span::new(start as u32, self.position as u32),
+                        Span::from_offsets(start, self.position),
                         "`:=` is not Newspeak syntax; a setter send is written `name:: expression`",
                     ));
                 } else {
@@ -268,7 +268,7 @@ impl<'a> Lexer<'a> {
                     .unwrap_or('\u{FFFD}');
                 self.position += character.len_utf8();
                 self.diagnostics.push(Diagnostic::error(
-                    Span::new(start as u32, self.position as u32),
+                    Span::from_offsets(start, self.position),
                     format!("unexpected character {character:?}"),
                 ));
             }
@@ -434,7 +434,7 @@ impl<'a> Lexer<'a> {
             match self.peek() {
                 None => {
                     self.diagnostics.push(Diagnostic::error(
-                        Span::new(start as u32, self.position as u32),
+                        Span::from_offsets(start, self.position),
                         "unterminated string literal",
                     ));
                     break;
@@ -488,7 +488,7 @@ impl<'a> Lexer<'a> {
             }
             _ => {
                 self.diagnostics.push(Diagnostic::error(
-                    Span::new(start as u32, self.position as u32),
+                    Span::from_offsets(start, self.position),
                     "expected symbol after `#`",
                 ));
             }
@@ -519,7 +519,7 @@ impl<'a> Lexer<'a> {
             None => {
                 self.position = self.source.len();
                 self.diagnostics.push(Diagnostic::error(
-                    Span::new(start as u32, self.position as u32),
+                    Span::from_offsets(start, self.position),
                     "unterminated string literal",
                 ));
             }

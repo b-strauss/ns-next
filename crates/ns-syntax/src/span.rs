@@ -12,6 +12,18 @@ impl Span {
         Span { start, end }
     }
 
+    /// A span of byte offsets into a source. The frontend refuses a source
+    /// past `u32::MAX` bytes before lexing it (`source_too_long`), so every
+    /// offset it takes fits; one that does not is a bug of the caller.
+    pub fn from_offsets(start: usize, end: usize) -> Span {
+        let narrow = |offset: usize| {
+            u32::try_from(offset).expect(
+                "internal: a source past u32::MAX bytes is refused before it is lexed (source_too_long)",
+            )
+        };
+        Span::new(narrow(start), narrow(end))
+    }
+
     pub fn merge(self, other: Span) -> Span {
         Span::new(self.start.min(other.start), self.end.max(other.end))
     }
@@ -28,6 +40,20 @@ impl Span {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn offsets_up_to_u32_max_make_a_span() {
+        assert_eq!(
+            Span::from_offsets(0, u32::MAX as usize),
+            Span::new(0, u32::MAX)
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "source_too_long")]
+    fn an_offset_past_u32_max_panics() {
+        Span::from_offsets(0, u32::MAX as usize + 1);
+    }
 
     #[test]
     fn merge_covers_both() {

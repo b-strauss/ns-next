@@ -460,7 +460,10 @@ impl<'a> Parser<'a> {
                 name: name.to_string(),
                 span: crate::span::Span::new(
                     keyword.span.start,
-                    keyword.span.start + name.len() as u32,
+                    keyword.span.start
+                        + u32::try_from(name.len()).expect(
+                            "internal: a source past u32::MAX bytes is refused before it is lexed (source_too_long)",
+                        ),
                 ),
             };
             self.refuse_reserved_word(&target.name, target.span, "be assigned");
