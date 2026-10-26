@@ -6235,12 +6235,13 @@ exempt, each test module or file naming the lints that fire there. The
 codegen budgets were not touched. No golden, `run-corpus` output or
 benchmark outcome changed.
 
-The audit found three defects, each fixed with a test that failed before
+The audit found two defects, each fixed with a test that failed before
 it: an LSP position past `u32` was wrapped and is clamped
 (`e5950348`); an index past `usize` was wrapped on a 32-bit target and is
-refused (`cf789bf3`); and text an editor sent reached a span narrowing
-unbounded, which `whole_file_edit_guarded` now bounds (part of
-`1f5824f3`). Nothing else was found unbounded: `compact.rs`'s side
+refused (`cf789bf3`). `whole_file_edit_guarded` (part of `1f5824f3`) is
+a guard, not a fix: `changed_span` now runs only when the hints changed
+the text, which they never do to a text `parse` refused, so
+`Span::from_offsets` cannot panic there. Nothing else was found unbounded: `compact.rs`'s side
 tables, the typed-array stores, the symbol interner (which aborts with a
 stated message) and the numerics were all bounded.
 
