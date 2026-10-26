@@ -116,9 +116,12 @@ pub(crate) fn execute<'gc>(
                 collections::integer_argument(&mutator.heap, arguments.first(&mutator.heap));
             let (count, field) = with_declared_slots(mutator, receiver, |declared| {
                 let field = match index {
-                    Some(IntegerArgument::Small(index)) if index >= 1 => {
-                        declared.get((index as usize) - 1).copied()
-                    }
+                    // An index past `usize` is out of range, never
+                    // wrapped to a slot that exists.
+                    Some(IntegerArgument::Small(index)) => usize::try_from(index)
+                        .ok()
+                        .and_then(|index| index.checked_sub(1))
+                        .and_then(|position| declared.get(position).copied()),
                     _ => None,
                 };
                 (declared.len(), field)
@@ -2072,7 +2075,8 @@ mod tests {
                 expected
             );
         }
-        for index in [0, 3] {
+        // 2 ** 32 + 1 wraps to 1 on a 32-bit target unless it is refused.
+        for index in [0, 3, (1 << 32) + 1] {
             let argument = interpreter.stash(Value::small_integer(index));
             match leaf(&mut interpreter, "value:slotAt:ifFail:", &pair, &[argument]) {
                 Err(HostSignal::Error(error)) => {

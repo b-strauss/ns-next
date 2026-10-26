@@ -1,0 +1,4 @@
+stdout = '''
+index 4294967297 out of range: valid indices are 1..3 (size 3)
+index 4294967297 out of range: valid indices are 1..3 (size 3)
+'''

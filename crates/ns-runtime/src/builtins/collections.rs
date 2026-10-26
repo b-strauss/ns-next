@@ -257,6 +257,18 @@ fn size<'gc>(
         .map(|length| Ok(Value::small_integer(length as i64)))
 }
 
+/// The zero-based position of the one-based `index` among `length`
+/// elements, or `None` for an index outside `1..=length`. The program
+/// decides the index, so one past `usize` is out of range, never wrapped
+/// to a position that fits.
+fn element_position(index: i64, length: usize) -> Option<usize> {
+    if index < 1 {
+        return None;
+    }
+    let index = usize::try_from(index).ok()?;
+    (index <= length).then(|| index - 1)
+}
+
 /// `at:` -- same payload as `size`.
 fn element_at<'gc>(
     mutator: &mut Mutator<'gc>,
@@ -269,10 +281,10 @@ fn element_at<'gc>(
     Some(
         match integer_argument(&mutator.heap, arguments.first(&mutator.heap)) {
             Some(IntegerArgument::Small(index)) => {
-                if index >= 1 && (index as usize) <= length {
+                if let Some(position) = element_position(index, length) {
                     Ok(mutator
                         .heap
-                        .array_element(object, (index as usize) - 1)
+                        .array_element(object, position)
                         .unwrap_or(Value::nil()))
                 } else {
                     Err(out_of_range(
@@ -334,7 +346,7 @@ fn element_at_put<'gc>(
             )));
         }
     };
-    if index < 1 || (index as usize) > length {
+    let Some(position) = element_position(index, length) else {
         return Some(Err(out_of_range(
             receiver,
             selector,
@@ -342,11 +354,9 @@ fn element_at_put<'gc>(
             first_argument(&mutator.heap, arguments),
             length,
         )));
-    }
+    };
     let value = arguments.try_get(&mutator.heap, 1).unwrap_or(Value::nil());
-    mutator
-        .heap
-        .array_set_element(object, (index as usize) - 1, value);
+    mutator.heap.array_set_element(object, position, value);
     Some(Ok(value))
 }
 
