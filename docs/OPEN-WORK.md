@@ -15,18 +15,46 @@ when they were written.
 
 ## Next
 
-**Road step 7a′, overlapping register windows** ("The road to a
-high-performance VM" below; [execution.md](design/execution.md), "Planned:
-JIT tiers"), the next part of road step 7, an execution model for compiled
-code: the caller's outgoing arguments become the callee's first registers
-instead of being copied ([execution.md](design/execution.md),
-"Representation"), behind its own measurement. 7b and 7a are built: a
+**First, a branch of its own adopts four clippy lints** ("Code quality
+follow-ups" below), decided with the user on 2026-10-26 to follow road
+step 7a′'s branch.
+
+**Road step 7c, the deoptimization contract and the protocol between
+interpreted and compiled frames** ("The road to a high-performance VM"
+below; [execution.md](design/execution.md), "Planned: JIT tiers"), the
+last part of road step 7, an execution model for compiled code, written
+into [execution.md](design/execution.md) for the baseline JIT of road
+step 8 to build on: how a compiled frame is turned back into interpreted
+ones, at which points, and what the two kinds of frame share. Not designed
+yet; it starts from the frame layout road steps 7a and 7a′ built and the
+landing point 7b built.
+
+7a′, 7b and 7a are built. The register windows overlap, in Cog's layout
+-- the arguments, then the header, then the other registers, the
+header's words left out of the register numbering and 13 words in every
+build -- so a send's own callee lies on its caller's slots, which are its
+first registers, and its arguments are copied into no window of its own
+([execution.md](design/execution.md), "Overlapping register windows").
+Built in two stages, each measured against the tree before it: the first
+-- a send's arguments contiguous slots or consecutive sources read in
+place, the argument buffer gone -- no program slower than `master` with
+its builds separated and twelve of twenty-four faster ("What contiguous
+arguments moved"); the second level with the first on the geometric
+mean, -0.09%; of the two programs slower with their builds separated,
+DeltaBlueTon80 is still 0.9% slower once its causes the code could fix
+were fixed, and Mandelbrot is level ("What overlapping windows
+moved"). Neither a push nor a pop writes a scratch register: the
+leftover analysis finds what a frame may read before writing it, the
+decoder refuses image code that reads it, and every trace of the stack
+nils it ("What the leftover analysis moved";
+[memory.md](design/memory.md), "What the collector traces"). A
 running activation is suspended into its frame and resumed from it lazily,
 the landing point of every later deoptimization, and a sixth stress mode
 runs every golden on from suspended frames
 ([execution.md](design/execution.md), "Suspending and resuming"); every
 running activation is a frame of tagged words in one reservation of the
-heap's, traced as one linear range, and measured no slower than the stack
+heap's, every word of which is traced, with no stack map, walked frame by
+frame (`Heap::trace_stack`), and measured no slower than the stack
 of entries before it -- nineteen of twenty-four programs faster, the rest
 level, with three builds a side that vary the block layout inside
 `vm::run` ([execution.md](design/execution.md), "What frames as words
@@ -39,7 +67,7 @@ master (`733c15bd`) and task by task: every program within noise, but
 `bench_megamorphic.ns`, +1.3-2.1% after the private and super accessor
 check, at the edge of build noise and not diagnosed ("Planned: performance
 and representation" below). Everything up to road step 6 on the road
-is built, and `new` as compiled code and road steps 7b and 7a after it;
+is built, and `new` as compiled code and road steps 7b, 7a and 7a′ after it;
 each step has its entry in [PROGRESS.md](PROGRESS.md), and the whole road is below.
 
 **Measuring.** The protocol is [execution.md](design/execution.md)'s "What
@@ -273,12 +301,18 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
   ([execution.md](design/execution.md), "Representation", "The depth
   limit"), kept because the interpreter measures no slower in release --
   no program slower with its builds not overlapping `master`'s, nineteen
-  of twenty-four faster ("What frames as words moved"). What remains of
-  step 7: **7a′**, next, register windows
-  that overlap, the caller's outgoing arguments being the callee's first
-  registers, behind its own measurement; **7c**, the deoptimization
-  contract and the protocol between interpreted and compiled frames,
-  written into [execution.md](design/execution.md).
+  of twenty-four faster ("What frames as words moved"). **7a′ is built**:
+  register windows that overlap, the caller's outgoing arguments being
+  the callee's first registers, in Cog's layout, built in two measured
+  stages ([execution.md](design/execution.md), "Overlapping register
+  windows"), the first -- contiguous arguments read in place -- faster
+  than `master` on twelve of twenty-four programs ("What contiguous
+  arguments moved"), the second level with the first on the geometric
+  mean ("What overlapping windows moved"), with neither a push nor a pop
+  writing a scratch register ("What the leftover analysis moved"). What
+  remains of step 7: **7c**, next, the deoptimization contract and the
+  protocol between interpreted and compiled frames, written into
+  [execution.md](design/execution.md).
 - **Between steps 7 and 8, real Newspeak bodies for `whileTrue:`, `whileFalse:` and
   `do:`.** Making them Newspeak loops keeps what their leaves settle --
   `do:` reads each element as it goes and sends `value:` to a non-block,
@@ -321,6 +355,46 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 
 ## Planned: performance and representation
 
+- **`vm::run` reloads the `Mutator` pointer from its frame** (2026-10-25).
+  Since the first stage of road step 7a′ the pointer arrives in a
+  callee-saved register (`r12`) but is also spilled to the frame and
+  reloaded at about 163 sites, one of them right before a public send's
+  cache guard compare; `master` keeps it in `rdi` throughout `vm::run`,
+  with no reload. A sampling profile of `bench_send.ns` puts 25 of 637
+  `vm::run` samples on or right after the reloads. Two experiments did not
+  change it -- dropping the two-argument send arms' call to
+  `place_arguments` (160 reloads) and `PendingSend::wide` out of line (186)
+  -- so it is not those calls alone. What would find out why: the
+  register allocator's spill remarks for `vm::run` (`-C
+  llvm-args=-pass-remarks-missed=regalloc`) at the merge base and at the
+  stage, and the stage's changes to `vm::run` reverted one at a time
+  until the pointer stays in its register, each build checked by
+  disassembly.
+  [execution.md](design/execution.md), "What contiguous arguments moved".
+- **`builtins::execute`'s result comes back through a store-forwarding
+  stall** (2026-10-25). Its `Option<Result<Step, Signal>>` is returned
+  through a sixteen-byte stack slot the callee writes as a qword and a
+  byte, which the caller copies out with one sixteen-byte load: a load the
+  store buffer cannot forward. On `master` already, 24% of Mandelbrot's
+  samples sit on that copy. A smaller result, or the value written
+  straight to the destination register, would remove it; the first stage
+  of road step 7a′ removed the same stall on the way in, for the argument
+  window. [execution.md](design/execution.md), "What contiguous arguments
+  moved", "No re-entry from Rust".
+- **Three values of the send, push and return path cross by value
+  through memory** (2026-10-25). Everything else the path passes between
+  functions the compiler keeps apart is at most two scalars, which Rust's
+  ABI passes in registers; these are larger and go through a stack slot:
+  the decided `Step` (56 bytes) that `Mutator::push_sent` and `push_step`
+  take, the pushes' `Result<ActivationReference, Signal>` (40), and the
+  `Popped` (24) that `Heap::pop_activation` answers on every return. The
+  release-only size tests pin them where they are
+  (`what_the_hot_path_passes_through_memory_stays_the_size_it_was_measured_at`,
+  `what_a_pop_answers_stays_the_size_it_was_measured_at`), and the codegen
+  gate counts the wide loads over narrower stores in the functions that
+  pass them. Whether lending them, or answering them in two scalars,
+  removes a measurable cost is unmeasured. [execution.md](design/execution.md),
+  "Keeping the hot path in registers".
 - **`bench_megamorphic.ns` since road step 5b1** (2026-10-18): +1.3-2.1%
   against master after the private and super slot accessor check, on all
   three pinned builds a side, where every other program measured within
@@ -967,6 +1041,35 @@ classes and a class from source with no predecessor are not edited
 
 ## Open design questions
 
+- **Whether the interpreter tier is generated by the JIT's backend**
+  (2026-10-25). The interpreter is the Rust `match` loop `vm::run`, whose
+  register assignment LLVM decides; generated by the macro assembler of
+  road step 8 instead, as JSC's LLInt (offlineasm), V8's Ignition (built
+  by the optimizing compiler's backend) and HotSpot's template interpreter
+  are, it would keep the program counter, the register base and the
+  mutator in fixed machine registers and be free of LLVM's codegen
+  surprises, typically 1.3-2x on interpreter-bound code (`vm::run` holds
+  about 60-70% of `bench_send.ns`'s samples). A hand-written interpreter,
+  as LuaJIT's, is not the option: beside a generated JIT it is a second
+  implementation of every instruction, which drifts. A cheaper measurement
+  can come first: a tail-call interpreter, one Rust function per
+  instruction, each ending in a guaranteed tail call to the next
+  instruction's handler, keeps the program counter, the register base and
+  the mutator in argument registers across handlers with no generated
+  tier. In a published experiment on a stack machine (Zack Radisic,
+  "Template interpreters", zackoverflow.dev, 2025-11-08, aarch64 only) it
+  was nearly as fast as a template interpreter, which ran `fibonacci(46)`
+  about 2.5x faster than direct threading; those benchmarks have no
+  objects and no sends, so they say nothing of the send path, where most
+  of this interpreter's time goes. Rust guarantees such a call only with
+  `become` (feature `explicit_tail_calls`), which in October 2026 is
+  unstable and incomplete, aimed at stabilization in 2027 together with
+  `loop_match`; without the guarantee every handler deepens the native
+  stack. Once it is stable, the experiment shows how much of the 1.3-2x
+  fixed registers give here before road step 8 builds its macro
+  assembler. Decided only once the instruction set and the frame layout
+  settle and the macro assembler exists.
+  [execution.md](design/execution.md), "Planned: JIT tiers".
 - **The resolver as a crate of its own.** It lives in `ns-runtime`
   (`resolver/`). A crate of its own would separate the front end from the VM
   and let a tool that needs only bindings — a lighter language server —
@@ -1063,6 +1166,50 @@ classes and a class from source with no predecessor are not edited
   stage 3.
 
 ## Unexplained measurements and unmeasured decisions
+
+- **`vm::run`'s stack frame grew from 744 to 904 bytes** (2026-10-26)
+  when every raising instruction came to store its program counter
+  before it unwinds (`vm::raise`, which passes the index through the
+  `Handoff`). The change adds no local to `vm::run`; every variant that
+  stores the counter in the raising arms, an inline store included, gave
+  904 bytes, so it is likely LLVM's spill slots shifting. Measured with
+  three builds a side, the 24 programs are level (+0.07%, none slower
+  with its builds separated), and 904 bytes stays under a page, so no
+  stack probe is added; comparing the base's and the head's assembly of
+  `vm::run` would name it. [execution.md](design/execution.md), "Where
+  `program_counter` is stored".
+- **DeltaBlueTon80 0.9% slower after overlapping the register windows**
+  (2026-10-26), with its builds separated, against the first stage of
+  road step 7a′ with the value-answered send's step forgotten; it was
+  1.6% before the pop's counts were decremented apart and an inlined
+  conditional answered in its argument slot, and Mandelbrot's 0.5% did
+  not reproduce. What remains is the return path: the loop reads the
+  frame's flags for its register base on every switch, since the frame's
+  start lies its argument count below its header (the switch handler
+  2,189 samples against 1,619, about 0.35% of a run), and `vm::finish`
+  and `vm::resume_caller` take about 550 and 340-600 samples more, on
+  the loads right after the pop. The base handed over in the `Handoff`
+  or in `Transfer::Switched` measured slower, read from the code's
+  argument count level, so the read stays (2026-10-26). Open: it costs
+  what the loop's state passing through memory costs, which an
+  interpreter tier with fixed machine registers for the frame's state
+  would not ("Whether the interpreter tier is generated by the JIT's
+  backend" above).
+  [execution.md](design/execution.md), "What overlapping windows moved".
+
+- **The send and return functions move with the collector's code size**
+  (2026-10-25). Inlining `Heap::trace_stack` into the scavenge grew
+  `World::scavenge` from 1,528 to 2,763 instructions and moved
+  `pop_activation`, `resume_caller` and `polymorphic_hit`, linked after
+  it, by `0x3380` to other offsets within their 4 KiB pages; RichardsTon80,
+  which spends no sample in the collector, measured +0.6% to +1.6% in four
+  timings, about 1.3%. `trace_stack` is kept out of line for it, but any
+  later growth of the collector's code, or of anything linked before the
+  hot functions, can move them again, and a Towers separation in one
+  sitting that did not reproduce looked the same. What would settle it:
+  which placement of those functions costs, found by pinning it with a
+  linker order file and measuring RichardsTon80 at each placement. [execution.md](design/execution.md), "What the
+  leftover analysis moved".
 
 - **`SendKey`'s word for `current_class`** (2026-10-22). A `super` send's
   key carries the running class beside S, so that a nested-class hit on a
@@ -1298,9 +1445,12 @@ classes and a class from source with no predecessor are not edited
   that is one chain of 20,000 `+ 1` overflows the interpreter thread's 8 MiB
   and aborts the process (release; 10,000 compile and run), where the
   program should run. Walking the chain from `Send::receiver_chain`, as the
-  language server does, would close it. [frontend.md](design/frontend.md),
-  "Recovery", rule 7; [execution.md](design/execution.md), "What the
-  trampoline moved". Noted 2026-10-04.
+  language server does, would close it. Until it is closed, the overflow at
+  about 20,000 links sits below the instruction limit of 2^20, so that limit
+  is not yet the real bound on a chain ([compiler.md](design/compiler.md),
+  "Limits"). [frontend.md](design/frontend.md), "Recovery", rule 7;
+  [execution.md](design/execution.md), "What the trampoline moved". Noted
+  2026-10-04.
 - **The AST's derived `PartialEq` and `Debug` recurse along a chain of
   messages** (`crates/ns-syntax/src/ast.rs`), as the compiler does: only
   `Send`'s `Drop` and `Clone` and `Send::receiver_chain` take a chain link
@@ -1679,21 +1829,13 @@ that only answers `isKindOfArray` or `isKindOfString`, the error of a
   id to the current version. [object-model.md](design/object-model.md),
   "An application has two ids".
 
-- **Instantiation's `u16` ceilings** (2026-10-22). An initializer
-  counts levels in a `u16`, so a declaration with more than 65,534 `<:`
-  clauses -- valid up to the clause index's 2^23 -- compiles its full and
-  standalone initializers to the too-large body and raises "initializer too
-  large" when it is instantiated, and a factory of 65,534 or more
-  parameters raises "factory too large", where a smaller one instantiates.
-  An implementation limit as the register ceiling is, which no program
-  comes near. [compiler.md](design/compiler.md), "The three initializer
-  bodies".
-- **A host's `Interpreter::instantiate` with more than 65,535 arguments
-  raises "factory too large" rather than the arity error** a send with a
-  wrong count gets (2026-10-22): `decide_instantiation` builds
-  `factory_body` of the count saturated to a `u16`, which is the too-large
-  body, and builds that body afresh on every call rather than reading the
-  class's factory entry, a cold path. Only a host reaches it.
+- **A host's `Interpreter::instantiate` builds its factory body afresh on
+  every call** (2026-10-22). `decide_instantiation` builds `factory_body`
+  of the argument count instead of reading the class's factory entry. It is
+  a cold path that only a host reaches. Past the argument limit of 255 the
+  arity is checked first, so a wrong count raises the arity error, as a
+  send's does. Only a class whose factory itself takes more than 255
+  parameters raises "factory too large".
   [object-model.md](design/object-model.md), "Instantiation".
 - **A code row records the first `MixinMethod` that registered its body**
   (2026-10-24): `Heap::register_code` fills a row's `method` only while it
@@ -1827,6 +1969,19 @@ that only answers `isKindOfArray` or `isKindOfString`, the error of a
 
 Small, deliberately left, none affecting an outcome.
 
+- **Four clippy lints, adopted on a branch of their own** (decided with
+  the user on 2026-10-26, to follow road step 7a′'s branch):
+  - `undocumented_unsafe_blocks`, for `ns-memory`, the one crate with
+    `unsafe`; it has no hit today.
+  - `allow_attributes_without_reason`: its 29 sites rewritten as
+    `#[expect(.., reason = ..)]`.
+  - `cast_possible_truncation` and `cast_sign_loss`: about 290 sites
+    outside tests, the lints allowed in tests. Each site is audited: a
+    bound already guaranteed becomes `try_from` with an invariant panic,
+    or a helper that states the bound; bit arithmetic becomes
+    `cast_unsigned()`; a cast nothing bounds is a defect and is fixed.
+    The image decoder already has none.
+
 - Leftover of road step 7b (noted 2026-10-24): the format- and test-level
   frame accessors `Heap::frame_set_program_counter`, `frame_register_shape`,
   `frame_record` and `frame_set_uncontinuable` debug-assert only that the
@@ -1897,6 +2052,20 @@ Small, deliberately left, none affecting an outcome.
   `DecodeError::ByteArrayRecordMismatch` carries two meanings, told apart
   by its `body`, where two variants would name each.
 
+- Nested inlined conditionals compile to code that doubles with each
+  level: an inlined form's fallback closure holds its blocks compiled
+  again, with their own inlined forms and fallbacks. `a ifTrue: [b g: a.
+  X]` ten deep compiles to 1,024 bodies, and twenty deep took 4.7 s
+  where ten took 5 ms (measured 2026-10-25, a debug test build, while
+  bounding `bytecode::leftovers`). Every level is valid Newspeak, and a
+  fallback could instead share one closure body per block literal. A
+  source of about 400 bytes, `(a and: [(b g: a) or: [...]])` ten deep,
+  compiles to 1,048,576 bodies and 18,175,273 instructions under the
+  optimized lowering, against 21 bodies and 106 instructions under the
+  reference one. The duplication multiplies the bodies and call sites per
+  family, about 17 instructions per body there, so the per-body
+  instruction limit of 2^20 does not bound it
+  ([compiler.md](design/compiler.md), "Limits").
 - A fallback closure (an inlined conditional's, sent to a non-Boolean)
   reloads its scope's indirection vector (`LoadOuterLocal`, then
   `LoadVector`/`StoreVector`) on every access. The vector register is

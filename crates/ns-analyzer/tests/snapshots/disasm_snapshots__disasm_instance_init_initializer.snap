@@ -2,38 +2,38 @@
 source: crates/ns-analyzer/tests/disasm_snapshots.rs
 expression: "disasm(\"language/class/instantiation/instance_init\", &[\"--initializer\"])"
 ---
-initializer InstanceInit (args 0, registers 3)
-   0   stmt 0  InitializeSuperclass r0 <- steps 1 #new ()
-   1   stmt 1  LoadLiteral r0, 'hi'
-   2   stmt 1  InitSlot own 0 <- r0
-   3   stmt 2  LoadLiteral r0, 0
-   4   stmt 2  InitSlot own 1 <- r0
-   5   stmt 3  LoadLiteral r0, false
-   6   stmt 3  InitSlot own 2 <- r0
-   7   stmt 4  SendLexical r0 <- depth 0 #greeting () @0
-   8   stmt 4  SendPublic r1 <- r0 #size () @1
-   9   stmt 4  SendLexical r2 <- depth 0 #count: (r1) @2
-  10   stmt 5  LoadLiteral r0, true
-  11   stmt 5  SendLexical r1 <- depth 0 #initialized: (r0) @3
-  12        -  LoadSelf r2
-  13        -  ImplicitReturn r2
+initializer InstanceInit (args 0, registers 16)
+   0   stmt 0  InitializeSuperclass r13 <- steps 1 #new ()
+   1   stmt 1  LoadLiteral r13, 'hi'
+   2   stmt 1  InitSlot own 0 <- r13
+   3   stmt 2  LoadLiteral r13, 0
+   4   stmt 2  InitSlot own 1 <- r13
+   5   stmt 3  LoadLiteral r13, false
+   6   stmt 3  InitSlot own 2 <- r13
+   7   stmt 4  SendLexical r14 <- depth 0 #greeting () @0
+   8   stmt 4  SendPublic r13 <- r14 #size () @1
+   9   stmt 4  SendLexical r15 <- depth 0 #count: (r13) @2
+  10   stmt 5  LoadLiteral r13, true
+  11   stmt 5  SendLexical r14 <- depth 0 #initialized: (r13) @3
+  12        -  LoadSelf r15
+  13        -  ImplicitReturn r15
 
-initializer InstanceInit own part (args 0, registers 3)
-   0   stmt 0  LoadLiteral r0, 'hi'
-   1   stmt 0  InitSlot own 0 <- r0
-   2   stmt 1  LoadLiteral r0, 0
-   3   stmt 1  InitSlot own 1 <- r0
-   4   stmt 2  LoadLiteral r0, false
-   5   stmt 2  InitSlot own 2 <- r0
-   6   stmt 3  SendLexical r0 <- depth 0 #greeting () @0
-   7   stmt 3  SendPublic r1 <- r0 #size () @1
-   8   stmt 3  SendLexical r2 <- depth 0 #count: (r1) @2
-   9   stmt 4  LoadLiteral r0, true
-  10   stmt 4  SendLexical r1 <- depth 0 #initialized: (r0) @3
-  11        -  LoadSelf r2
-  12        -  ImplicitReturn r2
+initializer InstanceInit own part (args 0, registers 16)
+   0   stmt 0  LoadLiteral r13, 'hi'
+   1   stmt 0  InitSlot own 0 <- r13
+   2   stmt 1  LoadLiteral r13, 0
+   3   stmt 1  InitSlot own 1 <- r13
+   4   stmt 2  LoadLiteral r13, false
+   5   stmt 2  InitSlot own 2 <- r13
+   6   stmt 3  SendLexical r14 <- depth 0 #greeting () @0
+   7   stmt 3  SendPublic r13 <- r14 #size () @1
+   8   stmt 3  SendLexical r15 <- depth 0 #count: (r13) @2
+   9   stmt 4  LoadLiteral r13, true
+  10   stmt 4  SendLexical r14 <- depth 0 #initialized: (r13) @3
+  11        -  LoadSelf r15
+  12        -  ImplicitReturn r15
 
-method InstanceInit factory new (args 0, registers 2)
-   0   stmt 0  AllocateInstance r0
-   1   stmt 0  InitializeInstance r1 <- r0 (arguments)
-   2   stmt 0  Return r0
+method InstanceInit factory new (args 0, registers 15)
+   0   stmt 0  AllocateInstance r13
+   1   stmt 0  InitializeInstance r14 <- r13 (arguments)
+   2   stmt 0  Return r13

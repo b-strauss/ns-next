@@ -42,6 +42,7 @@
 //! `hash` primitives call too. A second copy of those rules is how the derived
 //! answer and the class's own would drift apart.
 
+use crate::interpreter::Arguments;
 use std::collections::HashSet;
 use std::rc::Rc;
 
@@ -83,11 +84,11 @@ pub(crate) fn execute<'gc>(
     primitive: ValuePrimitive,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     match primitive {
         ValuePrimitive::SameAs => {
-            let other = *arguments.first()?;
+            let other = arguments.first(&mutator.heap)?;
             let equal = derived_equality(mutator, receiver, other)?;
             crate::interpreter::future::declines_for_a_future(
                 mutator,
@@ -111,7 +112,8 @@ pub(crate) fn execute<'gc>(
             // copying the list out: the declared slots and the fields
             // differ as soon as a level declares a nested class, and the
             // leaf must answer the same slot the walks compare.
-            let index = collections::integer_argument(&mutator.heap, arguments.first().copied());
+            let index =
+                collections::integer_argument(&mutator.heap, arguments.first(&mutator.heap));
             let (count, field) = with_declared_slots(mutator, receiver, |declared| {
                 let field = match index {
                     Some(IntegerArgument::Small(index)) if index >= 1 => {
@@ -132,23 +134,27 @@ pub(crate) fn execute<'gc>(
                         receiver,
                         selector,
                         index,
-                        first_argument(arguments),
+                        first_argument(&mutator.heap, arguments),
                         count,
                     ),
                     Some(IntegerArgument::Large { .. }) => collections::out_of_range(
                         receiver,
                         selector,
-                        mutator.heap.describe_argument(arguments.first().copied()),
-                        first_argument(arguments),
+                        mutator
+                            .heap
+                            .describe_argument(arguments.first(&mutator.heap)),
+                        first_argument(&mutator.heap, arguments),
                         count,
                     ),
                     None => NewspeakError::argument_error(
                         selector,
                         receiver,
-                        first_argument(arguments),
+                        first_argument(&mutator.heap, arguments),
                         format!(
                             "{selector} requires an Integer index, got {}",
-                            mutator.heap.describe_argument(arguments.first().copied())
+                            mutator
+                                .heap
+                                .describe_argument(arguments.first(&mutator.heap))
                         ),
                     ),
                 }));

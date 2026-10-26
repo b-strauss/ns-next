@@ -8,6 +8,7 @@
 //! (`docs/design/object-model.md`, "Class sides and metaclasses").
 
 use crate::builtins::primitive::BehaviorPrimitive;
+use crate::interpreter::Arguments;
 use crate::types::*;
 use crate::Mutator;
 
@@ -15,7 +16,7 @@ pub(crate) fn execute<'gc>(
     mutator: &mut Mutator<'gc>,
     primitive: BehaviorPrimitive,
     receiver: Value<'gc>,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let object = receiver.as_object()?;
     if !mutator.heap().is_class(object) {
@@ -39,7 +40,9 @@ pub(crate) fn execute<'gc>(
             .class_this_class(object)
             .map(|this_class| Ok(Value::object(this_class))),
         BehaviorPrimitive::SharesApplication => {
-            let other = arguments.first().and_then(|value| value.as_object())?;
+            let other = arguments
+                .first(&mutator.heap)
+                .and_then(|value| value.as_object())?;
             if !mutator.heap().is_class(other) {
                 return None;
             }

@@ -34,8 +34,8 @@ use crate::mixin::{
 };
 use crate::Symbol;
 
-use super::decode::{reserve_for, DecodeError, Reader};
-use super::encode::{u16_field, u32_field, CodeIds, Writer};
+use super::decode::{check_argument_count, reserve_for, DecodeError, Reader};
+use super::encode::{arity_field, u32_field, CodeIds, Writer};
 use super::opcodes::{SLOT_IMMUTABLE, SLOT_LAZY_IMMUTABLE, SLOT_LAZY_MUTABLE, SLOT_MUTABLE};
 use super::symbols;
 use super::texts::TextIds;
@@ -293,7 +293,7 @@ pub fn encode(
             Some(factory) => {
                 writer.write_boolean(true);
                 writer.write_u32(symbols.intern(factory.selector.as_str()));
-                writer.write_u16(u16_field("factory arity", factory.argument_count)?);
+                writer.write_u16(arity_field("factory arity", factory.argument_count)?);
             }
             None => writer.write_boolean(false),
         }
@@ -325,7 +325,7 @@ pub fn encode(
         for method in &row.methods {
             writer.write_u32(symbols.intern(method.selector.as_str()));
             writer.write_u8(access_tag(method.access));
-            writer.write_u16(u16_field("method arity", method.argument_count)?);
+            writer.write_u16(arity_field("method arity", method.argument_count)?);
             writer.write_u32(codes.id_of(&method.code)?);
         }
         writer.write_u32(u32_field("mixin's nested count", row.nested.len()));
@@ -553,9 +553,12 @@ fn read_row(
         });
     }
     let factory = if reader.read_boolean()? {
+        let selector = read_symbol(reader, symbols)?;
+        let argument_count = reader.read_u16()? as usize;
+        check_argument_count("factory", argument_count)?;
         Some(Factory {
-            selector: read_symbol(reader, symbols)?,
-            argument_count: reader.read_u16()? as usize,
+            selector,
+            argument_count,
         })
     } else {
         None
@@ -567,6 +570,11 @@ fn read_row(
         None
     };
     let clause_count = reader.read_u32()? as usize;
+    if clause_count > crate::mixin::CLAUSE_INDEX_LIMIT {
+        return Err(DecodeError::ClauseCountTooLarge {
+            count: clause_count,
+        });
+    }
     let mut mixin_applications: Vec<ClauseMessage> = reserve_for(clause_count, reader);
     for _ in 0..clause_count {
         mixin_applications.push(read_clause_message(reader, symbols)?);
@@ -578,6 +586,7 @@ fn read_row(
         let selector = read_symbol(reader, symbols)?;
         let access = access_from_tag(reader.read_u8()?)?;
         let argument_count = reader.read_u16()? as usize;
+        check_argument_count("method", argument_count)?;
         let code = read_code_id(reader, codes)?;
         methods.push((selector, access, argument_count, code));
     }

@@ -2261,21 +2261,21 @@ mod tests {
             UnwindMarker::Handler {
                 class_register: 0,
                 block_register: 1,
-                active_register: 2,
+                active_register: 15,
             },
         ),
         (
             "ensure:",
             UnwindMarker::Ensure {
                 block_register: 0,
-                complete_register: 1,
+                complete_register: 14,
             },
         ),
         (
             "ifCurtailed:",
             UnwindMarker::IfCurtailed {
                 block_register: 0,
-                complete_register: 1,
+                complete_register: 14,
             },
         ),
     ];

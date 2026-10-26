@@ -5,6 +5,7 @@
 
 use crate::builtins::first_argument;
 use crate::builtins::primitive::CollectionPrimitive;
+use crate::interpreter::Arguments;
 use crate::interpreter::{Signal, Step, StepArguments};
 use crate::types::*;
 use crate::{Heap, Mutator, Symbol};
@@ -173,7 +174,7 @@ fn copy_range<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let object = receiver.as_object()?;
     let size = mutator.heap.array_element_count(object)?;
@@ -182,8 +183,8 @@ fn copy_range<'gc>(
         receiver,
         selector,
         "copyFrom:",
-        arguments.first().copied(),
-        arguments.get(1).copied(),
+        arguments.first(&mutator.heap),
+        arguments.try_get(&mutator.heap, 1),
         size,
     ) {
         Ok(range) => range,
@@ -204,19 +205,19 @@ fn replace<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let object = receiver.as_object()?;
     let size = mutator.heap.array_element_count(object)?;
-    let source = arguments.get(2).copied()?.as_object()?;
+    let source = arguments.try_get(&mutator.heap, 2)?.as_object()?;
     let source_size = mutator.heap.array_element_count(source)?;
     let range = match checked_range(
         &mutator.heap,
         receiver,
         selector,
         "replaceFrom:",
-        arguments.first().copied(),
-        arguments.get(1).copied(),
+        arguments.first(&mutator.heap),
+        arguments.try_get(&mutator.heap, 1),
         size,
     ) {
         Ok(range) => range,
@@ -226,7 +227,7 @@ fn replace<'gc>(
         &mutator.heap,
         receiver,
         selector,
-        arguments.get(3).copied(),
+        arguments.try_get(&mutator.heap, 3),
         range.len(),
         source_size,
     ) {
@@ -261,12 +262,12 @@ fn element_at<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let object = receiver.as_object()?;
     let length = mutator.heap.array_element_count(object)?;
     Some(
-        match integer_argument(&mutator.heap, arguments.first().copied()) {
+        match integer_argument(&mutator.heap, arguments.first(&mutator.heap)) {
             Some(IntegerArgument::Small(index)) => {
                 if index >= 1 && (index as usize) <= length {
                     Ok(mutator
@@ -278,7 +279,7 @@ fn element_at<'gc>(
                         receiver,
                         selector,
                         index,
-                        first_argument(arguments),
+                        first_argument(&mutator.heap, arguments),
                         length,
                     ))
                 }
@@ -286,15 +287,17 @@ fn element_at<'gc>(
             Some(IntegerArgument::Large { .. }) => Err(out_of_range(
                 receiver,
                 selector,
-                mutator.heap.describe_argument(arguments.first().copied()),
-                first_argument(arguments),
+                mutator
+                    .heap
+                    .describe_argument(arguments.first(&mutator.heap)),
+                first_argument(&mutator.heap, arguments),
                 length,
             )),
             None => Err(not_an_integer(
                 &mutator.heap,
                 receiver,
                 selector,
-                arguments.first().copied(),
+                arguments.first(&mutator.heap),
             )),
         },
     )
@@ -305,18 +308,20 @@ fn element_at_put<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let object = receiver.as_object()?;
     let length = mutator.heap.array_element_count(object)?;
-    let index = match integer_argument(&mutator.heap, arguments.first().copied()) {
+    let index = match integer_argument(&mutator.heap, arguments.first(&mutator.heap)) {
         Some(IntegerArgument::Small(index)) => index,
         Some(IntegerArgument::Large { .. }) => {
             return Some(Err(out_of_range(
                 receiver,
                 selector,
-                mutator.heap.describe_argument(arguments.first().copied()),
-                first_argument(arguments),
+                mutator
+                    .heap
+                    .describe_argument(arguments.first(&mutator.heap)),
+                first_argument(&mutator.heap, arguments),
                 length,
             )));
         }
@@ -325,7 +330,7 @@ fn element_at_put<'gc>(
                 &mutator.heap,
                 receiver,
                 selector,
-                arguments.first().copied(),
+                arguments.first(&mutator.heap),
             )));
         }
     };
@@ -334,11 +339,11 @@ fn element_at_put<'gc>(
             receiver,
             selector,
             index,
-            first_argument(arguments),
+            first_argument(&mutator.heap, arguments),
             length,
         )));
     }
-    let value = arguments.get(1).copied().unwrap_or(Value::nil());
+    let value = arguments.try_get(&mutator.heap, 1).unwrap_or(Value::nil());
     mutator
         .heap
         .array_set_element(object, (index as usize) - 1, value);
@@ -355,19 +360,26 @@ fn allocate<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let class = receiver.as_object()?;
     if mutator.heap.class_builtin(class) != Some(BuiltinClass::Array) {
         return None;
     }
     let refusal = |message: String| {
-        NewspeakError::argument_error(selector, receiver, first_argument(arguments), message)
+        NewspeakError::argument_error(
+            selector,
+            receiver,
+            first_argument(&mutator.heap, arguments),
+            message,
+        )
     };
-    let size = match integer_argument(&mutator.heap, arguments.first().copied()) {
+    let size = match integer_argument(&mutator.heap, arguments.first(&mutator.heap)) {
         Some(IntegerArgument::Small(size)) => size,
         Some(IntegerArgument::Large { negative }) => {
-            let described = mutator.heap.describe_argument(arguments.first().copied());
+            let described = mutator
+                .heap
+                .describe_argument(arguments.first(&mutator.heap));
             return Some(Err(refusal(if negative {
                 format!("{selector} requires a size of at least 0, got {described}")
             } else {
@@ -377,7 +389,9 @@ fn allocate<'gc>(
         None => {
             return Some(Err(refusal(format!(
                 "{selector} requires an Integer size, got {}",
-                mutator.heap.describe_argument(arguments.first().copied())
+                mutator
+                    .heap
+                    .describe_argument(arguments.first(&mutator.heap))
             ))));
         }
     };
@@ -419,7 +433,7 @@ pub(crate) fn execute<'gc>(
     primitive: CollectionPrimitive,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Step<'gc>, Signal<'gc>>> {
     match primitive {
         CollectionPrimitive::Enumerate => do_step(mutator, receiver, selector, arguments),
@@ -450,11 +464,11 @@ fn do_step<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Step<'gc>, Signal<'gc>>> {
     let object = receiver.as_object()?;
     let size = mutator.heap.array_element_count(object)?;
-    let Some(action) = arguments.first().copied() else {
+    let Some(action) = arguments.first(&mutator.heap) else {
         return Some(Err(Signal::Error(NewspeakError::argument_error(
             selector,
             receiver,

@@ -309,12 +309,15 @@ Instructions:
   steps out along the chain of captured frames.
 - 6 `StoreOuterLocal`: writes a local variable of an enclosing activation,
   reached the same way.
-- 7–11 and 21–24: retired. 7–10 were the sends while a call site was a `u16`
-  instruction index; 21–24 were the sends while the number was serialized as
-  a `u32` (see the call-site paragraph below); 11 was `MakeClosure` before
-  closure conversion gave it a list of copied registers. The sends are 25–28
-  and `MakeClosure` is 29; bytes written under any retired number meet an
-  unknown tag and are refused (`opcodes::RETIRED_OPCODES`).
+- 7–11, 21–28, 44 and 45: retired. 7–10 were the sends while a call site was a
+  `u16` instruction index; 21–24 were the sends while the number was
+  serialized as a `u32` (see the call-site paragraph below); 25–28 were the
+  sends, and 44 and 45 `InitializeSuperclass` and `InitializeAppliedLevel`,
+  while they named an arbitrary list of argument registers; 11 was
+  `MakeClosure` before closure conversion gave it a list of copied registers.
+  The sends are 46–49, the two initializer invocations 50 and 51, and
+  `MakeClosure` is 29; bytes written under any retired number meet an unknown
+  tag and are refused (`opcodes::RETIRED_OPCODES`).
 - 12 `MakeArray`: creates an array from the values of a list of registers, for a
   `{ ... }` expression.
 - 13 `InitializeSlot`: writes the initial value of one of the running mixin's
@@ -335,15 +338,6 @@ Instructions:
   through for anything else.
 - 20 `BranchIfTrue`: jumps when a register holds exactly `true`, and falls
   through for anything else.
-- 25 `SendLexical`: sends a message with an implicit receiver, the enclosing
-  object at the lexical depth the resolver fixed, by the rules of §5.7–§5.9.
-- 26 `SendPublic`: sends a message to an explicit receiver, found by
-  `lookupPublic` (§5.5).
-- 27 `SendInlinable`: exactly a `SendPublic`, emitted only by the reference
-  lowering for a control-flow send the optimized lowering inlines, so that both
-  lowerings count recursion depth alike.
-- 28 `SendSuper`: sends a message to `self`, looked up from the superclass of
-  the running method's defining class (§5.10).
 - 29 `MakeClosure`: creates a block closure over a compiled block body,
   capturing the running activation, and carries the registers whose values the
   closure is handed ([execution.md](execution.md), "Closure conversion").
@@ -390,14 +384,29 @@ Instructions:
   no list, and a factory body is three instructions whatever its arity.
 - 43 `CheckAppliedClause`: §6.1's check of a `<:` clause, `steps` a `u16`
   and the selector as a send writes it.
-- 44 `InitializeSuperclass`: §6.1's check, then the initializer of the class
-  `steps` above, `steps` a `u16`, the selector and the argument registers as
-  a send writes them, and `destination` a `u16`.
-- 45 `InitializeAppliedLevel`: the own part of the level a `<:` clause adds
-  `steps` above, `steps` a `u16`, the argument registers as a send writes
-  them, and `destination` a `u16`.
+- 46 `SendLexical`: sends a message with an implicit receiver, the enclosing
+  object at the lexical depth the resolver fixed, by the rules of §5.7–§5.9.
+- 47 `SendPublic`: sends a message to an explicit receiver, found by
+  `lookupPublic` (§5.5).
+- 48 `SendInlinable`: exactly a `SendPublic`, emitted only by the reference
+  lowering for a control-flow send the optimized lowering inlines, so that both
+  lowerings count recursion depth alike.
+- 49 `SendSuper`: sends a message to `self`, looked up from the superclass of
+  the running method's defining class (§5.10).
 
-An initializer body carries 43 to 45 and a factory body 41 and 42, and
+  Each send, and 50 and 51 below, names its arguments as contiguous slots: a
+  `u16` argument base, then the register list of the sources, one per
+  argument. The arguments are the registers from the base on, and the
+  instruction copies each source that is not its slot into the slot before
+  it decides.
+- 50 `InitializeSuperclass`: §6.1's check, then the initializer of the class
+  `steps` above, `steps` a `u16`, the selector and the argument slots as a
+  send writes them, and `destination` a `u16`.
+- 51 `InitializeAppliedLevel`: the own part of the level a `<:` clause adds
+  `steps` above, `steps` a `u16`, the argument slots as a send writes them,
+  and `destination` a `u16`.
+
+An initializer body carries 43, 50 and 51 and a factory body 41 and 42, and
 the loader accepts all five in any body: a factory body never travels
 (below), and what a crafted body can make disagree -- a receiver that is no
 class object, a level that is not there, an arity -- each instruction
@@ -437,18 +446,28 @@ Literals:
 - 10 `LargeInteger`: an integer literal beyond `i64`, in the same wire form
   as value tag 9 below -- a sign byte, a `u32` digit count and that many
   `u64` digits, least significant first -- so the decoder parses no text.
-- 11 `BodyTooLarge`: no payload; what the body standing in for one past the
-  register ceiling loads first. It raises its error when it runs
-  ([compiler.md](compiler.md), "Compilation cannot fail").
+- 11 `BodyTooLarge(Registers)`: no payload; what the body standing in for
+  one past the register ceiling loads first. It raises its error when it
+  runs ([compiler.md](compiler.md), "Compilation cannot fail").
+- 12 `BodyTooLarge(Arguments)`: the same, for a body past the argument
+  limit of 255 ([compiler.md](compiler.md), "Limits").
+- 13 `BodyTooLarge(Instructions)`: the same, for a body past the
+  instruction limit of 2^20.
 
 **A count past its field refuses the image, never aborts it, except the
 count of heap objects.** A count a
 program decides is written through a checked narrowing that answers an
 error, `image encoding cannot write a <what> of <n>: it does not fit the
-image format's 16-bit field` (or `32-bit`): in 16 bits a register list, a
-closure's parameter and copied-value counts and a method's or factory's
-arity (`encode::u16_field`), all of which a valid program can pass
-([compiler.md](compiler.md), "Compilation cannot fail"); in 32 bits a
+image format's 16-bit field` (or `32-bit`): in 16 bits a register list and
+a closure's copied-value count (`encode::u16_field`), both of which a
+valid program can pass ([compiler.md](compiler.md), "Compilation cannot
+fail"). A body's arity, a closure's parameter count and a method's or
+factory's arity go through `encode::arity_field` instead. It refuses a
+count past the 16-bit field the same way, and one past the argument limit
+of 255 with `image encoding cannot write a <what> of <n>: it is past the
+limit of 255 arguments` ([compiler.md](compiler.md), "Limits"). A body past
+that limit compiled to one that raises, and the decoder refuses its arity,
+so `build` refuses what `load` would. In 32 bits a
 string's, a symbol's, a value list's and a `LargeInteger`'s digit count
 (`encode::u32_length`). Every other count goes through the asserting
 `encode::u32_field`, because no program is meant to pass it: object ids, a
@@ -469,8 +488,13 @@ number the file claims, writing each into the decoded body in place through
 `EncodedBody::for_each_emitted_mut`. A code record carries one flag, whether its
 sends were compiled uncached (the reference lowering never numbers a send at
 all, so it marks the whole body rather than leaving each send to say so), and
-one count, `copied_count`, so that a block's register layout is known from its
-code alone. `outer_reach` is not on the wire either: the decoder derives it as
+two counts, `copied_count`, so that a block's register layout is known from its
+code alone, and `local_count`, its first scratch register, which the
+verification holds its sends and the outer accesses into it to ("Verification"
+below). The record opens with its kind, tags 5-8 (`encode::code_kind_tag`):
+0-3 named the kinds of the record before it carried `local_count` and are
+retired with 4 (`opcodes::RETIRED_CODE_KIND_TAGS`), so a stale record meets a
+retired tag rather than having its source span read as its local count. `outer_reach` is not on the wire either: the decoder derives it as
 the compiler does, in `CompiledCode::from_builder`, which works because a
 block's code precedes its parent's in the table. A body's `family_size` is not
 on the wire either way; both sides derive it from the sends' numbers and the
@@ -478,7 +502,7 @@ blocks' sizes the same way, read off the encoding as `bytecode::family_size_of`
 reads the decoded view. A block precedes its parent in the table, but its
 numbers depend on where its `MakeClosure` sits in its root's emission order, so
 the decoder numbers a family only once its root -- the body nothing else's
-`MakeClosure` creates -- has been read in full. The golden image is 1363 bytes.
+`MakeClosure` creates -- has been read in full. The golden image is 1677 bytes.
 
 Both lists are declared once, in `image/opcodes.rs`, and used by the encoder and
 the decoder alike rather than repeated as magic numbers on each side.
@@ -769,8 +793,8 @@ a `u32` index into the list. The section's reader refuses more than
 `MAX_SHIPPED_NAMES` (65,536) entries (`TooManyShippedNames`), a count past
 the bytes left at the 9 bytes of the smallest entry, a symbol id past the
 symbol table (`BadSymbolId`), a kind byte no kind has (`InvalidTag`) and a
-clause index at or past `CLAUSE_INDEX_LIMIT`, which no class object can
-number (`UnknownShippedName`); it asks no world, so `inspect` reads the
+clause index at or past `CLAUSE_INDEX_LIMIT` (1,024), which no resolved
+declaration numbers (`UnknownShippedName`); it asks no world, so `inspect` reads the
 section the same way. How the loader resolves the names, and what a name
 may stand for where, is "Shipped names" below. A started image names only
 the kernel's classes and levels, never a module instance; an image
@@ -1214,6 +1238,23 @@ so it refuses texts that do not hold to the rows, but runs no
 disagree; only `load` refuses it. A corrupt but version-matching image is an
 error there, never a panic in the VM later.
 
+**Every compiler limit is a decoder refusal.** No compiled body passes a
+limit of [compiler.md](compiler.md), "Limits": past one it compiles to a
+body that raises, and the encoder refuses a body whose arity is past the
+argument limit. So the decoder refuses a count past a limit where it reads
+the count, before it reserves anything for it. That covers a body's
+instruction count past 2^20 (`InstructionCountTooLarge`, read before any
+instruction), a body's arity past 255, and likewise a method record's,
+a factory's, a closure's parameter count and the argument list of a send or
+a clause message (`ArgumentCountTooLarge`, naming the record), and a
+mixin-table row of more than 1,024 `<:` clauses (`ClauseCountTooLarge`).
+Every decoded body is then one a compiler could have written, and a pass
+over one is bounded by the limits as a compiled one is
+(`an_image_with_a_body_past_the_instruction_limit_is_refused`,
+`an_image_with_a_method_of_256_parameters_is_refused`,
+`an_image_with_a_send_of_256_arguments_is_refused`,
+`an_image_applying_1025_mixins_is_refused`).
+
 **The loader builds before the graph, and only what the binary has.** After
 the first passes and before the tenure, the loader builds the shipped modules
 and classes the shipped-name section names that the boot did not
@@ -1232,23 +1273,115 @@ halves come off the wire independently, so a crafted image can make them
 disagree: a `MakeClosure`'s `copied` list against its block's `copied_count`
 (checked in `lexical_parents`), a closure record's own values against the same
 count (checked in `decode_closure_record`, before any of them is read), and
-`argument_count + copied_count` against `register_count` (checked in
-`decode_code`, in `u32` arithmetic, once the arity itself fits). Every register
+`argument_count + HEADER_REGISTERS + copied_count` against `register_count`
+when there are copied values (checked in `decode_code`, in `u32` arithmetic,
+once the arity itself fits). Every register
 a `MakeClosure` copies, and every register operand of `MakeVector`,
 `LoadVector` and `StoreVector`, is inside its own body's register file, like
 every other register operand; a vector slot is not a register and is checked at
-run time, since a vector's size is a run-time value.
+run time, since a vector's size is a run-time value. A send's argument base
+and each of its sources are register operands too, and so is every slot from
+the base on, since the send writes a source into its slot: a body whose last
+slot runs past its register file is refused (`ArgumentSlotsOutOfRange`) even
+when the base and the sources are inside it.
+
+**No instruction names its own frame's header numbers.** A body's register
+numbers `argument_count .. argument_count + HEADER_REGISTERS` are its frame
+header's words, which the register numbering skips ([compiler.md](compiler.md),
+"Registers"): a register operand there, or an outer local's index there in the
+body that declares it, would read or write that frame's caller word or
+register count, so it is refused (`HeaderRegister`). A send's callee is laid on
+its argument slots, its header where they end
+([execution.md](execution.md), "Overlapping register windows"), so a
+send whose slots start below the end of its own body's header's numbers --
+among its arguments or on the header itself -- is refused too
+(`ArgumentSlotsBelowTheHeader`), even with no argument.
+
+**No instruction reaches another frame's live callee.** Through the overlap,
+a register of a sender's above its slots is its callee's header while the
+callee runs, and a block the callee runs can reach the sender's registers by
+reference. A code record therefore carries its body's `local_count`, the
+first scratch register, which both lowerings record ([compiler.md](compiler.md),
+"Registers"), and the decoder holds the body to it: a `local_count` past the
+register file is refused (`LocalCountOutOfRange`), a send whose slots start
+below it is refused (`ArgumentSlotsBelowTheScratch`), so every callee's
+header lies at or above it, and an outer load or store whose index is at or
+past the `local_count` of the body `depth` levels out -- found through the
+`MakeClosure` nesting, as the bound on its register file is -- is refused
+(`OuterLocalInScratch`). Compiled code never names such a register: an outer
+local is a named local, a copied value or the vector register of the body
+that declares it, all below its scratch. Without the refusal a crafted block
+run by a callee lying on its home's slots could store over that callee's
+caller word or register count, which its pop reads
+(`a_block_storing_into_its_homes_scratch_under_a_live_callee_is_refused_at_load`).
+
+**No instruction writes an argument register.** Parameters are immutable
+(§3.6), so no compiled body writes one, and an argument register is its
+sender's slot, which a setter's sender reads back after the send: a
+destination or a `StoreLocal` slot below its body's `argument_count`, or an
+outer store below the `argument_count` of the body it addresses, is refused
+(`ArgumentRegisterWritten`). A read is not. One destination there is no
+write: the load of `Literal::BodyTooLarge`, which raises before it writes,
+into the last argument -- the body a body past the register ceiling
+compiles to names that register when its arguments leave none above the
+header (`compiler::body_too_large`), and the decoder leaves it so rather
+than the lowering moving it, since no number above the header exists there.
+
+**No send reads a source from another of its slots.** A send's sources are
+copied into its slots on the push path, one after another, so a source that
+is another of its own slots would answer whatever the earlier copies left
+there: refused (`SourceIsAnotherSlot`). Neither lowering emits one: the
+reference lowering's sources are their own slots, and the optimized one's
+are their own slots or registers outside the slots -- named locals, copied
+values, or scratch the value was produced in.
+
+**No instruction reads what its body did not write.** A send's callee is
+laid on its slots, so once it returns every register of the sender's above
+the slots holds what the callee left there -- its header's words, its
+temporaries, and in a shipped method's scratch the VM mirror -- and a
+scratch register the body has not written holds whatever the push left
+there. No compiled body reads either ([compiler.md](compiler.md), "What a
+callee leaves"), so `verify_body` runs the leftover analysis
+(`bytecode::leftovers::check`) last, on a body whose every register and
+target it has found in range, and refuses a read of a register the body may
+not have written (`LeftoverRead`). Without it a crafted method sending to a
+shipped method that holds the mirror in its scratch could read the register
+the mirror was in
+(`an_image_reading_the_mirror_a_kernel_method_left_is_refused`,
+`an_image_reading_unwritten_scratch_is_refused`). The analysis's bitsets
+are bounded before it allocates them: a body past what any compiled body
+reaches -- more than
+257 jump targets pending at once, more than 128 loops open, loops that
+cross, a jump into a loop past its head -- is refused
+(`VerificationPastTheBound`;
+`an_image_past_the_verification_bound_is_refused`), so it holds at most 258
+bitsets, 2.02 MiB, of one body at a time, and 3.02 MiB in a debug build
+([memory.md](memory.md), "The amplification bound of a rejected load").
 
 **A frame record's register file matches its body.** Every reified frame is
-allocated with its code's full register file ([object-model.md](object-model.md),
-"The object layout"), and the encoder writes every register it has, `nil`
-where its activation copied none ([execution.md](execution.md),
-"Lifecycle"), so `verify_graph` refuses a frame record whose register count
-is anything but its body's `register_count` (`FrameRegisterFile`; a frame
-record with no registers for a body that has some is refused,
+allocated with its code's full register file but the header's numbers -- its
+arguments, then its registers above the header
+([object-model.md](object-model.md), "The object layout") -- and the encoder
+writes every register it has, `nil` where its activation copied none
+([execution.md](execution.md), "Lifecycle"), so `verify_graph` refuses a
+frame record whose register count is anything but its body's
+`argument_count` plus its registers above the header
+(`CompiledCode::frame_register_count`; `FrameRegisterFile`; a frame record
+with no registers for a body that has some is refused,
 `a_frame_with_no_registers_for_a_body_that_has_some_is_refused`). A crafted
 image therefore cannot pair a by-reference closure with a frame too small
-for the registers its code reads, and no frame object ever grows.
+for the registers its code reads, and no frame object ever grows. A body
+past the register ceiling whose arguments leave no number above the header
+has frames of its arguments alone, which decode
+(`a_frame_of_a_body_whose_arguments_fill_the_register_ceiling_verifies`).
+
+A frame record with a field for each of the header's numbers, as a stale
+image written while frame objects held them carries, is refused by the same
+check, never read with its registers shifted: it holds thirteen fields more
+than its body's register file, whatever the body
+(`a_frame_with_fields_for_the_header_numbers_is_refused`). That is why the
+frame record's tag (`OBJECT_FRAME`) needs no new number for the layout
+("A wire tag is assigned once" in `image/opcodes.rs`).
 
 **A frame's body is one its kind runs.** Since a program frame names its
 body by code id ("A frame names its body" above), nothing but this check
@@ -1299,9 +1432,8 @@ has a standalone initializer and every other row none
 row with `<:` clauses but no superclass clause is refused
 (`MixinApplicationWithoutSuperclass`). A level's record names an applying row
 and a position that must exist (`BadMixinId`, `BadMixinApplicationClause`) and
-fit the 23 bits a class object's packed applied clause gives it
-(`ClauseIndexTooLarge`, at 2^23 or more, the limit the resolver holds a
-source to; [object-model.md](object-model.md), "The object layout"), and
+lie below the clause limit, 1,024, which the resolver holds a source to
+(`ClauseIndexTooLarge`; [compiler.md](compiler.md), "Limits"), and
 a module's root class record is held to that module's own root row and to
 the root rule -- never another module's (`a_module_root_is_held_to_its_own_modules_row`;
 "Module section" above).
@@ -2609,6 +2741,12 @@ shipped world.
   meet an unknown tag instead of decoding as whatever instruction took the
   number next. A kernel method's fast path is never carried, so the format
   needed nothing new.
+- **A send naming its argument slots retired six tags** (2026-10-24): the
+  four sends' 25–28 and the initializer invocations' 44 and 45, taken by
+  46–51, which write the slots' base before the sources. A stale artifact's
+  register list read as a base and a shorter list would be a different,
+  valid program; under the retired numbers it meets an unknown tag
+  ([execution.md](execution.md), "Overlapping register windows").
 - **`FORMAT_VERSION` is not bumped**, because there are no external users and the
   safety property does not depend on it.
 - **Artifacts are readable but not writable as text.** A dump serves inspection;

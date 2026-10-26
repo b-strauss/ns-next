@@ -573,33 +573,33 @@ fn a_vector_round_trips_a_value_through_its_slot() {
     let instance = new_instance(&mut interpreter, &class);
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        // MakeVector r0, size 1; LoadLiteral r1 <- 42; StoreVector r0[0] <- r1;
-        // LoadVector r2 <- r0[0]; Return r2  =>  42
+        // MakeVector r13, size 1; LoadLiteral r14 <- 42; StoreVector r13[0] <- r14;
+        // LoadVector r15 <- r13[0]; Return r15  =>  42
         let body = CompiledCode::new(
             CodeKind::Method,
             vec![
                 Instruction::MakeVector {
-                    destination: 0,
+                    destination: 13,
                     size: 1,
                 },
                 Instruction::LoadLiteral {
-                    destination: 1,
+                    destination: 14,
                     literal: Literal::SmallInteger(42),
                 },
                 Instruction::StoreVector {
-                    vector: 0,
+                    vector: 13,
                     index: 0,
-                    source: 1,
+                    source: 14,
                 },
                 Instruction::LoadVector {
-                    destination: 2,
-                    vector: 0,
+                    destination: 15,
+                    vector: 13,
                     index: 0,
                 },
-                Instruction::Return { register: 2 },
+                Instruction::Return { register: 15 },
             ],
             0,
-            3,
+            16,
             0,
             vec![(0, 0..5)],
             Span::new(0, 0),
@@ -627,23 +627,23 @@ fn reading_a_vector_slot_that_is_not_there_is_an_error_not_a_panic() {
     let instance = new_instance(&mut interpreter, &class);
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        // LoadLiteral r0 <- 7 (not an Array); LoadVector r1 <- r0[0]; Return r1
+        // LoadLiteral r13 <- 7 (not an Array); LoadVector r14 <- r13[0]; Return r14
         let body = CompiledCode::new(
             CodeKind::Method,
             vec![
                 Instruction::LoadLiteral {
-                    destination: 0,
+                    destination: 13,
                     literal: Literal::SmallInteger(7),
                 },
                 Instruction::LoadVector {
-                    destination: 1,
-                    vector: 0,
+                    destination: 14,
+                    vector: 13,
                     index: 0,
                 },
-                Instruction::Return { register: 1 },
+                Instruction::Return { register: 14 },
             ],
             0,
-            2,
+            15,
             0,
             vec![(0, 0..3)],
             Span::new(0, 0),
@@ -685,24 +685,24 @@ fn a_vector_index_past_the_arrays_end_is_the_same_error_not_a_panic() {
     let instance = new_instance(&mut interpreter, &class);
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        // MakeVector r0, size 1 (one slot); LoadVector r1 <- r0[5] (out of
-        // range); Return r1
+        // MakeVector r13, size 1 (one slot); LoadVector r14 <- r13[5] (out of
+        // range); Return r14
         let body = CompiledCode::new(
             CodeKind::Method,
             vec![
                 Instruction::MakeVector {
-                    destination: 0,
+                    destination: 13,
                     size: 1,
                 },
                 Instruction::LoadVector {
-                    destination: 1,
-                    vector: 0,
+                    destination: 14,
+                    vector: 13,
                     index: 5,
                 },
-                Instruction::Return { register: 1 },
+                Instruction::Return { register: 14 },
             ],
             0,
-            2,
+            15,
             0,
             vec![(0, 0..3)],
             Span::new(0, 0),
@@ -736,13 +736,13 @@ fn constant_block(value: i64) -> Rc<CompiledCode> {
         CodeKind::Block,
         vec![
             Instruction::LoadLiteral {
-                destination: 0,
+                destination: 13,
                 literal: Literal::SmallInteger(value),
             },
-            Instruction::Return { register: 0 },
+            Instruction::Return { register: 13 },
         ],
         0,
-        1,
+        14,
         0,
         vec![(0, 0..2)],
         Span::new(0, 0),
@@ -762,47 +762,47 @@ fn make_future_load_own_slot_and_resolve_future_run_a_simultaneous_clause_by_han
     let instance = new_instance(&mut interpreter, &class);
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        // MakeClosure r0 <- the block answering 99;
-        // MakeFuture r1 <- future of r0;
-        // InitSlotProvisionally own 0 <- r1        (n holds the unresolved future)
-        // LoadOwnSlot r2 <- own 0                  (a simultaneous clause's end
+        // MakeClosure r13 <- the block answering 99;
+        // MakeFuture r14 <- future of r13;
+        // InitSlotProvisionally own 0 <- r14        (n holds the unresolved future)
+        // LoadOwnSlot r15 <- own 0                  (a simultaneous clause's end
         //                                            reading its own slot back)
-        // ResolveFuture r3 <- r2                   (unresolved: forces the
+        // ResolveFuture r16 <- r15                   (unresolved: forces the
         //                                            block, then runs this same
         //                                            instruction again --
         //                                            `vm::force_and_reexecute` /
         //                                            `reexecute` -- and finds it
         //                                            resolved)
-        // Return r3  =>  99
+        // Return r16  =>  99
         let body = CompiledCode::new(
             CodeKind::Method,
             vec![
                 Instruction::MakeClosure {
-                    destination: 0,
+                    destination: 13,
                     parameters: Rc::new(vec![]),
                     code: constant_block(99),
                     copied: vec![],
                 },
                 Instruction::MakeFuture {
-                    destination: 1,
-                    closure: 0,
+                    destination: 14,
+                    closure: 13,
                 },
                 Instruction::InitializeSlotProvisionally {
-                    source: 1,
+                    source: 14,
                     own_index: 0,
                 },
                 Instruction::LoadOwnSlot {
-                    destination: 2,
+                    destination: 15,
                     own_index: 0,
                 },
                 Instruction::ResolveFuture {
-                    destination: 3,
-                    source: 2,
+                    destination: 16,
+                    source: 15,
                 },
-                Instruction::Return { register: 3 },
+                Instruction::Return { register: 16 },
             ],
             0,
-            4,
+            17,
             0,
             vec![(0, 0..6)],
             Span::new(0, 0),
@@ -858,23 +858,23 @@ fn resolve_future_answers_a_non_future_value_unchanged() {
     let instance = new_instance(&mut interpreter, &class);
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        // LoadLiteral r0 <- 5 (not a future); ResolveFuture r1 <- r0
-        // (answers r0 unchanged, no forcing); Return r1
+        // LoadLiteral r13 <- 5 (not a future); ResolveFuture r14 <- r13
+        // (answers r13 unchanged, no forcing); Return r14
         let body = CompiledCode::new(
             CodeKind::Method,
             vec![
                 Instruction::LoadLiteral {
-                    destination: 0,
+                    destination: 13,
                     literal: Literal::SmallInteger(5),
                 },
                 Instruction::ResolveFuture {
-                    destination: 1,
-                    source: 0,
+                    destination: 14,
+                    source: 13,
                 },
-                Instruction::Return { register: 1 },
+                Instruction::Return { register: 14 },
             ],
             0,
-            2,
+            15,
             0,
             vec![(0, 0..3)],
             Span::new(0, 0),
@@ -902,18 +902,18 @@ fn load_own_slot_answers_nil_for_an_unfilled_slot() {
     let instance = new_instance(&mut interpreter, &class);
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        // LoadOwnSlot r0 <- own 0 (n, never initialized: nil); Return r0
+        // LoadOwnSlot r13 <- own 0 (n, never initialized: nil); Return r13
         let body = CompiledCode::new(
             CodeKind::Method,
             vec![
                 Instruction::LoadOwnSlot {
-                    destination: 0,
+                    destination: 13,
                     own_index: 0,
                 },
-                Instruction::Return { register: 0 },
+                Instruction::Return { register: 13 },
             ],
             0,
-            1,
+            14,
             0,
             vec![(0, 0..2)],
             Span::new(0, 0),
@@ -944,23 +944,23 @@ fn make_future_of_a_non_closure_is_an_error_not_a_panic() {
     let instance = new_instance(&mut interpreter, &class);
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        // LoadLiteral r0 <- 5 (not a closure); MakeFuture r1 <- future of r0;
-        // Return r1
+        // LoadLiteral r13 <- 5 (not a closure); MakeFuture r14 <- future of r13;
+        // Return r14
         let body = CompiledCode::new(
             CodeKind::Method,
             vec![
                 Instruction::LoadLiteral {
-                    destination: 0,
+                    destination: 13,
                     literal: Literal::SmallInteger(5),
                 },
                 Instruction::MakeFuture {
-                    destination: 1,
-                    closure: 0,
+                    destination: 14,
+                    closure: 13,
                 },
-                Instruction::Return { register: 1 },
+                Instruction::Return { register: 14 },
             ],
             0,
-            2,
+            15,
             0,
             vec![(0, 0..3)],
             Span::new(0, 0),
@@ -1055,23 +1055,23 @@ fn forcing_a_future_with_corrupted_fields_is_an_error_not_a_panic() {
     let instance = new_instance(&mut interpreter, &class);
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        // LoadOwnSlot r0 <- own 0 (held, the corrupted future);
-        // ResolveFuture r1 <- r0; Return r1
+        // LoadOwnSlot r13 <- own 0 (held, the corrupted future);
+        // ResolveFuture r14 <- r13; Return r14
         let body = CompiledCode::new(
             CodeKind::Method,
             vec![
                 Instruction::LoadOwnSlot {
-                    destination: 0,
+                    destination: 13,
                     own_index: 0,
                 },
                 Instruction::ResolveFuture {
-                    destination: 1,
-                    source: 0,
+                    destination: 14,
+                    source: 13,
                 },
-                Instruction::Return { register: 1 },
+                Instruction::Return { register: 14 },
             ],
             0,
-            2,
+            15,
             0,
             vec![(0, 0..3)],
             Span::new(0, 0),

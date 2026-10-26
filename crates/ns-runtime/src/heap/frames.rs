@@ -1,10 +1,14 @@
 //! The stack of running activations as frames of tagged words in one
-//! reservation (`docs/design/execution.md`, "Representation"). Frames lie
-//! back to back, innermost highest; each is a header of
-//! `frame_header::COUNT` words followed by its registers, and every word
-//! of it is a valid tagged `Word` -- a number a `SmallInteger`, an absent
-//! handle nil -- so that the collector can trace `[0, top)` as one linear
-//! range of values, with no stack map and no walk of frames.
+//! reservation (`docs/design/execution.md`, "Representation"). Each frame
+//! is its arguments, a header of `frame_header::COUNT` words, then the rest
+//! of its registers, innermost highest; a callee a send pushes lies on its
+//! sender's argument slots, which are its own arguments, every other frame
+//! above its sender's whole window. Every word a frame writes is a valid
+//! tagged `Word` -- a number a `SmallInteger`, an absent handle nil -- and
+//! the collector's trace of the stack nils every register no frame reads
+//! before it writes it as it walks the frames, before it traces each
+//! frame's words (`Heap::trace_stack`), so that the trace takes every word
+//! below the top as a value, with no stack map.
 
 use super::space::reserve_falling_back;
 use super::{out_of_memory, Word};
@@ -84,9 +88,10 @@ const MINIMUM_GROWTH: usize = 64 << 10;
 /// it uses.
 const MAXIMUM_GROWTH: usize = 16 << 20;
 
-/// The word offsets of a frame's header from the frame's start; its
-/// registers start at `COUNT`. Every word holds a tagged value
-/// (`docs/design/execution.md`, the table of header words).
+/// The word offsets of a frame's header from the header's start, which a
+/// frame's arguments precede and the rest of its registers follow from
+/// `COUNT` on. Every word holds a tagged value (`docs/design/execution.md`,
+/// the table of header words).
 pub(super) mod frame_header {
     /// The receiver, a value.
     pub const RECEIVER: usize = 0;
@@ -107,8 +112,10 @@ pub(super) mod frame_header {
     pub const PROGRAM_COUNTER: usize = 6;
     /// The feedback base, a `SmallInteger`.
     pub const FEEDBACK_BASE: usize = 7;
-    /// The word offset of the frame below, a `SmallInteger`; nil in the
-    /// bottom frame.
+    /// The word offset of the frame below and how far the top stood
+    /// above this frame's start when it was pushed -- the caller's window
+    /// end, which its pop gives back -- packed into one `SmallInteger`
+    /// (`caller_link_word`); nil in the bottom frame.
     pub const CALLER: usize = 8;
     /// Nil for `Deliver`, otherwise the continuation's row in the heap's
     /// side table, a `SmallInteger`.
@@ -117,20 +124,17 @@ pub(super) mod frame_header {
     pub const GUARD: usize = 10;
     /// The entered level, a `SmallInteger`.
     pub const ENTERED_LEVEL: usize = 11;
-    /// How many registers follow the header, a `SmallInteger`: the window
-    /// the push wrote, arguments and temporaries together, so that the
-    /// frame above starts where they end. A word of its own, since a
-    /// factory is handed as many arguments as its send has keywords,
-    /// which no field of the flags could bound.
+    /// How many registers follow the header, a `SmallInteger`: the frame's
+    /// window less its arguments, which lie below the header -- copied
+    /// values, temporaries and scratch -- so that the window ends at
+    /// `offset + COUNT + REGISTER_COUNT`. A word of its own, since a body's
+    /// registers can pass the 16 bits the flags give the argument count.
     pub const REGISTER_COUNT: usize = 12;
-    /// The activation's generation, a `SmallInteger`; debug builds only.
-    #[cfg(debug_assertions)]
-    pub const GENERATION: usize = 13;
-    /// The header's size: the first register's offset.
-    #[cfg(debug_assertions)]
-    pub const COUNT: usize = 14;
-    /// The header's size: the first register's offset.
-    #[cfg(not(debug_assertions))]
+    /// The header's size, and how many register numbers it takes between a
+    /// frame's arguments and the rest of its registers
+    /// (`bytecode::HEADER_REGISTERS`). The same in every build, a debug
+    /// build's generation riding in the flags word, so that the register
+    /// numbering the compiler decides around the header holds in both.
     pub const COUNT: usize = 13;
 }
 
@@ -163,12 +167,17 @@ pub(super) mod kind_tag {
 
 /// Where each field of `FrameFlags` sits in the flags word's
 /// `SmallInteger`: the kind tag in bits 0-7, the argument count in bits
-/// 8-39, then the two booleans; 42 bits, far inside 61.
+/// 8-23, `counted` at 24, `retains_registers` at 25 and, in a debug build,
+/// the 31-bit generation in bits 26-56; 57 bits, inside 61.
 const KIND_TAG_MASK: u64 = 0xFF;
 const ARGUMENT_COUNT_SHIFT: u32 = 8;
-const ARGUMENT_COUNT_MASK: u64 = 0xFFFF_FFFF;
-const COUNTED_BIT: u64 = 1 << 40;
-const RETAINS_REGISTERS_BIT: u64 = 1 << 41;
+const ARGUMENT_COUNT_MASK: u64 = 0xFFFF;
+const COUNTED_BIT: u64 = 1 << 24;
+const RETAINS_REGISTERS_BIT: u64 = 1 << 25;
+#[cfg(debug_assertions)]
+const GENERATION_SHIFT: u32 = 26;
+#[cfg(debug_assertions)]
+const GENERATION_MASK: u64 = 0x7FFF_FFFF;
 /// The bits below a `SmallInteger`'s payload.
 const SMALL_INTEGER_TAG_BITS: u32 = 3;
 /// A `SmallInteger`'s tag.
@@ -180,16 +189,53 @@ const SMALL_INTEGER_TAG: u64 = 0b001;
 pub(super) struct FrameFlags {
     /// One of `kind_tag`'s constants.
     pub(super) kind_tag: u8,
-    /// The arguments copied into the first registers.
-    pub(super) argument_count: u32,
+    /// The arguments copied into the first registers: at most the
+    /// register ceiling, `u16::MAX`, since every argument is a register.
+    pub(super) argument_count: u16,
     /// Whether the activation counts against the depth limit.
     pub(super) counted: bool,
     /// Whether a frame object married to the activation keeps its
     /// registers when the activation returns.
     pub(super) retains_registers: bool,
+    /// The activation's generation, which a debug build checks every
+    /// `ActivationReference` against; 31 bits.
+    #[cfg(debug_assertions)]
+    pub(super) generation: u32,
 }
 
 impl FrameFlags {
+    /// The flags of an activation of kind `kind_tag` handed
+    /// `argument_count` arguments; a debug build's generation is 0 until
+    /// `with_generation` names it.
+    #[inline(always)]
+    pub(super) fn new(
+        kind_tag: u8,
+        argument_count: u16,
+        counted: bool,
+        retains_registers: bool,
+    ) -> FrameFlags {
+        FrameFlags {
+            kind_tag,
+            argument_count,
+            counted,
+            retains_registers,
+            #[cfg(debug_assertions)]
+            generation: 0,
+        }
+    }
+
+    /// These flags with the generation `generation`, which must fit 31
+    /// bits.
+    #[cfg(debug_assertions)]
+    #[inline(always)]
+    pub(super) fn with_generation(self, generation: u32) -> FrameFlags {
+        debug_assert!(
+            u64::from(generation) <= GENERATION_MASK,
+            "internal: a generation fits 31 bits"
+        );
+        FrameFlags { generation, ..self }
+    }
+
     /// The flags as the `SmallInteger` word the header stores.
     #[inline(always)]
     pub(super) fn word(self) -> Word {
@@ -201,6 +247,10 @@ impl FrameFlags {
         if self.retains_registers {
             payload |= RETAINS_REGISTERS_BIT;
         }
+        #[cfg(debug_assertions)]
+        {
+            payload |= (u64::from(self.generation) & GENERATION_MASK) << GENERATION_SHIFT;
+        }
         number_word(payload)
     }
 
@@ -211,9 +261,11 @@ impl FrameFlags {
         let payload = number_of(word);
         FrameFlags {
             kind_tag: (payload & KIND_TAG_MASK) as u8,
-            argument_count: ((payload >> ARGUMENT_COUNT_SHIFT) & ARGUMENT_COUNT_MASK) as u32,
+            argument_count: ((payload >> ARGUMENT_COUNT_SHIFT) & ARGUMENT_COUNT_MASK) as u16,
             counted: payload & COUNTED_BIT != 0,
             retains_registers: payload & RETAINS_REGISTERS_BIT != 0,
+            #[cfg(debug_assertions)]
+            generation: ((payload >> GENERATION_SHIFT) & GENERATION_MASK) as u32,
         }
     }
 }
@@ -229,6 +281,53 @@ pub(super) fn number_word(number: u64) -> Word {
         "internal: a frame's number fits a SmallInteger"
     );
     Word::from_bits((number << SMALL_INTEGER_TAG_BITS) | SMALL_INTEGER_TAG)
+}
+
+/// The bits of a caller word (`frame_header::CALLER`) that hold the
+/// caller's offset: every offset is below `MAXIMUM_STACK_WORDS`, 2^31.
+const CALLER_OFFSET_BITS: u32 = 31;
+
+/// The bits above the caller's offset, which hold how far the top the
+/// frame was pushed at -- its caller's window end or past it -- lies above
+/// the frame's start: 29, so that the word stays a `number_word`. A frame
+/// is pushed either at the top, so the distance is 0, or on its caller's
+/// slots. Each frame of a chain laid on slots starts inside the window of
+/// every frame below it in the chain, and the top stands at the end of
+/// one of those windows, so the distance is at most the largest window in
+/// the chain, whose registers are numbered in 16 bits: far below 2^29.
+const CALLER_TOP_BITS: u32 = 60 - CALLER_OFFSET_BITS;
+
+const _: () = assert!(MAXIMUM_STACK_WORDS <= 1 << CALLER_OFFSET_BITS);
+
+/// The caller word of a frame pushed on `caller` from stack word `start`,
+/// its first argument, while the top stood at `top`: its caller's window
+/// end or past it, which the frame's pop restores without reading the
+/// caller's header.
+#[inline(always)]
+pub(super) fn caller_link_word(caller: u32, start: usize, top: usize) -> Word {
+    debug_assert!(
+        start <= top,
+        "internal: a frame starts at or below the top it is pushed at"
+    );
+    let above = (top - start) as u64;
+    debug_assert!(
+        above < 1 << CALLER_TOP_BITS && u64::from(caller) < 1 << CALLER_OFFSET_BITS,
+        "internal: a caller word's offset and distance fit their bits"
+    );
+    number_word(u64::from(caller) | (above << CALLER_OFFSET_BITS))
+}
+
+/// The caller's offset a caller word holds.
+#[inline(always)]
+pub(super) fn caller_offset_of(word: Word) -> u32 {
+    (number_of(word) & ((1 << CALLER_OFFSET_BITS) - 1)) as u32
+}
+
+/// How far above its frame's start the top stood when the frame was
+/// pushed, which a caller word holds.
+#[inline(always)]
+pub(super) fn caller_top_above_start(word: Word) -> usize {
+    (number_of(word) >> CALLER_OFFSET_BITS) as usize
 }
 
 /// The number `number_word` stored; `word` must be one it answered.
@@ -248,9 +347,13 @@ pub(super) struct ReservationExhausted;
 
 /// The frames of the running activations: one reservation of words,
 /// committed from its base as the stack deepens and never decommitted
-/// while it lives. Everything it lends is `[0, top)`, so the words a
-/// truncation left above the top are never read again, and the caller of a
-/// push writes every word of the frame it hands out.
+/// while it lives. Everything it lends is `[0, top)`. The caller of a push
+/// writes the header and the registers the frame reads before it writes
+/// them, and no other: a scratch register keeps whatever the stack last
+/// held there, and so does a register a pop gives back, until the
+/// collector's pre-pass nils it before a trace (`Heap::trace_stack`).
+/// The top never stands below the innermost frame's window end, nor below
+/// the window end of a frame a callee lies on the slots of.
 pub(super) struct FrameStack {
     reservation: Reservation,
     /// The first word past the innermost frame.
@@ -296,33 +399,109 @@ impl FrameStack {
         self.top
     }
 
+    /// The end of the committed range, in words: no frame's window reaches
+    /// past it. Only a debug build's stale-handle check reads it.
+    #[cfg(debug_assertions)]
+    pub(super) fn committed(&self) -> usize {
+        self.committed
+    }
+
     /// The most words the stack can ever hold.
     #[cfg(test)]
     pub(super) fn limit(&self) -> usize {
         self.limit
     }
 
-    /// Pushes a frame of `words` words and answers its word offset and its
-    /// words; `ReservationExhausted`, the top untouched, when the
-    /// reservation cannot hold it. The frame's words are whatever the stack
-    /// last held there -- a popped frame's, or zero where nothing was yet --
-    /// so the caller writes every one of them before anything reads the
-    /// stack again: a word a popped frame left could name an object since
-    /// moved or reclaimed. One comparison against the committed end and the
-    /// slice's one, with nothing written twice; committing more is the cold
-    /// path's.
+    /// Pushes a frame of `words` words and answers its word offset, the
+    /// words of every frame below it, which a send's arguments are copied
+    /// from, and its own words; `ReservationExhausted`, the top untouched,
+    /// when the reservation cannot hold it. The frame's words are whatever
+    /// the stack last held there -- a popped frame's, or zero where nothing
+    /// was yet -- so the caller writes every one its frame reads before it
+    /// writes it, and the collector's pre-pass nils the rest before a
+    /// trace: a word a popped frame left could name an object since moved
+    /// or reclaimed. One comparison against the committed end and the
+    /// slices' own, with nothing written twice; committing more is the
+    /// cold path's.
     #[inline(always)]
     pub(super) fn push(
         &mut self,
         words: usize,
-    ) -> Result<(usize, &mut [u64]), ReservationExhausted> {
+    ) -> Result<(usize, &[u64], &mut [u64]), ReservationExhausted> {
         let start = self.top;
         let end = start + words;
         if end > self.ordinary_end {
             self.grow(words, self.ordinary_limit)?;
         }
         self.top = end;
-        Ok((start, &mut self.reservation.accessible_mut()[start..end]))
+        let (below, frame) = self.reservation.accessible_mut()[..end].split_at_mut(start);
+        Ok((start, below, frame))
+    }
+
+    /// Pushes `words` words from `start`, which must not lie above the top
+    /// -- a callee's header laid on its sender's argument slots, over the
+    /// sender's registers above them, which are dead -- and answers them;
+    /// `ReservationExhausted`, the top untouched, when the reservation's
+    /// ordinary room cannot hold them. The top becomes their end where that
+    /// lies above it, and stays where it is otherwise: the sender's
+    /// registers past a shorter callee's window stay below the top, traced
+    /// once the pre-pass has nilled them (`Heap::trace_stack`), so that
+    /// no word comes below the top again that a collection never saw. One
+    /// comparison against the committed end, as `push` makes.
+    #[inline(always)]
+    pub(super) fn push_from(
+        &mut self,
+        start: usize,
+        words: usize,
+    ) -> Result<&mut [u64], ReservationExhausted> {
+        debug_assert!(
+            start <= self.top,
+            "internal: a frame laid on its sender's slots starts below the top"
+        );
+        let end = start + words;
+        if end > self.ordinary_end {
+            self.grow_to(end, self.ordinary_limit)?;
+        }
+        self.top = self.top.max(end);
+        Ok(&mut self.reservation.accessible_mut()[start..end])
+    }
+
+    /// Lowers the top to `top`, which must not lie above it: a pop, which
+    /// gives back the top its frame was pushed at. The words above the new
+    /// top keep whatever they held, and so do the words below it a callee
+    /// laid on its sender's slots gives back: nothing reads either before
+    /// a write, and the pre-pass nils the second before a trace.
+    #[inline(always)]
+    pub(super) fn lower_top(&mut self, top: usize) {
+        debug_assert!(top <= self.top, "internal: a pop never raises the top here");
+        self.top = top;
+    }
+
+    /// A debug build's pop of a callee that lay on its sender's slots from
+    /// `dead`, its header's offset: lowers the top to `top`, the top the
+    /// callee was pushed at, and writes `filler`, the dead register word,
+    /// into every word from `dead` up to it -- the sender's registers above
+    /// its slots, and any of a frame below that the sender lay on, all
+    /// dead -- so that an instruction's read of one is refused rather than
+    /// answering what the callee left. In whole blocks of four words, up
+    /// to three past the top where the committed stack allows: a word
+    /// above the top is no frame's.
+    #[cfg(debug_assertions)]
+    pub(super) fn give_back_dead_registers(&mut self, dead: usize, top: usize, filler: u64) {
+        debug_assert!(
+            dead <= top && top <= self.top,
+            "internal: a pop gives back dead registers below the top"
+        );
+        self.top = top;
+        let end = dead + (top - dead).next_multiple_of(4);
+        let words = self.reservation.accessible_mut();
+        if end <= self.committed {
+            for block in words[dead..end].as_chunks_mut::<4>().0 {
+                *block = [filler; 4];
+            }
+        } else {
+            words[dead..top].fill(filler);
+        }
     }
 
     /// `push`, but a frame may end anywhere in the reservation, the reserve
@@ -333,14 +512,15 @@ impl FrameStack {
     pub(super) fn push_reserved(
         &mut self,
         words: usize,
-    ) -> Result<(usize, &mut [u64]), ReservationExhausted> {
+    ) -> Result<(usize, &[u64], &mut [u64]), ReservationExhausted> {
         let start = self.top;
         let end = start + words;
         if end > self.committed {
             self.grow(words, self.limit)?;
         }
         self.top = end;
-        Ok((start, &mut self.reservation.accessible_mut()[start..end]))
+        let (below, frame) = self.reservation.accessible_mut()[..end].split_at_mut(start);
+        Ok((start, below, frame))
     }
 
     /// Whether the top is within the reserve of the end of the ordinary
@@ -361,10 +541,19 @@ impl FrameStack {
     #[cold]
     #[inline(never)]
     fn grow(&mut self, words: usize, ceiling: usize) -> Result<(), ReservationExhausted> {
-        let needed = match self.top.checked_add(words) {
-            Some(end) if end <= ceiling => end,
-            _ => return Err(ReservationExhausted),
-        };
+        match self.top.checked_add(words) {
+            Some(end) => self.grow_to(end, ceiling),
+            None => Err(ReservationExhausted),
+        }
+    }
+
+    /// `grow`, for a frame that ends at `needed`.
+    #[cold]
+    #[inline(never)]
+    fn grow_to(&mut self, needed: usize, ceiling: usize) -> Result<(), ReservationExhausted> {
+        if needed > ceiling {
+            return Err(ReservationExhausted);
+        }
         let page = Reservation::page_size();
         let size = self.reservation.size();
         let committed_bytes = self.committed * 8;
@@ -392,18 +581,6 @@ impl FrameStack {
         self.committed = self.committed.max(end / 8);
         self.ordinary_end = self.committed.min(self.ordinary_limit);
         Ok(())
-    }
-
-    /// Pops every frame at and above `offset`, which must not lie above the
-    /// top. The words above the new top keep whatever they held, but
-    /// nothing reads them: `words` lends only below the top, and a push
-    /// overwrites them.
-    pub(super) fn truncate(&mut self, offset: usize) {
-        debug_assert!(
-            offset <= self.top,
-            "internal: a truncation never raises the top"
-        );
-        self.top = offset.min(self.top);
     }
 
     /// The words of every frame, `[0, top)`: one comparison, of the top
@@ -488,25 +665,88 @@ mod tests {
         assert!(words.iter().all(|&word| word == Word::NIL.bits()));
     }
 
+    /// The generations a debug build's flags word must carry: the least
+    /// and the most the 31-bit counter reaches.
+    #[cfg(debug_assertions)]
+    const GENERATIONS: [u32; 2] = [0, 0x7FFF_FFFF];
+    #[cfg(not(debug_assertions))]
+    const GENERATIONS: [u32; 1] = [0];
+
     #[test]
     fn flags_round_trip_through_a_small_integer_word() {
         for kind_tag in ALL_KIND_TAGS {
-            for argument_count in [0, 1, u32::MAX] {
+            for argument_count in [0, 1, u16::MAX] {
                 for counted in [false, true] {
                     for retains_registers in [false, true] {
-                        let flags = FrameFlags {
-                            kind_tag,
-                            argument_count,
-                            counted,
-                            retains_registers,
-                        };
-                        let word = flags.word();
-                        assert!(word.is_small_integer());
-                        assert_eq!(FrameFlags::of(word), flags);
+                        for generation in GENERATIONS {
+                            let flags = FrameFlags::new(
+                                kind_tag,
+                                argument_count,
+                                counted,
+                                retains_registers,
+                            );
+                            #[cfg(debug_assertions)]
+                            let flags = flags.with_generation(generation);
+                            let _ = generation;
+                            let word = flags.word();
+                            assert!(word.is_non_negative_small_integer());
+                            assert_eq!(FrameFlags::of(word), flags);
+                        }
                     }
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_flags_word_packs_its_fields_where_the_layout_says() {
+        let payload = |flags: FrameFlags| number_of(flags.word());
+        assert_eq!(
+            payload(FrameFlags::new(kind_tag::FACTORY, 0, false, false)),
+            7
+        );
+        assert_eq!(
+            payload(FrameFlags::new(kind_tag::METHOD, u16::MAX, false, false)),
+            0xFFFF << 8
+        );
+        assert_eq!(
+            payload(FrameFlags::new(kind_tag::METHOD, 0, true, false)),
+            1 << 24
+        );
+        assert_eq!(
+            payload(FrameFlags::new(kind_tag::METHOD, 0, false, true)),
+            1 << 25
+        );
+        #[cfg(debug_assertions)]
+        assert_eq!(
+            payload(
+                FrameFlags::new(kind_tag::METHOD, 0, false, false).with_generation(0x7FFF_FFFF)
+            ),
+            0x7FFF_FFFF << 26
+        );
+    }
+
+    #[test]
+    fn a_caller_word_holds_the_caller_and_the_top_the_frame_was_pushed_at() {
+        // The largest of each: the last offset the reservation allows, and
+        // a caller window of every register number a body can have above
+        // a frame that starts at the caller's first argument.
+        let caller = (MAXIMUM_STACK_WORDS - 1) as u32;
+        let start = 1000;
+        let top = start + usize::from(u16::MAX) + 1;
+        let word = caller_link_word(caller, start, top);
+        assert!(word.is_non_negative_small_integer());
+        assert_eq!(caller_offset_of(word), caller);
+        assert_eq!(start + caller_top_above_start(word), top);
+        // A frame pushed at the top: nothing above its start.
+        let word = caller_link_word(7, start, start);
+        assert_eq!(caller_offset_of(word), 7);
+        assert_eq!(caller_top_above_start(word), 0);
+    }
+
+    #[test]
+    fn the_header_is_thirteen_words_in_every_build() {
+        assert_eq!(frame_header::COUNT, 13);
     }
 
     #[test]
@@ -526,8 +766,6 @@ mod tests {
             frame_header::ENTERED_LEVEL,
             frame_header::REGISTER_COUNT,
         ];
-        #[cfg(debug_assertions)]
-        offsets.push(frame_header::GENERATION);
         offsets.sort_unstable();
         assert_eq!(offsets, (0..frame_header::COUNT).collect::<Vec<_>>());
     }
@@ -546,7 +784,7 @@ mod tests {
         let frame_words = usize::from(u16::MAX) + frame_header::COUNT;
         assert!(frame_words * 8 > Reservation::page_size());
         let before = stack.top();
-        let (offset, _) = stack.push(frame_words).expect("push");
+        let (offset, _, _) = stack.push(frame_words).expect("push");
         assert_eq!(offset, before);
         assert_eq!(stack.top(), before + frame_words);
         stack.words_mut()[offset..].fill(Word::NIL.bits());
@@ -561,7 +799,7 @@ mod tests {
         loop {
             let before = stack.top();
             match stack.push(frame_words) {
-                Ok((offset, frame)) => {
+                Ok((offset, _, frame)) => {
                     assert_eq!(offset, before);
                     assert_eq!(frame.len(), frame_words);
                     pushed += 1;
@@ -591,7 +829,7 @@ mod tests {
         loop {
             let before = stack.top();
             match stack.push_reserved(frame_words) {
-                Ok((offset, _)) => {
+                Ok((offset, _, _)) => {
                     assert_eq!(offset, before);
                     reserved += 1;
                 }
@@ -605,25 +843,25 @@ mod tests {
         assert!(reserved > 0);
         // Back below the ordinary room, an ordinary push is refused only at
         // the ordinary limit again, though the reserve has been committed.
-        stack.truncate(ordinary_top);
+        stack.lower_top(ordinary_top);
         assert!(stack.push(frame_words).is_err());
-        stack.truncate(ordinary_top - frame_words);
+        stack.lower_top(ordinary_top - frame_words);
         assert!(stack.push(frame_words).is_ok());
     }
 
     #[test]
-    fn truncate_then_push_reuses_the_offset() {
+    fn lowering_the_top_then_pushing_reuses_the_offset() {
         let mut stack = FrameStack::new(1 << 20).expect("reserve");
         let frame_words = frame_header::COUNT + 4;
         stack.push(frame_words).expect("push");
-        let (offset, _) = stack.push(frame_words).expect("push");
+        let (offset, _, _) = stack.push(frame_words).expect("push");
         for word in &mut stack.words_mut()[offset..] {
             *word = number_word(7).bits();
         }
-        stack.truncate(offset);
+        stack.lower_top(offset);
         assert_eq!(stack.top(), offset);
         assert_eq!(stack.words().len(), offset);
-        let (again, _) = stack.push(frame_words).expect("push");
+        let (again, _, _) = stack.push(frame_words).expect("push");
         assert_eq!(again, offset);
         assert_eq!(stack.words().len(), offset + frame_words);
     }

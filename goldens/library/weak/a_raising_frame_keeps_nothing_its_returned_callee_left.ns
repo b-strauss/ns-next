@@ -1,0 +1,83 @@
+/// A frame that raises a VM error stays on the stack below the error's
+/// `signal` while the handler runs, and a collection the handler asks for
+/// keeps nothing of what a callee the frame sent to before left in its
+/// registers. `raiseAfterStoringIn:` first writes many scratch registers
+/// -- the elements of a brace array -- then sends `storeAnObjectIn:`,
+/// whose frame lies over those registers and leaves there the only
+/// strong reference to an Object it stores in a WeakArray, then raises at
+/// an inlined loop whose condition is no Boolean. The frame must be
+/// traced as of the raising instruction, after which every register the
+/// callee covered is dead; traced as of its earlier send, the registers
+/// it wrote before that send would count as its own and keep the Object.
+/// The handler prints the error, collects, and reads the WeakArray's slot
+/// by `at:`, which activates nothing. The defect shows only under the
+/// optimized lowering in a build without debug assertions; a debug
+/// build's pop poisons the registers a callee gives back.
+class ARaisingFrameKeepsNothingItsReturnedCalleeLeft = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      kernel = platform kernel.
+      weak = kernel WeakArray new: 1.
+    |
+    [raiseAfterStoringIn: weak] on: Error do: [:error |
+      transcript
+          show: error messageText;
+          newLine.
+      kernel garbageCollect.
+      transcript
+          show: (weak at: 1) printString;
+          newLine.
+    ].
+  )
+
+  /// Writes thirty-two scratch registers, sends `storeAnObjectIn:`, whose
+  /// frame lies over them, and raises at a loop whose condition is nil.
+  raiseAfterStoringIn: weak = (
+    |
+      condition
+    |
+    {
+      1.
+      2.
+      3.
+      4.
+      5.
+      6.
+      7.
+      8.
+      9.
+      10.
+      11.
+      12.
+      13.
+      14.
+      15.
+      16.
+      17.
+      18.
+      19.
+      20.
+      21.
+      22.
+      23.
+      24.
+      25.
+      26.
+      27.
+      28.
+      29.
+      30.
+      31.
+      32.
+    }.
+    storeAnObjectIn: weak.
+    [condition] whileTrue: [].
+  )
+
+  /// Stores in the first slot of `weak` an Object nothing else reaches
+  /// once this method's frame is gone.
+  storeAnObjectIn: weak = (
+    weak at: 1 put: Object new.
+  )
+)

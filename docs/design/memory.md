@@ -433,11 +433,10 @@ instructions between two safepoints is an entry of its own, and the
 safepoint is outside every one, so the compiler refuses anything else ("The
 brand" below); every live value is in a register
 on the activation stack or in one of the places "What the collector traces"
-below lists. The step state's reusable argument buffer is empty there — a
-send gathers into it, decides and pushes within one instruction, and it is
-cleared when it is given back — so it is not a root, and a debug assertion
-before every move, collection and scavenge says so
-(`World::check_quiescent_state`).
+below lists. A send's arguments are read in its slots, on the activation
+stack, while it is decided and pushed ([execution.md](execution.md), "No
+re-entry from Rust"), so the step state keeps no argument buffer that
+would have to be empty there.
 
 The one other place a collection is sound is between entries, where only
 roots hold values and no step is running: `Interpreter::collect_now`
@@ -508,8 +507,8 @@ source was slower beyond the sittings' noise, and `bench_block.ns` was 4%
 faster for another reason ([execution.md](execution.md), "What 2b moved",
 which also has the one borderline group). So Cog's trick was not
 needed; it stays the fallback should a later measurement show the poll's price
-on the send path: a request lowers the limit `Mutator::push` already
-compares the activation depth against, so a send pays nothing it does not pay
+on the send path: a request lowers the limit that `Mutator::push_above` and
+`Mutator::push_on_slots` already compare the activation depth against, so a send pays nothing it does not pay
 anyway.
 
 ### No Rust frame is live below a safepoint
@@ -540,7 +539,7 @@ invariant (`heap.rs`'s `Brand<'gc>`, a zero-sized
 extended. A release handle is still exactly its 64-bit offset.
 
 **The step state is a `Mutator<'gc>`** (`interpreter/mod.rs`): the heap, the
-builtin classes, the application caches and the argument buffer, and
+builtin classes and the application caches, and
 every method a step uses — heap access, allocation,
 the send decisions and pushes, the natives, the compiler, the image codec. At
 rest it is a `Mutator<'static>` held by a `World` (`heap/world.rs`), which the
@@ -725,14 +724,84 @@ check").
   `vmMirror` slot and the kernel every builtin class's `enclosing` object,
   but a root of their own keeps both alive and forwarded whatever those
   links are.
-- The activation stack, as one linear range of tagged words, `[0, top)`:
-  every frame's header -- its receiver, `current_class`, the closure object
-  or class its kind's operand names, the frame object it is married to,
-  and numbers the tracer passes over -- and its registers, with no stack
-  map and no walk of frames; the words a pop left above the top are never
-  read ([execution.md](execution.md), "Representation"). `ActivationStack`'s
-  impl is in `heap.rs`, where its
-  fields are private.
+- The activation stack, every tagged word of `[0, top)`: every frame's
+  header -- its receiver, `current_class`, the closure object or class its
+  kind's operand names, the frame object it is married to, and numbers
+  the tracer passes over -- and its registers, with no stack map. The
+  words above the top are not traced, and
+  no push or pop writes a scratch register: a push writes its frame's
+  header and named locals only, a pop nothing, and a push laid on its
+  sender's slots never lowers the top, so a sender's registers past a
+  shorter callee stay below it ([execution.md](execution.md),
+  "Representation"). A word below the top may so be one a callee or a
+  popped frame left, and the pre-pass below nils each before the trace
+  reads it, so that it neither keeps an object alive nor names one a
+  collection moved meanwhile. The trace is `Heap::trace_stack`, in
+  `heap.rs`, where `ActivationStack`'s fields are private.
+
+  Every trace of the stack -- the scavenge, marking, and every forward
+  (`forward_everything`: a compaction's, a stress move's, the bulk
+  forward's) -- walks the frames from the top by their caller words and,
+  in a pre-pass over each frame before it traces the frame's words,
+  writes `dead_register`'s word into every register the frame does not
+  read before writing it. That is
+  what `bytecode::leftovers` finds tainted before the program counter the
+  frame's header stores ([compiler.md](compiler.md), "What a callee
+  leaves"): for the top frame the instruction it runs next, which the run
+  loop writes back as it leaves for the safepoint; for every other the
+  instruction it stopped at, which stored its own index before it handed
+  control on -- a send, which the frame resumes after, an instruction
+  that met an unresolved future, which it runs again, or an instruction
+  that raised an error, below whose `signal` the frame stays while the
+  handler runs (`tainted_at`'s doc comment names each write). A frame
+  whose callee lies on its slots stopped at that send, which taints every
+  register from its slot end, so it loses as well every register from
+  there to its own window's end. A
+  word inside the window of a frame above is left to that frame, a word at
+  or past the top to none, and a frame's arguments and header are never
+  written: a callee's arguments are its sender's slots. Each body keeps
+  the sets the pre-pass asked of it, by program counter
+  (`leftovers::TaintedSets`), so a frame costs a lookup and its writes;
+  the analysis runs once per body and program counter, at the first
+  collection that finds a frame there, after a `check` of the body, since
+  the shipped code is decoded unverified and an answer for a body `check`
+  refuses would nil live registers. The stack is walked once: a frame
+  whose set is kept is nilled as the walk meets it and then traced --
+  its words but those of the windows above, which the frames above
+  traced and no frame below writes -- and one whose set is missing is
+  deferred with the windows above it that reach into its own; after the
+  walk the missing sets are filled body by body, each body's from one
+  pass, so a collection analyses a body once however many frames run
+  it, and the deferred frames are nilled against the windows recorded
+  for them and traced. Last, as a net, a word below the top in no
+  frame's window would be traced as it lies; none is, since the bottom
+  frame starts at 0 and the top is always some live frame's window end
+  -- a push raises it to its frame's, a pop gives back the top its frame
+  was pushed at -- and a debug build refuses one. A deferred frame costs
+  the walk a `DeferredFrame` of 72 bytes, its body and program counter
+  among the missing ones, 16, and at most one recorded claim, 16, since
+  at most one merged window above reaches into a frame -- one not laid
+  on its sender's slots starts at the top, at or past every window end
+  below it, so what reaches in lies on the slots, merged: at most 104
+  bytes, freed when the trace ends, no more than the 13 header words the
+  frame has of its own on the stack. The first collection of a
+  101,000-frame recursion, every frame deferred, holds about 10.5 MB of
+  it for the length of the trace. The walk keeps the set it looked up
+  last, so a frame of the same body at the same program counter as the
+  frame above it -- a deep recursion's frames -- costs the reads of its
+  header, its writes and its trace, no lookup. Nilling and tracing in
+  one walk loads each frame's header lines once per trace: a separate
+  pre-pass, a walk of its own before a linear trace of `[0, top)`,
+  loaded them twice and cost a 99,000-frame recursion under about 30
+  scavenges 3.4% of its run, which the one walk removes. It is the only
+  guard: no push or pop writes the registers it nils. A full collection
+  runs it twice, in its marking's trace and in its forwarding's, which
+  is idempotent on purpose. A frame object traced as
+  it lies takes no such register either: a suspension copies the frame's
+  registers less those the pre-pass would nil, a divorce its named ones
+  only. In a debug build the word it writes is `Word::DEAD_REGISTER`,
+  which every tracer passes over and an instruction's read refuses
+  ([execution.md](execution.md), "Representation").
 - The side table of continuations (`Heap`'s `continuations`): each running
   activation's continuation other than `Deliver`, which its stack frame
   names by row (a frame that delivers names none), and the state it
@@ -810,10 +879,9 @@ every build, since the collector runs in every build.
 
 A reified frame is not a root of its own: it is reached through the closure
 that captured it, through the stack frame it is married to, or through the
-side-table row of its suspension. Two things the
-step state keeps hold no handle, on purpose, and a debug assertion before
-every move checks it: a send's argument buffer, empty between instructions
-("Where a collection can happen" above). An instantiation keeps nothing
+side-table row of its suspension. A send's arguments are read in its
+slots, so nothing beside the stack holds them ("Where a collection can
+happen" above). An instantiation keeps nothing
 outside the activation stack: its factory and initializers are activations
 like any method's ([execution.md](execution.md), "No re-entry from Rust"). A nested
 class being created is marked in its own cache slot by a primitive (`false`),
@@ -1300,6 +1368,19 @@ not by the input. The figures above stand: about 10.7x of the graph section's
 bytes in a release build and 16x in a debug one, plus at most 4x of the
 symbol section's and 6x of the text table's, plus that constant.
 
+**The leftover analysis adds a fixed term, not a factor.** `verify_code_table`
+runs it on every decoded body ([image-format.md](image-format.md),
+"Verification"), and it is bounded before it allocates: at most 258 bitsets
+of at most 8 KiB, 2.02 MiB, in a release build, and 386, 3.02 MiB, in a
+debug one, which also keeps each open loop's head state
+([compiler.md](compiler.md), "What a callee leaves", "The bound"). It holds
+them for one body at a time, freed before the next, and all of it before
+the graph pass: `decode_described` verifies the code table before
+`decode_graph_phase` reads the graph section (`image/mod.rs`), so no bitset
+lives beside a placeholder. So the peak of a rejected load is the figures
+above, plus at most 2.02 MiB (3.02 MiB in a debug build) while the code
+table is verified.
+
 **What the figures do not count**: the Rust allocator's own overhead per
 allocation of the decoder's tables; a table's `Vec` that doubles while the
 decoder fills it, which holds both buffers for a moment; the object space's
@@ -1311,7 +1392,10 @@ set ("The object space"); the old space the load's tenure commits before
 it copies, for the worst case of everything young being promoted, which
 the nursery bounds rather than the input; and the decoded `Vec<Instruction>` of
 one compiled body at a time while the code table is verified ("The trigger
-and the growth policy" below); the text table's `Vec`, reserved for the
+and the growth policy" below); the leftover analysis's list of that body's
+loops, one 12-byte `Region` per backward jump, and in a debug build a
+16-byte slot per loop for its head's state, of one body at a time and
+smaller than its decoded `Vec<Instruction>`; the text table's `Vec`, reserved for the
 count the table claims, at most 8 bytes for every 16 that follow the count
 and dropped before the graph pass, the refusal coming as soon as the
 records run out; and what the first pass keeps
@@ -1717,8 +1801,8 @@ index, not an object.
 
 The activation stack is a root, and nothing there is reclaimed: a frame is
 popped when its activation returns, so the stack is bounded by the deepest the
-program has been. Marking traces every word of every live frame as one range
--- the header's receiver, `current_class`, operand and `reified` words among
+program has been. Marking traces every word of every live frame, frame by
+frame as `Heap::trace_stack` walks the stack -- the header's receiver, `current_class`, operand and `reified` words among
 them, every other header word a `SmallInteger` or nil, then the registers --
 and every row of the side table of continuations, which a frame whose
 continuation is not `Deliver` names by row.
@@ -1777,10 +1861,11 @@ Pinned by `heap.rs`'s
 `a_young_value_written_into_a_suspended_old_frame_is_remembered` and
 `the_reclaim_keeps_the_entered_level_of_a_suspended_activation`.
 
-The stack is frames of tagged words in one reservation, which the
-collector traces as one linear range ([execution.md](execution.md),
+The stack is frames of tagged words in one reservation, every word of
+`[0, top)` of which the collector traces, with no stack map, walked
+frame by frame (`Heap::trace_stack`; [execution.md](execution.md),
 "Representation"), pinned by `heap.rs`'s
-`the_stack_is_traced_as_one_range_of_tagged_words` and
+`every_word_of_the_stack_is_a_tagged_value` and
 `a_collection_after_a_deep_pop_reads_nothing_above_the_top`.
 
 What keeps a frame alive past its return is a closure's captured frame, or
@@ -1986,7 +2071,8 @@ Soup's `List` (`prior-art/primordialsoup/newspeak/Collections.ns`) holds
 (`prior-art/somns/core-lib/Kernel.ns`) allocates `Array new: 2 * storage size`
 and copies. ns-next's `List` in the shipped `CollectionsFactory.ns` does the
 same. **Every object is fixed-size once allocated: no block grows in
-place** -- a frame object is allocated with its code's full register file,
+place** -- a frame object is allocated with its code's full register file
+but the header's numbers,
 and an image's frame record carries exactly that many registers
 ([image-format.md](image-format.md), "Verification") -- so the object
 space needs no growth-in-place case. What changes an
@@ -2299,7 +2385,8 @@ objects lie end to end from the region's start up to its top.
 - **Frames stay objects of the frame format** in the space, with their
   registers inline. Married and divorced frames, and suspended ones, keep
   their meaning ("Frames, the activation stack and the marriage"); a frame
-  object is allocated with its code's full register count, so none ever
+  object is allocated with its code's full register count but the header's
+  numbers, so none ever
   grows, and whether a divorce copies the registers stays decided per
   activation from the block's `outer_reach`. The activation stack's layout
   stays as it is until road step 7a lays frames out as words in one
@@ -2525,8 +2612,7 @@ A Cheney copy of the nursery's survivors (`heap/scavenge.rs`), as Spur's
   collection's work ("A resolved future is traced as its value"; chosen by
   the plan).
 
-`World::scavenge` checks that the step state holds no handle outside its
-roots (`World::check_quiescent_state`), lends the heap and `StepRoots` side
+`World::scavenge` lends the heap and `StepRoots` side
 by side, and times the scavenge as `World::collect` times a collection;
 `--collector-statistics` reports the scavenges and their pauses beside the
 full collections ("The gates the collector needs").

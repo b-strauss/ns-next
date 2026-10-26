@@ -48,6 +48,7 @@ pub(crate) use large_integer::execute_large_integer;
 pub(crate) use tower::execute_number;
 
 use crate::builtins::first_argument;
+use crate::interpreter::Arguments;
 use crate::types::*;
 use crate::{ArbitraryInteger, Heap, Mutator, Symbol};
 
@@ -149,19 +150,24 @@ pub(super) fn shift_left<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
     receiver_integer: &ArbitraryInteger,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Result<Value<'gc>, NewspeakError<'gc>> {
     let selector = Symbol::intern("<<");
     let refusal = |message: String| {
-        NewspeakError::argument_error(selector, receiver, first_argument(arguments), message)
+        NewspeakError::argument_error(
+            selector,
+            receiver,
+            first_argument(&mutator.heap, arguments),
+            message,
+        )
     };
-    let Some(count) = integer_operand(&mutator.heap, arguments.first().copied()) else {
+    let Some(count) = integer_operand(&mutator.heap, arguments.first(&mutator.heap)) else {
         return Err(type_mismatch(
             &mutator.heap,
             receiver,
             selector,
             Accepted::Integer,
-            arguments.first().copied(),
+            arguments.first(&mutator.heap),
         ));
     };
     if count.is_negative() {

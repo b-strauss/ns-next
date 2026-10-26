@@ -8,6 +8,7 @@
 //! send that forced it, or run the instruction that met the future again --
 //! is `AfterForcing`.
 
+use super::Arguments;
 use crate::builtins::primitive::Primitive;
 use crate::heap::Heap;
 use crate::interpreter::{Signal, Step, StepArguments};
@@ -489,7 +490,7 @@ pub(crate) fn after_a_failed_leaf<'gc>(
     primitive: Primitive,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
     answer: Option<Result<Step<'gc>, Signal<'gc>>>,
 ) -> Option<Result<Step<'gc>, Signal<'gc>>> {
     if !mutator.futures_made {
@@ -505,7 +506,7 @@ fn see_through_a_failed_leaf<'gc>(
     primitive: Primitive,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
     answer: Option<Result<Step<'gc>, Signal<'gc>>>,
 ) -> Option<Result<Step<'gc>, Signal<'gc>>> {
     if !matches!(answer, None | Some(Err(Signal::Error(_)))) {
@@ -537,7 +538,7 @@ pub(crate) fn declines_for_a_future<'gc>(
     primitive: Primitive,
     answer: bool,
     receiver: Value<'gc>,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<bool> {
     if answer || !mutator.futures_made {
         return Some(answer);
@@ -555,14 +556,14 @@ fn a_future_among<'gc>(
     mutator: &Mutator<'gc>,
     primitive: Primitive,
     receiver: Value<'gc>,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> bool {
     debug_assert!(
         primitive.answers_false_to_a_stranger(),
         "internal: only a leaf that answers false to a stranger declines for a future"
     );
     std::iter::once(receiver)
-        .chain(arguments.iter().copied())
+        .chain(arguments.iter(&mutator.heap))
         .any(|operand| mutator.as_future(operand).is_some())
 }
 
@@ -591,17 +592,22 @@ pub(crate) fn see_through<'gc>(
     primitive: Primitive,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> SeeThrough<'gc> {
-    let operands = || std::iter::once(receiver).chain(arguments.iter().copied());
     // Looked for before anything is built: an equality that answers `false`
     // takes this path on every send once a program has made a future, and
     // almost never because of one.
-    if operands().all(|operand| mutator.as_future(operand).is_none()) {
+    if std::iter::once(receiver)
+        .chain(arguments.iter(&mutator.heap))
+        .all(|operand| mutator.as_future(operand).is_none())
+    {
         return SeeThrough::NoFuture;
     }
-    let mut resolved = Vec::with_capacity(arguments.len() + 1);
-    for operand in operands() {
+    let operands: Vec<Value<'gc>> = std::iter::once(receiver)
+        .chain(arguments.iter(&mutator.heap))
+        .collect();
+    let mut resolved = Vec::with_capacity(operands.len());
+    for operand in operands {
         let Some(future) = mutator.as_future(operand) else {
             resolved.push(operand);
             continue;
@@ -619,7 +625,11 @@ pub(crate) fn see_through<'gc>(
         unreachable!("internal: the receiver is an operand");
     };
     SeeThrough::Answer(crate::builtins::execute(
-        mutator, primitive, *receiver, selector, arguments,
+        mutator,
+        primitive,
+        *receiver,
+        selector,
+        Arguments::Values(&arguments),
     ))
 }
 

@@ -1,0 +1,50 @@
+/// A conditional argument answers in its argument slot. Its value stays
+/// there while the arguments after it assign the local its arms read: on
+/// the fallback path, through the closure the fallback kept and a later
+/// argument runs, and on the inlined path, through an assignment.
+class AConditionalArgumentKeepsItsValueWhileLaterArgumentsAssign = Object new (
+  |
+    kept.
+  |
+) (
+  me = (
+    ^self.
+  )
+
+  /// Keeps the true block for a later argument to run, and answers the
+  /// false block's value.
+  public ifTrue: t ifFalse: f = (
+    kept:: t.
+    ^f value.
+  )
+
+  a: x b: y c: z = (
+    ^x printString , '/' , y printString , '/' , z printString.
+  )
+
+  public main: p args: arguments = (
+    |
+      t
+      local
+    |
+    t:: true.
+    local:: 1.
+    p transcript
+        show: (self a: (me ifTrue: [
+          local:: local + 1.
+          local.
+        ] ifFalse: [
+          local:: local + 10.
+          local.
+        ]) b: kept value c: local);
+        newLine.
+    p transcript
+        show: (self a: (t ifTrue: [
+          local:: 100.
+          local.
+        ] ifFalse: [
+          0.
+        ]) b: (local:: 200) c: local);
+        newLine.
+  )
+)

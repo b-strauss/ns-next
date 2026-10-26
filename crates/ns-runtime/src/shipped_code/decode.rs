@@ -304,6 +304,7 @@ impl Decoder<'_> {
         let argument_count = self.reader.u16();
         let register_count = self.reader.u16();
         let copied_count = self.reader.u16();
+        let local_count = self.reader.u16();
         let statement_program_counter = (0..self.reader.length())
             .map(|_| {
                 let statement = self.reader.length();
@@ -325,6 +326,7 @@ impl Decoder<'_> {
             argument_count,
             register_count,
             copied_count,
+            local_count,
             statement_program_counter,
             source,
         );
@@ -430,13 +432,15 @@ impl Decoder<'_> {
             7 => {
                 let depth = self.reader.u16();
                 let selector = self.symbol();
-                let argument_registers = self.registers();
+                let argument_base = self.reader.u16();
+                let argument_sources = self.registers();
                 let destination = self.reader.u16();
                 let call_site = self.call_site();
                 Instruction::SendLexical {
                     depth,
                     selector,
-                    argument_registers,
+                    argument_base,
+                    argument_sources,
                     destination,
                     call_site,
                 }
@@ -444,13 +448,15 @@ impl Decoder<'_> {
             8 => {
                 let selector = self.symbol();
                 let receiver_register = self.reader.u16();
-                let argument_registers = self.registers();
+                let argument_base = self.reader.u16();
+                let argument_sources = self.registers();
                 let destination = self.reader.u16();
                 let call_site = self.call_site();
                 Instruction::SendPublic {
                     selector,
                     receiver_register,
-                    argument_registers,
+                    argument_base,
+                    argument_sources,
                     destination,
                     call_site,
                 }
@@ -458,25 +464,29 @@ impl Decoder<'_> {
             9 => {
                 let selector = self.symbol();
                 let receiver_register = self.reader.u16();
-                let argument_registers = self.registers();
+                let argument_base = self.reader.u16();
+                let argument_sources = self.registers();
                 let destination = self.reader.u16();
                 let call_site = self.call_site();
                 Instruction::SendInlinable {
                     selector,
                     receiver_register,
-                    argument_registers,
+                    argument_base,
+                    argument_sources,
                     destination,
                     call_site,
                 }
             }
             10 => {
                 let selector = self.symbol();
-                let argument_registers = self.registers();
+                let argument_base = self.reader.u16();
+                let argument_sources = self.registers();
                 let destination = self.reader.u16();
                 let call_site = self.call_site();
                 Instruction::SendSuper {
                     selector,
-                    argument_registers,
+                    argument_base,
+                    argument_sources,
                     destination,
                     call_site,
                 }
@@ -485,14 +495,16 @@ impl Decoder<'_> {
                 let primitive = self.mirror_primitive();
                 let mirror_register = self.reader.u16();
                 let subject_register = self.reader.u16();
-                let argument_registers = self.registers();
+                let argument_base = self.reader.u16();
+                let argument_sources = self.registers();
                 let destination = self.reader.u16();
                 let failure = self.reader.u32();
                 Instruction::SendMirror {
                     primitive,
                     mirror_register,
                     subject_register,
-                    argument_registers,
+                    argument_base,
+                    argument_sources,
                     destination,
                     failure,
                 }
@@ -653,22 +665,26 @@ impl Decoder<'_> {
             35 => {
                 let steps = self.reader.u16();
                 let selector = self.symbol();
-                let argument_registers = self.registers();
+                let argument_base = self.reader.u16();
+                let argument_sources = self.registers();
                 let destination = self.reader.u16();
                 Instruction::InitializeSuperclass {
                     steps,
                     selector,
-                    argument_registers,
+                    argument_base,
+                    argument_sources,
                     destination,
                 }
             }
             36 => {
                 let steps = self.reader.u16();
-                let argument_registers = self.registers();
+                let argument_base = self.reader.u16();
+                let argument_sources = self.registers();
                 let destination = self.reader.u16();
                 Instruction::InitializeAppliedLevel {
                     steps,
-                    argument_registers,
+                    argument_base,
+                    argument_sources,
                     destination,
                 }
             }
@@ -692,7 +708,9 @@ impl Decoder<'_> {
                 Literal::LargeInteger(ArbitraryInteger::from_parts(negative, digits))
             }
             7 => Literal::UnresolvedIdentifier(self.reader.str().to_owned()),
-            8 => Literal::BodyTooLarge,
+            8 => Literal::BodyTooLarge(crate::bytecode::BodyLimit::Registers),
+            9 => Literal::BodyTooLarge(crate::bytecode::BodyLimit::Arguments),
+            10 => Literal::BodyTooLarge(crate::bytecode::BodyLimit::Instructions),
             tag => panic!("internal: the embedded shipped code has literal tag {tag}"),
         }
     }

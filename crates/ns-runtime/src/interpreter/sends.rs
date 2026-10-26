@@ -4,6 +4,7 @@
 //! uncached; an ordinary send's uncached counterpart is
 //! `Mutator::decide_send`.
 
+use super::Arguments;
 use crate::dispatch::{self, LexicalOrigin};
 use crate::heap::{ActivationReference, Heap};
 use crate::types::*;
@@ -112,7 +113,7 @@ pub(crate) fn decide_lexical_send<'gc>(
     depth: u16,
     declaration_code: bool,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Result<Step<'gc>, Signal<'gc>> {
     let (self_value, origin) = lexical_origin(&mutator.heap, activation, declaration_code);
     let enclosing = dispatch::kth_enclosing_object(&mutator.heap, self_value, origin, depth);
@@ -156,7 +157,7 @@ pub(crate) fn decide_super_send<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Result<Step<'gc>, Signal<'gc>> {
     let Some(current_class) = mutator.heap.activation_current_class(activation) else {
         return Err(Signal::Error(NewspeakError::error(

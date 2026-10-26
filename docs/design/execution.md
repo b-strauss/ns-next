@@ -12,7 +12,9 @@
 > runs every program on from suspended frames; every running activation is
 > a frame of tagged words in one reservation of the heap's, measured no
 > slower than the stack of entries before it (road step 7a, "What frames
-> as words moved").
+> as words moved"), and a send's own callee lies on its argument slots,
+> which are the callee's first registers (road step 7a′, "Overlapping
+> register windows").
 > **Code:** `crates/ns-runtime/src/heap.rs` (the activation stack, the frame
 > objects, the `ActivationReference` and `FrameReference` handles, every read and write of an
 > activation, the copied values a closure carries and whether a frame keeps its
@@ -125,7 +127,10 @@ struct ActivationStack {
                                // count against the depth limit
 }
 
-a frame on the stack           // heap/frames.rs's frame_header; every word tagged
+a frame on the stack           // every word tagged
+    the arguments              // registers 0 .. argument_count, below the header;
+                               // a send's own callee's are its sender's slots
+the header                     // heap/frames.rs's frame_header, from the frame's offset
     0 receiver                 // a value
     1 current class            // the class object; nil at top level
     2 operand                  // the closure of a block frame, the class of a
@@ -133,15 +138,16 @@ a frame on the stack           // heap/frames.rs's frame_header; every word tagg
                                // frame as a SmallInteger; nil otherwise
     3 reified                  // the married frame object, or nil
     4 flags                    // SmallInteger: the kind's tag, argument_count,
-                               // counted, retains_registers
+                               // counted, retains_registers; in a debug
+                               // build the generation too
     5 code  6 program counter  7 feedback base          // SmallIntegers
     8 caller                   // the frame below's offset; nil in the bottom one
     9 continuation             // nil for Deliver, else its row in the heap's
                                // side table of continuations
     10 guard  11 entered level // recorded_guard and entered_level, SmallIntegers
-    12 register count          // the window the push wrote
-    13 generation              // debug builds only
-    then the registers         // arguments first, then temporaries
+    12 register count          // the registers above the header
+    then the registers         // copied values, temporaries, vector, scratch:
+                               // registers argument_count + 13 on
 
 a frame object                 // heap/object.rs's frame_field; an object of the frame format
     0 sender  1 home  2 receiver  3 current class   // objects or nil
@@ -151,10 +157,13 @@ a frame object                 // heap/object.rs's frame_field; an object of the
     9 married                  // SmallInteger: >= 0 the stack frame's offset,
                                // < 0 -(row + 1) of a suspended frame's
                                // side-table row; nil once divorced
-    10.. the registers         // the code's whole register file
+    10.. the registers         // the arguments, then the registers above the
+                               // header: register r is field 10 + r below
+                               // argument_count, 10 + r - 13 above the header;
+                               // the header's thirteen numbers have none
 
 pub struct ActivationReference {
-    offset: u32,               // the frame's word offset on the stack
+    offset: u32,               // the word offset of the frame's header
     #[cfg(debug_assertions)] origin: u32,
     #[cfg(debug_assertions)] generation: u32,
 }
@@ -173,9 +182,11 @@ pub struct ActivationReference {
   It is committed from its base as the stack deepens -- doubling what is
   committed, by at least 64 KiB and at most 16 MiB at a time unless a push
   needs more (`FrameStack::grow`) -- and never decommitted while the heap
-  lives. Frames lie back to back, innermost highest: the header,
-  `frame_header::COUNT` words -- 13 in a release build, 14 in a debug one,
-  which adds the generation -- then the registers. An
+  lives. A frame is its arguments, the header -- `frame_header::COUNT`
+  words, 13 in every build, a debug build's generation riding in the flags
+  word -- then the rest of its registers, innermost highest; a send's own
+  callee lies on its sender's argument slots, which are its arguments,
+  every other frame above its sender's whole window. An
   `ActivationReference` is the word offset of its frame's header, and a
   married frame object's married word holds the same offset.
 - **Every word of a frame is a valid tagged value**: a number a
@@ -190,13 +201,21 @@ pub struct ActivationReference {
   skips by offset (`interp.c:57557-57596`) and Soup turns into indexes
   around every collection (`interpreter.cc:1875-1905`). Here every link is
   an index, since `ns-runtime` forbids `unsafe`, so nothing needs either:
-  **the collector traces the stack as one linear range of tagged words**,
-  `[0, top)`, as Soup scans `[sp_, stack_base_)`, and the table of
-  continuations beside it; no stack map, no per-frame walk
-  ([memory.md](memory.md), "What the collector traces"). A married frame
+  **the collector traces every tagged word of the stack**, `[0, top)`, as
+  Soup scans `[sp_, stack_base_)`, and the table of continuations beside
+  it, with no stack map: it walks the frames by their caller words and
+  traces each frame's words as it meets the frame, once it has nilled
+  the registers the frame does not read before writing them
+  (`Heap::trace_stack`; [memory.md](memory.md), "What the collector
+  traces"). A married frame
   object still skips its own registers, which are nil while the stack
   holds the live ones. The flags word packs the kind's tag in bits 0-7,
-  the argument count in bits 8-39 and the two booleans above them; the
+  the argument count in bits 8-23 -- every argument is a register, so the
+  register ceiling, `u16::MAX`, bounds it: `Interpreter::push` refuses a
+  longer list of values with the too-large error the only body that
+  declares more parameters, the raising one, would raise -- `counted` at
+  24, `retains_registers` at 25 and, in a debug build, the 31-bit
+  generation in bits 26-56, 57 bits inside a `SmallInteger`'s 61; the
   kind tags are `heap/frames.rs`'s own numbering, never written to an
   image.
 - **The code is an id, not an `Rc`**: a return reads the caller's code from
@@ -204,10 +223,28 @@ pub struct ActivationReference {
   `MixinMethod` is needed only for its selector and its code, which the
   operand and the code word hold; the push registers a method's body with
   its method, so `reify` rebuilds `FrameKind::Method` from the code row.
-- **A push** (`Heap::push_activation`) takes a frame of the header's size
-  plus its window from the frame stack, writes every word of the header,
-  copies the arguments into the first registers and fills the temporaries
-  with nil; the frame names its body by its code id, found through the
+- **A push** comes in two kinds. A send's own callee
+  (`Heap::push_overlapped_activation`) takes the header and the registers
+  above it from the end of the send's argument slots, which are its
+  arguments and are copied nowhere, writes every word of the header and
+  fills its named locals above it with nil -- those below its body's
+  `local_count` -- and no scratch register. Every other push
+  (`Heap::push_activation`) -- a host's, a `doesNotUnderstand:` handler's,
+  `Message>>sendTo:`'s, a native loop's block, an unwind block, the
+  initializer a factory enters, a resumed or forcing activation -- takes
+  its arguments, the header and the registers above from the top, above
+  the sender's whole window: the frame stack answers the frame's words and
+  every word below it, and the push copies the arguments into the first
+  registers -- out of their window in the frame below, or from the values
+  a decision or the host built (`interpreter::Arguments`); one or two word
+  by word, more by a loop kept inline -- writes the header and fills the
+  named locals with nil, never indexing the whole stack once the frame is
+  pushed. No push writes a scratch register: no body reads one before it
+  writes it (`bytecode::leftovers`, which both lowerings check and the
+  decoder holds an image to; [compiler.md](compiler.md), "What a callee
+  leaves"), and the collector's pre-pass nils what the stack held there
+  before every trace (`Heap::trace_stack`).
+  The frame names its body by its code id, found through the
   body's one-entry cache ([memory.md](memory.md), "A closure's code id
   without the map") and kept by a full collection while the activation
   runs ([object-model.md](object-model.md), "An application has two ids");
@@ -219,35 +256,76 @@ pub struct ActivationReference {
   a slot access checks"). Taking the frame is one comparison of its end
   against what may be used without committing more, and the reservation
   stays committed across pops, so once it has grown to the program's depth
-  a push commits nothing. A push the reservation cannot hold answers
-  `StackExhausted`, which `Mutator::push` raises as the depth limit's
-  `stack overflow: recursion too deep` ("The depth limit" below). Every
-  activation the runtime pushes goes through one function,
-  `Mutator::push`, which refuses a push past the depth limit before it
-  reaches the heap, so no new push site can skip the check. It is called
-  from `Mutator::push_step`, for the method, block or body a decision
+  a push commits nothing. The heap's pushes refuse a frame the
+  reservation cannot hold with `PushRefused`, and the public
+  `Heap::push_activation` with `StackExhausted`; `Mutator::push_placed`
+  raises either as the depth limit's `stack overflow: recursion too deep`
+  ("The depth limit" below). Every activation the runtime pushes goes
+  through that one function, which `Mutator::push` calls for a push above
+  the sender's window. It refuses a push past the depth limit before it
+  reaches the heap -- the compare sits in `Mutator::push_above` and
+  `Mutator::push_on_slots`, the two placements it chooses between -- so no
+  new push site can skip the check. It is called from
+  `Mutator::push_step`, for the method, block or body a decision
   answered, and for the initializer a factory entered past its first
-  instructions decides (`Mutator::enter_factory_body`). Every word is
-  computed before the frame is taken, so a refused push changes nothing;
-  the header is then written in place, every word once, and a pop reads
-  the words it needs and lowers the top: the words it leaves above the top
-  are never read again. The window is recorded in its own word rather than
-  read off the code, since a factory is handed as many arguments as its
-  send has keywords whatever its register count. An activation nothing
+  instructions decides (`Mutator::enter_factory_body`). It lends the
+  header to the heap's push rather than moving it, and hands it on whole
+  only to a refusal's cold path, `Mutator::push_refused`. Moved through
+  the push's inlined layers, the header, built by narrow stores, was
+  copied into each layer's own place sixteen bytes at a time and so read
+  back wide right after it was written, a store-forwarding stall on every
+  send. Every word is computed before the frame is taken, so a refused
+  push changes nothing; the header is then written in place, every word
+  once. The caller word packs the caller's offset with the top the frame
+  was pushed at -- its caller's window end or past it -- as a distance
+  from the frame's start (`frames::caller_link_word`), so that a pop finds the top
+  it gives back without reading the caller's header. A push laid on its
+  sender's slots never lowers the top (`FrameStack::push_from`), so the
+  top stays at a live window end: the sender's registers past a shorter
+  callee's window stay below it, traced, and no word comes below the top
+  again that a collection never saw. A pop reads the words it needs and
+  sets the top back to the one it was pushed at -- the caller's window
+  end, or past it where the caller lies on a longer frame's slots -- or,
+  for the bottom frame, to its start, and writes nothing: the caller's
+  registers above its slots are its own again, dead, and whatever the
+  callee or a frame above it left there the collector's pre-pass nils
+  before the next trace, which would otherwise keep alive what nothing
+  reaches -- a `WeakArray` would not forget it -- or meet a handle to an
+  object a collection moved or reclaimed ([memory.md](memory.md), "What
+  the collector traces"). A debug build writes `Word::DEAD_REGISTER` --
+  under the tag no value carries, so that it cannot be told from a
+  program's number -- into every scratch register a push hands out and
+  every register a pop gives back (`FrameStack::give_back_dead_registers`),
+  and the pre-pass writes it into what it nils; `Heap::register` and every
+  other register read an instruction makes refuse it, the dynamic net
+  under the analysis that says nothing reads such a register. Bulk copies
+  -- a reification's, a suspension's, a divorce's, a trace -- are no such
+  reads: a suspension nils the registers the pre-pass would, a divorce
+  every scratch register, and the tracers pass over the word as naming no
+  object. The registers above the header are
+  recorded in their own word rather than read off the code, and the
+  arguments in the flags, since a factory is handed as many arguments as
+  its send has keywords whatever its register count. An activation nothing
   reifies leaves nothing behind; only a block the compiler did not inline
   reifies one, since an inlined `ifTrue:`/`and:`/`whileTrue:` argument
   creates no closure.
-- **The arguments are copied** into the callee's first registers;
-  overlapping the caller's outgoing arguments with the callee's window is
-  road step 7a′, behind its own measurement ("Planned: JIT tiers" below).
+- **A send's arguments are not copied** when its callee is the one it
+  decided: the caller's argument slots are the callee's first registers.
+  A send whose window names its sources rather than its slots copies them
+  into the slots first, on the push path (`Mutator::push_on_slots`); a
+  decision answering without a push reads them in place and writes
+  nothing ("Overlapping register windows" below).
 - **Register access through an `ActivationReference`** is the stack's word
-  at the frame's offset plus the header's size plus `r`, with no branch on
-  the handle's kind or on an args/temps split, and one bounds check, of
+  at the frame's start -- its offset less its argument count -- plus `r`,
+  the register numbering leaving the header's numbers out
+  ([compiler.md](compiler.md), "Registers"), with no branch on the
+  handle's kind or on an args/temps split, and one bounds check, of
   that index against the reservation's committed end (`FrameStack::word`,
   through `Reservation::accessible`). A debug build also checks that the
-  index lies below the top and inside the frame's own window: the
-  neighbouring activation's header and registers are in bounds of the
-  stack, so reading them would not otherwise fail. A release build makes
+  index lies below the top and inside the frame's own window, and names
+  no header word: the neighbouring activation's header and registers, and
+  the frame's own header, are in bounds of the stack, so reading them
+  would not otherwise fail. A release build makes
   that trade knowingly, since the run loop makes this access on nearly
   every instruction: a register index past its window but below the
   committed end reads or writes a stale word of the stack -- never another
@@ -257,11 +335,14 @@ pub struct ActivationReference {
   ([image-format.md](image-format.md), "Verification"). A frame's offset
   is fixed for its whole life and everything is addressed by index, so the
   reservation committing more moves nothing anyone holds. The activation
-  above a frame starts where its window ends, and the one below is its
-  caller word; an offset grows with depth, so a run's floor and every
-  comparison of positions stay an ordering, and the run's base has
-  returned once the top is back at its offset
-  (`Heap::activation_stack_top`).
+  below a frame is its caller word, and the one above is found by walking
+  the caller words down from the innermost, since a callee on its
+  sender's slots starts inside the sender's window. A frame's position is
+  its start, which grows with depth -- a callee on its sender's slots
+  starts above the sender's header, any other above its window -- so a
+  run's floor and every comparison of positions stay an ordering, and the
+  run's base has returned once the top is back at its position
+  (`Heap::activation_position`, `Heap::activation_stack_top`).
 - **Two handle types, not one tagged handle.** `ActivationReference` names a live
   stack frame; `FrameReference` names a frame object and is the only
   activation handle anything *stores*: a closure's captured frame, a frame's
@@ -274,7 +355,7 @@ pub struct ActivationReference {
   silent failure class the handles' private field was built to exclude.
 - **An `ActivationReference` is 4 bytes in a release build.** In a debug build it
   carries `origin`, like every handle, and a `generation` drawn from a counter at
-  each push and recorded in the frame's `generation` word. A handle read
+  each push and recorded in the frame's flags word. A handle read
   after its frame was popped and the offset reused would otherwise answer a
   different, perfectly valid activation; the generation check turns that
   into a panic at the read.
@@ -301,7 +382,9 @@ pub struct ActivationReference {
 **Reify.** `Heap::reify(activation) -> FrameReference` is idempotent: the first call
 allocates the frame object — receiver, `kind` and its operand, `current_class`,
 `program_counter`, the code id, and `home` when the activation is a
-closure's, with room for the activation's whole register file, all nil —
+closure's, with a field for every register of the activation's window but
+the header's thirteen words -- its arguments, then its registers above the
+header (`Heap::frame_field_of_register`) -- all nil —
 marries it to the stack frame, and records it in the frame's `reified`
 word; every later call
 answers the same handle. Its callers are closure creation, the VM's
@@ -324,10 +407,17 @@ the activation's value ("The VM" below). If the activation was reified,
 its frame object is **divorced**: its `program_counter` takes the stack
 frame's last stored one, the
 married field becomes nil, `uncontinuable` becomes true and `sender` becomes
-nil. Then the stack's top is lowered to the frame's offset.
+nil. Then the stack's top is set back to the top the frame was pushed at,
+its caller's window end or past it, the caller's registers above its slots
+its own again ("Representation" above).
 
 **The registers are copied into the frame object's registers only when the
-frame asks for it**, the `retains_registers` flag of its header, which
+frame asks for it**, and then only those below its body's `local_count`
+-- the arguments, the copied values, the named temporaries and the
+indirection vector's register, all a block reaching the frame by
+reference can name -- every scratch register nil, since it may hold a
+word a callee left. The frame asks through the `retains_registers` flag
+of its header, which
 `Heap::retain_registers` sets and which `MakeClosure` sets when the block it
 creates can reach this frame by reference — `block.outer_reach > 0`
 ("Converted representation"). Under the reference lowering that is every
@@ -490,9 +580,17 @@ mistakes it for a live one.
 or above `floor` first, so that each sender is a frame by the time the
 activation above it is suspended, then works from the top down. It copies
 every register into the frame, whatever `retains_registers` says, since the
-frame is now their only copy; writes the program counter and the sender;
-moves the rest of the header into a side-table row; and lowers the stack's
-top to the frame's offset. The row holds what a frame object cannot -- the
+frame is now their only copy -- a sender's only below the header of the
+callee that lay on its slots, the rest nil, so that no frame holds a word of
+another's header, and nil for every register the frame does not read
+before it writes it, the set the collector's pre-pass nils before the
+program counter the frame stores (`CompiledCode::tainted_before`), which
+may hold a word a callee or a popped frame left -- writes the program
+counter and the sender; moves the
+rest of the header into a side-table row; and sets the stack's top as a
+pop does. The slots the callee shared come back in both: the callee never
+writes its arguments (§3.6), so the sender's copy holds them as the
+callee's does. The row holds what a frame object cannot -- the
 activation's `Continuation`,
 whether it counts against the depth limit, the level it was entered at and
 `retains_registers` -- and the frame itself, which makes the table a root
@@ -607,8 +705,9 @@ stack is exactly as deep afterwards as it was before `base` was pushed. The
 depth `base` sits at, the run's *floor*, is how the loop tells its own
 activations from its callers'.
 
-- **A send** (`vm::send`) gathers its arguments from the caller's registers
-  into the step state's reusable buffer, stores the caller's `program_counter`, and asks
+- **A send** (`vm::send`) names its arguments where they are in the
+  caller's registers, an argument window (`vm::argument_window`; "No
+  re-entry from Rust" below), stores the caller's `program_counter`, and asks
   `interpreter/` what the send means: `inline_cache::send_public`,
   `send_lexical` or `send_super`, which answer from the call site's cache or
   run the lookup ([dispatch.md](dispatch.md), "3b — The caches"), or, for
@@ -624,11 +723,11 @@ activations from its callers'.
   decision in `interpreter/instantiate.rs` in place of a lookup. A step is
   pushed by `Mutator::push_step`, which checks a method's, block's or
   factory's arity and the depth limit, and the loop switches to the new activation at `program_counter` 0,
-  its window filled straight from the buffer -- except a factory, which
-  `Mutator::push_sent` carries through its first two instructions where it
-  pushes it, and which the loop starts where that leaves it
-  ([object-model.md](object-model.md), "Instantiation"). A send allocates no vector once
-  the buffer has grown to the widest one.
+  its window filled straight from the caller's registers -- except a
+  factory, which `Mutator::push_sent` carries through its first two
+  instructions where it pushes it, and which the loop starts where that
+  leaves it ([object-model.md](object-model.md), "Instantiation"). A send
+  gathers its arguments nowhere and allocates nothing for them.
 - **A return** (`vm::finish`) pops the activation and applies its
   continuation. `Continuation::Deliver`, every send's, hands the value to the
   caller: `resume_caller` reads the `program_counter` the caller stored at its send, writes
@@ -730,8 +829,8 @@ a register or an operand when an instruction needs it and written back before
 the next, so at a safepoint every handle is in a word of a stack frame,
 in the heap's side table of continuations or of suspended
 activations, in a heap object or in a root, where
-the tracer rewrites it. The reusable argument buffer, which a send fills and
-empties within one instruction, is empty at every safepoint.
+the tracer rewrites it. A send's arguments are read in its slots, so nothing
+outside the stack holds them while it is decided.
 
 **The VM has no dispatch logic, no `doesNotUnderstand:` construction, no native
 dispatch and no error text of its own.** It pushes, pops, switches, writes
@@ -769,7 +868,15 @@ An activation's `program_counter` is written **only by the instructions that can
 activation to an observer**: every send, since a nested activation runs above it;
 `MakeClosure`, since the activation escapes into the object graph — the store
 comes just before `reify`, which copies it into the frame it creates; and
-`NonLocalReturn`, since control leaves with a signal. The stretch adds one
+`NonLocalReturn`, since control leaves with a signal; an instruction that
+meets an unresolved future (`vm::force_and_reexecute`), since the forcing
+runs above it and the loop runs that instruction again; and every
+instruction that raises an error (`vm::raise`), since the raising
+activation stays on the stack below the error's `signal` while the
+handler runs, and a collection meanwhile nils its dead registers as of
+the instruction its header stores ([memory.md](memory.md), "What the
+collector traces") -- as of an earlier send it would keep what that
+send's callee left in registers the frame wrote before it. The stretch adds one
 more, off the hot path: leaving for a safepoint, it stores the running
 activation's, since a suspension there copies it into the frame
 ("Suspending and resuming").
@@ -6344,6 +6451,417 @@ frame, the unwinder deciding its destination before every pop -- cost
 nothing measurable; the measurement does not cover a program that signals
 exceptions in its inner loop, since none of the twenty-three does.
 
+### What contiguous arguments moved
+
+The first stage of road step 7a′ ("Overlapping register windows"
+below) -- a send's arguments in contiguous slots or read in place from
+consecutive sources, decisions reading them through an argument window, the
+argument buffer gone, the push copying once -- was measured whole against
+`master` (`3a67072f`, the tree before it) at `95d421a8` on 2026-10-25, by
+the protocol of "What frames as words moved" above: `master` checked out
+and the branch exported with `git archive` under the git-ignored `.temp/`,
+`cargo xtask
+shipped-code` in each before its builds, three release builds a side with
+the pinned `RUSTFLAGS` varying the block layout inside `vm::run` (build a
+the pin alone, b and c adding the two alignments), each in its own
+`--target-dir`; the eight micro sources at `--iterations 30`, five rounds a
+sitting, and the sixteen Are We Fast Yet programs, three rounds a sitting,
+the six binaries rotating by one position from round to round; two
+sittings, every run printing its recorded answer or `<Name>: ok`. The two
+trees' `benchmarks/` and core library are the same, and both sides ran one
+copy of it. Every binary has one `vm::run` and one `vm::run_wide`, no
+`vm::run::closure` and no `run_stretch` of its own, and none imports
+`VCRUNTIME140.dll`; each measured binary's `vm::run` is its
+debug-information build's instruction for instruction at the same offsets,
+64-byte aligned. `vm::run` is 44,736 bytes with 498 padding instructions in
+build a, 47,872 with 891 in build b and 50,880 with 1,089 in build c
+(`master`: 38,848, 41,920, 45,312 with 513, 903, 1,128), the same 8,296
+instructions apart from the padding in all three (`master`: 7,546, so +750),
+and its stack frame is `0x368` bytes (`master`: `0x398`).
+
+Means of each build's medians, pooled over both sittings (n = 10 rounds a
+build for the micro sources, 6 for Are We Fast Yet), in ms; "builds" says
+whether the three build means of one side all lie above or below the
+other side's:
+
+| Source | `master` | stage 1 | change | `master` a, b, c | stage 1 a, b, c | builds |
+|---|---|---|---|---|---|---|
+| `bench_block.ns` | 7.300 | 7.184 | -1.6% | 7.314, 7.313, 7.274 | 7.189, 7.162, 7.200 | faster |
+| `bench_loop.ns` | 2.333 | 2.330 | -0.1% | 2.350, 2.322, 2.328 | 2.335, 2.325, 2.330 | overlapping |
+| `bench_megamorphic.ns` | 4.824 | 4.779 | -0.9% | 4.839, 4.809, 4.825 | 4.787, 4.771, 4.780 | faster |
+| `bench_send.ns` | 3.375 | 3.289 | -2.5% | 3.371, 3.370, 3.383 | 3.296, 3.283, 3.288 | faster |
+| `bench_new.ns` | 2.736 | 2.696 | -1.5% | 2.752, 2.722, 2.735 | 2.688, 2.668, 2.733 | overlapping |
+| `bench_new2.ns` | 3.627 | 3.584 | -1.2% | 3.646, 3.593, 3.641 | 3.557, 3.550, 3.644 | overlapping |
+| `bench_newarg.ns` | 3.647 | 3.600 | -1.3% | 3.675, 3.607, 3.660 | 3.590, 3.561, 3.649 | overlapping |
+| `bench_do.ns` | 2.615 | 2.670 | +2.1% | 2.629, 2.614, 2.601 | 2.626, 2.654, 2.731 | overlapping |
+| Bounce | 0.920 | 0.909 | -1.2% | 0.929, 0.926, 0.903 | 0.900, 0.903, 0.924 | overlapping |
+| CD | 3505.2 | 3437.7 | -1.9% | 3530.7, 3488.1, 3496.9 | 3435.7, 3406.6, 3470.7 | faster |
+| DeltaBlue | 626.92 | 614.12 | -2.0% | 630.38, 622.70, 627.69 | 614.40, 609.53, 618.44 | faster |
+| DeltaBlueTon80 | 6.912 | 6.821 | -1.3% | 6.920, 6.918, 6.900 | 6.848, 6.768, 6.847 | faster |
+| Havlak | 3262.7 | 3238.4 | -0.7% | 3278.1, 3247.5, 3262.6 | 3236.3, 3221.1, 3257.7 | overlapping |
+| Json | 10.162 | 9.965 | -1.9% | 10.161, 10.188, 10.138 | 9.963, 9.899, 10.032 | faster |
+| List | 0.938 | 0.949 | +1.2% | 0.939, 0.924, 0.952 | 0.946, 0.949, 0.953 | overlapping |
+| Mandelbrot | 2954.1 | 2814.6 | -4.7% | 2952.6, 2940.9, 2968.8 | 2802.9, 2816.9, 2824.1 | faster |
+| NBody | 2194.8 | 2105.6 | -4.1% | 2198.9, 2195.4, 2190.1 | 2104.4, 2102.0, 2110.2 | faster |
+| Permute | 2.347 | 2.308 | -1.7% | 2.350, 2.347, 2.345 | 2.300, 2.302, 2.321 | faster |
+| Queens | 1.998 | 1.975 | -1.1% | 1.999, 2.011, 1.984 | 1.972, 1.965, 1.990 | overlapping |
+| Richards | 63.929 | 63.210 | -1.1% | 64.022, 63.694, 64.072 | 62.644, 63.549, 63.436 | faster |
+| RichardsTon80 | 4.426 | 4.357 | -1.6% | 4.457, 4.421, 4.400 | 4.370, 4.332, 4.369 | faster |
+| Sieve | 1.309 | 1.322 | +1.0% | 1.308, 1.333, 1.286 | 1.327, 1.314, 1.325 | overlapping |
+| Storage | 1.414 | 1.418 | +0.3% | 1.426, 1.414, 1.401 | 1.437, 1.409, 1.410 | overlapping |
+| Towers | 3.082 | 3.095 | +0.4% | 3.044, 3.082, 3.120 | 3.100, 3.103, 3.082 | overlapping |
+
+**No program is slower with its builds separated, so the first stage is
+kept.** Twelve of the twenty-four are faster with the builds separated,
+Mandelbrot and NBody by 4-5%; the other twelve overlap, five of them above
+`master`. `bench_do.ns` is the nearest: +2.1%, its fastest stage-1 build
+0.1% below `master`'s slowest, separated in the second sitting (+2.7%) and
+overlapping in the first (+1.6%). Sieve, +1.0%, was separated in the first
+sitting (+3.4%) and below `master` in the second (-1.4%); List, Storage and
+Towers overlap in both. `bench_do.ns` is level, not faster: what remains of
+it sits in functions whose code is `master`'s -- `vm::finish`,
+`array_element`, `Heap::pop_activation` -- as layout, beside one register
+more in its block, the one-argument fallback's slot, allocated and never
+written, which the second stage's push onto the slots decides about.
+
+What the stage taught, as reasons the current design still stands on:
+
+- **A sixteen-byte argument window built by narrow stores and passed by
+  reference stalls on store forwarding.** Every read of it waits for the
+  stores to retire, since the store buffer cannot forward narrow stores to
+  a wider load: the stage measured Mandelbrot +24% in the step that
+  introduced it, +28% for the whole stage, NBody +15-19%, until the window
+  travelled in registers. So the window is a tag and one word, its slots
+  packed into a `u64` by arithmetic (`heap::ArgumentSlots`; "No re-entry
+  from Rust" below).
+- **A placement loop inlined into every send path costs `vm::run` its
+  registers.** With each send copying its sources into its slots inline,
+  `vm::run` was 8,512 instructions with a `0x3B8`-byte frame, against
+  8,296 and `0x368` with the placement out of line, and `bench_loop.ns`,
+  `bench_send.ns` and Richards were 2-8% slower than `master`, level or
+  faster once it went. So a send reads consecutive sources in place -- none or
+  one always are -- tests a two-argument send's with one comparison, and
+  places only non-consecutive sources, out of line (`vm::place_arguments`).
+- **A push that indexes the whole frame stack again after taking its frame
+  pays reloads and bounds checks on every block a native loop pushes.**
+  Indexing `words_mut()` with computed offsets after storing the
+  continuation row reloaded the stack's base, length and top and checked
+  three ranges per activation: about 2 ns per block a continuation pushes
+  (`bench_do.ns`'s `do:`, a native `whileTrue:`), independent of the
+  block's body and of where the frames sit, `Mutator::push_step` holding a
+  quarter to a third more samples. So `FrameStack::push` answers the words
+  below the frame and the frame's own as two slices, and
+  `Heap::push_activation_in` writes through them ("Representation" above).
+
+What the measurement did not cover: one machine (Intel Core Ultra 9 285K)
+and operating system, not idle, two sittings back to back; data layout
+(symbol ids, object offsets, dispatch ids), which neither `-C metadata` nor
+the block alignment varies; the alignment of a function's blocks other than
+`vm::run`'s; no program signalling exceptions in its inner loop. `master`'s
+six builds were made the day before from its checkout with the same flags,
+and checked unchanged by a fresh disassembly; both sides were timed in the
+same sittings. Two costs the stage leaves are open
+([OPEN-WORK.md](../OPEN-WORK.md), "Planned: performance and
+representation"): `vm::run` reloads the `Mutator` pointer from its frame
+where `master` keeps it in a register, and `builtins::execute`'s result
+comes back through a stack copy written by narrow stores, which `master`
+pays as well.
+
+### What overlapping windows moved
+
+The second stage of road step 7a′ ("Overlapping register windows" below)
+-- a send's own callee laid on its sender's argument slots, the header 13
+words in every build and left out of the register numbering, the pop
+restoring the top it was pushed at, suspension, frame objects and image
+records without the header's numbers, and the decoder's checks -- was
+measured against the first by the protocol of "What contiguous arguments
+moved" above, on 2026-10-25, in three rounds.
+
+**As first built (`0037350d`), every program but `bench_loop.ns` was
+slower than the first stage with its builds separated**, by up to +19.2%
+(`bench_new.ns` +18.8%, `bench_send.ns` +12.7%, Richards +12.2%). What
+it taught, as reasons the current design stands on:
+
+- **A 72-byte header moved by value through the push's inlined layers is
+  copied into each of them.** `Mutator::push_sent` grew from 276 to 7,265
+  instructions, each move of the `ActivationHeader` a copy LLVM did not
+  elide, since the header escapes into the refusal's box, and each copy
+  read sixteen bytes wide right after the narrow stores that built it, a
+  store-forwarding stall on every send. So the header is lent to the
+  heap's push, and only the cold refusal takes it by value
+  ("Representation" above; "Keeping the hot path in registers" below).
+- **With the header's numbers left out, a register read through an
+  `ActivationReference` reads the frame's argument count**, from its
+  flags. So an indirection vector's loads and stores take the run loop's
+  register base, which it holds already.
+- **A larger push pushes small helpers past LLVM's inlining budget**:
+  `Continuations::insert`, `row_of` and `Heap::fill_copied_values` became
+  calls. They are `#[inline(always)]`.
+- **A send a primitive or an accessor answers dropped its `Step` through
+  out-of-line drop glue**, in both stages. `deliver` forgets it instead.
+  Since that removes a cost the first stage has too -- the first stage
+  with that change alone measured 0% to 5.5% faster than without, on one
+  build a side -- the second stage is judged against the first stage
+  with it, "stage 1 + forget" below.
+
+With those, and the caller word packing the top a frame was pushed at so
+that a pop reads no caller header, the second stage (`d7488e20`) was 14 of
+24 programs slower than stage 1 + forget with the builds separated, by
++1.1% to +2.3%, and faster on none. A return that wrote its value through
+the register base the switch finds, so that it read the flags once, grew
+`vm::run` from 8,269 to 8,351 instructions and its frame by sixteen bytes
+and measured 0.5-3% slower on seven of nine programs, and was reverted.
+What remained was mostly the pop's nil fill over the words a callee laid
+on its sender's slots gives back: a build without it, unsafe and only
+measured, was 0.4-2.8% faster. Decided with the user on 2026-10-25: the
+fill goes, replaced by the leftover analysis, rather than the cost being
+accepted or the stage reverted ("What the leftover analysis moved"
+below).
+
+**With the analysis (`f2faa8f4`), against stage 1 + forget**, three builds
+a side, both sittings pooled, in ms; "builds" compares the three build
+means as above:
+
+| Source | stage 1 + forget | second stage | change | builds |
+|---|---|---|---|---|
+| `bench_block.ns` | 7.121 | 7.156 | +0.5% | overlapping |
+| `bench_loop.ns` | 2.155 | 2.145 | -0.5% | overlapping |
+| `bench_megamorphic.ns` | 4.691 | 4.634 | -1.2% | faster |
+| `bench_send.ns` | 3.223 | 3.226 | +0.1% | overlapping |
+| `bench_new.ns` | 2.736 | 2.690 | -1.7% | faster |
+| `bench_new2.ns` | 3.597 | 3.584 | -0.3% | overlapping |
+| `bench_newarg.ns` | 3.625 | 3.645 | +0.5% | overlapping |
+| `bench_do.ns` | 2.599 | 2.616 | +0.7% | overlapping |
+| Bounce | 0.890 | 0.888 | -0.2% | overlapping |
+| CD | 3379.8 | 3394.7 | +0.4% | overlapping |
+| DeltaBlue | 609.08 | 609.22 | +0.0% | overlapping |
+| DeltaBlueTon80 | 6.686 | 6.790 | +1.6% | slower |
+| Havlak | 3215.0 | 3211.1 | -0.1% | overlapping |
+| Json | 9.763 | 9.811 | +0.5% | overlapping |
+| List | 0.931 | 0.915 | -1.7% | overlapping |
+| Mandelbrot | 2712.1 | 2725.2 | +0.5% | slower |
+| NBody | 1972.4 | 1976.5 | +0.2% | overlapping |
+| Permute | 2.325 | 2.311 | -0.6% | overlapping |
+| Queens | 1.938 | 1.949 | +0.6% | overlapping |
+| Richards | 61.578 | 61.697 | +0.2% | overlapping |
+| RichardsTon80 | 4.279 | 4.273 | -0.1% | overlapping |
+| Sieve | 1.317 | 1.334 | +1.3% | overlapping |
+| Storage | 1.406 | 1.372 | -2.4% | faster |
+| Towers | 3.032 | 3.029 | -0.1% | overlapping |
+
+**The geometric mean over the twenty-four is -0.09%**: three programs
+faster with the builds separated, nineteen overlapping, and two slower,
+DeltaBlueTon80 by 1.6% and Mandelbrot by 0.5% (diagnosed below).
+`vm::run` is 8,269 instructions apart from the padding with a
+`0x318`-byte frame, against the first stage's 8,296 and `0x368`. So
+overlapping the windows costs the interpreter nothing on the geometric
+mean; what it removes -- the copy of every argument into the callee's
+window -- is what compiled frames would otherwise pay too, and the
+header between the arguments and the temporaries is the frame layout road
+step 7c's protocol between interpreted and compiled frames starts from.
+
+What the measurement did not cover is what "What contiguous arguments
+moved" lists; stage 1 + forget is a tree built for the comparison, not a
+commit of the branch.
+
+**DeltaBlueTon80's gap, diagnosed** (2026-10-26). Profiled with xperf on
+the debug-information twins, 3,000 iterations, builds a and c, the second
+stage at `6ff8890a` against stage 1 + forget: the pushes together were
+faster (`push_sent` and `push_step` 13,784 samples against stage 1's
+14,481), and three costs were the stage's own:
+
+- **The pop's two counts, decremented as one 16-byte load.** The live and
+  the counted count lie side by side, and LLVM subtracted both with one
+  `movdqu`/`psubq`/`movdqu` over the push's two narrower stores of them,
+  which no store forwards. Stage 1 has the same instruction, but the
+  second stage's pop also read the frame's flags and caller words again
+  after the divorce check to find the top it was pushed at, and
+  `Heap::pop_activation` rose from 2,862 samples to 4,005. A branch on
+  the counted flag now keeps the two subtractions apart, and the top is
+  computed from the words the pop read first (`72de5ac0`): 2,782
+  samples, below stage 1's.
+- **A setter of an inlined conditional's value paid a `Move`.**
+  `direction:: (...) ifTrue: [...] ifFalse: [...]`, in `chooseMethod:`,
+  left its value in the conditional's result register above the slot,
+  which the second stage copies into the slot by a `Move` of its own
+  where the first stage's send copied it. The conditional, and
+  `and:`/`or:`, now answer in the slot they are lowered into
+  (`ca5ce8b3`; [compiler.md](compiler.md), "Registers"). Over
+  DeltaBlueTon80's methods the two stages now compile to the same number
+  of instructions.
+- **The register base reads the frame's flags on every switch.** The
+  frame's start lies `argument_count` words below its header, so the
+  loop's register base after a push or a return
+  (`Heap::activation_register_base`) is a load of the flags word where
+  the first stage added 13 to the offset; `resume_caller` reads it once
+  more to write the value. The loop's
+  switch handler took 2,189 samples against 1,619, about 0.35% of the
+  run. Three ways of not reading it were built and measured against the
+  fix, three builds a side, DeltaBlueTon80, `bench_send.ns` and Richards,
+  six rounds (and DeltaBlueTon80 six more for the third), and none was
+  kept:
+  - **The base in the `Handoff`**, `resume_caller` reading the flags
+    once: DeltaBlueTon80 +0.8%, builds separated; every switch site
+    computes the base then, and the handoff passes through memory.
+  - **The base in `Transfer::Switched`**, answered in a register:
+    DeltaBlueTon80 +0.6% and `bench_send.ns` +1.1%, both separated, with
+    every switch site computing it (`vm::run` 8,269 to 8,418
+    instructions). Carried only from a return, the loop reading the flags
+    after a push as before: `bench_send.ns` +1.6% and Richards +0.9%,
+    separated, since a `Transfer` with a payload is no longer one byte on
+    every send's path.
+  - **The base from the code's argument count**, which the loop holds,
+    instead of the frame's: every push takes as many arguments as its
+    body -- an argument list longer than `u16::MAX`, which a saturated
+    body stands for, is refused before it pushes -- and a frame resumed
+    from its object or decoded from an image takes its body's
+    (`Heap::frame_argument_count`, which the decoder's frame-shape check
+    holds), and every golden and suite test but the heap's own fixtures,
+    which push code of another arity, ran with that asserted. It
+    measured level: DeltaBlueTon80 -0.0% over twelve rounds, builds
+    overlapping, `bench_send.ns` +0.5%. The read is a load either way,
+    the code's field behind the handoff's code as the flags behind the
+    handoff's activation.
+
+After the first two, three builds a side, two sittings pooled (n = 12),
+in ms:
+
+| Source | stage 1 + forget | `6ff8890a` | fixed (`ca5ce8b3`) | fixed vs stage 1 + forget | builds |
+|---|---|---|---|---|---|
+| DeltaBlueTon80 | 6.643 | 6.733 | 6.700 | +0.9% | slower |
+| Mandelbrot | 2698.1 | 2691.6 | 2690.9 | -0.3% | overlapping |
+
+**Mandelbrot's +0.5% did not reproduce**: `6ff8890a` itself measured
+-0.2% against stage 1 + forget, builds overlapping. **DeltaBlueTon80's
+remaining +0.9% is the return path**: the flags read of the third point,
+which the frame layout makes, and `vm::finish` and `vm::resume_caller`,
+about 550 and 340-600 samples above stage 1 in both builds profiled,
+their samples on the loads after the pop -- the top it stored, the
+popped continuation ([OPEN-WORK.md](../OPEN-WORK.md), "Unexplained measurements and
+unmeasured decisions"). Against `6ff8890a`, the twenty-four programs,
+three builds a side, two sittings pooled, measured a geometric mean of
+-0.17% (-0.12% and -0.21% in the sittings), no program slower with its
+builds separated, Queens and Storage faster in the second sitting.
+
+### What the leftover analysis moved
+
+The leftover analysis, `bytecode::leftovers`, finds from a body's code
+alone the scratch registers it may read before it writes them: what a
+callee laid on its slots left there, or what the stack held before the
+push ([compiler.md](compiler.md), "What a callee leaves", one pass over
+bitsets, bounded by the construct limits of "Limits" there). The decoder
+refuses image code that reads one, both lowerings check every body in a
+debug build, and every trace of the stack nils them in each frame before
+it traces the frame's words (`Heap::trace_stack`; [memory.md](memory.md),
+"What the collector traces"). That is what lets neither a push nor a pop
+write a scratch register: a push fills only its named locals, a pop
+writes nothing ("Representation" above). The tree before it, `c6a126b3`,
+filled them in both: a push every register above its header, a pop of a
+callee laid on its sender's slots every word from the callee's header to
+the sender's window end, the fill that kept those words from being traced
+stale. A profile of that tree put the two fills at 1.6-1.8% of a run on
+average and 3.0% at most (DeltaBlueTon80), the push's 0.7-0.8 points of
+it and the pop's 0.9-1.0. The fill also kept image code from reading what
+a callee left, the VM mirror among it; the decoder's refusal is that
+guard now ([image-format.md](image-format.md), "Verification").
+
+It was measured at `f2faa8f4` against `c6a126b3` on 2026-10-25, by the
+protocol of "What contiguous arguments moved" above: three release builds
+a side, the eight micro sources five rounds a sitting and the sixteen Are
+We Fast Yet programs three, two sittings, every run printing its recorded
+answer. `vm::run` is the same on both sides, 8,269 instructions apart from
+the padding and a `0x318`-byte frame in all three builds; what changed is
+in the functions it calls, the pushes, the pop and the collector's walk.
+Means of each build's medians, pooled over both sittings (n = 10 rounds a
+build for the micro sources, 6 for Are We Fast Yet), in ms:
+
+| Source | `c6a126b3` | the analysis | change | `c6a126b3` a, b, c | the analysis a, b, c | builds |
+|---|---|---|---|---|---|---|
+| `bench_block.ns` | 7.235 | 7.156 | -1.1% | 7.225, 7.229, 7.249 | 7.184, 7.163, 7.122 | faster |
+| `bench_loop.ns` | 2.126 | 2.145 | +0.9% | 2.123, 2.113, 2.143 | 2.139, 2.145, 2.150 | overlapping |
+| `bench_megamorphic.ns` | 4.702 | 4.634 | -1.4% | 4.729, 4.694, 4.682 | 4.619, 4.635, 4.649 | faster |
+| `bench_send.ns` | 3.308 | 3.226 | -2.5% | 3.307, 3.295, 3.322 | 3.204, 3.219, 3.255 | faster |
+| `bench_new.ns` | 2.745 | 2.690 | -2.0% | 2.730, 2.744, 2.761 | 2.716, 2.675, 2.680 | faster |
+| `bench_new2.ns` | 3.646 | 3.584 | -1.7% | 3.654, 3.658, 3.627 | 3.660, 3.545, 3.547 | overlapping |
+| `bench_newarg.ns` | 3.689 | 3.645 | -1.2% | 3.674, 3.711, 3.682 | 3.705, 3.611, 3.619 | overlapping |
+| `bench_do.ns` | 2.657 | 2.616 | -1.6% | 2.643, 2.653, 2.676 | 2.621, 2.613, 2.613 | faster |
+| Bounce | 0.902 | 0.888 | -1.5% | 0.901, 0.897, 0.908 | 0.899, 0.875, 0.890 | overlapping |
+| CD | 3451.8 | 3394.7 | -1.7% | 3454.6, 3460.9, 3439.8 | 3373.7, 3378.4, 3431.9 | faster |
+| DeltaBlue | 619.28 | 609.22 | -1.6% | 621.51, 616.99, 619.35 | 608.61, 608.29, 610.75 | faster |
+| DeltaBlueTon80 | 6.816 | 6.790 | -0.4% | 6.801, 6.812, 6.835 | 6.798, 6.758, 6.814 | overlapping |
+| Havlak | 3252.6 | 3211.1 | -1.3% | 3250.1, 3256.6, 3251.0 | 3212.9, 3203.7, 3216.6 | faster |
+| Json | 10.023 | 9.811 | -2.1% | 10.013, 9.989, 10.066 | 9.817, 9.779, 9.838 | faster |
+| List | 0.933 | 0.915 | -2.0% | 0.927, 0.941, 0.932 | 0.930, 0.907, 0.908 | overlapping |
+| Mandelbrot | 2763.9 | 2725.2 | -1.4% | 2719.3, 2847.4, 2724.9 | 2723.4, 2730.1, 2722.1 | overlapping |
+| NBody | 1980.5 | 1976.5 | -0.2% | 1972.5, 1988.3, 1980.8 | 1970.3, 1975.8, 1983.3 | overlapping |
+| Permute | 2.323 | 2.311 | -0.5% | 2.333, 2.306, 2.331 | 2.277, 2.328, 2.328 | overlapping |
+| Queens | 1.973 | 1.949 | -1.2% | 1.975, 1.963, 1.980 | 1.961, 1.942, 1.943 | faster |
+| Richards | 62.878 | 61.697 | -1.9% | 62.613, 62.915, 63.106 | 61.708, 61.696, 61.686 | faster |
+| RichardsTon80 | 4.330 | 4.273 | -1.3% | 4.343, 4.302, 4.344 | 4.257, 4.287, 4.274 | faster |
+| Sieve | 1.325 | 1.334 | +0.7% | 1.314, 1.319, 1.341 | 1.314, 1.359, 1.328 | overlapping |
+| Storage | 1.402 | 1.372 | -2.2% | 1.393, 1.410, 1.405 | 1.373, 1.377, 1.365 | faster |
+| Towers | 3.115 | 3.029 | -2.8% | 3.121, 3.124, 3.100 | 2.992, 3.020, 3.074 | faster |
+
+**No program is slower with its builds separated, and the geometric mean
+over the twenty-four is -1.34%** (-1.13% in the first sitting, -1.55% in
+the second), **so the analysis is kept**, the rule it was built under.
+Fourteen programs are faster with the builds separated, Towers by 2.8% and
+`bench_send.ns` by 2.5%; ten overlap. Of the two above `c6a126b3`,
+`bench_loop.ns` sends nothing -- an inlined `whileTrue:` over two slots,
+which pushes and pops no frame and collects nothing -- and its three
+functions are `c6a126b3`'s instruction for instruction, at addresses
+moved by about `0x2840`, and its debug-information twins run it equally
+fast: layout. Against the first stage of road step 7a′ with only the
+value-answered send's step forgotten (`f0bf0d00`, which removes a cost
+the first stage has too), the geometric mean is -0.09%.
+
+**The analysis's one cost is in the collector, and only a deep stack
+shows it.** A probe that recurses to 99,000 frames and allocates about
+240 MB at the bottom, so that about 30 scavenges each meet the whole
+stack, measured, with three builds a side:
+
+- **+7.9% against `c6a126b3`, builds separated, with a pre-pass of its
+  own** before a linear trace of the stack: it walked the frames twice,
+  once to fill the sets not yet kept and once to nil, 10.1% of the run,
+  at about 8-10 ns a frame;
+- **+3.4% with one walk**, which nils a frame whose set is kept as it
+  meets it and defers the others, keeps the set it looked up last and
+  skips a frame whose every writable word the window above it covers.
+  What was left was the walk itself: a variant that only read each
+  frame's header words and nilled nothing measured the same;
+- **+0.05%, the builds overlapping, with the nilling folded into the
+  stack's trace** (`51f1050e`), which nils each frame and then traces
+  it, so that each frame's header lines are loaded once a trace. At 1,000
+  and 10 frames the same probe is -0.5% and -1.0%.
+
+The twenty-four programs measured neutral at both steps: a geometric mean
+of +0.00% for the one walk against `f2faa8f4`, and -0.05% for the fold
+against the one walk, no program slower with its builds separated once
+re-timed. **`Heap::trace_stack` stays out of line** (`#[inline(never)]`,
+one instance per tracer): inlined, it grew `World::scavenge` from 1,528
+to 2,763 instructions and changed what `World::collect` inlines, which
+moved the send and return functions linked after them --
+`pop_activation`, `resume_caller`, `polymorphic_hit` -- by `0x3380`, to
+other offsets within their 4 KiB pages, and RichardsTon80, which spends
+no sample in the collector, measured about 1.3% slower (+0.6% to +1.6%
+in four timings); out of line it is level. That is placement, not code
+the change runs, and a later growth of the collector's code can move those
+functions again ([OPEN-WORK.md](../OPEN-WORK.md), "Unexplained
+measurements and unmeasured decisions").
+
+Under `NS_NEXT_STRESS_SCAVENGE`, which scavenges at nearly every
+safepoint, the walk costs about what the scavenge's own trace of the
+stack does: an optimized build with debug assertions runs a 99,000-frame
+probe that allocates on the way down and up in 127 ms against
+`c6a126b3`'s 88, 1.45x. Only the debug suite's stress runs pay it; a
+release build has no stress mode.
+
+What the measurement did not cover: one machine and operating system, not
+idle; data layout, which neither `-C metadata` nor the block alignment
+varies; the deep probes are one source, five runs a build, and the stress
+figure comes from a build with debug assertions, so it includes their
+checks.
+
 ### What `new` as compiled code moved
 
 "`new` as compiled code" (a synthesized factory body, three initializer
@@ -6561,10 +7079,11 @@ nested-class accessor stay in `interpreter/` (`inline_cache::send_public`,
 in what they produce, but they answer a `Step` — a value, a method to
 activate, or a block to activate and what to do with its value — instead of
 activating it. That keeps `vm.rs` free of dispatch logic: what moved into the
-loop is the act of running a body, never the decision of which body. The loop
-gathers a send's arguments from the caller's registers into one reusable
-buffer, and a push copies them from there into the callee's window, so a send
-allocates no vector of its own.
+loop is the act of running a body, never the decision of which body. A
+send's decision reads its arguments in the caller's registers, through an
+argument window, and a push copies them from there into the callee's
+window, so a send allocates no vector of its own ("No re-entry from Rust"
+below).
 
 **Instantiation decides the same way, and runs as code.** A factory send is
 an ordinary send: the lookup finds the metaclass's factory entry and `act`
@@ -6656,10 +7175,9 @@ below it, so a chain of them descends the lexical nesting — and blocks nest at
 most 128 deep, the parser's ceiling in source and the decoder's, derived from
 it, in an artifact ([image-format.md](image-format.md), "Verification"). So the
 stack holds at most 129 × (L + `DEPTH_RESERVE`) frames, the reserve below
-included, 13.0 million, whose headers alone take about 1.36 GB in a release
-build (`frame_header::COUNT`, 13 words, 104 bytes, each) and 1.46 GB in a
-debug one (14 words, 112 bytes, the generation added), before their
-registers, a suspended activation's frame object counted in its frame's
+included, 13.0 million, whose headers alone take about 1.36 GB
+(`frame_header::COUNT`, 13 words, 104 bytes, each, in every build), before
+their registers, a suspended activation's frame object counted in its frame's
 place; the reservation the frames lie in is the net beneath L (below). Only
 code that carries `SendInlinable` gets there — the reference lowering's, or an
 artifact's — recursing through 128 nested control-flow blocks at every level;
@@ -6682,8 +7200,8 @@ one comparison against the committed end, as Soup's
 a reserve as L does: the last 1/16th of the reservation
 (`RESERVE_FRACTION`, `heap/frames.rs`; 1 GiB of 16) is refused to an
 ordinary push and left to the pushes made while the depth reserve is held
-(`Heap::push_reserved_activation`, which `Mutator::push` tries when an
-ordinary push is refused and the reserve is held, or is being taken by
+(`Heap::push_reserved_activation`, which a push tries
+(`Mutator::push_into_the_stack_reserve`) when an ordinary push is refused and the reserve is held, or is being taken by
 the push of the kernel's `doesNotUnderstand:`), and an error raised with
 the stack that close to its end takes the depth reserve for its `signal`
 ("Who takes it" below). Without it the `signal` of the overflow is itself
@@ -6759,8 +7277,10 @@ could only end the run as L, uncatchable and under the wrong name.
 `crates/ns-runtime/tests/exceptions.rs` the uncaught cases at L − 3, L − 1,
 L and L + 1 and the overruns of the machinery, a `pass`'s included.
 
-- **L is checked on every push.** `Mutator::push`, the one function every
-  activation the runtime pushes goes through, refuses a counted push when
+- **L is checked on every push.** `Mutator::push_placed` is the one
+  function every activation the runtime pushes goes through, and
+  `Mutator::push` calls it. Its two placements, `Mutator::push_above` and
+  `Mutator::push_on_slots`, each refuse a counted push when
   `Heap::counted_depth` has reached the limit. The heap keeps that count as a
   running total on push and pop, so an error path — which pops through
   `interpreter::unwind` like any other — leaves it exact; suspending and
@@ -7006,10 +7526,26 @@ which the debug assertion only confirms: a decision, a native or a
 continuation is handed only a `&mut Mutator`, which offers no way back to the
 `Interpreter` and so no `run` at all ([memory.md](memory.md), "The brand").
 
-`vm::send` still takes the step state's reusable argument buffer and gives it
-back, because the decision needs `&mut Mutator` while it reads the
-arguments. No decision runs code any more, so none takes a second, fresh
-buffer of its own. `Interpreter::reenter`, `invoke_closure`,
+A decision reads a send's arguments where they are, in the sender's
+registers, while it holds `&mut Mutator`: it is handed an argument window,
+`interpreter::Arguments`, which names them by the sender's
+`RegisterBase` and reads each one through the heap it is handed, or names
+values a decision or the host built (`Message>>sendTo:`'s, a host's send,
+a `doesNotUnderstand:` handler's message). Each case is one word -- the
+register base's index, the first register and the count packed into a `u64`
+by arithmetic (`heap::ArgumentSlots`), or a reference to the values'
+slice -- so the window is a tag and a word, built in registers and passed
+in two: as three narrow fields beside a fat slice it was a sixteen-byte
+aggregate, built by narrow stores and copied or read back wider, and every
+such read waited for the stores to retire: +24% on Mandelbrot, measured
+by bisecting the first stage of road step 7a′ ("What contiguous arguments
+moved"). Nothing gathers the arguments anywhere first, so the step state
+keeps no argument buffer: a send whose sources are consecutive registers
+names them in place, and only one whose sources are not copies them into
+its slots, out of line (`vm::place_arguments`). The registers
+stay put from the send's start to its push: no collection runs inside a
+decision, only at safepoints, and nothing pops the sender meanwhile.
+`Interpreter::reenter`, `invoke_closure`,
 `builtins::call_block`, the count of re-entries and its bound, and that
 bound's error, `stack overflow: too many nested native calls`, are gone with
 the re-entries.
@@ -7624,12 +8160,13 @@ suite still meets every handle held across one.
 advances the program counter and `continue`s. A jump sets the program
 counter, and a backward one tests the flag. A send, a return, an unwind and
 a future's forcing go through the helpers -- `send`, `deliver`, `finish`,
-`resume_caller`, `unwind`, `reexecute`, `force_and_reexecute` -- which
-answer a one-byte `Transfer`: `Next` (the instruction's value, if any, is
-written; go on after it), `Switched` (run the frame the `Handoff` names) or
-`Exited` (the `Handoff` holds the run's result). The `Handoff` is a local of
-`run_stretch` the helpers write the next frame or the result into, so the
-test after a send is one compare of a byte in a register. `vm.rs` still
+`resume_caller`, `unwind` and `raise`, `reexecute`, `force_and_reexecute`
+-- which answer a one-byte `Transfer`: `Next` (the instruction's value, if
+any, is written; go on after it), `Switched` (run the frame the `Handoff`
+names) or `Exited` (the `Handoff` holds the run's result). The `Handoff` is
+a local of `run_stretch` the helpers write the next frame or the result
+into, and a raise the index of the instruction that raised, so the test
+after a send is one compare of a byte in a register. `vm.rs` still
 holds no dispatch logic: every decision stays in `interpreter/` -- the
 caches, `act`, the continuations, the unwinder -- behind the interfaces it
 had, which a JIT tier will reach the same way.
@@ -7865,18 +8402,18 @@ unchanged:
   `BodyTooLarge`;
 - `send_sites`, one `SendSite` per send: its selector, its `CallSite`, the
   lexical depth for a `SendLexical`, and, for a wide send, its destination,
-  receiver and argument registers;
+  receiver, argument base and argument sources;
 - `blocks`, one per `MakeClosure`: the block's `Rc<CompiledCode>`, its
   parameters and its copied registers;
-- `mirror_sites`, one per `SendMirror`: its argument registers and its
-  failure target;
+- `mirror_sites`, one per `SendMirror`: its argument base and sources and
+  its failure target;
 - `superclass_sites`, one per `InitializeSuperclass`: its steps, its
-  selector and its argument registers, since the selector does not fit
+  selector and its argument base and sources, since the selector does not fit
   the slot beside the steps;
 - `register_lists`, the element registers of a `MakeArray`, and the
-  argument registers of an `InitializeAppliedLevel`, whose slots hold the
-  rest (an `InitializeInstance` passes its body's own arguments and names
-  no list);
+  argument sources of an `InitializeAppliedLevel`, whose eight bytes hold
+  its destination, its argument base and its steps (an `InitializeInstance`
+  passes its body's own arguments and names no list);
 - `wide`, the full `Instruction` of every instruction other than a send
   that has no eight-byte form here.
 
@@ -7891,12 +8428,19 @@ the image decoder alike, so the wire format is unchanged.
 `SendInlinable` each come in four forms, for no argument, one, two, and a `Wide`
 form that reads everything from its `SendSite` -- three arguments or more, or a
 register above 255. The two-argument `SendPublic` is `{ destination, receiver,
-arguments: [u8; 2], site: u16 }`, eight bytes, and an eight-byte form's argument
-registers reach `send` by value, from the slot, with no allocation to chase.
+argument_base, sources: [u8; 2], site: u16 }`, eight bytes -- a send names
+its arguments' contiguous slots by their base and each argument's source,
+and reads its arguments in place when the sources are consecutive, else
+copies a source that is not its slot into it before it decides
+([compiler.md](compiler.md), "Sends") -- and an eight-byte form's arm
+turns its sources into the window's first register in registers: none
+reads the base, one its source, two their first source after one compare,
+and only two that do not follow each other call the placement, out of
+line, with no allocation to chase.
 `SendMirror` has one eight-byte form, its arguments and failure target in its
 `MirrorSite`; like every other instruction it takes `Wide` when its operands do
 not fit (a register above 255, or the mirror-site table full). Every send arm
-only gathers its receiver, its arguments and its site into a `PendingSend` and
+only gathers its receiver, its argument window and its site into a `PendingSend` and
 leaves the match through its kind's labelled block; **one send path per kind**
 follows that block, so each kind's cache hit path is inlined into `vm::run`
 once, not once per form. The pending send carries no kind: a single join for all
@@ -7969,6 +8513,80 @@ was never measured. What the gate showed, the join it led to, and what the
 built encoding moved are "What the compact instruction encoding moved"
 above.
 
+## Keeping the hot path in registers
+
+The send, push and return path is Rust that LLVM compiles, and twice in
+road step 7a′ its machine code, not its algorithm, cost 10-28%: a
+sixteen-byte `Arguments`, and later the 72-byte `ActivationHeader`, were
+written onto the stack by narrow stores and read back by sixteen-byte
+loads, which the store buffer cannot forward, so every send waited for the
+stores to retire ("What contiguous arguments moved"; "Representation" above);
+and `Mutator::push_sent` grew from 276 to 7,265 instructions when the push
+chain was inlined into it. Both were found only after hours of measuring.
+Four rules keep the path in registers, and a gate holds them.
+
+- **What the path passes or answers by value is at most two scalars.**
+  Rust's ABI passes at most two scalars in registers; a larger aggregate
+  goes through memory, a copy written and read back. The argument window
+  is a tag and one word (`Arguments`, its slots packed into
+  `heap::ArgumentSlots`'s `u64`), an activation's handle one 32-bit
+  offset, the optional sender two scalars, the feedback base one, a
+  continuation a tag and a box, a value one word, and a `Transfer` one
+  byte. Release-only size tests hold the window, the handle, the sender,
+  the feedback base and the continuation there
+  (`interpreter`'s `what_the_hot_path_passes_by_value_is_at_most_two_scalars`,
+  `heap`'s `an_activation_handle_and_an_argument_window_are_one_scalar_each`,
+  beside the older pins of the handles and of `RegisterBase`). Three values
+  are larger and still cross by value, through memory: the decided `Step`
+  (56 bytes) that `push_sent` and `push_step` take, the pushes'
+  `Result<ActivationReference, Signal>` (40), and the `Popped` (24) that
+  `Heap::pop_activation` answers; the decision's `Result<Step, Signal>`
+  and the `Signal` are pinned besides. Each is pinned at the size it was
+  measured at, so that it does not grow
+  (`what_the_hot_path_passes_through_memory_stays_the_size_it_was_measured_at`,
+  `what_a_pop_answers_stays_the_size_it_was_measured_at`), and whether to
+  lend them is open ([OPEN-WORK.md](../OPEN-WORK.md), "Three values of
+  the send, push and return path cross by value through memory").
+- **Nothing larger is moved through a `Result`, an `enum` or a `match`
+  there; it is lent.** The activation header is built once, in
+  `Mutator::push_placed`'s callers, and lent `&mut` to `push_above` and
+  `push_on_slots` and from them to `Heap::push_activation_from` and
+  `Heap::push_overlapped_activation`, which write it into the frame in
+  place. A refusal hands it back to nobody: the push answers a `Refusal`
+  of at most the arguments, and only `Mutator::push_refused`, `#[cold]`
+  and `#[inline(never)]`, takes the header by value, and boxes it for the
+  reserve's paths. The by-value entries that remain, `Mutator::push` and
+  `push_placed`, are `#[inline(always)]`, so the header is never copied
+  into them, and the public `Heap::push_activation` serves hosts and
+  tests. No test can keep the header out of by-value signatures; the
+  codegen gate's count of wide loads is what notices a copy of it.
+- **Inlining is decided, not left to LLVM's budget.** The small helpers
+  of the path are `#[inline(always)]` (`Continuations::insert` and
+  `row_of`, `Heap::fill_copied_values`, the push layers), since a larger
+  caller once pushed them past the budget and made each a call; the
+  refusals and rare paths are `#[cold]` `#[inline(never)]`
+  (`push_refused`, `push_past_the_limit`, `push_into_the_stack_reserve`,
+  `Heap::push_reserved_activation`, `Continuations::insert_into_free_row`,
+  `vm::return_to_suspended`), so that they cost the hot code nothing; and
+  the out-of-line pieces of the loop, `vm::place_arguments` and
+  `vm::run_wide`, are `#[inline(never)]`, since inlined they cost
+  `vm::run` its registers ("What contiguous arguments moved").
+- **The codegen gate holds the result.** `cargo xtask gates codegen`
+  (`xtask/src/codegen.rs`; [README.md](README.md), "Gates") reads the
+  release listing of `ns-runtime` and holds each out-of-line function of
+  the path -- `vm::run`, `vm::run_wide`, `push_sent`, `push_step`,
+  `push_initializer_placed`, `Heap::pop_activation`, `vm::finish`,
+  `vm::resume_caller`, `Mutator::resume`, `vm::place_arguments`,
+  `vm::unwind`, `Step`'s drop glue and `builtins::execute` -- to a budget
+  of instructions and one of sixteen- or 32-byte stack loads over earlier
+  narrower stores, each the count at the time with a headroom of about
+  10%. At `0037350d`, the commit with the header's stall, it fails:
+  `push_sent` has 6,588 instructions and 79 such loads against budgets
+  of 5,390 and 14, `push_step` and `push_initializer_placed` likewise.
+  The count is static, over the listing's order rather than the control
+  flow, so it counts candidate sites, cold ones among them; what it
+  catches is a jump in their number.
+
 ## Planned: tail calls, skipped but kept
 
 **Status: a direction the user set on 2026-09-25, not designed and not
@@ -8000,6 +8618,192 @@ settle.
 marks — `on:do:`, whose `^self value` is a tail send — is never skipped, or
 `signal` would no longer find its handler. `ensure:` is never in tail
 position, since `onUnwind value` follows `self value`.
+
+## Overlapping register windows
+
+**Status: road step 7a′, decided with the user on 2026-10-24, built and
+measured in two stages.** The first makes a send's arguments contiguous
+slots or consecutive sources, read in place through an argument window,
+the argument buffer gone ("What contiguous arguments moved"). The second
+overlaps the windows: the header 13 words in every build, its numbers
+left out of the register numbering, a send's own callee laid on its
+caller's slots -- the caller's outgoing argument registers *are* the
+callee's first registers, so its arguments are copied into no window of
+the callee's -- the pop restoring the top the callee was pushed at,
+suspension keeping a sender's registers below its callee's header, frame
+objects and image records without the header's numbers, and the
+decoder's refusal of a register that names a header word, of argument
+slots below the header's end or below the body's locals, of a send source
+that is another of its slots, of a write to an argument register, and of
+an outer load or store into another frame's scratch
+([image-format.md](image-format.md), "Verification"). Neither a push nor
+a pop writes a scratch register; the leftover analysis decides what the
+collector nils instead ("What the leftover analysis moved"). The second
+stage costs nothing on the geometric mean against the first ("What
+overlapping windows moved").
+
+**What a send copies.** Each argument at most once, most of them
+never. A send names its arguments' contiguous slots, allocated after its
+receiver, and each argument's source. A send's value, an inlined integer
+operation's, an inlined conditional's or `and:`/`or:`'s, a literal or a
+closure is produced in its slot, a setter's value as any argument; a
+named local passed as an argument, and an argument whose value the
+optimized lowering leaves in the register an inlined loop or mirror send,
+an assignment or a cascade answered, is not ([compiler.md](compiler.md), "Sends"). The send
+reads its arguments where they are whenever its sources are consecutive
+registers -- none or one always are, and so are sources that all are their
+slots -- and only otherwise copies each source that is not its slot into
+it first, out of line (`vm::argument_window`, `vm::place_arguments`). The
+decision and the native then read the arguments where they are, through an
+argument window (`interpreter::Arguments`, a tag and one word, "No
+re-entry from Rust"), and a decision that answers without a push -- a
+primitive, a slot accessor, a cache hit's value -- writes no slot. The
+push of the send's own callee lays its frame on the slots
+(`Mutator::push_on_slots`, `Heap::push_overlapped_activation`): a window
+that names consecutive sources rather than the slots is copied into the
+slots first, on the push path, after the decision (`Heap::place_in_slots`;
+one or two word by word, more by a loop kept inline), and a window that is
+the slots is copied nowhere. Every other push copies the window from
+wherever it is, above the sender's whole window. A copy into a slot
+nothing reads would be pure cost, and nothing but the send reads a slot
+but a setter assignment: its value is the register its argument came
+from, a named local's below the slots, or else the slot -- where the value
+was produced there, or copied there by the lowering when it was left in a
+register above the slot, an inner assignment's (`a:: b:: 4`), which the
+callee's header goes over
+(`compiler::lower`'s `lower_setter_assign`). The first stage measured what
+the copies cost: the window built in memory up to +24% (Mandelbrot), the
+placement inlined into every send path and its eager copies +2% to +9% on
+every send-heavy program, before both went.
+
+**The prior art overlaps them, and puts the header between the arguments
+and the temporaries.** Cog's stack frame is the caller's pushed receiver
+and arguments, then the saved frame pointer, method, flags, context and a
+copy of the receiver, then the temporaries
+(`prior-art/opensmalltalk-vm/src/spur64.stack/gcc3x-interp.c:150-157`,
+`internalActivateNewMethod` at 5601-5660; arguments read above the frame
+pointer, `temporary:in:` at 65657-65667); Primordial Soup's is the same
+(`prior-art/primordialsoup/vm/interpreter.cc:18-45`, `FrameTemp` at
+94-101), and Strongtalk's native frame too
+(`prior-art/strongtalk/vm/runtime/frame.hpp:29-51`). A primitive reads
+its arguments in place in all three, and a failed one activates the method
+over them. Lua keeps the header out of line (`CallInfo`) so that the
+window is contiguous from `base`, the compiler placing the arguments at
+the top of the free registers; Dalvik's `invoke/range` takes contiguous
+registers and its non-range form copies once, into the callee's place.
+
+**The layout is Cog's, with the header's registers left out of the
+numbering.** A frame is its arguments, then the header, then the rest of
+its registers:
+
+```
+caller   ... live registers | slot 0 .. slot argc-1 | dead above
+callee                      | r0 .. r(argc-1)       | header (13) | r(argc+13) ..
+```
+
+- **The callee's register numbering skips the header**: registers `0 ..
+  argc` are the arguments, `argc .. argc + COUNT` name the header's words
+  and no instruction names them, and copied values, temporaries, the vector
+  register and scratch start at `argc + COUNT` ([compiler.md](compiler.md),
+  "Registers"). Every register is still `base + r`, one addition and no
+  branch on an args/temps split; the header sits at `base + argc`, and an
+  `ActivationReference` is its offset.
+- **The header is 13 words in every build**, since its size is in the
+  compiled code and a debug build's artifact or image must run in a
+  release one: the debug build's generation rides in the flags word,
+  whose argument count is 16 bits -- 8 + 16 + 2 + 31 bits, inside 61.
+  The register ceiling bounds the count: a body with more parameters
+  compiles to the raising body ("Compilation cannot fail"), whose declared
+  arity still passes the arity check, so a longer list of values -- a
+  host's send or `Message>>sendTo:` -- is refused at the push instead:
+  `Interpreter::push` raises the error the raising body would, without
+  pushing, so the sender is the activation that signals it.
+- **A send's arguments are contiguous slots at the top of the caller's
+  live registers**. Both lowerings allocate the `argc` slots right
+  after the receiver and lower each argument into its slot: a literal or a
+  send writes it directly, so nothing copies it. Every register numbered
+  above the slots is dead when the send executes -- the callee's header and
+  window overwrite them -- which the bump allocator makes true: nothing is
+  allocated below a slot after it, and what an argument is computed with
+  lands above. Both lowerings check it on every body in a debug build
+  (`compiler::reference::check_leftovers`): no instruction after a send
+  reads a register above its slots before something writes it again.
+- **A named local passed as an argument is the send's to copy**: the
+  send names its slot base and, for each argument, the register it comes
+  from, reads consecutive sources in place and copies any other source
+  that is not its slot into it ("What a send copies" above) -- at most
+  one copy, inside the send's own handling, where a `Move` before it
+  would cost an instruction. The reference lowering never uses it: it
+  `Move`s every local into a fresh slot, as its rule 3 already asks, so
+  that the optimized lowering's in-send copy is what the two are compared
+  on
+  ([compiler.md](compiler.md), "The reference lowering").
+- **A push without the arguments in the caller's registers copies them**
+  to the top of the stack, above the caller's whole window: a
+  `doesNotUnderstand:` handler's message, `Message>>sendTo:`, `cull:`, a
+  native loop's next block, an unwind block, a host's entry, a resumed
+  frame, and the initializer a factory enters, whose arguments are the
+  factory's own and lie below its header. A future forced before a send
+  is re-run lands above the caller's window too, so the slots it re-reads
+  are untouched. Only an activation that takes the run loop's send's own
+  arguments (`StepArguments::Send`) is laid on the slots; a mirror send's
+  leaf and `InitializeInstance` hand theirs on from elsewhere, and land
+  above too (pinned by
+  `goldens/language/evaluation-order/a_push_that_is_not_the_senders_callee_leaves_its_window.ns`).
+- **A pop restores the top it was pushed at**, not the callee's
+  offset: the caller's window end, or past it where the caller lies on a
+  longer frame's slots, since a push never lowers the top. The caller's
+  registers above its slots are its own again, dead, and the pop writes
+  none of them, nor does a push write a scratch register: every trace of
+  the stack nils each register a frame does not read before it writes it
+  (`Heap::trace_stack`; [memory.md](memory.md), "What the collector
+  traces"; "What the leftover analysis moved"). A debug build writes a
+  poison word no value can be into both, and refuses an instruction's
+  read of it ("Representation" above). Suspending a sender copies its
+  registers below its callee's header only and leaves the rest nil, so a
+  frame object holds no stale header word, and nils every register the
+  trace would. A frame object and an image record hold the registers
+  without the header's numbers: register `r` is field `r` below the
+  argument count and field `r - 13` above the header, and a number the
+  header takes has no field (`Heap::frame_field_of_register`), so a frame
+  of a body past the register ceiling whose arguments leave no number
+  above the header holds its arguments alone, and an image carrying one
+  decodes.
+- **Parameter slots are immutable (§3.6, §6.3.2)**, so a callee never
+  writes the caller's slots: a setter assignment's value, read from the
+  slot after the send, is still there (pinned by
+  `goldens/language/evaluation-order/a_setter_value_read_after_its_send_survives_the_callee.ns`).
+  The decoder refuses an instruction that names one of the header's
+  numbers, a send whose slots start below the header's end, whose
+  callee's header would go over its sender's, an instruction that writes
+  an argument register, and an outer load or store into another frame's
+  scratch, which would reach a live frame above it
+  ([image-format.md](image-format.md), "Verification").
+- **The decision reads the arguments where they are**, through an
+  argument window -- the frame, the slot base and the count, read through
+  the `Heap` -- instead of a slice; there is no argument buffer.
+
+**Two stages, each measured** as "What frames as words moved" was, with
+three builds a side. The first makes the arguments contiguous and drops
+the buffer: both lowerings lower a send's arguments into slots at the top
+of the live registers, the send forms name the slot base and each
+argument's source, and decisions, primitives and builtins read the
+argument window. A window is a base and a count, so the slots come
+first: over arbitrary register lists the window would have to lend the
+instruction's list to every decision. The second overlaps the windows.
+The first is kept: no program slower than `master` with its builds
+separated, twelve of twenty-four faster ("What contiguous arguments
+moved"). The second, measured against the first with the change that
+forgets a value-answered send's step, which speeds both, is level on the
+geometric mean, -0.09%, with two programs slower with their builds
+separated, by 0.5% and 1.6%, and three faster; with what of that the
+code could fix fixed, DeltaBlueTon80 is 0.9% slower and Mandelbrot
+level. It is kept, decided with the user on 2026-10-26, against the rule
+that a stage slows no program: the 0.9% is the flags load for the
+register base on every switch that Cog's layout, the point of the stage,
+forces, four ways around it measured no better, and the branch as a whole
+is 1.34% faster than before the leftover analysis with no program slower
+("What overlapping windows moved", "What the leftover analysis moved").
 
 ## Planned: JIT tiers
 
@@ -8049,11 +8853,18 @@ Each step gets its own design when it comes up.
   condition it was built under, without which it would have moved to
   step 8: measured with three builds a side that vary the block layout
   inside `vm::run`, nineteen of twenty-four programs are faster and the
-  rest level ("What frames as words moved"). **7a′**, next,
-  overlaps the register windows, the caller's outgoing arguments being
-  the callee's first registers, behind its own measurement. **7c** writes
-  the deoptimization contract and the protocol between interpreted and
-  compiled frames into this document.
+  rest level ("What frames as words moved"). **7a′** is
+  built: the register windows overlap, the caller's outgoing arguments
+  being the callee's first registers, in Cog's layout, in two measured
+  stages ("Overlapping register windows"), the first -- contiguous
+  arguments read in place -- faster than `master` on twelve of
+  twenty-four programs ("What contiguous arguments moved"), the second
+  level with the first on the geometric mean ("What overlapping windows
+  moved"), neither a push nor a pop writing a scratch register since the
+  leftover analysis decides what the collector nils ("What the leftover
+  analysis moved"). **7c**, next, writes the deoptimization contract and
+  the protocol between interpreted and compiled frames into this
+  document.
 - **Step 8, a baseline JIT**, Cog's class: every method compiled without
   speculation, the inline caches and the allocation fast path emitted into
   the code, values kept in registers, for x64 and arm64, since images are
@@ -8070,6 +8881,28 @@ Each step gets its own design when it comes up.
   ("The Are We Fast Yet benchmarks"), and with
   `prior-art/newspeak-benchmarks`, a separate suite -- DeltaBlue, Richards,
   Splay, parser combinators and micro-benchmarks -- with Java versions of five of its programs.
+
+**Open: whether the interpreter tier is generated by the JIT's backend.**
+`vm::run` is a Rust `match` loop, compiled by LLVM, which decides where the
+program counter, the register base and the mutator live and has twice
+cost 10-28% through codegen ("Keeping the hot path in registers");
+`vm::run` holds about 60-70% of `bench_send.ns`'s samples. JSC's LLInt is
+written in offlineasm, V8's Ignition handlers are built by its optimizing
+compiler's backend, and HotSpot's template interpreter is generated at
+start-up by its macro assembler; each keeps the program counter, the
+frame and the dispatch base in fixed machine registers and leaves no
+compiler between the design and the instructions, which typically gives
+1.3-2x on interpreter-bound code. LuaJIT's interpreter is hand-written
+assembly, which is not the option here: a hand-written interpreter beside
+a generated JIT is two implementations of every instruction, which drift.
+The interpreter would instead be emitted by the macro assembler road step
+8 builds. It is decided only once the instruction set and the frame
+layout settle and that macro assembler exists
+([OPEN-WORK.md](../OPEN-WORK.md), "Open design questions").
+Before that, a tail-call interpreter -- a handler per instruction, each
+ending in a guaranteed tail call to the next, which Rust gives only with
+`become`, unstable in October 2026 -- would measure the gain of fixed
+registers without a generated tier (the same question in OPEN-WORK.md).
 
 Steps 1 to 6 of the road give a very good interpreter on a modern object
 representation; road step 8 reaches Cog's class, and road step 9 Strongtalk's and
@@ -8199,3 +9032,17 @@ HotSpot's.
   registers by reference, its writes count as after every capture, and the
   divorce copy is decided per activation by whether it created such a
   closure — so the common path pays nothing and inlining stays unobservable.
+- **A send's own callee lies on its sender's argument slots** (decided
+  with the user on 2026-10-24, "Overlapping register windows"): Cog's
+  layout, the arguments, then the header, then the other registers, the
+  header's numbers left out of the register numbering and 13 words in
+  every build, so that a caller's outgoing arguments are its callee's
+  first registers and a debug build's artifact runs in a release one.
+- **Neither a push nor a pop writes a scratch register** (decided with
+  the user on 2026-10-25, "What the leftover analysis moved"): the
+  leftover analysis, derived from the code, says what a frame may read
+  before writing it, the decoder refuses image code that reads it, and
+  the collector nils it in its trace of the stack, rather than the pop
+  filling what its callee gave back, which cost 1-2% of a run, or
+  liveness maps declared in the image, which a flat send of inlined
+  conditionals makes quadratic.

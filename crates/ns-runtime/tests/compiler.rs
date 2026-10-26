@@ -4,7 +4,7 @@ use indoc::indoc;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use ns_runtime::bytecode::{CallSite, CodeKind, Instruction, Literal};
+use ns_runtime::bytecode::{BodyLimit, CallSite, CodeKind, Instruction, Literal, HEADER_REGISTERS};
 use ns_runtime::dispatch::Lookup;
 use ns_runtime::{Interpreter, Mixin, Mutator, Root, SourceOrigin, Symbol, ValueKind};
 
@@ -68,8 +68,8 @@ fn loading_compiles_every_method_and_the_initializer_onto_the_mixin() {
     assert_eq!(
         initializer.instructions(),
         vec![
-            Instruction::LoadSelf { destination: 0 },
-            Instruction::ImplicitReturn { register: 0 }
+            Instruction::LoadSelf { destination: 13 },
+            Instruction::ImplicitReturn { register: 13 }
         ]
     );
 }
@@ -128,37 +128,40 @@ fn the_initializer_lowers_slots_then_initializer_expressions_with_own_slot_indic
             },
             // `q ::= 5.`
             Instruction::LoadLiteral {
-                destination: 1,
+                destination: 14,
                 literal: Literal::SmallInteger(5)
             },
             Instruction::InitializeSlot {
-                source: 1,
+                source: 14,
                 own_index: 1
             },
-            // `q:: p.` -- slot reads/writes are lexical sends.
+            // `q:: p.` -- slot reads/writes are lexical sends, and the
+            // value is lowered into the setter's slot, register 14.
             Instruction::SendLexical {
                 depth: 0,
                 selector: Symbol::intern("p"),
-                argument_registers: vec![],
-                destination: 1,
+                argument_base: 15,
+                argument_sources: vec![],
+                destination: 14,
                 call_site: CallSite { number: 0 },
             },
             Instruction::SendLexical {
                 depth: 0,
                 selector: Symbol::intern("q:"),
-                argument_registers: vec![1],
-                destination: 2,
+                argument_base: 14,
+                argument_sources: vec![14],
+                destination: 15,
                 call_site: CallSite { number: 1 },
             },
-            Instruction::LoadSelf { destination: 3 },
-            Instruction::ImplicitReturn { register: 3 },
+            Instruction::LoadSelf { destination: 16 },
+            Instruction::ImplicitReturn { register: 16 },
         ]
     );
     assert_eq!(
         initializer.statement_program_counter,
         vec![(0, 0..1), (1, 1..3), (2, 3..5)]
     );
-    assert_eq!(initializer.register_count, 4);
+    assert_eq!(initializer.register_count, 17);
 }
 
 #[test]
@@ -342,8 +345,8 @@ fn a_full_initializer_initializes_its_superclass_before_its_own_slots() {
     assert!(sum < superclass);
     assert!(matches!(
         &instructions[superclass],
-        Instruction::InitializeSuperclass { steps: 1, selector, argument_registers, .. }
-            if *selector == Symbol::intern("y:") && *argument_registers == vec![sum_register]
+        Instruction::InitializeSuperclass { steps: 1, selector, argument_sources, .. }
+            if *selector == Symbol::intern("y:") && *argument_sources == vec![sum_register]
     ));
     let slot = instructions
         .iter()
@@ -399,13 +402,13 @@ fn a_full_initializer_checks_every_applied_clause_before_the_superclass_message(
     );
     assert!(matches!(
         &instructions[2],
-        Instruction::InitializeSuperclass { steps: 3, selector, argument_registers, .. }
-            if *selector == Symbol::NEW && argument_registers.is_empty()
+        Instruction::InitializeSuperclass { steps: 3, selector, argument_sources, .. }
+            if *selector == Symbol::NEW && argument_sources.is_empty()
     ));
     assert!(matches!(
         &instructions[3],
-        Instruction::InitializeAppliedLevel { steps: 2, argument_registers, .. }
-            if argument_registers.is_empty()
+        Instruction::InitializeAppliedLevel { steps: 2, argument_sources, .. }
+            if argument_sources.is_empty()
     ));
     let Instruction::LoadLiteral {
         destination: tag,
@@ -416,8 +419,8 @@ fn a_full_initializer_checks_every_applied_clause_before_the_superclass_message(
     };
     assert!(matches!(
         &instructions[5],
-        Instruction::InitializeAppliedLevel { steps: 1, argument_registers, .. }
-            if *argument_registers == vec![tag]
+        Instruction::InitializeAppliedLevel { steps: 1, argument_sources, .. }
+            if *argument_sources == vec![tag]
     ));
     assert!(matches!(instructions[6], Instruction::LoadSelf { .. }));
     assert!(matches!(
@@ -456,17 +459,19 @@ fn the_own_part_is_the_body_of_today() {
             Instruction::ImplicitReturn { register },
         ]
     };
+    // The parameter is register 0; scratch starts past the header's
+    // numbers.
     let parameter_then = |second: i64| {
-        let mut instructions = vec![slot(0, 0), literal(1, second), slot(1, 1)];
-        instructions.extend(answer(2));
+        let mut instructions = vec![slot(0, 0), literal(14, second), slot(14, 1)];
+        instructions.extend(answer(15));
         instructions
     };
-    let mut leaf = vec![literal(0, 3), slot(0, 0), literal(0, 30), slot(0, 1)];
-    leaf.extend(answer(1));
+    let mut leaf = vec![literal(13, 3), slot(13, 0), literal(13, 30), slot(13, 1)];
+    leaf.extend(answer(14));
     let expected = [
-        ("Base", parameter_then(10), 3, vec![(0, 0..1), (1, 1..3)]),
-        ("Middle", parameter_then(20), 3, vec![(0, 0..1), (1, 1..3)]),
-        ("Leaf", leaf, 2, vec![(0, 0..2), (1, 2..4)]),
+        ("Base", parameter_then(10), 16, vec![(0, 0..1), (1, 1..3)]),
+        ("Middle", parameter_then(20), 16, vec![(0, 0..1), (1, 1..3)]),
+        ("Leaf", leaf, 15, vec![(0, 0..2), (1, 2..4)]),
     ];
     for (name, instructions, register_count, statements) in expected {
         let own = nested_mixin(&mut interpreter, &class, name)
@@ -500,8 +505,8 @@ fn a_standalone_initializer_exists_only_for_a_declaration_with_clauses() {
     )));
     assert!(matches!(
         &instructions[0],
-        Instruction::InitializeSuperclass { steps: 1, selector, argument_registers, .. }
-            if *selector == Symbol::NEW && argument_registers.is_empty()
+        Instruction::InitializeSuperclass { steps: 1, selector, argument_sources, .. }
+            if *selector == Symbol::NEW && argument_sources.is_empty()
     ));
     for name in ["S", "M1", "M2"] {
         let mixin = nested_mixin(&mut interpreter, &class, name);
@@ -522,22 +527,33 @@ fn the_factory_body_allocates_initializes_and_returns_the_instance() {
     let body = ns_runtime::compiler::factory_body(2);
     assert_eq!(body.kind, CodeKind::Method);
     assert_eq!(body.argument_count, 2);
-    assert_eq!(body.register_count, 4);
+    // The instance and the answer are the first two registers above the
+    // header's numbers.
+    assert_eq!(body.register_count, 17);
     assert_eq!(
         body.instructions(),
         vec![
-            Instruction::AllocateInstance { destination: 2 },
+            Instruction::AllocateInstance { destination: 15 },
             Instruction::InitializeInstance {
-                instance: 2,
-                destination: 3,
+                instance: 15,
+                destination: 16,
             },
-            Instruction::Return { register: 2 },
+            Instruction::Return { register: 15 },
         ]
     );
-    // An arity read off an image cannot make the body grow with it.
-    let widest = ns_runtime::compiler::factory_body(u16::MAX - 2);
+    // Three instructions at the argument limit, whatever the arity.
+    let widest = ns_runtime::compiler::factory_body(255);
     assert_eq!(widest.instructions().len(), 3);
-    assert_eq!(widest.register_count, u16::MAX);
+    assert_eq!(widest.register_count, 255 + HEADER_REGISTERS + 2);
+    // Past it, the factory raises the too-large error when it is sent.
+    let past = ns_runtime::compiler::factory_body(256);
+    assert_eq!(
+        past.instructions()[0],
+        Instruction::LoadLiteral {
+            destination: 256 + HEADER_REGISTERS,
+            literal: Literal::BodyTooLarge(BodyLimit::Arguments),
+        }
+    );
 }
 
 /// A clause argument is lowered inside the initializer, so a block in one
@@ -575,7 +591,7 @@ fn a_block_in_a_clause_argument_captures_the_factory_parameter() {
             instructions.iter().all(|instruction| !matches!(
                 instruction,
                 Instruction::LoadLiteral {
-                    literal: Literal::BodyTooLarge,
+                    literal: Literal::BodyTooLarge(_),
                     ..
                 }
             )),

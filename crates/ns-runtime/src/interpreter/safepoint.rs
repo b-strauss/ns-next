@@ -11,9 +11,8 @@
 //! the run into its frame at the safepoints a fourth schedule picks, the
 //! mode that runs every program on from frames as a deoptimized one will
 //! (`docs/design/execution.md`, "Activations"). The step state's side of a
-//! move -- its own roots, forwarded after the heap's, and the state that
-//! must hold no handle when one happens -- is `World::move_everything` and
-//! `World::check_quiescent_state`, in `heap/world.rs`; a collection's is
+//! move -- its own roots, forwarded after the heap's -- is
+//! `World::move_everything`, in `heap/world.rs`; a collection's is
 //! `World::collect`, in the same file.
 
 use super::Interpreter;

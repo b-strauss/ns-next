@@ -9,6 +9,7 @@ use crate::builtins::collections::{
 use crate::builtins::first_argument;
 use crate::builtins::primitive::BytePrimitive;
 use crate::builtins::text::search_start;
+use crate::interpreter::Arguments;
 use crate::types::*;
 use crate::{Heap, Mutator, Symbol};
 
@@ -20,7 +21,7 @@ pub(crate) fn execute<'gc>(
     primitive: BytePrimitive,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     match primitive {
         BytePrimitive::Allocate => allocate(mutator, receiver, selector, arguments),
@@ -197,7 +198,7 @@ fn copy_range<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let (object, size) = byte_array(mutator, receiver)?;
     let range = match checked_range(
@@ -205,8 +206,8 @@ fn copy_range<'gc>(
         receiver,
         selector,
         "copyFrom:",
-        arguments.first().copied(),
-        arguments.get(1).copied(),
+        arguments.first(&mutator.heap),
+        arguments.try_get(&mutator.heap, 1),
         size,
     ) {
         Ok(range) => range,
@@ -229,17 +230,17 @@ fn replace<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let (object, size) = byte_array(mutator, receiver)?;
-    let source = argument_bytes(&mutator.heap, arguments.get(2).copied()?)?;
+    let source = argument_bytes(&mutator.heap, arguments.try_get(&mutator.heap, 2)?)?;
     let range = match checked_range(
         &mutator.heap,
         receiver,
         selector,
         "replaceFrom:",
-        arguments.first().copied(),
-        arguments.get(1).copied(),
+        arguments.first(&mutator.heap),
+        arguments.try_get(&mutator.heap, 1),
         size,
     ) {
         Ok(range) => range,
@@ -249,7 +250,7 @@ fn replace<'gc>(
         &mutator.heap,
         receiver,
         selector,
-        arguments.get(3).copied(),
+        arguments.try_get(&mutator.heap, 3),
         range.len(),
         source.size(),
     ) {
@@ -282,10 +283,10 @@ fn concatenate<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let (object, size) = byte_array(mutator, receiver)?;
-    let argument = argument_bytes(&mutator.heap, arguments.first().copied()?)?;
+    let argument = argument_bytes(&mutator.heap, arguments.first(&mutator.heap)?)?;
     // Two ByteArrays the heap holds can still join into one it cannot
     // commit: an error, found before anything is allocated, never an
     // abort.
@@ -296,7 +297,7 @@ fn concatenate<'gc>(
         return Some(Err(NewspeakError::argument_error(
             selector,
             receiver,
-            first_argument(arguments),
+            first_argument(&mutator.heap, arguments),
             format!(
                 "{selector} cannot allocate a ByteArray of {} bytes",
                 size as u128 + argument.size() as u128
@@ -326,16 +327,22 @@ fn search<'gc>(
     mutator: &Mutator<'gc>,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
     backwards: bool,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let heap = &mutator.heap;
     let (object, size) = byte_array(mutator, receiver)?;
-    let position = match search_start(heap, receiver, selector, arguments.get(1).copied(), size) {
+    let position = match search_start(
+        heap,
+        receiver,
+        selector,
+        arguments.try_get(&mutator.heap, 1),
+        size,
+    ) {
         Ok(position) => position,
         Err(error) => return Some(Err(error)),
     };
-    let needle = Needle::of(heap, arguments.first().copied())?;
+    let needle = Needle::of(heap, arguments.first(&mutator.heap))?;
     let found = size.checked_sub(needle.size()).and_then(|last_position| {
         let occurs = |candidate: &usize| needle.occurs_at(heap, object, *candidate);
         if backwards {
@@ -358,19 +365,19 @@ fn affix<'gc>(
     mutator: &Mutator<'gc>,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
     at_end: bool,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let heap = &mutator.heap;
     let (object, size) = byte_array(mutator, receiver)?;
-    let Some(needle) = Needle::of(heap, arguments.first().copied()) else {
+    let Some(needle) = Needle::of(heap, arguments.first(&mutator.heap)) else {
         return Some(Err(NewspeakError::argument_error(
             selector,
             receiver,
-            first_argument(arguments),
+            first_argument(&mutator.heap, arguments),
             format!(
                 "{selector} requires an Integer, a ByteArray or a String, got {}",
-                heap.describe_argument(arguments.first().copied())
+                heap.describe_argument(arguments.first(&mutator.heap))
             ),
         )));
     };
@@ -405,10 +412,10 @@ fn position<'gc>(
     mutator: &Mutator<'gc>,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
     size: usize,
 ) -> Result<usize, NewspeakError<'gc>> {
-    let argument = arguments.first().copied();
+    let argument = arguments.first(&mutator.heap);
     match integer_argument(&mutator.heap, argument) {
         Some(IntegerArgument::Small(index)) => match usize::try_from(index) {
             Ok(index) if index >= 1 && index <= size => Ok(index - 1),
@@ -416,7 +423,7 @@ fn position<'gc>(
                 receiver,
                 selector,
                 index,
-                first_argument(arguments),
+                first_argument(&mutator.heap, arguments),
                 size,
             )),
         },
@@ -424,7 +431,7 @@ fn position<'gc>(
             receiver,
             selector,
             mutator.heap.describe_argument(argument),
-            first_argument(arguments),
+            first_argument(&mutator.heap, arguments),
             size,
         )),
         None => Err(not_an_integer(&mutator.heap, receiver, selector, argument)),
@@ -436,7 +443,7 @@ fn element_at<'gc>(
     mutator: &Mutator<'gc>,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let (object, size) = byte_array(mutator, receiver)?;
     Some(
@@ -454,14 +461,14 @@ fn element_at_put<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let (object, size) = byte_array(mutator, receiver)?;
     let position = match position(mutator, receiver, selector, arguments, size) {
         Ok(position) => position,
         Err(error) => return Some(Err(error)),
     };
-    let value = arguments.get(1).copied().unwrap_or(Value::nil());
+    let value = arguments.try_get(&mutator.heap, 1).unwrap_or(Value::nil());
     let Some(byte) = value
         .as_small_integer()
         .and_then(|number| u8::try_from(number).ok())
@@ -490,14 +497,14 @@ fn write_code_point<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let (object, size) = byte_array(mutator, receiver)?;
     let position = match position(mutator, receiver, selector, arguments, size) {
         Ok(position) => position,
         Err(error) => return Some(Err(error)),
     };
-    let value = arguments.get(1).copied().unwrap_or(Value::nil());
+    let value = arguments.try_get(&mutator.heap, 1).unwrap_or(Value::nil());
     let Some(character) = value
         .as_small_integer()
         .and_then(|number| u32::try_from(number).ok())
@@ -522,7 +529,7 @@ fn write_code_point<'gc>(
             receiver,
             selector,
             end,
-            first_argument(arguments),
+            first_argument(&mutator.heap, arguments),
             size,
         )));
     }
@@ -544,13 +551,13 @@ fn write_code_point<'gc>(
 fn fits<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let class = receiver.as_object()?;
     if mutator.heap.class_builtin(class) != Some(BuiltinClass::ByteArray) {
         return None;
     }
-    let fits = match integer_argument(&mutator.heap, arguments.first().copied())? {
+    let fits = match integer_argument(&mutator.heap, arguments.first(&mutator.heap))? {
         IntegerArgument::Small(size) if size >= 0 => usize::try_from(size)
             .ok()
             .is_some_and(|size| mutator.heap.byte_array_fits(size)),
@@ -572,20 +579,20 @@ fn allocate<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let class = receiver.as_object()?;
     if mutator.heap.class_builtin(class) != Some(BuiltinClass::ByteArray) {
         return None;
     }
-    let argument = arguments.first().copied();
+    let argument = arguments.first(&mutator.heap);
     // Described only once a refusal needs it: a size that passes costs no
     // text.
     let refusal = |heap: &crate::Heap<'gc>, message: &dyn Fn(String) -> String| {
         NewspeakError::argument_error(
             selector,
             receiver,
-            first_argument(arguments),
+            first_argument(&mutator.heap, arguments),
             message(heap.describe_argument(argument)),
         )
     };

@@ -560,11 +560,19 @@ impl AppliedClause {
     }
 }
 
-/// How many `<:` clauses one superclass clause may apply: the clause index
-/// is 23 bits of the class object's applied-clause `SmallInteger` -- a limit
-/// a valid program can reach, taken knowingly (decided with the user on
-/// 2026-10-03; `docs/design/object-model.md`, "The object layout").
-pub(crate) const CLAUSE_INDEX_LIMIT: usize = 1 << 23;
+/// How many `<:` clauses one superclass clause may apply
+/// (`docs/design/compiler.md`, "Limits"): the resolver refuses a
+/// declaration of more, and the image decoder a mixin-table row of more or
+/// a clause index at or past it. It is one stated limit in place of what a
+/// class object's field and an initializer's `u16` step count would bound
+/// separately, far below both.
+pub(crate) const CLAUSE_INDEX_LIMIT: usize = 1 << 10;
+
+/// The clause indices the class object's applied-clause `SmallInteger`
+/// can hold: its 23 bits (`docs/design/object-model.md`, "The object
+/// layout"), which leave headroom above `CLAUSE_INDEX_LIMIT`.
+const CLAUSE_INDEX_FIELD: usize = 1 << 23;
+const _: () = assert!(CLAUSE_INDEX_LIMIT <= CLAUSE_INDEX_FIELD);
 
 const CLAUSE_INDEX_SHIFT: u32 = 32;
 const BUILTIN_TAG_SHIFT: u32 = 55;
@@ -592,7 +600,7 @@ impl AppliedClause {
     pub(crate) fn unpack(packed: i64) -> Option<(MixinId, usize, Option<BuiltinClass>)> {
         let pattern = packed as u64 & SIXTY_ONE_BITS;
         let mixin = MixinId::from_index((pattern & u64::from(u32::MAX)) as usize)?;
-        let index = ((pattern >> CLAUSE_INDEX_SHIFT) as usize) & (CLAUSE_INDEX_LIMIT - 1);
+        let index = ((pattern >> CLAUSE_INDEX_SHIFT) as usize) & (CLAUSE_INDEX_FIELD - 1);
         let tag = (pattern >> BUILTIN_TAG_SHIFT) & BUILTIN_TAG_MASK;
         let named_builtin = match tag {
             0 => None,

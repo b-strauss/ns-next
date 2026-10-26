@@ -1,37 +1,37 @@
 ---
 source: crates/ns-analyzer/tests/disasm_snapshots.rs
-expression: "disasm(\"control_flow_fallback.ns\", &[\"main:args:\", \"--lowering\", \"reference\"])"
+expression: "disasm(\"language/control-flow/control_flow_fallback\",\n&[\"main:args:\", \"--lowering\", \"reference\"])"
 ---
-method main:args: (args 2, registers 21)
-   0   stmt 0  Move r2, r0
-   1   stmt 0  SendPublic r3 <- r2 #transcript () @-
-   2   stmt 0  SendLexical r4 <- depth 0 #me () @-
-   3   stmt 0  MakeClosure r5, [] ->
-        block block (args 0, registers 1)
-           0   stmt 0  LoadLiteral r0, 'inlined'
-           1        -  ImplicitReturn r0
-   4   stmt 0  MakeClosure r6, [] ->
-        block block (args 0, registers 1)
-           0   stmt 0  LoadLiteral r0, 'fell back'
-           1        -  ImplicitReturn r0
-   5   stmt 0  SendInlinable r7 <- r4 #ifTrue:ifFalse: (r5, r6) @-
-   6   stmt 0  SendPublic r8 <- r3 #show: (r7) @-
-   7   stmt 0  SendPublic r9 <- r3 #newLine () @-
-   8   stmt 1  Move r10, r0
-   9   stmt 1  SendPublic r11 <- r10 #transcript () @-
-  10   stmt 1  LoadLiteral r12, 3
-  11   stmt 1  LoadLiteral r13, 4
-  12   stmt 1  SendPublic r14 <- r12 #< (r13) @-
-  13   stmt 1  MakeClosure r15, [] ->
-        block block (args 0, registers 1)
-           0   stmt 0  LoadLiteral r0, 'fast path'
-           1        -  ImplicitReturn r0
-  14   stmt 1  MakeClosure r16, [] ->
-        block block (args 0, registers 1)
-           0   stmt 0  LoadLiteral r0, '?'
-           1        -  ImplicitReturn r0
-  15   stmt 1  SendInlinable r17 <- r14 #ifTrue:ifFalse: (r15, r16) @-
-  16   stmt 1  SendPublic r18 <- r11 #show: (r17) @-
-  17   stmt 1  SendPublic r19 <- r11 #newLine () @-
-  18        -  LoadSelf r20
-  19        -  ImplicitReturn r20
+method main:args: (args 2, registers 34)
+   0   stmt 0  Move r15, r0
+   1   stmt 0  SendPublic r16 <- r15 #transcript () @-
+   2   stmt 0  SendLexical r18 <- depth 0 #me () @-
+   3   stmt 0  MakeClosure r19, [] ->
+        block block (args 0, registers 14)
+           0   stmt 0  LoadLiteral r13, 'inlined'
+           1        -  ImplicitReturn r13
+   4   stmt 0  MakeClosure r20, [] ->
+        block block (args 0, registers 14)
+           0   stmt 0  LoadLiteral r13, 'fell back'
+           1        -  ImplicitReturn r13
+   5   stmt 0  SendInlinable r17 <- r18 #ifTrue:ifFalse: (r19, r20) @-
+   6   stmt 0  SendPublic r21 <- r16 #show: (r17) @-
+   7   stmt 0  SendPublic r22 <- r16 #newLine () @-
+   8   stmt 1  Move r23, r0
+   9   stmt 1  SendPublic r24 <- r23 #transcript () @-
+  10   stmt 1  LoadLiteral r26, 3
+  11   stmt 1  LoadLiteral r27, 4
+  12   stmt 1  SendPublic r28 <- r26 #< (r27) @-
+  13   stmt 1  MakeClosure r29, [] ->
+        block block (args 0, registers 14)
+           0   stmt 0  LoadLiteral r13, 'fast path'
+           1        -  ImplicitReturn r13
+  14   stmt 1  MakeClosure r30, [] ->
+        block block (args 0, registers 14)
+           0   stmt 0  LoadLiteral r13, '?'
+           1        -  ImplicitReturn r13
+  15   stmt 1  SendInlinable r25 <- r28 #ifTrue:ifFalse: (r29, r30) @-
+  16   stmt 1  SendPublic r31 <- r24 #show: (r25) @-
+  17   stmt 1  SendPublic r32 <- r24 #newLine () @-
+  18        -  LoadSelf r33
+  19        -  ImplicitReturn r33

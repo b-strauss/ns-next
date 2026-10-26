@@ -41,7 +41,8 @@ pub(crate) const fn is_small_float_bits(bits: u64) -> bool {
 /// `0b001`; `nil`, `false` and `true` the payloads 0, 1 and 2 over `0b010`;
 /// a `SmallFloat` Spur's rotated float over `0b100`. Tags `0b011`, `0b101`,
 /// `0b110` and `0b111` are never made, so bit 0 alone tells a
-/// `SmallInteger`.
+/// `SmallInteger`; a debug build writes `0b110` into a dead register
+/// (`Word::DEAD_REGISTER`), and no value carries it.
 #[derive(Clone, Copy)]
 pub struct Value<'gc> {
     word: u64,
@@ -76,8 +77,32 @@ const SMALL_FLOAT_EXPONENT_OFFSET: u64 = 896 << 53;
 #[derive(Clone, Copy)]
 pub struct Word(u64);
 
+/// The tag of the debug build's dead register (`Word::DEAD_REGISTER`):
+/// `0b110`, the one never-made tag whose bit 0 is clear, so that the word
+/// is neither a `SmallInteger` -- every odd tag reads as one -- nor an
+/// object, a constant or a float.
+#[cfg(debug_assertions)]
+const DEAD_REGISTER_TAG: u64 = 0b110;
+
 impl Word {
     pub(crate) const NIL: Word = Word(NIL_WORD);
+
+    /// What a debug build writes into a register no instruction has
+    /// written since its frame was pushed or its callee returned
+    /// (`heap.rs`'s `dead_register`): a word no `Value` can be, under the
+    /// tag no constructor makes. Every tracer passes over it as a word
+    /// that names no object (`object_offset` answers `None`), and the
+    /// header checks as one that is no number, so the collector and the
+    /// stack's own checks meet it safely; only an instruction's read of
+    /// it is refused.
+    #[cfg(debug_assertions)]
+    pub(super) const DEAD_REGISTER: Word = Word((0x5EAD_5EAD << TAG_BITS) | DEAD_REGISTER_TAG);
+
+    /// Whether this is the debug build's dead register word.
+    #[cfg(debug_assertions)]
+    pub(super) fn is_dead_register(self) -> bool {
+        self.0 == Word::DEAD_REGISTER.0
+    }
 
     /// The offset of the object this word names, for the collector. An
     /// object's word is its offset itself, which is never 0, so the zero

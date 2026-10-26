@@ -12,6 +12,7 @@ use crate::builtins::collections::{
 use crate::builtins::first_argument;
 use crate::builtins::primitive::{Primitive, WeakPrimitive};
 use crate::interpreter::instantiate;
+use crate::interpreter::Arguments;
 use crate::types::*;
 use crate::{Mutator, Symbol};
 
@@ -28,7 +29,7 @@ pub(crate) fn execute<'gc>(
     primitive: WeakPrimitive,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     match primitive {
         WeakPrimitive::Allocate => allocate(mutator, receiver, selector, arguments),
@@ -85,10 +86,10 @@ fn position<'gc>(
     mutator: &Mutator<'gc>,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
     size: usize,
 ) -> Result<usize, NewspeakError<'gc>> {
-    let argument = arguments.first().copied();
+    let argument = arguments.first(&mutator.heap);
     match integer_argument(&mutator.heap, argument) {
         Some(IntegerArgument::Small(index)) => match usize::try_from(index) {
             Ok(index) if index >= 1 && index <= size => Ok(index - 1),
@@ -96,7 +97,7 @@ fn position<'gc>(
                 receiver,
                 selector,
                 index,
-                first_argument(arguments),
+                first_argument(&mutator.heap, arguments),
                 size,
             )),
         },
@@ -104,7 +105,7 @@ fn position<'gc>(
             receiver,
             selector,
             mutator.heap.describe_argument(argument),
-            first_argument(arguments),
+            first_argument(&mutator.heap, arguments),
             size,
         )),
         None => Err(not_an_integer(&mutator.heap, receiver, selector, argument)),
@@ -116,7 +117,7 @@ fn element_at<'gc>(
     mutator: &Mutator<'gc>,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let (object, size) = weak_array(mutator, receiver)?;
     Some(
@@ -135,14 +136,14 @@ fn element_at_put<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let (object, size) = weak_array(mutator, receiver)?;
     let position = match position(mutator, receiver, selector, arguments, size) {
         Ok(position) => position,
         Err(error) => return Some(Err(error)),
     };
-    let value = arguments.get(1).copied().unwrap_or(Value::nil());
+    let value = arguments.try_get(&mutator.heap, 1).unwrap_or(Value::nil());
     mutator.heap.weak_array_set_element(object, position, value);
     Some(Ok(value))
 }
@@ -158,15 +159,20 @@ fn allocate<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let class = receiver.as_object()?;
     if mutator.heap.class_builtin(class) != Some(BuiltinClass::WeakArray) {
         return None;
     }
-    let argument = arguments.first().copied();
+    let argument = arguments.first(&mutator.heap);
     let refusal = |message: String| {
-        NewspeakError::argument_error(selector, receiver, first_argument(arguments), message)
+        NewspeakError::argument_error(
+            selector,
+            receiver,
+            first_argument(&mutator.heap, arguments),
+            message,
+        )
     };
     let size = match integer_argument(&mutator.heap, argument) {
         Some(IntegerArgument::Small(size)) => size,
@@ -248,10 +254,10 @@ fn ephemeron_set_field<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
     index: usize,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Value<'gc>> {
     let object = receiver.as_object()?;
-    let value = arguments.first().copied().unwrap_or(Value::nil());
+    let value = arguments.first(&mutator.heap).unwrap_or(Value::nil());
     if mutator.heap.ephemeron_set_field(object, index, value) {
         return Some(receiver);
     }

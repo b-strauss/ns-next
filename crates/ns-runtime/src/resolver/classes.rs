@@ -130,9 +130,9 @@ pub(super) fn duplicate_member_names(declaration: &ast::ClassDeclaration) -> Vec
     duplicates
 }
 
-/// The resolve error for a superclass clause applying more mixins than a
-/// class object's applied-clause field can number
-/// (`crate::mixin::CLAUSE_INDEX_LIMIT`), or `None`.
+/// The resolve error for a superclass clause applying more mixins than
+/// `crate::mixin::CLAUSE_INDEX_LIMIT` (`docs/design/compiler.md`,
+/// "Limits"), or `None`.
 pub(super) fn clause_count_error(count: usize, class_name: &str) -> Option<String> {
     (count > crate::mixin::CLAUSE_INDEX_LIMIT).then(|| {
         format!(
@@ -273,13 +273,13 @@ mod tests {
     use super::clause_count_error;
 
     #[test]
-    fn a_superclass_clause_of_more_than_two_to_the_twenty_three_clauses_is_refused() {
+    fn a_superclass_clause_of_more_than_1024_clauses_is_refused() {
         assert!(clause_count_error(crate::mixin::CLAUSE_INDEX_LIMIT, "Wide").is_none());
         let message =
             clause_count_error(crate::mixin::CLAUSE_INDEX_LIMIT + 1, "Wide").expect("refused");
         assert_eq!(
             message,
-            "class `Wide` applies 8388609 mixins in its superclass clause; at most 8388608 are allowed"
+            "class `Wide` applies 1025 mixins in its superclass clause; at most 1024 are allowed"
         );
     }
 }

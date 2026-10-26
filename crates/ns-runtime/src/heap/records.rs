@@ -100,6 +100,8 @@ pub enum PlaceholderFormat {
 pub struct FrameRecord<'gc> {
     pub receiver: Value<'gc>,
     pub arguments: Vec<Value<'gc>>,
+    /// The registers above the header, in order: register `argument_count
+    /// + HEADER_REGISTERS + index` is `temporaries[index]`.
     pub temporaries: Vec<Value<'gc>>,
     pub program_counter: usize,
     pub sender: Option<FrameReference<'gc>>,

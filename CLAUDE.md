@@ -17,7 +17,8 @@ Rust 1.98.0, edition 2021, six crates:
 - `crates/ns-runtime` — resolver, object model, dispatch, the compiler (`compiler/`,
   checked against the reference lowering in `compiler/reference.rs`), the
   instructions (`bytecode.rs`, stored and run in the eight-byte encoding of
-  `bytecode/compact.rs`), the VM (`vm.rs`) and the send machinery it calls
+  `bytecode/compact.rs`; what a callee leaves in a frame's registers is
+  `bytecode/leftovers.rs`'s analysis), the VM (`vm.rs`) and the send machinery it calls
   (`interpreter/`: inline caches in `inline_cache.rs` in front of the lookups
   in `resolve.rs`, the one unwinder in `unwind.rs`, the VM mirror in
   `mirror.rs` and its leaves in `builtins/`, a MirrorBuilder's edit
@@ -163,6 +164,27 @@ checked by `lower_assign`'s `debug_assert!`s against `read_only_locals`. Getting
 it wrong is silent wrong output at exit status 0 (`execution.md`, "Fewer
 protective copies").
 
+**A register a frame does not read before it writes it is dead, and only
+the collector's pre-pass makes it safe to trace.** Neither a push nor a
+pop writes a scratch register -- at or above its body's `local_count` --
+nor the registers a callee that lay on its sender's slots gives back, so
+such a word may be one a callee or a popped frame left. The pre-pass,
+which every trace of the stack makes over each frame before it traces
+the frame's words (`Heap::trace_stack`), nils every register
+`bytecode::leftovers` finds tainted before the program counter the frame
+stores; a suspension nils the same in its copy, a divorce every scratch
+register. The decoder refuses image code that reads a tainted register,
+both lowerings `debug_assert!` it on every body, and a debug build writes
+a poison word no value can be into dead registers and refuses an
+instruction's read of it. A new instruction declares its register
+effects in `bytecode.rs`'s exhaustive matches (`registers_read`,
+`register_written`, `jump_target`, `falls_through`, `successors`, and
+`Instruction::argument_slots` for a send), or the analysis misjudges
+it. A miss is a stale handle traced -- an object since moved or
+reclaimed -- or an object nothing reaches kept alive, which a
+`WeakArray` shows (`compiler.md`, "What a callee leaves"; `memory.md`,
+"What the collector traces").
+
 **An image is untrusted input.** No byte sequence may panic or abort the
 process: validate every id, tag, count and length before it indexes, allocates
 or slices; bound any recursion the input controls; never add a pre-allocation
@@ -183,7 +205,9 @@ nothing collects while its placeholders exist and the peak argument stands
 transient peak of a rejected load is about 10.7x of the graph bytes plus ≤4x
 of the symbol section in a release build, and about 16x of the graph bytes
 plus ≤4x of the symbol section in a debug one, plus ≤6x of the text table
-in an image with source in both (`memory.md`, "The
+in an image with source in both, plus the leftover analysis's fixed term
+of at most 2.02 MiB (3.02 MiB in a debug build), one body at a time and
+before the graph pass (`memory.md`, "The
 amplification bound of a rejected load", has the breakdown and what is not
 counted; `decode_value`'s doc comment the derivation, `texts::decode`'s
 the text table's; both count a class
@@ -400,10 +424,11 @@ every one runs on 18 threads.
 | `benchmarks` | the benchmark programs verified at full size, and their Java counterparts; needs a JDK (`JAVA_HOME` or `PATH`); profile `benchmarks-verify`; it measures nothing and never runs under a stress mode (`execution.md`, "The Are We Fast Yet benchmarks") | when benchmarking; the end of a batch that changed the runtime |
 | `release-checks` | the suite built without debug assertions, profile `release-checks` of `Cargo.toml` (release without its fat LTO), which runs the size tests (below) | when a change touches a type a size test pins; the end of a batch that changed the runtime |
 | `stress` | the suite under the six stress modes at once, each into `.temp/stress-<MODE>.log`, then `run-corpus` plain and under each (`docs/design/README.md`, "Gates") | the end of a batch that changed the runtime |
+| `codegen` | `cargo asm` (`cargo install cargo-show-asm --locked`) over `ns-runtime`'s lib in the `release` profile for `x86_64-pc-windows-msvc`, into `target/codegen`: each hot function of the send, push and return path held to a budget of instructions and of wide stack loads over narrower stores (`xtask/src/codegen.rs`; `execution.md`, "Keeping the hot path in registers") | a commit touching `vm.rs`, `interpreter/mod.rs`, `interpreter/sends.rs`, `heap.rs`, `heap/frames.rs` or `bytecode/compact.rs` (under `crates/ns-runtime/src/`); the end of a batch that changed the runtime |
 | `plugin-verification` | `gradlew --no-daemon verifyPlugin buildPlugin`, which downloads several IDEs | the end of a batch that changed `editors/jetbrains/` |
 
-`end-of-batch` is `images`, `caches`, `benchmarks`, `release-checks` and `stress`
-together.
+`end-of-batch` is `images`, `caches`, `benchmarks`, `release-checks`, `codegen`
+and `stress` together.
 "The runtime" is `crates/ns-runtime`, `ns-syntax`, `ns-tooling`, `ns-cli` or
 `ns-memory`; a batch that changed only `crates/ns-analyzer`, the plugin or
 Markdown runs no stress mode, no `run-corpus` and no benchmark programs, since

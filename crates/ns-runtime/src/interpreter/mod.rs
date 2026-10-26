@@ -29,7 +29,7 @@ use std::rc::Rc;
 
 use crate::compiler::Lowering;
 use crate::hash::IdentityMap;
-use crate::heap::{ActivationHeader, ActivationReference, Heap, Root};
+use crate::heap::{ActivationHeader, ActivationReference, ArgumentSlots, Heap, PushRefused, Root};
 use crate::shipped_code::ShippedCodePath;
 use crate::types::*;
 use crate::Symbol;
@@ -246,19 +246,181 @@ pub(crate) enum StepArguments<'gc> {
 }
 
 impl<'gc> StepArguments<'gc> {
-    pub(crate) fn slice<'a>(&'a self, send: &'a [Value<'gc>]) -> &'a [Value<'gc>] {
+    /// The decision's own arguments, for `window`: `Owned`'s, none for the
+    /// others.
+    pub(crate) fn owned(&self) -> &[Value<'gc>] {
+        match self {
+            StepArguments::Owned(arguments) => arguments,
+            StepArguments::Send | StepArguments::ControlFlow => &[],
+        }
+    }
+
+    /// The arguments the activation is pushed with: `send`'s own for
+    /// `Send`, none for `ControlFlow`, the decision's for `Owned`, which
+    /// `owned` must be: `self.owned()`, held by the caller so that the
+    /// window can name it by a thin reference (`Arguments::Values`). A
+    /// debug build checks that it is the same slice.
+    pub(crate) fn window<'values>(
+        &self,
+        send: Arguments<'values, 'gc>,
+        owned: &'values &'values [Value<'gc>],
+    ) -> Arguments<'values, 'gc> {
         match self {
             StepArguments::Send => send,
-            StepArguments::ControlFlow => &[],
-            StepArguments::Owned(arguments) => arguments,
+            StepArguments::ControlFlow => Arguments::NONE,
+            StepArguments::Owned(arguments) => {
+                debug_assert!(
+                    std::ptr::eq(*owned, arguments.as_slice()),
+                    "internal: the window's owned arguments are not the decision's own"
+                );
+                Arguments::Values(owned)
+            }
         }
     }
 }
 
-/// Everything a step of the interpreter works on -- the heap and the
-/// bootstrap's builtin classes, the caches of behaviour and the argument
-/// buffer -- and every decision, native
-/// and continuation that runs one. A host reaches it only through
+/// The arguments a decision reads: a send's window in its sender's
+/// registers, read where they are, or values a decision or the host built.
+///
+/// A send's arguments stay in the sender's registers while the send is
+/// decided and its activation pushed, and the push lays a send's own callee
+/// on its argument slots, which then are the callee's arguments
+/// (`Mutator::push_on_slots`), or copies them into the window of any other
+/// activation (`Heap::push_activation`), so nothing gathers them anywhere
+/// in between (`docs/design/execution.md`, "Planned: overlapping register
+/// windows"). Reading one is reading a register of a
+/// live activation: good while the sender stays where it is, which it does
+/// from the send's start to its push -- no collection runs inside a
+/// decision, only at safepoints, and nothing pops the sender meanwhile.
+///
+/// Each case holds one word, so that the enum is a tag and a word and
+/// travels in two registers: as a three-field window beside a fat slice it
+/// was an aggregate of sixteen bytes, passed by reference to a copy built
+/// by narrow stores and read back wide, a stall on every send.
+/// Public because `Heap::push_activation` is, for a host's own frames.
+#[derive(Clone, Copy)]
+pub enum Arguments<'values, 'gc> {
+    /// Consecutive registers of a window, which must lie in a live
+    /// activation's registers, as `Heap::register` requires of every
+    /// register it reads: a send's sources where they are consecutive, its
+    /// slots otherwise (`vm::argument_window`).
+    Slots(ArgumentSlots),
+    /// Values built apart from any window: `Message>>sendTo:`'s, a host's,
+    /// a decision's own -- named through a reference to the slice, which
+    /// keeps this case one word.
+    Values(&'values &'values [Value<'gc>]),
+}
+
+/// Why a push refused before it pushed anything, for its cold path
+/// (`Mutator::push_refused`), with the arguments that path pushes from.
+enum Refusal<'values, 'gc> {
+    /// A list of values longer than the register ceiling, `u16::MAX`.
+    PastTheRegisterCeiling,
+    /// A counted push at the depth limit.
+    AtTheLimit(Arguments<'values, 'gc>),
+    /// A frame the ordinary room of the stack's reservation cannot hold.
+    StackFull(Arguments<'values, 'gc>),
+}
+
+impl<'values, 'gc> Arguments<'values, 'gc> {
+    /// No arguments.
+    pub const NONE: Arguments<'values, 'gc> = Arguments::Values(&(&[] as &[Value<'gc>]));
+
+    /// How many arguments there are.
+    #[inline(always)]
+    pub(crate) fn len(self) -> usize {
+        match self {
+            Arguments::Slots(slots) => usize::from(slots.count()),
+            Arguments::Values(values) => values.len(),
+        }
+    }
+
+    /// Argument `index`; panics past the last, as indexing a slice does,
+    /// so that a register is never read beyond the send's own.
+    #[inline(always)]
+    pub(crate) fn get(self, heap: &Heap<'gc>, index: usize) -> Value<'gc> {
+        assert!(
+            index < self.len(),
+            "internal: argument {index} read from a send of {} arguments",
+            self.len()
+        );
+        self.read(heap, index)
+    }
+
+    /// Argument `index`, or `None` past the last: what a leaf that checks
+    /// its own operands reads.
+    #[inline(always)]
+    pub(crate) fn try_get(self, heap: &Heap<'gc>, index: usize) -> Option<Value<'gc>> {
+        (index < self.len()).then(|| self.read(heap, index))
+    }
+
+    /// Argument `index`, which the caller has checked lies below `len`.
+    #[inline(always)]
+    fn read(self, heap: &Heap<'gc>, index: usize) -> Value<'gc> {
+        match self {
+            // `index < count`, a `u16`, so the sum is a register of the
+            // window the send named.
+            Arguments::Slots(slots) => {
+                heap.register(slots.register_base(), slots.start() + index as u16)
+            }
+            Arguments::Values(values) => values[index],
+        }
+    }
+
+    /// The first argument, or `None` when there is none.
+    #[inline(always)]
+    pub(crate) fn first(self, heap: &Heap<'gc>) -> Option<Value<'gc>> {
+        self.try_get(heap, 0)
+    }
+
+    /// The arguments in `range`, which must lie inside `0..len`, read where
+    /// they are as these are. `view` is where the narrower slice of
+    /// `Values` is kept for the answer to name.
+    pub(crate) fn slice<'narrow>(
+        self,
+        range: std::ops::Range<usize>,
+        view: &'narrow mut &'values [Value<'gc>],
+    ) -> Arguments<'narrow, 'gc>
+    where
+        'values: 'narrow,
+    {
+        assert!(
+            range.start <= range.end && range.end <= self.len(),
+            "internal: the range lies outside the send's arguments"
+        );
+        match self {
+            // Both below `count`, a `u16`.
+            Arguments::Slots(slots) => Arguments::Slots(ArgumentSlots::new(
+                slots.register_base(),
+                slots.start() + range.start as u16,
+                (range.end - range.start) as u16,
+            )),
+            Arguments::Values(values) => {
+                *view = &values[range];
+                Arguments::Values(view)
+            }
+        }
+    }
+
+    /// Every argument, in order.
+    pub(crate) fn iter<'heap>(
+        self,
+        heap: &'heap Heap<'gc>,
+    ) -> impl Iterator<Item = Value<'gc>> + use<'heap, 'values, 'gc> {
+        (0..self.len()).map(move |index| self.read(heap, index))
+    }
+
+    /// Every argument, in order, copied out: for a decision that keeps
+    /// them past its send -- `doesNotUnderstand:`'s message, a mirror
+    /// leaf's owned step.
+    pub(crate) fn to_vec(self, heap: &Heap<'gc>) -> Vec<Value<'gc>> {
+        self.iter(heap).collect()
+    }
+}
+
+/// Everything a step of the interpreter works on -- the heap, the
+/// bootstrap's builtin classes and the caches of behaviour -- and every
+/// decision, native and continuation that runs one. A host reaches it only through
 /// `Interpreter::enter`, and nothing here reaches back: no method takes or
 /// answers the `Interpreter`, so no step can run the loop, reach its
 /// safepoint, or start a host's send (`docs/design/memory.md`, "The
@@ -360,13 +522,6 @@ pub struct Mutator<'gc> {
     /// Where the boot takes the shipped modules' compiled mixins from. Fixed
     /// at construction, as `lowering` is.
     pub(crate) shipped_code_path: ShippedCodePath,
-    /// The reusable argument buffer the run loop gathers a send's arguments
-    /// into (`vm::send`). Taken while a send is decided and pushed and given
-    /// back afterwards, because the decision needs `&mut Mutator` while
-    /// it reads the arguments. Empty between instructions: it is cleared
-    /// when it is given back, so it holds no handle a move would have to
-    /// find.
-    pub(crate) argument_buffer: Vec<Value<'gc>>,
     /// The dispatch ids `apply_mixin` mints: the smallest freed one first,
     /// else the next never minted, below `DispatchId::LIMIT` (22 bits, the
     /// header word's guard field). Once exhausted applications get `NONE`,
@@ -631,8 +786,9 @@ impl Interpreter {
                 .iter()
                 .map(|argument| mutator.fetch(argument))
                 .collect();
-            let decided = mutator.decide_send(receiver, selector, &arguments);
-            mutator.start(decided, &arguments)
+            let decided =
+                mutator.decide_send(receiver, selector, Arguments::Values(&arguments.as_slice()));
+            mutator.start(decided, Arguments::Values(&arguments.as_slice()))
         });
         self.run_from_host(start, depth)
     }
@@ -665,7 +821,7 @@ impl Interpreter {
                 declaring_class,
                 nested::NO_CACHED_FIELD,
             );
-            mutator.start(decided, &[])
+            mutator.start(decided, Arguments::NONE)
         });
         self.run_from_host(start, depth)
     }
@@ -973,7 +1129,7 @@ impl<'gc> Mutator<'gc> {
     pub(crate) fn start(
         &mut self,
         decided: Result<Step<'gc>, Signal<'gc>>,
-        send_arguments: &[Value<'gc>],
+        send_arguments: Arguments<'_, 'gc>,
     ) -> HostStart {
         match decided {
             Ok(Step::Value(value)) => HostStart::Finished(self.to_host(Ok(value))),
@@ -1022,27 +1178,16 @@ impl<'gc> Mutator<'gc> {
         &mut self,
         receiver: Value<'gc>,
         selector: Symbol,
-        arguments: &[Value<'gc>],
+        arguments: Arguments<'_, 'gc>,
     ) -> Result<Step<'gc>, Signal<'gc>> {
         let resolved = self.resolve_public(receiver, selector);
         self.act(resolved, receiver, selector, arguments)
     }
 
-    pub(crate) fn take_argument_buffer(&mut self) -> Vec<Value<'gc>> {
-        std::mem::take(&mut self.argument_buffer)
-    }
-
-    /// Cleared here rather than when it is taken, so that between two
-    /// instructions -- at every safepoint -- the buffer holds no value, and
-    /// so no handle a move would have to find.
-    pub(crate) fn return_argument_buffer(&mut self, mut buffer: Vec<Value<'gc>>) {
-        buffer.clear();
-        self.argument_buffer = buffer;
-    }
-
     /// Pushes an activation, refusing one that would take the counted depth
     /// past `MAX_ACTIVATION_DEPTH`. Every activation in the runtime is pushed
-    /// here, so the count and the check cannot be skipped by a new site.
+    /// here or by `push_placed`, which this calls, so the count and the
+    /// check cannot be skipped by a new site.
     ///
     /// The check is the one compare it always was: the reserve is looked at
     /// only once the depth has reached L (`push_past_the_limit`), so an
@@ -1051,21 +1196,179 @@ impl<'gc> Mutator<'gc> {
     pub(crate) fn push(
         &mut self,
         header: ActivationHeader<'gc>,
-        arguments: &[Value<'gc>],
+        arguments: Arguments<'_, 'gc>,
         temporaries: usize,
     ) -> Result<ActivationReference, Signal<'gc>> {
-        if header.counted && self.heap.counted_depth() >= MAX_ACTIVATION_DEPTH {
-            // Boxed, so that only this path keeps the header in memory: the
-            // header the push below copies is then never written there
-            // first and read back.
-            return self.push_past_the_limit(Box::new(header), arguments, temporaries);
+        self.push_placed(header, arguments, None, temporaries)
+    }
+
+    /// `push`, or for a send's own callee `push_on_slots`: `slots` is the
+    /// first of the send's argument slots in its sender's window when the
+    /// activation takes the run loop's send's own arguments, `arguments`
+    /// then its window, and `None` for every other push, which lands above
+    /// the sender's whole window.
+    ///
+    /// The header is lent to the push, never moved, and handed on whole
+    /// only to a refusal's cold path (`push_refused`): moved through the
+    /// push's inlined layers, it was copied into each one's own place
+    /// sixteen bytes at a time, right after the narrow stores that built
+    /// it -- a store-forwarding stall on every send.
+    #[inline(always)]
+    fn push_placed(
+        &mut self,
+        mut header: ActivationHeader<'gc>,
+        arguments: Arguments<'_, 'gc>,
+        slots: Option<u16>,
+        temporaries: usize,
+    ) -> Result<ActivationReference, Signal<'gc>> {
+        let pushed = match (arguments, slots) {
+            (Arguments::Slots(window), Some(argument_base)) => {
+                self.push_on_slots(&mut header, window, argument_base, temporaries)
+            }
+            _ => {
+                debug_assert!(
+                    slots.is_none(),
+                    "internal: a send's own callee is handed the send's window"
+                );
+                self.push_above(&mut header, arguments, temporaries)
+            }
+        };
+        match pushed {
+            Ok(activation) => {
+                // What the frame did not take is released here, inline: the
+                // method and the code. A successful push always took the
+                // continuation and left `Deliver` in its place, which owns
+                // nothing, so forgetting it is dropping it without a call
+                // into `Continuation`'s drop glue.
+                let ActivationHeader {
+                    method, code, then, ..
+                } = header;
+                drop(method);
+                drop(code);
+                debug_assert!(
+                    matches!(then, Continuation::Deliver),
+                    "internal: a successful push takes the continuation"
+                );
+                std::mem::forget(then);
+                Ok(activation)
+            }
+            Err(refusal) => self.push_refused(refusal, header, temporaries),
         }
-        match self.heap.push_activation(header, arguments, temporaries) {
-            Ok(activation) => Ok(activation),
-            Err(exhausted) => {
-                self.push_into_the_stack_reserve(exhausted.header, arguments, temporaries)
+    }
+
+    /// Pushes an activation above every live frame's whole window
+    /// (`Heap::push_activation_from`), refusing, pushing nothing, a list of
+    /// values past the register ceiling, a push at the depth limit and one
+    /// the reservation cannot hold.
+    #[inline(always)]
+    fn push_above<'values>(
+        &mut self,
+        header: &mut ActivationHeader<'gc>,
+        arguments: Arguments<'values, 'gc>,
+        temporaries: usize,
+    ) -> Result<ActivationReference, Refusal<'values, 'gc>> {
+        // Only a list of values can pass the register ceiling: a send's
+        // window counts its slots in 16 bits, so for `Slots` the test is
+        // the variant's alone and folds away where the variant is known.
+        if matches!(arguments, Arguments::Values(values) if values.len() > usize::from(u16::MAX)) {
+            return Err(Refusal::PastTheRegisterCeiling);
+        }
+        if header.counted && self.heap.counted_depth() >= MAX_ACTIVATION_DEPTH {
+            return Err(Refusal::AtTheLimit(arguments));
+        }
+        self.heap
+            .push_activation_from(header, arguments, temporaries)
+            .map_err(|PushRefused| Refusal::StackFull(arguments))
+    }
+
+    /// Pushes a send's own callee on the send's argument slots, from
+    /// register `argument_base` of the sender's window, so that they are
+    /// its arguments (`Heap::push_overlapped_activation`;
+    /// `docs/design/execution.md`, "Overlapping register windows").
+    /// `window` is where the decision read the arguments: the slots, or
+    /// their sources where those are consecutive registers, which are
+    /// copied into the slots first -- the callee's header goes over every
+    /// register above the slots, a source there included. From then on
+    /// the slots are the arguments, so that the depth limit's and the
+    /// reservation's cold paths, which push above the sender's window,
+    /// copy them from there. The depth limit is checked as `push_above`
+    /// checks it.
+    #[inline(always)]
+    fn push_on_slots<'values>(
+        &mut self,
+        header: &mut ActivationHeader<'gc>,
+        window: ArgumentSlots,
+        argument_base: u16,
+        temporaries: usize,
+    ) -> Result<ActivationReference, Refusal<'values, 'gc>> {
+        let register_base = window.register_base();
+        let count = window.count();
+        if window.start() != argument_base {
+            self.heap.place_in_slots(window, argument_base);
+        }
+        let slots = Arguments::Slots(ArgumentSlots::new(register_base, argument_base, count));
+        if header.counted && self.heap.counted_depth() >= MAX_ACTIVATION_DEPTH {
+            return Err(Refusal::AtTheLimit(slots));
+        }
+        self.heap
+            .push_overlapped_activation(header, register_base, argument_base, count, temporaries)
+            .map_err(|PushRefused| Refusal::StackFull(slots))
+    }
+
+    /// The cold path of a push `refusal` refused, `header` the activation
+    /// it was to push: the register ceiling's error, the depth limit's
+    /// reserve or error (`push_past_the_limit`), or the stack's reserve or
+    /// the depth limit's error (`push_into_the_stack_reserve`). Boxed from
+    /// here on, so that only these paths keep the header whole in memory.
+    #[cold]
+    #[inline(never)]
+    fn push_refused(
+        &mut self,
+        refusal: Refusal<'_, 'gc>,
+        header: ActivationHeader<'gc>,
+        temporaries: usize,
+    ) -> Result<ActivationReference, Signal<'gc>> {
+        match refusal {
+            Refusal::PastTheRegisterCeiling => Err(self.refuse_past_the_register_ceiling(
+                header.kind,
+                header.receiver,
+                header.then,
+            )),
+            Refusal::AtTheLimit(arguments) => {
+                self.push_past_the_limit(Box::new(header), arguments, temporaries)
+            }
+            Refusal::StackFull(arguments) => {
+                self.push_into_the_stack_reserve(Box::new(header), arguments, temporaries)
             }
         }
+    }
+
+    /// The refusal of a push handed more arguments than the register
+    /// ceiling, `u16::MAX`, which a frame cannot record: the too-large
+    /// error the callee's body would raise. Every arity check holds a body
+    /// that compiled to at most `u16::MAX` parameters, so only a body past
+    /// the register ceiling -- compiled to one that raises before it reads
+    /// anything (`compiler::body_too_large`) -- can be handed more, by a
+    /// host's send or `Message>>sendTo:`. Refusing it here signals the
+    /// same error and delivers a resumed value to the same send; only the
+    /// signalling activation differs, the sender instead of a
+    /// one-instruction callee.
+    #[cold]
+    #[inline(never)]
+    fn refuse_past_the_register_ceiling(
+        &mut self,
+        kind: ActivationKind<'gc>,
+        receiver: Value<'gc>,
+        then: Continuation<'gc>,
+    ) -> Signal<'gc> {
+        let refusal =
+            literals::body_too_large_error(kind, receiver, crate::bytecode::BodyLimit::Registers);
+        // As `refuse_exhausted_push` undoes it: a refused activation never
+        // runs, so a future it was to compute is unresolved again.
+        if let Continuation::Future(forcing) = then {
+            self.future_abandoned(*forcing);
+        }
+        refusal
     }
 
     /// A push the ordinary room of the activation stack's reservation could
@@ -1080,7 +1383,7 @@ impl<'gc> Mutator<'gc> {
     fn push_into_the_stack_reserve(
         &mut self,
         header: Box<ActivationHeader<'gc>>,
-        arguments: &[Value<'gc>],
+        arguments: Arguments<'_, 'gc>,
         temporaries: usize,
     ) -> Result<ActivationReference, Signal<'gc>> {
         // The order `push_past_the_limit` asks in: the push that makes a
@@ -1128,7 +1431,7 @@ impl<'gc> Mutator<'gc> {
     fn push_past_the_limit(
         &mut self,
         header: Box<ActivationHeader<'gc>>,
-        arguments: &[Value<'gc>],
+        arguments: Arguments<'_, 'gc>,
         temporaries: usize,
     ) -> Result<ActivationReference, Signal<'gc>> {
         // The push that makes a freshly taken reserve held is asked about
@@ -1313,10 +1616,31 @@ impl<'gc> Mutator<'gc> {
     pub(crate) fn push_step(
         &mut self,
         step: Step<'gc>,
-        send_arguments: &[Value<'gc>],
+        send_arguments: Arguments<'_, 'gc>,
         sender: Option<ActivationReference>,
         inlinable: bool,
     ) -> Result<ActivationReference, Signal<'gc>> {
+        self.push_step_placed(step, send_arguments, sender, inlinable, None)
+    }
+
+    /// `push_step`, an activation that takes the send's own arguments laid
+    /// on the send's slots from register `slots` of the sender's window
+    /// when it is given (`push_placed`): the run loop's sends give it.
+    #[inline(always)]
+    fn push_step_placed(
+        &mut self,
+        step: Step<'gc>,
+        send_arguments: Arguments<'_, 'gc>,
+        sender: Option<ActivationReference>,
+        inlinable: bool,
+        slots: Option<u16>,
+    ) -> Result<ActivationReference, Signal<'gc>> {
+        // Only an activation that takes the send's own arguments is the
+        // send's own callee; any other lands above the sender's window.
+        let on_slots = |arguments: &StepArguments<'gc>| match arguments {
+            StepArguments::Send => slots,
+            StepArguments::ControlFlow | StepArguments::Owned(_) => None,
+        };
         match step {
             Step::Value(_) => unreachable!("internal: a value needs no activation"),
             Step::Method {
@@ -1326,7 +1650,9 @@ impl<'gc> Mutator<'gc> {
                 arguments,
                 feedback_base,
             } => {
-                let arguments = arguments.slice(send_arguments);
+                let slots = on_slots(&arguments);
+                let owned = arguments.owned();
+                let arguments = arguments.window(send_arguments, &owned);
                 check_method_arity(&method, receiver, arguments.len())?;
                 let code = method.code.clone();
                 // A decision never knows its method's range -- only
@@ -1338,8 +1664,8 @@ impl<'gc> Mutator<'gc> {
                 } else {
                     feedback_base
                 };
-                let temporaries = (code.register_count - code.argument_count) as usize;
-                self.push(
+                let temporaries = code.registers_above_header();
+                self.push_placed(
                     ActivationHeader {
                         receiver,
                         current_class: Some(defining_class),
@@ -1351,6 +1677,7 @@ impl<'gc> Mutator<'gc> {
                         feedback_base,
                     },
                     arguments,
+                    slots,
                     temporaries,
                 )
             }
@@ -1361,7 +1688,9 @@ impl<'gc> Mutator<'gc> {
                 then,
             } => {
                 let control_flow = matches!(arguments, StepArguments::ControlFlow);
-                let arguments = arguments.slice(send_arguments);
+                let slots = on_slots(&arguments);
+                let owned = arguments.owned();
+                let arguments = arguments.window(send_arguments, &owned);
                 let (code, captured_frame, closure_feedback_base) = self
                     .heap
                     .closure_activation(closure)
@@ -1407,8 +1736,8 @@ impl<'gc> Mutator<'gc> {
                 let counted = !(inlinable && control_flow && created_by_sender(&self.heap));
                 let receiver = self.heap.frame_receiver(captured_frame);
                 let current_class = self.heap.frame_current_class(captured_frame);
-                let temporaries = (code.register_count - code.argument_count) as usize;
-                let activation = self.push(
+                let temporaries = code.registers_above_header();
+                let activation = self.push_placed(
                     ActivationHeader {
                         receiver,
                         current_class,
@@ -1420,6 +1749,7 @@ impl<'gc> Mutator<'gc> {
                         feedback_base,
                     },
                     arguments,
+                    slots,
                     temporaries,
                 )?;
                 // The copied values sit between the block's parameters and
@@ -1437,7 +1767,9 @@ impl<'gc> Mutator<'gc> {
                 code,
                 arguments,
             } => {
-                let arguments = arguments.slice(send_arguments);
+                let slots = on_slots(&arguments);
+                let owned = arguments.owned();
+                let arguments = arguments.window(send_arguments, &owned);
                 // The entry's arity is its selector's, which the send
                 // matched, and a host's factory is built for its count;
                 // checked all the same, since the window is laid out from
@@ -1452,8 +1784,8 @@ impl<'gc> Mutator<'gc> {
                     ));
                 }
                 let feedback_base = self.caches.base_for(&code);
-                let temporaries = (code.register_count - code.argument_count) as usize;
-                self.push(
+                let temporaries = code.registers_above_header();
+                self.push_placed(
                     ActivationHeader {
                         receiver: Value::object(class),
                         current_class: Some(class),
@@ -1465,6 +1797,7 @@ impl<'gc> Mutator<'gc> {
                         feedback_base,
                     },
                     arguments,
+                    slots,
                     temporaries,
                 )
             }
@@ -1475,12 +1808,21 @@ impl<'gc> Mutator<'gc> {
                 body,
                 code,
             } => {
-                self.push_initializer(receiver, level, arguments.slice(send_arguments), body, code)
+                let slots = on_slots(&arguments);
+                let owned = arguments.owned();
+                self.push_initializer_placed(
+                    receiver,
+                    level,
+                    arguments.window(send_arguments, &owned),
+                    slots,
+                    body,
+                    code,
+                )
             }
             Step::SuperclassClause(creation) => {
                 let code = nested::superclass_clause_code(&creation.nested);
                 let feedback_base = self.caches.base_for(&code);
-                let temporaries = (code.register_count - code.argument_count) as usize;
+                let temporaries = code.registers_above_header();
                 let (enclosing, index, serial) =
                     (creation.enclosing, creation.index, creation.serial);
                 let activation = self.push(
@@ -1494,7 +1836,7 @@ impl<'gc> Mutator<'gc> {
                         counted: true,
                         feedback_base,
                     },
-                    &[],
+                    Arguments::NONE,
                     temporaries,
                 )?;
                 // A nested class's creation is in progress exactly while its
@@ -1551,12 +1893,19 @@ impl<'gc> Mutator<'gc> {
     /// since only they switch to what is answered: a host's run starts at
     /// the activation it pushed, and a continuation of the pushed
     /// activation is written by some other callers.
+    ///
+    /// `slots` is the first of the send's argument slots, for a send whose
+    /// callee is laid on them (`push_on_slots`); `None` for one whose
+    /// arguments are the sender's own -- `InitializeInstance`'s, the
+    /// factory's -- or a mirror send's, whose callee lands above the
+    /// sender's window.
     pub(crate) fn push_sent(
         &mut self,
         step: Step<'gc>,
-        send_arguments: &[Value<'gc>],
+        send_arguments: Arguments<'_, 'gc>,
         sender: Option<ActivationReference>,
         inlinable: bool,
+        slots: Option<u16>,
     ) -> Result<(ActivationReference, usize), Signal<'gc>> {
         let factory = match &step {
             Step::Factory {
@@ -1566,10 +1915,18 @@ impl<'gc> Mutator<'gc> {
             } => instantiate::factory_registers(code).map(|registers| (*class, registers)),
             _ => None,
         };
-        let pushed = self.push_step(step, send_arguments, sender, inlinable)?;
+        let pushed = self.push_step_placed(step, send_arguments, sender, inlinable, slots)?;
         match factory {
             Some((class, registers)) => {
-                self.enter_factory_body(pushed, class, registers, send_arguments)
+                // The factory's own arguments, where its initializer reads
+                // them: a source the window named above the slots is gone
+                // under the factory's header.
+                let arguments = ArgumentSlots::new(
+                    self.heap.activation_register_base(pushed),
+                    0,
+                    send_arguments.len() as u16,
+                );
+                self.enter_factory_body(pushed, class, registers, Arguments::Slots(arguments))
             }
             None => Ok((pushed, 0)),
         }
@@ -1582,7 +1939,21 @@ impl<'gc> Mutator<'gc> {
         &mut self,
         receiver: Value<'gc>,
         level: ClassReference<'gc>,
-        arguments: &[Value<'gc>],
+        arguments: Arguments<'_, 'gc>,
+        body: instantiate::InitializerBody,
+        code: Rc<crate::bytecode::CompiledCode>,
+    ) -> Result<ActivationReference, Signal<'gc>> {
+        self.push_initializer_placed(receiver, level, arguments, None, body, code)
+    }
+
+    /// `push_initializer`, laid on the send's slots from register `slots`
+    /// when it is given (`push_placed`).
+    fn push_initializer_placed(
+        &mut self,
+        receiver: Value<'gc>,
+        level: ClassReference<'gc>,
+        arguments: Arguments<'_, 'gc>,
+        slots: Option<u16>,
         body: instantiate::InitializerBody,
         code: Rc<crate::bytecode::CompiledCode>,
     ) -> Result<ActivationReference, Signal<'gc>> {
@@ -1594,8 +1965,8 @@ impl<'gc> Mutator<'gc> {
             "internal: an initializer is pushed with its own number of arguments"
         );
         let feedback_base = self.caches.base_for(&code);
-        let temporaries = (code.register_count - code.argument_count) as usize;
-        self.push(
+        let temporaries = code.registers_above_header();
+        self.push_placed(
             ActivationHeader {
                 receiver,
                 current_class: Some(level),
@@ -1607,6 +1978,7 @@ impl<'gc> Mutator<'gc> {
                 feedback_base,
             },
             arguments,
+            slots,
             temporaries,
         )
     }
@@ -1717,8 +2089,8 @@ impl<'gc> Mutator<'gc> {
         // (`StepArguments::Send` is only answered by a decision about a send,
         // and a continuation decides none: the one send it makes, a body's
         // `value`, is a `Step::MethodThen`, which owns its arguments), so
-        // `&[]` is always right here.
-        self.push_step(step, &[], sender, !replaced_counted)
+        // `Arguments::NONE` is always right here.
+        self.push_step(step, Arguments::NONE, sender, !replaced_counted)
     }
 
     /// The step that sends `value` to `action`, or `value:` with
@@ -2925,7 +3297,7 @@ mod tests {
         let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         interpreter.enter(|mutator| {
             let receiver = mutator.fetch(&instance);
-            match mutator.decide_send(receiver, Symbol::intern("foo"), &[]) {
+            match mutator.decide_send(receiver, Symbol::intern("foo"), Arguments::NONE) {
                 Ok(Step::Method { method, .. }) => assert_eq!(method.selector.as_str(), "foo"),
                 _ => panic!("a user method is decided as an activation"),
             }
@@ -2933,7 +3305,7 @@ mod tests {
             match mutator.decide_send(
                 Value::small_integer(3),
                 Symbol::intern("+"),
-                &[Value::small_integer(4)],
+                Arguments::Values(&[Value::small_integer(4)].as_slice()),
             ) {
                 Ok(Step::Value(answer)) if answer.as_small_integer() == Some(7) => {}
                 _ => panic!("a native leaf is decided as its value"),
@@ -2966,7 +3338,7 @@ mod tests {
         );
         interpreter.enter(|mutator| {
             let (items, echo) = (mutator.fetch(&items), mutator.fetch(&echo));
-            match mutator.decide_send(items, Symbol::intern("do:"), &[echo]) {
+            match mutator.decide_send(items, Symbol::intern("do:"), Arguments::Values(&[echo].as_slice())) {
                 Ok(Step::Block {
                     arguments: StepArguments::Owned(arguments),
                     then: Continuation::DoElement(state),
@@ -3005,7 +3377,7 @@ mod tests {
         let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         interpreter.enter(|mutator| {
             let instance = mutator.fetch(&instance);
-            let slot = match mutator.decide_send(instance, Symbol::intern("N"), &[]) {
+            let slot = match mutator.decide_send(instance, Symbol::intern("N"), Arguments::NONE) {
                 Ok(Step::SuperclassClause(creation)) => {
                     assert!(
                         instance
@@ -3072,7 +3444,8 @@ mod tests {
                     panic!("the accessor answers a class object")
                 };
                 let arguments = vec![Value::small_integer(3); arity];
-                match mutator.decide_send(class, selector, &arguments) {
+                match mutator.decide_send(class, selector, Arguments::Values(&arguments.as_slice()))
+                {
                     Ok(Step::Factory {
                         class: decided,
                         code,
@@ -3199,6 +3572,49 @@ mod tests {
         assert_eq!(std::mem::size_of::<Signal>(), 40);
         assert_eq!(std::mem::size_of::<Result<Step, Signal>>(), 56);
         assert_eq!(std::mem::size_of::<EvaluationResult>(), 40);
+    }
+
+    /// What the send, push and return path passes by value between
+    /// functions the compiler keeps apart -- the argument window, the
+    /// sender, the feedback base, a popped frame's continuation -- is at
+    /// most two scalars. Rust's ABI passes at most two scalars in
+    /// registers; a larger aggregate goes through memory, a copy built by
+    /// narrow stores and read back wide, which stalled every send while
+    /// `Arguments` was one (`docs/design/execution.md`, "Keeping the hot
+    /// path in registers"). The size is what this holds; whether the layout
+    /// stays a pair the codegen gate's count of wide loads sees. The window
+    /// and the activation's handle are pinned in `heap`'s tests. Release
+    /// only: a debug build's handles carry an origin and a move epoch.
+    #[cfg(all(target_pointer_width = "64", not(debug_assertions)))]
+    #[test]
+    fn what_the_hot_path_passes_by_value_is_at_most_two_scalars() {
+        // A tag and one word: the packed window, or a reference to a slice.
+        assert_eq!(std::mem::size_of::<Arguments>(), 16);
+        assert_eq!(std::mem::size_of::<Option<ActivationReference>>(), 8);
+        assert_eq!(std::mem::size_of::<FeedbackBase>(), 4);
+        // A tag and a box: every variant that owns more is boxed.
+        assert_eq!(std::mem::size_of::<Continuation>(), 16);
+    }
+
+    /// The three values of the path that are larger than two scalars and
+    /// still cross between its functions by value, through memory: the
+    /// decided `Step` that `push_sent` and `push_step` take, and the
+    /// pushes' results, as large as the `Signal` they may carry (the
+    /// decision itself and the `Signal` are pinned above). Pinned at the size they were measured
+    /// at, so that they do not grow; whether to lend them instead is open
+    /// (`docs/OPEN-WORK.md`).
+    #[cfg(all(target_pointer_width = "64", not(debug_assertions)))]
+    #[test]
+    fn what_the_hot_path_passes_through_memory_stays_the_size_it_was_measured_at() {
+        assert_eq!(std::mem::size_of::<Step>(), 56);
+        assert_eq!(
+            std::mem::size_of::<Result<ActivationReference, Signal>>(),
+            40
+        );
+        assert_eq!(
+            std::mem::size_of::<Result<(ActivationReference, usize), Signal>>(),
+            40
+        );
     }
 
     /// A recursion whose frames fill the stack's reservation long before the

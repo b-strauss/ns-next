@@ -109,43 +109,49 @@ fn a_reference_initializer_initializes_each_slot_then_answers_self() {
     });
     assert!(matches!(
         code.instruction(0),
-        Instruction::LoadLiteral { destination: 0, .. }
+        Instruction::LoadLiteral {
+            destination: 13,
+            ..
+        }
     ));
     assert_eq!(
         code.instruction(1),
         Instruction::InitializeSlot {
-            source: 0,
+            source: 13,
             own_index: 0
         }
     );
     assert!(matches!(
         code.instruction(2),
-        Instruction::LoadLiteral { destination: 1, .. }
+        Instruction::LoadLiteral {
+            destination: 14,
+            ..
+        }
     ));
     assert_eq!(
         code.instruction(3),
         Instruction::InitializeSlot {
-            source: 1,
+            source: 14,
             own_index: 1
         }
     );
     assert!(matches!(
         &code.instruction(4),
-        Instruction::SendLexical { selector, argument_registers, destination: 2, .. }
-            if *selector == Symbol::intern("a") && argument_registers.is_empty()
+        Instruction::SendLexical { selector, argument_sources, destination: 15, .. }
+            if *selector == Symbol::intern("a") && argument_sources.is_empty()
     ));
     assert!(matches!(
         &code.instruction(5),
-        Instruction::SendPublic { selector, receiver_register: 2, destination: 3, .. }
+        Instruction::SendPublic { selector, receiver_register: 15, destination: 16, .. }
             if *selector == Symbol::intern("printString")
     ));
     assert_eq!(
         code.instruction(6),
-        Instruction::LoadSelf { destination: 4 }
+        Instruction::LoadSelf { destination: 17 }
     );
     assert_eq!(
         code.instruction(7),
-        Instruction::ImplicitReturn { register: 4 }
+        Instruction::ImplicitReturn { register: 17 }
     );
     assert_eq!(code.instructions().len(), 8);
     assert_eq!(
@@ -184,8 +190,9 @@ fn full_initializer(
 }
 
 /// The full initializer's prologue under the reference lowering: the
-/// optimized lowering's shapes (`compiler.rs`), each clause argument in a
-/// register nothing else writes and the parameter it reads copied first.
+/// optimized lowering's shapes (`compiler.rs`), each clause argument
+/// produced in its slot, which nothing else writes, and the parameter it
+/// reads copied first.
 #[test]
 fn the_reference_lowering_emits_the_same_prologue() {
     let superclass_with_argument = indoc! {"
@@ -200,36 +207,38 @@ fn the_reference_lowering_emits_the_same_prologue() {
         full.instructions(),
         vec![
             Instruction::Move {
-                destination: 1,
+                destination: 15,
                 source: 0
             },
             Instruction::LoadLiteral {
-                destination: 2,
+                destination: 16,
                 literal: ns_runtime::bytecode::Literal::SmallInteger(1)
             },
             Instruction::SendPublic {
-                receiver_register: 1,
+                receiver_register: 15,
                 selector: Symbol::intern("+"),
-                argument_registers: vec![2],
-                destination: 3,
+                argument_base: 16,
+                argument_sources: vec![16],
+                destination: 14,
                 call_site: CallSite::UNCACHED
             },
             Instruction::InitializeSuperclass {
                 steps: 1,
                 selector: Symbol::intern("y:"),
-                argument_registers: vec![3],
-                destination: 4
+                argument_base: 14,
+                argument_sources: vec![14],
+                destination: 17
             },
             Instruction::Move {
-                destination: 5,
+                destination: 18,
                 source: 0
             },
             Instruction::InitializeSlot {
-                source: 5,
+                source: 18,
                 own_index: 0
             },
-            Instruction::LoadSelf { destination: 6 },
-            Instruction::ImplicitReturn { register: 6 },
+            Instruction::LoadSelf { destination: 19 },
+            Instruction::ImplicitReturn { register: 19 },
         ]
     );
 
@@ -257,25 +266,28 @@ fn the_reference_lowering_emits_the_same_prologue() {
             Instruction::InitializeSuperclass {
                 steps: 3,
                 selector: Symbol::NEW,
-                argument_registers: vec![],
-                destination: 0
+                argument_base: 13,
+                argument_sources: vec![],
+                destination: 13
             },
             Instruction::InitializeAppliedLevel {
                 steps: 2,
-                argument_registers: vec![],
-                destination: 1
+                argument_base: 14,
+                argument_sources: vec![],
+                destination: 14
             },
             Instruction::LoadLiteral {
-                destination: 2,
+                destination: 15,
                 literal: ns_runtime::bytecode::Literal::SmallInteger(1)
             },
             Instruction::InitializeAppliedLevel {
                 steps: 1,
-                argument_registers: vec![2],
-                destination: 3
+                argument_base: 15,
+                argument_sources: vec![15],
+                destination: 16
             },
-            Instruction::LoadSelf { destination: 4 },
-            Instruction::ImplicitReturn { register: 4 },
+            Instruction::LoadSelf { destination: 17 },
+            Instruction::ImplicitReturn { register: 17 },
         ]
     );
 }

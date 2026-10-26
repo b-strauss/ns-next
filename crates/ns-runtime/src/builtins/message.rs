@@ -6,6 +6,7 @@
 //! which the run loop runs as any send's; it runs nothing itself.
 
 use crate::builtins::primitive::MessagePrimitive;
+use crate::interpreter::Arguments;
 use crate::interpreter::{Signal, Step, StepArguments};
 use crate::types::*;
 use crate::{Mutator, Symbol};
@@ -18,13 +19,17 @@ pub(crate) fn execute<'gc>(
     mutator: &mut Mutator<'gc>,
     primitive: MessagePrimitive,
     subject: Value<'gc>,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Step<'gc>, Signal<'gc>>> {
     match primitive {
         MessagePrimitive::SendTo => {
-            let receiver = *arguments.first()?;
+            let receiver = arguments.first(&mutator.heap)?;
             let (selector, message_arguments) = message_parts(mutator, subject)?;
-            let decided = mutator.decide_send(receiver, selector, &message_arguments);
+            let decided = mutator.decide_send(
+                receiver,
+                selector,
+                Arguments::Values(&message_arguments.as_slice()),
+            );
             Some(decided.map(|step| owning_the_message_arguments(step, message_arguments)))
         }
     }

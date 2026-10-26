@@ -835,3 +835,23 @@ fn an_explicit_self_send_stays_explicit_on_a_tree_without_positions() {
         .collect();
     assert_eq!(sends, ["LexicalSend { depth: 0 }"]);
 }
+
+/// A superclass clause may apply at most 1,024 mixins: 1,025 is one resolve
+/// error naming the limit, and 1,024 resolves.
+#[test]
+fn a_superclass_clause_of_1025_mixins_is_refused_at_resolve() {
+    let module_applying = |count: usize| {
+        let applications = " <: Marker".repeat(count);
+        formatdoc! {"
+            class Outer = Object new () (
+              class Marker = Object new () () : ()
+              class Wide = Object{applications}.
+            ) : ()
+        "}
+    };
+    assert_eq!(
+        resolve_errors(&module_applying(1025)),
+        ["class `Wide` applies 1025 mixins in its superclass clause; at most 1024 are allowed"]
+    );
+    assert_eq!(resolve_errors(&module_applying(1024)), Vec::<String>::new());
+}

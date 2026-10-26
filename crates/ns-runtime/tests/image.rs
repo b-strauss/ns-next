@@ -3,11 +3,13 @@
 //! whole-image `snapshot`/`load`, and the two verification passes.
 
 use indoc::{formatdoc, indoc};
+use ns_runtime::interpreter::Arguments;
 use std::path::PathBuf;
 use std::rc::Rc;
 
 use ns_runtime::bytecode::{
-    CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal,
+    BodyLimit, CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal,
+    HEADER_REGISTERS,
 };
 use ns_runtime::image;
 use ns_runtime::image::opcodes::*;
@@ -515,10 +517,10 @@ fn every_instruction_once() -> CompiledCode {
         CodeKind::Block,
         vec![Instruction::NonLocalReturn { register: 0 }],
         1,
-        // One parameter, two copied values, one temporary: the widest
-        // register layout a block can have, so the round trip covers
-        // `copied_count` too.
-        4,
+        // One parameter, the header's numbers, two copied values, one
+        // temporary: the widest register layout a block can have, so the
+        // round trip covers `copied_count` too.
+        1 + HEADER_REGISTERS + 3,
         2,
         vec![(0, 0..1)],
         Span::new(1, 2),
@@ -549,27 +551,31 @@ fn every_instruction_once() -> CompiledCode {
             Instruction::SendLexical {
                 depth: 1,
                 selector: Symbol::intern("foo:"),
-                argument_registers: vec![1, 2],
+                argument_base: 1,
+                argument_sources: vec![1, 2],
                 destination: 5,
                 call_site: CallSite { number: 0 },
             },
             Instruction::SendPublic {
                 selector: Symbol::intern("+"),
                 receiver_register: 1,
-                argument_registers: vec![2],
+                argument_base: 2,
+                argument_sources: vec![2],
                 destination: 6,
                 call_site: CallSite { number: 1 },
             },
             Instruction::SendInlinable {
                 selector: Symbol::intern("+"),
                 receiver_register: 1,
-                argument_registers: vec![2],
+                argument_base: 2,
+                argument_sources: vec![2],
                 destination: 6,
                 call_site: CallSite { number: 2 },
             },
             Instruction::SendSuper {
                 selector: Symbol::intern("bar"),
-                argument_registers: vec![],
+                argument_base: 7,
+                argument_sources: vec![],
                 destination: 7,
                 call_site: CallSite { number: 3 },
             },
@@ -871,15 +877,19 @@ fn every_instruction_variant_round_trips() {
 }
 
 /// The instructions of a compiled `new` in an initializer body: one of each
-/// for none, one, two and three hundred argument registers, and for `steps`
-/// 0, 1 and the most a `u16` holds.
+/// for none, one, two and 255 argument registers, the most a message takes
+/// (`docs/design/compiler.md`, "Limits"), and for `steps`
+/// 0, 1 and the most a `u16` holds. Every register lies above the header's
+/// numbers of a body of two arguments, `FIRST` on, and so of one of none.
 fn every_instantiation_instruction() -> CompiledCode {
-    let mut instructions = vec![Instruction::AllocateInstance { destination: 0 }];
-    for count in [0_u16, 1, 2, 300] {
-        let arguments: Vec<u16> = (0..count).map(|index| index * 2 + 1).collect();
+    const FIRST: u16 = 2 + HEADER_REGISTERS;
+    let mut instructions = vec![Instruction::AllocateInstance { destination: FIRST }];
+    for count in [0_u16, 1, 2, 255] {
+        // Above every slot, since a source may be no other slot.
+        let arguments: Vec<u16> = (0..count).map(|index| FIRST + 301 + index).collect();
         instructions.push(Instruction::InitializeInstance {
-            instance: 0,
-            destination: 600,
+            instance: FIRST,
+            destination: FIRST + 600,
         });
         for steps in [0, 1, u16::MAX] {
             instructions.push(Instruction::CheckAppliedClause {
@@ -889,23 +899,25 @@ fn every_instantiation_instruction() -> CompiledCode {
             instructions.push(Instruction::InitializeSuperclass {
                 steps,
                 selector: Symbol::intern("new"),
-                argument_registers: arguments.clone(),
-                destination: 2,
+                argument_base: FIRST + 1,
+                argument_sources: arguments.clone(),
+                destination: FIRST + 2,
             });
             instructions.push(Instruction::InitializeAppliedLevel {
                 steps,
-                argument_registers: arguments.clone(),
-                destination: 300,
+                argument_base: FIRST + 1,
+                argument_sources: arguments.clone(),
+                destination: FIRST + 300,
             });
         }
     }
-    instructions.push(Instruction::Return { register: 0 });
+    instructions.push(Instruction::Return { register: FIRST });
     let count = instructions.len();
     CompiledCode::new(
         CodeKind::Initializer,
         instructions,
         2,
-        601,
+        FIRST + 601,
         0,
         vec![(0, 0..count)],
         Span::new(10, 20),
@@ -1115,6 +1127,7 @@ fn a_make_closure_code_id_out_of_range_is_a_decode_error_not_a_panic() {
     writer.write_u16(0); // argument_count
     writer.write_u16(1); // register_count
     writer.write_u16(0); // copied_count
+    writer.write_u16(0); // local_count
     writer.write_u32(0); // source.start
     writer.write_u32(0); // source.end
     writer.write_u32(0); // no statement_program_counter entries
@@ -1143,6 +1156,7 @@ fn a_forward_make_closure_code_id_is_a_decode_error_not_a_panic() {
     writer.write_u16(0);
     writer.write_u16(1);
     writer.write_u16(0); // copied_count
+    writer.write_u16(0); // local_count
     writer.write_u32(0);
     writer.write_u32(0);
     writer.write_u32(0);
@@ -1177,11 +1191,12 @@ fn an_invalid_code_kind_tag_is_a_decode_error_not_a_panic() {
     );
 }
 
-/// A code table naming the retired clause-message kind meets the refusal of
+/// A code table naming a retired code kind -- the clause-message kind, or a
+/// kind of the layout before `local_count` -- meets the refusal of
 /// a tag never assigned.
 #[test]
 fn a_retired_code_kind_tag_is_refused() {
-    assert_eq!(RETIRED_CODE_KIND_TAGS, [4]);
+    assert_eq!(RETIRED_CODE_KIND_TAGS, [0, 1, 2, 3, 4]);
     for tag in RETIRED_CODE_KIND_TAGS {
         let mut writer = encode::Writer::new();
         writer.write_u32(1);
@@ -1206,19 +1221,20 @@ fn an_invalid_instruction_tag_is_a_decode_error_not_a_panic() {
     writer.write_u16(0);
     writer.write_u16(0);
     writer.write_u16(0); // copied_count
+    writer.write_u16(0); // local_count
     writer.write_u32(0);
     writer.write_u32(0);
     writer.write_u32(0);
     writer.write_boolean(false); // not compiled uncached
     writer.write_u32(1); // one instruction ...
-    writer.write_u8(46); // ... one past the last real tag
+    writer.write_u8(52); // ... one past the last real tag
     let bytes = writer.into_bytes();
     let mut reader = decode::Reader::new(&bytes);
     assert_eq!(
         decode::decode_code_table(&mut reader, &symbols::Table::empty()),
         Err(decode::DecodeError::InvalidTag {
             what: "instruction",
-            tag: 46
+            tag: 52
         })
     );
 }
@@ -1237,6 +1253,7 @@ fn one_method_code_table(
     writer.write_u16(0); // argument_count
     writer.write_u16(2); // register_count
     writer.write_u16(0); // copied_count
+    writer.write_u16(0); // local_count
     writer.write_u32(0); // source.start
     writer.write_u32(0); // source.end
     writer.write_u32(0); // no statement_program_counter entries
@@ -1321,7 +1338,7 @@ fn the_retired_load_builtin_class_tag_is_refused() {
 /// decoding as whatever literal takes the next free number.
 #[test]
 fn an_invalid_or_retired_literal_tag_is_a_decode_error_not_a_panic() {
-    let mut payloads = vec![vec![LITERAL_BODY_TOO_LARGE + 1]];
+    let mut payloads = vec![vec![LITERAL_BODY_PAST_THE_INSTRUCTION_LIMIT + 1]];
     for tag in RETIRED_LITERALS {
         payloads.push(vec![tag, 0x41, 0x00, 0x00, 0x00]);
     }
@@ -1332,6 +1349,7 @@ fn an_invalid_or_retired_literal_tag_is_a_decode_error_not_a_panic() {
         writer.write_u16(0);
         writer.write_u16(1);
         writer.write_u16(0); // copied_count
+        writer.write_u16(0); // local_count
         writer.write_u32(0);
         writer.write_u32(0);
         writer.write_u32(0);
@@ -1506,6 +1524,90 @@ fn a_body_past_the_register_ceiling_round_trips_and_still_raises() {
     assert_eq!(integer_of(&mut loaded.interpreter, &answer), 7);
 }
 
+/// A body past the argument limit -- here one sending 256 arguments --
+/// travels as its raising body too, and raises the message it raises from
+/// source, the limit named.
+#[test]
+fn a_body_past_the_argument_limit_round_trips_and_still_raises() {
+    let arguments = "k: 1 ".repeat(256);
+    let source = formatdoc! {"
+        class X = Object new (
+        ) (
+          public run = ( ^self {arguments})
+          public answer = ( ^7 )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(&source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let message = "method too large: it takes or sends more than 255 arguments";
+    assert_eq!(
+        expect_error(
+            interpreter.send(&instance, Symbol::intern("run"), &[]),
+            "run from source"
+        ),
+        message
+    );
+    let bytes = interpreter.enter(|mutator| {
+        let instance = mutator.fetch(&instance);
+        let class = class_reference(mutator, &class);
+        snapshot_one(
+            mutator,
+            false,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
+    let mut loaded = image::load(&bytes).expect("load");
+    assert_eq!(
+        expect_error(
+            loaded
+                .interpreter
+                .send(&loaded.roots[0], Symbol::intern("run"), &[]),
+            "run",
+        ),
+        message
+    );
+}
+
+/// Each reason a body is too large has a literal tag of its own, and
+/// decodes to the literal that names it.
+#[test]
+fn each_too_large_literal_decodes_to_its_reason() {
+    for (tag, limit) in [
+        (LITERAL_BODY_TOO_LARGE, BodyLimit::Registers),
+        (LITERAL_BODY_PAST_THE_ARGUMENT_LIMIT, BodyLimit::Arguments),
+        (
+            LITERAL_BODY_PAST_THE_INSTRUCTION_LIMIT,
+            BodyLimit::Instructions,
+        ),
+    ] {
+        let mut writer = encode::Writer::new();
+        writer.write_u32(1); // one code entry
+        code_header(&mut writer, CodeKind::Method, 0, HEADER_REGISTERS + 1);
+        writer.write_u32(2); // two instructions
+        writer.write_u8(OPCODE_LOAD_LITERAL);
+        writer.write_u16(HEADER_REGISTERS);
+        writer.write_u8(tag);
+        writer.write_u8(OPCODE_IMPLICIT_RETURN);
+        writer.write_u16(HEADER_REGISTERS);
+        let bytes = writer.into_bytes();
+        let mut reader = decode::Reader::new(&bytes);
+        let table = match decode::decode_code_table(&mut reader, &table_with(&[])) {
+            Ok(table) => table,
+            Err(error) => panic!("tag {tag}: {error}"),
+        };
+        assert_eq!(
+            table.codes[0].instruction(0),
+            Instruction::LoadLiteral {
+                destination: HEADER_REGISTERS,
+                literal: Literal::BodyTooLarge(limit),
+            }
+        );
+    }
+}
+
 /// An image may carry the instructions of a compiled `new`, and a crafted
 /// one can put one where no compiler does: in an ordinary method, on a
 /// receiver that is no class, in a class with no level a `<:` clause added.
@@ -1524,15 +1626,25 @@ fn an_instantiation_instruction_a_crafted_image_runs_raises_an_error() {
     "};
     // A destination past what the eight-byte form addresses makes the wide
     // form.
-    for destination in [0_u16, 600] {
+    for destination in [HEADER_REGISTERS, HEADER_REGISTERS + 600] {
         let doctored_body = |instruction: Instruction| {
             Rc::new(CompiledCode::new(
                 CodeKind::Method,
-                vec![instruction, Instruction::Return { register: 0 }],
+                vec![
+                    // What the return reads, written first, as a compiled
+                    // body writes it.
+                    Instruction::LoadSelf {
+                        destination: HEADER_REGISTERS,
+                    },
+                    instruction,
+                    Instruction::Return {
+                        register: HEADER_REGISTERS,
+                    },
+                ],
                 0,
                 destination + 1,
                 0,
-                vec![(0, 0..2)],
+                vec![(0, 0..3)],
                 Span::new(0, 0),
             ))
         };
@@ -1545,7 +1657,7 @@ fn an_instantiation_instruction_a_crafted_image_runs_raises_an_error() {
             (Instruction::AllocateInstance { destination }, not_a_class),
             (
                 Instruction::InitializeInstance {
-                    instance: 0,
+                    instance: HEADER_REGISTERS,
                     destination,
                 },
                 not_a_class,
@@ -1561,7 +1673,8 @@ fn an_instantiation_instruction_a_crafted_image_runs_raises_an_error() {
                 Instruction::InitializeSuperclass {
                     steps: 1,
                     selector: Symbol::NEW,
-                    argument_registers: vec![],
+                    argument_base: destination,
+                    argument_sources: vec![],
                     destination,
                 },
                 None,
@@ -1569,7 +1682,8 @@ fn an_instantiation_instruction_a_crafted_image_runs_raises_an_error() {
             (
                 Instruction::InitializeAppliedLevel {
                     steps: 1,
-                    argument_registers: vec![],
+                    argument_base: destination,
+                    argument_sources: vec![],
                     destination,
                 },
                 no_applied_level,
@@ -1625,9 +1739,10 @@ fn snapshot_error(source: &str) -> String {
     })
 }
 
-/// A method of more than 65,535 parameters compiles, but its arity does not
-/// fit the mixin table's 16-bit field: building the image is refused with
-/// an error, never a panic.
+/// A method of more than 65,535 parameters compiles, to a body whose arity
+/// saturates at `u16::MAX`, past the argument limit: building the image is
+/// refused at that body with an error, never a panic, before the mixin
+/// table's 16-bit field is reached.
 #[test]
 fn a_method_of_more_parameters_than_the_format_counts_is_refused_not_a_panic() {
     let pattern: String = (0..=usize::from(u16::MAX))
@@ -1641,7 +1756,25 @@ fn a_method_of_more_parameters_than_the_format_counts_is_refused_not_a_panic() {
     "};
     assert_eq!(
         snapshot_error(&source),
-        "image encoding cannot write a method arity of 65536: it does not fit the image format's 16-bit field"
+        "image encoding cannot write a body arity of 65535 or more: it is past the limit of 255 arguments"
+    );
+}
+
+/// A method of 256 parameters compiles to the raising body, but no image
+/// carries a body past the argument limit: building one is refused, so
+/// that `build` refuses what `load` would.
+#[test]
+fn a_method_of_256_parameters_is_refused_by_the_encoder() {
+    let pattern: String = (0..256).map(|index| format!("k: p{index} ")).collect();
+    let source = formatdoc! {"
+        class X = Object new (
+        ) (
+          public {pattern}= ( ^p0 )
+        ) : ()
+    "};
+    assert_eq!(
+        snapshot_error(&source),
+        "image encoding cannot write a body arity of 256: it is past the limit of 255 arguments"
     );
 }
 
@@ -2386,6 +2519,7 @@ fn an_invalid_integer_operation_tag_is_a_decode_error_not_a_panic() {
     writer.write_u16(0);
     writer.write_u16(1);
     writer.write_u16(0); // copied_count
+    writer.write_u16(0); // local_count
     writer.write_u32(0);
     writer.write_u32(0);
     writer.write_u32(0);
@@ -2474,6 +2608,7 @@ fn a_copied_count_that_does_not_fit_the_register_file_is_a_decode_error() {
     writer.write_u16(1); // argument_count
     writer.write_u16(2); // register_count
     writer.write_u16(2); // copied_count -- one more than the file has room for
+    writer.write_u16(0); // local_count
     let bytes = writer.into_bytes();
     let mut reader = decode::Reader::new(&bytes);
     let error = decode::decode_code_table(&mut reader, &symbols::Table::empty())
@@ -2501,6 +2636,7 @@ fn a_backwards_source_span_is_a_decode_error_not_a_panic() {
     writer.write_u16(0); // argument_count
     writer.write_u16(0); // register_count
     writer.write_u16(0); // copied_count
+    writer.write_u16(0); // local_count
     writer.write_u32(9); // source.start ...
     writer.write_u32(4); // ... after source.end
     let bytes = writer.into_bytes();
@@ -2534,14 +2670,15 @@ fn a_huge_code_table_count_does_not_reserve_gigabytes() {
 /// Body 0 is the innermost block, each later body creates the one before it,
 /// and the last is the method -- the order the encoder writes, every block
 /// before the code that creates it. The innermost block sits `levels`
-/// `MakeClosure` hops below the method. Each level is 38 bytes, so the file
+/// `MakeClosure` hops below the method. Each level is 40 bytes, so the file
 /// grows linearly with the nesting it asks for.
 fn code_table_with_nested_blocks(levels: usize) -> Vec<u8> {
     let body = |writer: &mut encode::Writer, kind: u8, creates: Option<usize>| {
         writer.write_u8(kind);
         writer.write_u16(0); // argument_count
-        writer.write_u16(1); // register_count
+        writer.write_u16(HEADER_REGISTERS + 1); // register_count: one past the header's numbers
         writer.write_u16(0); // copied_count
+        writer.write_u16(0); // local_count
         writer.write_u32(0); // source.start
         writer.write_u32(0); // source.end
         writer.write_u32(0); // no statement_program_counter entries
@@ -2549,24 +2686,36 @@ fn code_table_with_nested_blocks(levels: usize) -> Vec<u8> {
         match creates {
             Some(block) => {
                 writer.write_u32(2); // two instructions ...
-                writer.write_u8(OPCODE_MAKE_CLOSURE); // ... r0 <- the next block in,
-                writer.write_u16(0);
+                writer.write_u8(OPCODE_MAKE_CLOSURE); // ... r13 <- the next block in,
+                writer.write_u16(HEADER_REGISTERS);
                 writer.write_u16(0); // taking no parameters,
                 writer.write_u32(u32::try_from(block).expect("a test-sized code id"));
                 writer.write_u16(0); // copying nothing
             }
-            None => writer.write_u32(1), // the innermost: one instruction ...
+            None => {
+                writer.write_u32(2); // the innermost: two instructions ...
+                writer.write_u8(OPCODE_LOAD_SELF); // ... r13 <- self,
+                writer.write_u16(HEADER_REGISTERS);
+            }
         }
-        writer.write_u8(OPCODE_RETURN); // ... then ^r0
-        writer.write_u16(0);
+        writer.write_u8(OPCODE_RETURN); // ... then ^r13
+        writer.write_u16(HEADER_REGISTERS);
     };
     let mut writer = encode::Writer::new();
     writer.write_u32(u32::try_from(levels + 1).expect("a test-sized code table"));
-    body(&mut writer, 1, None); // CodeKind::Block
+    body(&mut writer, encode::code_kind_tag(CodeKind::Block), None);
     for id in 1..levels {
-        body(&mut writer, 1, Some(id - 1));
+        body(
+            &mut writer,
+            encode::code_kind_tag(CodeKind::Block),
+            Some(id - 1),
+        );
     }
-    body(&mut writer, 0, Some(levels - 1)); // CodeKind::Method
+    body(
+        &mut writer,
+        encode::code_kind_tag(CodeKind::Method),
+        Some(levels - 1),
+    );
     writer.into_bytes()
 }
 
@@ -4200,11 +4349,14 @@ fn a_closure_and_its_paused_home_frame_round_trip() {
                     .heap()
                     .closure_home(object(closure_value))
                     .expect("expected a closure");
-                let (_, _, register_count) = mutator.heap().frame_register_shape(home);
+                let (_, argument_count, register_count) = mutator.heap().frame_register_shape(home);
+                assert_eq!(argument_count, 0, "`mk` takes no argument");
                 assert!(register_count > 0, "`mk` has a register to write");
+                // Its last register: every register field past the
+                // arguments is a register above the header.
                 mutator.heap_mut().frame_set_local(
                     home,
-                    (register_count - 1) as u16,
+                    register_count as u16 - 1 + HEADER_REGISTERS,
                     Value::small_integer(9),
                 );
                 mutator.heap_mut().frame_set_program_counter(home, 1);
@@ -4238,7 +4390,7 @@ fn a_closure_and_its_paused_home_frame_round_trip() {
         let (_, argument_count, register_count) = heap.frame_register_shape(closure_home);
         assert_eq!(register_count - argument_count, home.temporaries.len());
         assert_eq!(
-            heap.frame_local(closure_home, (register_count - 1) as u16)
+            heap.frame_local(closure_home, register_count as u16 - 1 + HEADER_REGISTERS)
                 .as_small_integer(),
             Some(9)
         );
@@ -6163,12 +6315,17 @@ fn a_closure_capturing_a_block_activation_round_trips() {
             panic!("the captured frame is a block activation")
         };
         // Every reified frame travels with its whole register file, so the
-        // decoded one has every register its body declares.
+        // decoded one has every register its body declares but the header's
+        // numbers.
         let outer_code = heap.closure_code(*outer).expect("the outer block");
         assert_eq!(
             captured.arguments.len() + captured.temporaries.len(),
-            usize::from(outer_code.register_count),
+            outer_code.frame_register_count(),
             "the captured frame carries its full register file"
+        );
+        assert_eq!(
+            captured.temporaries.len(),
+            outer_code.registers_above_header()
         );
         // The optimized lowering converts `[ x ]`: `x` is copied into the
         // inner closure when it is created, so the outer block's activation
@@ -7076,6 +7233,8 @@ fn code_with_copied(
 ) -> Rc<CompiledCode> {
     let mut code = (*code_with(kind, argument_count, register_count, instructions)).clone();
     code.copied_count = copied_count;
+    // The copied values are locals, below the scratch.
+    code.local_count = (argument_count + HEADER_REGISTERS + copied_count).min(register_count);
     Rc::new(code)
 }
 
@@ -7129,30 +7288,30 @@ fn every_conditional_jump_target_is_checked_too() {
     // `Jump` would leave three unchecked `program_counter` writes in the VM.
     for instruction in [
         Instruction::JumpIfNotBoolean {
-            register: 0,
+            register: 13,
             target: 9,
         },
         Instruction::BranchIfFalse {
-            register: 0,
+            register: 13,
             target: 9,
         },
         Instruction::BranchIfTrue {
-            register: 0,
+            register: 13,
             target: 9,
         },
         Instruction::IntegerBinary {
             operation: IntegerOperation::Add,
-            destination: 0,
-            left: 0,
-            right: 0,
+            destination: 13,
+            left: 13,
+            right: 13,
             target: 9,
         },
     ] {
         let table = table_of(vec![code_with(
             CodeKind::Method,
             0,
-            1,
-            vec![instruction, Instruction::Return { register: 0 }],
+            14,
+            vec![instruction, Instruction::Return { register: 13 }],
         )]);
         assert_eq!(
             decode::verify_code_table(&table),
@@ -7200,12 +7359,40 @@ fn a_register_in_a_send_argument_list_is_checked_too() {
     let table = table_of(vec![code_with(
         CodeKind::Method,
         0,
-        1,
+        14,
         vec![
             Instruction::SendPublic {
                 selector: Symbol::intern("foo:"),
+                receiver_register: 13,
+                argument_base: 13,
+                argument_sources: vec![13, 17],
+                destination: 13,
+                call_site: CallSite { number: 0 },
+            },
+            Instruction::Return { register: 13 },
+        ],
+    )]);
+    assert_eq!(
+        decode::verify_code_table(&table),
+        Err(decode::DecodeError::RegisterOutOfRange {
+            register: 17,
+            register_count: 14
+        })
+    );
+}
+
+#[test]
+fn a_register_in_a_send_inlinable_is_checked_too() {
+    let table = table_of(vec![code_with(
+        CodeKind::Method,
+        0,
+        1,
+        vec![
+            Instruction::SendInlinable {
+                selector: Symbol::intern("ifTrue:"),
                 receiver_register: 0,
-                argument_registers: vec![0, 4],
+                argument_base: 0,
+                argument_sources: vec![4],
                 destination: 0,
                 call_site: CallSite { number: 0 },
             },
@@ -7221,29 +7408,565 @@ fn a_register_in_a_send_argument_list_is_checked_too() {
     );
 }
 
+/// A send copies each source into its slot and reads its slots, so a base
+/// past the body's registers is refused even with no argument, and so are
+/// slots whose last runs past them though base and sources are in range.
 #[test]
-fn a_register_in_a_send_inlinable_is_checked_too() {
-    let table = table_of(vec![code_with(
+fn a_send_whose_argument_slots_leave_the_body_is_refused() {
+    let send = |argument_base, argument_sources: Vec<u16>| {
+        table_of(vec![code_with(
+            CodeKind::Method,
+            0,
+            15,
+            vec![
+                Instruction::LoadSelf { destination: 13 },
+                Instruction::LoadSelf { destination: 14 },
+                Instruction::SendLexical {
+                    depth: 0,
+                    selector: Symbol::intern("foo:bar:"),
+                    argument_base,
+                    argument_sources,
+                    destination: 13,
+                    call_site: CallSite { number: 0 },
+                },
+                Instruction::Return { register: 13 },
+            ],
+        )])
+    };
+    assert_eq!(
+        decode::verify_code_table(&send(15, vec![])),
+        Err(decode::DecodeError::RegisterOutOfRange {
+            register: 15,
+            register_count: 15
+        })
+    );
+    let error = decode::verify_code_table(&send(14, vec![13, 14]))
+        .expect_err("the second slot is r15, past fifteen registers");
+    assert_eq!(
+        error,
+        decode::DecodeError::ArgumentSlotsOutOfRange {
+            argument_base: 14,
+            argument_count: 2,
+            register_count: 15
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "2 argument slot(s) from r14 run past a body with 15 register(s)"
+    );
+    assert_eq!(decode::verify_code_table(&send(13, vec![13, 14])), Ok(()));
+}
+
+/// The register numbers between a body's arguments and the rest of its
+/// registers are its frame header's words, which no instruction may name:
+/// a write there would overwrite a live frame's caller or register count.
+/// An own register, an outer local's index and a send's slots below the
+/// header's end are each refused, in a body taking arguments too.
+#[test]
+fn a_register_naming_the_frame_header_is_refused() {
+    let own = table_of(vec![code_with(
         CodeKind::Method,
-        0,
         1,
+        HEADER_REGISTERS + 2,
         vec![
-            Instruction::SendInlinable {
-                selector: Symbol::intern("ifTrue:"),
-                receiver_register: 0,
-                argument_registers: vec![4],
-                destination: 0,
-                call_site: CallSite { number: 0 },
-            },
+            Instruction::LoadSelf { destination: 5 },
             Instruction::Return { register: 0 },
         ],
     )]);
+    let error = decode::verify_code_table(&own).expect_err("r5 is a header word");
     assert_eq!(
-        decode::verify_code_table(&table),
-        Err(decode::DecodeError::RegisterOutOfRange {
+        error,
+        decode::DecodeError::HeaderRegister {
+            depth: 0,
+            register: 5,
+            argument_count: 1
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "register r5 at depth 0 names the frame header of a body taking 1 argument(s)"
+    );
+    assert_eq!(
+        decode::verify_code_table(&outer_local_table(17, 1, 4)),
+        Err(decode::DecodeError::HeaderRegister {
+            depth: 1,
             register: 4,
-            register_count: 1
+            argument_count: 0
         })
+    );
+    let send_below = |argument_base| {
+        table_of(vec![code_with(
+            CodeKind::Method,
+            2,
+            HEADER_REGISTERS + 4,
+            vec![
+                Instruction::SendLexical {
+                    depth: 0,
+                    selector: Symbol::intern("foo"),
+                    argument_base,
+                    argument_sources: vec![],
+                    destination: HEADER_REGISTERS + 3,
+                    call_site: CallSite { number: 0 },
+                },
+                Instruction::Return { register: 0 },
+            ],
+        )])
+    };
+    // Among the arguments, so no own register names the header, but the
+    // callee's header would lie over the sender's.
+    let error = decode::verify_code_table(&send_below(1)).expect_err("slots in the arguments");
+    assert_eq!(
+        error,
+        decode::DecodeError::ArgumentSlotsBelowTheHeader {
+            argument_base: 1,
+            argument_count: 2
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "argument slots from r1 lie below the frame header's end in a body taking 2 argument(s)"
+    );
+    assert_eq!(
+        decode::verify_code_table(&send_below(HEADER_REGISTERS + 2)),
+        Ok(())
+    );
+}
+
+/// A callee lies on its sender's argument slots, so a register of the
+/// sender's above its named locals can be a live callee's header. A
+/// crafted `run` hands a block to `call:`, which runs it while lying on
+/// `run`'s slots, and the block stores into `run`'s register where
+/// `call:`'s header starts: the image is refused at load, before anything
+/// runs, rather than let the store overwrite the caller word the pop reads.
+#[test]
+fn a_block_storing_into_its_homes_scratch_under_a_live_callee_is_refused_at_load() {
+    let source = indoc! {"
+        class X = Object new (
+        ) (
+          public run = ( ^1 )
+          public call: block = ( ^block value )
+        ) : ()
+    "};
+    let block = HEADER_REGISTERS;
+    let receiver = HEADER_REGISTERS + 1;
+    let slot = HEADER_REGISTERS + 2;
+    // The callee's one argument is `slot`, its header the numbers after it;
+    // the header's last word is its register count, which the pop reads.
+    let callee_header = slot + 1;
+    let callee_register_count_word = callee_header + HEADER_REGISTERS - 1;
+    let block_body = Rc::new(CompiledCode::new(
+        CodeKind::Block,
+        vec![
+            Instruction::LoadSelf {
+                destination: HEADER_REGISTERS,
+            },
+            Instruction::StoreOuterLocal {
+                source: HEADER_REGISTERS,
+                depth: 1,
+                index: callee_register_count_word,
+            },
+            Instruction::ImplicitReturn {
+                register: HEADER_REGISTERS,
+            },
+        ],
+        0,
+        HEADER_REGISTERS + 1,
+        0,
+        vec![(0, 0..3)],
+        Span::new(0, 0),
+    ));
+    let run_body = Rc::new(CompiledCode::new(
+        CodeKind::Method,
+        vec![
+            Instruction::MakeClosure {
+                destination: block,
+                parameters: Rc::new(vec![]),
+                code: block_body,
+                copied: Vec::new(),
+            },
+            Instruction::LoadSelf {
+                destination: receiver,
+            },
+            Instruction::Move {
+                destination: slot,
+                source: block,
+            },
+            Instruction::SendPublic {
+                receiver_register: receiver,
+                selector: Symbol::intern("call:"),
+                argument_base: slot,
+                argument_sources: vec![slot],
+                destination: receiver,
+                call_site: CallSite { number: 0 },
+            },
+            Instruction::Return { register: receiver },
+        ],
+        0,
+        callee_header + HEADER_REGISTERS,
+        0,
+        vec![(0, 0..5)],
+        Span::new(0, 0),
+    ));
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let doctored = with_method_code(mixin_of(mutator.heap(), class), "run", run_body);
+        install_mixin(mutator, class, doctored);
+        let instance = mutator.fetch(&instance);
+        snapshot_one(
+            mutator,
+            false,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
+    let Err(error) = image::load(&bytes) else {
+        panic!("a store into the home's scratch must be refused at load")
+    };
+    let expected = decode::DecodeError::OuterLocalInScratch {
+        depth: 1,
+        index: callee_register_count_word,
+        local_count: HEADER_REGISTERS,
+    };
+    assert!(error.contains(&expected.to_string()), "{error}");
+}
+
+/// `[block, parent]` as the encoder writes them (post-order), where
+/// `parent` takes `parent_arguments` arguments in `parent_registers`
+/// registers, the first `parent_local_count` of them its locals, and
+/// `block` runs `access` -- an outer load or store -- and answers r13.
+fn outer_access_table(
+    parent_arguments: u16,
+    parent_registers: u16,
+    parent_local_count: u16,
+    access: Instruction,
+) -> decode::DecodedCodeTable {
+    let block = code_with(
+        CodeKind::Block,
+        0,
+        HEADER_REGISTERS + 1,
+        vec![
+            Instruction::LoadSelf {
+                destination: HEADER_REGISTERS,
+            },
+            access,
+            Instruction::ImplicitReturn {
+                register: HEADER_REGISTERS,
+            },
+        ],
+    );
+    let closure = parent_arguments + HEADER_REGISTERS;
+    let mut parent = (*code_with(
+        CodeKind::Method,
+        parent_arguments,
+        parent_registers,
+        vec![
+            Instruction::MakeClosure {
+                destination: closure,
+                parameters: Rc::new(vec![]),
+                code: block.clone(),
+                copied: Vec::new(),
+            },
+            Instruction::Return { register: closure },
+        ],
+    ))
+    .clone();
+    parent.local_count = parent_local_count;
+    table_of(vec![block, Rc::new(parent)])
+}
+
+/// No compiled body writes an argument register: parameters are immutable
+/// (§3.6), and the register is the sender's slot, which a setter's sender
+/// reads back after the send. A write there by its own body or by a block
+/// of it is refused; a read is not; and the load of the too-large error
+/// into the last argument, which the body a body past the register ceiling
+/// compiles to makes when its arguments leave no register above the
+/// header, is no write, since it raises before writing.
+#[test]
+fn a_write_to_an_argument_register_is_refused() {
+    let own = |instructions| {
+        table_of(vec![code_with(
+            CodeKind::Method,
+            1,
+            HEADER_REGISTERS + 2,
+            instructions,
+        )])
+    };
+    let error = decode::verify_code_table(&own(vec![
+        Instruction::LoadSelf { destination: 0 },
+        Instruction::Return { register: 0 },
+    ]))
+    .expect_err("r0 is the argument");
+    assert_eq!(
+        error,
+        decode::DecodeError::ArgumentRegisterWritten {
+            depth: 0,
+            register: 0,
+            argument_count: 1
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "register r0 at depth 0 is written, an argument of a body taking 1 argument(s)"
+    );
+    assert_eq!(
+        decode::verify_code_table(&own(vec![
+            Instruction::LoadSelf {
+                destination: HEADER_REGISTERS + 1,
+            },
+            Instruction::StoreLocal {
+                source: HEADER_REGISTERS + 1,
+                slot: 0,
+            },
+            Instruction::Return { register: 0 },
+        ])),
+        Err(decode::DecodeError::ArgumentRegisterWritten {
+            depth: 0,
+            register: 0,
+            argument_count: 1
+        })
+    );
+    let store = Instruction::StoreOuterLocal {
+        source: HEADER_REGISTERS,
+        depth: 1,
+        index: 0,
+    };
+    assert_eq!(
+        decode::verify_code_table(&outer_access_table(
+            1,
+            HEADER_REGISTERS + 2,
+            HEADER_REGISTERS + 1,
+            store
+        )),
+        Err(decode::DecodeError::ArgumentRegisterWritten {
+            depth: 1,
+            register: 0,
+            argument_count: 1
+        })
+    );
+    let load = Instruction::LoadOuterLocal {
+        destination: HEADER_REGISTERS,
+        depth: 1,
+        index: 0,
+    };
+    assert_eq!(
+        decode::verify_code_table(&outer_access_table(
+            1,
+            HEADER_REGISTERS + 2,
+            HEADER_REGISTERS + 1,
+            load
+        )),
+        Ok(())
+    );
+    // Past the ceiling: no register above the header, so the error is
+    // loaded into the last argument, and nothing else may be.
+    let arguments = u16::MAX - HEADER_REGISTERS + 1;
+    let too_large = |literal| {
+        table_of(vec![code_with(
+            CodeKind::Method,
+            arguments,
+            arguments,
+            vec![
+                Instruction::LoadLiteral {
+                    destination: arguments - 1,
+                    literal,
+                },
+                Instruction::ImplicitReturn {
+                    register: arguments - 1,
+                },
+            ],
+        )])
+    };
+    assert_eq!(
+        decode::verify_code_table(&too_large(Literal::BodyTooLarge(BodyLimit::Registers))),
+        Ok(())
+    );
+    assert_eq!(
+        decode::verify_code_table(&too_large(Literal::Nil)),
+        Err(decode::DecodeError::ArgumentRegisterWritten {
+            depth: 0,
+            register: arguments - 1,
+            argument_count: arguments
+        })
+    );
+}
+
+/// A register of the enclosing frame at or past its `local_count` is
+/// scratch, where a callee it sends to lies with its header while the block
+/// runs: an outer load or store there is refused, one into a named local
+/// verifies.
+#[test]
+fn an_outer_local_in_the_enclosing_frames_scratch_is_refused() {
+    let local_count = HEADER_REGISTERS + 1;
+    let load = |index| Instruction::LoadOuterLocal {
+        destination: HEADER_REGISTERS,
+        depth: 1,
+        index,
+    };
+    let store = |index| Instruction::StoreOuterLocal {
+        source: HEADER_REGISTERS,
+        depth: 1,
+        index,
+    };
+    let table = |access| outer_access_table(0, HEADER_REGISTERS + 4, local_count, access);
+    assert_eq!(
+        decode::verify_code_table(&table(load(HEADER_REGISTERS))),
+        Ok(())
+    );
+    assert_eq!(
+        decode::verify_code_table(&table(store(HEADER_REGISTERS))),
+        Ok(())
+    );
+    let error = decode::verify_code_table(&table(load(local_count))).expect_err("a scratch load");
+    assert_eq!(
+        error,
+        decode::DecodeError::OuterLocalInScratch {
+            depth: 1,
+            index: local_count,
+            local_count
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "outer local r14 at depth 1 is a scratch register of the enclosing body, whose first is r14"
+    );
+    assert_eq!(
+        decode::verify_code_table(&table(store(local_count + 2))),
+        Err(decode::DecodeError::OuterLocalInScratch {
+            depth: 1,
+            index: local_count + 2,
+            local_count
+        })
+    );
+}
+
+/// What makes the refusal above sound: a send's slots, and so its callee's
+/// header, start at or above its body's `local_count`, which is itself
+/// inside the register file.
+#[test]
+fn a_send_whose_slots_start_below_the_scratch_is_refused() {
+    let body = |local_count, argument_base| {
+        let mut code = (*code_with(
+            CodeKind::Method,
+            0,
+            HEADER_REGISTERS + 3,
+            vec![
+                Instruction::SendLexical {
+                    depth: 0,
+                    selector: Symbol::intern("foo"),
+                    argument_base,
+                    argument_sources: vec![],
+                    destination: HEADER_REGISTERS + 2,
+                    call_site: CallSite { number: 0 },
+                },
+                Instruction::Return {
+                    register: HEADER_REGISTERS + 2,
+                },
+            ],
+        ))
+        .clone();
+        code.local_count = local_count;
+        table_of(vec![Rc::new(code)])
+    };
+    let error = decode::verify_code_table(&body(HEADER_REGISTERS + 1, HEADER_REGISTERS))
+        .expect_err("slots on a named local");
+    assert_eq!(
+        error,
+        decode::DecodeError::ArgumentSlotsBelowTheScratch {
+            argument_base: HEADER_REGISTERS,
+            local_count: HEADER_REGISTERS + 1
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "argument slots from r13 lie below the first scratch register r14"
+    );
+    assert_eq!(
+        decode::verify_code_table(&body(HEADER_REGISTERS + 1, HEADER_REGISTERS + 1)),
+        Ok(())
+    );
+    let error = decode::verify_code_table(&body(HEADER_REGISTERS + 4, HEADER_REGISTERS + 1))
+        .expect_err("a local count past the file");
+    assert_eq!(
+        error,
+        decode::DecodeError::LocalCountOutOfRange {
+            local_count: HEADER_REGISTERS + 4,
+            register_count: HEADER_REGISTERS + 3
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "a local count of 17 is past a body with 16 register(s)"
+    );
+}
+
+/// A send writes each source into its slot in turn, so a source that is
+/// another of its own slots would answer whatever the order of the writes
+/// left there: refused, while a source in its own slot, or outside the
+/// slots, verifies.
+#[test]
+fn a_send_whose_source_is_another_of_its_slots_is_refused() {
+    let send = |argument_sources: Vec<u16>| {
+        table_of(vec![code_with(
+            CodeKind::Method,
+            0,
+            HEADER_REGISTERS + 3,
+            vec![
+                Instruction::LoadSelf {
+                    destination: HEADER_REGISTERS,
+                },
+                Instruction::LoadSelf {
+                    destination: HEADER_REGISTERS + 1,
+                },
+                Instruction::LoadSelf {
+                    destination: HEADER_REGISTERS + 2,
+                },
+                Instruction::SendLexical {
+                    depth: 0,
+                    selector: Symbol::intern("foo:bar:"),
+                    argument_base: HEADER_REGISTERS + 1,
+                    argument_sources,
+                    destination: HEADER_REGISTERS,
+                    call_site: CallSite { number: 0 },
+                },
+                Instruction::Return {
+                    register: HEADER_REGISTERS,
+                },
+            ],
+        )])
+    };
+    let error = decode::verify_code_table(&send(vec![HEADER_REGISTERS + 2, HEADER_REGISTERS]))
+        .expect_err("the first source is the second slot");
+    assert_eq!(
+        error,
+        decode::DecodeError::SourceIsAnotherSlot {
+            argument_base: HEADER_REGISTERS + 1,
+            position: 0,
+            source: HEADER_REGISTERS + 2
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "the source of argument 0 of a send with slots from r14 is r15, another of its slots"
+    );
+    assert_eq!(
+        decode::verify_code_table(&send(vec![HEADER_REGISTERS, HEADER_REGISTERS + 1])),
+        Err(decode::DecodeError::SourceIsAnotherSlot {
+            argument_base: HEADER_REGISTERS + 1,
+            position: 1,
+            source: HEADER_REGISTERS + 1
+        })
+    );
+    assert_eq!(
+        decode::verify_code_table(&send(vec![HEADER_REGISTERS + 1, HEADER_REGISTERS])),
+        Ok(())
+    );
+    assert_eq!(
+        decode::verify_code_table(&send(vec![HEADER_REGISTERS, HEADER_REGISTERS])),
+        Ok(())
     );
 }
 
@@ -7273,8 +7996,11 @@ fn a_body_that_ends_in_a_non_boolean_signal_is_terminated() {
     let table = table_of(vec![code_with(
         CodeKind::Method,
         0,
-        1,
-        vec![Instruction::SignalNonBoolean { register: 0 }],
+        14,
+        vec![
+            Instruction::LoadSelf { destination: 13 },
+            Instruction::SignalNonBoolean { register: 13 },
+        ],
     )]);
     assert_eq!(decode::verify_code_table(&table), Ok(()));
 }
@@ -7298,15 +8024,25 @@ fn a_body_that_runs_past_its_last_instruction_is_refused() {
 #[test]
 fn a_body_with_an_instantiation_instruction_is_accepted() {
     let instructions = every_instantiation_instruction().instructions();
+    let register_count = 2 + HEADER_REGISTERS + 601;
     for instruction in instructions
         .iter()
         .filter(|instruction| !matches!(instruction, Instruction::Return { .. }))
     {
+        // Every register the instruction may read written first, as a
+        // compiled body writes it.
+        let mut body: Vec<Instruction> = (HEADER_REGISTERS..register_count)
+            .map(|destination| Instruction::LoadSelf { destination })
+            .collect();
+        body.push(instruction.clone());
+        body.push(Instruction::Return {
+            register: HEADER_REGISTERS,
+        });
         let table = table_of(vec![code_with(
             CodeKind::Initializer,
             0,
-            601,
-            vec![instruction.clone(), Instruction::Return { register: 0 }],
+            register_count,
+            body,
         )]);
         assert_eq!(decode::verify_code_table(&table), Ok(()), "{instruction:?}");
     }
@@ -7446,30 +8182,30 @@ fn a_make_closure_copying_a_register_its_own_body_lacks_is_refused() {
     let block = code_with_copied(
         CodeKind::Block,
         0,
-        2,
+        15,
         1,
-        vec![Instruction::ImplicitReturn { register: 0 }],
+        vec![Instruction::ImplicitReturn { register: 13 }],
     );
     let parent = code_with(
         CodeKind::Method,
         0,
-        1,
+        14,
         vec![
             Instruction::MakeClosure {
-                destination: 0,
+                destination: 13,
                 parameters: Rc::new(vec![]),
                 code: block.clone(),
-                copied: vec![4],
+                copied: vec![17],
             },
-            Instruction::Return { register: 0 },
+            Instruction::Return { register: 13 },
         ],
     );
     let table = table_of(vec![block, parent]);
     assert_eq!(
         decode::verify_code_table(&table),
         Err(decode::DecodeError::RegisterOutOfRange {
-            register: 4,
-            register_count: 1
+            register: 17,
+            register_count: 14
         })
     );
 }
@@ -7535,7 +8271,8 @@ fn number_call_site_families_leaves_the_table_untouched_when_it_fails() {
             Instruction::SendPublic {
                 selector: Symbol::intern("foo"),
                 receiver_register: 0,
-                argument_registers: vec![],
+                argument_base: 1,
+                argument_sources: vec![],
                 destination: 1,
                 call_site: CallSite { number: 0 },
             },
@@ -7599,36 +8336,41 @@ fn outer_local_table(
     let block = code_with(
         CodeKind::Block,
         0,
-        1,
+        14,
         vec![
             Instruction::LoadOuterLocal {
-                destination: 0,
+                destination: 13,
                 depth: outer_depth,
                 index: outer_index,
             },
-            Instruction::ImplicitReturn { register: 0 },
+            Instruction::ImplicitReturn { register: 13 },
         ],
     );
-    let parent = code_with(
+    // Every register of the parent a local, so that the bound the test
+    // asks about is its register file's.
+    let mut parent = (*code_with(
         CodeKind::Method,
         0,
         parent_registers,
         vec![
             Instruction::MakeClosure {
-                destination: 0,
+                destination: 13,
                 parameters: Rc::new(vec![]),
                 code: block.clone(),
                 copied: Vec::new(),
             },
-            Instruction::Return { register: 0 },
+            Instruction::Return { register: 13 },
         ],
-    );
-    table_of(vec![block, parent])
+    ))
+    .clone();
+    parent.local_count = parent_registers;
+    table_of(vec![block, Rc::new(parent)])
 }
 
 #[test]
 fn an_outer_local_within_its_lexical_parents_register_file_verifies() {
-    decode::verify_code_table(&outer_local_table(4, 1, 3)).expect("r3 of a four-register parent");
+    decode::verify_code_table(&outer_local_table(17, 1, 16))
+        .expect("r16 of a seventeen-register parent");
 }
 
 #[test]
@@ -7636,18 +8378,18 @@ fn an_outer_local_past_its_lexical_parents_register_file_is_refused() {
     // `LoadOuterLocal`'s index addresses the *outer* frame, so the body's
     // own `register_count` says nothing about it: the bound is the register
     // file of the body one `MakeClosure` hop out.
-    let error = decode::verify_code_table(&outer_local_table(2, 1, 3)).expect_err("out of range");
+    let error = decode::verify_code_table(&outer_local_table(15, 1, 16)).expect_err("out of range");
     assert_eq!(
         error,
         decode::DecodeError::OuterLocalOutOfRange {
             depth: 1,
-            index: 3,
-            register_count: 2
+            index: 16,
+            register_count: 15
         }
     );
     assert_eq!(
         error.to_string(),
-        "outer local r3 at depth 1 is outside the enclosing body's 2 register(s)"
+        "outer local r16 at depth 1 is outside the enclosing body's 15 register(s)"
     );
 }
 
@@ -7655,11 +8397,11 @@ fn an_outer_local_past_its_lexical_parents_register_file_is_refused() {
 fn an_outer_local_at_depth_zero_is_bounded_by_its_own_register_file() {
     // `frame_at_depth(frame, 0)` is the frame itself.
     assert_eq!(
-        decode::verify_code_table(&outer_local_table(4, 0, 3)),
+        decode::verify_code_table(&outer_local_table(17, 0, 16)),
         Err(decode::DecodeError::OuterLocalOutOfRange {
             depth: 0,
-            index: 3,
-            register_count: 1
+            index: 16,
+            register_count: 14
         })
     );
 }
@@ -7670,11 +8412,11 @@ fn an_outer_local_deeper_than_the_lexical_nesting_is_bounded_by_the_outermost_bo
     // depth past the nesting lands on the outermost frame -- the method's,
     // with two registers here, not the block's own.
     assert_eq!(
-        decode::verify_code_table(&outer_local_table(2, 9, 3)),
+        decode::verify_code_table(&outer_local_table(15, 9, 16)),
         Err(decode::DecodeError::OuterLocalOutOfRange {
             depth: 9,
-            index: 3,
-            register_count: 2
+            index: 16,
+            register_count: 15
         })
     );
 }
@@ -7684,36 +8426,37 @@ fn a_store_to_an_outer_local_is_checked_like_a_load() {
     let block = code_with(
         CodeKind::Block,
         0,
-        1,
+        14,
         vec![
+            Instruction::LoadSelf { destination: 13 },
             Instruction::StoreOuterLocal {
-                source: 0,
+                source: 13,
                 depth: 1,
-                index: 6,
+                index: 19,
             },
-            Instruction::ImplicitReturn { register: 0 },
+            Instruction::ImplicitReturn { register: 13 },
         ],
     );
     let parent = code_with(
         CodeKind::Method,
         0,
-        2,
+        15,
         vec![
             Instruction::MakeClosure {
-                destination: 0,
+                destination: 13,
                 parameters: Rc::new(vec![]),
                 code: block.clone(),
                 copied: Vec::new(),
             },
-            Instruction::Return { register: 0 },
+            Instruction::Return { register: 13 },
         ],
     );
     assert_eq!(
         decode::verify_code_table(&table_of(vec![block, parent])),
         Err(decode::DecodeError::OuterLocalOutOfRange {
             depth: 1,
-            index: 6,
-            register_count: 2
+            index: 19,
+            register_count: 15
         })
     );
 }
@@ -7995,27 +8738,40 @@ const ONE_METHOD: &str = indoc! {"
 /// A world whose code table is `[block, foo]` -- `foo`'s body is the one
 /// `MakeClosure` that creates `block` -- with the class's `foo` carrying
 /// that body. Everything a decoded closure over `block`
-/// needs to verify: its lexical parent is `foo`, which has two registers.
+/// needs to verify: its lexical parent is `foo`, which has two registers
+/// above its header.
 fn closure_world() -> (GraphFixture, decode::DecodedCodeTable) {
-    let (mut interpreter, class) = load(ONE_METHOD);
-    let block = code_with(
+    closure_world_over(code_with(
         CodeKind::Block,
         0,
-        1,
-        vec![Instruction::ImplicitReturn { register: 0 }],
-    );
+        HEADER_REGISTERS + 1,
+        vec![Instruction::ImplicitReturn {
+            register: HEADER_REGISTERS,
+        }],
+    ))
+}
+
+/// `closure_world` with the block `foo` creates given.
+fn closure_world_over(block: Rc<CompiledCode>) -> (GraphFixture, decode::DecodedCodeTable) {
+    let (mut interpreter, class) = load(ONE_METHOD);
+    // Two registers above the header, so two register fields in a frame.
     let parent = code_with(
         CodeKind::Method,
         0,
-        2,
+        HEADER_REGISTERS + 2,
         vec![
             Instruction::MakeClosure {
-                destination: 0,
-                parameters: Rc::new(vec![]),
+                destination: HEADER_REGISTERS,
+                parameters: Rc::new(vec![
+                    Symbol::intern("parameter");
+                    usize::from(block.argument_count)
+                ]),
                 code: block.clone(),
                 copied: Vec::new(),
             },
-            Instruction::Return { register: 0 },
+            Instruction::Return {
+                register: HEADER_REGISTERS,
+            },
         ],
     );
     let table = decode::DecodedCodeTable {
@@ -8174,7 +8930,8 @@ fn a_frame_with_no_registers_for_a_body_that_has_some_is_refused() {
                     arguments: 0,
                     locals: 0,
                     argument_count: 0,
-                    register_count: 2
+                    expected_locals: 2,
+                    register_count: HEADER_REGISTERS + 2
                 })
             );
         },
@@ -8183,10 +8940,10 @@ fn a_frame_with_no_registers_for_a_body_that_has_some_is_refused() {
 
 #[test]
 fn a_frame_whose_register_file_is_too_small_for_its_code_is_refused() {
-    // `foo`'s body has two registers; this activation has one. A
-    // `LoadOuterLocal` of r1 from the closure would index `temporaries[1]` of a
-    // one-element `temporaries` -- an unchecked out-of-bounds index in
-    // `locals::read_local`, reached from a version-matching image.
+    // `foo`'s body has two registers above its header; this activation has
+    // one. A `LoadOuterLocal` of the second from the closure would index
+    // past the frame's one register field, reached from a version-matching
+    // image.
     let (mut fixture, table) = closure_world();
     fixture.decoded(&closure_over_frame(foo_frame(1)), "decode", |heap, graph| {
         let error = decode::verify_graph(heap, graph, &table).expect_err("undersized frame");
@@ -8196,12 +8953,85 @@ fn a_frame_whose_register_file_is_too_small_for_its_code_is_refused() {
                 arguments: 0,
                 locals: 1,
                 argument_count: 0,
-                register_count: 2
+                expected_locals: 2,
+                register_count: HEADER_REGISTERS + 2
             }
         );
         assert_eq!(
             error.to_string(),
-            "a decoded frame holds 0 argument(s) and 1 local(s), but the code that runs in it takes 0 argument(s) in 2 register(s)"
+            "a decoded frame holds 0 argument(s) and 1 local(s), but the code that runs in it takes 0 argument(s) and 2 local(s) beside its header in 15 register(s)"
+        );
+    });
+}
+
+/// A frame record written with a field for each of the header's numbers,
+/// as frame objects were laid out before they left them out, holds 13
+/// registers too many for its body: refused rather than read with its
+/// registers above the header shifted by 13.
+#[test]
+fn a_frame_with_fields_for_the_header_numbers_is_refused() {
+    let (mut fixture, table) = closure_world();
+    let stale = u32::from(HEADER_REGISTERS) + 2;
+    fixture.decoded(
+        &closure_over_frame(foo_frame(stale)),
+        "decode",
+        |heap, graph| {
+            assert_eq!(
+                decode::verify_graph(heap, graph, &table),
+                Err(decode::DecodeError::FrameRegisterFile {
+                    arguments: 0,
+                    locals: usize::from(HEADER_REGISTERS) + 2,
+                    argument_count: 0,
+                    expected_locals: 2,
+                    register_count: HEADER_REGISTERS + 2
+                })
+            );
+        },
+    );
+}
+
+/// A body past the register ceiling whose arguments leave no number above
+/// the header has its arguments as its whole register file
+/// (`compiler::body_too_large`), and a frame of it holds exactly those: an
+/// image carrying one -- here a block of `u16::MAX` parameters, whose
+/// activation is object 1 -- verifies.
+#[test]
+fn a_frame_of_a_body_whose_arguments_fill_the_register_ceiling_verifies() {
+    let block = code_with(
+        CodeKind::Block,
+        u16::MAX,
+        u16::MAX,
+        vec![Instruction::ImplicitReturn { register: 0 }],
+    );
+    assert_eq!(block.frame_register_count(), usize::from(u16::MAX));
+    let (mut fixture, table) = closure_world_over(block);
+    fixture.module_roots = vec![3];
+    let mut writer = encode::Writer::new();
+    graph_counts(&mut writer, 5);
+    writer.write_shipped(CLOSURE_NAME);
+    writer.write_u32(1); // identity hash
+    writer.write_u8(OBJECT_CLOSURE); // object body: Closure
+    writer.write_u32(0); // code id 0 -- the block body
+    writer.write_u32(2); // captured frame -- object 2, `foo`'s activation
+    writer.write_u16(0); // copying nothing
+    frame_header(&mut writer, 0);
+    writer.write_u8(FRAME_CLOSURE); // frame kind: a closure...
+    writer.write_u32(0); // ...object 0
+    runs_body(&mut writer, 0); // code id 0 -- the block's body
+    frame_tail_marked(&mut writer, 0, u32::from(u16::MAX), true, Some(2));
+    frame_header(&mut writer, 0);
+    foo_frame(2)(&mut writer);
+    root_class_records(&mut writer, 3);
+    writer.write_u32(1); // one root...
+    writer.write_u8(VALUE_OBJECT_ID);
+    writer.write_u32(1); // ...the block's activation
+    fixture.decoded(&writer.into_bytes(), "decode", |heap, graph| {
+        decode::verify_graph(heap, graph, &table)
+            .expect("the frame holds the block's arguments, its whole register file");
+        let frame = graph.frames[0];
+        assert_eq!(
+            heap.frame_register_shape(frame),
+            (0, usize::from(u16::MAX), usize::from(u16::MAX))
         );
     });
 }
@@ -11786,7 +12616,7 @@ fn a_snapshot_taken_while_an_activation_is_running_is_refused() {
                     then: ns_runtime::Continuation::Deliver,
                     counted: true,
                 },
-                &[],
+                Arguments::NONE,
                 0,
             )
             .expect("the stack holds the frame");
@@ -13735,14 +14565,15 @@ fn an_applied_levels_clause_its_row_does_not_declare_is_a_decode_error() {
     }
 }
 
-/// A clause index the applied-clause field cannot number is refused before
-/// it is looked up, so it is never truncated into another clause.
+/// A clause index at or past the clause limit of 1,024, which no resolved
+/// declaration numbers, is refused before it is looked up, so it is never
+/// truncated into another clause.
 #[test]
-fn an_applied_levels_clause_index_past_twenty_three_bits_is_refused() {
+fn an_applied_levels_clause_index_past_the_clause_limit_is_refused() {
     let mut fixture = GraphFixture::with_source(APPLYING_MODULE);
     let marker = row_named(&fixture, "Marker");
     let applied = row_named(&fixture, "Applied");
-    for index in [1u32 << 23, u32::MAX] {
+    for index in [1024, 1u32 << 23, u32::MAX] {
         let bytes = class_records(2, |writer| {
             applied_level_record(writer, (1, marker), None, (applied, index));
             metaclass_record(writer, 0);
@@ -13758,8 +14589,7 @@ fn an_applied_levels_clause_index_past_twenty_three_bits_is_refused() {
         assert_eq!(
             error.to_string(),
             format!(
-                "mixin application clause index {index} of row {applied} is past the 2^23 \
-                 clauses a class object can name"
+                "mixin application clause index {index} of row {applied} is past the limit of 1024 clauses"
             )
         );
     }
@@ -17196,4 +18026,389 @@ fn a_body_less_value_class_is_refused_alike_after_build_and_load() {
             expected
         );
     });
+}
+
+/// A code record's header, for a body of `kind` taking `argument_count`
+/// arguments in `register_count` registers, with no copied value, no
+/// statement map and its sends cached: what the limit tests vary.
+fn code_header(
+    writer: &mut encode::Writer,
+    kind: CodeKind,
+    argument_count: u16,
+    register_count: u16,
+) {
+    writer.write_u8(encode::code_kind_tag(kind));
+    writer.write_u16(argument_count);
+    writer.write_u16(register_count);
+    writer.write_u16(0); // copied_count
+    writer.write_u16(register_count); // local_count
+    writer.write_u32(0); // source.start
+    writer.write_u32(0); // source.end
+    writer.write_u32(0); // no statement_program_counter entries
+    writer.write_boolean(false); // not compiled uncached
+}
+
+/// The decode error of a code table of one record, which `write` writes
+/// after the table's count.
+fn code_table_error(write: impl FnOnce(&mut encode::Writer)) -> decode::DecodeError {
+    let mut writer = encode::Writer::new();
+    writer.write_u32(1); // one code entry
+    write(&mut writer);
+    let bytes = writer.into_bytes();
+    let mut reader = decode::Reader::new(&bytes);
+    match decode::decode_code_table(&mut reader, &table_with(&["foo"])) {
+        Ok(_) => panic!("expected the code table to be refused"),
+        Err(error) => error,
+    }
+}
+
+/// A body claiming one instruction past the limit of 2^20 is refused where
+/// its count is read, before any instruction is: the bytes hold none.
+#[test]
+fn an_image_with_a_body_past_the_instruction_limit_is_refused() {
+    let error = code_table_error(|writer| {
+        code_header(writer, CodeKind::Method, 0, HEADER_REGISTERS + 1);
+        writer.write_u32((1 << 20) + 1); // the instruction count, and no instruction
+    });
+    assert_eq!(
+        error,
+        decode::DecodeError::InstructionCountTooLarge {
+            count: (1 << 20) + 1
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "a body in the image holds 1048577 instructions, more than the limit of 1048576"
+    );
+}
+
+/// A body taking 256 arguments is refused at its header, and so is a
+/// method record of 256 parameters in the mixin table: no compiled program
+/// has either.
+#[test]
+fn an_image_with_a_method_of_256_parameters_is_refused() {
+    let error = code_table_error(|writer| {
+        code_header(writer, CodeKind::Method, 256, 256 + HEADER_REGISTERS + 1);
+        writer.write_u32(0);
+    });
+    assert_eq!(
+        error,
+        decode::DecodeError::ArgumentCountTooLarge {
+            what: "body",
+            count: 256
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "a body in the image takes 256 arguments, more than the limit of 255"
+    );
+    let mut writer = encode::Writer::new();
+    writer.write_u32(1);
+    write_mixin_row_with_method_shapes(
+        &mut writer,
+        0,
+        &[],
+        &[MethodShape {
+            selector: 0,
+            access: AccessModifier::Public,
+            argument_count: 256,
+            code: 0,
+        }],
+        &[],
+    );
+    let bytes = writer.into_bytes();
+    let mut reader = decode::Reader::new(&bytes);
+    match mixins::decode(&mut reader, &table_with(&["foo"]), &[]) {
+        Err(error) => assert_eq!(
+            error,
+            decode::DecodeError::ArgumentCountTooLarge {
+                what: "method",
+                count: 256
+            }
+        ),
+        Ok(_) => panic!("expected the method of 256 parameters to be refused"),
+    }
+}
+
+/// A send of 256 arguments, and a closure of 256 parameters, are refused
+/// where their list's count is read.
+#[test]
+fn an_image_with_a_send_of_256_arguments_is_refused() {
+    let error = code_table_error(|writer| {
+        code_header(writer, CodeKind::Method, 0, 300);
+        writer.write_u32(1); // one instruction ...
+        writer.write_u8(OPCODE_SEND_PUBLIC);
+        writer.write_u32(0); // selector `foo`
+        writer.write_u16(HEADER_REGISTERS); // receiver
+        writer.write_u16(HEADER_REGISTERS + 1); // argument base
+        writer.write_u16(256); // ... of 256 arguments
+    });
+    assert_eq!(
+        error,
+        decode::DecodeError::ArgumentCountTooLarge {
+            what: "send",
+            count: 256
+        }
+    );
+    let error = code_table_error(|writer| {
+        code_header(writer, CodeKind::Method, 0, HEADER_REGISTERS + 1);
+        writer.write_u32(1); // one instruction ...
+        writer.write_u8(OPCODE_MAKE_CLOSURE);
+        writer.write_u16(HEADER_REGISTERS); // destination
+        writer.write_u16(256); // ... naming 256 parameters
+    });
+    assert_eq!(
+        error,
+        decode::DecodeError::ArgumentCountTooLarge {
+            what: "closure",
+            count: 256
+        }
+    );
+}
+
+/// A mixin-table row of 1,025 `<:` clauses is refused where the count is
+/// read, before a clause is reserved for.
+#[test]
+fn an_image_applying_1025_mixins_is_refused() {
+    let mut writer = encode::Writer::new();
+    writer.write_u32(1); // one row
+    writer.write_u32(0); // name
+    writer.write_u8(mixins::access_tag(AccessModifier::Protected));
+    writer.write_u32(0); // span.start
+    writer.write_u32(0); // span.end
+    writer.write_u32(0); // no slots
+    writer.write_boolean(false); // no factory
+    writer.write_boolean(false); // no initExprs
+    writer.write_boolean(true); // a superclass clause ...
+    writer.write_u32(0); // ... sending `foo`
+    writer.write_boolean(false); // without arguments
+    writer.write_u32(1025); // the clause count, and no clause
+    let bytes = writer.into_bytes();
+    let mut reader = decode::Reader::new(&bytes);
+    match mixins::decode(&mut reader, &table_with(&["foo"]), &[]) {
+        Err(error) => {
+            assert_eq!(
+                error,
+                decode::DecodeError::ClauseCountTooLarge { count: 1025 }
+            );
+            assert_eq!(
+                error.to_string(),
+                "a mixin-table row applies 1025 mixins, more than the limit of 1024"
+            );
+        }
+        Ok(_) => panic!("expected the row of 1,025 clauses to be refused"),
+    }
+}
+
+/// The register a `key:` send's callee, `Ephemeron>>key:`, holds the VM
+/// mirror in when it answers, as the sender numbers it: the callee lowers
+/// `vmMirror` into a scratch register of its own for its last
+/// `SendMirror`, whose answer it returns, and is laid on the send's slots,
+/// from `argument_base` on.
+fn mirror_register_of_ephemeron_key<'gc>(
+    mutator: &Mutator<'gc>,
+    ephemeron: Value<'gc>,
+    argument_base: u16,
+) -> u16 {
+    let key_code = method_code(mutator.heap(), mutator.class_of(ephemeron), "key:");
+    let mirror_register = key_code
+        .instructions()
+        .iter()
+        .rev()
+        .find_map(|instruction| match instruction {
+            Instruction::SendMirror {
+                mirror_register, ..
+            } => Some(*mirror_register),
+            _ => None,
+        })
+        .expect("Ephemeron>>key: runs a mirror send");
+    argument_base + mirror_register
+}
+
+/// The capability barrier the analysis protects: a crafted method sends
+/// `key: nil` to an `Ephemeron`, whose shipped method stores the key by a
+/// `SendMirror` and so holds the VM mirror in one of its registers until
+/// it answers -- a register of the sender's above the send's slots, where
+/// the callee is laid; then the crafted method returns that register. No
+/// compiled body reads a register above a send's slots before writing it,
+/// so the image carrying the method is refused at load, before any of its
+/// code runs, whatever the pop leaves in that register.
+#[test]
+fn an_image_reading_the_mirror_a_kernel_method_left_is_refused() {
+    let source = indoc! {"
+        class X = Object new (
+        ) (
+          public ephemeronOf: platform = ( ^platform kernel Ephemeron new )
+          public run: subject = ( ^subject key: nil )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let platform = interpreter.platform();
+    let ephemeron = expect_ok(
+        interpreter.send(&instance, Symbol::intern("ephemeronOf:"), &[platform]),
+        "ephemeronOf:",
+    );
+    let (image_bytes, refused_at, mirror_register) = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let run = method_code(mutator.heap(), class, "run:");
+        let mut instructions = run.instructions();
+        let (argument_base, slot_end) = instructions
+            .iter()
+            .find_map(|instruction| match instruction {
+                Instruction::SendPublic {
+                    selector,
+                    argument_base,
+                    argument_sources,
+                    ..
+                } if *selector == Symbol::intern("key:") => Some((
+                    *argument_base,
+                    *argument_base + argument_sources.len() as u16,
+                )),
+                _ => None,
+            })
+            .expect("run: sends key:");
+        let ephemeron = mutator.fetch(&ephemeron);
+        let mirror_register = mirror_register_of_ephemeron_key(mutator, ephemeron, argument_base);
+        assert!(
+            mirror_register >= slot_end,
+            "the mirror lies above the slots"
+        );
+        // The body's own return of the send's answer answers the register
+        // the callee held the mirror in instead.
+        let last = instructions.len() - 1;
+        assert!(matches!(
+            instructions[last],
+            Instruction::Return { .. } | Instruction::ImplicitReturn { .. }
+        ));
+        instructions[last] = Instruction::Return {
+            register: mirror_register,
+        };
+        let doctored = Rc::new(CompiledCode::new(
+            CodeKind::Method,
+            instructions,
+            run.argument_count,
+            run.register_count.max(mirror_register + 1),
+            0,
+            vec![],
+            Span::new(0, 0),
+        ));
+        let mixin = with_method_code(mixin_of(mutator.heap(), class), "run:", doctored);
+        install_mixin(mutator, class, mixin);
+        let instance = mutator.fetch(&instance);
+        let image_bytes = snapshot_one(
+            mutator,
+            false,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &[instance],
+        )
+        .expect("snapshot");
+        (image_bytes, last as u32, mirror_register)
+    });
+    let Err(error) = image::load(&image_bytes) else {
+        panic!("a read of the mirror a callee left must be refused at load")
+    };
+    let expected = decode::DecodeError::LeftoverRead {
+        instruction: refused_at,
+        register: mirror_register,
+    };
+    assert!(error.contains(&expected.to_string()), "{error}");
+}
+
+/// A body whose return reads a scratch register nothing wrote -- a word
+/// the push left there -- is refused, and so is one that reads a register
+/// above a send's slots, where its callee was laid.
+#[test]
+fn an_image_reading_unwritten_scratch_is_refused() {
+    let table = table_of(vec![code_with(
+        CodeKind::Method,
+        0,
+        HEADER_REGISTERS + 1,
+        vec![Instruction::Return {
+            register: HEADER_REGISTERS,
+        }],
+    )]);
+    let error = decode::verify_code_table(&table).expect_err("the scratch is unwritten");
+    assert_eq!(
+        error,
+        decode::DecodeError::LeftoverRead {
+            instruction: 0,
+            register: HEADER_REGISTERS,
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "register r{HEADER_REGISTERS} is read at instruction 0 before the body writes it: \
+             it may hold what a callee or the push left there"
+        )
+    );
+    let receiver = HEADER_REGISTERS;
+    let above = HEADER_REGISTERS + 2;
+    let table = table_of(vec![code_with(
+        CodeKind::Method,
+        0,
+        HEADER_REGISTERS + 3,
+        vec![
+            Instruction::LoadSelf {
+                destination: receiver,
+            },
+            Instruction::LoadSelf { destination: above },
+            Instruction::SendPublic {
+                receiver_register: receiver,
+                selector: Symbol::intern("foo:"),
+                argument_base: HEADER_REGISTERS + 1,
+                argument_sources: vec![receiver],
+                destination: receiver,
+                call_site: CallSite { number: 0 },
+            },
+            Instruction::Return { register: above },
+        ],
+    )]);
+    assert_eq!(
+        decode::verify_code_table(&table),
+        Err(decode::DecodeError::LeftoverRead {
+            instruction: 3,
+            register: above,
+        })
+    );
+}
+
+/// A body keeping 258 forward branch targets pending at once, one more
+/// than any compiled body can, is refused at the branch that opens the
+/// 258th, before the analysis takes a bitset for it; one of 257 verifies.
+#[test]
+fn an_image_past_the_verification_bound_is_refused() {
+    let nested_branches = |count: u32| {
+        let mut instructions: Vec<Instruction> = (0..count)
+            .map(|index| Instruction::BranchIfFalse {
+                register: 0,
+                target: 2 * count - 1 - index,
+            })
+            .collect();
+        instructions.extend((0..count).map(|_| Instruction::LoadSelf {
+            destination: HEADER_REGISTERS + 1,
+        }));
+        instructions.push(Instruction::Return { register: 0 });
+        table_of(vec![code_with(
+            CodeKind::Method,
+            1,
+            HEADER_REGISTERS + 2,
+            instructions,
+        )])
+    };
+    let error = decode::verify_code_table(&nested_branches(258))
+        .expect_err("258 pending targets are past the bound");
+    assert_eq!(
+        error,
+        decode::DecodeError::VerificationPastTheBound { instruction: 257 }
+    );
+    assert_eq!(
+        error.to_string(),
+        "a body in the image passes the verification's bound at instruction 257: no \
+         compiled body keeps more than 257 jump targets pending or 128 loops open, \
+         crosses two loops or jumps into a loop past its head"
+    );
+    assert_eq!(decode::verify_code_table(&nested_branches(257)), Ok(()));
 }

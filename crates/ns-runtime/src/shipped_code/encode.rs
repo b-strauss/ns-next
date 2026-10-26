@@ -384,6 +384,7 @@ impl Out {
             // `addresses_own_slots_of` decide them here too.
             family_size: _,
             copied_count,
+            local_count,
             outer_reach: _,
             addresses_own_slots: _,
             unwind_marker,
@@ -391,6 +392,9 @@ impl Out {
             // A heap's answer, valid only in that heap; the decoded body
             // starts with none.
             code_id_cache: _,
+            // What the collector asked of the body; the decoded body asks
+            // afresh.
+            tainted_sets: _,
             // Derived from the mixin the body is attached to, as the
             // decoder attaches it (`Mixin::mark_declaration_code`).
             declaration_code: _,
@@ -404,6 +408,7 @@ impl Out {
         self.u16(*argument_count);
         self.u16(*register_count);
         self.u16(*copied_count);
+        self.u16(*local_count);
         self.length(statement_program_counter.len());
         for (statement, range) in statement_program_counter {
             self.length(*statement);
@@ -520,54 +525,62 @@ impl Out {
             Instruction::SendLexical {
                 depth,
                 selector,
-                argument_registers,
+                argument_base,
+                argument_sources,
                 destination,
                 call_site,
             } => {
                 self.u8(7);
                 self.u16(*depth);
                 self.symbol(*selector);
-                self.registers(argument_registers);
+                self.u16(*argument_base);
+                self.registers(argument_sources);
                 self.u16(*destination);
                 self.call_site(*call_site);
             }
             Instruction::SendPublic {
                 selector,
                 receiver_register,
-                argument_registers,
+                argument_base,
+                argument_sources,
                 destination,
                 call_site,
             } => {
                 self.u8(8);
                 self.symbol(*selector);
                 self.u16(*receiver_register);
-                self.registers(argument_registers);
+                self.u16(*argument_base);
+                self.registers(argument_sources);
                 self.u16(*destination);
                 self.call_site(*call_site);
             }
             Instruction::SendInlinable {
                 selector,
                 receiver_register,
-                argument_registers,
+                argument_base,
+                argument_sources,
                 destination,
                 call_site,
             } => {
                 self.u8(9);
                 self.symbol(*selector);
                 self.u16(*receiver_register);
-                self.registers(argument_registers);
+                self.u16(*argument_base);
+                self.registers(argument_sources);
                 self.u16(*destination);
                 self.call_site(*call_site);
             }
             Instruction::SendSuper {
                 selector,
-                argument_registers,
+                argument_base,
+                argument_sources,
                 destination,
                 call_site,
             } => {
                 self.u8(10);
                 self.symbol(*selector);
-                self.registers(argument_registers);
+                self.u16(*argument_base);
+                self.registers(argument_sources);
                 self.u16(*destination);
                 self.call_site(*call_site);
             }
@@ -575,7 +588,8 @@ impl Out {
                 primitive,
                 mirror_register,
                 subject_register,
-                argument_registers,
+                argument_base,
+                argument_sources,
                 destination,
                 failure,
             } => {
@@ -583,7 +597,8 @@ impl Out {
                 self.mirror_primitive(*primitive);
                 self.u16(*mirror_register);
                 self.u16(*subject_register);
-                self.registers(argument_registers);
+                self.u16(*argument_base);
+                self.registers(argument_sources);
                 self.u16(*destination);
                 self.u32(*failure);
             }
@@ -752,23 +767,27 @@ impl Out {
             Instruction::InitializeSuperclass {
                 steps,
                 selector,
-                argument_registers,
+                argument_base,
+                argument_sources,
                 destination,
             } => {
                 self.u8(35);
                 self.u16(*steps);
                 self.symbol(*selector);
-                self.registers(argument_registers);
+                self.u16(*argument_base);
+                self.registers(argument_sources);
                 self.u16(*destination);
             }
             Instruction::InitializeAppliedLevel {
                 steps,
-                argument_registers,
+                argument_base,
+                argument_sources,
                 destination,
             } => {
                 self.u8(36);
                 self.u16(*steps);
-                self.registers(argument_registers);
+                self.u16(*argument_base);
+                self.registers(argument_sources);
                 self.u16(*destination);
             }
         }
@@ -810,7 +829,9 @@ impl Out {
                 self.u8(7);
                 self.str(name);
             }
-            Literal::BodyTooLarge => self.u8(8),
+            Literal::BodyTooLarge(crate::bytecode::BodyLimit::Registers) => self.u8(8),
+            Literal::BodyTooLarge(crate::bytecode::BodyLimit::Arguments) => self.u8(9),
+            Literal::BodyTooLarge(crate::bytecode::BodyLimit::Instructions) => self.u8(10),
         }
     }
 }

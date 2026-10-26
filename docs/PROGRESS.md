@@ -52,7 +52,8 @@ first.
 | After road step 6 — `new` as compiled code: a synthesized factory body, three initializer bodies per mixin with the clause messages lowered inline, a level reached through a mirror an ordinary class of its mixin, a declaration without a body the mixin application it writes, and a nested-class accessor's hit one field load | Complete | 2026-10-23 | [compiled-new](superpowers/plans/2026-10-22-2051-compiled-new.md) |
 | Road step 7b — resuming an activation from its frame: suspended frames and a side table, the lazy resume, unwinding and the sender walks through suspended frames, a sixth stress mode, the decoder refusing a continuable frame | Complete | 2026-10-24 | [resuming-frames](superpowers/plans/2026-10-24-0140-resuming-frames.md) |
 | Road step 7a — frames as words in one reservation: the code an id, the kind a copyable view, the continuation a side-table row, every activation a frame of tagged words with a fixed header in one `ns-memory` reservation, the reservation a net beneath the depth limit; the measuring protocol varying the block layout inside `vm::run` | Complete | 2026-10-24 | [frames-as-words](superpowers/plans/2026-10-24-1147-frames-as-words.md) |
-| Road step 7 — an execution model for compiled code: 7a′ and 7c | Not started | — | — |
+| Road step 7a′ — overlapping register windows: a send's arguments in contiguous slots read in place, its own callee laid on its slots, the header 13 words in every build and out of the register numbering, the leftover analysis that lets neither a push nor a pop write a scratch register, stated construct limits, the codegen gate | Complete | 2026-10-26 | [register-windows](superpowers/plans/2026-10-24-2054-register-windows.md), [leftover-analysis](superpowers/plans/2026-10-25-1248-leftover-analysis.md) (superseded from its Task 1 on), [leftover-bitsets](superpowers/plans/2026-10-25-1635-leftover-bitsets.md) |
+| Road step 7c — the deoptimization contract and the protocol between interpreted and compiled frames | Not started | — | — |
 | Between road steps 7 and 8 — real Newspeak bodies for `whileTrue:`, `whileFalse:` and `do:` | Not started | — | — |
 | Road step 8 (M5) — a baseline JIT | Not started | — | — |
 | Road step 9 (M6) — an optimizing JIT | Not started | — | — |
@@ -6015,18 +6016,19 @@ memory layer".
 
 Decided with the user on 2026-10-24, as the second part of road step 7:
 every running activation is a frame of tagged words -- a fixed header of
-thirteen words (fourteen in a debug build, the generation added), then its
-registers -- in one reservation of `ns-memory` per heap, 16 GiB on a 64-bit
-target, committed from its base as the stack deepens, in place of the two
-vectors of values and entries; taken only if the interpreter measures no
-slower, and otherwise moved to road step 8. Staged so that each part
-removed one field that was not a word while the vectors still existed: a
+thirteen words in every build, a debug build's generation in the flags
+word, and its registers -- in one reservation of `ns-memory` per heap,
+16 GiB on a 64-bit target, committed from its base as the stack deepens,
+in place of the two vectors of values and entries; taken only if the
+interpreter measures no slower, and otherwise moved to road step 8.
+Staged so that each part removed one field that was not a word while the
+vectors still existed: a
 frame names its code by its `CodeId`, its kind is a copyable view whose
 tag and argument count a flags word packs, and a continuation other than
 `Deliver` is a row of a side table of the heap's, native loops keeping
 theirs. Every word of a frame is a valid tagged value, so the collector
-traces the stack as one linear range with no stack map, as Primordial
-Soup scans its stack; an `ActivationReference` is the frame's word offset,
+traces every word of the stack with no stack map, as Primordial Soup
+scans its stack; an `ActivationReference` is the frame's word offset,
 and a register access one bounds check against the committed end. The
 reservation is a net beneath the depth limit, which stays the bound the
 goldens pin: a push it cannot hold is refused with the limit's error, and
@@ -6077,3 +6079,132 @@ all six stress modes and `run-corpus` under each. New tests in `heap.rs`,
 
 What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): road step
 7a′, next, then 7c.
+
+## Overlapping register windows, road step 7a′ (2026-10-26)
+
+Plans: [register-windows](superpowers/plans/2026-10-24-2054-register-windows.md),
+[leftover-analysis](superpowers/plans/2026-10-25-1248-leftover-analysis.md)
+(superseded from its Task 1 on),
+[leftover-bitsets](superpowers/plans/2026-10-25-1635-leftover-bitsets.md);
+[execution.md](design/execution.md), "Overlapping register windows",
+"What contiguous arguments moved", "What overlapping windows moved", "What
+the leftover analysis moved", "Keeping the hot path in registers";
+[compiler.md](design/compiler.md), "Registers", "What a callee leaves",
+"Limits"; [memory.md](design/memory.md), "What the collector traces";
+[image-format.md](design/image-format.md), "Verification".
+
+Decided with the user on 2026-10-24, as the third part of road step 7: the
+register windows overlap in Cog's layout -- a frame's arguments, then its
+header, then its other registers -- so that a caller's outgoing arguments
+are its callee's first registers; built in two stages, each measured
+against the tree before it with three builds a side.
+
+The first stage makes a send's arguments contiguous slots, allocated after
+its receiver and lowered into directly, or consecutive sources read in
+place; decisions, primitives and builtins read them through an argument
+window, and the argument buffer is gone. As first built it made every
+program slower, Mandelbrot by 28%. A bisection found a sixteen-byte window
+built by narrow stores and read back wide, a store-forwarding stall on
+every read, and a placement loop inlined into every send path, which cost
+`vm::run` its registers. With the window travelling in registers as a tag
+and one word, the placement out of line and a push writing through the
+slices the frame stack answers, no program is slower than `master` with
+its builds separated and twelve of twenty-four are faster, Mandelbrot
+-4.7% and NBody -4.1%.
+
+The second stage lays a send's own callee on its sender's slots: the
+header 13 words in every build, a debug build's generation in the flags
+word, its numbers left out of the register numbering, of frame objects and
+of image records; the pop restoring the top the callee was pushed at,
+which its caller word records; and the decoder refusing a register that
+names a header word, a write to an argument register and an outer load or
+store into another frame's scratch. As first built it made every program
+but `bench_loop.ns` slower, by up to 19.2%: the 72-byte header, moved by
+value through the push's inlined layers, was copied into each and read
+back wide. With the header lent, the push's small helpers inlined and a
+value-answered send's step forgotten -- which speeds the first stage too,
+so the second is judged against the first with it -- fourteen programs
+were still 1.1-2.3% slower, mostly through the pop's nil fill of the words
+its callee gave back. Decided with the user on 2026-10-25: the fill goes.
+The leftover analysis, one pass over bitsets, finds the scratch registers
+a body may read before it writes them; the decoder refuses image code that
+reads one, both lowerings check every body in a debug build, and every
+trace of the stack nils them, so neither a push nor a pop writes a scratch
+register, and a debug build writes a poison word into them and refuses an
+instruction's read of it. Stated construct limits bound the analysis: 2^20
+instructions a body, 255 parameters or arguments, 1,024 `<:` clauses, each
+past which a body compiles to one that raises. Against the tree with the
+fills, no program is slower with its builds separated and the geometric
+mean is -1.34%; against the first stage, -0.09%, DeltaBlueTon80 +1.6% and
+Mandelbrot +0.5% slower with their builds separated. A 99,000-frame stack
+under about 30 scavenges cost 7.9% while the nilling was a pre-pass of its
+own that walked the stack twice, and is level since the stack's trace nils
+each frame as it walks it.
+
+Twice in the step the machine code, not the algorithm, cost 10-28%, found
+only after hours of measuring. `cargo xtask gates codegen`, a gate group
+run at the end of every batch that changes the runtime, holds each hot
+function of the send, push and return path to a budget of instructions
+and of wide stack loads over narrower stores, and release-only size tests
+pin what the path passes by value.
+
+The sends naming their slots retired six wire tags and the code kinds four,
+and each limit a body can pass has a literal tag of its own. No golden's
+outcome changed. Three new goldens under
+`goldens/language/evaluation-order/` pin a setter's value across its
+send's callee and a push that is not its sender's callee leaving the
+sender's window. The end-of-batch gates passed, the suite under all six
+stress modes and `run-corpus` under each. New tests in
+`bytecode/leftovers/tests.rs`, `heap.rs`, `heap/frames.rs`,
+`interpreter/mod.rs`,
+`tests/image.rs`, `tests/compact_encoding.rs`, `tests/compiler.rs`,
+`tests/vm.rs` and `tests/opcode_tags.rs`.
+
+- `6b9a4640`, `96e8898a`, `c18f4b9a` -- the design and the plan.
+- `4c2bdf6f`, `e9019110`, `c3af64f7`, `afc23e8f`, `560b84c8` -- a send
+  names its contiguous slots, its arguments and an inlined integer
+  operation's result are lowered into them, and decisions read them where
+  they are.
+- `b885230b`, `991b78a2`, `0fb019b8`, `81ba9b92`, `d0435bf5`, `95d421a8`
+  -- the first stage's regression recovered: the window in registers, a
+  setter's value in its slot, placement only where a send cannot read in
+  place, a push writing through the frame stack's slices.
+- `e2322b16` -- the first stage measured.
+- `4d0abd72`, `cedc4618` -- the header 13 words in every build.
+- `77d1d8fb`, `f0a1ed27` -- a callee's frame on its caller's slots.
+- `75b35560`, `ec13951d` -- frame objects without the header's numbers.
+- `e3f3f522`, `0037350d` -- the decoder's refusals, and the code kinds'
+  tags pinned.
+- `3b391c41`, `c79353b5`, `ee26d3dd`, `e652421e`, `f0bf0d00`, `6d7da106`,
+  `bcaf22fb`, `8b43a230` -- the second stage's regression narrowed: the
+  header lent, a vector read through the register base, helpers inline, a
+  value-answered send's step forgotten, the caller word recording the top.
+  `fc5791f7`, a return writing through the switch's register base, was
+  measured slower and reverted in `d7488e20`.
+- `0a1a8fd2`, `0a643653`, `4f632168`, `2d83cefa`, `58fdb9ed`, `2b15787f`,
+  `d468c641`, `92db93bb`, `3943443a` -- the codegen gate and the hot
+  path's size tests.
+- `c6a126b3`, `5d5ebfdb` -- the leftover analysis planned, and the README
+  running every xtask goal.
+- `154bd964`, `d5ac0409`, `dbfbf042` -- the register effects of an
+  instruction in `bytecode.rs`, and a first analysis over undo logs,
+  replaced by the bitsets.
+- `22244e44` -- the plan over bitsets, with construct limits.
+- `f0ec9439`, `16c33879`, `54a04a48` -- the construct limits.
+- `312eb63f`, `13eab1eb`, `28e8ad77` -- the analysis over bitsets, and both
+  lowerings checking it.
+- `9c5eee28` -- the decoder refuses code that reads what it did not write.
+- `ffb4c49e`, `28a798eb`, `f2faa8f4` -- the collector nils the tainted
+  registers, and neither a push nor a pop fills them.
+- `dc01d39d`, `a6eb4ab1`, `3e0460b4`, `51f1050e`, `a2c44bf2` -- a deep
+  stack walked once, the nilling folded into the stack's trace, the trace
+  out of line.
+- `51d78a8e` -- a tail-call interpreter as the first measurement of fixed
+  registers.
+- `5836de89` -- what the leftover analysis measured.
+- This commit -- the second stage measured, and this entry.
+
+What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): a branch
+adopting four clippy lints, then road step 7c, next; DeltaBlueTon80 and
+Mandelbrot slower after the overlap; the send and return functions'
+placement moving with the collector's code size.

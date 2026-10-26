@@ -11,6 +11,7 @@ use crate::builtins::first_argument;
 use crate::builtins::numbers::integer_operand;
 use crate::builtins::primitive::{ElementAccess, ElementKind};
 use crate::heap::Element;
+use crate::interpreter::Arguments;
 use crate::types::*;
 use crate::{ArbitraryInteger, Heap, Mutator, Symbol};
 
@@ -24,7 +25,7 @@ pub(crate) fn execute<'gc>(
     access: ElementAccess,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let object = receiver.as_object()?;
     let size = mutator.heap.byte_array_size(object)?;
@@ -34,7 +35,7 @@ pub(crate) fn execute<'gc>(
         Err(error) => return Some(Err(error)),
     };
     if access.write() {
-        let value = arguments.get(1).copied().unwrap_or(Value::nil());
+        let value = arguments.try_get(&mutator.heap, 1).unwrap_or(Value::nil());
         let element = match element_operand(&mutator.heap, kind, receiver, selector, value) {
             Ok(element) => element,
             Err(error) => return Some(Err(error)),
@@ -77,11 +78,11 @@ fn offset<'gc>(
     access: ElementAccess,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
     size: usize,
 ) -> Result<usize, NewspeakError<'gc>> {
     let width = access.kind().width();
-    let argument = arguments.first().copied();
+    let argument = arguments.first(heap);
     let refusal = |index: &dyn std::fmt::Display| {
         if access.byte_position() {
             // The last position at which a whole element fits. Bytes fewer
@@ -96,7 +97,7 @@ fn offset<'gc>(
             NewspeakError::argument_error(
                 selector,
                 receiver,
-                first_argument(arguments),
+                first_argument(heap, arguments),
                 format!("{selector} position {index} out of range: {valid} (size {size})"),
             )
         } else {
@@ -104,7 +105,7 @@ fn offset<'gc>(
                 receiver,
                 selector,
                 index,
-                first_argument(arguments),
+                first_argument(heap, arguments),
                 size / width,
             )
         }

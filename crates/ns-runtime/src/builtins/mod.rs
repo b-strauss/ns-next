@@ -33,8 +33,10 @@ pub mod text;
 pub mod value;
 pub mod weak;
 
+use crate::interpreter::Arguments;
 use primitive::Primitive;
 
+use crate::heap::Heap;
 use crate::interpreter::{Signal, Step};
 use crate::types::*;
 use crate::{platform, Mutator, Symbol};
@@ -59,7 +61,7 @@ pub(crate) fn execute<'gc>(
     primitive: Primitive,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Step<'gc>, Signal<'gc>>> {
     match primitive {
         Primitive::Object(primitive) => {
@@ -140,6 +142,6 @@ fn wrap_error<'gc>(
 
 /// The first argument, or nil when there is none: the subject an
 /// `ArgumentError` carries for a leaf whose first argument is wrong.
-pub(crate) fn first_argument<'gc>(arguments: &[Value<'gc>]) -> Value<'gc> {
-    arguments.first().copied().unwrap_or(Value::nil())
+pub(crate) fn first_argument<'gc>(heap: &Heap<'gc>, arguments: Arguments<'_, 'gc>) -> Value<'gc> {
+    arguments.first(heap).unwrap_or(Value::nil())
 }

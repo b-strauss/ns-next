@@ -6,6 +6,7 @@ use super::{type_mismatch, Accepted};
 use crate::builtins::collections::{self, IntegerArgument};
 use crate::builtins::first_argument;
 use crate::builtins::primitive::{FloatPrimitive, Primitive};
+use crate::interpreter::Arguments;
 use crate::numeric::{float_text, numeric_hash};
 use crate::types::*;
 use crate::{Heap, Mutator, Symbol};
@@ -24,7 +25,7 @@ pub(crate) fn execute_float<'gc>(
     mutator: &mut Mutator<'gc>,
     primitive: FloatPrimitive,
     receiver: Value<'gc>,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     if let FloatPrimitive::Parse = primitive {
         return parse(mutator, receiver, arguments);
@@ -36,7 +37,7 @@ pub(crate) fn execute_float<'gc>(
     // `Value` of: the closure holds `mutator` shared, and
     // `Mutator::new_float` needs it.
     let float_function = |operator: &str, operation: fn(f64, f64) -> f64| {
-        let argument = arguments.first().copied();
+        let argument = arguments.first(&mutator.heap);
         match argument.and_then(|value| tower::operand(&mutator.heap, value)) {
             Some(number) => Ok(operation(receiver_float, number.to_f64())),
             None => Err(type_mismatch(
@@ -118,11 +119,13 @@ pub(crate) fn execute_float<'gc>(
         // other argument the tower's way.
         FloatPrimitive::Equal => {
             let equal = match arguments
-                .first()
-                .and_then(|argument| tower::ordering_double(&mutator.heap, *argument))
+                .first(&mutator.heap)
+                .and_then(|argument| tower::ordering_double(&mutator.heap, argument))
             {
                 Some(argument) => doubles_equal(receiver_float, argument),
-                None => tower::values_equal(&mutator.heap, receiver, arguments.first().copied()),
+                None => {
+                    tower::values_equal(&mutator.heap, receiver, arguments.first(&mutator.heap))
+                }
             };
             crate::interpreter::future::declines_for_a_future(
                 mutator,
@@ -243,12 +246,12 @@ fn arithmetic<'gc>(
     operation: Arithmetic,
     receiver: Value<'gc>,
     receiver_float: f64,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
     fast: impl FnOnce(f64, f64) -> f64,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     match arguments
-        .first()
-        .and_then(|argument| tower::arithmetic_double(&mutator.heap, *argument))
+        .first(&mutator.heap)
+        .and_then(|argument| tower::arithmetic_double(&mutator.heap, argument))
     {
         Some(argument) => Some(Ok(mutator.new_float(fast(receiver_float, argument)))),
         None => tower::arithmetic(mutator, operation, receiver, arguments),
@@ -266,12 +269,12 @@ fn compare<'gc>(
     comparison: Comparison,
     receiver: Value<'gc>,
     receiver_float: f64,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
     fast: impl FnOnce(f64, f64) -> bool,
 ) -> Result<Value<'gc>, NewspeakError<'gc>> {
     match arguments
-        .first()
-        .and_then(|argument| tower::ordering_double(heap, *argument))
+        .first(heap)
+        .and_then(|argument| tower::ordering_double(heap, argument))
     {
         Some(argument) => Ok(Value::boolean(fast(receiver_float, argument))),
         None => tower::compare(heap, comparison, receiver, arguments)
@@ -291,9 +294,9 @@ fn digit_count<'gc>(
     range: std::ops::RangeInclusive<i64>,
     out_of_range: &str,
     accepted: Accepted,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Result<usize, NewspeakError<'gc>> {
-    match collections::integer_argument(heap, arguments.first().copied()) {
+    match collections::integer_argument(heap, arguments.first(heap)) {
         Some(IntegerArgument::Small(count)) if range.contains(&count) => Ok(count as usize),
         Some(IntegerArgument::Small(count)) => Err(NewspeakError::argument_error(
             Symbol::intern(selector),
@@ -304,10 +307,10 @@ fn digit_count<'gc>(
         Some(IntegerArgument::Large { .. }) => Err(NewspeakError::argument_error(
             Symbol::intern(selector),
             receiver,
-            first_argument(arguments),
+            first_argument(heap, arguments),
             format!(
                 "{selector} {out_of_range}, got {}",
-                heap.describe_argument(arguments.first().copied())
+                heap.describe_argument(arguments.first(heap))
             ),
         )),
         None => Err(type_mismatch(
@@ -315,7 +318,7 @@ fn digit_count<'gc>(
             receiver,
             Symbol::intern(selector),
             accepted,
-            arguments.first().copied(),
+            arguments.first(heap),
         )),
     }
 }
@@ -327,13 +330,17 @@ fn digit_count<'gc>(
 fn parse<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let class = receiver.as_object()?;
     if mutator.heap.class_builtin(class) != Some(BuiltinClass::Float) {
         return None;
     }
-    Some(parse_text(mutator, receiver, first_argument(arguments)))
+    Some(parse_text(
+        mutator,
+        receiver,
+        first_argument(&mutator.heap, arguments),
+    ))
 }
 
 /// The work of `parse`: reads `argument` as a String that is not a Symbol and

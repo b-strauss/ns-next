@@ -1,0 +1,4 @@
+stdout = '''
+a loop's condition answered nil, which is no Boolean
+nil
+'''

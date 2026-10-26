@@ -4,7 +4,9 @@
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use crate::bytecode::{CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal};
+use crate::bytecode::{
+    BodyLimit, CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal,
+};
 use crate::heap::{Heap, MixinId, ObjectShape};
 use crate::interpreter::future;
 use crate::interpreter::shipped_world::{ShippedEntry, ShippedWorld};
@@ -213,6 +215,23 @@ pub(crate) fn u16_field(what: &str, value: usize) -> Result<u16, String> {
     })
 }
 
+/// A closure's parameter count, a method's or factory's arity, narrowed to
+/// the wire's `u16` field (`u16_field`) and refused past
+/// `bytecode::ARGUMENT_LIMIT`: the body compiled to one that raises
+/// (`docs/design/compiler.md`, "Limits"), and the decoder refuses it, so
+/// the write is refused with an error, and `build` refuses what `load`
+/// would.
+pub(crate) fn arity_field(what: &str, value: usize) -> Result<u16, String> {
+    let arity = u16_field(what, value)?;
+    if arity > crate::bytecode::ARGUMENT_LIMIT {
+        return Err(format!(
+            "image encoding cannot write a {what} of {value}: it is past the limit of {} arguments",
+            crate::bytecode::ARGUMENT_LIMIT
+        ));
+    }
+    Ok(arity)
+}
+
 /// `Rc<CompiledCode>` pointer -> code-table id, assigned by
 /// `encode_code_table`; `encode_closure_record` uses it for a
 /// closure's code reference.
@@ -239,13 +258,15 @@ impl CodeIds {
 }
 
 /// Explicit wire tags for `CodeKind` -- never `as u8` on the enum, whose
-/// declaration order is not a wire format.
+/// declaration order is not a wire format. The kind opens a code record,
+/// so a record of a retired layout meets a retired tag
+/// (`opcodes::RETIRED_CODE_KIND_TAGS`).
 pub fn code_kind_tag(kind: CodeKind) -> u8 {
     match kind {
-        CodeKind::Method => 0,
-        CodeKind::Block => 1,
-        CodeKind::Initializer => 2,
-        CodeKind::SuperclassClause => 3,
+        CodeKind::Method => 5,
+        CodeKind::Block => 6,
+        CodeKind::Initializer => 7,
+        CodeKind::SuperclassClause => 8,
     }
 }
 
@@ -319,12 +340,25 @@ fn encode_code(
     symbols: &mut symbols::Builder,
 ) -> Result<(), String> {
     writer.write_u8(code_kind_tag(code.kind));
-    writer.write_u16(code.argument_count);
+    // Refused past the argument limit as the decoder refuses it
+    // (`decode::check_argument_count`), so that `build` refuses what `load`
+    // would. A body past the register ceiling saturates its arity at
+    // `u16::MAX`, which this refuses too, naming it as the least count it
+    // stands for.
+    if code.argument_count == u16::MAX {
+        return Err(format!(
+            "image encoding cannot write a body arity of {} or more: it is past the limit of {} arguments",
+            u16::MAX,
+            crate::bytecode::ARGUMENT_LIMIT
+        ));
+    }
+    writer.write_u16(arity_field("body arity", usize::from(code.argument_count))?);
     writer.write_u16(code.register_count);
     // `outer_reach` is deliberately absent: it follows from the
     // instructions, and `decode_code` recomputes it as the compiler did,
     // through `CompiledCode::from_builder`.
     writer.write_u16(code.copied_count);
+    writer.write_u16(code.local_count);
     writer.write_u32(code.source.start);
     writer.write_u32(code.source.end);
     writer.write_u32(u32_field(
@@ -441,51 +475,59 @@ fn encode_instruction(
         Instruction::SendLexical {
             depth,
             selector,
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
             ..
         } => {
             writer.write_u8(OPCODE_SEND_LEXICAL);
             writer.write_u16(*depth);
             writer.write_u32(symbols.intern(selector.as_str()));
-            encode_registers(writer, argument_registers)?;
+            writer.write_u16(*argument_base);
+            encode_registers(writer, argument_sources)?;
             writer.write_u16(*destination);
         }
         Instruction::SendPublic {
             selector,
             receiver_register,
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
             ..
         } => {
             writer.write_u8(OPCODE_SEND_PUBLIC);
             writer.write_u32(symbols.intern(selector.as_str()));
             writer.write_u16(*receiver_register);
-            encode_registers(writer, argument_registers)?;
+            writer.write_u16(*argument_base);
+            encode_registers(writer, argument_sources)?;
             writer.write_u16(*destination);
         }
         Instruction::SendInlinable {
             selector,
             receiver_register,
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
             ..
         } => {
             writer.write_u8(OPCODE_SEND_INLINABLE);
             writer.write_u32(symbols.intern(selector.as_str()));
             writer.write_u16(*receiver_register);
-            encode_registers(writer, argument_registers)?;
+            writer.write_u16(*argument_base);
+            encode_registers(writer, argument_sources)?;
             writer.write_u16(*destination);
         }
         Instruction::SendSuper {
             selector,
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
             ..
         } => {
             writer.write_u8(OPCODE_SEND_SUPER);
             writer.write_u32(symbols.intern(selector.as_str()));
-            encode_registers(writer, argument_registers)?;
+            writer.write_u16(*argument_base);
+            encode_registers(writer, argument_sources)?;
             writer.write_u16(*destination);
         }
         Instruction::MakeClosure {
@@ -496,7 +538,7 @@ fn encode_instruction(
         } => {
             writer.write_u8(OPCODE_MAKE_CLOSURE);
             writer.write_u16(*destination);
-            writer.write_u16(u16_field("closure parameter count", parameters.len())?);
+            writer.write_u16(arity_field("closure parameter count", parameters.len())?);
             for parameter in parameters.iter() {
                 writer.write_u32(symbols.intern(parameter.as_str()));
             }
@@ -647,23 +689,27 @@ fn encode_instruction(
         Instruction::InitializeSuperclass {
             steps,
             selector,
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
         } => {
             writer.write_u8(OPCODE_INITIALIZE_SUPERCLASS);
             writer.write_u16(*steps);
             writer.write_u32(symbols.intern(selector.as_str()));
-            encode_registers(writer, argument_registers)?;
+            writer.write_u16(*argument_base);
+            encode_registers(writer, argument_sources)?;
             writer.write_u16(*destination);
         }
         Instruction::InitializeAppliedLevel {
             steps,
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
         } => {
             writer.write_u8(OPCODE_INITIALIZE_APPLIED_LEVEL);
             writer.write_u16(*steps);
-            encode_registers(writer, argument_registers)?;
+            writer.write_u16(*argument_base);
+            encode_registers(writer, argument_sources)?;
             writer.write_u16(*destination);
         }
     }
@@ -743,7 +789,13 @@ fn encode_literal(
             writer.write_u8(LITERAL_UNRESOLVED_IDENTIFIER);
             writer.write_str(name);
         }
-        Literal::BodyTooLarge => writer.write_u8(LITERAL_BODY_TOO_LARGE),
+        Literal::BodyTooLarge(BodyLimit::Registers) => writer.write_u8(LITERAL_BODY_TOO_LARGE),
+        Literal::BodyTooLarge(BodyLimit::Arguments) => {
+            writer.write_u8(LITERAL_BODY_PAST_THE_ARGUMENT_LIMIT)
+        }
+        Literal::BodyTooLarge(BodyLimit::Instructions) => {
+            writer.write_u8(LITERAL_BODY_PAST_THE_INSTRUCTION_LIMIT)
+        }
     }
     Ok(())
 }

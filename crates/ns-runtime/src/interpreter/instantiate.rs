@@ -2,6 +2,7 @@
 //! `docs/design/object-model.md`, "Instantiation", for the six numbered
 //! steps the factory body and the initializers' instructions decide here.
 
+use super::Arguments;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -223,8 +224,9 @@ impl Interpreter {
                 .iter()
                 .map(|argument| mutator.fetch(argument))
                 .collect();
-            let decided = mutator.decide_instantiation(class, factory_arguments.len());
-            mutator.start(Ok(decided), &factory_arguments)
+            let arguments = Arguments::Values(&factory_arguments.as_slice());
+            let decided = mutator.decide_instantiation(class, arguments);
+            mutator.start(decided, arguments)
         });
         self.run_from_host(start, depth)
     }
@@ -574,17 +576,31 @@ impl<'gc> Mutator<'gc> {
     /// metaclass holds none -- one a host built by hand -- instantiates
     /// too, and the factory's arity is checked where a send's is, by
     /// `decide_instance_initializer`, after the allocation's refusals.
+    ///
+    /// Past `bytecode::ARGUMENT_LIMIT` arguments the body of that count is
+    /// the too-large one, which would raise its error before the arity is
+    /// checked: so the arity is checked first there, and a class whose
+    /// factory takes another count raises the arity error, as it does for
+    /// any other wrong count.
     pub(crate) fn decide_instantiation(
         &self,
         class: ClassReference<'gc>,
-        argument_count: usize,
-    ) -> Step<'gc> {
+        arguments: Arguments<'_, 'gc>,
+    ) -> Result<Step<'gc>, Signal<'gc>> {
+        let argument_count = arguments.len();
+        if argument_count > usize::from(crate::bytecode::ARGUMENT_LIMIT) {
+            check_arity(
+                class,
+                declared_factory_arity(self.heap.class_level(class)),
+                arguments,
+            )?;
+        }
         let code = crate::compiler::factory_body(u16::try_from(argument_count).unwrap_or(u16::MAX));
-        Step::Factory {
+        Ok(Step::Factory {
             class,
             code: Rc::new(code),
             arguments: StepArguments::Send,
-        }
+        })
     }
 
     /// The factory activation `factory`, just pushed for `class` with the
@@ -614,7 +630,7 @@ impl<'gc> Mutator<'gc> {
         factory: ActivationReference,
         class: ClassReference<'gc>,
         registers: FactoryRegisters,
-        arguments: &[Value<'gc>],
+        arguments: Arguments<'_, 'gc>,
     ) -> Result<(ActivationReference, usize), Signal<'gc>> {
         let decided = self.decide_instance_initializer(class, Value::nil(), arguments);
         // Read where the decision left it rather than moved out whole: a
@@ -648,7 +664,8 @@ impl<'gc> Mutator<'gc> {
                 .set_register(register_base, registers.answer, instance);
             return Ok((factory, FACTORY_INITIALIZE + 1));
         };
-        let initializer_arguments = initializer_arguments.slice(arguments);
+        let owned = initializer_arguments.owned();
+        let initializer_arguments = initializer_arguments.window(arguments, &owned);
         let pushed = self.push_initializer(
             instance,
             *level,
@@ -837,7 +854,7 @@ impl<'gc> Mutator<'gc> {
         &mut self,
         activation: ActivationReference,
         instance: Value<'gc>,
-        arguments: &[Value<'gc>],
+        arguments: Arguments<'_, 'gc>,
     ) -> Result<Step<'gc>, Signal<'gc>> {
         let receiver = self.heap.activation_receiver(activation);
         let class = self.class_receiver(receiver)?;
@@ -853,7 +870,7 @@ impl<'gc> Mutator<'gc> {
         &mut self,
         class: ClassReference<'gc>,
         instance: Value<'gc>,
-        arguments: &[Value<'gc>],
+        arguments: Arguments<'_, 'gc>,
     ) -> Result<Step<'gc>, Signal<'gc>> {
         let level = self.heap.class_level(class);
         check_arity(class, declared_factory_arity(level), arguments)?;
@@ -876,7 +893,7 @@ impl<'gc> Mutator<'gc> {
         activation: ActivationReference,
         steps: u16,
         selector: Symbol,
-        arguments: &[Value<'gc>],
+        arguments: Arguments<'_, 'gc>,
     ) -> Result<Step<'gc>, Signal<'gc>> {
         let (instance, applying) = self.heap.activation_receiver_and_current_class(activation);
         let Some(applying) = applying else {
@@ -964,7 +981,7 @@ impl<'gc> Mutator<'gc> {
         &mut self,
         activation: ActivationReference,
         steps: u16,
-        arguments: &[Value<'gc>],
+        arguments: Arguments<'_, 'gc>,
     ) -> Result<Step<'gc>, Signal<'gc>> {
         let (instance, applying) = self.heap.activation_receiver_and_current_class(activation);
         let (_, level) = self.applied_level(instance, applying, steps)?;
@@ -1104,7 +1121,11 @@ impl<'gc> Mutator<'gc> {
                 ));
             }
             let superclass_view = self.heap.class_level(superclass);
-            check_arity(superclass, declared_factory_arity(superclass_view), &[])?;
+            check_arity(
+                superclass,
+                declared_factory_arity(superclass_view),
+                Arguments::NONE,
+            )?;
             level = superclass;
             view = superclass_view;
             arguments = StepArguments::Owned(Vec::new());
@@ -1330,7 +1351,7 @@ struct Pass {
 fn check_arity<'gc>(
     class: ClassReference<'gc>,
     declared_arity: Option<usize>,
-    factory_arguments: &[Value<'gc>],
+    factory_arguments: Arguments<'_, 'gc>,
 ) -> Result<(), Signal<'gc>> {
     if let Some(declared_arity) = declared_arity {
         if factory_arguments.len() != declared_arity {
@@ -2084,6 +2105,29 @@ mod tests {
                 assert_eq!(
                     error.message,
                     "wrong number of factory arguments: factory takes 0, got 1"
+                );
+                assert_eq!(error.selector, Symbol::NEW);
+            }
+            Err(HostSignal::Return) => panic!("a non-local return escaped"),
+            Ok(_) => panic!("expected the arity error"),
+        }
+    }
+
+    /// Past the argument limit too: a host's instantiation with 256
+    /// arguments of a class whose factory takes none raises the arity
+    /// error, never the too-large error the factory body of 256 arguments
+    /// would raise.
+    #[test]
+    fn a_wrong_argument_count_past_the_argument_limit_raises_the_arity_error() {
+        let (mut interpreter, class) = load("class Empty = () ()\n");
+        let arguments: Vec<crate::Root> = (0..256)
+            .map(|_| interpreter.stash(crate::Value::small_integer(1)))
+            .collect();
+        match interpreter.instantiate(&class, &arguments) {
+            Err(HostSignal::Error(error)) => {
+                assert_eq!(
+                    error.message,
+                    "wrong number of factory arguments: factory takes 0, got 256"
                 );
                 assert_eq!(error.selector, Symbol::NEW);
             }

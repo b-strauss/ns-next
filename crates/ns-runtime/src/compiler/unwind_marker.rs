@@ -15,7 +15,8 @@ use crate::bytecode::{CompiledCode, Instruction, UnwindMarker};
 /// The marker `declaration`, a method of the kernel's `Closure` compiled to
 /// `code`, carries, if it is one of the three. The registers are read off
 /// the layout `docs/design/compiler.md`, "Registers" gives a method: its
-/// parameters from 0, then its named temporaries in declaration order.
+/// parameters from 0, then the header's numbers, then its named
+/// temporaries in declaration order.
 pub(crate) fn recognize(
     declaration: &ast::MethodDeclaration,
     code: &CompiledCode,
@@ -101,5 +102,5 @@ fn local_register(declaration: &ast::MethodDeclaration, code: &CompiledCode, nam
             panic!("internal: Kernel.ns's marked Closure method declares no local {name}")
         });
     debug_assert_eq!(code.copied_count, 0, "a method is handed no copied values");
-    super::temporary_index(code.argument_count, position)
+    super::temporary_index(code.argument_count, position) + crate::bytecode::HEADER_REGISTERS
 }

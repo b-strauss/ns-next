@@ -12,6 +12,7 @@ use ns_syntax::Span;
 use crate::Symbol;
 
 mod compact;
+pub(crate) mod leftovers;
 
 pub(crate) use compact::CreatedBlock;
 pub use compact::{
@@ -40,10 +41,13 @@ pub use compact::{
 /// `ast::Literal` but the payload of a `LoadLiteral` that raises instead of
 /// producing a value.
 ///
-/// `BodyTooLarge` is the other deferral: a body that needs more registers
-/// than a `u16` names compiles to a body that loads it first and raises
-/// `interpreter::literals::body_too_large_error` (`docs/design/compiler.md`,
-/// "Compilation cannot fail"), so a body never run never fails.
+/// `BodyTooLarge` is the other deferral: a body past one of the compiler's
+/// limits -- more registers than a `u16` names, more than `ARGUMENT_LIMIT`
+/// arguments taken or sent, more than `INSTRUCTION_LIMIT` instructions --
+/// compiles to a body that loads it first and raises
+/// `interpreter::literals::body_too_large_error`, which names the limit
+/// (`docs/design/compiler.md`, "Compilation cannot fail", "Limits"), so a
+/// body never run never fails.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Literal {
     Nil,
@@ -54,8 +58,38 @@ pub enum Literal {
     Symbol(Symbol),
     LargeInteger(crate::ArbitraryInteger),
     UnresolvedIdentifier(String),
-    BodyTooLarge,
+    BodyTooLarge(BodyLimit),
 }
+
+/// The limit a body that compiled to `Literal::BodyTooLarge` passed, which
+/// its error names (`docs/design/compiler.md`, "Limits"). When a body
+/// passes several, it is the first its lowering met; a body whose named
+/// locals do not fit the registers is judged before anything else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BodyLimit {
+    /// It needs more registers than a `u16` numbers.
+    Registers,
+    /// It takes, or one of its sends or clause messages passes, more than
+    /// `ARGUMENT_LIMIT` arguments.
+    Arguments,
+    /// It holds more than `INSTRUCTION_LIMIT` instructions.
+    Instructions,
+}
+
+/// The most instructions one body holds (`docs/design/compiler.md`,
+/// "Limits"). Past it a body compiles to `Literal::BodyTooLarge`, and an
+/// image's body is refused where its count is read. It keeps every
+/// instruction index, jump target and table index within 20 bits, and
+/// bounds the work any pass over one body does.
+pub(crate) const INSTRUCTION_LIMIT: u32 = 1 << 20;
+
+/// The most parameters a method, block or factory takes, and the most
+/// arguments a send or a clause message passes (`docs/design/compiler.md`,
+/// "Limits"). Past it a body compiles to `Literal::BodyTooLarge`; the image
+/// encoder refuses to write such a body and the decoder refuses to read
+/// one, so that every program that runs from source can be packaged. An
+/// argument count fits a byte.
+pub(crate) const ARGUMENT_LIMIT: u16 = 255;
 
 /// One send's identity within its code family (`docs/design/dispatch.md`,
 /// "Code families"): its number among every send of one root body and the
@@ -93,6 +127,17 @@ pub enum IntegerOperation {
 /// Every register operand is a `u16` index into the frame's unified
 /// arguments-then-temporaries register file; every jump target is an instruction
 /// index into the owning `CompiledCode`'s instructions.
+///
+/// **A send's arguments are contiguous slots.** Every send and every
+/// initializer invocation but `InitializeInstance` names its arguments by
+/// `argument_base` and `argument_sources`: the arguments are the registers
+/// `argument_base .. argument_base + argument_sources.len()`, and before it
+/// decides, the instruction copies `argument_sources[index]` into
+/// `argument_base + index` wherever the two differ -- a named local passed
+/// as an argument is copied by the send itself
+/// (`docs/design/execution.md`, "Overlapping register windows").
+/// `InitializeInstance` names `0 .. argument_count`, its body's own
+/// arguments.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Instruction {
     LoadLiteral {
@@ -135,7 +180,8 @@ pub enum Instruction {
     SendLexical {
         depth: u16,
         selector: Symbol,
-        argument_registers: Vec<u16>,
+        argument_base: u16,
+        argument_sources: Vec<u16>,
         destination: u16,
         call_site: CallSite,
     },
@@ -143,7 +189,8 @@ pub enum Instruction {
     SendPublic {
         selector: Symbol,
         receiver_register: u16,
-        argument_registers: Vec<u16>,
+        argument_base: u16,
+        argument_sources: Vec<u16>,
         destination: u16,
         call_site: CallSite,
     },
@@ -156,7 +203,8 @@ pub enum Instruction {
     SendInlinable {
         selector: Symbol,
         receiver_register: u16,
-        argument_registers: Vec<u16>,
+        argument_base: u16,
+        argument_sources: Vec<u16>,
         destination: u16,
         call_site: CallSite,
     },
@@ -164,7 +212,8 @@ pub enum Instruction {
     /// current activation's `current_class`'s superclass.
     SendSuper {
         selector: Symbol,
-        argument_registers: Vec<u16>,
+        argument_base: u16,
+        argument_sources: Vec<u16>,
         destination: u16,
         call_site: CallSite,
     },
@@ -178,9 +227,9 @@ pub enum Instruction {
     /// table, and nothing can add to or override them. The run-time check
     /// that `mirror_register` holds the mirror is what stands for the
     /// lookup (`interpreter::mirror::send_inlined`). `subject_register` is
-    /// the kernel method's `self`, `argument_registers` the leaf's own
-    /// arguments; the failure block is not an argument, because it is code
-    /// here, not a value.
+    /// the kernel method's `self`, the slots at `argument_base` the leaf's
+    /// own arguments; the failure block is not an argument, because it is
+    /// code here, not a value.
     ///
     /// Reads and writes only registers of the activation executing it, so
     /// its `outer_reach_of` reach is 0.
@@ -188,7 +237,8 @@ pub enum Instruction {
         primitive: crate::builtins::primitive::MirrorPrimitive,
         mirror_register: u16,
         subject_register: u16,
-        argument_registers: Vec<u16>,
+        argument_base: u16,
+        argument_sources: Vec<u16>,
         destination: u16,
         failure: u32,
     },
@@ -395,27 +445,29 @@ pub enum Instruction {
     /// An initializer's superclass initialization (§6.3): §6.1's check that
     /// the class `steps` above the activation's class has a primary
     /// factory of `selector`, then that class's initializer on `self`, with
-    /// the clause's arguments in `argument_registers`; `destination` takes
-    /// what it answers.
+    /// the clause's arguments in the slots at `argument_base`;
+    /// `destination` takes what it answers.
     ///
     /// Reads and writes only registers of the activation executing it, so
     /// its `outer_reach_of` reach is 0.
     InitializeSuperclass {
         steps: u16,
         selector: Symbol,
-        argument_registers: Vec<u16>,
+        argument_base: u16,
+        argument_sources: Vec<u16>,
         destination: u16,
     },
     /// An initializer's initialization of a level a `<:` clause adds
     /// (§6.2): the own part of the level `steps` above the activation's
-    /// class, on `self`, with the arguments in `argument_registers`;
-    /// `destination` takes what it answers.
+    /// class, on `self`, with the arguments in the slots at
+    /// `argument_base`; `destination` takes what it answers.
     ///
     /// Reads and writes only registers of the activation executing it, so
     /// its `outer_reach_of` reach is 0.
     InitializeAppliedLevel {
         steps: u16,
-        argument_registers: Vec<u16>,
+        argument_base: u16,
+        argument_sources: Vec<u16>,
         destination: u16,
     },
 }
@@ -436,6 +488,19 @@ pub enum CodeKind {
     SuperclassClause,
 }
 
+/// How many register numbers a frame's header takes, between its arguments
+/// and the rest of its registers: registers `0 .. argument_count` are the
+/// arguments, `argument_count .. argument_count + HEADER_REGISTERS` are
+/// never named by an instruction, and the copied values, the temporaries,
+/// the vector register and scratch start at `argument_count +
+/// HEADER_REGISTERS` (`docs/design/compiler.md`, "Registers"). So a send's
+/// slots, at the top of its sender's live registers, are its callee's
+/// arguments, the callee's header laid where they end, and every register
+/// is still one addition from the frame's start. The frame header's word
+/// count (`heap::frames::frame_header::COUNT`), which a compile-time
+/// assertion holds it to.
+pub const HEADER_REGISTERS: u16 = 13;
+
 #[derive(Debug, Clone)]
 pub struct CompiledCode {
     pub kind: CodeKind,
@@ -445,12 +510,16 @@ pub struct CompiledCode {
     /// view (`instruction`, `instructions`).
     body: EncodedBody,
     pub argument_count: u16,
-    /// Total register count, in the order the registers are laid out:
-    /// `argument_count`, then `copied_count`, then the named temporaries,
-    /// then one hidden register for the indirection vector when the body has
-    /// vector variables, then the compiler-allocated scratch registers
-    /// (`docs/design/compiler.md`, "Registers"). An activation is pushed with
-    /// `register_count - argument_count`.
+    /// One past the highest register number, in the order the registers
+    /// are laid out: `argument_count`, then the `HEADER_REGISTERS` numbers
+    /// of the frame's header, then `copied_count`, then the named
+    /// temporaries, then one hidden register for the indirection vector
+    /// when the body has vector variables, then the compiler-allocated
+    /// scratch registers (`docs/design/compiler.md`, "Registers"). Both
+    /// lowerings make it at least `argument_count + HEADER_REGISTERS`, but
+    /// for a body past the register ceiling with too many arguments for
+    /// that, whose registers are its arguments alone. An activation is
+    /// pushed with `registers_above_header` registers above its header.
     pub register_count: u16,
     /// Maps a statement index to the half-open instruction range it compiled
     /// to -- the safepoint boundary, and how an activation's instruction
@@ -466,6 +535,14 @@ pub struct CompiledCode {
     /// How many copied values a block's activation is handed, between its
     /// parameters and its temporaries. Zero for every other kind of body.
     pub copied_count: u16,
+    /// The first scratch register: one past the arguments, the header's
+    /// numbers, the copied values, the named temporaries and the
+    /// indirection vector's register. Every send's argument slots start at
+    /// or above it, so a callee laid on them has its header here or
+    /// higher, and a block reaching this body's registers by reference
+    /// reads and writes only those below it (`image::decode`'s
+    /// verification holds an image to both). At most `register_count`.
+    pub local_count: u16,
     /// How many frames out the deepest by-reference read or write this body
     /// or a block it creates can reach: `0` for converted code, `1` for a
     /// fallback closure that reads its own creator's registers, one more per
@@ -513,6 +590,11 @@ pub struct CompiledCode {
     /// closure or frame made of it finds its id without the heap's map.
     /// Never on any wire; a copy starts empty.
     pub(crate) code_id_cache: crate::heap::CodeIdCache,
+    /// The registers the collector's pre-pass nils in a frame running this
+    /// body, by program counter, filled the first time a frame stands
+    /// there (`leftovers::TaintedSets`). Never on any wire; a copy starts
+    /// empty.
+    tainted_sets: leftovers::TaintedSets,
     /// Whether this body is a body-less declaration's own code: its full
     /// initializer (`Mixin::has_body`), or a block created in it at any
     /// depth. Such code runs only at the declaration's class object, and
@@ -541,6 +623,7 @@ pub(crate) struct CompiledCodeFields<'code> {
     #[expect(dead_code, reason = "named so that a writer decides to leave it out")]
     pub(crate) family_size: &'code u32,
     pub(crate) copied_count: &'code u16,
+    pub(crate) local_count: &'code u16,
     #[expect(dead_code, reason = "named so that a writer decides to leave it out")]
     pub(crate) outer_reach: &'code u16,
     #[expect(dead_code, reason = "named so that a writer decides to leave it out")]
@@ -550,15 +633,38 @@ pub(crate) struct CompiledCodeFields<'code> {
     #[expect(dead_code, reason = "named so that a writer decides to leave it out")]
     pub(crate) code_id_cache: &'code crate::heap::CodeIdCache,
     #[expect(dead_code, reason = "named so that a writer decides to leave it out")]
+    pub(crate) tainted_sets: &'code leftovers::TaintedSets,
+    #[expect(dead_code, reason = "named so that a writer decides to leave it out")]
     pub(crate) declaration_code: &'code std::cell::Cell<bool>,
 }
 
 impl CompiledCode {
+    /// How many registers an activation of this body has above its header:
+    /// `register_count` less the arguments and the header's numbers, none
+    /// for a body whose registers are its arguments alone.
+    #[inline(always)]
+    pub fn registers_above_header(&self) -> usize {
+        usize::from(self.register_count)
+            .saturating_sub(usize::from(self.argument_count) + usize::from(HEADER_REGISTERS))
+    }
+
+    /// How many registers a frame object of this body holds: its arguments
+    /// and its registers above the header, the header's numbers left out
+    /// (`Heap::frame_field_of_register`). Its arguments alone for a body
+    /// whose registers are its arguments alone.
+    #[inline]
+    pub fn frame_register_count(&self) -> usize {
+        usize::from(self.argument_count) + self.registers_above_header()
+    }
+
     /// A body from its instructions, encoded at once; `family_size` and
     /// `outer_reach` and `addresses_own_slots` are derived from them, as the
     /// compiler derives them.
     /// It carries no unwind marker: only the kernel's compilation
-    /// recognizes one.
+    /// recognizes one. Its `local_count` is that of a body with no named
+    /// temporaries and no indirection vector -- its arguments, the header's
+    /// numbers and its copied values, at most `register_count` -- which a
+    /// body built by hand with named temporaries sets itself.
     pub fn new(
         kind: CodeKind,
         instructions: Vec<Instruction>,
@@ -572,12 +678,16 @@ impl CompiledCode {
         for instruction in instructions {
             builder.emit(instruction);
         }
+        let named =
+            u32::from(argument_count) + u32::from(HEADER_REGISTERS) + u32::from(copied_count);
+        let local_count = u16::try_from(named).unwrap_or(u16::MAX).min(register_count);
         CompiledCode::from_builder(
             kind,
             builder,
             argument_count,
             register_count,
             copied_count,
+            local_count,
             statement_program_counter,
             source,
         )
@@ -588,12 +698,16 @@ impl CompiledCode {
     /// derived from it, read off its tables as `family_size_of`,
     /// `outer_reach_of` and `addresses_own_slots_of` read the decoded view,
     /// so that building a body decodes none of it.
+    // Every field a body is built with but its derived ones, each a
+    // different quantity, so a struct of them would only rename the list.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_builder(
         kind: CodeKind,
         builder: CodeBuilder,
         argument_count: u16,
         register_count: u16,
         copied_count: u16,
+        local_count: u16,
         statement_program_counter: Vec<(usize, Range<usize>)>,
         source: Span,
     ) -> CompiledCode {
@@ -606,10 +720,12 @@ impl CompiledCode {
             argument_count,
             register_count,
             copied_count,
+            local_count,
             statement_program_counter,
             unwind_marker: None,
             source,
             code_id_cache: crate::heap::CodeIdCache::default(),
+            tainted_sets: leftovers::TaintedSets::default(),
             declaration_code: std::cell::Cell::new(false),
         }
     }
@@ -627,11 +743,13 @@ impl CompiledCode {
             statement_program_counter,
             family_size,
             copied_count,
+            local_count,
             outer_reach,
             addresses_own_slots,
             unwind_marker,
             source,
             code_id_cache,
+            tainted_sets,
             declaration_code,
         } = self;
         CompiledCodeFields {
@@ -642,11 +760,13 @@ impl CompiledCode {
             statement_program_counter,
             family_size,
             copied_count,
+            local_count,
             outer_reach,
             addresses_own_slots,
             unwind_marker,
             source,
             code_id_cache,
+            tainted_sets,
             declaration_code,
         }
     }
@@ -672,6 +792,28 @@ impl CompiledCode {
             }
             pending.extend(code.body.created_blocks().map(|block| &**block.code));
         }
+    }
+
+    /// The registers tainted before `program_counter` -- which a frame
+    /// running this body stores -- that the collector's pre-pass nils
+    /// (`leftovers::tainted_at`, kept by `leftovers::TaintedSets`).
+    pub(crate) fn tainted_before(&self, program_counter: u32) -> std::cell::Ref<'_, [Range<u16>]> {
+        self.tainted_sets.before(self, program_counter)
+    }
+
+    /// The set before `program_counter` if it is kept already, which
+    /// `tainted_before` would answer without a pass; `None` otherwise.
+    pub(crate) fn kept_tainted_before(
+        &self,
+        program_counter: u32,
+    ) -> Option<std::cell::Ref<'_, [Range<u16>]>> {
+        self.tainted_sets.kept(program_counter)
+    }
+
+    /// Keeps the sets before each of `program_counters`, ascending, from
+    /// one pass over the body (`leftovers::TaintedSets::fill_all`).
+    pub(crate) fn fill_tainted_before(&self, program_counters: &[u32]) {
+        self.tainted_sets.fill_all(self, program_counters);
     }
 
     /// The instruction at `index`, decoded: what was emitted there.
@@ -701,7 +843,7 @@ impl CompiledCode {
             && matches!(
                 self.instruction(0),
                 Instruction::LoadLiteral {
-                    literal: Literal::BodyTooLarge,
+                    literal: Literal::BodyTooLarge(_),
                     ..
                 }
             )
@@ -764,11 +906,14 @@ impl PartialEq for CompiledCode {
             statement_program_counter,
             family_size,
             copied_count,
+            local_count,
             outer_reach,
             addresses_own_slots,
             unwind_marker,
             source,
             code_id_cache: _,
+            // What the collector asked of the body, not the body.
+            tainted_sets: _,
             // Derived from the mixin the body is attached to, not from the
             // body: a body compiled alone and the same body attached to a
             // body-less mixin mean the same instructions.
@@ -780,6 +925,7 @@ impl PartialEq for CompiledCode {
             && *statement_program_counter == other.statement_program_counter
             && *family_size == other.family_size
             && *copied_count == other.copied_count
+            && *local_count == other.local_count
             && *outer_reach == other.outer_reach
             && *addresses_own_slots == other.addresses_own_slots
             && *unwind_marker == other.unwind_marker
@@ -867,6 +1013,81 @@ impl Instruction {
         match self {
             call_site_variants!(site) => Some(site),
             _ => None,
+        }
+    }
+
+    /// The argument base and the argument sources of a send or an
+    /// initializer invocation that names its argument slots; `None` for
+    /// every other instruction, `InitializeInstance` among them, whose
+    /// arguments are its body's own. No `_` arm, so that a new instruction
+    /// must decide.
+    pub fn argument_slots(&self) -> Option<(u16, &[u16])> {
+        match self {
+            Instruction::SendLexical {
+                argument_base,
+                argument_sources,
+                ..
+            }
+            | Instruction::SendPublic {
+                argument_base,
+                argument_sources,
+                ..
+            }
+            | Instruction::SendInlinable {
+                argument_base,
+                argument_sources,
+                ..
+            }
+            | Instruction::SendSuper {
+                argument_base,
+                argument_sources,
+                ..
+            }
+            | Instruction::SendMirror {
+                argument_base,
+                argument_sources,
+                ..
+            }
+            | Instruction::InitializeSuperclass {
+                argument_base,
+                argument_sources,
+                ..
+            }
+            | Instruction::InitializeAppliedLevel {
+                argument_base,
+                argument_sources,
+                ..
+            } => Some((*argument_base, argument_sources)),
+            Instruction::LoadLiteral { .. }
+            | Instruction::LoadSelf { .. }
+            | Instruction::LoadEnclosingObject { .. }
+            | Instruction::Move { .. }
+            | Instruction::StoreLocal { .. }
+            | Instruction::LoadOuterLocal { .. }
+            | Instruction::StoreOuterLocal { .. }
+            | Instruction::MakeClosure { .. }
+            | Instruction::MakeArray { .. }
+            | Instruction::MakeVector { .. }
+            | Instruction::LoadVector { .. }
+            | Instruction::StoreVector { .. }
+            | Instruction::InitializeSlot { .. }
+            | Instruction::ReturnSlotIfFilled { .. }
+            | Instruction::MakeFuture { .. }
+            | Instruction::ResolveFuture { .. }
+            | Instruction::LoadOwnSlot { .. }
+            | Instruction::InitializeSlotProvisionally { .. }
+            | Instruction::Return { .. }
+            | Instruction::ImplicitReturn { .. }
+            | Instruction::NonLocalReturn { .. }
+            | Instruction::SignalNonBoolean { .. }
+            | Instruction::Jump { .. }
+            | Instruction::JumpIfNotBoolean { .. }
+            | Instruction::BranchIfFalse { .. }
+            | Instruction::BranchIfTrue { .. }
+            | Instruction::IntegerBinary { .. }
+            | Instruction::AllocateInstance { .. }
+            | Instruction::InitializeInstance { .. }
+            | Instruction::CheckAppliedClause { .. } => None,
         }
     }
 
@@ -1010,6 +1231,234 @@ pub(crate) fn outer_reach_of(instructions: &[Instruction]) -> u16 {
         .unwrap_or(0)
 }
 
+/// The registers of the executing frame that `instruction` reads. The
+/// `index` of an outer-local access names a register of another frame, so
+/// it is not one of them; neither are the factory arguments
+/// `InitializeInstance` hands on, which are its body's named arguments and
+/// which it names by no operand, nor the argument slots a send copies its
+/// sources into, which its callee reads, not the send.
+///
+/// **The match answers every instruction, with no `_` arm**, as
+/// `register_written` and `outer_reach_of` do, so that a new instruction
+/// must decide what it reads. One that read a register but answered none of
+/// it would be read past every check that holds a body to what its
+/// callees may have left (`docs/design/compiler.md`, "What a callee
+/// leaves").
+pub(crate) fn registers_read(instruction: &Instruction) -> impl Iterator<Item = u16> + '_ {
+    let (fixed, listed): ([Option<u16>; 2], &[u16]) = match instruction {
+        Instruction::Move { source, .. }
+        | Instruction::StoreLocal { source, .. }
+        | Instruction::StoreOuterLocal { source, .. }
+        | Instruction::InitializeSlot { source, .. }
+        | Instruction::InitializeSlotProvisionally { source, .. }
+        | Instruction::ResolveFuture { source, .. } => ([Some(*source), None], &[]),
+        Instruction::MakeFuture { closure, .. } => ([Some(*closure), None], &[]),
+        Instruction::Return { register }
+        | Instruction::ImplicitReturn { register }
+        | Instruction::NonLocalReturn { register }
+        | Instruction::SignalNonBoolean { register }
+        | Instruction::JumpIfNotBoolean { register, .. }
+        | Instruction::BranchIfFalse { register, .. }
+        | Instruction::BranchIfTrue { register, .. } => ([Some(*register), None], &[]),
+        Instruction::SendPublic {
+            receiver_register,
+            argument_sources,
+            ..
+        }
+        | Instruction::SendInlinable {
+            receiver_register,
+            argument_sources,
+            ..
+        } => ([Some(*receiver_register), None], argument_sources),
+        Instruction::SendMirror {
+            mirror_register,
+            subject_register,
+            argument_sources,
+            ..
+        } => (
+            [Some(*mirror_register), Some(*subject_register)],
+            argument_sources,
+        ),
+        Instruction::SendLexical {
+            argument_sources, ..
+        }
+        | Instruction::SendSuper {
+            argument_sources, ..
+        }
+        | Instruction::InitializeSuperclass {
+            argument_sources, ..
+        }
+        | Instruction::InitializeAppliedLevel {
+            argument_sources, ..
+        } => ([None, None], argument_sources),
+        Instruction::MakeArray {
+            element_registers, ..
+        } => ([None, None], element_registers),
+        // The values a converted closure is handed are read out of this
+        // frame when the closure is made.
+        Instruction::MakeClosure { copied, .. } => ([None, None], copied),
+        Instruction::InitializeInstance { instance, .. } => ([Some(*instance), None], &[]),
+        Instruction::LoadVector { vector, .. } => ([Some(*vector), None], &[]),
+        Instruction::StoreVector { vector, source, .. } => ([Some(*vector), Some(*source)], &[]),
+        Instruction::IntegerBinary { left, right, .. } => ([Some(*left), Some(*right)], &[]),
+        Instruction::LoadLiteral { .. }
+        | Instruction::LoadSelf { .. }
+        | Instruction::LoadEnclosingObject { .. }
+        | Instruction::LoadOuterLocal { .. }
+        | Instruction::MakeVector { .. }
+        | Instruction::ReturnSlotIfFilled { .. }
+        | Instruction::LoadOwnSlot { .. }
+        | Instruction::Jump { .. }
+        | Instruction::AllocateInstance { .. }
+        | Instruction::CheckAppliedClause { .. } => ([None, None], &[]),
+    };
+    fixed.into_iter().flatten().chain(listed.iter().copied())
+}
+
+/// The register of the executing frame `instruction` writes, if any: its
+/// destination, or a `StoreLocal`'s slot. A send's argument slots are not
+/// answered (`Instruction::argument_slots` names them), and neither is the
+/// destination of a load of `Literal::BodyTooLarge`, which raises before it
+/// writes: the body a body past the register ceiling compiles to
+/// (`compiler::body_too_large`) names its last argument so when its
+/// arguments leave no register above the header.
+///
+/// **The match answers every instruction, with no `_` arm**, so that a new
+/// instruction must decide whether it writes a register.
+pub(crate) fn register_written(instruction: &Instruction) -> Option<u16> {
+    match instruction {
+        Instruction::LoadLiteral {
+            literal: Literal::BodyTooLarge(_),
+            ..
+        } => None,
+        Instruction::LoadLiteral { destination, .. }
+        | Instruction::LoadSelf { destination }
+        | Instruction::LoadEnclosingObject { destination, .. }
+        | Instruction::Move { destination, .. }
+        | Instruction::LoadOuterLocal { destination, .. }
+        | Instruction::SendLexical { destination, .. }
+        | Instruction::SendPublic { destination, .. }
+        | Instruction::SendInlinable { destination, .. }
+        | Instruction::SendSuper { destination, .. }
+        | Instruction::SendMirror { destination, .. }
+        | Instruction::MakeClosure { destination, .. }
+        | Instruction::MakeArray { destination, .. }
+        | Instruction::MakeVector { destination, .. }
+        | Instruction::LoadVector { destination, .. }
+        | Instruction::IntegerBinary { destination, .. }
+        | Instruction::MakeFuture { destination, .. }
+        | Instruction::ResolveFuture { destination, .. }
+        | Instruction::LoadOwnSlot { destination, .. }
+        | Instruction::AllocateInstance { destination }
+        | Instruction::InitializeInstance { destination, .. }
+        | Instruction::InitializeSuperclass { destination, .. }
+        | Instruction::InitializeAppliedLevel { destination, .. } => Some(*destination),
+        Instruction::StoreLocal { slot, .. } => Some(*slot),
+        Instruction::StoreOuterLocal { .. }
+        | Instruction::StoreVector { .. }
+        | Instruction::InitializeSlot { .. }
+        | Instruction::InitializeSlotProvisionally { .. }
+        | Instruction::ReturnSlotIfFilled { .. }
+        | Instruction::CheckAppliedClause { .. }
+        | Instruction::Return { .. }
+        | Instruction::ImplicitReturn { .. }
+        | Instruction::NonLocalReturn { .. }
+        | Instruction::SignalNonBoolean { .. }
+        | Instruction::Jump { .. }
+        | Instruction::JumpIfNotBoolean { .. }
+        | Instruction::BranchIfFalse { .. }
+        | Instruction::BranchIfTrue { .. } => None,
+    }
+}
+
+/// Where `instruction` may go other than to the next instruction: a jump's
+/// or a branch's target, the fallback of an inlined integer operation, a
+/// mirror send's failure block. `None` for every other instruction.
+///
+/// **The match answers every instruction, with no `_` arm**, so that a new
+/// jump-carrying instruction must say where it goes rather than reach the
+/// VM's `program_counter` unchecked by the decoder.
+pub(crate) fn jump_target(instruction: &Instruction) -> Option<u32> {
+    match instruction {
+        Instruction::Jump { target }
+        | Instruction::JumpIfNotBoolean { target, .. }
+        | Instruction::BranchIfFalse { target, .. }
+        | Instruction::BranchIfTrue { target, .. }
+        | Instruction::IntegerBinary { target, .. } => Some(*target),
+        // Never decoded (it has no wire tag); its target is still one.
+        Instruction::SendMirror { failure, .. } => Some(*failure),
+        Instruction::LoadLiteral { .. }
+        | Instruction::LoadSelf { .. }
+        | Instruction::LoadEnclosingObject { .. }
+        | Instruction::Move { .. }
+        | Instruction::StoreLocal { .. }
+        | Instruction::LoadOuterLocal { .. }
+        | Instruction::StoreOuterLocal { .. }
+        | Instruction::SendLexical { .. }
+        | Instruction::SendPublic { .. }
+        | Instruction::SendInlinable { .. }
+        | Instruction::SendSuper { .. }
+        | Instruction::MakeClosure { .. }
+        | Instruction::MakeArray { .. }
+        | Instruction::MakeVector { .. }
+        | Instruction::LoadVector { .. }
+        | Instruction::StoreVector { .. }
+        | Instruction::InitializeSlot { .. }
+        | Instruction::ReturnSlotIfFilled { .. }
+        | Instruction::MakeFuture { .. }
+        | Instruction::ResolveFuture { .. }
+        | Instruction::LoadOwnSlot { .. }
+        | Instruction::InitializeSlotProvisionally { .. }
+        | Instruction::Return { .. }
+        | Instruction::ImplicitReturn { .. }
+        | Instruction::NonLocalReturn { .. }
+        | Instruction::SignalNonBoolean { .. }
+        | Instruction::AllocateInstance { .. }
+        | Instruction::InitializeInstance { .. }
+        | Instruction::CheckAppliedClause { .. }
+        | Instruction::InitializeSuperclass { .. }
+        | Instruction::InitializeAppliedLevel { .. } => None,
+    }
+}
+
+/// Whether control can pass from `instruction` to the instruction after
+/// it: every instruction but a return, the signal that ends an inlined
+/// loop's guard-failure path, a load of `Literal::BodyTooLarge`, which
+/// always raises, and an unconditional jump. An `Error` is not resumable,
+/// so nothing continues after the two that raise (`vm::run`). It is not
+/// the decoder's list of the instructions a body may end with
+/// (`image::decode`'s `verify_body`), on purpose: a body cannot end with a
+/// load, which the run loop would step past.
+pub(crate) fn falls_through(instruction: &Instruction) -> bool {
+    !matches!(
+        instruction,
+        Instruction::Return { .. }
+            | Instruction::ImplicitReturn { .. }
+            | Instruction::NonLocalReturn { .. }
+            | Instruction::SignalNonBoolean { .. }
+            | Instruction::LoadLiteral {
+                literal: Literal::BodyTooLarge(_),
+                ..
+            }
+            | Instruction::Jump { .. }
+    )
+}
+
+/// The instructions control can reach next from `instruction`, which
+/// stands at `index`: the next one when it falls through, then its jump
+/// target (`jump_target`). A send resumes at the next instruction however
+/// its callee returns, and an instruction that forces a future runs again
+/// from where it stands, so neither adds an edge.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn successors(index: u32, instruction: &Instruction) -> impl Iterator<Item = u32> {
+    let next = if falls_through(instruction) {
+        index.checked_add(1)
+    } else {
+        None
+    };
+    [next, jump_target(instruction)].into_iter().flatten()
+}
+
 /// Whether a body itself addresses a slot of the level it was entered at: it
 /// contains an instruction that reads or writes the receiver's field at the
 /// activation's slot base plus an `own_index`. A block a body creates is a
@@ -1114,6 +1563,24 @@ fn registers(registers: &[u16]) -> String {
         .join(", ")
 }
 
+/// A send's argument slots as `disasm` prints them: each slot, and where
+/// its source differs, the register the send copies into it.
+fn argument_slots(argument_base: u16, argument_sources: &[u16]) -> String {
+    argument_sources
+        .iter()
+        .enumerate()
+        .map(|(offset, source)| {
+            let slot = u32::from(argument_base) + offset as u32;
+            if u32::from(*source) == slot {
+                format!("r{slot}")
+            } else {
+                format!("r{slot} <- r{source}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn format_instruction(instruction: &Instruction) -> String {
     match instruction {
         Instruction::LoadLiteral {
@@ -1148,63 +1615,70 @@ fn format_instruction(instruction: &Instruction) -> String {
         Instruction::SendLexical {
             depth,
             selector,
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
             call_site,
         } => format!(
             "SendLexical r{destination} <- depth {depth} #{selector} ({}) {}",
-            registers(argument_registers),
+            argument_slots(*argument_base, argument_sources),
             format_call_site(*call_site)
         ),
         Instruction::SendPublic {
             selector,
             receiver_register,
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
             call_site,
         } => format!(
             "SendPublic r{destination} <- r{receiver_register} #{selector} ({}) {}",
-            registers(argument_registers),
+            argument_slots(*argument_base, argument_sources),
             format_call_site(*call_site)
         ),
         Instruction::SendInlinable {
             selector,
             receiver_register,
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
             call_site,
         } => format!(
             "SendInlinable r{destination} <- r{receiver_register} #{selector} ({}) {}",
-            registers(argument_registers),
+            argument_slots(*argument_base, argument_sources),
             format_call_site(*call_site)
         ),
         Instruction::SendSuper {
             selector,
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
             call_site,
         } => format!(
             "SendSuper r{destination} <- #{selector} ({}) {}",
-            registers(argument_registers),
+            argument_slots(*argument_base, argument_sources),
             format_call_site(*call_site)
         ),
         Instruction::SendMirror {
             primitive,
             mirror_register,
             subject_register,
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
             failure,
         } => {
             // The subject leads the list, as it leads the mirror selector's
             // arguments; the failure block is the target, not an operand.
-            let operands: Vec<u16> = std::iter::once(*subject_register)
-                .chain(argument_registers.iter().copied())
-                .collect();
+            let slots = argument_slots(*argument_base, argument_sources);
+            let operands = if slots.is_empty() {
+                format!("r{subject_register}")
+            } else {
+                format!("r{subject_register}, {slots}")
+            };
             format!(
-                "SendMirror r{destination} <- r{mirror_register} #{} ({}) else -> {failure}",
+                "SendMirror r{destination} <- r{mirror_register} #{} ({operands}) else -> {failure}",
                 crate::builtins::primitive::mirror_entry(*primitive).selector,
-                registers(&operands),
             )
         }
         Instruction::MakeClosure {
@@ -1315,19 +1789,21 @@ fn format_instruction(instruction: &Instruction) -> String {
         Instruction::InitializeSuperclass {
             steps,
             selector,
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
         } => format!(
             "InitializeSuperclass r{destination} <- steps {steps} #{selector} ({})",
-            registers(argument_registers)
+            argument_slots(*argument_base, argument_sources)
         ),
         Instruction::InitializeAppliedLevel {
             steps,
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
         } => format!(
             "InitializeAppliedLevel r{destination} <- steps {steps} ({})",
-            registers(argument_registers)
+            argument_slots(*argument_base, argument_sources)
         ),
     }
 }
@@ -1352,7 +1828,9 @@ fn format_literal(literal: &Literal) -> String {
         Literal::Symbol(symbol) => format!("#{symbol}"),
         Literal::LargeInteger(integer) => format!("large-int {}", integer.to_bounded_text()),
         Literal::UnresolvedIdentifier(name) => format!("unresolved-ident '{name}'"),
-        Literal::BodyTooLarge => "body-too-large".to_string(),
+        Literal::BodyTooLarge(BodyLimit::Registers) => "body-too-large".to_string(),
+        Literal::BodyTooLarge(BodyLimit::Arguments) => "body-too-large arguments".to_string(),
+        Literal::BodyTooLarge(BodyLimit::Instructions) => "body-too-large instructions".to_string(),
     }
 }
 
@@ -1528,13 +2006,14 @@ mod tests {
             primitive,
             mirror_register: 1,
             subject_register: 2,
-            argument_registers: vec![0],
+            argument_base: 4,
+            argument_sources: vec![0],
             destination: 3,
             failure: 4,
         };
         assert_eq!(
             format_instruction(&instruction),
-            "SendMirror r3 <- r1 #string:concatenate:ifFail: (r2, r0) else -> 4"
+            "SendMirror r3 <- r1 #string:concatenate:ifFail: (r2, r4 <- r0) else -> 4"
         );
         assert_eq!(instruction.call_site(), None);
         assert_eq!(outer_reach_of(&[instruction]), 0);
@@ -1567,7 +2046,8 @@ mod tests {
                 Instruction::InitializeSuperclass {
                     steps: 2,
                     selector: Symbol::intern("with:"),
-                    argument_registers: vec![4],
+                    argument_base: 4,
+                    argument_sources: vec![4],
                     destination: 5,
                 },
                 "InitializeSuperclass r5 <- steps 2 #with: (r4)",
@@ -1575,7 +2055,8 @@ mod tests {
             (
                 Instruction::InitializeAppliedLevel {
                     steps: 3,
-                    argument_registers: vec![],
+                    argument_base: 6,
+                    argument_sources: vec![],
                     destination: 6,
                 },
                 "InitializeAppliedLevel r6 <- steps 3 ()",
@@ -1599,7 +2080,8 @@ mod tests {
         let send = Instruction::SendPublic {
             selector: Symbol::intern("foo:"),
             receiver_register: 0,
-            argument_registers: vec![1],
+            argument_base: 1,
+            argument_sources: vec![1],
             destination: 2,
             call_site: CallSite { number: 0 },
         };
@@ -1666,7 +2148,8 @@ mod tests {
                 Instruction::SendPublic {
                     selector: Symbol::intern("value"),
                     receiver_register: 1,
-                    argument_registers: vec![],
+                    argument_base: 2,
+                    argument_sources: vec![],
                     destination: 2,
                     call_site: CallSite { number: 1 },
                 },
@@ -1778,6 +2261,7 @@ method foo: (args 1, registers 4)
             1,
             300,
             0,
+            300,
             vec![(0, 0..instructions.len())],
             Span::new(0, 10),
         )
@@ -1810,7 +2294,8 @@ method foo: (args 1, registers 4)
             Instruction::SendPublic {
                 selector: Symbol::intern("at:put:"),
                 receiver_register: 1,
-                argument_registers: vec![2, 3],
+                argument_base: 2,
+                argument_sources: vec![2, 3],
                 destination: 4,
                 call_site: CallSite { number: 0 },
             },

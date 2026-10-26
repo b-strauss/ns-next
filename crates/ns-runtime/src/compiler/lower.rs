@@ -15,8 +15,8 @@ use super::control_flow::{self, InlineForm};
 use super::simultaneous;
 use crate::builtins::primitive::MirrorPrimitive;
 use crate::bytecode::{
-    CallSite, CodeBuilder, CodeKind, CompiledCode, Instruction, IntegerOperation,
-    Literal as BytecodeLiteral,
+    BodyLimit, CallSite, CodeBuilder, CodeKind, CompiledCode, Instruction, IntegerOperation,
+    Literal as BytecodeLiteral, HEADER_REGISTERS,
 };
 use crate::interpreter::literals::{parse_float_literal, parse_integer_literal, IntegerLiteral};
 use crate::types::Binding;
@@ -54,10 +54,11 @@ pub(crate) struct Layout {
     vector_size: u16,
     /// `copied.len()`, which fits a `u16` because `base` does.
     copied_count: u16,
-    /// One past this body's last named register: the parameters, the copied
-    /// values, the temporaries and the vector register. Everything above is
-    /// scratch. A layout exists only when this fits a `u16`, which is what
-    /// keeps every named register's index below from overflowing.
+    /// One past this body's last named register: the parameters, the
+    /// header's numbers, the copied values, the temporaries and the vector
+    /// register. Everything above is scratch. A layout exists only when
+    /// this fits a `u16`, which is what keeps every named register's index
+    /// below from overflowing.
     base: u16,
 }
 
@@ -94,11 +95,12 @@ pub(crate) struct Enclosing {
 }
 
 impl Layout {
-    /// The layout of a converted body: the copied values sit between the
-    /// parameters and the temporaries, and one hidden register after the
-    /// temporaries holds the indirection vector when the body has one.
-    /// `None` when its named registers do not fit a `u16`: the body is past
-    /// the register ceiling.
+    /// The layout of a converted body: the parameters, then the header's
+    /// numbers (`HEADER_REGISTERS`), then the copied values, then the
+    /// temporaries, and one hidden register after them holds the
+    /// indirection vector when the body has one. `None` when its named
+    /// registers do not fit a `u16`: the body is past the register
+    /// ceiling.
     fn converted(
         key: BodyKey,
         argument_count: u16,
@@ -109,6 +111,7 @@ impl Layout {
         let copied = body.copied.clone();
         let copied_count = u16::try_from(copied.len()).ok()?;
         let below_vector = argument_count
+            .checked_add(HEADER_REGISTERS)?
             .checked_add(copied_count)?
             .checked_add(temporary_count)?;
         let (vector_register, base) = if body.vector_size > 0 {
@@ -130,15 +133,18 @@ impl Layout {
 
     /// The layout of a fallback closure, or of a block nested in one: no
     /// copied values and no vector, so every local sits in the register its
-    /// resolver index names (`docs/design/execution.md`, "Fallback blocks").
-    /// `None` when its named locals do not fit a `u16`.
+    /// resolver index names, a temporary's past the header's numbers
+    /// (`docs/design/execution.md`, "Fallback blocks"). `None` when its
+    /// named locals do not fit a `u16`.
     fn by_reference(key: BodyKey, argument_count: u16, temporary_count: u16) -> Option<Self> {
-        let base = argument_count.checked_add(temporary_count)?;
+        let base = argument_count
+            .checked_add(HEADER_REGISTERS)?
+            .checked_add(temporary_count)?;
         Some(Layout {
             key,
             argument_count,
             copied: Vec::new(),
-            places: vec![Place::Register; usize::from(base)],
+            places: vec![Place::Register; usize::from(argument_count + temporary_count)],
             vector_register: None,
             vector_size: 0,
             copied_count: 0,
@@ -162,15 +168,17 @@ impl Layout {
         }
     }
 
-    /// The register a local of *this* body sits in: the copied values sit
-    /// between the parameters and the temporaries, so every temporary is
-    /// pushed up by their count. Below `base`, so it fits.
+    /// The register a local of *this* body sits in: the header's numbers
+    /// and the copied values sit between the parameters and the
+    /// temporaries, so every temporary is pushed up by their count. Below
+    /// `base`, so it fits.
     fn local_register(&self, index: u16) -> u16 {
         if index < self.argument_count {
             index
         } else {
             index
-                .checked_add(self.copied_count)
+                .checked_add(HEADER_REGISTERS)
+                .and_then(|register| register.checked_add(self.copied_count))
                 .expect("internal: a local's register past the body's base")
         }
     }
@@ -189,7 +197,9 @@ impl Layout {
                     self.copied.iter().position(|held| *held == entry).expect(
                         "internal: a variable the capture analysis did not hand this block",
                     );
-                super::local_index(usize::from(self.argument_count) + position)
+                super::local_index(
+                    usize::from(self.argument_count) + usize::from(HEADER_REGISTERS) + position,
+                )
             }
         }
     }
@@ -283,13 +293,16 @@ pub(crate) struct Lowerer<'a> {
     /// Saturated at `u16::MAX`: only a body that is `too_large` meets a
     /// count past it.
     argument_count: u16,
-    /// Whether this body needs more registers than a `u16` numbers: its
-    /// named registers do not fit (it is never laid out, and lowers
-    /// nothing), or its scratch registers ran past `u16::MAX`
-    /// (`allocate_scratch`). From then on nothing emitted is kept: `finish`
-    /// answers `super::body_too_large`, never a body whose register indices
-    /// wrapped.
-    too_large: bool,
+    /// The limit this body passed, if any (`docs/design/compiler.md`,
+    /// "Limits"): more registers than a `u16` numbers -- its named
+    /// registers do not fit (it is never laid out, and lowers nothing), or
+    /// its scratch registers ran past `u16::MAX` (`allocate_scratch`) --,
+    /// more than `ARGUMENT_LIMIT` parameters, or an instruction that would
+    /// pass `INSTRUCTION_LIMIT` or send more than `ARGUMENT_LIMIT`
+    /// arguments (`emit`). The first one met is kept, and from then on
+    /// nothing is emitted: `finish` answers `super::body_too_large`, never
+    /// a body whose register indices wrapped or that grew past a limit.
+    too_large: Option<BodyLimit>,
     /// The capture analysis of the whole code family, shared by every body
     /// of it (`compiler/capture.rs`).
     captures: Rc<Captures>,
@@ -393,11 +406,18 @@ impl<'a> Lowerer<'a> {
         } else {
             None
         };
-        let too_large = layout.is_none();
+        let too_large = match layout {
+            None => Some(BodyLimit::Registers),
+            Some(_) => super::parameter_limit_passed(argument_count),
+        };
         let argument_count = super::saturated_count(argument_count);
         let layout = layout.unwrap_or_else(|| Layout::past_the_ceiling(key));
         // A body past the ceiling has no register table to fill.
-        let named_temporaries = if too_large { &[][..] } else { temporaries };
+        let named_temporaries = if too_large == Some(BodyLimit::Registers) {
+            &[][..]
+        } else {
+            temporaries
+        };
         let base = layout.base;
         // Indexed by *register*, not by resolver index. A parameter and an
         // immutable local slot are read-only because nothing but their
@@ -424,7 +444,7 @@ impl<'a> Lowerer<'a> {
             for (register, read_only) in read_only_locals.iter().enumerate() {
                 reachable_by_a_fallback_closure[register] = !read_only;
             }
-        } else if !too_large {
+        } else if too_large != Some(BodyLimit::Registers) {
             // A body past the ceiling was never analysed, and has no
             // register to mark.
             let body = captures.body(key);
@@ -481,20 +501,36 @@ impl<'a> Lowerer<'a> {
                 self.next_scratch = next;
                 self.max_register = self.max_register.max(next);
             }
-            None => self.too_large = true,
+            None => self.pass_a_limit(BodyLimit::Registers),
         }
         register
     }
 
+    /// Records that the body passed `limit`, unless it passed one before.
+    fn pass_a_limit(&mut self, limit: BodyLimit) {
+        self.too_large.get_or_insert(limit);
+    }
+
+    /// Emits `instruction` and answers its index, unless the body is too
+    /// large already or the instruction would make it so
+    /// (`super::emitting_passes_a_limit`): then nothing is emitted, and
+    /// the index answered names no instruction, which `patch_target`
+    /// leaves alone and `finish` never keeps.
     fn emit(&mut self, instruction: Instruction) -> usize {
-        self.code.emit(instruction)
+        if self.too_large.is_none() {
+            match super::emitting_passes_a_limit(self.code.len(), &instruction) {
+                Some(limit) => self.pass_a_limit(limit),
+                None => return self.code.emit(instruction),
+            }
+        }
+        self.code.len()
     }
 
     /// Lowers a body's own statements, then its end (`finish_body`). The
     /// last statement's value is read only when falling off the end answers
     /// it; every other statement's value is discarded.
     pub(crate) fn lower_body(&mut self, statements: &[Statement]) {
-        if self.too_large {
+        if self.too_large.is_some() {
             return;
         }
         let last_use = if self.answers_last_value() {
@@ -503,7 +539,7 @@ impl<'a> Lowerer<'a> {
             ValueUse::Discarded
         };
         for (index, statement) in statements.iter().enumerate() {
-            if self.too_large {
+            if self.too_large.is_some() {
                 // Nothing more is kept (`finish`): stop lowering.
                 return;
             }
@@ -547,8 +583,7 @@ impl<'a> Lowerer<'a> {
     /// counted from: the level `<:` clause `k` of `n` adds is `n - k + 1`
     /// steps up, the superclass clause's class `n + 1`. A body-less
     /// declaration's class is the level its last clause adds, one step
-    /// lower. A chain of more levels than a `u16` counts leaves the body
-    /// too large.
+    /// lower. The step counts fit a `u16` (`super::superclass_steps`).
     ///
     /// One statement for the checks, one for the superclass and one for
     /// each applied level, each with its own scratch registers: nothing is
@@ -559,18 +594,11 @@ impl<'a> Lowerer<'a> {
         applied: &[ast::SuperclassClause],
         has_body: bool,
     ) {
-        if self.too_large {
+        if self.too_large.is_some() {
             return;
         }
         let own_level = usize::from(has_body);
-        let Some(superclass_steps) = applied
-            .len()
-            .checked_add(own_level)
-            .and_then(|steps| u16::try_from(steps).ok())
-        else {
-            self.too_large = true;
-            return;
-        };
+        let superclass_steps = super::superclass_steps(applied.len(), own_level);
         // The level clause `position` (from 0) adds; below the superclass
         // clause's, so it fits a `u16` too.
         let steps_of = |position: usize| superclass_steps - 1 - position as u16;
@@ -586,27 +614,31 @@ impl<'a> Lowerer<'a> {
         }
         self.next_scratch = self.base;
         let start = self.code.len();
-        let argument_registers = self.lower_operands(super::clause_arguments(superclass));
+        let (argument_base, argument_sources) =
+            self.lower_arguments(&[], super::clause_arguments(superclass));
         let destination = self.allocate_scratch();
         self.emit(Instruction::InitializeSuperclass {
             steps: superclass_steps,
             selector: super::clause_selector(superclass),
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
         });
         self.record_statement(start);
         for (position, clause) in applied.iter().enumerate() {
-            if self.too_large {
+            if self.too_large.is_some() {
                 // Nothing more is kept (`finish`): stop lowering.
                 return;
             }
             self.next_scratch = self.base;
             let start = self.code.len();
-            let argument_registers = self.lower_operands(super::clause_arguments(Some(clause)));
+            let (argument_base, argument_sources) =
+                self.lower_arguments(&[], super::clause_arguments(Some(clause)));
             let destination = self.allocate_scratch();
             self.emit(Instruction::InitializeAppliedLevel {
                 steps: steps_of(position),
-                argument_registers,
+                argument_base,
+                argument_sources,
                 destination,
             });
             self.record_statement(start);
@@ -620,7 +652,7 @@ impl<'a> Lowerer<'a> {
     /// VM turns it into an absolute field index at run time via the executing
     /// activation's slot base (`Heap::activation_slot_base`).
     pub(crate) fn lower_slot_initializer(&mut self, initializer: &Expression, own_index: u32) {
-        if self.too_large {
+        if self.too_large.is_some() {
             return;
         }
         self.next_scratch = self.base;
@@ -640,7 +672,7 @@ impl<'a> Lowerer<'a> {
         block: &Expression,
         own_index: u32,
     ) {
-        if self.too_large {
+        if self.too_large.is_some() {
             return;
         }
         self.next_scratch = self.base;
@@ -666,7 +698,7 @@ impl<'a> Lowerer<'a> {
     /// only register live across it is this statement's own scratch
     /// register, which no send can write. One statement.
     pub(crate) fn lower_simultaneous_slot_end(&mut self, own_index: u32) {
-        if self.too_large {
+        if self.too_large.is_some() {
             return;
         }
         self.next_scratch = self.base;
@@ -706,7 +738,7 @@ impl<'a> Lowerer<'a> {
     /// (`Heap::activation_slot_base`), the class whose slot this is. The
     /// test precedes the one statement, as a prologue.
     pub(crate) fn lower_lazy_slot_getter(&mut self, initializer: &Expression, own_index: u32) {
-        if self.too_large {
+        if self.too_large.is_some() {
             return;
         }
         self.next_scratch = self.base;
@@ -736,11 +768,11 @@ impl<'a> Lowerer<'a> {
     /// each of those temporaries back and stores it resolved, one statement
     /// apiece, in declaration order.
     pub(crate) fn lower_local_initializers(&mut self, temporaries: &[ast::SlotDeclaration]) {
-        if self.too_large {
+        if self.too_large.is_some() {
             return;
         }
         for (position, temporary) in temporaries.iter().enumerate() {
-            if self.too_large {
+            if self.too_large.is_some() {
                 // Nothing more is kept (`finish`): stop lowering.
                 return;
             }
@@ -770,7 +802,7 @@ impl<'a> Lowerer<'a> {
             self.record_statement(start);
         }
         for (position, temporary) in temporaries.iter().enumerate() {
-            if self.too_large {
+            if self.too_large.is_some() {
                 // Nothing more is kept (`finish`): stop lowering.
                 return;
             }
@@ -781,7 +813,7 @@ impl<'a> Lowerer<'a> {
             let start = self.code.len();
             let access =
                 self.resolve_variable(0, super::temporary_index(self.argument_count, position));
-            let read = self.emit_read(access);
+            let read = self.emit_read(access, None);
             // `ResolveFuture` runs user code -- the future's block -- exactly
             // as a send does, and runs again once that block has answered
             // (`AfterForcing::Reexecute`), reading its source afresh. So its
@@ -917,7 +949,7 @@ impl<'a> Lowerer<'a> {
     /// `Lowerer` that inherits this one's whole scope stack, and emits
     /// `MakeClosure`. `captured_frame`/`home`/`bindings` are supplied by the
     /// VM at run time (`docs/design/execution.md`, "Activations").
-    fn lower_block_literal(&mut self, block: &ast::BlockExpression) -> u16 {
+    fn lower_block_literal(&mut self, block: &ast::BlockExpression, into: Option<u16>) -> u16 {
         let parameters: Vec<crate::Symbol> = block
             .parameters
             .iter()
@@ -956,7 +988,7 @@ impl<'a> Lowerer<'a> {
         // family, never restarting at each `MakeClosure`
         // (`docs/design/dispatch.md`, "Code families").
         let after = inner.next_call_site;
-        let too_large = inner.too_large;
+        let too_large = inner.too_large.is_some();
         let code = inner.finish(block.span);
         // A block past the register ceiling is `super::body_too_large`,
         // which takes no copied values and makes no send, so its creator
@@ -975,7 +1007,7 @@ impl<'a> Lowerer<'a> {
         };
         self.next_call_site = if too_large { first_call_site } else { after };
         let parameters = super::parameters_of(parameters, &code);
-        let destination = self.allocate_scratch();
+        let destination = self.target_register(into);
         self.emit(Instruction::MakeClosure {
             destination,
             parameters: Rc::new(parameters),
@@ -1000,7 +1032,7 @@ impl<'a> Lowerer<'a> {
     /// lowered afterwards can write, because the resolver binds no assignment
     /// to one (§3.6).
     fn materialize(&mut self, register: u16, clobbered: bool) -> u16 {
-        if !clobbered || register >= self.base || self.read_only_locals[register as usize] {
+        if !self.needs_copy(register, clobbered) {
             return register;
         }
         let destination = self.allocate_scratch();
@@ -1011,20 +1043,45 @@ impl<'a> Lowerer<'a> {
         destination
     }
 
+    /// `materialize`, the copy going into `slot`, a send's argument slot,
+    /// rather than into a fresh scratch register: the slot is then the
+    /// argument's source, and the send copies nothing.
+    fn materialize_into(&mut self, register: u16, clobbered: bool, slot: u16) -> u16 {
+        if !self.needs_copy(register, clobbered) {
+            return register;
+        }
+        self.emit(Instruction::Move {
+            destination: slot,
+            source: register,
+        });
+        slot
+    }
+
+    /// Whether `materialize` copies `register`: a writable named local
+    /// something lowered before its consumer can write.
+    fn needs_copy(&self, register: u16, clobbered: bool) -> bool {
+        clobbered && register < self.base && !self.read_only_locals[register as usize]
+    }
+
     /// Lowers one operand of a multi-operand instruction. `rest` is
     /// everything lowered after this operand but before that instruction
     /// executes -- the arguments still to come, for instance.
     fn lower_operand(&mut self, expression: &Expression, rest: &[Expression]) -> u16 {
         let register = self.lower_expression(expression);
-        // Only a writable named local can be clobbered (`materialize`), so
-        // nothing else walks `rest`: a long argument list or tuple of one
-        // parameter would otherwise cost a walk per operand, quadratic.
+        let clobbered = self.clobbered_by(register, rest);
+        self.materialize(register, clobbered)
+    }
+
+    /// Whether anything in `rest` can write `register`. Only a writable
+    /// named local can be clobbered (`materialize`), so nothing else walks
+    /// `rest`: a long argument list or tuple of one parameter would
+    /// otherwise cost a walk per operand, quadratic.
+    fn clobbered_by(&self, register: u16, rest: &[Expression]) -> bool {
         let writable_local = register < self.base && !self.read_only_locals[usize::from(register)];
-        let clobbered = writable_local
+        writable_local
             && rest
                 .iter()
-                .any(|later| self.writes_register(later, register, 0));
-        self.materialize(register, clobbered)
+                .any(|later| self.writes_register(later, register, 0))
     }
 
     /// Lowers `expression` in a position whose caller states whether anything
@@ -1050,7 +1107,7 @@ impl<'a> Lowerer<'a> {
                 self.lower_assign(target, value, ValueUse::Discarded)
             }
             (ValueUse::Discarded, ExpressionKind::Send(send)) => {
-                self.lower_send(send, ValueUse::Discarded)
+                self.lower_send(send, ValueUse::Discarded, None)
             }
             _ => self.lower_expression(expression),
         }
@@ -1260,27 +1317,75 @@ impl<'a> Lowerer<'a> {
 
     /// Returns the register holding `expression`'s value.
     pub(crate) fn lower_expression(&mut self, expression: &Expression) -> u16 {
+        self.lower_expression_to(expression, None)
+    }
+
+    /// Lowers a send's argument into `slot`, its argument slot, and answers
+    /// the argument's source: `slot` itself when the value was produced
+    /// there. A send that is not inlined and an inlined integer leaf write
+    /// their `destination` into the slot, an inlined conditional's and an
+    /// `and:`/`or:`'s arms each move their value into it, and a literal, `self`, a read of
+    /// another frame's local or of a vector, a closure and an array are
+    /// loaded into it, so the send copies none of them. A named local
+    /// answers its own register, which the send reads in place when the
+    /// send's sources are consecutive and otherwise copies into the slot --
+    /// or, when an argument after it can write that local, the protective
+    /// `Move` into the slot, which the send then reads there. Every other
+    /// expression answers the register its value is in -- the result
+    /// register of an inlined loop or mirror send, an assignment's value,
+    /// a cascade's last send -- which the send
+    /// likewise reads in place, or copies into the slot when it cannot.
+    ///
+    /// Writing the slot this early is sound because the slots were
+    /// allocated before any argument was lowered (`lower_arguments`):
+    /// whatever the arguments after this one emit lands above all of them,
+    /// and nothing but the send reads a slot.
+    fn lower_expression_into(
+        &mut self,
+        expression: &Expression,
+        rest: &[Expression],
+        slot: u16,
+    ) -> u16 {
+        let register = self.lower_expression_to(expression, Some(slot));
+        let clobbered = self.clobbered_by(register, rest);
+        self.materialize_into(register, clobbered, slot)
+    }
+
+    /// The register an instruction that produces a value writes: `into`,
+    /// the argument slot `lower_expression_into` lowers into, or else a
+    /// fresh scratch register.
+    fn target_register(&mut self, into: Option<u16>) -> u16 {
+        match into {
+            Some(slot) => slot,
+            None => self.allocate_scratch(),
+        }
+    }
+
+    /// `lower_expression`, the value produced in `into` where its last
+    /// instruction is one that writes a register of its choosing
+    /// (`lower_expression_into`); answers the register holding the value.
+    fn lower_expression_to(&mut self, expression: &Expression, into: Option<u16>) -> u16 {
         match &expression.kind {
             ExpressionKind::Literal(literal) => {
-                let destination = self.allocate_scratch();
+                let destination = self.target_register(into);
                 self.emit(Instruction::LoadLiteral {
                     destination,
                     literal: lower_literal(literal),
                 });
                 destination
             }
-            ExpressionKind::Identifier(id) => self.lower_identifier_read(id),
+            ExpressionKind::Identifier(id) => self.lower_identifier_read(id, into),
             ExpressionKind::Assign { target, value, .. } => {
                 self.lower_assign(target, value, ValueUse::Read)
             }
-            ExpressionKind::Send(send) => self.lower_send(send, ValueUse::Read),
+            ExpressionKind::Send(send) => self.lower_send(send, ValueUse::Read, into),
             ExpressionKind::Cascade(cascade) => self.lower_cascade(cascade),
-            ExpressionKind::Block(block) => self.lower_block_literal(block),
+            ExpressionKind::Block(block) => self.lower_block_literal(block, into),
             ExpressionKind::DynamicArray { elements, .. } => {
                 let element_registers: Vec<u16> = (0..elements.len())
                     .map(|index| self.lower_operand(&elements[index], &elements[index + 1..]))
                     .collect();
-                let destination = self.allocate_scratch();
+                let destination = self.target_register(into);
                 self.emit(Instruction::MakeArray {
                     destination,
                     element_registers,
@@ -1320,10 +1425,13 @@ impl<'a> Lowerer<'a> {
     fn resolve_variable(&self, depth: u16, index: u16) -> Access {
         let (declaring_position, key, by_reference) = declaring_scope(&self.scopes, depth);
         if by_reference {
-            return access_through(
-                hops_above(&self.scopes, declaring_position),
-                Location::Register(index),
-            );
+            let hops = hops_above(&self.scopes, declaring_position);
+            let layout = if hops == 0 {
+                &self.layout
+            } else {
+                &self.layouts[self.layouts.len() - hops as usize]
+            };
+            return access_through(hops, Location::Register(layout.local_register(index)));
         }
         let anchor_position = self.innermost_converted();
         let hops = hops_above(&self.scopes, anchor_position);
@@ -1340,11 +1448,11 @@ impl<'a> Lowerer<'a> {
 
     /// Emits whatever `access` needs to leave the variable's value in a
     /// register, and answers that register.
-    fn emit_read(&mut self, access: Access) -> u16 {
+    fn emit_read(&mut self, access: Access, into: Option<u16>) -> u16 {
         match access {
             Access::Register(register) => register,
             Access::OuterRegister { hops, index } => {
-                let destination = self.allocate_scratch();
+                let destination = self.target_register(into);
                 self.emit(Instruction::LoadOuterLocal {
                     destination,
                     depth: hops,
@@ -1354,7 +1462,7 @@ impl<'a> Lowerer<'a> {
             }
             Access::Vector { vector, slot } => {
                 let vector = self.emit_vector_register(vector);
-                let destination = self.allocate_scratch();
+                let destination = self.target_register(into);
                 self.emit(Instruction::LoadVector {
                     destination,
                     vector,
@@ -1413,24 +1521,31 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn lower_identifier_read(&mut self, id: &ast::Identifier) -> u16 {
+    fn lower_identifier_read(&mut self, id: &ast::Identifier, into: Option<u16>) -> u16 {
         if id.name == "self" {
-            let destination = self.allocate_scratch();
+            let destination = self.target_register(into);
             self.emit(Instruction::LoadSelf { destination });
             return destination;
         }
         match self.bindings.get(&id.span) {
             Some(Binding::Local(slot)) => {
                 let access = self.resolve_variable(0, *slot);
-                self.emit_read(access)
+                self.emit_read(access, into)
             }
             Some(Binding::OuterLocal { depth, index }) => {
                 let access = self.resolve_variable(*depth, *index);
-                self.emit_read(access)
+                self.emit_read(access, into)
             }
             Some(Binding::LexicalSend { depth }) => {
                 let depth = *depth;
-                self.emit_lexical_send(depth, crate::Symbol::intern(&id.name), vec![])
+                let (argument_base, argument_sources) = self.lower_arguments(&[], &[]);
+                self.emit_lexical_send(
+                    depth,
+                    crate::Symbol::intern(&id.name),
+                    argument_base,
+                    argument_sources,
+                    into,
+                )
             }
             // The resolver attaches `SuperSend` to a bare identifier in one
             // place: a `super`-prefixed inheritance-clause receiver, `super
@@ -1439,9 +1554,11 @@ impl<'a> Lowerer<'a> {
             // `Foo`, whose lookup starts above the clause activation's
             // `current_class` -- the class that declares the clause.
             Some(Binding::SuperSend) => {
-                self.emit_send(|destination, call_site| Instruction::SendSuper {
+                let (argument_base, argument_sources) = self.lower_arguments(&[], &[]);
+                self.emit_send(into, |destination, call_site| Instruction::SendSuper {
                     selector: crate::Symbol::intern(&id.name),
-                    argument_registers: vec![],
+                    argument_base,
+                    argument_sources,
                     destination,
                     call_site,
                 })
@@ -1459,7 +1576,7 @@ impl<'a> Lowerer<'a> {
             // `UnresolvedIdentifier`: the VM raises `literals`' own error when
             // the instruction executes.
             Some(Binding::MirrorSend | Binding::EnclosingObject { .. }) | None => {
-                let destination = self.allocate_scratch();
+                let destination = self.target_register(into);
                 self.emit(Instruction::LoadLiteral {
                     destination,
                     literal: BytecodeLiteral::UnresolvedIdentifier(id.name.clone()),
@@ -1502,25 +1619,10 @@ impl<'a> Lowerer<'a> {
         value: &Expression,
         use_: ValueUse,
     ) -> u16 {
-        let mut value_register = self.lower_expression(value);
-        // A setter send runs user code before anything reads this expression's
-        // own value, so a named local's register may no longer hold what was
-        // assigned by then -- but only where that code can reach the register
-        // at all, which after conversion is a fallback closure's locals alone
-        // (`a_send_can_write`). (The `StoreLocal`/`StoreOuterLocal` cases below
-        // need no copy: the only named local a `StoreLocal` can write while
-        // `value_register` is live is `value_register` itself -- `t:: t` --
-        // which leaves it unchanged, and a `StoreOuterLocal` writes a different
-        // frame.)
-        if use_ == ValueUse::Read
-            && matches!(
-                self.bindings.get(&target.span),
-                Some(Binding::LexicalSend { .. })
-            )
-            && self.a_send_can_write(value_register)
-        {
-            value_register = self.materialize(value_register, true);
+        if let Some(Binding::LexicalSend { depth }) = self.bindings.get(&target.span) {
+            return self.lower_setter_assign(*depth, target, value, use_);
         }
+        let value_register = self.lower_expression(value);
         match self.bindings.get(&target.span) {
             Some(Binding::Local(slot)) => {
                 let access = self.resolve_variable(0, *slot);
@@ -1532,12 +1634,12 @@ impl<'a> Lowerer<'a> {
                 self.check_writable(access);
                 self.emit_store(access, value_register);
             }
-            Some(Binding::LexicalSend { depth }) => {
-                let depth = *depth;
-                let setter = crate::Symbol::intern(&format!("{}:", target.name));
-                self.emit_lexical_send(depth, setter, vec![value_register]);
-            }
-            Some(Binding::SuperSend | Binding::MirrorSend | Binding::EnclosingObject { .. })
+            Some(
+                Binding::LexicalSend { .. }
+                | Binding::SuperSend
+                | Binding::MirrorSend
+                | Binding::EnclosingObject { .. },
+            )
             | None => panic!(
                 "internal: unresolved setter target `{}` (the resolver should have rejected this)",
                 target.name
@@ -1546,6 +1648,56 @@ impl<'a> Lowerer<'a> {
         // An assignment's own value is `value`'s value
         // (`docs/design/dispatch.md`, "Setter sends") -- already sitting in
         // register `value_register`.
+        value_register
+    }
+
+    /// An assignment through a setter send: its one argument slot allocated
+    /// first and the value lowered into it, as a send's arguments are
+    /// (`lower_arguments`), so that a value produced there is not copied.
+    /// The register the value is in -- the slot, or the register a named
+    /// local or an inlined form left it in -- is the setter's argument and
+    /// the assignment's value (`docs/design/dispatch.md`, "Setter sends").
+    fn lower_setter_assign(
+        &mut self,
+        depth: u16,
+        target: &ast::Identifier,
+        value: &Expression,
+        use_: ValueUse,
+    ) -> u16 {
+        let setter = crate::Symbol::intern(&format!("{}:", target.name));
+        let argument_base = self.allocate_argument_slots(&[], 1);
+        let value_register = self.lower_expression_to(value, Some(argument_base));
+        // A setter send runs user code before anything reads this
+        // expression's own value, so a named local's register may no longer
+        // hold what was assigned by then -- but only where that code can
+        // reach the register at all, which after conversion is a fallback
+        // closure's locals alone (`a_send_can_write`). The copy goes into
+        // the slot, which is then the setter's argument and the
+        // assignment's value. (The `StoreLocal`/`StoreOuterLocal` cases of
+        // `lower_assign` need no copy: the only named local a `StoreLocal`
+        // can write while `value_register` is live is `value_register`
+        // itself -- `t:: t` -- which leaves it unchanged, and a
+        // `StoreOuterLocal` writes a different frame.)
+        //
+        // A value left in a scratch register above the slot -- an inner
+        // assignment's (`a:: b:: 4`) -- is read
+        // in place by the send, but is dead once it executes: its callee's
+        // header goes over every register above the slot
+        // (`docs/design/compiler.md`, "Sends"). So it is copied into the
+        // slot, which the callee never writes, and the assignment's value
+        // is the slot: an inlined form whose arm this is moves its arm's
+        // value out after the send, read or not.
+        let value_register = if value_register > argument_base {
+            self.emit(Instruction::Move {
+                destination: argument_base,
+                source: value_register,
+            });
+            argument_base
+        } else {
+            let clobbered = use_ == ValueUse::Read && self.a_send_can_write(value_register);
+            self.materialize_into(value_register, clobbered, argument_base)
+        };
+        self.emit_lexical_send(depth, setter, argument_base, vec![value_register], None);
         value_register
     }
 
@@ -1562,8 +1714,14 @@ impl<'a> Lowerer<'a> {
         CallSite { number }
     }
 
-    fn emit_send(&mut self, build: impl FnOnce(u16, CallSite) -> Instruction) -> u16 {
-        let destination = self.allocate_scratch();
+    /// Emits a send whose value lands in `into`, or else in a fresh
+    /// scratch register.
+    fn emit_send(
+        &mut self,
+        into: Option<u16>,
+        build: impl FnOnce(u16, CallSite) -> Instruction,
+    ) -> u16 {
+        let destination = self.target_register(into);
         let call_site = self.take_call_site();
         self.emit(build(destination, call_site));
         destination
@@ -1573,12 +1731,15 @@ impl<'a> Lowerer<'a> {
         &mut self,
         depth: u16,
         selector: crate::Symbol,
-        argument_registers: Vec<u16>,
+        argument_base: u16,
+        argument_sources: Vec<u16>,
+        into: Option<u16>,
     ) -> u16 {
-        self.emit_send(|destination, call_site| Instruction::SendLexical {
+        self.emit_send(into, |destination, call_site| Instruction::SendLexical {
             depth,
             selector,
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
             call_site,
         })
@@ -1588,13 +1749,16 @@ impl<'a> Lowerer<'a> {
         &mut self,
         receiver_register: u16,
         message: &ast::MessageSend,
+        into: Option<u16>,
     ) -> u16 {
         let selector = selector_of(message);
-        let argument_registers = self.lower_arguments(message);
-        self.emit_send(|destination, call_site| Instruction::SendPublic {
+        let (argument_base, argument_sources) =
+            self.lower_arguments(&[receiver_register], &message.arguments);
+        self.emit_send(into, |destination, call_site| Instruction::SendPublic {
             selector,
             receiver_register,
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
             call_site,
         })
@@ -1607,28 +1771,72 @@ impl<'a> Lowerer<'a> {
     /// blocks").
     fn lower_fallback_send(&mut self, receiver_register: u16, message: &ast::MessageSend) -> u16 {
         let saved = std::mem::replace(&mut self.blocks_by_reference, true);
-        let result = self.emit_ordinary_send_with_receiver(receiver_register, message);
+        let result = self.emit_ordinary_send_with_receiver(receiver_register, message, None);
         self.blocks_by_reference = saved;
         result
     }
 
-    /// Every argument is live until the send instruction reads it, so each
-    /// one has to survive whatever the arguments after it emit.
-    fn lower_arguments(&mut self, message: &ast::MessageSend) -> Vec<u16> {
-        self.lower_operands(&message.arguments)
+    /// A send's `count` contiguous argument slots, allocated at once, after
+    /// every scratch register in `receivers` the send also reads -- a
+    /// receiver, a mirror send's subject, an inlined operation's operands --
+    /// and before any of its arguments is lowered. Answers the first slot;
+    /// for no argument, where the first would be.
+    ///
+    /// The slots are not always the top of what is live at the send:
+    /// whatever an argument is evaluated with lands above them, and an
+    /// argument the send may copy (`lower_expression_into`) -- the result
+    /// register of an inlined loop or mirror send, an assignment's value
+    /// or a cascade's last send, unless that is
+    /// a named local below the slots -- is read by the send from a register
+    /// above them. Every other register above the slots is dead by the time
+    /// the send executes (`docs/design/compiler.md`, "Sends").
+    fn allocate_argument_slots(&mut self, receivers: &[u16], count: usize) -> u16 {
+        let argument_base = self.next_scratch;
+        for _ in 0..count {
+            self.allocate_scratch();
+        }
+        debug_assert!(
+            argument_base >= self.base,
+            "internal: argument slots from r{argument_base} below the first scratch register r{}",
+            self.base
+        );
+        debug_assert!(
+            self.too_large.is_some()
+                || receivers
+                    .iter()
+                    .all(|receiver| *receiver < self.base || *receiver < argument_base),
+            "internal: argument slots from r{argument_base} not above the send's scratch operands {receivers:?}"
+        );
+        argument_base
     }
 
-    /// `lower_operand` over a run of operands one instruction reads: each is
-    /// protected against every operand lowered after it.
-    fn lower_operands(&mut self, operands: &[Expression]) -> Vec<u16> {
-        (0..operands.len())
-            .map(|index| self.lower_operand(&operands[index], &operands[index + 1..]))
-            .collect()
+    /// A send's arguments: their slots allocated first
+    /// (`allocate_argument_slots`), then each argument lowered into its
+    /// slot (`lower_expression_into`), the register it answers recorded as
+    /// its source -- every argument is live until the send reads it, so
+    /// each has to survive whatever the arguments after it emit, which is
+    /// why a named local a later argument can write is copied, into its
+    /// slot, as `lower_operand` copies an operand. The send reads its
+    /// sources in place when they are consecutive and otherwise copies each
+    /// one that is not its slot into it. Answers the first slot and the
+    /// sources.
+    fn lower_arguments(&mut self, receivers: &[u16], arguments: &[Expression]) -> (u16, Vec<u16>) {
+        let argument_base = self.allocate_argument_slots(receivers, arguments.len());
+        let argument_sources = (0..arguments.len())
+            .map(|index| {
+                // Past `u16::MAX` the body is too large and nothing emitted
+                // is kept (`finish`), so a saturated slot is never run.
+                let offset = u16::try_from(index).unwrap_or(u16::MAX);
+                let slot = argument_base.saturating_add(offset);
+                self.lower_expression_into(&arguments[index], &arguments[index + 1..], slot)
+            })
+            .collect();
+        (argument_base, argument_sources)
     }
 
     /// `use_` is what reads the send's value. Only an inlined form passes it
     /// on, to the blocks whose values become its own.
-    fn lower_send(&mut self, send: &ast::Send, use_: ValueUse) -> u16 {
+    fn lower_send(&mut self, send: &ast::Send, use_: ValueUse, into: Option<u16>) -> u16 {
         // The inlining gate: only an ordinary explicit-receiver send is ever
         // offered to `recognize` (`docs/design/compiler.md`, "Control-flow
         // inlining"), through the one predicate the capture analysis and the
@@ -1636,7 +1844,7 @@ impl<'a> Lowerer<'a> {
         // runtime guard whose failure path is a real virtual send, so
         // inlining stays a pure optimization.
         if !control_flow::is_ordinary_send(self.bindings, send) {
-            return self.lower_super_or_lexical_send(send);
+            return self.lower_super_or_lexical_send(send, into);
         }
         if let Some((primitive, block)) = control_flow::recognize_mirror_send(self.bindings, send) {
             return self.lower_mirror_send(send, primitive, block, use_);
@@ -1644,14 +1852,16 @@ impl<'a> Lowerer<'a> {
         if let Some(form) = control_flow::recognize(send) {
             return match form {
                 InlineForm::IfTrueIfFalse(true_block, false_block) => {
-                    self.lower_if(send, Some(true_block), Some(false_block), use_)
+                    self.lower_if(send, Some(true_block), Some(false_block), use_, into)
                 }
-                InlineForm::IfTrue(true_block) => self.lower_if(send, Some(true_block), None, use_),
+                InlineForm::IfTrue(true_block) => {
+                    self.lower_if(send, Some(true_block), None, use_, into)
+                }
                 InlineForm::IfFalse(false_block) => {
-                    self.lower_if(send, None, Some(false_block), use_)
+                    self.lower_if(send, None, Some(false_block), use_, into)
                 }
-                InlineForm::And(block) => self.lower_and_or(send, block, true, use_),
-                InlineForm::Or(block) => self.lower_and_or(send, block, false, use_),
+                InlineForm::And(block) => self.lower_and_or(send, block, true, use_, into),
+                InlineForm::Or(block) => self.lower_and_or(send, block, false, use_, into),
                 InlineForm::WhileTrue { condition, body } => {
                     self.lower_while(condition, body, true)
                 }
@@ -1661,22 +1871,22 @@ impl<'a> Lowerer<'a> {
             };
         }
         if let Some(operation) = control_flow::recognize_integer_binary(send) {
-            return self.lower_integer_binary(send, operation);
+            return self.lower_integer_binary(send, operation, into);
         }
         // The receiver is read by the send instruction, so it has to
         // survive its own arguments' lowering.
         let receiver_register = self.lower_operand(&send.receiver, &send.message.arguments);
-        self.emit_ordinary_send_with_receiver(receiver_register, &send.message)
+        self.emit_ordinary_send_with_receiver(receiver_register, &send.message, into)
     }
 
     /// The sends `is_ordinary_send` rejects: none has a receiver expression,
     /// and none is ever inlined. `outer N` alone is no send at all but the
     /// object `outer N m` would send to, loaded without running any code.
-    fn lower_super_or_lexical_send(&mut self, send: &ast::Send) -> u16 {
+    fn lower_super_or_lexical_send(&mut self, send: &ast::Send, into: Option<u16>) -> u16 {
         let selector = selector_of(&send.message);
         match self.bindings.get(&send.span) {
             Some(Binding::EnclosingObject { depth }) => {
-                let destination = self.allocate_scratch();
+                let destination = self.target_register(into);
                 self.emit(Instruction::LoadEnclosingObject {
                     destination,
                     depth: *depth,
@@ -1685,18 +1895,21 @@ impl<'a> Lowerer<'a> {
             }
             Some(Binding::LexicalSend { depth }) => {
                 let depth = *depth;
-                let argument_registers = self.lower_arguments(&send.message);
-                self.emit_lexical_send(depth, selector, argument_registers)
+                let (argument_base, argument_sources) =
+                    self.lower_arguments(&[], &send.message.arguments);
+                self.emit_lexical_send(depth, selector, argument_base, argument_sources, into)
             }
             binding => {
                 debug_assert!(
                     matches!(binding, Some(Binding::SuperSend)),
                     "internal: is_ordinary_send rejected a send that is neither super nor lexical"
                 );
-                let argument_registers = self.lower_arguments(&send.message);
-                self.emit_send(|destination, call_site| Instruction::SendSuper {
+                let (argument_base, argument_sources) =
+                    self.lower_arguments(&[], &send.message.arguments);
+                self.emit_send(into, |destination, call_site| Instruction::SendSuper {
                     selector,
-                    argument_registers,
+                    argument_base,
+                    argument_sources,
                     destination,
                     call_site,
                 })
@@ -1716,25 +1929,28 @@ impl<'a> Lowerer<'a> {
                 .flat_map(|message| message.arguments.iter())
                 .any(|argument| self.writes_register(argument, receiver_register, 0));
         let receiver_register = self.materialize(receiver_register, clobbered);
-        let mut result = self.emit_ordinary_send_with_receiver(receiver_register, &cascade.first);
+        let mut result =
+            self.emit_ordinary_send_with_receiver(receiver_register, &cascade.first, None);
         for message in &cascade.rest {
-            result = self.emit_ordinary_send_with_receiver(receiver_register, message);
+            result = self.emit_ordinary_send_with_receiver(receiver_register, message, None);
         }
         result
     }
 
     /// The index the next emitted instruction will get -- a forward label.
-    /// Passing `u32::MAX` would take a body of gigabytes of source, near
-    /// the four gibibytes a `Span`'s `u32` offsets address; were one to, a
-    /// wrapped label would be a jump to the wrong instruction, so it panics
-    /// instead.
+    /// At most `INSTRUCTION_LIMIT`, since `emit` emits nothing past it.
     fn here(&self) -> u32 {
         u32::try_from(self.code.len())
-            .expect("internal: more instructions in one body than a u32 numbers")
+            .expect("internal: a body holds at most INSTRUCTION_LIMIT instructions")
     }
 
+    /// Patches the jump at `instruction_index`. A body too large emits
+    /// nothing more, so a jump it did not emit is not patched; its code is
+    /// never kept.
     fn patch_target(&mut self, instruction_index: usize, target: u32) {
-        self.code.patch_target(instruction_index, target);
+        if instruction_index < self.code.len() {
+            self.code.patch_target(instruction_index, target);
+        }
     }
 
     /// Lowers `block`'s statements directly into the current instruction stream
@@ -1842,16 +2058,22 @@ impl<'a> Lowerer<'a> {
     /// branch is `nil`, matching `True>>ifFalse:` and `False>>ifTrue:`,
     /// which answer `nil`. A branch's value is only moved into the send's
     /// own result, so `use_` -- what reads that result -- is what reads the
-    /// branch's value.
+    /// branch's value. The result is `into`, the argument slot
+    /// `lower_expression_into` lowers into, where there is one: each arm
+    /// moves its value there anyway, and a result in a scratch register
+    /// above the slot would cost a setter assignment another `Move` into
+    /// it (`lower_setter_assign`). The slot was allocated before the
+    /// guard, so no arm's scratch register is it.
     fn lower_if(
         &mut self,
         send: &ast::Send,
         true_block: Option<&ast::BlockExpression>,
         false_block: Option<&ast::BlockExpression>,
         use_: ValueUse,
+        into: Option<u16>,
     ) -> u16 {
         let guard_register = self.lower_expression(&send.receiver);
-        let destination = self.allocate_scratch();
+        let destination = self.target_register(into);
         self.emit_guarded_branch(
             guard_register,
             destination,
@@ -1879,15 +2101,22 @@ impl<'a> Lowerer<'a> {
     /// The fallback reads the two registers the guard already filled instead
     /// of lowering the message a second time: re-lowering it would evaluate
     /// the argument's own side effects twice whenever the guard fails. What
-    /// it emits is therefore exactly the `SendPublic` the ordinary lowering
-    /// would have emitted for this send, over exactly the same registers --
-    /// which is what makes the inlining a pure optimization, with every
+    /// it emits is therefore the `SendPublic` the ordinary lowering would
+    /// have emitted for this send, over the same receiver and argument
+    /// values -- which is what makes the inlining a pure optimization, with every
     /// error and its text still coming from that send's primitive. It lands
     /// its result in the same `destination` the fast path writes, rather
     /// than in a scratch register of its own that a `Move` then copies: the
-    /// two paths are mutually exclusive, and `destination` was allocated
-    /// after both operands, so neither can be reading it.
-    fn lower_integer_binary(&mut self, send: &ast::Send, operation: IntegerOperation) -> u16 {
+    /// two paths are mutually exclusive, and `destination` is neither
+    /// operand: a fresh register allocated after both, or `into`, the
+    /// argument slot the operation is lowered into
+    /// (`lower_expression_into`), which was allocated before both.
+    fn lower_integer_binary(
+        &mut self,
+        send: &ast::Send,
+        operation: IntegerOperation,
+        into: Option<u16>,
+    ) -> u16 {
         // The parser gives a binary selector exactly one argument; name the
         // invariant so a mismatch surfaces here rather than as a bare
         // slice-index panic, as `control_flow::recognize` does for its own.
@@ -1900,7 +2129,16 @@ impl<'a> Lowerer<'a> {
         let argument = &send.message.arguments[0];
         let left_register = self.lower_operand(&send.receiver, std::slice::from_ref(argument));
         let right_register = self.lower_expression(argument);
-        let destination = self.allocate_scratch();
+        // The fallback's one argument slot: the argument's own register when
+        // it is a scratch register above the receiver, where the slot would
+        // stand, and otherwise -- a named local -- a slot of its own, which
+        // stays unwritten: a send of one argument reads its source in place.
+        let argument_base = if right_register >= self.base && right_register > left_register {
+            right_register
+        } else {
+            self.allocate_argument_slots(&[left_register, right_register], 1)
+        };
+        let destination = self.target_register(into);
         let fallback_jump = self.emit(Instruction::IntegerBinary {
             operation,
             destination,
@@ -1915,7 +2153,8 @@ impl<'a> Lowerer<'a> {
         self.emit(Instruction::SendPublic {
             selector: selector_of(&send.message),
             receiver_register: left_register,
-            argument_registers: vec![right_register],
+            argument_base,
+            argument_sources: vec![right_register],
             destination,
             call_site,
         });
@@ -1956,13 +2195,15 @@ impl<'a> Lowerer<'a> {
             unreachable!("internal: every mirror selector takes a subject");
         };
         let subject_register = self.lower_operand(subject, rest);
-        let argument_registers = self.lower_operands(rest);
+        let (argument_base, argument_sources) =
+            self.lower_arguments(&[mirror_register, subject_register], rest);
         let destination = self.allocate_scratch();
         let failure_jump = self.emit(Instruction::SendMirror {
             primitive,
             mirror_register,
             subject_register,
-            argument_registers,
+            argument_base,
+            argument_sources,
             destination,
             failure: 0,
         });
@@ -1982,16 +2223,18 @@ impl<'a> Lowerer<'a> {
     /// `and:`/`or:`: the short-circuit arm is the receiver's own Boolean
     /// value, the other arm the block's value as it is. A branch's value is
     /// only moved into the send's own result, so `use_` -- what reads that
-    /// result -- is what reads the block's value, as in `lower_if`.
+    /// result -- is what reads the block's value, as in `lower_if`, and
+    /// the result is `into` where there is one, as there.
     fn lower_and_or(
         &mut self,
         send: &ast::Send,
         block: &ast::BlockExpression,
         is_and: bool,
         use_: ValueUse,
+        into: Option<u16>,
     ) -> u16 {
         let guard_register = self.lower_expression(&send.receiver);
-        let destination = self.allocate_scratch();
+        let destination = self.target_register(into);
         let evaluate = |lowerer: &mut Self| lowerer.lower_inline_block_body(block, use_);
         let fallback =
             |lowerer: &mut Self| lowerer.lower_fallback_send(guard_register, &send.message);
@@ -2058,8 +2301,8 @@ impl<'a> Lowerer<'a> {
     }
 
     pub(crate) fn finish(self, source: Span) -> CompiledCode {
-        if self.too_large {
-            return super::body_too_large(self.kind, self.argument_count, source);
+        if let Some(limit) = self.too_large {
+            return super::body_too_large(self.kind, self.argument_count, source, limit);
         }
         // Control-flow inlining and the integer leaves' fast path are the two
         // sources of a patched target, and every one of their labels is a
@@ -2093,12 +2336,27 @@ impl<'a> Lowerer<'a> {
                 .all(|target| target < self.code.len()),
             "internal: a jump target does not name an instruction of this body"
         );
+        // Every register above a send's slots dead once it executes. The
+        // bump allocator makes it true for every value but a setter
+        // assignment's, which is the one value kept across a send:
+        // `lower_setter_assign`'s `Move` into the slot makes it true there.
+        // The scan checks it.
+        if cfg!(debug_assertions) {
+            super::reference::check_leftovers(
+                &self.code.instructions(),
+                self.base,
+                self.max_register,
+            );
+        }
         CompiledCode::from_builder(
             self.kind,
             self.code,
             self.argument_count,
             self.max_register,
             self.layout.copied_count,
+            // Every named register is below `base`, and every scratch
+            // register -- a send's slots among them -- at or above it.
+            self.base,
             self.statement_program_counter,
             source,
         )
@@ -2241,16 +2499,16 @@ mod tests {
         );
         let mut lowerer = method_lowerer(&method, &bindings); // 0 parameters, 0 temporaries -> base 0
         let register = lowerer.lower_expression(return_expression(&method));
-        assert_eq!(register, 0);
+        assert_eq!(register, 13);
         let code = lowerer.finish(method.span);
         assert_eq!(
             code.instructions(),
             vec![Instruction::LoadLiteral {
-                destination: 0,
+                destination: 13,
                 literal: BytecodeLiteral::SmallInteger(42)
             }]
         );
-        assert_eq!(code.register_count, 1);
+        assert_eq!(code.register_count, 14);
         assert_eq!(code.kind, CodeKind::Method);
     }
 
@@ -2295,7 +2553,7 @@ mod tests {
             "},
             1,
         );
-        let mut lowerer = method_lowerer(&method, &bindings); // temporary `t` is register 0
+        let mut lowerer = method_lowerer(&method, &bindings); // temporary `t` is register 13
         for statement in &method.body.statements {
             lowerer.lower_statement(statement, ValueUse::Discarded);
         }
@@ -2303,7 +2561,7 @@ mod tests {
         // An explicit `self` receiver is a depth-0 lexical send.
         let instructions = code.instructions();
         let Some(Instruction::SendLexical {
-            argument_registers, ..
+            argument_sources, ..
         }) = instructions
             .iter()
             .find(|instruction| matches!(instruction, Instruction::SendLexical { .. }))
@@ -2311,13 +2569,13 @@ mod tests {
             panic!("expected the keyword send");
         };
         assert_ne!(
-            argument_registers[0], 0,
-            "`t` is register 0; the first argument must not be its live register"
+            argument_sources[0], 13,
+            "`t` is register 13; the first argument must not be its live register"
         );
         assert!(
             code.instructions().contains(&Instruction::Move {
-                destination: argument_registers[0],
-                source: 0
+                destination: argument_sources[0],
+                source: 13
             }),
             "the copy out of `t` is a Move emitted before the assignment"
         );
@@ -2353,14 +2611,14 @@ mod tests {
                 .filter_map(|instruction| match instruction {
                     Instruction::SendPublic {
                         receiver_register,
-                        argument_registers,
+                        argument_sources,
                         ..
-                    } => Some((*receiver_register, argument_registers.clone())),
+                    } => Some((*receiver_register, argument_sources.clone())),
                     _ => None,
                 })
                 .collect::<Vec<_>>(),
-            vec![(0, vec![1, 2])],
-            "receiver and first argument are read straight out of their own registers"
+            vec![(0, vec![1, 16])],
+            "receiver and first argument are read straight out of their own registers, the literal out of its slot"
         );
     }
 
@@ -2400,12 +2658,12 @@ mod tests {
               m = ( | local = 1. | ^local foo: self bar )
             ) : ()
         "};
-        let code = lower_whole_method(source, 0); // `local` is register 0
+        let code = lower_whole_method(source, 0); // `local` is register 13
         assert!(
             !code
                 .instructions()
                 .iter()
-                .any(|instruction| matches!(instruction, Instruction::Move { source: 0, .. })),
+                .any(|instruction| matches!(instruction, Instruction::Move { source: 13, .. })),
             "an immutable local needs no copy: {:?}",
             code.instructions()
         );
@@ -2438,18 +2696,18 @@ mod tests {
               m = ( | t ::= 1. | ^t + self foo )
             ) : ()
         "};
-        let code = lower_whole_method(source, 0); // `t` is register 0
+        let code = lower_whole_method(source, 0); // `t` is register 13
         assert!(
             !code
                 .instructions()
                 .iter()
-                .any(|instruction| matches!(instruction, Instruction::Move { source: 0, .. })),
+                .any(|instruction| matches!(instruction, Instruction::Move { source: 13, .. })),
             "nothing the `foo` send runs can write `t`'s register: {:?}",
             code.instructions()
         );
         assert_eq!(
             public_receiver(&code, "+"),
-            0,
+            13,
             "the `+` send reads `t`'s own register"
         );
     }
@@ -2465,18 +2723,18 @@ mod tests {
               m: c = ( | t ::= 1. | c ifTrue: [t:: 9]. ^t + self foo )
             ) : ()
         "};
-        let code = lower_whole_method(source, 0); // `c` is register 0, `t` register 1
+        let code = lower_whole_method(source, 0); // `c` is register 0, `t` register 14
         let receiver = public_receiver(&code, "+");
         assert_ne!(
             receiver,
-            1,
+            14,
             "the `ifTrue:` fallback closure can write `t` from inside `foo`: {:?}",
             code.instructions()
         );
         assert!(
             code.instructions().contains(&Instruction::Move {
                 destination: receiver,
-                source: 1
+                source: 14
             }),
             "the copy out of `t` is a Move: {:?}",
             code.instructions()
@@ -2494,22 +2752,22 @@ mod tests {
               m = ( | t ::= 1. | ^self first: t second: (t:: 9) )
             ) : ()
         "};
-        let code = lower_whole_method(source, 1); // `t` is register 0
+        let code = lower_whole_method(source, 1); // `t` is register 13
                                                   // An explicit `self` receiver is a depth-0 lexical send.
         let instructions = code.instructions();
         let Some(Instruction::SendLexical {
-            argument_registers, ..
+            argument_sources, ..
         }) = instructions
             .iter()
             .find(|instruction| matches!(instruction, Instruction::SendLexical { .. }))
         else {
             panic!("expected the keyword send: {:?}", code.instructions());
         };
-        assert_ne!(argument_registers[0], 0, "`t` is register 0");
+        assert_ne!(argument_sources[0], 13, "`t` is register 13");
         assert!(
             code.instructions().contains(&Instruction::Move {
-                destination: argument_registers[0],
-                source: 0
+                destination: argument_sources[0],
+                source: 13
             }),
             "the copy out of `t` is a Move: {:?}",
             code.instructions()
@@ -2529,13 +2787,13 @@ mod tests {
                      outerDone:: true]. 1} at: 2)";
 
     /// The register the `+` send reads its receiver out of, and the register
-    /// the copy out of `t` (register 0) went into.
+    /// the copy out of `t` (register 13) went into.
     fn receiver_and_copy_of_the_binary_send(code: &CompiledCode) -> (u16, u16) {
         let receiver = public_receiver(code, "+");
         let instructions = code.instructions();
         let Some(Instruction::Move { destination, .. }) = instructions
             .iter()
-            .find(|instruction| matches!(instruction, Instruction::Move { source: 0, .. }))
+            .find(|instruction| matches!(instruction, Instruction::Move { source: 13, .. }))
         else {
             panic!(
                 "expected a copy out of `t`'s register: {:?}",
@@ -2559,9 +2817,9 @@ mod tests {
               )
             ) : ()
         "};
-        let code = lower_whole_method(&source, 0); // `t` is register 0
+        let code = lower_whole_method(&source, 0); // `t` is register 13
         let (receiver, copy) = receiver_and_copy_of_the_binary_send(&code);
-        assert_ne!(receiver, 0, "`t` is written before the `+` send reads it");
+        assert_ne!(receiver, 13, "`t` is written before the `+` send reads it");
         assert_eq!(
             receiver,
             copy,
@@ -2593,10 +2851,10 @@ mod tests {
         };
         assert_eq!(
             block.copied_count, 0,
-            "the block reads nothing of its method, so `t` is its register 0"
+            "the block reads nothing of its method, so `t` is its register 13"
         );
         let (receiver, copy) = receiver_and_copy_of_the_binary_send(block);
-        assert_ne!(receiver, 0, "`t` is written before the `+` send reads it");
+        assert_ne!(receiver, 13, "`t` is written before the `+` send reads it");
         assert_eq!(
             receiver,
             copy,
@@ -2623,13 +2881,16 @@ mod tests {
             code.instructions(),
             vec![
                 Instruction::LoadLiteral {
-                    destination: 1,
+                    destination: 14,
                     literal: BytecodeLiteral::SmallInteger(7)
                 },
-                Instruction::StoreLocal { source: 1, slot: 0 },
+                Instruction::StoreLocal {
+                    source: 14,
+                    slot: 13
+                },
             ]
         );
-        assert_eq!(code.register_count, 2);
+        assert_eq!(code.register_count, 15);
         assert_eq!(code.statement_program_counter, vec![(0, 0..2)]);
     }
 
@@ -2654,18 +2915,24 @@ mod tests {
             code.instructions(),
             vec![
                 Instruction::LoadLiteral {
-                    destination: 1,
+                    destination: 14,
                     literal: BytecodeLiteral::SmallInteger(1)
                 },
-                Instruction::StoreLocal { source: 1, slot: 0 },
+                Instruction::StoreLocal {
+                    source: 14,
+                    slot: 13
+                },
                 Instruction::LoadLiteral {
-                    destination: 1,
+                    destination: 14,
                     literal: BytecodeLiteral::SmallInteger(2)
                 },
-                Instruction::StoreLocal { source: 1, slot: 0 },
+                Instruction::StoreLocal {
+                    source: 14,
+                    slot: 13
+                },
             ]
         );
-        assert_eq!(code.register_count, 2);
+        assert_eq!(code.register_count, 15);
         assert_eq!(code.statement_program_counter, vec![(0, 0..2), (1, 2..4)]);
     }
 
@@ -2686,7 +2953,7 @@ mod tests {
         assert_eq!(
             code.instructions(),
             vec![Instruction::LoadLiteral {
-                destination: 0,
+                destination: 13,
                 literal: BytecodeLiteral::LargeInteger(
                     crate::ArbitraryInteger::parse("99999999999999999999", 10).unwrap()
                 ),
@@ -2711,7 +2978,7 @@ mod tests {
         assert_eq!(
             code.instructions(),
             vec![Instruction::LoadLiteral {
-                destination: 0,
+                destination: 13,
                 literal: BytecodeLiteral::SmallInteger(255)
             }]
         );
@@ -2738,20 +3005,21 @@ mod tests {
             code.instructions(),
             vec![
                 Instruction::LoadLiteral {
-                    destination: 1,
+                    destination: 14,
                     literal: BytecodeLiteral::SmallInteger(3)
                 },
                 Instruction::SendPublic {
                     selector: crate::Symbol::intern("~="),
-                    receiver_register: 1,
-                    argument_registers: vec![0],
-                    destination: 2,
+                    receiver_register: 14,
+                    argument_base: 15,
+                    argument_sources: vec![0],
+                    destination: 16,
                     call_site: CallSite { number: 0 },
                 },
             ]
         );
-        assert_eq!(destination, 2);
-        assert_eq!(code.register_count, 3);
+        assert_eq!(destination, 16);
+        assert_eq!(code.register_count, 17);
         assert_eq!(code.family_size, 1);
     }
 
@@ -2775,12 +3043,13 @@ mod tests {
             vec![Instruction::SendLexical {
                 depth: 0,
                 selector: crate::Symbol::intern("bar"),
-                argument_registers: vec![],
-                destination: 0,
+                argument_base: 13,
+                argument_sources: vec![],
+                destination: 13,
                 call_site: CallSite { number: 0 },
             }]
         );
-        assert_eq!(destination, 0);
+        assert_eq!(destination, 13);
     }
 
     #[test]
@@ -2798,8 +3067,8 @@ mod tests {
         let code = lowerer.finish(foo.span);
         assert!(matches!(
             &code.instruction(2),
-            Instruction::SendLexical { depth: 0, selector, argument_registers, .. }
-                if selector.as_str() == "at:put:" && argument_registers.len() == 2
+            Instruction::SendLexical { depth: 0, selector, argument_sources, .. }
+                if selector.as_str() == "at:put:" && argument_sources.len() == 2
         ));
         let (foo, bindings) = resolve_method(source, 1);
         let mut lowerer = method_lowerer(&foo, &bindings);
@@ -2810,8 +3079,8 @@ mod tests {
         let code = lowerer.finish(foo.span);
         assert!(matches!(
             &code.instruction(0),
-            Instruction::SendSuper { selector, argument_registers, destination: 0, .. }
-                if selector.as_str() == "printString" && argument_registers.is_empty()
+            Instruction::SendSuper { selector, argument_sources, destination: 13, .. }
+                if selector.as_str() == "printString" && argument_sources.is_empty()
         ));
     }
 
@@ -2830,8 +3099,8 @@ mod tests {
         let code = lowerer.finish(bump.span);
         assert!(matches!(
             code.instructions().last(),
-            Some(Instruction::SendLexical { depth: 0, selector, argument_registers, .. })
-                if selector.as_str() == "n:" && argument_registers.len() == 1
+            Some(Instruction::SendLexical { depth: 0, selector, argument_sources, .. })
+                if selector.as_str() == "n:" && argument_sources.len() == 1
         ));
     }
 
@@ -2842,15 +3111,15 @@ mod tests {
             .filter_map(|instruction| match instruction {
                 Instruction::SendLexical {
                     selector,
-                    argument_registers,
+                    argument_sources,
                     ..
-                } if selector.as_str() == "n:" => Some(argument_registers[0]),
+                } if selector.as_str() == "n:" => Some(argument_sources[0]),
                 _ => None,
             })
             .collect()
     }
 
-    /// The copy `lower_assign` makes for a setter send protects the
+    /// The copy `lower_setter_assign` makes for a setter send protects the
     /// assignment's *value* from the user code that setter runs, which can
     /// write the local before anything reads the value -- even a consumer
     /// that is the very next instruction. Only where nothing reads the value
@@ -2881,13 +3150,13 @@ mod tests {
             !code
                 .instructions()
                 .iter()
-                .any(|instruction| matches!(instruction, Instruction::Move { source: 0, .. })),
+                .any(|instruction| matches!(instruction, Instruction::Move { source: 13, .. })),
             "nothing reads the assignment's value, so it needs no copy: {:?}",
             code.instructions()
         );
         assert_eq!(
             setter_arguments(&code),
-            vec![0],
+            vec![13],
             "the setter takes `t`'s own register"
         );
     }
@@ -2908,7 +3177,7 @@ mod tests {
         assert_ne!(copy, 0, "the setter can write `t` before `Return` reads");
         assert!(code.instructions().contains(&Instruction::Move {
             destination: copy,
-            source: 0
+            source: 13
         }));
         assert_eq!(
             code.instructions().last(),
@@ -2968,7 +3237,7 @@ mod tests {
         assert!(
             code.instructions().contains(&Instruction::Move {
                 destination: copy,
-                source: 1
+                source: 14
             }),
             "the copy out of `p` is a Move: {:?}",
             code.instructions()
@@ -3019,8 +3288,9 @@ mod tests {
                 Instruction::SendLexical {
                     depth: 0,
                     selector: crate::Symbol::intern("n:"),
-                    argument_registers: vec![0],
-                    destination: 1,
+                    argument_base: 14,
+                    argument_sources: vec![0],
+                    destination: 15,
                     call_site: CallSite { number: 0 },
                 },
                 Instruction::InitializeSlot {
@@ -3039,7 +3309,7 @@ mod tests {
     /// write, and so the copy possible at all
     /// (`a_slot_assignment_in_statement_position_does_not_copy_its_value`);
     /// its receiver is a literal so that the block captures nothing and `t`
-    /// stays the block's register 0.
+    /// stays the block's register 13, its first above the header's numbers.
     #[test]
     fn a_blocks_last_slot_assignment_copies_its_value_and_an_earlier_one_does_not() {
         let source = indoc! {"
@@ -3057,13 +3327,13 @@ mod tests {
             panic!("expected two setter sends: {:?}", block.instructions());
         };
         assert_eq!(
-            discarded, 0,
+            discarded, 13,
             "the first value is discarded: `t`'s own register"
         );
-        assert_ne!(read, 0, "the block answers the second value");
+        assert_ne!(read, 13, "the block answers the second value");
         assert!(block.instructions().contains(&Instruction::Move {
             destination: read,
-            source: 0
+            source: 13
         }));
         assert_eq!(
             block.instructions().last(),
@@ -3120,15 +3390,15 @@ mod tests {
               loop = ( | t | true ifTrue: [t:: 1]. [n:: t] whileTrue: [n:: t] )
             ) : ()
         "};
-        // `c` is register 0 and `t` register 1; `loop`'s `t` is register 0.
+        // `c` is register 0 and `t` register 14; `loop`'s `t` is register 13.
         let discarded = lower_whole_method(source, 0);
-        assert_eq!(setter_arguments(&discarded), vec![1, 1, 1]);
+        assert_eq!(setter_arguments(&discarded), vec![14, 14, 14]);
         for (index, count) in [(1, 2), (2, 1)] {
             let returned = lower_whole_method(source, index);
             let arguments = setter_arguments(&returned);
             assert_eq!(arguments.len(), count);
             assert!(
-                arguments.iter().all(|&argument| argument > 1),
+                arguments.iter().all(|&argument| argument > 14),
                 "the send's value is read, so each branch's is: {:?}",
                 returned.instructions()
             );
@@ -3137,8 +3407,8 @@ mod tests {
         let [condition, body] = setter_arguments(&loop_code)[..] else {
             panic!("expected two setter sends: {:?}", loop_code.instructions());
         };
-        assert_ne!(condition, 0, "the guard reads the condition's value");
-        assert_eq!(body, 0, "nothing reads the loop body's value");
+        assert_ne!(condition, 13, "the guard reads the condition's value");
+        assert_eq!(body, 13, "nothing reads the loop body's value");
     }
 
     /// §5.7: a name no enclosing declaration declares is `self
@@ -3159,7 +3429,7 @@ mod tests {
         let [Instruction::SendLexical {
             depth: 0,
             selector,
-            argument_registers,
+            argument_sources,
             destination: send_destination,
             ..
         }] = &code.instructions()[..]
@@ -3170,7 +3440,7 @@ mod tests {
             );
         };
         assert_eq!(selector.as_str(), "Array");
-        assert!(argument_registers.is_empty());
+        assert!(argument_sources.is_empty());
         assert_eq!(*send_destination, destination);
     }
 
@@ -3183,7 +3453,7 @@ mod tests {
             ) : ()
         "};
         let (foo, bindings) = resolve_method(source, 0);
-        let mut lowerer = method_lowerer(&foo, &bindings); // temporary `c` is register 0
+        let mut lowerer = method_lowerer(&foo, &bindings); // temporary `c` is register 13
         lowerer.lower_statement(&foo.body.statements[0], ValueUse::Discarded);
         lowerer.lower_statement(&foo.body.statements[1], ValueUse::Discarded);
         let code = lowerer.finish(foo.span);
@@ -3204,7 +3474,7 @@ mod tests {
         // reaches it -- so the cascade reads `c` itself.
         assert_eq!(
             receiver_registers[1],
-            0,
+            13,
             "the cascade receiver is `c`'s own register: {:?}",
             code.instructions()
         );
@@ -3263,7 +3533,7 @@ mod tests {
         assert!(
             code.instructions().contains(&Instruction::Move {
                 destination: first,
-                source: 0
+                source: 13
             }),
             "the copy out of `c` is a Move: {:?}",
             code.instructions()
@@ -3293,7 +3563,7 @@ mod tests {
         assert!(
             code.instructions().contains(&Instruction::Move {
                 destination: first,
-                source: 0
+                source: 13
             }),
             "the copy out of `c` is a Move: {:?}",
             code.instructions()
@@ -3341,8 +3611,8 @@ mod tests {
         assert_eq!(
             &code.instructions()[code.instructions().len() - 2..],
             &[
-                Instruction::LoadSelf { destination: 3 },
-                Instruction::ImplicitReturn { register: 3 }
+                Instruction::LoadSelf { destination: 16 },
+                Instruction::ImplicitReturn { register: 16 }
             ]
         );
     }
@@ -3362,10 +3632,10 @@ mod tests {
             code.instructions(),
             vec![
                 Instruction::LoadLiteral {
-                    destination: 0,
+                    destination: 13,
                     literal: BytecodeLiteral::SmallInteger(1)
                 },
-                Instruction::Return { register: 0 },
+                Instruction::Return { register: 13 },
             ]
         );
     }
@@ -3383,7 +3653,7 @@ mod tests {
         );
         let instructions = code.instructions();
         let Some(Instruction::MakeClosure {
-            destination: 0,
+            destination: 13,
             parameters,
             code: block,
             copied,
@@ -3471,12 +3741,12 @@ mod tests {
             "},
             0,
         );
-        // `x` is r0, `t` is r1 (unused: it lives in the vector), the vector
-        // is r2.
+        // `x` is r0, `t` is r14 (unused: it lives in the vector), the
+        // vector is r15.
         assert_eq!(
             code.instruction(0),
             Instruction::MakeVector {
-                destination: 2,
+                destination: 15,
                 size: 1
             }
         );
@@ -3489,19 +3759,20 @@ mod tests {
         else {
             panic!()
         };
-        // The parameter's own register, then the vector register.
-        assert_eq!(*copied, vec![0, 2]);
+        // The parameter's own register, then the vector register, which
+        // the block holds in its first two registers above the header.
+        assert_eq!(*copied, vec![0, 15]);
         assert_eq!(block.copied_count, 2);
         assert_eq!(block.outer_reach, 0);
         assert_eq!(
             block.instructions(),
             vec![
                 Instruction::StoreVector {
-                    vector: 1,
+                    vector: 14,
                     index: 0,
-                    source: 0
+                    source: 13
                 }, // t:: x
-                Instruction::ImplicitReturn { register: 0 },
+                Instruction::ImplicitReturn { register: 13 },
             ]
         );
     }
@@ -3530,7 +3801,7 @@ mod tests {
         assert_eq!(block.copied_count, 1);
         assert_eq!(
             block.instructions(),
-            vec![Instruction::ImplicitReturn { register: 0 }]
+            vec![Instruction::ImplicitReturn { register: 13 }]
         );
         assert_eq!(block.outer_reach, 0);
     }
@@ -3549,7 +3820,7 @@ mod tests {
         assert_eq!(
             code.instruction(0),
             Instruction::MakeVector {
-                destination: 1,
+                destination: 14,
                 size: 1
             }
         );
@@ -3562,20 +3833,20 @@ mod tests {
         else {
             panic!()
         };
-        assert_eq!(*copied, vec![1]); // the vector register
+        assert_eq!(*copied, vec![14]); // the vector register
         assert_eq!(
             block.instructions(),
             vec![
                 Instruction::LoadLiteral {
-                    destination: 1,
+                    destination: 14,
                     literal: BytecodeLiteral::SmallInteger(1)
                 },
                 Instruction::StoreVector {
-                    vector: 0,
+                    vector: 13,
                     index: 0,
-                    source: 1
+                    source: 14
                 },
-                Instruction::ImplicitReturn { register: 1 },
+                Instruction::ImplicitReturn { register: 14 },
             ]
         );
     }
@@ -3611,10 +3882,10 @@ mod tests {
             panic!()
         };
         // The middle block holds it in its own first copied register.
-        assert_eq!(*inner_copied, vec![0]);
+        assert_eq!(*inner_copied, vec![13]);
         assert_eq!(
             inner.instructions(),
-            vec![Instruction::ImplicitReturn { register: 0 }]
+            vec![Instruction::ImplicitReturn { register: 13 }]
         );
     }
 
@@ -3648,7 +3919,7 @@ mod tests {
             instruction,
             Instruction::StoreOuterLocal {
                 depth: 1,
-                index: 1,
+                index: 14,
                 ..
             }
         )));
@@ -3679,10 +3950,10 @@ mod tests {
             block.instructions(),
             vec![
                 Instruction::LoadLiteral {
-                    destination: 0,
+                    destination: 13,
                     literal: BytecodeLiteral::SmallInteger(1)
                 },
-                Instruction::NonLocalReturn { register: 0 },
+                Instruction::NonLocalReturn { register: 13 },
             ]
         );
     }
@@ -3706,10 +3977,10 @@ mod tests {
             empty.instructions(),
             vec![
                 Instruction::LoadLiteral {
-                    destination: 0,
+                    destination: 13,
                     literal: BytecodeLiteral::Nil
                 },
-                Instruction::ImplicitReturn { register: 0 }
+                Instruction::ImplicitReturn { register: 13 }
             ]
         );
         let instructions = code.instructions();
@@ -3720,14 +3991,14 @@ mod tests {
             two.instructions(),
             vec![
                 Instruction::LoadLiteral {
-                    destination: 0,
+                    destination: 13,
                     literal: BytecodeLiteral::SmallInteger(1)
                 },
                 Instruction::LoadLiteral {
-                    destination: 0,
+                    destination: 13,
                     literal: BytecodeLiteral::SmallInteger(2)
                 },
-                Instruction::ImplicitReturn { register: 0 },
+                Instruction::ImplicitReturn { register: 13 },
             ]
         );
     }
@@ -3772,24 +4043,24 @@ mod tests {
             code.instructions(),
             vec![
                 Instruction::LoadLiteral {
-                    destination: 0,
+                    destination: 13,
                     literal: BytecodeLiteral::SmallInteger(1)
                 },
                 Instruction::LoadLiteral {
-                    destination: 1,
+                    destination: 14,
                     literal: BytecodeLiteral::SmallInteger(2)
                 },
                 Instruction::LoadLiteral {
-                    destination: 2,
+                    destination: 15,
                     literal: BytecodeLiteral::SmallInteger(3)
                 },
                 Instruction::MakeArray {
-                    destination: 3,
-                    element_registers: vec![0, 1, 2]
+                    destination: 16,
+                    element_registers: vec![13, 14, 15]
                 },
             ]
         );
-        assert_eq!(destination, 3);
+        assert_eq!(destination, 16);
     }
 
     #[test]
@@ -3818,11 +4089,11 @@ mod tests {
             code.instructions(),
             vec![
                 Instruction::LoadLiteral {
-                    destination: 0,
+                    destination: 13,
                     literal: BytecodeLiteral::SmallInteger(1)
                 },
-                Instruction::LoadSelf { destination: 1 },
-                Instruction::ImplicitReturn { register: 1 },
+                Instruction::LoadSelf { destination: 14 },
+                Instruction::ImplicitReturn { register: 14 },
             ]
         );
     }
@@ -3854,7 +4125,7 @@ mod tests {
         assert!(matches!(
             code.instructions().last(),
             Some(Instruction::InitializeSlot {
-                source: 2,
+                source: 15,
                 own_index: 4
             })
         ));
@@ -3930,34 +4201,38 @@ mod tests {
             Instruction::SendLexical {
                 depth: 1,
                 selector: crate::Symbol::intern("vmMirror"),
-                argument_registers: vec![],
-                destination: 1,
+                argument_base: 14,
+                argument_sources: vec![],
+                destination: 14,
                 call_site: CallSite { number: 0 },
             },
-            Instruction::LoadSelf { destination: 2 },
+            Instruction::LoadSelf { destination: 15 },
+            // The leaf's argument is the parameter, which the send copies
+            // into its slot, r3.
             Instruction::SendMirror {
                 primitive,
-                mirror_register: 1,
-                subject_register: 2,
-                argument_registers: vec![0],
-                destination: 3,
+                mirror_register: 14,
+                subject_register: 15,
+                argument_base: 16,
+                argument_sources: vec![0],
+                destination: 17,
                 failure: 4,
             },
             Instruction::Jump { target: 8 },
             Instruction::LoadLiteral {
-                destination: 4,
+                destination: 18,
                 literal: BytecodeLiteral::Nil,
             },
-            Instruction::Return { register: 4 },
+            Instruction::Return { register: 18 },
             Instruction::LoadLiteral {
-                destination: 5,
+                destination: 19,
                 literal: BytecodeLiteral::Nil,
             },
             Instruction::Move {
-                destination: 3,
-                source: 5,
+                destination: 17,
+                source: 19,
             },
-            Instruction::Return { register: 3 },
+            Instruction::Return { register: 17 },
         ];
         assert_eq!(code.instructions(), expected, "{:#?}", code.instructions());
         // The one call site is `vmMirror`'s lexical send: `SendMirror`
@@ -4143,7 +4418,7 @@ mod tests {
         let instructions = code.instructions();
         let Some(Instruction::SendPublic {
             receiver_register,
-            argument_registers,
+            argument_sources,
             ..
         }) = instructions.iter().find(
             |instruction| matches!(instruction, Instruction::SendPublic { selector, .. } if selector.as_str() == "+"),
@@ -4151,7 +4426,7 @@ mod tests {
             panic!("expected the fallback send: {:#?}", code.instructions())
         };
         assert_eq!(*receiver_register, *left);
-        assert_eq!(*argument_registers, vec![*right]);
+        assert_eq!(*argument_sources, vec![*right]);
         assert_eq!(
             code.instructions()
                 .iter()
@@ -4202,7 +4477,8 @@ mod tests {
             "},
             1,
         );
-        // `foo` takes no parameters, so its only local `total` is register 0.
+        // `foo` takes no parameters, so its only local `total` is register
+        // 13, the first above the header's numbers.
         let instructions = code.instructions();
         let Some(Instruction::IntegerBinary { left, .. }) = instructions
             .iter()
@@ -4210,11 +4486,14 @@ mod tests {
         else {
             panic!("expected the fast path: {:#?}", code.instructions())
         };
-        assert_ne!(*left, 0, "`total` can be written before the guard reads it");
+        assert_ne!(
+            *left, 13,
+            "`total` can be written before the guard reads it"
+        );
         assert!(
             code.instructions().contains(&Instruction::Move {
                 destination: *left,
-                source: 0
+                source: 13
             }),
             "the guard reads the copy of `total`: {:#?}",
             code.instructions()
@@ -4301,7 +4580,7 @@ mod tests {
         assert_eq!(*copied, vec![0], "handed the method's own register for x");
         assert_eq!(
             inlined_arm_block.instruction(0),
-            Instruction::ImplicitReturn { register: 0 }
+            Instruction::ImplicitReturn { register: 13 }
         );
         assert_eq!(inlined_arm_block.outer_reach, 0);
         // Inside the fallback closure the nested `[ x ]` reaches two frames
@@ -4321,7 +4600,7 @@ mod tests {
         assert_eq!(
             nested.instruction(0),
             Instruction::LoadOuterLocal {
-                destination: 0,
+                destination: 13,
                 depth: 2,
                 index: 0
             }
@@ -4389,7 +4668,7 @@ mod tests {
         assert_ne!(bar_destination, baz_destination);
         let instructions = code.instructions();
         let Some(Instruction::SendPublic {
-            selector, argument_registers, ..
+            selector, argument_sources, ..
         }) = instructions.iter().rev().find(
             |instruction| matches!(instruction, Instruction::SendPublic { selector, .. } if selector.as_str() == "foo:with:"),
         )
@@ -4397,7 +4676,7 @@ mod tests {
             panic!("expected a foo:with: send")
         };
         assert_eq!(selector.as_str(), "foo:with:");
-        assert_eq!(argument_registers[0], bar_destination);
+        assert_eq!(argument_sources[0], bar_destination);
     }
 
     /// The evaluated arm moves the block's value into the result as it is:
@@ -4436,11 +4715,11 @@ mod tests {
         // together -- register count must stay bounded by the costliest single
         // arm, not grow with the sum of all three arms' code size. Before the
         // `emit_guarded_branch` scratch-allocator reset, this body compiled to
-        // 15 registers; the arms now share scratch space and it compiles to 7
-        // (`self` r0, `x` r1, guard+destination r2-r3, and the costliest arm's
-        // own 3 scratch registers r4-r6).
+        // 15 registers; the arms now share scratch space and it compiles to
+        // 20: `x`, the header's thirteen numbers, the guard and the
+        // destination, and the costliest arm's own scratch registers.
         let code = compile_foo("x ifTrue: [(x + 1) + (x + 2)] ifFalse: [(x + 3) + (x + 4)]");
-        assert_eq!(code.register_count, 7, "{:#?}", code.instructions());
+        assert_eq!(code.register_count, 20, "{:#?}", code.instructions());
     }
 
     #[test]
@@ -4472,24 +4751,73 @@ mod tests {
         )
     }
 
+    /// The instruction limit, on the counter the lowerer keeps: a body of
+    /// `INSTRUCTION_LIMIT` instructions is still one, the next instruction
+    /// is not emitted and makes it too large, and it compiles to the
+    /// raising body that names the limit. Emitted directly, since a source
+    /// of 2^20 instructions is too slow to compile in the suite.
+    #[test]
+    fn a_body_past_the_instruction_limit_is_too_large() {
+        let bindings = Rc::new(HashMap::new());
+        let captures = Rc::new(analyze(
+            RootBody {
+                argument_count: 0,
+                temporaries: &[],
+                slot_initializers: Vec::new(),
+                statements: &[],
+            },
+            &bindings,
+        ));
+        let mut lowerer = Lowerer::new(
+            CodeKind::Method,
+            BodyKey::Root,
+            0,
+            &[],
+            &bindings,
+            captures,
+            false,
+            Enclosing::default(),
+            0,
+        );
+        let destination = lowerer.allocate_scratch();
+        let limit = crate::bytecode::INSTRUCTION_LIMIT as usize;
+        for _ in 0..limit {
+            lowerer.emit(Instruction::LoadSelf { destination });
+        }
+        assert_eq!(lowerer.too_large, None);
+        assert_eq!(lowerer.here() as usize, limit);
+        lowerer.emit(Instruction::LoadSelf { destination });
+        assert_eq!(lowerer.too_large, Some(BodyLimit::Instructions));
+        assert_eq!(lowerer.here() as usize, limit);
+        let code = lowerer.finish(Span::new(0, 0));
+        assert_eq!(
+            code.instruction(0),
+            Instruction::LoadLiteral {
+                destination: HEADER_REGISTERS,
+                literal: BytecodeLiteral::BodyTooLarge(BodyLimit::Instructions),
+            }
+        );
+        assert_eq!(code.instruction_count(), 2);
+    }
+
     /// The body `compiler::body_too_large` builds for a body of `kind`
-    /// taking `argument_count` arguments: its one register follows them.
+    /// taking `argument_count` arguments: its one register is the first
+    /// above the header's numbers.
     fn assert_raises_too_large(code: &CompiledCode, kind: CodeKind, argument_count: u16) {
+        let register = argument_count + HEADER_REGISTERS;
         assert_eq!(code.kind, kind);
         assert_eq!(
             code.instructions(),
             vec![
                 Instruction::LoadLiteral {
-                    destination: argument_count,
-                    literal: BytecodeLiteral::BodyTooLarge,
+                    destination: register,
+                    literal: BytecodeLiteral::BodyTooLarge(BodyLimit::Registers),
                 },
-                Instruction::ImplicitReturn {
-                    register: argument_count
-                },
+                Instruction::ImplicitReturn { register },
             ]
         );
         assert_eq!(code.argument_count, argument_count);
-        assert_eq!(code.register_count, argument_count + 1);
+        assert_eq!(code.register_count, register + 1);
         assert_eq!(code.copied_count, 0);
         assert_eq!(code.statement_program_counter, vec![(0, 0..2)]);
     }
@@ -4499,24 +4827,26 @@ mod tests {
             matches!(
                 instruction,
                 Instruction::LoadLiteral {
-                    literal: BytecodeLiteral::BodyTooLarge,
+                    literal: BytecodeLiteral::BodyTooLarge(_),
                     ..
                 }
             )
         })
     }
 
-    /// `u16::MAX - 1` temporaries and the scratch register `self` is
-    /// answered from fill the ceiling exactly; one temporary more needs a
-    /// register past it, and more temporaries than registers cannot even be
-    /// laid out. Neither panics: both compile to the raising body.
+    /// The header's numbers, `u16::MAX - 1 - HEADER_REGISTERS` temporaries
+    /// and the scratch register `self` is answered from fill the ceiling
+    /// exactly; one temporary more needs a register past it, and more
+    /// temporaries than registers cannot even be laid out. Neither panics:
+    /// both compile to the raising body.
     #[test]
     fn a_body_past_the_register_ceiling_compiles_to_one_that_raises() {
-        let at_the_ceiling = lower_with_temporaries("", usize::from(u16::MAX) - 1, "");
+        let fitting = usize::from(u16::MAX - 1 - HEADER_REGISTERS);
+        let at_the_ceiling = lower_with_temporaries("", fitting, "");
         assert_eq!(at_the_ceiling.register_count, u16::MAX);
         assert!(!loads_body_too_large(&at_the_ceiling));
 
-        let one_scratch_past = lower_with_temporaries("", usize::from(u16::MAX), "");
+        let one_scratch_past = lower_with_temporaries("", fitting + 1, "");
         assert_raises_too_large(&one_scratch_past, CodeKind::Method, 0);
 
         let locals_past = lower_with_temporaries(": a with: b", usize::from(u16::MAX) + 1, "^a");
@@ -4531,12 +4861,14 @@ mod tests {
             let elements: String = (0..count).map(|_| "1. ").collect();
             compile_foo(&format!("{{{elements}}}"))
         };
-        // `x` is r0, so `u16::MAX - 2` elements and the tuple's own register
-        // fill it exactly.
-        let at_the_ceiling = tuple(usize::from(u16::MAX) - 2);
+        // `x` is r0 and the header's numbers follow, so `u16::MAX - 2 -
+        // HEADER_REGISTERS` elements and the tuple's own register fill it
+        // exactly.
+        let fitting = usize::from(u16::MAX - 2 - HEADER_REGISTERS);
+        let at_the_ceiling = tuple(fitting);
         assert_eq!(at_the_ceiling.register_count, u16::MAX);
         assert!(!loads_body_too_large(&at_the_ceiling));
-        assert_raises_too_large(&tuple(usize::from(u16::MAX) - 1), CodeKind::Method, 1);
+        assert_raises_too_large(&tuple(fitting + 1), CodeKind::Method, 1);
     }
 
     /// A block is judged on its own: one whose copied value and temporaries
@@ -4595,12 +4927,326 @@ mod tests {
             vec![
                 Instruction::LoadLiteral {
                     destination: u16::MAX - 1,
-                    literal: BytecodeLiteral::BodyTooLarge,
+                    literal: BytecodeLiteral::BodyTooLarge(BodyLimit::Registers),
                 },
                 Instruction::ImplicitReturn {
                     register: u16::MAX - 1
                 },
             ]
+        );
+    }
+
+    /// The methods the argument-slot tests send from: a keyword send to
+    /// `self`, a send to a scratch receiver of a parameter, a super send of
+    /// a send's value, and an implicit-receiver keyword send.
+    const ARGUMENT_SLOT_SENDS: &str = indoc! {"
+        class X = Object new (
+        ) (
+          foo: first bar: second = ( ^first )
+          foo: first = ( ^first )
+          a = ( ^self )
+          b = ( ^self )
+          toSelf = ( ^self foo: 1 bar: 2 )
+          toScratch: x = ( ^self a foo: x )
+          toSuper = ( ^super foo: (b bar) )
+          implicit = ( ^foo: 3 )
+        ) : ()
+    "};
+
+    /// The receiver register, the argument base and the argument sources of
+    /// the one send of `selector` in `code`; no receiver for a lexical or a
+    /// super send.
+    fn argument_slots_of(code: &CompiledCode, selector: &str) -> (Option<u16>, u16, Vec<u16>) {
+        code.instructions()
+            .into_iter()
+            .find_map(|instruction| match instruction {
+                Instruction::SendPublic {
+                    selector: sent,
+                    receiver_register,
+                    argument_base,
+                    argument_sources,
+                    ..
+                }
+                | Instruction::SendInlinable {
+                    selector: sent,
+                    receiver_register,
+                    argument_base,
+                    argument_sources,
+                    ..
+                } if sent.as_str() == selector => {
+                    Some((Some(receiver_register), argument_base, argument_sources))
+                }
+                Instruction::SendLexical {
+                    selector: sent,
+                    argument_base,
+                    argument_sources,
+                    ..
+                }
+                | Instruction::SendSuper {
+                    selector: sent,
+                    argument_base,
+                    argument_sources,
+                    ..
+                } if sent.as_str() == selector => Some((None, argument_base, argument_sources)),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("expected a `{selector}` send: {:?}", code.instructions()))
+    }
+
+    /// A send of `selector` in `code` names `arity` contiguous slots, at or
+    /// above `first_scratch` and above a scratch receiver, inside the body's
+    /// registers; answers its base and its sources.
+    fn assert_contiguous_slots(
+        code: &CompiledCode,
+        selector: &str,
+        arity: usize,
+        first_scratch: u16,
+    ) -> (u16, Vec<u16>) {
+        let (receiver, argument_base, argument_sources) = argument_slots_of(code, selector);
+        assert_eq!(argument_sources.len(), arity, "{:?}", code.instructions());
+        assert!(
+            argument_base >= first_scratch,
+            "the slots of `{selector}` start at r{argument_base}, below the first scratch register r{first_scratch}"
+        );
+        if let Some(receiver) = receiver.filter(|receiver| *receiver >= first_scratch) {
+            assert!(
+                argument_base > receiver,
+                "the slots of `{selector}` start at r{argument_base}, not after its receiver r{receiver}"
+            );
+        }
+        assert!(
+            u32::from(argument_base) + arity as u32 <= u32::from(code.register_count),
+            "the slots of `{selector}` run past the body's {} registers",
+            code.register_count
+        );
+        (argument_base, argument_sources)
+    }
+
+    #[test]
+    fn a_send_to_self_names_contiguous_argument_slots() {
+        let code = lower_whole_method(ARGUMENT_SLOT_SENDS, 4);
+        assert_contiguous_slots(&code, "foo:bar:", 2, 0);
+    }
+
+    /// A parameter is never copied: it is the argument's source, and the
+    /// send itself copies it into its slot.
+    #[test]
+    fn a_send_to_a_scratch_receiver_names_its_slots_after_the_receiver() {
+        let code = lower_whole_method(ARGUMENT_SLOT_SENDS, 5);
+        let (_, sources) = assert_contiguous_slots(&code, "foo:", 1, 1);
+        assert_eq!(sources, vec![0], "`x` is register 0, passed as it is");
+    }
+
+    #[test]
+    fn a_super_send_names_contiguous_argument_slots() {
+        let code = lower_whole_method(ARGUMENT_SLOT_SENDS, 6);
+        assert_contiguous_slots(&code, "foo:", 1, 0);
+    }
+
+    #[test]
+    fn an_implicit_receiver_send_names_contiguous_argument_slots() {
+        let code = lower_whole_method(ARGUMENT_SLOT_SENDS, 7);
+        assert_contiguous_slots(&code, "foo:", 1, 0);
+    }
+
+    /// The value `x` had when the first argument was evaluated, not 3: the
+    /// protective copy goes into the first slot, which is then its source.
+    #[test]
+    fn a_local_a_later_argument_assigns_is_copied_into_its_slot() {
+        let source = indoc! {"
+            class X = Object new (
+            ) (
+              foo: first bar: second = ( ^first )
+              m = ( | x ::= 1. | ^self foo: x bar: (x:: 3) )
+            ) : ()
+        "};
+        let code = lower_whole_method(source, 1); // `x` is register 13
+        let (argument_base, sources) = assert_contiguous_slots(&code, "foo:bar:", 2, 1);
+        assert_ne!(
+            sources[0], 13,
+            "`x` is register 13, which the second argument writes"
+        );
+        assert_eq!(sources[0], argument_base, "the copy is the first slot");
+        assert!(
+            code.instructions().contains(&Instruction::Move {
+                destination: argument_base,
+                source: 13
+            }),
+            "the copy out of `x` is a Move into the slot: {:?}",
+            code.instructions()
+        );
+    }
+
+    /// The methods the tests of arguments lowered into their slots send
+    /// from: a send's value and a literal, and an inlined conditional.
+    const ARGUMENTS_INTO_SLOTS: &str = indoc! {"
+        class X = Object new (
+        ) (
+          foo: first baz: second = ( ^first )
+          foo: first = ( ^first )
+          a = ( ^self )
+          straight = ( ^self foo: (a bar) baz: 3 )
+          branch: c = ( ^self foo: (c ifTrue: [1] ifFalse: [2]) )
+        ) : ()
+    "};
+
+    /// A send's value and a literal are produced in their slots: both are
+    /// their own sources, and nothing is moved.
+    #[test]
+    fn a_send_and_a_literal_argument_are_lowered_into_their_slots() {
+        let code = lower_whole_method(ARGUMENTS_INTO_SLOTS, 3);
+        let (argument_base, sources) = assert_contiguous_slots(&code, "foo:baz:", 2, 0);
+        assert_eq!(
+            sources,
+            vec![argument_base, argument_base + 1],
+            "{:?}",
+            code.instructions()
+        );
+        assert!(
+            !has(&code, |instruction| matches!(
+                instruction,
+                Instruction::Move { .. }
+            )),
+            "no argument is moved: {:?}",
+            code.instructions()
+        );
+    }
+
+    /// An inlined conditional's result is the slot: each of its three arms
+    /// moves its value there, so the send copies nothing.
+    #[test]
+    fn an_inlined_conditional_argument_is_lowered_into_its_slot() {
+        let code = lower_whole_method(ARGUMENTS_INTO_SLOTS, 4);
+        let (argument_base, sources) = assert_contiguous_slots(&code, "foo:", 1, 1);
+        assert_eq!(sources, vec![argument_base], "{:?}", code.instructions());
+        let moves_into_the_slot = code
+            .instructions()
+            .iter()
+            .filter(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::Move { destination, .. } if *destination == argument_base
+                )
+            })
+            .count();
+        assert_eq!(
+            moves_into_the_slot,
+            3,
+            "the true arm, the false arm and the fallback each move into the slot: {:?}",
+            code.instructions()
+        );
+    }
+
+    /// An inlined integer operation's fast path and its fallback send both
+    /// write its destination, which is the slot: the send copies nothing.
+    #[test]
+    fn an_inlined_integer_operation_argument_is_lowered_into_its_slot() {
+        let source = indoc! {"
+            class X = Object new (
+            ) (
+              foo: first = ( ^first )
+              m: n = ( ^self foo: n - 1 )
+            ) : ()
+        "};
+        let code = lower_whole_method(source, 1);
+        let (argument_base, sources) = assert_contiguous_slots(&code, "foo:", 1, 1);
+        assert_eq!(sources, vec![argument_base], "{:?}", code.instructions());
+        assert!(
+            has(&code, |instruction| matches!(
+                instruction,
+                Instruction::IntegerBinary { destination, .. } if *destination == argument_base
+            )),
+            "the fast path writes the slot: {:?}",
+            code.instructions()
+        );
+        assert!(
+            !has(&code, |instruction| matches!(
+                instruction,
+                Instruction::Move { destination, .. } if *destination == argument_base
+            )),
+            "nothing is moved into the slot: {:?}",
+            code.instructions()
+        );
+    }
+
+    /// A setter's value is lowered into its one slot, which is then its
+    /// source and the assignment's value: the inlined operation's fast path
+    /// and its fallback send write the slot, and nothing is moved into it,
+    /// whether the assignment's value is discarded or answered.
+    #[test]
+    fn a_setter_value_is_lowered_into_its_slot() {
+        let source = indoc! {"
+            class X = Object new (
+              | sum ::= 0. |
+            ) (
+              add: n = ( sum:: sum + n )
+              answer: n = ( ^sum:: sum + n )
+            ) : ()
+        "};
+        for index in 0..2 {
+            let code = lower_whole_method(source, index);
+            let (argument_base, sources) = assert_contiguous_slots(&code, "sum:", 1, 1);
+            assert_eq!(sources, vec![argument_base], "{:?}", code.instructions());
+            assert!(
+                has(&code, |instruction| matches!(
+                    instruction,
+                    Instruction::IntegerBinary { destination, .. } if *destination == argument_base
+                )),
+                "the fast path writes the slot: {:?}",
+                code.instructions()
+            );
+            assert!(
+                !has(&code, |instruction| matches!(
+                    instruction,
+                    Instruction::Move { destination, .. } if *destination == argument_base
+                )),
+                "nothing is moved into the slot: {:?}",
+                code.instructions()
+            );
+        }
+        let answered = lower_whole_method(source, 1);
+        let (_, argument_base, _) = argument_slots_of(&answered, "sum:");
+        assert!(
+            has(&answered, |instruction| matches!(
+                instruction,
+                Instruction::Return { register } if *register == argument_base
+            )),
+            "the assignment's value is the slot: {:?}",
+            answered.instructions()
+        );
+    }
+
+    /// A setter's value an inlined conditional produces is in the slot
+    /// already: the conditional's true arm, false arm and fallback each
+    /// move their value there, and nothing else does -- no `Move` copies
+    /// the value into the slot from a result register above it.
+    #[test]
+    fn a_setter_value_an_inlined_conditional_produces_is_in_its_slot() {
+        let source = indoc! {"
+            class X = Object new (
+              | direction ::= nil. |
+            ) (
+              choose: c = ( direction:: c ifTrue: [1] ifFalse: [2] )
+            ) : ()
+        "};
+        let code = lower_whole_method(source, 0);
+        let (argument_base, sources) = assert_contiguous_slots(&code, "direction:", 1, 1);
+        assert_eq!(sources, vec![argument_base], "{:?}", code.instructions());
+        let moves_into_the_slot = code
+            .instructions()
+            .iter()
+            .filter(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::Move { destination, .. } if *destination == argument_base
+                )
+            })
+            .count();
+        assert_eq!(
+            moves_into_the_slot,
+            3,
+            "only the conditional's three arms move into the slot: {:?}",
+            code.instructions()
         );
     }
 }

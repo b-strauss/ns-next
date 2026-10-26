@@ -1,6 +1,7 @@
 //! The error a deferred literal raises when the VM executes it, and the
 //! number-literal parsers the compiler uses.
 
+use crate::bytecode::BodyLimit;
 use crate::types::*;
 use crate::{ArbitraryInteger, Symbol};
 
@@ -20,17 +21,19 @@ pub(crate) fn unresolved_identifier_error<'gc>(name: &str, receiver: Value<'gc>)
     ))
 }
 
-/// The program-level error a body past the register ceiling raises when it
-/// runs: the compiler replaces such a body with one that loads
+/// The program-level error a body past one of the compiler's limits raises
+/// when it runs: the compiler replaces such a body with one that loads
 /// `bytecode::Literal::BodyTooLarge` first (`docs/design/compiler.md`,
-/// "Compilation cannot fail"), so only a body that runs fails. Named after
-/// the kind of body the activation runs, with a method's own selector and a
-/// block's `value`, as `recursion_too_deep_error` names them.
+/// "Compilation cannot fail", "Limits"), so only a body that runs fails.
+/// Named after the kind of body the activation runs, with a method's own
+/// selector and a block's `value`, as `recursion_too_deep_error` names
+/// them, and after the limit, `limit`, it passed.
 ///
 /// Raised by `vm::make_value` for `bytecode::Literal::BodyTooLarge`.
 pub(crate) fn body_too_large_error<'gc>(
     kind: ActivationKind<'gc>,
     receiver: Value<'gc>,
+    limit: BodyLimit,
 ) -> Signal<'gc> {
     let (selector, body) = match kind {
         ActivationKind::Method(selector) => (selector, "method"),
@@ -39,13 +42,21 @@ pub(crate) fn body_too_large_error<'gc>(
         ActivationKind::Factory(_) => (Symbol::NEW, "factory"),
         ActivationKind::SuperclassClause(_) => (Symbol::NEW, "superclass clause"),
     };
+    let reason = match limit {
+        BodyLimit::Registers => format!("it needs more than {} registers", u16::MAX),
+        BodyLimit::Arguments => format!(
+            "it takes or sends more than {} arguments",
+            crate::bytecode::ARGUMENT_LIMIT
+        ),
+        BodyLimit::Instructions => format!(
+            "it needs more than {} instructions",
+            crate::bytecode::INSTRUCTION_LIMIT
+        ),
+    };
     Signal::Error(NewspeakError::error(
         selector,
         receiver,
-        format!(
-            "{body} too large: it needs more than {} registers",
-            u16::MAX
-        ),
+        format!("{body} too large: {reason}"),
     ))
 }
 

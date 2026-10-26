@@ -1,0 +1,164 @@
+/// `id:: e` answers `e`'s value (`docs/design/dispatch.md`, "Setter sends")
+/// whatever answers the setter send and wherever its argument came from: a
+/// send reads a named local's argument where it is, in the local's own
+/// register, so the assignment's value has to be read there too, never from
+/// a slot the send did not write. One method per setter and argument: a
+/// slot's setter, answered from the cache from the second send on; a
+/// method, which runs; and a name nothing declares, which
+/// `doesNotUnderstand:` answers -- each with a parameter, an immutable local
+/// and a mutable local as `e`, in a statement, as an operand of `+` and
+/// under `^`. Each of the nine test methods answers its argument, through
+/// `^id:: b` -- `recorded:` and `doesNotUnderstand:` themselves answer
+/// `self` -- and -1 when the sum was wrong and -2 when the slot was. Three rounds, so every send is cached; then the
+/// slot's last value, and the sums of the arguments the method and the
+/// handler were sent, 216 each: three rounds of three sends of 7, 8 and 9.
+class ASetterAssignmentAnswersItsValueAfterTheSend = Object new (
+  |
+    slot ::= 0.
+    total ::= 0.
+    seen ::= 0.
+  |
+) (
+  recorded: value = (
+    total:: total + value.
+  )
+
+  protected doesNotUnderstand: message = (
+    seen:: seen + (message arguments at: 1).
+  )
+
+  slotParameter: b = (
+    |
+      x
+    |
+    slot:: b.
+    slot = b ifFalse: [^-2].
+    x:: (slot:: b) + 1.
+    x = (b + 1) ifFalse: [^-1].
+    ^slot:: b.
+  )
+
+  slotImmutable = (
+    |
+      b = 8.
+      x
+    |
+    slot:: b.
+    slot = b ifFalse: [^-2].
+    x:: (slot:: b) + 1.
+    x = (b + 1) ifFalse: [^-1].
+    ^slot:: b.
+  )
+
+  slotMutable = (
+    |
+      b ::= 9.
+      x
+    |
+    slot:: b.
+    slot = b ifFalse: [^-2].
+    x:: (slot:: b) + 1.
+    x = (b + 1) ifFalse: [^-1].
+    ^slot:: b.
+  )
+
+  methodParameter: b = (
+    |
+      x
+    |
+    recorded:: b.
+    x:: (recorded:: b) + 1.
+    x = (b + 1) ifFalse: [^-1].
+    ^recorded:: b.
+  )
+
+  methodImmutable = (
+    |
+      b = 8.
+      x
+    |
+    recorded:: b.
+    x:: (recorded:: b) + 1.
+    x = (b + 1) ifFalse: [^-1].
+    ^recorded:: b.
+  )
+
+  methodMutable = (
+    |
+      b ::= 9.
+      x
+    |
+    recorded:: b.
+    x:: (recorded:: b) + 1.
+    x = (b + 1) ifFalse: [^-1].
+    ^recorded:: b.
+  )
+
+  missingParameter: b = (
+    |
+      x
+    |
+    unknown:: b.
+    x:: (unknown:: b) + 1.
+    x = (b + 1) ifFalse: [^-1].
+    ^unknown:: b.
+  )
+
+  missingImmutable = (
+    |
+      b = 8.
+      x
+    |
+    unknown:: b.
+    x:: (unknown:: b) + 1.
+    x = (b + 1) ifFalse: [^-1].
+    ^unknown:: b.
+  )
+
+  missingMutable = (
+    |
+      b ::= 9.
+      x
+    |
+    unknown:: b.
+    x:: (unknown:: b) + 1.
+    x = (b + 1) ifFalse: [^-1].
+    ^unknown:: b.
+  )
+
+  public main: p args: a = (
+    |
+      transcript = p transcript.
+    |
+    1 to: 3 do: [:round |
+      transcript
+          show: (self slotParameter: 7) printString;
+          show: ' ';
+          show: self slotImmutable printString;
+          show: ' ';
+          show: self slotMutable printString;
+          show: ' ';
+          show: (self methodParameter: 7) printString;
+          show: ' ';
+          show: self methodImmutable printString;
+          show: ' ';
+          show: self methodMutable printString;
+          show: ' ';
+          show: (self missingParameter: 7) printString;
+          show: ' ';
+          show: self missingImmutable printString;
+          show: ' ';
+          show: self missingMutable printString;
+          newLine.
+    ].
+    transcript
+        show: slot printString;
+        newLine.
+    transcript
+        show: total printString;
+        newLine.
+    transcript
+        show: seen printString;
+        newLine.
+  )
+)

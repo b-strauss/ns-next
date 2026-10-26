@@ -23,6 +23,7 @@
 //! structural, by level; behind it, a value that is either is declined
 //! whatever level it was reached through (`Mutator::is_withheld`).
 
+use crate::interpreter::Arguments;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -39,7 +40,7 @@ pub(crate) fn execute<'gc>(
     mutator: &mut Mutator<'gc>,
     primitive: ReflectionPrimitive,
     receiver: Value<'gc>,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Value<'gc>> {
     match primitive {
         ReflectionPrimitive::MixinOf => {
@@ -117,9 +118,13 @@ pub(crate) fn execute<'gc>(
             let mixin = reified(mutator, receiver)?;
             Some(Value::boolean(is_shipped(&mixin)))
         }
-        ReflectionPrimitive::Identical => Some(Value::boolean(
-            crate::builtins::object_class::identical(&mutator.heap, receiver, *arguments.first()?),
-        )),
+        ReflectionPrimitive::Identical => {
+            Some(Value::boolean(crate::builtins::object_class::identical(
+                &mutator.heap,
+                receiver,
+                arguments.first(&mutator.heap)?,
+            )))
+        }
         ReflectionPrimitive::SymbolText => {
             let symbol = mutator.heap.symbol_value(receiver.as_object()?)?;
             Some(Value::object(
@@ -157,11 +162,11 @@ pub(crate) fn execute<'gc>(
 fn edit<'gc>(
     mutator: &mut Mutator<'gc>,
     subject: Value<'gc>,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
     run: impl FnOnce(&mut Mutator<'gc>, MixinId, &Edit) -> Result<EditedTexts, String>,
 ) -> Option<Value<'gc>> {
     let id = instance_side_id(&mutator.heap, reified_id(mutator, subject)?)?;
-    let edit = Edit::from_value(&mutator.heap, *arguments.first()?)?;
+    let edit = Edit::from_value(&mutator.heap, arguments.first(&mutator.heap)?)?;
     let answer = match run(mutator, id, &edit) {
         Ok(texts) => {
             let declaration = Value::object(mutator.new_string(texts.declaration));
@@ -190,10 +195,10 @@ fn edit<'gc>(
 fn forward_identity<'gc>(
     mutator: &mut Mutator<'gc>,
     subject: Value<'gc>,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Value<'gc>> {
     let old = forwardable_elements(mutator, subject)?;
-    let new = forwardable_elements(mutator, *arguments.first()?)?;
+    let new = forwardable_elements(mutator, arguments.first(&mutator.heap)?)?;
     crate::heap::forward_identity(mutator, &old, &new).ok()?;
     Some(Value::nil())
 }
@@ -412,9 +417,11 @@ fn slot_names<'gc>(mutator: &mut Mutator<'gc>, subject: Value<'gc>) -> Value<'gc
 fn slot_named<'gc>(
     mutator: &Mutator<'gc>,
     subject: Value<'gc>,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Value<'gc>> {
-    let name = mutator.heap.symbol_value(arguments.first()?.as_object()?)?;
+    let name = mutator
+        .heap
+        .symbol_value(arguments.first(&mutator.heap)?.as_object()?)?;
     let object = subject.as_object()?;
     let field = visible_slots(mutator, subject)
         .into_iter()
@@ -514,11 +521,13 @@ fn mixin_nested<'gc>(mutator: &mut Mutator<'gc>, id: MixinId) -> Value<'gc> {
 fn method_source<'gc>(
     mutator: &mut Mutator<'gc>,
     subject: Value<'gc>,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Value<'gc>> {
     let id = reified_id(mutator, subject)?;
     let mixin = mutator.heap.mixin(id)?;
-    let selector = mutator.heap.symbol_value(arguments.first()?.as_object()?)?;
+    let selector = mutator
+        .heap
+        .symbol_value(arguments.first(&mutator.heap)?.as_object()?)?;
     let method = declared_methods(&mixin)
         .into_iter()
         .find(|method| method.selector == selector)?;

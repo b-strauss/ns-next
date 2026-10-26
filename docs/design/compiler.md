@@ -45,7 +45,7 @@ that lowering is mostly a transliteration rather than a translation.
 
 - `LoadLiteral { destination, literal }` — the literal is already lowered:
   `Nil | Boolean | SmallInteger | Float | String | Symbol | LargeInteger |
-  UnresolvedIdentifier | BodyTooLarge`, with integer and float text parsed at
+  UnresolvedIdentifier | BodyTooLarge(limit)`, with integer and float text parsed at
   compile time rather than at each execution. `LargeInteger` carries an
   integer literal beyond a `SmallInteger`'s 61 bits as its digits (an
   `ArbitraryInteger`); `UnresolvedIdentifier` and `BodyTooLarge` are the
@@ -72,23 +72,64 @@ ignored a member of that name, is retired, and so is its wire tag 2
 ([image-format.md](image-format.md)).
 
 **Sends** — each carries a `call_site`; see "Safepoints and call-site
-identity".
+identity". Each names its arguments as contiguous slots: `argument_base` and
+`argument_sources`, the arguments being the registers `argument_base ..
+argument_base + argument_sources.len()`. The send reads its arguments
+where they are when its sources are consecutive registers -- one argument
+always is -- and otherwise, before it decides, copies each source that is
+not its slot into the slot, so a named local passed as an argument is
+copied by the send itself, and only where the send cannot read it in
+place. Nothing but the send reads a slot: a setter assignment's value is
+the register its argument came from. Both lowerings allocate the slots
+after every scratch register the send also reads -- its receiver, a mirror
+send's subject -- and before they lower any argument, then lower each
+argument into its slot ([execution.md](execution.md), "Overlapping
+register windows"). An assignment through a setter is a send
+of one argument like any other: its slot is allocated before its value,
+which is lowered into it, so `sum:: sum + n` writes the sum into the slot,
+and the register the value is in is both the setter's source and the
+assignment's value.
 
-- `SendPublic { selector, receiver_register, argument_registers, destination,
-  call_site }` — an ordinary explicit-receiver send, resolved with
-  `lookupPublic`.
-- `SendInlinable { selector, receiver_register, argument_registers, destination, call_site }` — the
-  same send, decided exactly as `SendPublic` is, marking one the optimized
-  lowering would have inlined. Only the reference lowering emits it, and only
-  the depth count reads the mark; see "How the limit counts".
-- `SendLexical { depth, selector, argument_registers, destination, call_site
-  }` — `Binding::LexicalSend`. **No receiver register**: the receiver is
-  `self` by construction, and the kth-enclosing object is computed at run
-  time.
-- `SendSuper { selector, argument_registers, destination, call_site }` — receiver is `self`, lookup
-  starts at the current activation's `current_class`'s superclass.
-- `SendMirror { primitive, mirror_register, subject_register,
-  argument_registers, destination, failure }` — a send to the VM mirror whose
+- **The optimized lowering** (`Lowerer::lower_expression_into`) produces
+  in its slot a send it does not inline, whose `destination` is the slot;
+  an inlined integer leaf (`n - 1`), whose fast path and fallback send both
+  write their destination, the slot; an inlined conditional or
+  `and:`/`or:`, whose three arms each move their value into its result,
+  the slot (`lower_if`, `lower_and_or`); and a literal, `self`, a read of
+  another frame's local or of a vector, a closure and an array, each
+  loaded into the slot. The send copies none of them. A named local's
+  source is its own register, below the slots, which the send reads there
+  or copies -- or, when an argument after it can write that local, the
+  protective `Move` into the slot, which the send then does not copy ("The
+  value-register invariant"). Every other argument's source is the
+  register its value is in, which the send reads there or copies: the result register of
+  an inlined loop or mirror send, and an
+  assignment's or a cascade's value, which are above the slots unless the
+  value is a named local's register. So the slots are not always the top of
+  what is live at the send: a source the send reads from above them is
+  live until it does. Every other register above the slots -- whatever
+  an argument was evaluated with -- is dead by then.
+- **The reference lowering** produces every argument in its slot, a named
+  local by the `Move` that is its read, so each of its sources is its slot
+  and no register above the slots is live at the send (`check_shape`).
+
+- `SendPublic { selector, receiver_register, argument_base, argument_sources,
+  destination, call_site }` — an ordinary explicit-receiver send, resolved
+  with `lookupPublic`.
+- `SendInlinable { selector, receiver_register, argument_base,
+  argument_sources, destination, call_site }` — the same send, decided
+  exactly as `SendPublic` is, marking one the optimized lowering would have
+  inlined. Only the reference lowering emits it, and only the depth count
+  reads the mark; see "How the limit counts".
+- `SendLexical { depth, selector, argument_base, argument_sources,
+  destination, call_site }` — `Binding::LexicalSend`. **No receiver
+  register**: the receiver is `self` by construction, and the kth-enclosing
+  object is computed at run time.
+- `SendSuper { selector, argument_base, argument_sources, destination,
+  call_site }` — receiver is `self`, lookup starts at the current
+  activation's `current_class`'s superclass.
+- `SendMirror { primitive, mirror_register, subject_register, argument_base,
+  argument_sources, destination, failure }` — a send to the VM mirror whose
   failure block is lowered inline at `failure`: it runs the mirror row
   `primitive`, bound at compile time, with no lookup and no call site, and
   jumps to `failure` when the leaf declines. Emitted only into `Kernel.ns`,
@@ -133,11 +174,13 @@ identity".
 - `CheckAppliedClause { steps, selector }` — §6.1's check of a `<:` clause
   against the primary factory of the class it named, whose level is
   `steps` above the running initializer's.
-- `InitializeSuperclass { steps, selector, argument_registers, destination }`
-  — §6.1's check of the superclass clause, the arity check, then the
-  initializer of the class `steps` above, on `self`.
-- `InitializeAppliedLevel { steps, argument_registers, destination }` — the
-  own part of the level a `<:` clause added `steps` above, on `self`.
+- `InitializeSuperclass { steps, selector, argument_base, argument_sources,
+  destination }` — §6.1's check of the superclass clause, the arity check,
+  then the initializer of the class `steps` above, on `self`, its arguments
+  in slots as a send's are.
+- `InitializeAppliedLevel { steps, argument_base, argument_sources,
+  destination }` — the own part of the level a `<:` clause added `steps`
+  above, on `self`, its arguments in slots as a send's are.
 
 Each reads another level of `self`'s class chain, never another frame's
 registers, so each answers 0 in `bytecode::outer_reach_of` and
@@ -197,9 +240,10 @@ CompiledCode {
 
 A method body, a block body and an instance initializer all compile to the same
 shape; `kind` tags which. An activation of it is pushed with
-`register_count - argument_count` temporaries, and a block's activation is
+`register_count - argument_count - HEADER_REGISTERS` registers above its
+header (`CompiledCode::registers_above_header`), and a block's activation is
 then handed its closure's `copied_count` values into the registers just above
-its parameters.
+its header's numbers.
 
 `outer_reach` is derived from the instructions, by the compiler and by the
 image decoder alike (`CompiledCode::from_builder`, off the encoding:
@@ -339,40 +383,77 @@ here. A host's `Interpreter::instantiate` runs `factory_body` of its
 argument count, so a class object a host built by hand, with no
 metaclass, instantiates too.
 
-**The `u16` ceilings.** A step count is a `u16`, so a declaration with
-more than 65,534 `<:` clauses -- valid up to the clause index's 2^23 --
-compiles its full and standalone bodies to `body_too_large`, which raises
-"initializer too large" when the class is instantiated, as every other
-body past a ceiling does ("Compilation cannot fail" below); a passed
-level never passes such a chain, so the too-large body runs. A factory
-of 65,534 or more parameters has no room for its two registers after its
-arguments, and its body is `body_too_large`'s too, raising "factory too
-large".
+**The `u16` ceilings.** A step count is a `u16`. It never overflows,
+because the resolver refuses more than 1,024 `<:` clauses ("Limits"
+below) and `compiler::superclass_steps` asserts it. A factory of more than
+255 parameters is past the argument limit. A factory of 65,534 or more has
+no room for its two registers after its arguments either. In both cases its
+body is `body_too_large`'s and raises "factory too large" with the limit
+it passed, the register ceiling first.
 
 ## Registers
 
-Each activation carries `arguments ++ temporaries` as one unified register space addressed
-by a single `u16`: on the activation stack it is one window of registers, and in
-a divorced `Frame` index `< argument_count` is `arguments[index]`, index `>= argument_count` is
-`temporaries[index - argument_count]`. That is exactly the args-then-temps split the
-resolver's `Binding::Local` already used, so the compiler needs no separate
-renumbering, and a block's `OuterLocal` indices are untouched by the scratch
-registers a bytecode frame adds — scratch sits after the named locals.
+Each activation carries its arguments, then the thirteen numbers of its frame
+header (`bytecode::HEADER_REGISTERS`, held equal to `frame_header::COUNT`),
+then its temporaries and scratch, as one unified register space addressed by a
+single `u16`: registers `0 .. argument_count` are the arguments,
+`argument_count .. argument_count + HEADER_REGISTERS` are never named by an
+instruction, and everything else starts at `argument_count +
+HEADER_REGISTERS`. On the activation stack it is one window, the header's words
+where those numbers are, so every register is one addition from the frame's
+start, and a send's argument slots are its callee's arguments, the callee's
+header laid where they end ([execution.md](execution.md), "Overlapping
+register windows"); a frame object has a field for every number
+but the header's, its arguments and then its registers above the header
+(`Heap::frame_field_of_register`). The resolver's `Binding::Local` numbers the arguments and
+then the temporaries with no gap, so a temporary's register is its resolver
+index plus the header's numbers, which `Layout` and the reference lowering's
+`local_register` add; a block's `OuterLocal` index is mapped the same way,
+against the argument count of the body that declares it, and is untouched by
+the scratch registers a bytecode frame adds — scratch sits after the named
+locals. A body's `register_count` is one past its highest register number, so
+at least `argument_count + HEADER_REGISTERS`, but for a body past the register
+ceiling with too many arguments for that, whose registers are its arguments
+alone (`compiler::body_too_large`); the header's numbers count against the
+ceiling like any other. Its `local_count` is the first scratch register --
+one past the arguments, the header's numbers, the copied values, the
+temporaries and the vector register -- which both lowerings record and an
+image carries: every send's slots start at or above it, and every outer
+local a block names lies below it in the body that declares it, which is
+what lets the image decoder refuse an outer access into another frame's
+scratch, where a callee laid on its slots has its live header
+([image-format.md](image-format.md), "Verification").
 
-**A converted block's layout inserts its copied values between the two.** Under
-the optimized lowering a block's registers are its parameters, then the values
-it was handed when the closure was created, then its temporaries, then one
-hidden register holding its indirection vector when it has one, then scratch; a
-method's, an initializer's or a clause's are the same without the copied values
+**A converted block's layout inserts its copied values after the header's
+numbers.** Under the optimized lowering a block's registers are its
+parameters, the header's numbers, then the values it was handed when the
+closure was created, then its temporaries, then one hidden register holding
+its indirection vector when it has one, then scratch; a method's, an
+initializer's or a clause's are the same without the copied values
 ([execution.md](execution.md), "Closure conversion"). A resolver index is no
 longer a register index, so `Layout` (`compiler/lower.rs`) is the one place
 that maps one to the other: `local_register` pushes every temporary up by the
-copied count, and a local the capture analysis put in the vector keeps its
-resolver index while its register simply stays nil, so every `Binding` stays
-valid. A fallback closure and anything nested in it get a by-reference
-`Layout` instead — no copied values, no vector, every local in the register its
-resolver index names — because such a closure reaches the frame whose common
-path it stands in for by reference.
+header's numbers and the copied count, and a local the capture analysis put
+in the vector keeps its resolver index while its register simply stays nil,
+so every `Binding` stays valid. A fallback closure and anything nested in it
+get a by-reference `Layout` instead — no copied values, no vector, every local
+in the register its resolver index names, a temporary's past the header's
+numbers — because such a closure reaches the frame whose common path it
+stands in for by reference.
+
+**Every register above a send's argument slots is dead when the send
+executes**: the callee's header and window go over them. The bump allocator
+makes it true -- nothing is allocated below a slot after it, and what an
+argument is computed with lands above -- and both lowerings check it on every
+body in a debug build (`reference::check_leftovers`, which runs the leftover
+analysis, "What a callee leaves"): no instruction after a send reads a
+register above its slots before something writes it again, along any path
+-- a loop's back edges and the entry state included. The one value a
+lowering keeps across a send is a setter assignment's, which is the
+setter's slot or a named local below it: a value left in a register above
+the slot, an inner assignment's, is copied into the slot
+(`lower_setter_assign`); an inlined conditional's arms move their values
+into the slot itself, so that a setter of one copies nothing.
 
 Registers above the named locals are compiler-allocated scratch from a bump
 allocator **reset to the first scratch index at the start of every statement**.
@@ -815,6 +896,186 @@ and is the uncached oracle the cached optimized lowering is checked against
 ("The reference lowering" below). Its `family_size` is 0. `ns-next-analyzer disasm`
 prints a send's number as `@N`, and `UNCACHED` as `@-`.
 
+## What a callee leaves
+
+A send's callee is laid on its argument slots, so after it returns, every
+register of the sender above the slots may hold what the callee left
+there: its header's words and its temporaries, and in a shipped method's
+scratch the VM mirror. `bytecode::leftovers` derives, from a body's code
+alone, which scratch registers -- those at and above `local_count` -- may
+hold a word the body did not write, at each instruction. It has three
+readers:
+
+- the image decoder, which refuses a read of such a register (`check`,
+  which keeps nothing; `DecodeError::LeftoverRead`, and
+  `VerificationPastTheBound` for a body past the bounds below;
+  [image-format.md](image-format.md), "Verification");
+- a debug build, which checks every compiled body
+  (`reference::check_leftovers`);
+- the collector's pre-pass (`Heap::trace_stack`), which nils those
+  registers before every trace of the stack, so that neither a push nor
+  a pop need write them. It asks `tainted_at`, answered as sorted
+  disjoint ranges from one pass, the first time it meets a frame of a
+  body at a program counter, and the body keeps the answer
+  (`leftovers::TaintedSets`; [memory.md](memory.md), "What the collector
+  traces").
+
+**The rule.**
+
+- **At entry** every scratch register is tainted, so that a push need fill
+  none of them. Registers below `local_count` -- the arguments, the
+  header's numbers and the named locals -- are never tainted: no callee is
+  laid below the scratch, and the push fills them.
+- **A send** other than `SendMirror` taints the registers at and above its
+  slot end. A mirror send's leaf lands above its sender's window.
+- **A send writes none of its slots for certain.** The run loop reads one
+  argument, or consecutive ones, where they stand (`vm.rs`,
+  `argument_window`), and a primitive or an accessor answers without a
+  push. So a slot keeps the status it had: clean where its producer wrote
+  it, tainted where an earlier callee went over it or since entry.
+- **A write** cleans a register, a send's destination after the callee
+  returned. **A read** of a tainted register is refused (`Read`).
+- **A join** is tainted where either path is.
+
+The register effects are `bytecode::registers_read`, `register_written`,
+`jump_target`, `falls_through` and `successors`. Each is exhaustive over
+`Instruction`; the reference lowering's checks and the decoder share them.
+A load of `Literal::BodyTooLarge` does not fall through: it always raises,
+and an `Error` is not resumable. So the return after it, in the body a body
+past a limit compiles to, which reads a scratch register nothing wrote, is
+never reached.
+
+Every body the goldens, the core library and `benchmarks/` compile to,
+under both lowerings (18,496 bodies), reads no register the rule taints,
+none tainted since entry either (`every_golden_body_stays_within_the_bound`).
+
+**The pass.** One pass in instruction order over one current bitset of
+`register_count` bits, rounded up to 64. A state stored at every
+instruction would be quadratic in compiled code; a state stored at every
+pending jump target is bounded by how many can be pending at once.
+
+- **A forward jump** ORs the current state into its target's pending
+  bitset, allocated when the target first gets one. A jump past the body
+  is left to the decoder's own check.
+- **Reaching a pending target** ORs its bitset into the current state, or
+  takes it over when the previous instruction does not fall through. The
+  bitset is then freed, kept for the next forward jump to take, so the pass
+  never holds more than its peak. An instruction no path reaches is
+  skipped, and answers no tainted register.
+- **A loop head**, the target of a backward jump, takes the state it is
+  reached with ORed with `[floor, register_count)`, where `floor` is the
+  least slot end of a non-mirror send between the head and its last back
+  edge.
+  - Loops must nest, no more than `LOOP_LIMIT` may be open at once, and
+    a jump into a loop other than at its head is `PastTheBound`. So the
+    loop's code cannot taint below the floor, and every later iteration's
+    state is within the head's: the back edge needs no second pass. A
+    debug build asserts it at every back edge.
+  - Over-tainting the head is sound. Neither lowering reads a register at
+    or above the floor before rewriting it in the same iteration: every
+    scratch register a loop reads across iterations was allocated before
+    the loop, below every slot inside it.
+- **A body of more than `INSTRUCTION_LIMIT` instructions** is
+  `PastTheBound` before anything is allocated.
+
+**The oracle.** A test-only fixpoint over explicit sets (`oracle` in
+`leftovers/tests.rs`), tainting every scratch register at entry, holds the
+pass to the rule: equal at every instruction of a body without a loop, and
+never less with one. It runs over 4,000 crafted bodies whose forward jumps
+cross freely, 300 more of up to 260 registers, so that every bitset
+operation crosses words, and every compiled body of up to 400
+instructions.
+
+**The bound on pending targets.** The analysis refuses a body that keeps
+more than `PENDING_LIMIT` targets pending at once, stated and derived
+once, in `leftovers.rs`. A target is pending while a jump to it is open,
+so no more targets are pending than jumps are open:
+
+- **The reference lowering** emits no jump (`check_shape`).
+- **The optimized lowering** opens forward jumps only in four inlined
+  forms (`lower.rs`; `finish`'s target check lists every emitter):
+
+  | Form | Open over the code in its blocks | Open over its own instructions |
+  |---|---|---|
+  | `emit_guarded_branch` (`ifTrue:` and its relatives, `and:`, `or:`) | two: the guard and the false branch over the true arm; the guard and the true arm's exit over the false arm; both exits over the fallback, a send of closures | three, as the true arm's exit opens |
+  | `lower_while` | two: the guard and the exit branch over the body. The condition has none of this loop's | two |
+  | `lower_mirror_send` | one: the jump past the failure block | two |
+  | `lower_integer_binary` | none, since its operands are lowered before it | two, around the fallback send |
+
+- **What lies outside a form's jumps:** everything evaluated before a
+  form's first jump (its receiver, its operands) has none of its jumps
+  open, and all code a form encloses lies in one of its block literals.
+- **What the parser allows:** a block literal is one of the parser's
+  guarded productions, of which at most `MAX_DEPTH = 128` may be open
+  (`crates/ns-syntax/src/parser/mod.rs`). A form needs one production
+  more than the blocks around it, for its blocks or its operands, so its
+  own instructions lie inside at most 127.
+- **So** the most that can be open is a guarded branch's three at that
+  depth: `PENDING_LIMIT = 2 × 127 + 3 = 257`.
+- **Pinned and measured.** `the_parser_accepts_no_deeper_nesting` holds
+  `PARSER_NESTING_LIMIT` to what the parser accepts. A `whileTrue:`
+  nested in the body of another 125 deep, the deepest the parser accepts,
+  keeps 250 pending (`the_deepest_nesting_stays_within_the_bound`).
+
+**The bound on open loops.** The analysis refuses a body that keeps more
+than `LOOP_LIMIT` loops open at once, nested each in the next, stated and
+derived once, in `leftovers.rs`:
+
+- Every loop either lowering emits is `lower_while`'s, with one back edge;
+  the reference lowering emits none.
+- A loop's code is its condition's and its body's block literals, so a
+  loop nested in another lies inside one of the outer loop's block
+  literals, and the innermost of `depth` nested loops inside `depth - 1`
+  of them.
+- Its own instructions lie inside at most 127 block literals, as above. So
+  `LOOP_LIMIT = PARSER_NESTING_LIMIT = 128`.
+- Measured: 2 open at once over every compiled body, and 125 for the
+  125-deep `whileTrue:` nesting.
+
+**The bound**, for a body of at most 65,535 registers, so of at most
+1,024 words a bitset:
+
+- **Memory:** at most `PENDING_LIMIT + 1 = 258` bitsets, the pending ones
+  and the current one, of `ceil(register_count / 64)` words each: at most
+  258 × 8 KiB = 2,064 KiB, 2.02 MiB, per body, freed with it. Beside them
+  the pass keeps the body's loops, one twelve-byte entry per backward jump,
+  smaller than the instructions it is read from, and the at most 128 loops
+  it is inside. A debug build also keeps a copy of each open loop's head
+  state for its back edges' assertion, found by binary search among the
+  loops: at most `258 + 128 = 386` bitsets, 3.02 MiB, per body.
+- **Work:** at most `3 × ceil(register_count / 64) + c` word operations per
+  instruction. An instruction takes at most three bitset operations: the
+  OR of a reached target's bitset (taking it over is a swap); a loop
+  head's floor; and one more, a send's taint or a forward jump's OR or
+  copy, never both, since the one send that jumps, `SendMirror`, taints
+  nothing. `c` covers the bit tests of the at most `ARGUMENT_LIMIT + 2`
+  registers an instruction reads, a write's bit, and the search and the
+  insertion among at most 257 pending targets. Finding the loops sorts the
+  backward jumps, whose logarithm `INSTRUCTION_LIMIT` bounds by 20. Nothing
+  is charged per target beyond that, and no state is undone.
+
+Measured, the largest figures:
+
+| Bodies | Bitsets at once | Pending at once | Bytes of bitsets | Word operations per instruction |
+|---|---|---|---|---|
+| every compiled body, both lowerings | 15 (`CD.ns`) | 14 (`CD.ns`) | 144 (`three_hundred_registers.ns`, 323 registers) | 12, at 6 words a bitset; at most 2 per word |
+| the 125-deep `whileTrue:` nesting | 251 | 250 | 14,056 | 14, at 7 words; 2 per word |
+| the flat case at N = 2,000, a tuple of inlined conditionals | 4 | 3 | 4,032 | 252, at 126 words; 2 per word |
+| 257 nested forward jumps over 65,535 registers, crafted | 258 | 257 | 2,113,536 | 1,024, at 1,024 words; 1 per word |
+
+**The tests:**
+
+- `every_golden_body_stays_within_the_bound`, a unit test, since it needs
+  the shipped modules resolved as the boot resolves them. It asserts that
+  each source it cannot compile is a golden recording a parse or resolve
+  error.
+- `the_flat_worst_case_stays_within_the_bound`.
+- `the_deepest_nesting_stays_within_the_bound`.
+- `the_most_a_body_holds_is_258_bitsets_of_the_widest_register_file`.
+- The hand-built cases in `leftovers/tests.rs`, among them
+  `scratch_is_tainted_at_entry` and
+  `a_send_taints_from_its_slot_end_and_writes_none_of_its_slots`.
+
 ## Compilation cannot fail
 
 **Compiling an already-resolved module can never raise a `NewspeakError`.**
@@ -829,7 +1090,11 @@ unbound, a module root's clause receiver, which the root rule decides and
 which never runs ([object-model.md](object-model.md), "The root rule").
 Every other name is bound, a predefined class name included.
 
-`Literal::BodyTooLarge` is the register ceiling. A register is numbered by a
+`Literal::BodyTooLarge(limit)` is a body past one of the compiler's limits
+("Limits" below), `limit` naming which one: `BodyLimit::Registers`, the
+register ceiling; `Arguments`, more than 255 parameters, or a send or a
+clause message of more than 255 arguments; `Instructions`, more than 2^20
+instructions. A register is numbered by a
 `u16`, so a body can use at most `u16::MAX` (65,535) of them: its
 parameters, the values a block is handed, its named temporaries, the vector
 register and the scratch registers its expressions need. Both lowerings count
@@ -848,7 +1113,13 @@ the literal raises before anything is written. When it runs it raises
 `method too large: it needs more than 65535 registers`, with `block`,
 `initializer`, `factory` or `superclass clause` in place of
 `method` for the other kinds (`interpreter/literals.rs`,
-`body_too_large_error`, which `vm::make_value` only calls). Each body is judged
+`body_too_large_error`, which `vm::make_value` only calls). Past the other
+two limits the message ends `it takes or sends more than 255 arguments` or
+`it needs more than 1048576 instructions`. The image carries the limit, one
+literal tag for each, so a loaded body raises what it raised from source.
+When a body passes several limits, the first one its lowering meets is the
+one named. That is the register ceiling for a body whose named locals do
+not fit, which is judged before anything else. Each body is judged
 on its own: a block past the ceiling makes only that block raise, its creator
 hands it no copied value and compiles as it would around any block, and a
 sibling method still runs. A block with more parameters than a `u16` counts
@@ -859,15 +1130,20 @@ parameters compiles and raises the same way; its factory body and its
 initializers, whose arity saturates too, are still handed every factory
 argument, since they raise before they read one
 (`CompiledCode::stands_for_too_many_arguments`, which `push_step` asks of
-a factory body). An image cannot carry such a method or
-factory, nor a register list of more than 65,535 entries -- a send or a tuple
-whose operands all read one parameter's register fits the ceiling under the
-optimized lowering -- since the wire stores those counts in 16 bits:
-`image::snapshot`, and so `ns-next build`, refuses the program with
-`image encoding cannot write a method arity of 65536: it does not fit the
-image format's 16-bit field` (or the register list's, the factory arity's)
-rather than aborting ([image-format.md](image-format.md), "The instruction
-encoding").
+a factory body). An image cannot carry a method, factory or block of more
+than 255 parameters. `image::snapshot`, and so `ns-next build`, refuses
+the program at the body's arity with `image encoding cannot write a body
+arity of 256: it is past the limit of 255 arguments` (`encode::arity_field`,
+which also holds a closure's parameter count and a method's and factory's
+arity to the limit). A body past the register ceiling saturates its arity
+at 65,535 and meets the same refusal. The decoder refuses each of these
+where it reads the count. A register list of more than 65,535 entries is
+refused by its 16-bit field instead, with `image encoding cannot write a
+register list of 65536: it does not fit the image format's 16-bit field`.
+Under the optimized lowering, a tuple whose operands all read one
+parameter's register fits the ceiling and still meets that refusal. Both
+refusals are errors, never aborts ([image-format.md](image-format.md), "The
+instruction encoding", "Verification").
 
 The two lowerings meet the ceiling at different sizes. The reference lowering
 never reuses a register, so every value costs it one; the optimized lowering
@@ -894,6 +1170,48 @@ or digit that denotes nothing is a parse error, and a fraction or exponent makes
 a float, so `parse_integer_literal` (`interpreter/literals.rs`) refusing a
 literal the parser accepted is a compiler invariant, and `lower_literal` panics
 on it.
+
+## Limits
+
+These are the limits a construct of Newspeak source meets in this
+implementation. The specification states none (its text searched for
+"limit", "maximum", "at most" and "implementation-defined"), so each one
+is a property of this implementation, set well above everything measured.
+The measured maximum is the largest over `corpus/modules`, the benchmarks
+and the core library; a golden that probes a limit is named where it goes
+further. Past a compile-side limit a body compiles to
+`Literal::BodyTooLarge(limit)` and raises only when it runs ("Compilation
+cannot fail"). Past a source-side limit the program is refused before it
+compiles. The image decoder refuses each one where it reads the count, before it
+reserves anything for it ([image-format.md](image-format.md),
+"Verification").
+
+| Construct | Limit | Enforced by | Measured maximum |
+|---|---|---|---|
+| Instructions per body | 2^20 = 1,048,576, `bytecode::INSTRUCTION_LIMIT` | both lowerings, `compiler::emitting_passes_a_limit` before every emit: `BodyTooLarge(Instructions)`; `CodeBuilder::emit` asserts it; decoder `InstructionCountTooLarge` | 990, both lowerings (`NewspeakGrammar.ns`) |
+| Parameters of a method, block or factory; arguments of a send or a clause message | 255, `bytecode::ARGUMENT_LIMIT` | both lowerings, `compiler::parameter_limit_passed` and `emitting_passes_a_limit` (every `Instruction::argument_slots` list): `BodyTooLarge(Arguments)`; `factory_body`; encoder `arity_field`; decoder `ArgumentCountTooLarge` | method 12 and send 13 (`CAPI.ns`), block 12 (`NewspeakParsing.ns`), factory 7 |
+| `<:` clauses per superclass clause | 1,024, `mixin::CLAUSE_INDEX_LIMIT` | a resolve error (`resolver/classes.rs`, `clause_count_error`); decoder `ClauseCountTooLarge`, `ClauseIndexTooLarge` | 1 (core library); goldens 3 |
+| Registers per body | 65,535, the `u16` that numbers them | both lowerings: `BodyTooLarge(Registers)` ("Compilation cannot fail"); decoder: the `u16` header field and `verify_body` | 329 optimized (`LanguageUiDescriptionRegistry.ns`, a tuple of 306), 956 reference (`KernelTests.ns`) |
+| Source nesting depth | 128, `ns-syntax`'s `MAX_DEPTH` | a parse error ([frontend.md](frontend.md)); block nesting, outer reach and class nesting derive from it, and the decoder's `MAX_BLOCK_NESTING` | 14 (`Newspeak2V8Compilation.ns`) |
+| Literals and constants per body | none | each is an instruction, so the instruction limit bounds them; a table past 16 bits takes the wide form | 152 table literals (`LanguageUiDescriptionRegistry.ns`) |
+| Slots per class | none | an `own_index` is a `u32`, and an object's word count has an overflow word | 147 (`NewspeakGrammar.ns`) |
+| Cascade length | none | a cascade holds one receiver register, and the instruction limit bounds its messages | 86 (`Browsing.ns`) |
+| Message chain length | none | every length is valid Newspeak, and the instruction limit bounds it. The compiler still recurses along a chain and overflows at about 20,000 links, so the instruction limit is not yet the real bound there (`OPEN-WORK.md`) | 17 (`NewspeakGrammar.ns`) |
+| String and symbol literal length | none | only the module's size, which a `Span`'s `u32` offsets bound, and the image's `u32` length | 36,775 bytes (`DeploymentManager.ns`) |
+
+The instruction limit keeps every instruction index, jump target and table
+index within 20 bits, and it bounds the work of every pass over one body. It
+does not bound the code of a nested inlined conditional. That conditional's
+fallback closure compiles its blocks again, which multiplies the bodies and
+call sites of one code family with each level of nesting, but each body
+stays small: about 17 instructions in the ten-deep construct of
+`OPEN-WORK.md`. So a small source can compile to a family of a million
+bodies that no limit on one body refuses. With the argument limit, an
+argument count fits a byte, and every program that compiles can be
+packaged. The clause limit
+replaces the two ceilings that existed before it: the class object's
+23-bit clause field, which keeps its headroom, and the initializer's
+`u16` step count.
 
 ## Reading the output
 
@@ -987,8 +1305,9 @@ against code nothing had checked.
    an inner block's `StoreOuterLocal`. A defect in which the optimized lowering
    overwrites a register that is still live cannot happen here, so it shows as
    a divergence.
-3. Every read of a local is a `Move` into a fresh register, and every read of
-   an outer local a `LoadOuterLocal`. There are no inlined scopes, so the hop
+3. Every read of a local is a `Move` into a fresh register (or into the
+   argument slot it is read for, rule 4), and every read of an outer local
+   a `LoadOuterLocal`. There are no inlined scopes, so the hop
    count is the resolver's depth unchanged.
 4. Every send is a real send, receiver then arguments from left to right.
    Nothing is inlined. Every send the optimized lowering inlines — exactly the
@@ -996,11 +1315,19 @@ against code nothing had checked.
    `recognize_mirror_send` accepts — is a `SendInlinable`, and every other
    explicit-receiver send a `SendPublic` ("How the limit counts" below). A
    mirror send is therefore an ordinary send to the mirror object here, its
-   failure block a real closure ("Mirror sends").
-5. An assignment evaluates its value into a fresh register, then stores it or
-   sends the setter. The assignment's value is that register, never the local.
+   failure block a real closure ("Mirror sends"). A send's argument slots
+   are allocated after its receiver, and each argument is produced in its
+   slot -- the instruction that computes its value writes the slot, and a
+   named local's read is the `Move` into it -- so every source is its slot
+   and the send copies nothing: the optimized lowering's copy inside the
+   send is what the two are compared on.
+5. An assignment evaluates its value into a fresh register, or into the
+   slot it is an argument for, then stores it or sends the setter, whose
+   one slot is that same register: nothing above it is live by then. The
+   assignment's value is that register, never the local.
 6. A cascade evaluates its receiver once into a fresh register and sends every
-   message to it; its value is the last send's.
+   message to it; its value is the last send's, produced in the slot when
+   the cascade is an argument.
 7. A block literal is a `MakeClosure` whose body the reference lowering
    compiles too, with an empty `copied` list: every block reaches its
    enclosing variables by reference, which is the model closure conversion is
@@ -1022,12 +1349,13 @@ runs (`check_shape`): no branch instruction, since only inlining emits one;
 every scratch register written by exactly one instruction; a named local
 written only by `StoreLocal`; and a named local read only by `Move`, every other
 operand being a scratch register — rule 3, the property that keeps a value from
-changing under its consumer. The register ceiling is checked in every
-build (`Body::new`, `fresh`), as it is in `lower.rs`, and a body past it
-compiles to the raising body of "Compilation cannot fail"; the shape check
-does not run on a body it replaced. (The optimized lowering's call-site
-counter is checked in every build too; see "Safepoints and call-site
-identity".)
+changing under its consumer; and a send's sources are its own slots, so
+every `Move` it emits is the read of a named local. The register
+ceiling is checked in every build (`Body::new`, `fresh`), as it is in
+`lower.rs`, and a body past it compiles to the raising body of "Compilation
+cannot fail"; the shape check does not run on a body it replaced. (The
+optimized lowering's call-site counter is checked in every build too; see
+"Safepoints and call-site identity".)
 
 ### Selecting it
 
@@ -1214,8 +1542,9 @@ agree, so this rule is ns-next's own.
 exempted. Every other push is counted by construction: `push_step`'s method arm
 and its body arms, for a factory, an initializer level and a superclass
 clause, record `counted: true`. The flag
-rides on the stack frame, and `Mutator::push` refuses a counted push at the
-limit. A block is exempt when it carries
+rides on the stack frame, and the push refuses a counted push at the limit:
+`Mutator::push_above` and `Mutator::push_on_slots` each compare the depth,
+whichever of the two `Mutator::push_placed` chooses. A block is exempt when it carries
 `StepArguments::ControlFlow` — the arguments only the control-flow leaves and a
 declining sent mirror send build —
 the send that led to it was a `SendInlinable`, and its `captured_frame` is the

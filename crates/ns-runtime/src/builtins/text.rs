@@ -3,6 +3,7 @@
 use crate::builtins::collections::{self, IntegerArgument};
 use crate::builtins::first_argument;
 use crate::builtins::primitive::{Primitive, StringPrimitive, SymbolPrimitive};
+use crate::interpreter::Arguments;
 use crate::types::*;
 use crate::{Heap, Mutator, Symbol};
 
@@ -92,14 +93,14 @@ fn from_code_point<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let class = receiver.as_object()?;
     if mutator.heap.class_builtin(class) != Some(BuiltinClass::String) {
         return None;
     }
     let code_points = arguments
-        .first()
+        .first(&mutator.heap)
         .and_then(|value| value.as_small_integer())
         .and_then(|code| u32::try_from(code).ok())
         .and_then(crate::CodePoints::from_code_point);
@@ -110,11 +111,13 @@ fn from_code_point<'gc>(
         None => Err(NewspeakError::argument_error(
             selector,
             receiver,
-            first_argument(arguments),
+            first_argument(&mutator.heap, arguments),
             format!(
                 "{selector} requires a Unicode code point, an Integer from 0 to 1114111 \
                  outside 55296 to 57343, got {}",
-                mutator.heap.describe_argument(arguments.first().copied())
+                mutator
+                    .heap
+                    .describe_argument(arguments.first(&mutator.heap))
             ),
         )),
     })
@@ -138,13 +141,13 @@ fn from_code_points<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let class = receiver.as_object()?;
     if mutator.heap.class_builtin(class) != Some(BuiltinClass::String) {
         return None;
     }
-    let argument = arguments.first()?.as_object()?;
+    let argument = arguments.first(&mutator.heap)?.as_object()?;
     if let Some(code_points) = mutator.heap.string_code_points(argument) {
         return Some(Ok(Value::object(
             mutator.new_string_from_code_points(code_points),
@@ -235,25 +238,31 @@ fn search<'gc>(
     backwards: bool,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Result<Value<'gc>, NewspeakError<'gc>> {
     let heap = &mutator.heap;
     let needle = arguments
-        .first()
+        .first(&mutator.heap)
         .and_then(|value| value.as_object())
         .and_then(|needle| heap.string_code_points(needle));
     let Some(needle) = needle else {
         return Err(NewspeakError::argument_error(
             selector,
             receiver,
-            first_argument(arguments),
+            first_argument(&mutator.heap, arguments),
             format!(
                 "{selector} requires a String argument, got {}",
-                heap.describe_argument(arguments.first().copied())
+                heap.describe_argument(arguments.first(&mutator.heap))
             ),
         ));
     };
-    let position = search_start(heap, receiver, selector, arguments.get(1).copied(), size)?;
+    let position = search_start(
+        heap,
+        receiver,
+        selector,
+        arguments.try_get(&mutator.heap, 1),
+        size,
+    )?;
     let needle: Vec<u32> = needle.elements().collect();
     let Some(last_position) = size.checked_sub(needle.len()) else {
         return Ok(Value::small_integer(0));
@@ -287,15 +296,15 @@ fn copy_range<'gc>(
     size: usize,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let range = match collections::checked_range(
         &mutator.heap,
         receiver,
         selector,
         "copyFrom:",
-        arguments.first().copied(),
-        arguments.get(1).copied(),
+        arguments.first(&mutator.heap),
+        arguments.try_get(&mutator.heap, 1),
         size,
     ) {
         Ok(range) => range,
@@ -319,14 +328,14 @@ fn from_utf8<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let class = receiver.as_object()?;
     if mutator.heap.class_builtin(class) != Some(BuiltinClass::String) {
         return None;
     }
     let heap = &mutator.heap;
-    let source = arguments.first().copied();
+    let source = arguments.first(&mutator.heap);
     let Some((bytes, size)) = source
         .and_then(|value| value.as_object())
         .and_then(|object| Some((object, heap.byte_array_size(object)?)))
@@ -334,7 +343,7 @@ fn from_utf8<'gc>(
         return Some(Err(NewspeakError::argument_error(
             selector,
             receiver,
-            first_argument(arguments),
+            first_argument(&mutator.heap, arguments),
             format!(
                 "{selector} requires a ByteArray, got {}",
                 heap.describe_argument(source)
@@ -346,8 +355,8 @@ fn from_utf8<'gc>(
         receiver,
         selector,
         "from:",
-        arguments.get(1).copied(),
-        arguments.get(2).copied(),
+        arguments.try_get(&mutator.heap, 1),
+        arguments.try_get(&mutator.heap, 2),
         size,
     ) {
         Ok(range) => range,
@@ -367,7 +376,7 @@ fn from_utf8<'gc>(
         Err(offset) => Err(NewspeakError::argument_error(
             selector,
             receiver,
-            first_argument(arguments),
+            first_argument(&mutator.heap, arguments),
             format!("fromUtf8: invalid UTF-8 at byte {}", start + offset + 1),
         )),
     })
@@ -402,7 +411,7 @@ pub(crate) fn execute_string<'gc>(
     primitive: StringPrimitive,
     receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     // The class-side leaves: their subject is the class, not a String.
     match primitive {
@@ -442,7 +451,7 @@ pub(crate) fn execute_string<'gc>(
         )),
         // Array's errors, so that a program sees one text from either.
         StringPrimitive::ElementAt => Some(
-            match collections::integer_argument(&mutator.heap, arguments.first().copied()) {
+            match collections::integer_argument(&mutator.heap, arguments.first(&mutator.heap)) {
                 Some(IntegerArgument::Small(index)) => {
                     match usize::try_from(index)
                         .ok()
@@ -454,7 +463,7 @@ pub(crate) fn execute_string<'gc>(
                             receiver,
                             selector,
                             index,
-                            first_argument(arguments),
+                            first_argument(&mutator.heap, arguments),
                             size,
                         )),
                     }
@@ -462,15 +471,17 @@ pub(crate) fn execute_string<'gc>(
                 Some(IntegerArgument::Large { .. }) => Err(collections::out_of_range(
                     receiver,
                     selector,
-                    mutator.heap.describe_argument(arguments.first().copied()),
-                    first_argument(arguments),
+                    mutator
+                        .heap
+                        .describe_argument(arguments.first(&mutator.heap)),
+                    first_argument(&mutator.heap, arguments),
                     size,
                 )),
                 None => Err(collections::not_an_integer(
                     &mutator.heap,
                     receiver,
                     selector,
-                    arguments.first().copied(),
+                    arguments.first(&mutator.heap),
                 )),
             },
         ),
@@ -480,7 +491,7 @@ pub(crate) fn execute_string<'gc>(
         StringPrimitive::Size => Some(Ok(Value::small_integer(size as i64))),
         StringPrimitive::Concatenate => {
             let joined = arguments
-                .first()
+                .first(&mutator.heap)
                 .and_then(|value| value.as_object())
                 .and_then(|other| mutator.heap.string_concatenation(object, other));
             Some(match joined {
@@ -490,16 +501,18 @@ pub(crate) fn execute_string<'gc>(
                 None => Err(NewspeakError::argument_error(
                     selector,
                     receiver,
-                    first_argument(arguments),
+                    first_argument(&mutator.heap, arguments),
                     format!(
                         "String concatenation (,) requires a String argument, got {}",
-                        mutator.heap.describe_argument(arguments.first().copied())
+                        mutator
+                            .heap
+                            .describe_argument(arguments.first(&mutator.heap))
                     ),
                 )),
             })
         }
         StringPrimitive::Equal => {
-            let equal = text_equals(&mutator.heap, object, arguments.first().copied());
+            let equal = text_equals(&mutator.heap, object, arguments.first(&mutator.heap));
             crate::interpreter::future::declines_for_a_future(
                 mutator,
                 Primitive::String(primitive),
@@ -528,7 +541,7 @@ pub(crate) fn execute_symbol<'gc>(
     mutator: &mut Mutator<'gc>,
     primitive: SymbolPrimitive,
     receiver: Value<'gc>,
-    arguments: &[Value<'gc>],
+    arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let object = receiver.as_object()?;
     match primitive {
@@ -544,7 +557,7 @@ pub(crate) fn execute_symbol<'gc>(
             if !mutator.heap.is_symbol(object) {
                 return None;
             }
-            let equal = symbol_equals(object, arguments.first().copied());
+            let equal = symbol_equals(object, arguments.first(&mutator.heap));
             crate::interpreter::future::declines_for_a_future(
                 mutator,
                 Primitive::Symbol(primitive),
