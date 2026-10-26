@@ -1851,14 +1851,16 @@ impl<'a> Lowerer<'a> {
         if let Some(form) = control_flow::recognize(send) {
             return match form {
                 InlineForm::IfTrueIfFalse(true_block, false_block) => {
-                    self.lower_if(send, Some(true_block), Some(false_block), use_)
+                    self.lower_if(send, Some(true_block), Some(false_block), use_, into)
                 }
-                InlineForm::IfTrue(true_block) => self.lower_if(send, Some(true_block), None, use_),
+                InlineForm::IfTrue(true_block) => {
+                    self.lower_if(send, Some(true_block), None, use_, into)
+                }
                 InlineForm::IfFalse(false_block) => {
-                    self.lower_if(send, None, Some(false_block), use_)
+                    self.lower_if(send, None, Some(false_block), use_, into)
                 }
-                InlineForm::And(block) => self.lower_and_or(send, block, true, use_),
-                InlineForm::Or(block) => self.lower_and_or(send, block, false, use_),
+                InlineForm::And(block) => self.lower_and_or(send, block, true, use_, into),
+                InlineForm::Or(block) => self.lower_and_or(send, block, false, use_, into),
                 InlineForm::WhileTrue { condition, body } => {
                     self.lower_while(condition, body, true)
                 }
@@ -2055,16 +2057,22 @@ impl<'a> Lowerer<'a> {
     /// branch is `nil`, matching `True>>ifFalse:` and `False>>ifTrue:`,
     /// which answer `nil`. A branch's value is only moved into the send's
     /// own result, so `use_` -- what reads that result -- is what reads the
-    /// branch's value.
+    /// branch's value. The result is `into`, the argument slot
+    /// `lower_expression_into` lowers into, where there is one: each arm
+    /// moves its value there anyway, and a result in a scratch register
+    /// above the slot would cost a setter assignment another `Move` into
+    /// it (`lower_setter_assign`). The slot was allocated before the
+    /// guard, so no arm's scratch register is it.
     fn lower_if(
         &mut self,
         send: &ast::Send,
         true_block: Option<&ast::BlockExpression>,
         false_block: Option<&ast::BlockExpression>,
         use_: ValueUse,
+        into: Option<u16>,
     ) -> u16 {
         let guard_register = self.lower_expression(&send.receiver);
-        let destination = self.allocate_scratch();
+        let destination = self.target_register(into);
         self.emit_guarded_branch(
             guard_register,
             destination,
@@ -2214,16 +2222,18 @@ impl<'a> Lowerer<'a> {
     /// `and:`/`or:`: the short-circuit arm is the receiver's own Boolean
     /// value, the other arm the block's value as it is. A branch's value is
     /// only moved into the send's own result, so `use_` -- what reads that
-    /// result -- is what reads the block's value, as in `lower_if`.
+    /// result -- is what reads the block's value, as in `lower_if`, and
+    /// the result is `into` where there is one, as there.
     fn lower_and_or(
         &mut self,
         send: &ast::Send,
         block: &ast::BlockExpression,
         is_and: bool,
         use_: ValueUse,
+        into: Option<u16>,
     ) -> u16 {
         let guard_register = self.lower_expression(&send.receiver);
-        let destination = self.allocate_scratch();
+        let destination = self.target_register(into);
         let evaluate = |lowerer: &mut Self| lowerer.lower_inline_block_body(block, use_);
         let fallback =
             |lowerer: &mut Self| lowerer.lower_fallback_send(guard_register, &send.message);
@@ -5101,19 +5111,27 @@ mod tests {
         );
     }
 
-    /// An inlined conditional's value is in the branch's result register,
-    /// which both arms write, so the send copies it into its slot.
+    /// An inlined conditional's result is the slot: each of its three arms
+    /// moves its value there, so the send copies nothing.
     #[test]
-    fn an_inlined_conditional_argument_is_copied_by_the_send() {
+    fn an_inlined_conditional_argument_is_lowered_into_its_slot() {
         let code = lower_whole_method(ARGUMENTS_INTO_SLOTS, 4);
         let (argument_base, sources) = assert_contiguous_slots(&code, "foo:", 1, 1);
-        assert_ne!(sources[0], argument_base, "{:?}", code.instructions());
-        assert!(
-            has(&code, |instruction| matches!(
-                instruction,
-                Instruction::Move { destination, .. } if *destination == sources[0]
-            )),
-            "the source is the branch's result register: {:?}",
+        assert_eq!(sources, vec![argument_base], "{:?}", code.instructions());
+        let moves_into_the_slot = code
+            .instructions()
+            .iter()
+            .filter(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::Move { destination, .. } if *destination == argument_base
+                )
+            })
+            .count();
+        assert_eq!(
+            moves_into_the_slot,
+            3,
+            "the true arm, the false arm and the fallback each move into the slot: {:?}",
             code.instructions()
         );
     }
@@ -5194,6 +5212,40 @@ mod tests {
             )),
             "the assignment's value is the slot: {:?}",
             answered.instructions()
+        );
+    }
+
+    /// A setter's value an inlined conditional produces is in the slot
+    /// already: the conditional's true arm, false arm and fallback each
+    /// move their value there, and nothing else does -- no `Move` copies
+    /// the value into the slot from a result register above it.
+    #[test]
+    fn a_setter_value_an_inlined_conditional_produces_is_in_its_slot() {
+        let source = indoc! {"
+            class X = Object new (
+              | direction ::= nil. |
+            ) (
+              choose: c = ( direction:: c ifTrue: [1] ifFalse: [2] )
+            ) : ()
+        "};
+        let code = lower_whole_method(source, 0);
+        let (argument_base, sources) = assert_contiguous_slots(&code, "direction:", 1, 1);
+        assert_eq!(sources, vec![argument_base], "{:?}", code.instructions());
+        let moves_into_the_slot = code
+            .instructions()
+            .iter()
+            .filter(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::Move { destination, .. } if *destination == argument_base
+                )
+            })
+            .count();
+        assert_eq!(
+            moves_into_the_slot,
+            3,
+            "only the conditional's three arms move into the slot: {:?}",
+            code.instructions()
         );
     }
 }
