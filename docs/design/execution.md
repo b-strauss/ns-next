@@ -8614,11 +8614,11 @@ overlapping windows moved").
 **What a send copies.** Each argument at most once, most of them
 never. A send names its arguments' contiguous slots, allocated after its
 receiver, and each argument's source. A send's value, an inlined integer
-operation's, a literal or a closure is produced in its slot, a setter's
-value as any argument; a named local passed as an argument, and an
-argument whose value the optimized lowering leaves in the register an
-inlined conditional, `and:`/`or:`, loop or mirror send, an assignment or a
-cascade answered, is not ([compiler.md](compiler.md), "Sends"). The send
+operation's, an inlined conditional's or `and:`/`or:`'s, a literal or a
+closure is produced in its slot, a setter's value as any argument; a
+named local passed as an argument, and an argument whose value the
+optimized lowering leaves in the register an inlined loop or mirror send,
+an assignment or a cascade answered, is not ([compiler.md](compiler.md), "Sends"). The send
 reads its arguments where they are whenever its sources are consecutive
 registers -- none or one always are, and so are sources that all are their
 slots -- and only otherwise copies each source that is not its slot into
@@ -8638,8 +8638,8 @@ nothing reads would be pure cost, and nothing but the send reads a slot
 but a setter assignment: its value is the register its argument came
 from, a named local's below the slots, or else the slot -- where the value
 was produced there, or copied there by the lowering when it was left in a
-register above the slot, an inner assignment's (`a:: b:: 4`) or an inlined
-conditional's, which the callee's header goes over
+register above the slot, an inner assignment's (`a:: b:: 4`), which the
+callee's header goes over
 (`compiler::lower`'s `lower_setter_assign`). The first stage measured what
 the copies cost: the window built in memory up to +24% (Mandelbrot), the
 placement inlined into every send path and its eager copies +2% to +9% on

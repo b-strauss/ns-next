@@ -1323,7 +1323,8 @@ impl<'a> Lowerer<'a> {
     /// Lowers a send's argument into `slot`, its argument slot, and answers
     /// the argument's source: `slot` itself when the value was produced
     /// there. A send that is not inlined and an inlined integer leaf write
-    /// their `destination` into the slot, and a literal, `self`, a read of
+    /// their `destination` into the slot, an inlined conditional's and an
+    /// `and:`/`or:`'s arms each move their value into it, and a literal, `self`, a read of
     /// another frame's local or of a vector, a closure and an array are
     /// loaded into it, so the send copies none of them. A named local
     /// answers its own register, which the send reads in place when the
@@ -1331,8 +1332,8 @@ impl<'a> Lowerer<'a> {
     /// or, when an argument after it can write that local, the protective
     /// `Move` into the slot, which the send then reads there. Every other
     /// expression answers the register its value is in -- the result
-    /// register of an inlined conditional, `and:`/`or:`, loop or mirror
-    /// send, an assignment's value, a cascade's last send -- which the send
+    /// register of an inlined loop or mirror send, an assignment's value,
+    /// a cascade's last send -- which the send
     /// likewise reads in place, or copies into the slot when it cannot.
     ///
     /// Writing the slot this early is sound because the slots were
@@ -1679,7 +1680,7 @@ impl<'a> Lowerer<'a> {
         // `StoreOuterLocal` writes a different frame.)
         //
         // A value left in a scratch register above the slot -- an inner
-        // assignment's (`a:: b:: 4`), an inlined conditional's -- is read
+        // assignment's (`a:: b:: 4`) -- is read
         // in place by the send, but is dead once it executes: its callee's
         // header goes over every register above the slot
         // (`docs/design/compiler.md`, "Sends"). So it is copied into the
@@ -1784,8 +1785,8 @@ impl<'a> Lowerer<'a> {
     /// The slots are not always the top of what is live at the send:
     /// whatever an argument is evaluated with lands above them, and an
     /// argument the send may copy (`lower_expression_into`) -- the result
-    /// register of an inlined conditional, `and:`/`or:`, loop or mirror
-    /// send, an assignment's value or a cascade's last send, unless that is
+    /// register of an inlined loop or mirror send, an assignment's value
+    /// or a cascade's last send, unless that is
     /// a named local below the slots -- is read by the send from a register
     /// above them. Every other register above the slots is dead by the time
     /// the send executes (`docs/design/compiler.md`, "Sends").

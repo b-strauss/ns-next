@@ -42,10 +42,11 @@ its builds separated and twelve of twenty-four faster ("What contiguous
 arguments moved"); the second level with the first on the geometric
 mean, -0.09%; of the two programs slower with their builds separated,
 DeltaBlueTon80 is still 0.9% slower once its causes the code could fix
-were fixed, and Mandelbrot is level ("What overlapping windows moved"). Neither a push nor a pop writes
-a scratch register: the leftover analysis finds what a frame may read
-before writing it, the decoder refuses image code that reads it, and
-every trace of the stack nils it ("What the leftover analysis moved";
+were fixed, and Mandelbrot is level ("What overlapping windows
+moved"). Neither a push nor a pop writes a scratch register: the
+leftover analysis finds what a frame may read before writing it, the
+decoder refuses image code that reads it, and every trace of the stack
+nils it ("What the leftover analysis moved";
 [memory.md](design/memory.md), "What the collector traces"). A
 running activation is suspended into its frame and resumed from it lazily,
 the landing point of every later deoptimization, and a sixth stress mode

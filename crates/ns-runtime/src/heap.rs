@@ -7094,7 +7094,12 @@ impl<'gc> Heap<'gc> {
                 Some(sender) => self.store(Value::object(self.frame_object(sender))),
                 None => Word::NIL,
             };
-            let caller = self.stack.caller(offset);
+            // Read once, as the pop reads it: the caller's offset now, and
+            // the top the frame was pushed at when it comes off the words.
+            let caller_word = self.stack.header_word(offset, frame_header::CALLER);
+            let caller = caller_word
+                .is_small_integer()
+                .then(|| frames::caller_offset_of(caller_word));
             let header = offset as usize;
             let start = self.stack.frame_start(offset);
             let end = self.stack.window_end(offset).min(callee_header);
@@ -7141,11 +7146,7 @@ impl<'gc> Heap<'gc> {
             if !space::is_young(frame.offset) && (holds_young || sender_is_young) {
                 self.remember(frame.offset);
             }
-            self.stack.take_off_words(
-                offset,
-                flags,
-                self.stack.header_word(offset, frame_header::CALLER),
-            );
+            self.stack.take_off_words(offset, flags, caller_word);
             self.stack.innermost = caller.unwrap_or(NO_FRAME);
             self.stack.live -= 1;
         }
