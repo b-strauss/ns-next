@@ -382,6 +382,11 @@ pub fn encode(symbols: &[Symbol], text: &str, line_index: &LineIndex) -> Vec<Doc
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::cast_possible_truncation,
+        reason = "a test's values are small literals and lengths it built"
+    )]
+
     use super::*;
     use indoc::{formatdoc, indoc};
 

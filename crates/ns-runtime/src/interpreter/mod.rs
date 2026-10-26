@@ -2899,6 +2899,11 @@ fn build_self_referential_object_class<'gc>(
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a test's values are small literals and lengths it built"
+    )]
     use super::*;
     use indoc::indoc;
     use std::path::PathBuf;

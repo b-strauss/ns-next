@@ -415,7 +415,10 @@ mode", "The gates the collector needs", "Generations";
 "The compact instruction encoding", "Suspending and resuming"). Clippy's gate
 includes `min_ident_chars` (`clippy.toml`), which refuses identifiers of one
 or two characters: names are written out
-(`CLAUDE.md`, "Conventions").
+(`CLAUDE.md`, "Conventions"). It also includes `cast_possible_truncation` and
+`cast_sign_loss`, so a narrowing cast outside tests states the bound that
+makes it exact, and `allow_attributes_without_reason`, so every lint
+exception states its reason.
 
 Never judge performance from a debug build; `cargo build --workspace --release`
 is the one to measure, and every binary a measurement compares — the current

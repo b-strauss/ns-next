@@ -2477,6 +2477,11 @@ fn assemble_send(
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::cast_possible_truncation,
+        reason = "a test's values are small literals and lengths it built"
+    )]
+
     use super::*;
     use crate::bytecode::{CallSite, Instruction, IntegerOperation, Literal};
     use crate::Symbol;

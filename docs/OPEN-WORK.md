@@ -15,10 +15,6 @@ when they were written.
 
 ## Next
 
-**First, a branch of its own adopts four clippy lints** ("Code quality
-follow-ups" below), decided with the user on 2026-10-26 to follow road
-step 7a′'s branch.
-
 **Road step 7c, the deoptimization contract and the protocol between
 interpreted and compiled frames** ("The road to a high-performance VM"
 below; [execution.md](design/execution.md), "Planned: JIT tiers"), the
@@ -1968,19 +1964,6 @@ that only answers `isKindOfArray` or `isKindOfString`, the error of a
 ## Code quality follow-ups
 
 Small, deliberately left, none affecting an outcome.
-
-- **Four clippy lints, adopted on a branch of their own** (decided with
-  the user on 2026-10-26, to follow road step 7a′'s branch):
-  - `undocumented_unsafe_blocks`, for `ns-memory`, the one crate with
-    `unsafe`; it has no hit today.
-  - `allow_attributes_without_reason`: its 29 sites rewritten as
-    `#[expect(.., reason = ..)]`.
-  - `cast_possible_truncation` and `cast_sign_loss`: about 290 sites
-    outside tests, the lints allowed in tests. Each site is audited: a
-    bound already guaranteed becomes `try_from` with an invariant panic,
-    or a helper that states the bound; bit arithmetic becomes
-    `cast_unsigned()`; a cast nothing bounds is a defect and is fixed.
-    The image decoder already has none.
 
 - Leftover of road step 7b (noted 2026-10-24): the format- and test-level
   frame accessors `Heap::frame_set_program_counter`, `frame_register_shape`,

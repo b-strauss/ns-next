@@ -10,6 +10,11 @@
 //! the end of the suite while the other cores idled. Each trial builds the
 //! one image it cuts.
 
+#![expect(
+    clippy::cast_possible_truncation,
+    reason = "a test's values are small literals and lengths it built"
+)]
+
 use std::path::PathBuf;
 use std::rc::Rc;
 

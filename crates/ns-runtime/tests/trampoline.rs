@@ -3,6 +3,11 @@
 //! bounded by a count rather than by the native stack, and running past it is
 //! an ordinary Newspeak error under both lowerings.
 
+#![expect(
+    clippy::cast_possible_truncation,
+    reason = "a test's values are small literals and lengths it built"
+)]
+
 use indoc::{formatdoc, indoc};
 use std::path::PathBuf;
 use std::rc::Rc;

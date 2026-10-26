@@ -1662,6 +1662,10 @@ pub fn preorder(mixin: &Rc<Mixin>, out: &mut Vec<Rc<Mixin>>) {
 
 #[cfg(test)]
 mod declaration_text_tests {
+    #![expect(
+        clippy::cast_possible_truncation,
+        reason = "a test's values are small literals and lengths it built"
+    )]
     use super::DeclarationText;
     use indoc::indoc;
     use ns_syntax::Span;
@@ -1857,6 +1861,10 @@ mod dispatch_id_tests {
 
 #[cfg(test)]
 mod applied_clause_tests {
+    #![expect(
+        clippy::cast_sign_loss,
+        reason = "a test's values are small literals and lengths it built"
+    )]
     use super::{AppliedClause, BUILTIN_TAG_MASK, BUILTIN_TAG_SHIFT, CLAUSE_INDEX_LIMIT};
     use crate::heap::MixinId;
     use crate::types::BuiltinClass;
