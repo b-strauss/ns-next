@@ -6256,3 +6256,29 @@ stated message) and the numerics were all bounded.
 
 What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): road step
 7c, next.
+
+## The deoptimization contract, road step 7c (2026-10-27)
+
+Decided with the user on 2026-10-27, the last part of road step 7, and
+written, not built: [execution.md](design/execution.md), "Planned: the
+deoptimization contract", which road steps 8 and 9 build to. Every
+observer of an activation runs only after machine code's exit to the run
+loop, and the exit materializes every compiled frame as interpreted
+ones, so the hot path writes nothing only an observer needs: compiled
+frames lie at the interpreter's positions on the activation stack and a
+call writes no header word, the return addresses lie on a machine stack
+of their own and are mapped to program counters at the exit, a frame
+pushed by compiled code returns by a bare `ret`, a poll spills only when
+it is taken, and the depth count stays exact with an inlined scope's
+depth folded in as a constant. A baseline frame becomes interpreted, and
+an interpreted one baseline at a backward jump, in place; an optimized
+frame is deoptimized lazily, into the suspended frames of road step 7b,
+resuming either by delivering a send's value or by running an
+instruction again; optimized code has metadata only at interrupt points
+and may declare a raw area per code; observed kernel methods are never
+inlined, and a walk over activations reifies only what it answers.
+Grounded in Cog, Strongtalk and Primordial Soup, with HotSpot and V8 as
+background. Only Markdown changed.
+
+What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md): real Newspeak
+bodies for the loops and `do:`, next.
