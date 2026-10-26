@@ -483,7 +483,6 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                     Err(signal) => {
                                         break 'decided raise(
                                             mutator,
-                                            activation,
                                             program_counter,
                                             signal,
                                             floor,
@@ -863,7 +862,6 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                     Err(signal) => {
                                         break 'decided raise(
                                             mutator,
-                                            activation,
                                             program_counter,
                                             signal,
                                             floor,
@@ -886,7 +884,6 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                     Err(signal) => {
                                         break 'decided raise(
                                             mutator,
-                                            activation,
                                             program_counter,
                                             signal,
                                             floor,
@@ -945,7 +942,6 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                         Err(signal) => {
                                             break 'decided raise(
                                                 mutator,
-                                                activation,
                                                 program_counter,
                                                 signal,
                                                 floor,
@@ -985,7 +981,6 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                         Err(signal) => {
                                             break 'decided raise(
                                                 mutator,
-                                                activation,
                                                 program_counter,
                                                 signal,
                                                 floor,
@@ -1020,7 +1015,6 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                         Err(signal) => {
                                             break 'decided raise(
                                                 mutator,
-                                                activation,
                                                 program_counter,
                                                 signal,
                                                 floor,
@@ -1089,7 +1083,6 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                     let error = non_boolean_condition(&mutator.heap, value);
                                     break 'decided raise(
                                         mutator,
-                                        activation,
                                         program_counter,
                                         Signal::Error(error),
                                         floor,
@@ -1425,7 +1418,7 @@ fn run_wide<'gc>(
             literal,
         } => match load_literal_into(mutator, activation, register_base, *destination, literal) {
             Ok(()) => return WideOutcome::Next,
-            Err(signal) => raise(mutator, activation, program_counter, signal, floor, handoff),
+            Err(signal) => raise(mutator, program_counter, signal, floor, handoff),
         },
         Instruction::LoadSelf { destination } => {
             load_self_into(mutator, activation, register_base, *destination);
@@ -1542,7 +1535,7 @@ fn run_wide<'gc>(
             index,
         } => match load_vector_into(mutator, register_base, *destination, *vector, *index) {
             Ok(()) => return WideOutcome::Next,
-            Err(signal) => raise(mutator, activation, program_counter, signal, floor, handoff),
+            Err(signal) => raise(mutator, program_counter, signal, floor, handoff),
         },
         Instruction::StoreVector {
             vector,
@@ -1550,7 +1543,7 @@ fn run_wide<'gc>(
             source,
         } => match store_vector(&mut mutator.heap, register_base, *vector, *index, *source) {
             Ok(()) => return WideOutcome::Next,
-            Err(signal) => raise(mutator, activation, program_counter, signal, floor, handoff),
+            Err(signal) => raise(mutator, program_counter, signal, floor, handoff),
         },
         Instruction::InitializeSlot { source, own_index } => {
             match initialize_slot(mutator, activation, register_base, *source, *own_index) {
@@ -1571,7 +1564,7 @@ fn run_wide<'gc>(
             match filled_own_slot(mutator, activation, *own_index) {
                 Ok(Some(value)) => finish(mutator, activation, value, floor, handoff),
                 Ok(None) => return WideOutcome::Next,
-                Err(signal) => raise(mutator, activation, program_counter, signal, floor, handoff),
+                Err(signal) => raise(mutator, program_counter, signal, floor, handoff),
             }
         }
         Instruction::MakeFuture {
@@ -1643,7 +1636,6 @@ fn run_wide<'gc>(
             let error = non_boolean_condition(&mutator.heap, value);
             raise(
                 mutator,
-                activation,
                 program_counter,
                 Signal::Error(error),
                 floor,
@@ -1692,7 +1684,7 @@ fn run_wide<'gc>(
         Instruction::AllocateInstance { destination } => {
             match allocate_instance_into(mutator, activation, register_base, *destination) {
                 Ok(()) => return WideOutcome::Next,
-                Err(signal) => raise(mutator, activation, program_counter, signal, floor, handoff),
+                Err(signal) => raise(mutator, program_counter, signal, floor, handoff),
             }
         }
         Instruction::InitializeInstance {
@@ -1718,7 +1710,7 @@ fn run_wide<'gc>(
         Instruction::CheckAppliedClause { steps, selector } => {
             match mutator.check_applied_clause(activation, *steps, *selector) {
                 Ok(()) => return WideOutcome::Next,
-                Err(signal) => raise(mutator, activation, program_counter, signal, floor, handoff),
+                Err(signal) => raise(mutator, program_counter, signal, floor, handoff),
             }
         }
         Instruction::InitializeSuperclass {
@@ -2555,11 +2547,11 @@ fn initialize_slot_refused<'gc>(
     // of the value itself can be about a future.
     let receiver = mutator.heap.activation_receiver(activation);
     if !receiver_keeps_entered_level(mutator, activation, receiver) {
-        return raise(mutator, activation, program_counter, signal, floor, handoff);
+        return raise(mutator, program_counter, signal, floor, handoff);
     }
     let value = read_local(&mutator.heap, activation, source);
     match value_for_a_value_slot(mutator, value) {
-        None => raise(mutator, activation, program_counter, signal, floor, handoff),
+        None => raise(mutator, program_counter, signal, floor, handoff),
         Some(Ok(Resolution::Value(resolved))) => {
             let receiver = mutator.heap.activation_receiver(activation);
             let base = mutator.heap.activation_slot_base(activation);
@@ -2573,13 +2565,13 @@ fn initialize_slot_refused<'gc>(
                     );
                     Transfer::Next
                 }
-                Err(signal) => raise(mutator, activation, program_counter, signal, floor, handoff),
+                Err(signal) => raise(mutator, program_counter, signal, floor, handoff),
             }
         }
         Some(Ok(Resolution::Force(step))) => {
             force_and_reexecute(mutator, activation, program_counter, step, floor, handoff)
         }
-        Some(Err(signal)) => raise(mutator, activation, program_counter, signal, floor, handoff),
+        Some(Err(signal)) => raise(mutator, program_counter, signal, floor, handoff),
     }
 }
 
@@ -2669,7 +2661,6 @@ fn make_future<'gc>(
         _ => {
             return raise(
                 mutator,
-                activation,
                 program_counter,
                 not_a_closure(operand),
                 floor,
@@ -2707,7 +2698,7 @@ fn resolve_future<'gc>(
         Ok(Resolution::Force(step)) => {
             force_and_reexecute(mutator, activation, program_counter, step, floor, handoff)
         }
-        Err(signal) => raise(mutator, activation, program_counter, signal, floor, handoff),
+        Err(signal) => raise(mutator, program_counter, signal, floor, handoff),
     }
 }
 
@@ -2726,7 +2717,7 @@ fn load_own_slot_into<'gc>(
             write_local(&mut mutator.heap, activation, destination, value);
             Transfer::Next
         }
-        Err(signal) => raise(mutator, activation, program_counter, signal, floor, handoff),
+        Err(signal) => raise(mutator, program_counter, signal, floor, handoff),
     }
 }
 
@@ -2741,7 +2732,7 @@ fn initialize_slot_provisionally<'gc>(
     handoff: &mut Handoff,
 ) -> Transfer {
     if let Err(signal) = check_own_slots(mutator, activation) {
-        return raise(mutator, activation, program_counter, signal, floor, handoff);
+        return raise(mutator, program_counter, signal, floor, handoff);
     }
     let value = read_local(&mutator.heap, activation, source);
     let receiver = mutator.heap.activation_receiver(activation);
@@ -2778,23 +2769,37 @@ fn force_and_reexecute<'gc>(
     }
 }
 
-/// An error the instruction at `program_counter` of the running
-/// `activation` raised, unwound with its index stored first (`run`'s doc
-/// comment). Out of line and cold, so that a raising arm adds only a call
-/// to the loop's cold blocks.
-#[cold]
-#[inline(never)]
+/// An error the instruction at `program_counter` of the running activation
+/// raised, unwound with its index stored first (`run`'s doc comment). The
+/// running activation is the handoff's, which names it from the stretch's
+/// start and every switch on, and the index goes through the handoff too,
+/// so that a raising arm adds to the loop one store and a call with
+/// `unwind`'s own arguments. Passed as two more arguments to a cold
+/// function, the activation and the index measured nine of the 24
+/// programs 0.6-2.4% slower, builds separated; this way none is.
+#[inline(always)]
 fn raise<'gc>(
     mutator: &mut Mutator<'gc>,
-    activation: ActivationReference,
     program_counter: usize,
+    signal: Signal<'gc>,
+    floor: usize,
+    handoff: &mut Handoff,
+) -> Transfer {
+    handoff.program_counter = program_counter;
+    raise_from_handoff(mutator, signal, floor, handoff)
+}
+
+/// `raise`'s store and unwind, out of line.
+#[inline(never)]
+fn raise_from_handoff<'gc>(
+    mutator: &mut Mutator<'gc>,
     signal: Signal<'gc>,
     floor: usize,
     handoff: &mut Handoff,
 ) -> Transfer {
     mutator
         .heap
-        .activation_set_program_counter(activation, program_counter);
+        .activation_set_program_counter(handoff.activation, handoff.program_counter);
     unwind(mutator, signal, floor, handoff)
 }
 
