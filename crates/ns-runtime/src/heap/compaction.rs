@@ -91,7 +91,9 @@ impl ForwardingTable {
 
 impl Relocation for ForwardingTable {
     fn apply(&self, offset: NonZeroU64) -> NonZeroU64 {
-        let word = (offset.get() / 8) as usize;
+        let word = usize::try_from(offset.get() / 8).expect(
+            "internal: a word index lies inside the object space's reservation, DEFAULT_RESERVATION",
+        );
         debug_assert!(
             self.is_live(word),
             "a handle to a collected object survived marking: a root the tracer does not know about"

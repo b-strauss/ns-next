@@ -41,7 +41,7 @@ impl LocalScope {
             names.insert(
                 name,
                 LocalEntry {
-                    index: local_index(index),
+                    index: local_index_or_ceiling(index),
                     has_setter,
                 },
             );
@@ -56,7 +56,7 @@ impl LocalScope {
 /// index, so each of its locals past the ceiling takes `u16::MAX`, which no
 /// local of a body that fits holds: a body fits only with at most
 /// `u16::MAX` locals, numbered from 0.
-fn local_index(index: usize) -> u16 {
+fn local_index_or_ceiling(index: usize) -> u16 {
     u16::try_from(index).unwrap_or(u16::MAX)
 }
 

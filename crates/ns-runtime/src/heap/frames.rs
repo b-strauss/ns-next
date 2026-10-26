@@ -341,8 +341,8 @@ pub(super) fn number_of(word: Word) -> u64 {
 }
 
 /// The number of a header word that holds a 32-bit id, index or count --
-/// a code id, a program counter, a feedback base, a continuation row, an
-/// entered level, a guard, a selector's index -- which `number_word`
+/// a code id, a feedback base, a continuation row, an entered level, a
+/// guard, a selector's index -- which `number_word`
 /// stored from that `u32`. A helper rather than `u32::try_from`, whose
 /// check the push and the run loop would pay on every read.
 #[inline(always)]
@@ -361,7 +361,7 @@ pub(super) fn number_as_u32(word: Word) -> u32 {
 
 /// The number of a header word that holds an index or a count of the
 /// target's width -- a code table's row, a register count, a program
-/// counter -- which `number_word` stored from a `usize` or narrower. A
+/// counter, a `usize` bounded by `INSTRUCTION_LIMIT` -- which `number_word` stored from a `usize` or narrower. A
 /// helper rather than `usize::try_from`, whose check a 32-bit target's
 /// run loop would pay on every read.
 #[inline(always)]

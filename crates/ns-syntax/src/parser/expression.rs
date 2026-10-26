@@ -458,12 +458,9 @@ impl<'a> Parser<'a> {
             let name = self.text(keyword).trim_end_matches(':');
             let target = Identifier {
                 name: name.to_string(),
-                span: crate::span::Span::new(
-                    keyword.span.start,
-                    keyword.span.start
-                        + u32::try_from(name.len()).expect(
-                            "internal: a source past u32::MAX bytes is refused before it is lexed (source_too_long)",
-                        ),
+                span: crate::span::Span::from_offsets(
+                    keyword.span.start as usize,
+                    keyword.span.start as usize + name.len(),
                 ),
             };
             self.refuse_reserved_word(&target.name, target.span, "be assigned");

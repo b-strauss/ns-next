@@ -1116,6 +1116,7 @@ fn pack(source: &[u64], first_destination: &mut [u64], second_destination: &mut 
 /// How many values of `bits` bits, more than 32, the digits of an operand
 /// `length` digits long pack into.
 fn packed_length(length: usize, bits: u64) -> usize {
+    debug_assert!(bits > 32, "internal: values pack into more than 32 bits");
     usize::try_from((64 * length as u64).div_ceil(bits))
         .expect("internal: values of more than 32 bits pack a digit into fewer than two")
 }
