@@ -180,7 +180,9 @@ impl Collector<'_> {
         });
         match closer_shares_its_line {
             Some(line_start) => {
-                let end = self.text[..line_start].trim_end().len() as u32;
+                let end = u32::try_from(self.text[..line_start].trim_end().len()).expect(
+                    "internal: folding runs over a parsed module, whose source is at most u32::MAX bytes (source_too_long)",
+                );
                 let span = Span::new(members.open.start, end.max(members.open.end));
                 self.push(span, "(...".to_string(), false);
             }

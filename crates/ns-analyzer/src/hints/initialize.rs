@@ -131,8 +131,8 @@ fn in_place(
     let initializer = edits::initializer(
         text,
         value,
-        edits::column(text, statement.span.start),
-        edits::column(text, slot.span.start),
+        edits::column(text, statement.span.start as usize),
+        edits::column(text, slot.span.start as usize),
     );
     // A slot written with its optional `.` keeps it, the initializer going
     // before it.
@@ -193,7 +193,7 @@ fn reordered(
                 &text[..removal.start as usize],
                 &text[removal.end as usize..destination as usize]
             );
-            edits::column(&kept, kept.len() as u32) + separator.len()
+            edits::column(&kept, kept.len()) + separator.len()
         },
         |index| separator.len() - index - 1,
     );
@@ -203,7 +203,7 @@ fn reordered(
         edits::initializer(
             text,
             value,
-            edits::column(text, statement.span.start),
+            edits::column(text, statement.span.start as usize),
             declaration_column
         )
     );

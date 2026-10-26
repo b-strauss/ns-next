@@ -25,7 +25,8 @@ pub fn dump(text: &str) -> Result<serde_json::Value, String> {
         {
             *element = units;
         }
-        units += character.len_utf16() as u32;
+        units += u32::try_from(character.len_utf16())
+            .expect("internal: a character is at most two UTF-16 units");
     }
     utf16_at[text.len()] = units;
     let entries: Vec<serde_json::Value> = tokens
