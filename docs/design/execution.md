@@ -8789,9 +8789,12 @@ forgets a value-answered send's step, which speeds both, is level on the
 geometric mean, -0.09%, with two programs slower with their builds
 separated, by 0.5% and 1.6%, and three faster; with what of that the
 code could fix fixed, DeltaBlueTon80 is 0.9% slower and Mandelbrot
-level. It is kept by the user's
-decision to remove its remaining cost, the pop's fill, rather than revert
-the stage ("What overlapping windows moved").
+level. It is kept, decided with the user on 2026-10-26, against the rule
+that a stage slows no program: the 0.9% is the flags load for the
+register base on every switch that Cog's layout, the point of the stage,
+forces, four ways around it measured no better, and the branch as a whole
+is 1.34% faster than before the leftover analysis with no program slower
+("What overlapping windows moved", "What the leftover analysis moved").
 
 ## Planned: JIT tiers
 
