@@ -598,19 +598,20 @@ impl AppliedClause {
     /// `None` for a tag that names no builtin, which only a corrupt field
     /// could hold.
     pub(crate) fn unpack(packed: i64) -> Option<(MixinId, usize, Option<BuiltinClass>)> {
-        let pattern = packed as u64 & SIXTY_ONE_BITS;
+        let pattern = packed.cast_unsigned() & SIXTY_ONE_BITS;
         let mixin = MixinId::from_index((pattern & u64::from(u32::MAX)) as usize)?;
         let index = ((pattern >> CLAUSE_INDEX_SHIFT) as usize) & (CLAUSE_INDEX_FIELD - 1);
-        let tag = (pattern >> BUILTIN_TAG_SHIFT) & BUILTIN_TAG_MASK;
+        // Six bits, which the cast keeps whole.
+        let tag = ((pattern >> BUILTIN_TAG_SHIFT) & BUILTIN_TAG_MASK) as usize;
         let named_builtin = match tag {
             0 => None,
-            tag => Some(*BuiltinClass::ALL.get(tag as usize - 1)?),
+            tag => Some(*BuiltinClass::ALL.get(tag - 1)?),
         };
         Some((mixin, index, named_builtin))
     }
 }
 
-const _: () = assert!(BuiltinClass::ALL.len() < BUILTIN_TAG_MASK as usize);
+const _: () = assert!((BuiltinClass::ALL.len() as u64) < BUILTIN_TAG_MASK);
 
 /// `Debug` is derived so a class object's payload keeps its own derived
 /// `Debug` now that a class object's behaviour lives here. Printing one

@@ -16,7 +16,7 @@ use std::rc::Rc;
 
 use crate::builtins::primitive::MirrorPrimitive;
 use crate::bytecode::{CompactInstruction, CompiledCode, Instruction, IntegerOperation, Literal};
-use crate::heap::{ActivationReference, ArgumentSlots, RegisterBase};
+use crate::heap::{register_number, ActivationReference, ArgumentSlots, RegisterBase};
 use crate::interpreter::future::{
     not_a_closure, resolve_for_instruction, value_for_a_value_slot, FutureOutcome, Resolution,
 };
@@ -1358,7 +1358,7 @@ impl PendingSend {
             site: u32::from(site),
             window,
             slots: u16::from(argument_base),
-            count: sources.len() as u16,
+            count: argument_count(sources),
         }
     }
 
@@ -2142,8 +2142,8 @@ fn argument_window(
 /// How many arguments `argument_sources` names: within the body's
 /// registers, a `u16` count, as the decoder verifies of every send.
 #[inline(always)]
-fn argument_count(argument_sources: &[u16]) -> u16 {
-    argument_sources.len() as u16
+fn argument_count<Source>(argument_sources: &[Source]) -> u16 {
+    register_number(argument_sources.len())
 }
 
 /// `argument_window` for sources no test inline found consecutive: out of
@@ -2168,14 +2168,13 @@ fn place_arguments(
         let consecutive = argument_sources
             .iter()
             .enumerate()
-            .all(|(offset, source)| u32::from(*source) == u32::from(first) + offset as u32);
+            .all(|(offset, source)| usize::from(*source) == usize::from(first) + offset);
         if consecutive {
             return first;
         }
     }
     for (offset, source) in argument_sources.iter().enumerate() {
-        // Below the body's register count, a `u16`.
-        let slot = argument_base + offset as u16;
+        let slot = argument_base + register_number(offset);
         if *source != slot {
             copy_register(mutator, register_base, slot, *source);
         }

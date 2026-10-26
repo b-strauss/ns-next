@@ -67,7 +67,9 @@ impl ForwardingTable {
             chunk.before = total;
             total += u64::from(chunk.live.count_ones());
         }
-        total as usize
+        usize::try_from(total).expect(
+            "internal: the live words lie inside the object space's reservation, DEFAULT_RESERVATION",
+        )
     }
 
     fn is_live(&self, word: usize) -> bool {
@@ -80,7 +82,10 @@ impl ForwardingTable {
     pub(in crate::heap) fn destination(&self, word: usize) -> usize {
         let chunk = self.chunks[word / 64];
         let below = chunk.live & ((1u64 << (word % 64)) - 1);
-        self.base + (chunk.before + u64::from(below.count_ones())) as usize
+        self.base
+            + usize::try_from(chunk.before + u64::from(below.count_ones())).expect(
+                "internal: a word index lies inside the object space's reservation, DEFAULT_RESERVATION",
+            )
     }
 }
 

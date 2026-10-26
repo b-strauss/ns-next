@@ -29,7 +29,9 @@ use std::rc::Rc;
 
 use crate::compiler::Lowering;
 use crate::hash::IdentityMap;
-use crate::heap::{ActivationHeader, ActivationReference, ArgumentSlots, Heap, PushRefused, Root};
+use crate::heap::{
+    register_number, ActivationHeader, ActivationReference, ArgumentSlots, Heap, PushRefused, Root,
+};
 use crate::shipped_code::ShippedCodePath;
 use crate::types::*;
 use crate::Symbol;
@@ -360,9 +362,10 @@ impl<'values, 'gc> Arguments<'values, 'gc> {
         match self {
             // `index < count`, a `u16`, so the sum is a register of the
             // window the send named.
-            Arguments::Slots(slots) => {
-                heap.register(slots.register_base(), slots.start() + index as u16)
-            }
+            Arguments::Slots(slots) => heap.register(
+                slots.register_base(),
+                slots.start() + register_number(index),
+            ),
             Arguments::Values(values) => values[index],
         }
     }
@@ -392,8 +395,8 @@ impl<'values, 'gc> Arguments<'values, 'gc> {
             // Both below `count`, a `u16`.
             Arguments::Slots(slots) => Arguments::Slots(ArgumentSlots::new(
                 slots.register_base(),
-                slots.start() + range.start as u16,
-                (range.end - range.start) as u16,
+                slots.start() + register_number(range.start),
+                register_number(range.end - range.start),
             )),
             Arguments::Values(values) => {
                 *view = &values[range];
@@ -1930,7 +1933,7 @@ impl<'gc> Mutator<'gc> {
                 let arguments = ArgumentSlots::new(
                     self.heap.activation_register_base(pushed),
                     0,
-                    send_arguments.len() as u16,
+                    register_number(send_arguments.len()),
                 );
                 self.enter_factory_body(pushed, class, registers, Arguments::Slots(arguments))
             }

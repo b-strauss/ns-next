@@ -370,7 +370,8 @@ impl InlineCaches {
         {
             Some(end) if end < FeedbackBase::NOT_ASSIGNED.0 => {
                 self.sites.resize(end as usize, CacheEntry::vacant());
-                FeedbackBase(start as u32)
+                // `end` fits 32 bits, and `start` lies `size` below it.
+                FeedbackBase(end - size)
             }
             _ => FeedbackBase::NOT_ASSIGNED,
         }
@@ -679,6 +680,10 @@ pub(crate) struct GlobalCache {
 
 impl GlobalCache {
     /// The first of the key's group's two adjacent slots.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the hash only picks a group, so folding it to the target's width keeps all the mask reads"
+    )]
     fn group(&self, guard: DispatchId, selector: Symbol, rule: CacheRule) -> usize {
         let hash = crate::hash::IdentityBuildHasher::default().hash_one((guard, selector, rule));
         (hash as usize & self.mask) * 2

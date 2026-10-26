@@ -421,6 +421,27 @@ pub struct ArgumentSlots {
     activation: ActivationReference,
 }
 
+/// `number`, a count of registers or a register's offset in a window, in
+/// the `u16` registers are numbered in. Every body's registers lie below
+/// the register ceiling, `u16::MAX` -- a body past it is compiled to one
+/// that raises (`Literal::BodyTooLarge`) -- and a list of values longer
+/// than the ceiling is refused before it is pushed
+/// (`interpreter::Refusal::PastTheRegisterCeiling`). A helper rather than
+/// `u16::try_from`, whose check the push and the send would pay on every
+/// activation.
+#[inline(always)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "every register number lies below the register ceiling, u16::MAX, which the compiler and the push keep"
+)]
+pub(crate) fn register_number(number: usize) -> u16 {
+    debug_assert!(
+        number <= usize::from(u16::MAX),
+        "internal: a register number lies within the register ceiling, u16::MAX"
+    );
+    number as u16
+}
+
 impl ArgumentSlots {
     /// The `count` registers from `start` in `register_base`'s window.
     #[inline(always)]
@@ -438,14 +459,28 @@ impl ArgumentSlots {
     #[inline(always)]
     pub(crate) fn register_base(self) -> RegisterBase {
         RegisterBase {
-            index: self.packed as u32,
+            index: self.base_index(),
             #[cfg(debug_assertions)]
             activation: self.activation,
         }
     }
 
+    /// The register base's index, bits 0-31 of the packed word.
+    #[inline(always)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the index is the packed word's low 32 bits, which the truncation keeps"
+    )]
+    fn base_index(self) -> u32 {
+        self.packed as u32
+    }
+
     /// The first register.
     #[inline(always)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "`start` is bits 32-47 of the packed word, which the truncation keeps"
+    )]
     pub(crate) fn start(self) -> u16 {
         (self.packed >> 32) as u16
     }
@@ -459,7 +494,7 @@ impl ArgumentSlots {
     /// The index of the first register's word on the activation stack.
     #[inline(always)]
     fn first_word(self) -> usize {
-        self.packed as u32 as usize + usize::from(self.start())
+        self.base_index() as usize + usize::from(self.start())
     }
 }
 
@@ -1126,9 +1161,7 @@ impl ActivationStack {
     /// How many registers the frame at `offset` has above its header.
     #[inline(always)]
     fn register_count(&self, offset: u32) -> usize {
-        // A register count is a count of committed words, so the
-        // conversion is exact.
-        frames::number_of(self.header_word(offset, frame_header::REGISTER_COUNT)) as usize
+        frames::number_as_usize(self.header_word(offset, frame_header::REGISTER_COUNT))
     }
 
     /// Where the registers of the frame at `offset` end. A callee laid on
@@ -1209,7 +1242,7 @@ impl ActivationStack {
     fn continuation(&self, offset: u32) -> Option<ContinuationRow> {
         let word = self.header_word(offset, frame_header::CONTINUATION);
         word.is_small_integer()
-            .then(|| ContinuationRow(frames::number_of(word) as u32))
+            .then(|| ContinuationRow(frames::number_as_u32(word)))
     }
 
     /// Names `row` in the frame at `offset`; `None` for a frame that
@@ -1364,7 +1397,7 @@ impl<'gc> Continuations<'gc> {
     fn take(&mut self, row: ContinuationRow) -> Continuation<'gc> {
         let index = row.0 as usize;
         if index + 1 != self.rows.len() {
-            return self.take_below_the_last(index);
+            return self.take_below_the_last(row);
         }
         let continuation = self
             .rows
@@ -1380,11 +1413,11 @@ impl<'gc> Continuations<'gc> {
     /// `take` of a row below the last one: it becomes a free row.
     #[cold]
     #[inline(never)]
-    fn take_below_the_last(&mut self, index: usize) -> Continuation<'gc> {
-        let continuation = self.rows[index]
+    fn take_below_the_last(&mut self, row: ContinuationRow) -> Continuation<'gc> {
+        let continuation = self.rows[row.0 as usize]
             .take()
             .expect("internal: a stack frame names a live continuation row");
-        self.free.free(index as u32);
+        self.free.free(row.0);
         continuation
     }
 
@@ -2110,7 +2143,10 @@ impl<'gc> Heap<'gc> {
             if let Some((offset, fields)) = self.space.bump_object(header, class_word.bits()) {
                 fields.fill(Word::NIL.bits());
                 self.count_young_allocation();
-                let first = offset.get() as usize / 8 + FIELDS;
+                let first = usize::try_from(offset.get()).expect(
+                    "internal: an offset lies inside the object space's reservation, DEFAULT_RESERVATION",
+                ) / 8
+                    + FIELDS;
                 return (self.object_handle(offset), first..first + field_count);
             }
         }
@@ -2257,9 +2293,7 @@ impl<'gc> Heap<'gc> {
         class: ClassReference<'gc>,
         size: usize,
     ) -> ObjectReference<'gc> {
-        // The unused bytes of the last word, 0 to 7, so the cast cannot
-        // truncate.
-        let unused = ((8 - size % 8) % 8) as u8;
+        let unused = object::unused_bytes(size);
         let (object, fields) = self.allocate_object(
             class,
             Format::AlignedBytes,
@@ -2878,9 +2912,7 @@ impl<'gc> Heap<'gc> {
             return false;
         }
         fields.fill(0);
-        // The unused bytes of the last word, 0 to 7, so the cast cannot
-        // truncate.
-        let unused = ((8 - bytes.len() % 8) % 8) as u8;
+        let unused = object::unused_bytes(bytes.len());
         self.rewrite_placeholder_header(object, class, identity_hash, Format::AlignedBytes, unused);
         let written = self.with_byte_array_mut(object, |mut data| data.write(0, bytes));
         debug_assert_eq!(written, Some(true));
@@ -6544,7 +6576,7 @@ impl<'gc> Heap<'gc> {
             "internal: no activation is handed more arguments than the register ceiling, u16::MAX"
         );
         debug_assert_arity(&header.code, arguments.len());
-        let argument_count = arguments.len() as u16;
+        let argument_count = register_number(arguments.len());
         let words = usize::from(argument_count) + frame_header::COUNT + temporary_count;
         // `store`'s check, made apart from the copy so that a release build,
         // which has no check, copies the arguments' words straight in. A
@@ -6636,9 +6668,7 @@ impl<'gc> Heap<'gc> {
             },
         }
         fill_temporaries(temporaries, header.code.local_count, argument_count);
-        // The reservation holds at most `MAXIMUM_STACK_WORDS`, 2^31 words,
-        // so an offset is exact in 32 bits.
-        let offset = (start + usize::from(argument_count)) as u32;
+        let offset = frames::stack_offset(start + usize::from(argument_count));
         Ok(self.pushed_at(offset, header.counted))
     }
 
@@ -6753,8 +6783,7 @@ impl<'gc> Heap<'gc> {
         let (fixed, temporaries) = frame.split_at_mut(frame_header::COUNT);
         header_words.write(fixed);
         fill_temporaries(temporaries, header.code.local_count, argument_count);
-        // Inside the reservation, so exact in 32 bits.
-        Ok(self.pushed_at(offset as u32, header.counted))
+        Ok(self.pushed_at(frames::stack_offset(offset), header.counted))
     }
 
     /// The caller word of a frame pushed now from stack word `start`, its
@@ -6870,7 +6899,7 @@ impl<'gc> Heap<'gc> {
         // table; every other continuation is taken out of line.
         let then = if continuation.is_small_integer() {
             self.continuations
-                .take(ContinuationRow(frames::number_of(continuation) as u32))
+                .take(ContinuationRow(frames::number_as_u32(continuation)))
         } else {
             Continuation::Deliver
         };
@@ -6895,8 +6924,7 @@ impl<'gc> Heap<'gc> {
         program_counter: u64,
     ) {
         let start = offset - usize::from(flags.argument_count);
-        // An offset is below 2^31, so the conversion is exact.
-        let end = self.stack.window_end(offset as u32);
+        let end = self.stack.window_end(frames::stack_offset(offset));
         let Heap {
             space,
             stack,
@@ -6904,8 +6932,9 @@ impl<'gc> Heap<'gc> {
             ..
         } = self;
         let holds_young = flags.retains_registers && {
-            let code_index =
-                frames::number_of(stack.header_word(offset as u32, frame_header::CODE)) as usize;
+            let code_index = frames::number_as_usize(
+                stack.header_word(frames::stack_offset(offset), frame_header::CODE),
+            );
             let Some(entry) = tables.codes.get(code_index).and_then(Option::as_ref) else {
                 unreachable!("internal: a running frame names a live code row")
             };
@@ -7105,7 +7134,7 @@ impl<'gc> Heap<'gc> {
                 frame,
                 then,
                 counted: flags.counted,
-                entered_level: ApplicationIndex::from_raw(frames::number_of(entered_level) as u32),
+                entered_level: ApplicationIndex::from_raw(frames::number_as_u32(entered_level)),
                 retains_registers: flags.retains_registers,
             });
             let sender = match sender {
@@ -7130,8 +7159,7 @@ impl<'gc> Heap<'gc> {
             } = self;
             let stack_words = stack.frames.words();
             let program_counter = stack_words[header + frame_header::PROGRAM_COUNTER];
-            let code_index =
-                frames::number_of(stack.header_word(offset, frame_header::CODE)) as usize;
+            let code_index = frames::number_as_usize(stack.header_word(offset, frame_header::CODE));
             let Some(entry) = tables.codes.get(code_index).and_then(Option::as_ref) else {
                 unreachable!("internal: a running frame names a live code row")
             };
@@ -7141,7 +7169,7 @@ impl<'gc> Heap<'gc> {
             // as it lies, must not keep.
             let tainted = entry
                 .code
-                .tainted_before(frames::number_of(Word::from_bits(program_counter)) as u32);
+                .tainted_before(frames::number_as_u32(Word::from_bits(program_counter)));
             let space_words = space.words_mut();
             let range = block_range(space_words, header_index(frame.offset));
             let words = &mut space_words[range][FIELDS..];
@@ -7199,7 +7227,9 @@ impl<'gc> Heap<'gc> {
             suspension.frame.same(frame),
             "internal: a suspended frame's row names that frame"
         );
-        self.suspensions.free.free(row as u32);
+        self.suspensions.free.free(u32::try_from(row).expect(
+            "internal: a suspension row is one per suspended frame object, far fewer than u32::MAX in the object space",
+        ));
         ids::truncate_trailing(&mut self.suspensions.rows, &mut self.suspensions.free);
         let receiver = self.store(self.frame_receiver(frame));
         let current_class = self
@@ -7233,9 +7263,7 @@ impl<'gc> Heap<'gc> {
         let register_count = fields - argument_count;
         let words = argument_count + frame_header::COUNT + register_count;
         let start = self.stack.frames.top();
-        // The reservation holds at most `MAXIMUM_STACK_WORDS`, 2^31 words,
-        // so an offset is exact in 32 bits.
-        let offset = (start + argument_count) as u32;
+        let offset = frames::stack_offset(start + argument_count);
         let flags = FrameFlags::new(
             kind_tag,
             u16::try_from(argument_count)
@@ -7546,9 +7574,8 @@ impl<'gc> Heap<'gc> {
         self.check_activation(activation);
         let header = self.stack.frames.header(activation.offset as usize);
         let receiver = Word::from_bits(header[frame_header::RECEIVER]);
-        let guard = frames::number_of(Word::from_bits(header[frame_header::GUARD]));
-        // A guard is a 22-bit id, so the conversion is exact.
-        (self.load(receiver), DispatchId::from_bits(guard as u32))
+        let guard = frames::number_as_u32(Word::from_bits(header[frame_header::GUARD]));
+        (self.load(receiver), DispatchId::from_bits(guard))
     }
 
     /// The full-width index of the application `activation` was entered at
@@ -7642,11 +7669,10 @@ impl<'gc> Heap<'gc> {
     /// Where `activation`'s code family starts in the heap's cache table.
     pub(crate) fn activation_feedback_base(&self, activation: ActivationReference) -> FeedbackBase {
         self.check_activation(activation);
-        // A feedback base is a `u32`, so the conversion is exact.
-        FeedbackBase::from_raw(frames::number_of(
+        FeedbackBase::from_raw(frames::number_as_u32(
             self.stack
                 .header_word(activation.offset, frame_header::FEEDBACK_BASE),
-        ) as u32)
+        ))
     }
 
     pub fn activation_set_program_counter(
@@ -7698,21 +7724,19 @@ impl<'gc> Heap<'gc> {
     /// code word.
     #[inline(always)]
     fn activation_code_id(&self, activation: ActivationReference) -> CodeId {
-        // A code id is a `u32`, so the conversion is exact.
-        CodeId::from_raw(frames::number_of(
+        CodeId::from_raw(frames::number_as_u32(
             self.stack
                 .header_word(activation.offset, frame_header::CODE),
-        ) as u32)
+        ))
     }
 
     /// The application the frame at `offset` was entered at
     /// (`frame_header::ENTERED_LEVEL`).
     #[inline(always)]
     fn activation_entered_level_of(&self, offset: u32) -> ApplicationIndex {
-        // An application index is a `u32`, so the conversion is exact.
-        ApplicationIndex::from_raw(frames::number_of(
+        ApplicationIndex::from_raw(frames::number_as_u32(
             self.stack.header_word(offset, frame_header::ENTERED_LEVEL),
-        ) as u32)
+        ))
     }
 
     /// The code table's row of the body `activation` runs, lent for one
@@ -7826,10 +7850,10 @@ impl<'gc> Heap<'gc> {
     /// callee returns.
     pub fn activation_program_counter(&self, activation: ActivationReference) -> usize {
         self.check_activation(activation);
-        frames::number_of(
+        frames::number_as_usize(
             self.stack
                 .header_word(activation.offset, frame_header::PROGRAM_COUNTER),
-        ) as usize
+        )
     }
 
     /// The innermost live activation, if any.
@@ -7882,9 +7906,8 @@ impl<'gc> Heap<'gc> {
             )
         };
         match tag {
-            // A selector's index is a `u32`, so the conversion is exact.
             kind_tag::METHOD => {
-                ActivationKind::Method(Symbol::from_index(frames::number_of(operand) as u32))
+                ActivationKind::Method(Symbol::from_index(frames::number_as_u32(operand)))
             }
             kind_tag::CLOSURE => ActivationKind::Closure(object()),
             kind_tag::TOP_LEVEL => ActivationKind::TopLevel,
@@ -8041,9 +8064,8 @@ impl<'gc> Heap<'gc> {
     /// The field of `frame`, whose activation is not on the stack, that
     /// holds register `index`, counted from its first register field.
     fn dead_frame_field(&self, frame: FrameReference<'gc>, index: u16) -> Option<usize> {
-        // A frame's argument count is its code's, inside `u16` like the
-        // count it was read from.
-        let argument_count = self.frame_argument_count(frame) as u16;
+        let argument_count = u16::try_from(self.frame_argument_count(frame))
+            .expect("internal: a frame's argument count is at most its code's, a u16");
         Self::frame_field_of_register(argument_count, index)
     }
 
@@ -8339,12 +8361,11 @@ impl<'gc> Heap<'gc> {
             let start = stack.frame_start(offset);
             let header = offset as usize;
             let end = stack.window_end(offset);
-            let code_index =
-                frames::number_of(stack.header_word(offset, frame_header::CODE)) as usize;
+            let code_index = frames::number_as_usize(stack.header_word(offset, frame_header::CODE));
             // A program counter is an instruction's index, and a body has
             // at most `INSTRUCTION_LIMIT` of them.
             let program_counter =
-                frames::number_of(stack.header_word(offset, frame_header::PROGRAM_COUNTER)) as u32;
+                frames::number_as_u32(stack.header_word(offset, frame_header::PROGRAM_COUNTER));
             let caller = stack.caller(offset);
             let window = FrameWindow {
                 start,

@@ -288,9 +288,9 @@ impl Space {
         header: Header,
         class: u64,
     ) -> Option<(NonZeroU64, &mut [u64])> {
-        let word_count = header.word_count();
-        debug_assert!(word_count < WORD_COUNT_OVERFLOW);
-        let (start, block) = self.reservation.bump(word_count as u8 + 1)?;
+        debug_assert!(header.word_count() < WORD_COUNT_OVERFLOW);
+        // Below `WORD_COUNT_OVERFLOW`, 255, so one more fits the byte.
+        let (start, block) = self.reservation.bump(header.word_count_field() + 1)?;
         #[cfg(test)]
         {
             self.fast_bumps += 1;
