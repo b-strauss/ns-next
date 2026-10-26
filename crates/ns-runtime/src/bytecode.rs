@@ -1429,7 +1429,6 @@ pub(crate) fn jump_target(instruction: &Instruction) -> Option<u32> {
 /// the decoder's list of the instructions a body may end with
 /// (`image::decode`'s `verify_body`), on purpose: a body cannot end with a
 /// load, which the run loop would step past.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn falls_through(instruction: &Instruction) -> bool {
     !matches!(
         instruction,

@@ -21,8 +21,9 @@
 // Instructions, numbered in the order `bytecode::Instruction` declares them,
 // except the four sends and the two initializer invocations. The sends were
 // retired at 7-10 (see `RETIRED_OPCODES`) once their call site widened from
-// a `u16` instruction index to a `u32` family number, reassigned to 21-24, then retired a second time and reassigned at 25-28
-// once the number itself stopped being part of the artifact at all -- a
+// a `u16` instruction index to a `u32` family number, reassigned to 21-24,
+// then retired a second time and reassigned at 25-28 once the number
+// itself stopped being part of the artifact at all -- a
 // property the decoder now derives instead of reading -- and retired a
 // third time, with the two initializer invocations at 44 and 45, when a
 // send came to name its argument slots' base beside each argument's source

@@ -719,6 +719,21 @@ fn assert_live_register(offset: u32, index: u16, bits: u64) {
     );
 }
 
+/// Refuses, in a debug build, a push that hands `code` other than its own
+/// number of arguments, but for the body a body past the register ceiling
+/// compiled to (`CompiledCode::stands_for_too_many_arguments`). Every push
+/// checks it, a host's included, since a frame finds where its registers
+/// above the header begin from its code's argument count once it is
+/// reified, returned or suspended (`frame_argument_count`).
+#[inline(always)]
+fn debug_assert_arity(code: &crate::bytecode::CompiledCode, given: usize) {
+    debug_assert!(
+        given == usize::from(code.argument_count) || code.stands_for_too_many_arguments(given),
+        "internal: an activation is handed {given} arguments, its code takes {}",
+        code.argument_count
+    );
+}
+
 /// Writes a pushed frame's `temporaries` -- its registers above the header
 /// -- as its body needs them: nil into the named ones, below the body's
 /// `local_count` (the copied values, the named temporaries and the
@@ -3379,8 +3394,9 @@ impl<'gc> Heap<'gc> {
             word.is_non_negative_small_integer()
                 .then(|| frames::number_of(word))
         };
-        // Against the committed stack, not the top: a sender's window
-        // passes the top while a shorter callee lies on its slots.
+        // Against the committed stack, not the top: a stale handle may
+        // still point at a popped frame's header above the top, whose
+        // words the committed stack holds, and the check reads them there.
         let register_count = usize::try_from(number(frame_header::REGISTER_COUNT)?).ok()?;
         if register_count > self.stack.frames.committed() - start - frame_header::COUNT {
             return None;
@@ -6527,6 +6543,7 @@ impl<'gc> Heap<'gc> {
             arguments.len() <= usize::from(u16::MAX),
             "internal: no activation is handed more arguments than the register ceiling, u16::MAX"
         );
+        debug_assert_arity(&header.code, arguments.len());
         let argument_count = arguments.len() as u16;
         let words = usize::from(argument_count) + frame_header::COUNT + temporary_count;
         // `store`'s check, made apart from the copy so that a release build,
@@ -6688,6 +6705,7 @@ impl<'gc> Heap<'gc> {
         argument_count: u16,
         temporary_count: usize,
     ) -> Result<ActivationReference, PushRefused> {
+        debug_assert_arity(&header.code, usize::from(argument_count));
         #[cfg(debug_assertions)]
         {
             let sender = register_base.activation;
@@ -11054,13 +11072,19 @@ mod tests {
     /// read back except where a test sets it on purpose. A top-level frame
     /// names no code, so a frame reified from it takes no arguments.
     fn header<'gc>() -> ActivationHeader<'gc> {
+        header_taking(0)
+    }
+
+    /// `header`'s, for a push handed `argument_count` arguments: every
+    /// push hands a code its own number of them.
+    fn header_taking<'gc>(argument_count: u16) -> ActivationHeader<'gc> {
         ActivationHeader {
             receiver: Value::nil(),
             current_class: None,
             kind: ActivationKind::TopLevel,
             method: None,
             feedback_base: FeedbackBase::NOT_ASSIGNED,
-            code: trivial_code(),
+            code: trivial_code_taking(argument_count),
             then: Continuation::Deliver,
             counted: true,
         }
@@ -11071,10 +11095,15 @@ mod tests {
     /// temporary a test asks for with nil, and no collection takes one for
     /// scratch; a test of the scratch builds its own body.
     fn trivial_code() -> std::rc::Rc<crate::bytecode::CompiledCode> {
+        trivial_code_taking(0)
+    }
+
+    /// `trivial_code`, taking `argument_count` arguments.
+    fn trivial_code_taking(argument_count: u16) -> std::rc::Rc<crate::bytecode::CompiledCode> {
         let mut code = crate::bytecode::CompiledCode::new(
             crate::bytecode::CodeKind::Method,
             vec![crate::bytecode::Instruction::Return { register: 0 }],
-            0,
+            argument_count,
             u16::MAX,
             0,
             Vec::new(),
@@ -11089,7 +11118,7 @@ mod tests {
         let mut heap = Heap::new();
         let activation = heap
             .push_activation(
-                header(),
+                header_taking(2),
                 Arguments::Values(&[Value::small_integer(1), Value::small_integer(2)].as_slice()),
                 2,
             )
@@ -11121,14 +11150,14 @@ mod tests {
         let mut heap = Heap::new();
         let outer = heap
             .push_activation(
-                header(),
+                header_taking(1),
                 Arguments::Values(&[Value::small_integer(1)].as_slice()),
                 1,
             )
             .expect("the stack holds the frame");
         let inner = heap
             .push_activation(
-                header(),
+                header_taking(1),
                 Arguments::Values(&[Value::small_integer(2)].as_slice()),
                 1,
             )
@@ -11177,7 +11206,7 @@ mod tests {
         for count in 1..=3_u16 {
             let from_slots = heap
                 .push_activation(
-                    header(),
+                    header_taking(count),
                     Arguments::Slots(ArgumentSlots::new(register_base, first + 2, count)),
                     1,
                 )
@@ -11200,7 +11229,7 @@ mod tests {
         for count in 1..=3_u16 {
             let from_values = heap
                 .push_activation(
-                    header(),
+                    header_taking(count),
                     Arguments::Values(&&values[..usize::from(count)]),
                     1,
                 )
@@ -11256,7 +11285,7 @@ mod tests {
         assert_eq!(heap.stack.frames.top(), sender_end);
 
         let callee = heap
-            .push_overlapped_activation(&mut header(), base, argument_base, 2, 1)
+            .push_overlapped_activation(&mut header_taking(2), base, argument_base, 2, 1)
             .expect("the stack holds the frame");
         let callee_base = heap.activation_register_base(callee);
         assert_eq!(
@@ -11286,7 +11315,7 @@ mod tests {
         let top = heap.stack.frames.top();
         let from_values = heap
             .push_activation(
-                header(),
+                header_taking(1),
                 Arguments::Values(&[Value::small_integer(5)].as_slice()),
                 0,
             )
@@ -11421,7 +11450,7 @@ mod tests {
         let unreachable = heap.allocate_instance(class, 0);
         heap.set_register(base, dead, Value::object(unreachable));
         let callee = heap
-            .push_overlapped_activation(&mut header(), base, argument_base, 1, 0)
+            .push_overlapped_activation(&mut header_taking(1), base, argument_base, 1, 0)
             .expect("the stack holds the frame");
         let dead_word = base.index as usize + usize::from(dead);
         assert!(heap.stack.window_end(callee.offset) <= dead_word);
@@ -11694,7 +11723,7 @@ mod tests {
         for _ in 0..1000 {
             let activation = heap
                 .push_activation(
-                    header(),
+                    header_taking(1),
                     Arguments::Values(&[Value::small_integer(1)].as_slice()),
                     3,
                 )
@@ -11824,7 +11853,7 @@ mod tests {
             objects.push(object);
             activations.push(
                 heap.push_activation(
-                    header(),
+                    header_taking(1),
                     Arguments::Values(&[Value::object(object)].as_slice()),
                     0,
                 )
@@ -12275,7 +12304,7 @@ mod tests {
 
         let activation = heap
             .push_activation(
-                header(),
+                header_taking(1),
                 Arguments::Values(&[Value::small_integer(1)].as_slice()),
                 1,
             )
@@ -12329,7 +12358,7 @@ mod tests {
         let mut heap = Heap::new();
         let activation = heap
             .push_activation(
-                header(),
+                header_taking(1),
                 Arguments::Values(&[Value::small_integer(7)].as_slice()),
                 2,
             )
@@ -12372,7 +12401,7 @@ mod tests {
         let mut heap = Heap::new();
         let caller = heap
             .push_activation(
-                header(),
+                header_taking(1),
                 Arguments::Values(&[Value::small_integer(1)].as_slice()),
                 1,
             )
@@ -12923,7 +12952,7 @@ mod tests {
         let unreachable = heap.allocate_string(class, crate::CodePoints::from("dead"));
         let activation = heap
             .push_activation(
-                header(),
+                header_taking(1),
                 Arguments::Values(&[Value::object(reachable)].as_slice()),
                 1,
             )
@@ -12946,7 +12975,7 @@ mod tests {
         assert!(heap.instance_set_field(holder, 0, Value::object(target)));
         let activation = heap
             .push_activation(
-                header(),
+                header_taking(1),
                 Arguments::Values(&[Value::object(holder)].as_slice()),
                 1,
             )
@@ -13007,7 +13036,7 @@ mod tests {
         let activation_object = heap.frame_object(frame);
         let activation = heap
             .push_activation(
-                header(),
+                header_taking(1),
                 Arguments::Values(&[Value::object(activation_object)].as_slice()),
                 1,
             )
@@ -13195,7 +13224,7 @@ mod tests {
         heap.instance_set_field(first, 0, Value::object(second));
         let activation = heap
             .push_activation(
-                header(),
+                header_taking(1),
                 Arguments::Values(&[Value::object(first)].as_slice()),
                 1,
             )
@@ -13218,7 +13247,7 @@ mod tests {
         heap.allocate_string(class, crate::CodePoints::from("also dead"));
         let activation = heap
             .push_activation(
-                header(),
+                header_taking(1),
                 Arguments::Values(&[Value::object(reachable)].as_slice()),
                 1,
             )
@@ -13244,7 +13273,7 @@ mod tests {
         let reachable = heap.allocate_string(class, crate::CodePoints::from("live"));
         let activation = heap
             .push_activation(
-                header(),
+                header_taking(1),
                 Arguments::Values(&[Value::object(reachable)].as_slice()),
                 1,
             )
@@ -13704,7 +13733,7 @@ mod tests {
         let code = trivial_code();
         let activation = heap
             .push_activation(
-                header(),
+                header_taking(2),
                 Arguments::Values(&[Value::small_integer(7), Value::object(class)].as_slice()),
                 2,
             )

@@ -1253,7 +1253,7 @@ mod tests {
             let code = Rc::new(crate::bytecode::CompiledCode::new(
                 crate::bytecode::CodeKind::Method,
                 vec![crate::bytecode::Instruction::Return { register: 0 }],
-                0,
+                1,
                 1,
                 0,
                 Vec::new(),
