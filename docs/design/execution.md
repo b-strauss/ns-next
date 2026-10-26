@@ -6688,10 +6688,32 @@ faster (`push_sent` and `push_step` 13,784 samples against stage 1's
   the first stage added 13 to the offset; `resume_caller` reads it once
   more to write the value. The loop's
   switch handler took 2,189 samples against 1,619, about 0.35% of the
-  run. Handing the base over in the `Handoff` instead (`resume_caller`
-  reading it once) measured about 1% slower on one build a side, since
-  every switch site then computed it and the handoff passes through
-  memory anyway; it was not kept.
+  run. Three ways of not reading it were built and measured against the
+  fix, three builds a side, DeltaBlueTon80, `bench_send.ns` and Richards,
+  six rounds (and DeltaBlueTon80 six more for the third), and none was
+  kept:
+  - **The base in the `Handoff`**, `resume_caller` reading the flags
+    once: DeltaBlueTon80 +0.8%, builds separated; every switch site
+    computes the base then, and the handoff passes through memory.
+  - **The base in `Transfer::Switched`**, answered in a register:
+    DeltaBlueTon80 +0.6% and `bench_send.ns` +1.1%, both separated, with
+    every switch site computing it (`vm::run` 8,269 to 8,418
+    instructions). Carried only from a return, the loop reading the flags
+    after a push as before: `bench_send.ns` +1.6% and Richards +0.9%,
+    separated, since a `Transfer` with a payload is no longer one byte on
+    every send's path.
+  - **The base from the code's argument count**, which the loop holds,
+    instead of the frame's: every push takes as many arguments as its
+    body -- an argument list longer than `u16::MAX`, which a saturated
+    body stands for, is refused before it pushes -- and a frame resumed
+    from its object or decoded from an image takes its body's
+    (`Heap::frame_argument_count`, which the decoder's frame-shape check
+    holds), and every golden and suite test but the heap's own fixtures,
+    which push code of another arity, ran with that asserted. It
+    measured level: DeltaBlueTon80 -0.0% over twelve rounds, builds
+    overlapping, `bench_send.ns` +0.5%. The read is a load either way,
+    the code's field behind the handoff's code as the flags behind the
+    handoff's activation.
 
 After the first two, three builds a side, two sittings pooled (n = 12),
 in ms:
