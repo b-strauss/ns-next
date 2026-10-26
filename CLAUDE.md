@@ -17,7 +17,8 @@ Rust 1.98.0, edition 2021, six crates:
 - `crates/ns-runtime` — resolver, object model, dispatch, the compiler (`compiler/`,
   checked against the reference lowering in `compiler/reference.rs`), the
   instructions (`bytecode.rs`, stored and run in the eight-byte encoding of
-  `bytecode/compact.rs`), the VM (`vm.rs`) and the send machinery it calls
+  `bytecode/compact.rs`; what a callee leaves in a frame's registers is
+  `bytecode/leftovers.rs`'s analysis), the VM (`vm.rs`) and the send machinery it calls
   (`interpreter/`: inline caches in `inline_cache.rs` in front of the lookups
   in `resolve.rs`, the one unwinder in `unwind.rs`, the VM mirror in
   `mirror.rs` and its leaves in `builtins/`, a MirrorBuilder's edit
