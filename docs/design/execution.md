@@ -6659,8 +6659,8 @@ DeltaBlueTon80 by 1.6% and Mandelbrot by 0.5% (diagnosed below).
 overlapping the windows costs the interpreter nothing on the geometric
 mean; what it removes -- the copy of every argument into the callee's
 window -- is what compiled frames would otherwise pay too, and the
-header between the arguments and the temporaries is the frame layout road
-step 7c's protocol between interpreted and compiled frames starts from.
+header between the arguments and the temporaries is the layout compiled
+frames keep too ("Planned: the deoptimization contract").
 
 What the measurement did not cover is what "What contiguous arguments
 moved" lists; stage 1 + forget is a tree built for the comparison, not a
