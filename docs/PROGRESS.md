@@ -54,7 +54,7 @@ first.
 | Road step 7a — frames as words in one reservation: the code an id, the kind a copyable view, the continuation a side-table row, every activation a frame of tagged words with a fixed header in one `ns-memory` reservation, the reservation a net beneath the depth limit; the measuring protocol varying the block layout inside `vm::run` | Complete | 2026-10-24 | [frames-as-words](superpowers/plans/2026-10-24-1147-frames-as-words.md) |
 | Road step 7a′ — overlapping register windows: a send's arguments in contiguous slots read in place, its own callee laid on its slots, the header 13 words in every build and out of the register numbering, the leftover analysis that lets neither a push nor a pop write a scratch register, stated construct limits, the codegen gate | Complete | 2026-10-26 | [register-windows](superpowers/plans/2026-10-24-2054-register-windows.md), [leftover-analysis](superpowers/plans/2026-10-25-1248-leftover-analysis.md) (superseded from its Task 1 on), [leftover-bitsets](superpowers/plans/2026-10-25-1635-leftover-bitsets.md) |
 | Four clippy lints: every lint exception states its reason, every unsafe block its safety, and every narrowing cast outside tests the bound that makes it exact | Complete | 2026-10-26 | [clippy-lints](superpowers/plans/2026-10-26-1227-clippy-lints.md) |
-| Road step 7c — the deoptimization contract and the protocol between interpreted and compiled frames | Not started | — | — |
+| Road step 7c — the deoptimization contract and the protocol between interpreted and compiled frames, written into `execution.md` for road steps 8 and 9 to build to | Complete | 2026-10-27 | — |
 | Between road steps 7 and 8 — real Newspeak bodies for `whileTrue:`, `whileFalse:` and `do:` | Not started | — | — |
 | Road step 8 (M5) — a baseline JIT | Not started | — | — |
 | Road step 9 (M6) — an optimizing JIT | Not started | — | — |
@@ -6256,3 +6256,29 @@ stated message) and the numerics were all bounded.
 
 What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): road step
 7c, next.
+
+## The deoptimization contract, road step 7c (2026-10-27)
+
+Decided with the user on 2026-10-27, the last part of road step 7, and
+written, not built: [execution.md](design/execution.md), "Planned: the
+deoptimization contract", which road steps 8 and 9 build to. Every
+observer of an activation runs only after machine code's exit to the run
+loop, and the exit materializes every compiled frame as interpreted
+ones, so the hot path writes nothing only an observer needs: compiled
+frames lie at the interpreter's positions on the activation stack and a
+call writes no header word, the return addresses lie on a machine stack
+of their own and are mapped to program counters at the exit, a frame
+pushed by compiled code returns by a bare `ret`, a poll spills only when
+it is taken, and the depth count stays exact with an inlined scope's
+depth folded in as a constant. A baseline frame becomes interpreted, and
+an interpreted one baseline at a backward jump, in place; an optimized
+frame is deoptimized lazily, into the suspended frames of road step 7b,
+resuming either by delivering a send's value or by running an
+instruction again; optimized code has metadata only at interrupt points
+and may declare a raw area per code; observed kernel methods are never
+inlined, and a walk over activations reifies only what it answers.
+Grounded in Cog, Strongtalk and Primordial Soup, with HotSpot and V8 as
+background. Only Markdown changed.
+
+What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md): real Newspeak
+bodies for the loops and `do:`, next.

@@ -15,15 +15,16 @@ when they were written.
 
 ## Next
 
-**Road step 7c, the deoptimization contract and the protocol between
-interpreted and compiled frames** ("The road to a high-performance VM"
-below; [execution.md](design/execution.md), "Planned: JIT tiers"), the
-last part of road step 7, an execution model for compiled code, written
-into [execution.md](design/execution.md) for the baseline JIT of road
-step 8 to build on: how a compiled frame is turned back into interpreted
-ones, at which points, and what the two kinds of frame share. Not designed
-yet; it starts from the frame layout road steps 7a and 7a′ built and the
-landing point 7b built.
+**Real Newspeak bodies for `whileTrue:`, `whileFalse:` and `do:`**,
+between road steps 7 and 8 ("The road to a high-performance VM" below;
+[core-library.md](design/core-library.md), "Planned: real bodies for
+control flow and `do:`, before the baseline JIT"): `Closure`'s loops and
+the collections' `do:` become Newspeak loops instead of forwarders to
+trampoline-step leaves, so that the baseline JIT of road step 8 sees
+through them, keeping everything the leaves settle today. Not planned
+yet. Road step 7 is complete: 7c wrote the contract the JIT tiers build
+to ([execution.md](design/execution.md), "Planned: the deoptimization
+contract").
 
 7a′, 7b and 7a are built. The register windows overlap, in Cog's layout
 -- the arguments, then the header, then the other registers, the
@@ -305,10 +306,17 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
   than `master` on twelve of twenty-four programs ("What contiguous
   arguments moved"), the second level with the first on the geometric
   mean ("What overlapping windows moved"), with neither a push nor a pop
-  writing a scratch register ("What the leftover analysis moved"). What
-  remains of step 7: **7c**, next, the deoptimization contract and the
-  protocol between interpreted and compiled frames, written into
-  [execution.md](design/execution.md).
+  writing a scratch register ("What the leftover analysis moved").
+  **7c is written** (2026-10-27): the deoptimization contract and the
+  protocol between interpreted and compiled frames
+  ([execution.md](design/execution.md), "Planned: the deoptimization
+  contract") -- compiled frames at the interpreter's positions on the
+  activation stack, no header word written on the hot path, return
+  addresses on a machine stack of their own, every compiled frame
+  materialized as interpreted ones at machine code's exit to the run
+  loop, before any observer runs; deoptimization and on-stack
+  replacement of baseline frames in place, of optimized frames lazily
+  through the suspended frames of 7b; metadata only at interrupt points.
 - **Between steps 7 and 8, real Newspeak bodies for `whileTrue:`, `whileFalse:` and
   `do:`.** Making them Newspeak loops keeps what their leaves settle --
   `do:` reads each element as it goes and sends `value:` to a non-block,
@@ -316,9 +324,22 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
   changes nothing a program can see.
   [core-library.md](design/core-library.md), "Planned: real bodies for
   control flow and `do:`, before the baseline JIT".
-- **Step 8, a baseline JIT**, Cog's class, for x64 and arm64.
+- **Step 8, a baseline JIT**, Cog's class, for x64 and arm64, to the
+  contract of 7c. Left to it, and measured: whether the depth count
+  lives in a machine register while machine code runs, written back at
+  the exit, or stays in memory ([execution.md](design/execution.md),
+  "Planned: the deoptimization contract", "Safepoints and the depth
+  limit").
 - **Step 9, an optimizing JIT** with type feedback, inlining and
   deoptimization, Strongtalk's and HotSpot's class.
+  - **The home of a closure created in an inlined scope** (noted with the
+    user on 2026-10-27): a frame object is married only to a frame that
+    stands for one activation, so a block the optimizer does not inline,
+    created in a scope it did inline, has no frame to take as its home
+    without deoptimizing. Strongtalk gives such blocks a compiled context
+    that a deoptimization forwards (`prior-art/strongtalk/vm/runtime/vframe.cpp:595-695`).
+    [execution.md](design/execution.md), "Planned: the deoptimization
+    contract", "Open".
   - **Scalar replacement of value objects** (noted with the user on
     2026-10-22): a value whose allocation the JIT sees can live in
     registers and never be allocated, as escape analysis does for any
@@ -350,6 +371,20 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
 Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 
 ## Planned: performance and representation
+
+- **The handler search and the search for unwind markers walk the
+  frames themselves** (noted with the user on 2026-10-27). The kernel's
+  handler search walks the senders through `activationSender:`, which
+  reifies every activation it passes: a frame object per frame per
+  signal in the interpreter today, and, under the deoptimization
+  contract, the deoptimization of every optimized frame it passes. Two
+  leaves that walk the stack and reify only the activation they answer
+  would remove both, as Cog's `primitiveFindHandlerContext` and
+  `primitiveFindNextUnwindContext` do
+  (`prior-art/opensmalltalk-vm/src/spur64.sista/cointerp.c:84085-84160`).
+  Needed before road step 9; worth measuring on the interpreter before.
+  [execution.md](design/execution.md), "Planned: the deoptimization
+  contract", "Observers".
 
 - **`vm::run` reloads the `Mutator` pointer from its frame** (2026-10-25).
   Since the first stage of road step 7a′ the pointer arrives in a

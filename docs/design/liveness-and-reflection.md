@@ -1208,7 +1208,9 @@ layout, generations and inline allocation that compiled code builds on.
 - **Tier 2 — optimizing JIT.** Speculative inlining driven by IC feedback, escape
   analysis, unboxing, guarded by deopt.
 - **Deopt metadata** — safepoint ↔ machine-code position ↔ abstract interpreter
-  state.
+  state, under the contract of [execution.md](execution.md), "Planned: the
+  deoptimization contract": every observer runs after machine code's exit to
+  the run loop, which materializes every compiled frame as interpreted ones.
 - **A snapshot discards all JIT state**; warm-up re-happens after load, which is
   acceptable because snapshotting is rare. No native code ever enters an image.
 

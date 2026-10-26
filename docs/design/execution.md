@@ -14,7 +14,9 @@
 > slower than the stack of entries before it (road step 7a, "What frames
 > as words moved"), and a send's own callee lies on its argument slots,
 > which are the callee's first registers (road step 7a′, "Overlapping
-> register windows").
+> register windows"). The contract compiled frames will keep with
+> interpreted ones is written, not built (road step 7c, "Planned: the
+> deoptimization contract").
 > **Code:** `crates/ns-runtime/src/heap.rs` (the activation stack, the frame
 > objects, the `ActivationReference` and `FrameReference` handles, every read and write of an
 > activation, the copied values a closure carries and whether a frame keeps its
@@ -6657,8 +6659,8 @@ DeltaBlueTon80 by 1.6% and Mandelbrot by 0.5% (diagnosed below).
 overlapping the windows costs the interpreter nothing on the geometric
 mean; what it removes -- the copy of every argument into the callee's
 window -- is what compiled frames would otherwise pay too, and the
-header between the arguments and the temporaries is the frame layout road
-step 7c's protocol between interpreted and compiled frames starts from.
+header between the arguments and the temporaries is the layout compiled
+frames keep too ("Planned: the deoptimization contract").
 
 What the measurement did not cover is what "What contiguous arguments
 moved" lists; stage 1 + forget is a tree built for the comparison, not a
@@ -8862,9 +8864,9 @@ Each step gets its own design when it comes up.
   level with the first on the geometric mean ("What overlapping windows
   moved"), neither a push nor a pop writing a scratch register since the
   leftover analysis decides what the collector nils ("What the leftover
-  analysis moved"). **7c**, next, writes the deoptimization contract and
-  the protocol between interpreted and compiled frames into this
-  document.
+  analysis moved"). **7c** is written: the deoptimization contract and
+  the protocol between interpreted and compiled frames, "Planned: the
+  deoptimization contract" below, which steps 8 and 9 build to.
 - **Step 8, a baseline JIT**, Cog's class: every method compiled without
   speculation, the inline caches and the allocation fast path emitted into
   the code, values kept in registers, for x64 and arm64, since images are
@@ -8907,6 +8909,285 @@ registers without a generated tier (the same question in OPEN-WORK.md).
 Steps 1 to 6 of the road give a very good interpreter on a modern object
 representation; road step 8 reaches Cog's class, and road step 9 Strongtalk's and
 HotSpot's.
+
+## Planned: the deoptimization contract
+
+Would change: nothing yet; this is the contract road steps 8 and 9 build
+to (road step 7c, decided with the user on 2026-10-27). It says where a
+compiled frame lives, how control passes between interpreted and
+compiled code, when a compiled frame becomes interpreted ones and back,
+and what each observer of an activation may assume. The interpreter
+stays the source of truth ([liveness-and-reflection.md](liveness-and-reflection.md),
+"The unifying principle"): every compiled frame can be turned into the
+interpreted activations it stands for, and nothing a program, the
+collector, the debugger or an image observes depends on which tier ran.
+
+**The principle.** The hot path of compiled code writes nothing that only
+an observer needs, and everything an observer needs is reconstructed at
+the one place observation can begin: the exit of machine code to the run
+loop. Every observer -- the collector, a suspension, the unwinder, the
+activation leaves, a deoptimization, an interpreted callee, later the
+debugger and an activation mirror -- runs only after such an exit. That
+is HotSpot's arrangement, debug information at safepoints rather than in
+the frame, carried over to a stack of tagged words with no stack map,
+which is Cog's and Strongtalk's: neither has stack maps, because every
+value live at a point the runtime can see is a tagged word in the frame.
+Cog flushes its register-cached values before every send, backward
+branch, conditional jump and trap (`ssFlushTo:`,
+`cogitX64SysV.c:40797-40812`, `:38825-38840`, `:34200-34210`,
+`:36290-36298`) and traces every word of both frame kinds
+(`cointerp.c:20768-20860`); Strongtalk spills every live value before a
+send (`compiler/codeGenerator.cpp:1396-1412`) and traces every word of a
+compiled frame (`runtime/frame.cpp:342-349`). Cog's citations in this
+section are to the generated C under
+`prior-art/opensmalltalk-vm/src/spur64.sista/`, Strongtalk's to
+`prior-art/strongtalk/vm/`.
+
+### Where a compiled frame lives
+
+- **On the activation stack, at the interpreter's positions.** A compiled
+  frame occupies the layout "Representation" above describes -- its
+  arguments, the thirteen header places, then its registers -- and
+  baseline code numbers its registers as the interpreter does, so that a
+  baseline frame and an interpreted one differ only in which code
+  resumes them. The header word that tells them apart is a bit in the
+  flags word, since the code word is a `CodeId` and not an address Cog
+  could compare against its code zone (`cointerp.c:19944-19947`).
+- **The hot path writes no header word.** A compiled call places its
+  callee on its argument slots as the interpreter's send does, and
+  writes nothing else of the callee's frame; a value that lives across a
+  send the code did not inline -- the receiver among them, in its header
+  place -- is stored into its slot before the send, as HotSpot and V8
+  spill every live value across a call, since their calling conventions
+  keep no register across one. The header is written when the frame is
+  materialized ("The exit materializes" below). A call so costs what
+  HotSpot's costs, and less than Cog's machine-code frame, which writes
+  five words (`cointerp.c:216`).
+- **The return addresses are on a machine stack of their own**, a
+  reservation of `ns-memory`'s, on which compiled code calls and returns
+  with the processor's `call` and `ret`, so a return is predicted by the
+  return stack buffer. It is a stack of its own because the activation
+  stack grows upwards and a native call needs one that grows downwards;
+  it holds only the return addresses of the compiled frames above the
+  run loop's latest entry into machine code, and the frame's own base
+  register addresses the activation stack.
+- **Machine code holds no handle**, as compiled code holds none today
+  ([compiler.md](compiler.md), "Readers of compiled code take the
+  mixin"): a literal object is loaded through the heap's tables, so the
+  collector never patches code, where Cog's has to (`cogitX64SysV.c:9453-9792`).
+- **Optimized code may declare a raw area** in its frame, a range of
+  words fixed per code -- not per program counter -- that the walk of the
+  stack, the leftover pre-pass and the debug poison all pass over. An
+  unboxed float or integer then lives across a call without being boxed;
+  with only tagged spills, a float outside the `SmallFloat64` range kept
+  across a call in a hot loop would allocate a box on every iteration.
+  HotSpot affords raw spills through its oop maps; one range per code is
+  the whole map ns-next needs. Baseline code declares none.
+
+### The exit materializes
+
+Machine code leaves for the run loop -- it returns to the loop rather than
+calling into it, so nothing re-enters the loop from Rust ("No re-entry
+from Rust" above) -- when it takes a safepoint whose poll found a
+request, sends to a body that has no machine code, meets a continuation
+other than `Deliver`, unwinds what it cannot cut itself ("Non-local
+return and unwinding" below), raises an error, or calls a leaf that
+reads or writes another activation. Before it leaves, the exit walks the
+machine stack's return addresses down to the run loop's entry and writes
+each compiled frame's whole header: its code, its program counter, its
+caller word, its flags with the compiled bit, its continuation (`Deliver`),
+its feedback base, its guard and entered level (none, so the first
+own-slot access takes the cold check, as a resume does today: "Suspending
+and resuming" above), and its reified word, nil unless the frame reified
+itself, whose reification wrote it then ("Returns" below). Everything it writes is derived: a return
+address names a call site, the call site its code and program counter,
+and a callee's frame lies at a fixed offset of its caller's, the call
+site's, so the caller word follows. Each compiled frame's registers hold
+by then every value an observer can need, spilled at its send. The exit
+then drops the machine stack.
+
+From the exit on, **every frame on the activation stack reads as an
+interpreted frame**: a baseline frame exactly, word for word, an
+optimized frame through its metadata ("Optimized frames" below). The
+collector walks it as today, `Heap::trace_stack` skipping only a raw
+area; a suspension, the unwinder and the activation leaves read it as
+today. So the stored program counter is written by no instruction of
+compiled code -- Strongtalk maps a return address to its scope and
+bytecode index the same way (`code/nmethod.cpp:508-531`,
+`runtime/vframe.cpp:52-61`), Cog lazily
+(`mustMapMachineCodePC:context:`, `cointerp.c:21633`) -- and "Where
+`program_counter` is stored" above stays true of every frame an observer
+sees.
+
+### Returns
+
+- **A frame that lived through an exit returns only through the run
+  loop.** When the loop resumes a compiled frame, it enters the frame's
+  code at the machine address its program counter maps to, through a
+  table per code; that frame is the bottom of a new stretch of machine
+  code, and its return goes to the loop again. Each frame pays one slow
+  return per exit it lived through -- after a scavenge, the stack's depth
+  times the loop's round trip, which is small beside the scavenge itself.
+- **A frame pushed by compiled code since the latest exit returns by a
+  bare `ret`.** It was pushed by a send, so its continuation is
+  `Deliver`; it counts against the depth limit; and only its own code can
+  have reified it, since every other reifier -- a handler search, a
+  `currentActivation` leaf, the depth reserve, a suspension -- runs after
+  an exit. Whether a return must divorce a frame object is therefore
+  known from the code: only code with an instruction that reifies its own
+  frame tests it, and every other return tests nothing. The continuation
+  word and the reified word are read only on the loop's path, as
+  `vm::finish` reads them today.
+- **Compiled code creates no fallback closure.** An inlined conditional
+  whose receiver is not a Boolean hands its frame to the interpreter at
+  that instruction, to run it again there, as Cog converts its frame at
+  `mustBeBoolean` (`cointerp.c:16346-16366`).
+
+### Safepoints and the depth limit
+
+- **A poll writes nothing back.** Only the cold path of a poll that found
+  a request spills the registers its code caches and takes the exit;
+  receiver and arguments may travel into a callee in machine registers,
+  as Cog passes up to two (`numRegArgs`, `cogitX64SysV.c:2761`), the
+  callee storing them only where it needs them.
+- **The entry's poll is the depth check.** A safepoint request lowers the
+  limit a compiled push compares the depth against, Cog's `stackLimit`
+  arrangement ([memory.md](memory.md), "Where a collection can happen"
+  already keeps it as the fallback), so a compiled call pays one
+  compare for both, besides the comparison of its frame's end against
+  the activation stack's committed end.
+- **The count stays exact.** The goldens pin where a recursion overflows,
+  so the running total of counted activations agrees with the
+  interpreter's at every check. Compiled code may keep it in a machine
+  register and writes it back at the exit; whether it does is road step
+  8's measurement. An inlined scope is not counted at run time: at a
+  call site d scopes deep the compiler adds d to the push's comparison
+  and to its increment, a constant, so the count includes every
+  activation a deoptimization could rebuild there.
+
+### Between the tiers
+
+- **A baseline frame becomes interpreted in place**: clearing its
+  compiled bit, once materialized, is the whole conversion, since its
+  words are the interpreter's.
+- **An interpreted frame becomes a baseline one in place**, on-stack
+  replacement at a backward jump whose counter trips: the frame's
+  compiled bit is set and the loop enters the code at that jump's
+  machine address, a back edge being a point where baseline code holds
+  every value in its slot. Cog switches there and only there
+  (`attemptToSwitchToMachineCode:`, `cointerp.c:14623-14735`, `:8379-8393`).
+  Without it a hot loop in a method entered once -- a benchmark's main
+  loop -- would never run compiled.
+- **An optimized frame is deoptimized lazily**, when it would become the
+  top of the stack: one below the top whose code was invalidated is only
+  marked, and converted when control returns into it, as HotSpot defers
+  it; the top one -- the frame whose leaf invalidated its code, or whose
+  guard failed -- is converted at once. The conversion writes the k
+  activations the frame stands for as suspended frames ("Suspending and
+  resuming" above) and resumes the innermost, the others coming back as
+  returns reach them. That is Strongtalk's eager packing into an array
+  and lazy unpacking on return (`DeltaProcess::deoptimize_stretch`,
+  `runtime/process.cpp:886-915`; `unpack_frame_array`, `:784-874`),
+  with the suspended frame as the packed form, a form the suspend stress
+  mode already runs every golden through. A frame below the top that
+  must be converted at once -- only when the debugger, a stack trace or
+  a mirror asks for one of its inlined activations as an object -- is
+  converted by suspending everything from it up and resuming the top,
+  the stress mode's own path, since the callee above lies on its slots.
+- **A conversion resumes in one of two ways**: the value of the send at
+  the stored program counter is delivered to that send's destination, as
+  `vm::resume_caller` delivers a callee's value today -- every inlined
+  caller of an optimized frame, and a frame returned into, resumes so --
+  or the instruction at the stored program counter runs again, as
+  `vm::force_and_reexecute` runs one today: after a failed guard and at
+  a non-Boolean conditional. Strongtalk has the same two, a deoptimized
+  return from a send and a redone bytecode after an uncommon trap
+  (`runtime/process.cpp:716-718`, `:759-777`). Nothing resumes inside
+  an instruction, and since the VM keeps every value in a register, no
+  expression stack has to be mapped (`runtime/vframe.cpp:388-411` is
+  what Strongtalk needs for one).
+
+### Optimized frames
+
+- **Metadata only at interrupt points**: every send the code did not
+  inline, every poll, every guard and every instruction that can raise --
+  Strongtalk records its scope descriptors at the same kind of points
+  (`CodeGenerator::updateDebuggingInfo`, `compiler/codeGenerator.cpp:782-787`),
+  Cog its pc map at every call's return address. At each, a chain of
+  scope descriptions, innermost first, each giving its code id, its
+  program counter, which of the two ways it resumes, its receiver,
+  current class and operand, and for every register of its body where
+  its value is: a frame word, a constant, an object to materialize -- an
+  eliminated closure, indirection vector or box -- or dead, which
+  becomes nil, the same deadness as the leftover analysis's
+  ([compiler.md](compiler.md), "What a callee leaves"). Strongtalk's
+  `NameDesc` kinds are the model (`code/nameDesc.hpp`); a value it
+  cannot recover becomes nil too (`runtime/vframe.cpp:525-529`).
+  Baseline code needs none of this: its registers are the frame's words.
+- **Invalidation follows the dependency keys** of
+  [liveness-and-reflection.md](liveness-and-reflection.md), "Caches and
+  their dependency keys": optimized code records the applications and
+  mixin ids its speculation rests on, and an install or a reclaim that
+  changes one marks every code that depends on it and requests a
+  safepoint, so no marked code runs past the next one; Strongtalk walks
+  every stack and deoptimizes the frames of marked code in the same way
+  (`runtime/process.cpp:917-926`). The bulk forward deoptimizes all
+  optimized code, as Strongtalk's `become:` does (`prims/oop_prims.cpp:68`).
+  Baseline code speculates only in its inline caches: invalidating them
+  resets its call sites and touches no frame, as Cog's `unlinkAllSends`
+  touches none, and code of a superseded mixin version keeps running the
+  frames that run it, as interpreted code does
+  ([liveness-and-reflection.md](liveness-and-reflection.md), "An edit
+  replaces the mixin under its id").
+
+### Observers
+
+- **A walk over activations marries only what it answers.** The kernel's
+  handler search today reifies every sender it passes
+  (`activationSender:`), which would deoptimize every optimized frame it
+  passes and already allocates a frame object per frame per signal. The
+  handler search and the search for unwind markers become leaves that
+  walk the frames themselves and reify only the activation they answer,
+  as Cog's handler search does (`primitiveFindHandlerContext`, primitive
+  197, `cointerp.c:84085-84112`, beside `primitiveFindNextUnwindContext`), so an
+  exception through optimized code converts nothing it does not stop
+  at.
+- **What is observed is never inlined.** `on:do:`, `ensure:`,
+  `ifCurtailed:` and every kernel method whose activation a leaf reads or
+  marks (`signal`, the handler's, the unwind marker's) stay frames of
+  their own in optimized code, so every activation the exception
+  machinery stops at is a whole frame.
+- **Any other request for an inlined activation as an object deoptimizes
+  its frame** -- the debugger, a stack trace, an activation mirror --
+  and every write to an activation, a restart and a forced return
+  deoptimizes it first. Reading one through its metadata, as
+  Strongtalk's `vframe`s read (`prims/vframe_prims.cpp:67-214`), stays
+  open to the debugger.
+
+### Non-local return and unwinding
+
+- **Machine code cuts a non-local return itself** when its target's frame
+  lies in the current stretch of machine code and no activation with an
+  unwind marker lies between: it pops to the target and returns there,
+  as Primordial Soup cuts its stack when the home is on it and no
+  unwind-protect lies between (`prior-art/primordialsoup/vm/interpreter.cc:908-1001`).
+  Otherwise it takes the exit, and the one unwinder carries the unwind
+  on as today ("Unwinding" above) -- so a `^` out of a `do:` block costs
+  no exit. An unwind that must look into an optimized frame -- its
+  target, or an unwind marker, inside it -- deoptimizes that frame
+  first, which "What is observed is never inlined" makes the exception.
+
+### Open
+
+What the contract leaves to road steps 8 and 9 is in
+[OPEN-WORK.md](../OPEN-WORK.md): where the depth count lives in machine
+code, measured; the two walking leaves, which serve the interpreter's
+exceptions already; and the home of a closure created in an inlined
+scope, since a frame object is married only to a frame that stands for
+one activation. A closure the optimizer does not inline still reifies the
+frame it is created in, whatever it captured, since `enclosingActivation`
+and the debugger read that link ("The closure keeps its defining
+activation" above); one it inlines creates neither.
 
 ## Decisions
 
