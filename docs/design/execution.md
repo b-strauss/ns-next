@@ -8160,12 +8160,13 @@ suite still meets every handle held across one.
 advances the program counter and `continue`s. A jump sets the program
 counter, and a backward one tests the flag. A send, a return, an unwind and
 a future's forcing go through the helpers -- `send`, `deliver`, `finish`,
-`resume_caller`, `unwind`, `reexecute`, `force_and_reexecute` -- which
-answer a one-byte `Transfer`: `Next` (the instruction's value, if any, is
-written; go on after it), `Switched` (run the frame the `Handoff` names) or
-`Exited` (the `Handoff` holds the run's result). The `Handoff` is a local of
-`run_stretch` the helpers write the next frame or the result into, so the
-test after a send is one compare of a byte in a register. `vm.rs` still
+`resume_caller`, `unwind` and `raise`, `reexecute`, `force_and_reexecute`
+-- which answer a one-byte `Transfer`: `Next` (the instruction's value, if
+any, is written; go on after it), `Switched` (run the frame the `Handoff`
+names) or `Exited` (the `Handoff` holds the run's result). The `Handoff` is
+a local of `run_stretch` the helpers write the next frame or the result
+into, and a raise the index of the instruction that raised, so the test
+after a send is one compare of a byte in a register. `vm.rs` still
 holds no dispatch logic: every decision stays in `interpreter/` -- the
 caches, `act`, the continuations, the unwinder -- behind the interfaces it
 had, which a JIT tier will reach the same way.

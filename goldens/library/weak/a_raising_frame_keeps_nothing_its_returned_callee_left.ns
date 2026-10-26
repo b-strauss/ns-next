@@ -10,7 +10,9 @@
 /// callee covered is dead; traced as of its earlier send, the registers
 /// it wrote before that send would count as its own and keep the Object.
 /// The handler prints the error, collects, and reads the WeakArray's slot
-/// by `at:`, which activates nothing.
+/// by `at:`, which activates nothing. The defect shows only under the
+/// optimized lowering in a build without debug assertions; a debug
+/// build's pop poisons the registers a callee gives back.
 class ARaisingFrameKeepsNothingItsReturnedCalleeLeft = Object new () (
   public main: platform args: arguments = (
     |

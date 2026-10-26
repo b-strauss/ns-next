@@ -720,15 +720,15 @@ fn assert_live_register(offset: u32, index: u16, bits: u64) {
 }
 
 /// Refuses, in a debug build, a push that hands `code` other than its own
-/// number of arguments, but for the body a body past the register ceiling
-/// compiled to (`CompiledCode::stands_for_too_many_arguments`). Every push
-/// checks it, a host's included, since a frame finds where its registers
+/// number of arguments. A body that stands for more arguments than its
+/// saturated count is never pushed: the send that would hand them is
+/// refused before any push. Every push checks it, a host's included, since a frame finds where its registers
 /// above the header begin from its code's argument count once it is
 /// reified, returned or suspended (`frame_argument_count`).
 #[inline(always)]
 fn debug_assert_arity(code: &crate::bytecode::CompiledCode, given: usize) {
     debug_assert!(
-        given == usize::from(code.argument_count) || code.stands_for_too_many_arguments(given),
+        given == usize::from(code.argument_count),
         "internal: an activation is handed {given} arguments, its code takes {}",
         code.argument_count
     );
