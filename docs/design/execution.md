@@ -868,7 +868,15 @@ An activation's `program_counter` is written **only by the instructions that can
 activation to an observer**: every send, since a nested activation runs above it;
 `MakeClosure`, since the activation escapes into the object graph — the store
 comes just before `reify`, which copies it into the frame it creates; and
-`NonLocalReturn`, since control leaves with a signal. The stretch adds one
+`NonLocalReturn`, since control leaves with a signal; an instruction that
+meets an unresolved future (`vm::force_and_reexecute`), since the forcing
+runs above it and the loop runs that instruction again; and every
+instruction that raises an error (`vm::raise`), since the raising
+activation stays on the stack below the error's `signal` while the
+handler runs, and a collection meanwhile nils its dead registers as of
+the instruction its header stores ([memory.md](memory.md), "What the
+collector traces") -- as of an earlier send it would keep what that
+send's callee left in registers the frame wrote before it. The stretch adds one
 more, off the hot path: leaving for a safepoint, it stores the running
 activation's, since a suspension there copies it into the frame
 ("Suspending and resuming").

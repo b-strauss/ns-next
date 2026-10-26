@@ -750,9 +750,10 @@ check").
   leaves"): for the top frame the instruction it runs next, which the run
   loop writes back as it leaves for the safepoint; for every other the
   instruction it stopped at, which stored its own index before it handed
-  control on -- a send, which the frame resumes after, or an instruction
-  that met an unresolved future, which it runs again (`tainted_at`'s doc
-  comment names each write). A frame whose callee lies on its slots
+  control on -- a send, which the frame resumes after, an instruction
+  that met an unresolved future, which it runs again, or an instruction
+  that raised an error, below whose `signal` the frame stays while the
+  handler runs (`tainted_at`'s doc comment names each write). A frame whose callee lies on its slots
   stopped at that send, which taints every register from its slot end, so
   it loses as well every register from there to its own window's end. A
   word inside the window of a frame above is left to that frame, a word at

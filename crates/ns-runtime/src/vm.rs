@@ -154,12 +154,17 @@ impl Handoff {
 /// before), `NonLocalReturn` (control leaves with a signal), and
 /// `ResolveFuture` and `InitializeSlot` when either meets an unresolved
 /// future (`force_and_reexecute` pushes the forcing above it, and the loop
-/// must come back to this same instruction once the future resolves).
-/// An instruction that raises an error -- `SignalNonBoolean`, `LoadLiteral`'s
-/// error path -- leaves with a signal too but stores none: nothing resumes
-/// the raising activation, since an `Error` is not resumable and a handler's
-/// `retry` or `return:` pops it. Nothing reads `program_counter` while a
-/// straight-line instruction executes.
+/// must come back to this same instruction once the future resolves),
+/// and every instruction that raises an error -- `SignalNonBoolean`,
+/// `LoadLiteral`'s error path, a refused slot or vector access (`raise`).
+/// Nothing resumes a raising activation, since an `Error` is not resumable
+/// and a handler's `retry` or `return:` pops it, but it stays on the stack
+/// below the error's `signal` while the handler runs, and a collection
+/// meanwhile nils its registers as of the instruction its header stores
+/// (`Heap::trace_stack`): as of an earlier send, the registers that send's
+/// callee covered and the frame wrote before it would be kept as live,
+/// and whatever the callee left in them with them. Nothing reads
+/// `program_counter` while a straight-line instruction executes.
 pub(crate) fn run(interpreter: &mut Interpreter, base: ActivationReference) -> HostResult {
     let (floor, mut frame) = interpreter.enter(|mutator| {
         (
@@ -476,7 +481,14 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                 ) {
                                     Ok(()) => next!(),
                                     Err(signal) => {
-                                        break 'decided unwind(mutator, signal, floor, &mut handoff)
+                                        break 'decided raise(
+                                            mutator,
+                                            activation,
+                                            program_counter,
+                                            signal,
+                                            floor,
+                                            &mut handoff,
+                                        )
                                     }
                                 },
                                 CompactInstruction::LoadSelf { destination } => {
@@ -849,7 +861,14 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                 ) {
                                     Ok(()) => next!(),
                                     Err(signal) => {
-                                        break 'decided unwind(mutator, signal, floor, &mut handoff)
+                                        break 'decided raise(
+                                            mutator,
+                                            activation,
+                                            program_counter,
+                                            signal,
+                                            floor,
+                                            &mut handoff,
+                                        )
                                     }
                                 },
                                 CompactInstruction::StoreVector {
@@ -865,7 +884,14 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                 ) {
                                     Ok(()) => next!(),
                                     Err(signal) => {
-                                        break 'decided unwind(mutator, signal, floor, &mut handoff)
+                                        break 'decided raise(
+                                            mutator,
+                                            activation,
+                                            program_counter,
+                                            signal,
+                                            floor,
+                                            &mut handoff,
+                                        )
                                     }
                                 },
                                 CompactInstruction::InitializeSlot { source, own_index } => {
@@ -917,8 +943,10 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                         }
                                         Ok(None) => next!(),
                                         Err(signal) => {
-                                            break 'decided unwind(
+                                            break 'decided raise(
                                                 mutator,
+                                                activation,
+                                                program_counter,
                                                 signal,
                                                 floor,
                                                 &mut handoff,
@@ -955,8 +983,10 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                     ) {
                                         Ok(()) => next!(),
                                         Err(signal) => {
-                                            break 'decided unwind(
+                                            break 'decided raise(
                                                 mutator,
+                                                activation,
+                                                program_counter,
                                                 signal,
                                                 floor,
                                                 &mut handoff,
@@ -988,8 +1018,10 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                     {
                                         Ok(()) => next!(),
                                         Err(signal) => {
-                                            break 'decided unwind(
+                                            break 'decided raise(
                                                 mutator,
+                                                activation,
+                                                program_counter,
                                                 signal,
                                                 floor,
                                                 &mut handoff,
@@ -1055,8 +1087,10 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                     let value =
                                         mutator.heap.register(register_base, u16::from(register));
                                     let error = non_boolean_condition(&mutator.heap, value);
-                                    break 'decided unwind(
+                                    break 'decided raise(
                                         mutator,
+                                        activation,
+                                        program_counter,
                                         Signal::Error(error),
                                         floor,
                                         &mut handoff,
@@ -1391,7 +1425,7 @@ fn run_wide<'gc>(
             literal,
         } => match load_literal_into(mutator, activation, register_base, *destination, literal) {
             Ok(()) => return WideOutcome::Next,
-            Err(signal) => unwind(mutator, signal, floor, handoff),
+            Err(signal) => raise(mutator, activation, program_counter, signal, floor, handoff),
         },
         Instruction::LoadSelf { destination } => {
             load_self_into(mutator, activation, register_base, *destination);
@@ -1508,7 +1542,7 @@ fn run_wide<'gc>(
             index,
         } => match load_vector_into(mutator, register_base, *destination, *vector, *index) {
             Ok(()) => return WideOutcome::Next,
-            Err(signal) => unwind(mutator, signal, floor, handoff),
+            Err(signal) => raise(mutator, activation, program_counter, signal, floor, handoff),
         },
         Instruction::StoreVector {
             vector,
@@ -1516,7 +1550,7 @@ fn run_wide<'gc>(
             source,
         } => match store_vector(&mut mutator.heap, register_base, *vector, *index, *source) {
             Ok(()) => return WideOutcome::Next,
-            Err(signal) => unwind(mutator, signal, floor, handoff),
+            Err(signal) => raise(mutator, activation, program_counter, signal, floor, handoff),
         },
         Instruction::InitializeSlot { source, own_index } => {
             match initialize_slot(mutator, activation, register_base, *source, *own_index) {
@@ -1537,13 +1571,21 @@ fn run_wide<'gc>(
             match filled_own_slot(mutator, activation, *own_index) {
                 Ok(Some(value)) => finish(mutator, activation, value, floor, handoff),
                 Ok(None) => return WideOutcome::Next,
-                Err(signal) => unwind(mutator, signal, floor, handoff),
+                Err(signal) => raise(mutator, activation, program_counter, signal, floor, handoff),
             }
         }
         Instruction::MakeFuture {
             destination,
             closure,
-        } => make_future(mutator, activation, *destination, *closure, floor, handoff),
+        } => make_future(
+            mutator,
+            activation,
+            program_counter,
+            *destination,
+            *closure,
+            floor,
+            handoff,
+        ),
         Instruction::ResolveFuture {
             destination,
             source,
@@ -1562,13 +1604,22 @@ fn run_wide<'gc>(
         } => load_own_slot_into(
             mutator,
             activation,
+            program_counter,
             *destination,
             *own_index,
             floor,
             handoff,
         ),
         Instruction::InitializeSlotProvisionally { source, own_index } => {
-            initialize_slot_provisionally(mutator, activation, *source, *own_index, floor, handoff)
+            initialize_slot_provisionally(
+                mutator,
+                activation,
+                program_counter,
+                *source,
+                *own_index,
+                floor,
+                handoff,
+            )
         }
         Instruction::Return { register } | Instruction::ImplicitReturn { register } => return_from(
             mutator,
@@ -1590,7 +1641,14 @@ fn run_wide<'gc>(
         Instruction::SignalNonBoolean { register } => {
             let value = mutator.heap.register(register_base, *register);
             let error = non_boolean_condition(&mutator.heap, value);
-            unwind(mutator, Signal::Error(error), floor, handoff)
+            raise(
+                mutator,
+                activation,
+                program_counter,
+                Signal::Error(error),
+                floor,
+                handoff,
+            )
         }
         Instruction::Jump { target } => return WideOutcome::Jump(*target),
         Instruction::JumpIfNotBoolean { register, target } => {
@@ -1634,7 +1692,7 @@ fn run_wide<'gc>(
         Instruction::AllocateInstance { destination } => {
             match allocate_instance_into(mutator, activation, register_base, *destination) {
                 Ok(()) => return WideOutcome::Next,
-                Err(signal) => unwind(mutator, signal, floor, handoff),
+                Err(signal) => raise(mutator, activation, program_counter, signal, floor, handoff),
             }
         }
         Instruction::InitializeInstance {
@@ -1660,7 +1718,7 @@ fn run_wide<'gc>(
         Instruction::CheckAppliedClause { steps, selector } => {
             match mutator.check_applied_clause(activation, *steps, *selector) {
                 Ok(()) => return WideOutcome::Next,
-                Err(signal) => unwind(mutator, signal, floor, handoff),
+                Err(signal) => raise(mutator, activation, program_counter, signal, floor, handoff),
             }
         }
         Instruction::InitializeSuperclass {
@@ -2497,11 +2555,11 @@ fn initialize_slot_refused<'gc>(
     // of the value itself can be about a future.
     let receiver = mutator.heap.activation_receiver(activation);
     if !receiver_keeps_entered_level(mutator, activation, receiver) {
-        return unwind(mutator, signal, floor, handoff);
+        return raise(mutator, activation, program_counter, signal, floor, handoff);
     }
     let value = read_local(&mutator.heap, activation, source);
     match value_for_a_value_slot(mutator, value) {
-        None => unwind(mutator, signal, floor, handoff),
+        None => raise(mutator, activation, program_counter, signal, floor, handoff),
         Some(Ok(Resolution::Value(resolved))) => {
             let receiver = mutator.heap.activation_receiver(activation);
             let base = mutator.heap.activation_slot_base(activation);
@@ -2515,13 +2573,13 @@ fn initialize_slot_refused<'gc>(
                     );
                     Transfer::Next
                 }
-                Err(signal) => unwind(mutator, signal, floor, handoff),
+                Err(signal) => raise(mutator, activation, program_counter, signal, floor, handoff),
             }
         }
         Some(Ok(Resolution::Force(step))) => {
             force_and_reexecute(mutator, activation, program_counter, step, floor, handoff)
         }
-        Some(Err(signal)) => unwind(mutator, signal, floor, handoff),
+        Some(Err(signal)) => raise(mutator, activation, program_counter, signal, floor, handoff),
     }
 }
 
@@ -2550,6 +2608,7 @@ fn simultaneous_clause_instruction<'gc>(
         } => make_future(
             mutator,
             activation,
+            program_counter,
             u16::from(destination),
             u16::from(closure),
             floor,
@@ -2573,6 +2632,7 @@ fn simultaneous_clause_instruction<'gc>(
         } => load_own_slot_into(
             mutator,
             activation,
+            program_counter,
             u16::from(destination),
             own_index,
             floor,
@@ -2582,6 +2642,7 @@ fn simultaneous_clause_instruction<'gc>(
             initialize_slot_provisionally(
                 mutator,
                 activation,
+                program_counter,
                 u16::from(source),
                 own_index,
                 floor,
@@ -2596,6 +2657,7 @@ fn simultaneous_clause_instruction<'gc>(
 fn make_future<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
+    program_counter: usize,
     destination: u16,
     closure: u16,
     floor: usize,
@@ -2604,7 +2666,16 @@ fn make_future<'gc>(
     let operand = read_local(&mutator.heap, activation, closure);
     let closure = match operand.as_object() {
         Some(object) if mutator.heap.is_closure(object) => object,
-        _ => return unwind(mutator, not_a_closure(operand), floor, handoff),
+        _ => {
+            return raise(
+                mutator,
+                activation,
+                program_counter,
+                not_a_closure(operand),
+                floor,
+                handoff,
+            )
+        }
     };
     let future = mutator.new_future(closure);
     write_local(
@@ -2636,7 +2707,7 @@ fn resolve_future<'gc>(
         Ok(Resolution::Force(step)) => {
             force_and_reexecute(mutator, activation, program_counter, step, floor, handoff)
         }
-        Err(signal) => unwind(mutator, signal, floor, handoff),
+        Err(signal) => raise(mutator, activation, program_counter, signal, floor, handoff),
     }
 }
 
@@ -2644,6 +2715,7 @@ fn resolve_future<'gc>(
 fn load_own_slot_into<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
+    program_counter: usize,
     destination: u16,
     own_index: u32,
     floor: usize,
@@ -2654,7 +2726,7 @@ fn load_own_slot_into<'gc>(
             write_local(&mut mutator.heap, activation, destination, value);
             Transfer::Next
         }
-        Err(signal) => unwind(mutator, signal, floor, handoff),
+        Err(signal) => raise(mutator, activation, program_counter, signal, floor, handoff),
     }
 }
 
@@ -2662,13 +2734,14 @@ fn load_own_slot_into<'gc>(
 fn initialize_slot_provisionally<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
+    program_counter: usize,
     source: u16,
     own_index: u32,
     floor: usize,
     handoff: &mut Handoff,
 ) -> Transfer {
     if let Err(signal) = check_own_slots(mutator, activation) {
-        return unwind(mutator, signal, floor, handoff);
+        return raise(mutator, activation, program_counter, signal, floor, handoff);
     }
     let value = read_local(&mutator.heap, activation, source);
     let receiver = mutator.heap.activation_receiver(activation);
@@ -2703,6 +2776,26 @@ fn force_and_reexecute<'gc>(
         Ok(callee) => handoff.switch_to(mutator, callee, 0),
         Err(signal) => unwind(mutator, signal, floor, handoff),
     }
+}
+
+/// An error the instruction at `program_counter` of the running
+/// `activation` raised, unwound with its index stored first (`run`'s doc
+/// comment). Out of line and cold, so that a raising arm adds only a call
+/// to the loop's cold blocks.
+#[cold]
+#[inline(never)]
+fn raise<'gc>(
+    mutator: &mut Mutator<'gc>,
+    activation: ActivationReference,
+    program_counter: usize,
+    signal: Signal<'gc>,
+    floor: usize,
+    handoff: &mut Handoff,
+) -> Transfer {
+    mutator
+        .heap
+        .activation_set_program_counter(activation, program_counter);
+    unwind(mutator, signal, floor, handoff)
 }
 
 /// A signal leaving the running activation, handed to the one unwinder

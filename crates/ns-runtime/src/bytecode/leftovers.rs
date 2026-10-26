@@ -118,13 +118,16 @@ pub(crate) fn check(
 ///
 /// A frame is asked at the program counter its header stores. Every
 /// instruction that hands control to a frame above its own stores its
-/// own index first -- a send (`vm::send`, `vm::send_mirror`), and an
-/// instruction that forces a future (`vm::force_and_reexecute`) -- so a
-/// frame below the top is asked before the instruction it stopped at,
-/// and the registers at and above a send's slot end are its callee's
-/// window meanwhile. It resumes after a send once the send's destination
-/// is written (`vm::resume_caller`), or runs the instruction again once
-/// the future is resolved (`vm::reexecute`); a restarted target starts
+/// own index first -- a send (`vm::send`, `vm::send_mirror`), an
+/// instruction that forces a future (`vm::force_and_reexecute`), and an
+/// instruction that raises an error (`vm::raise`), below whose `signal`
+/// the frame stays while the handler runs -- so a frame below the top is
+/// asked before the instruction it stopped at, and the registers at and
+/// above a send's slot end are its callee's window meanwhile. It resumes
+/// after a send once the send's destination is written
+/// (`vm::resume_caller`), runs the instruction again once the future is
+/// resolved (`vm::reexecute`), and never runs again after a raise, since
+/// an `Error` is not resumable; a restarted target starts
 /// at 0 (`interpreter::unwind`'s `arrive`). The frame on top stores the
 /// instruction it runs next when it leaves for a safepoint (`vm::run_stretch`'s
 /// write-back). Either way the answer is what the frame does not read
