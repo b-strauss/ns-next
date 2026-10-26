@@ -642,7 +642,13 @@ impl Interpreter {
     /// a test stops here to see what the kernel phase alone built.
     pub(crate) fn with_kernel(lowering: Lowering, path: ShippedCodePath) -> Interpreter {
         // Only the debug build's stress modes write to these fields below.
-        #[cfg_attr(not(debug_assertions), allow(unused_mut))]
+        #[cfg_attr(
+            not(debug_assertions),
+            allow(
+                unused_mut,
+                reason = "only the debug build's stress modes write to these fields"
+            )
+        )]
         let mut interpreter = Interpreter {
             world: crate::heap::World::new(lowering, path),
             running: false,

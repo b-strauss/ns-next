@@ -579,7 +579,10 @@ fn decode_described(
 /// The second phase of `load`: the graph against the shipped names,
 /// resolved again in this entry, run with the heap allocating old. Answers
 /// the graph's roots and every module's root class record, rooted.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the phase takes every part of the load's state the first phase decided; bundling them would only rename the list"
+)]
 fn decode_graph_phase<'gc>(
     mutator: &mut Mutator<'gc>,
     reader: &mut decode::Reader<'_>,

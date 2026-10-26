@@ -714,7 +714,6 @@ fn radix_five_block<const PRIME: u64, const INVERSE: bool, const TWIDDLE: bool>(
 }
 
 /// The radix-6 butterfly: three radix-2 butterflies, then two radix-3 ones.
-#[allow(clippy::too_many_arguments)]
 const fn radix_six_kernel<const PRIME: u64, const INVERSE: bool, const TWIDDLE: bool>(
     mut first: u64,
     mut second: u64,

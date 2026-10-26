@@ -51,7 +51,7 @@ macro_rules! for_each_lowering {
         mod $name {
             // A test gated to debug builds can leave the import unused in
             // a release build; a debug build still reports one.
-            #[cfg_attr(not(debug_assertions), allow(unused_imports))]
+            #[cfg_attr(not(debug_assertions), allow(unused_imports, reason = "a test gated to debug builds can leave the import unused"))]
             use super::*;
 
             $(#[$attribute])*

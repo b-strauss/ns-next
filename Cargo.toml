@@ -76,7 +76,13 @@ incremental = true
 # `ObjectReference`, `ClassReference`, `FrameReference` and
 # `ActivationReference` are `Copy` indices; a reference to one is an indirection
 # that buys nothing. Sized by `clippy.toml`.
+# `undocumented_unsafe_blocks` keeps every `unsafe` block carrying a `// SAFETY:`
+# comment that names the invariant the block relies on.
+# `allow_attributes_without_reason` keeps every lint exception stating what it
+# prevents or why the lint is wrong there.
 [workspace.lints.clippy]
+undocumented_unsafe_blocks = "warn"
+allow_attributes_without_reason = "warn"
 cloned_instead_of_copied = "warn"
 trivially_copy_pass_by_ref = "warn"
 min_ident_chars = "warn"

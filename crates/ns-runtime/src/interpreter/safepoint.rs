@@ -60,7 +60,13 @@ impl Interpreter {
         #[cfg(debug_assertions)]
         let mut stressed = false;
         // Only the debug build's suspend stress mode rebuilds the stack.
-        #[cfg_attr(not(debug_assertions), allow(unused_mut))]
+        #[cfg_attr(
+            not(debug_assertions),
+            allow(
+                unused_mut,
+                reason = "only the debug build's suspend stress mode rebuilds the stack"
+            )
+        )]
         let mut rebuilt = false;
         #[cfg(debug_assertions)]
         {

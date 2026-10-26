@@ -295,7 +295,13 @@ impl std::fmt::Debug for TaintedSets {
 
 /// What the pass spent on one body.
 #[derive(Debug, Clone, Copy, Default)]
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "read by the tests that bound what the pass spends"
+    )
+)]
 pub(crate) struct Spent {
     /// The words of one bitset: `register_count` rounded up to 64 bits.
     pub(crate) words: usize,
@@ -313,7 +319,13 @@ pub(crate) struct Spent {
 
 /// What one pass found: the answers to `tainted_at`'s program counters,
 /// and what it spent.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "read by the tests that bound what the pass spends"
+    )
+)]
 pub(crate) struct Analysis {
     pub(crate) answers: Vec<Vec<Range<u16>>>,
     pub(crate) spent: Spent,

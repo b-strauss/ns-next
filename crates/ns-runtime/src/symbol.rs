@@ -23,7 +23,11 @@ pub struct Symbol(u32);
 /// the same order.
 macro_rules! well_known_symbols {
     ($($name:ident => $text:literal,)*) => {
-        #[allow(non_camel_case_types, clippy::upper_case_acronyms)]
+        #[expect(
+            non_camel_case_types,
+            clippy::upper_case_acronyms,
+            reason = "a variant is named after the text it stands for, which the table keeps in one list"
+        )]
         #[repr(u32)]
         enum WellKnown {
             $($name,)*

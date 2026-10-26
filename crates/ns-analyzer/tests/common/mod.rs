@@ -7,7 +7,10 @@
 //! `common/mod.rs`, whose runner starts `ns-next`: a test can start only its
 //! own crate's binaries.
 
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "a test binary that uses only some of the helpers would otherwise warn about the rest"
+)]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

@@ -374,7 +374,10 @@ impl<'a> Lowerer<'a> {
     /// of the family shares (`bindings`, `captures`), what makes it a
     /// fallback closure (`by_reference`), what it inherits from its creator
     /// (`enclosing`) and where its sends' numbering resumes.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each parameter is a distinct part of a body's identity, shape or inheritance, documented above"
+    )]
     pub(crate) fn new(
         kind: CodeKind,
         key: BodyKey,
