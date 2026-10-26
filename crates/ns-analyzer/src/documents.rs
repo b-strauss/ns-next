@@ -4,6 +4,14 @@
 use lsp_types::Position;
 use ns_syntax::Span;
 
+/// A count or offset as the `uinteger` LSP speaks. An editor's text has not
+/// necessarily passed `ns_syntax::source_too_long` when its positions are
+/// computed, so a number past `u32::MAX` is clamped to it, never wrapped
+/// into a wrong, small position.
+fn lsp_number(count: usize) -> u32 {
+    u32::try_from(count).unwrap_or(u32::MAX)
+}
+
 /// Where each line of a text starts, as byte offsets. LSP counts `\n`,
 /// `\r\n` and a lone `\r` as line breaks, so all three do here.
 pub struct LineIndex {
@@ -21,7 +29,7 @@ impl LineIndex {
                 _ => false,
             };
             if breaks_here {
-                line_starts.push(index as u32 + 1);
+                line_starts.push(lsp_number(index + 1));
             }
         }
         LineIndex { line_starts }
@@ -43,7 +51,7 @@ impl LineIndex {
             - 1;
         let line_start = self.line_starts[line] as usize;
         let character = text[line_start..offset].encode_utf16().count();
-        Position::new(line as u32, character as u32)
+        Position::new(lsp_number(line), lsp_number(character))
     }
 }
 
@@ -52,7 +60,7 @@ pub fn utf16_length(text: &str, span: Span) -> u32 {
     let start = (span.start as usize).min(text.len());
     let end = (span.end as usize).clamp(start, text.len());
     text.get(start..end)
-        .map_or(0, |slice| slice.encode_utf16().count() as u32)
+        .map_or(0, |slice| lsp_number(slice.encode_utf16().count()))
 }
 
 #[cfg(test)]
@@ -119,6 +127,15 @@ mod tests {
     #[test]
     fn an_offset_past_the_end_answers_the_end() {
         assert_eq!(position_of("ab", 99), Position::new(0, 2));
+    }
+
+    #[test]
+    fn a_position_past_u32_is_clamped() {
+        // A four-GiB text cannot be built in a test, so the narrowing every
+        // position goes through is checked directly.
+        assert_eq!(lsp_number(u32::MAX as usize + 1), u32::MAX);
+        assert_eq!(lsp_number(usize::MAX), u32::MAX);
+        assert_eq!(lsp_number(7), 7);
     }
 
     #[test]
