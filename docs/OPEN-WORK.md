@@ -1965,6 +1965,19 @@ that only answers `isKindOfArray` or `isKindOfString`, the error of a
 
 Small, deliberately left, none affecting an outcome.
 
+- Leftovers of the cast lints' reviews (noted 2026-10-26): no 32-bit
+  target is installed or gated, so the `cfg(not(target_pointer_width =
+  "64"))` paths and the 32-bit index fix (`builtins/collections.rs`'s
+  `element_position`, `builtins/value.rs`'s `SlotAt`) are never built,
+  only reasoned about; the analyzer's clamping test pins `lsp_number`
+  (`documents.rs`), not a `LineIndex` over a text past `u32`;
+  `bytecode/leftovers.rs` narrows an instruction index to `u32` with the
+  same `expect` in two places; `arbitrary_integer`'s `low_digit` also
+  narrows two values that are bounded rather than split (`division.rs`'s
+  `divide_wide`, `multiplication.rs`'s final carry), which its doc does
+  not say; and `conversion.rs`'s `radix_digit` checks every printed digit
+  against a radix the compiler cannot see is at most 36.
+
 - Leftover of road step 7b (noted 2026-10-24): the format- and test-level
   frame accessors `Heap::frame_set_program_counter`, `frame_register_shape`,
   `frame_record` and `frame_set_uncontinuable` debug-assert only that the
