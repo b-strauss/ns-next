@@ -6643,9 +6643,8 @@ means as above:
 
 **The geometric mean over the twenty-four is -0.09%**: three programs
 faster with the builds separated, nineteen overlapping, and two slower,
-DeltaBlueTon80 by 1.6% and Mandelbrot by 0.5%, neither diagnosed
-([OPEN-WORK.md](../OPEN-WORK.md), "Unexplained measurements and unmeasured
-decisions"). `vm::run` is 8,269 instructions apart from the padding with a
+DeltaBlueTon80 by 1.6% and Mandelbrot by 0.5% (diagnosed below).
+`vm::run` is 8,269 instructions apart from the padding with a
 `0x318`-byte frame, against the first stage's 8,296 and `0x368`. So
 overlapping the windows costs the interpreter nothing on the geometric
 mean; what it removes -- the copy of every argument into the callee's
@@ -6656,6 +6655,63 @@ step 7c's protocol between interpreted and compiled frames starts from.
 What the measurement did not cover is what "What contiguous arguments
 moved" lists; stage 1 + forget is a tree built for the comparison, not a
 commit of the branch.
+
+**DeltaBlueTon80's gap, diagnosed** (2026-10-26). Profiled with xperf on
+the debug-information twins, 3,000 iterations, builds a and c, the second
+stage at `6ff8890a` against stage 1 + forget: the pushes together were
+faster (`push_sent` and `push_step` 13,784 samples against stage 1's
+14,481), and three costs were the stage's own:
+
+- **The pop's two counts, decremented as one 16-byte load.** The live and
+  the counted count lie side by side, and LLVM subtracted both with one
+  `movdqu`/`psubq`/`movdqu` over the push's two narrower stores of them,
+  which no store forwards. Stage 1 has the same instruction, but the
+  second stage's pop also read the frame's flags and caller words again
+  after the divorce check to find the top it was pushed at, and
+  `Heap::pop_activation` rose from 2,862 samples to 4,005. A branch on
+  the counted flag now keeps the two subtractions apart, and the top is
+  computed from the words the pop read first (`72de5ac0`): 2,782
+  samples, below stage 1's.
+- **A setter of an inlined conditional's value paid a `Move`.**
+  `direction:: (...) ifTrue: [...] ifFalse: [...]`, in `chooseMethod:`,
+  left its value in the conditional's result register above the slot,
+  which the second stage copies into the slot by a `Move` of its own
+  where the first stage's send copied it. The conditional, and
+  `and:`/`or:`, now answer in the slot they are lowered into
+  (`ca5ce8b3`; [compiler.md](compiler.md), "Registers"). Over
+  DeltaBlueTon80's methods the two stages now compile to the same number
+  of instructions.
+- **The register base reads the frame's flags on every switch.** The
+  frame's start lies `argument_count` words below its header, so the
+  loop's register base after a push or a return
+  (`Heap::activation_register_base`) is a load of the flags word where
+  the first stage added 13 to the offset; `resume_caller` reads it once
+  more to write the value. The loop's
+  switch handler took 2,189 samples against 1,619, about 0.35% of the
+  run. Handing the base over in the `Handoff` instead (`resume_caller`
+  reading it once) measured about 1% slower on one build a side, since
+  every switch site then computed it and the handoff passes through
+  memory anyway; it was not kept.
+
+After the first two, three builds a side, two sittings pooled (n = 12),
+in ms:
+
+| Source | stage 1 + forget | `6ff8890a` | fixed (`ca5ce8b3`) | fixed vs stage 1 + forget | builds |
+|---|---|---|---|---|---|
+| DeltaBlueTon80 | 6.643 | 6.733 | 6.700 | +0.9% | slower |
+| Mandelbrot | 2698.1 | 2691.6 | 2690.9 | -0.3% | overlapping |
+
+**Mandelbrot's +0.5% did not reproduce**: `6ff8890a` itself measured
+-0.2% against stage 1 + forget, builds overlapping. **DeltaBlueTon80's
+remaining +0.9% is the return path**: the flags read of the third point,
+which the frame layout makes, and `vm::finish` and `vm::resume_caller`,
+about 550 and 340-600 samples above stage 1 in both builds profiled,
+their samples on the loads after the pop -- the top it stored, the
+popped continuation ([OPEN-WORK.md](../OPEN-WORK.md), "Unexplained measurements and
+unmeasured decisions"). Against `6ff8890a`, the twenty-four programs,
+three builds a side, two sittings pooled, measured a geometric mean of
+-0.17% (-0.12% and -0.21% in the sittings), no program slower with its
+builds separated, Queens and Storage faster in the second sitting.
 
 ### What the leftover analysis moved
 
@@ -8709,7 +8765,9 @@ separated, twelve of twenty-four faster ("What contiguous arguments
 moved"). The second, measured against the first with the change that
 forgets a value-answered send's step, which speeds both, is level on the
 geometric mean, -0.09%, with two programs slower with their builds
-separated, by 0.5% and 1.6%, and three faster. It is kept by the user's
+separated, by 0.5% and 1.6%, and three faster; with what of that the
+code could fix fixed, DeltaBlueTon80 is 0.9% slower and Mandelbrot
+level. It is kept by the user's
 decision to remove its remaining cost, the pop's fill, rather than revert
 the stage ("What overlapping windows moved").
 

@@ -40,8 +40,9 @@ Built in two stages, each measured against the tree before it: the first
 place, the argument buffer gone -- no program slower than `master` with
 its builds separated and twelve of twenty-four faster ("What contiguous
 arguments moved"); the second level with the first on the geometric
-mean, -0.09%, two programs slower with their builds separated by 0.5% and
-1.6% ("What overlapping windows moved"). Neither a push nor a pop writes
+mean, -0.09%; of the two programs slower with their builds separated,
+DeltaBlueTon80 is still 0.9% slower once its causes the code could fix
+were fixed, and Mandelbrot is level ("What overlapping windows moved"). Neither a push nor a pop writes
 a scratch register: the leftover analysis finds what a frame may read
 before writing it, the decoder refuses image code that reads it, and
 every trace of the stack nils it ("What the leftover analysis moved";
@@ -1165,16 +1166,21 @@ classes and a class from source with no predecessor are not edited
 
 ## Unexplained measurements and unmeasured decisions
 
-- **DeltaBlueTon80 1.6% and Mandelbrot 0.5% slower after overlapping the
-  register windows** (2026-10-25), with their builds separated, against
-  the first stage of road step 7a′ with the value-answered send's step
-  forgotten; the other twenty-two are level or faster and the geometric
-  mean is -0.09%. Both were slower already before the leftover analysis
-  removed the pop's fill, by as much or more (DeltaBlueTon80 +1.9%), so
-  the cost is the overlap's, not the analysis's; neither was profiled.
-  The first candidate: the flags reads the register numbering adds
-  (`Heap::register_slot`, `resume_caller`'s `write_local`), which the
-  profiles of the second stage showed.
+- **DeltaBlueTon80 0.9% slower after overlapping the register windows**
+  (2026-10-26), with its builds separated, against the first stage of
+  road step 7a′ with the value-answered send's step forgotten; it was
+  1.6% before the pop's counts were decremented apart and an inlined
+  conditional answered in its argument slot, and Mandelbrot's 0.5% did
+  not reproduce. What remains is the return path: the loop reads the
+  frame's flags for its register base on every switch, since the frame's
+  start lies its argument count below its header (the switch handler
+  2,189 samples against 1,619, about 0.35% of a run), and `vm::finish`
+  and `vm::resume_caller` take about 550 and 340-600 samples more, on
+  the loads right after the pop. Handing the base over in the `Handoff`
+  measured slower. Open: a `Transfer` that carries the register base in
+  a register from the sites that know it -- the return, which reads the
+  flags anyway, and a push, which computed the start -- or a code-side
+  argument count the loop reads instead of the stack's.
   [execution.md](design/execution.md), "What overlapping windows moved".
 
 - **The send and return functions move with the collector's code size**

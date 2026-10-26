@@ -93,7 +93,9 @@ assignment's value.
 - **The optimized lowering** (`Lowerer::lower_expression_into`) produces
   in its slot a send it does not inline, whose `destination` is the slot;
   an inlined integer leaf (`n - 1`), whose fast path and fallback send both
-  write their destination, the slot; and a literal, `self`, a read of
+  write their destination, the slot; an inlined conditional or
+  `and:`/`or:`, whose three arms each move their value into its result,
+  the slot (`lower_if`, `lower_and_or`); and a literal, `self`, a read of
   another frame's local or of a vector, a closure and an array, each
   loaded into the slot. The send copies none of them. A named local's
   source is its own register, below the slots, which the send reads there
@@ -101,7 +103,7 @@ assignment's value.
   protective `Move` into the slot, which the send then does not copy ("The
   value-register invariant"). Every other argument's source is the
   register its value is in, which the send reads there or copies: the result register of
-  an inlined conditional, `and:`/`or:`, loop or mirror send, and an
+  an inlined loop or mirror send, and an
   assignment's or a cascade's value, which are above the slots unless the
   value is a named local's register. So the slots are not always the top of
   what is live at the send: a source the send reads from above them is
@@ -449,8 +451,9 @@ register above its slots before something writes it again, along any path
 -- a loop's back edges and the entry state included. The one value a
 lowering keeps across a send is a setter assignment's, which is the
 setter's slot or a named local below it: a value left in a register above
-the slot, an inner assignment's or an inlined conditional's, is copied into
-the slot (`lower_setter_assign`).
+the slot, an inner assignment's, is copied into the slot
+(`lower_setter_assign`); an inlined conditional's arms move their values
+into the slot itself, so that a setter of one copies nothing.
 
 Registers above the named locals are compiler-allocated scratch from a bump
 allocator **reset to the first scratch index at the start of every statement**.
