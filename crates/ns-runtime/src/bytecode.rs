@@ -1579,8 +1579,8 @@ fn argument_slots(argument_base: u16, argument_sources: &[u16]) -> String {
         .iter()
         .enumerate()
         .map(|(offset, source)| {
-            let slot = u32::from(argument_base) + offset as u32;
-            if u32::from(*source) == slot {
+            let slot = usize::from(argument_base) + offset;
+            if usize::from(*source) == slot {
                 format!("r{slot}")
             } else {
                 format!("r{slot} <- r{source}")

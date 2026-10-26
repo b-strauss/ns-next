@@ -604,7 +604,13 @@ impl<'a> Lowerer<'a> {
         let superclass_steps = super::superclass_steps(applied.len(), own_level);
         // The level clause `position` (from 0) adds; below the superclass
         // clause's, so it fits a `u16` too.
-        let steps_of = |position: usize| superclass_steps - 1 - position as u16;
+        let steps_of = |position: usize| {
+            superclass_steps
+                - 1
+                - u16::try_from(position).expect(
+                    "internal: more `<:` clauses than CLAUSE_INDEX_LIMIT reached the compiler",
+                )
+        };
         if !applied.is_empty() {
             let start = self.code.len();
             for (position, clause) in applied.iter().enumerate().rev() {

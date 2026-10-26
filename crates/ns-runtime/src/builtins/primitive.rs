@@ -2394,6 +2394,15 @@ pub const MIRROR: &[MirrorEntry] = &[
 
 const _: () = assert!(MIRROR.len() <= u16::MAX as usize + 1);
 
+/// The primitive of `MIRROR`'s row at `index`. The table holds at most
+/// `u16::MAX + 1` rows, which the assertion above keeps.
+fn mirror_row(index: usize) -> MirrorPrimitive {
+    MirrorPrimitive(
+        u16::try_from(index)
+            .expect("internal: MIRROR holds at most u16::MAX + 1 rows, as its assertion keeps"),
+    )
+}
+
 /// The row `primitive` names.
 pub fn mirror_entry(primitive: MirrorPrimitive) -> &'static MirrorEntry {
     &MIRROR[primitive.index()]
@@ -2405,7 +2414,7 @@ pub fn mirror_primitive_named(selector: &str) -> Option<MirrorPrimitive> {
     MIRROR
         .iter()
         .position(|entry| entry.selector == selector)
-        .map(|index| MirrorPrimitive(index as u16))
+        .map(mirror_row)
 }
 
 /// The VM mirror's method table: one public `MethodEntry::Primitive` per
@@ -2419,7 +2428,7 @@ pub fn mirror_method_table() -> IdentityMap<Symbol, MethodEntry> {
             (
                 Symbol::intern(entry.selector),
                 MethodEntry::Primitive(PrimitiveMethod {
-                    primitive: Primitive::Mirror(MirrorPrimitive(index as u16)),
+                    primitive: Primitive::Mirror(mirror_row(index)),
                     access: ast::AccessModifier::Public,
                 }),
             )

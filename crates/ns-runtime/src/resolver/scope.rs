@@ -41,13 +41,33 @@ impl LocalScope {
             names.insert(
                 name,
                 LocalEntry {
-                    index: index as u16,
+                    index: local_index(index),
                     has_setter,
                 },
             );
         }
         LocalScope { names }
     }
+}
+
+/// A local's resolver index. A body whose parameters and named temporaries
+/// number more than `u16::MAX` -- a program may declare that many -- is
+/// compiled to one that raises (`Literal::BodyTooLarge`) and never reads an
+/// index, so each of its locals past the ceiling takes `u16::MAX`, which no
+/// local of a body that fits holds: a body fits only with at most
+/// `u16::MAX` locals, numbered from 0.
+fn local_index(index: usize) -> u16 {
+    u16::try_from(index).unwrap_or(u16::MAX)
+}
+
+/// A lexical depth -- of an enclosing activation or an enclosing class --
+/// as a binding stores it. Each level is a block, method or class
+/// declaration the parser nests, and it refuses nesting past its limit
+/// (`PARSER_NESTING_LIMIT`), far below `u16::MAX`.
+pub(super) fn lexical_depth(depth: usize) -> u16 {
+    u16::try_from(depth).expect(
+        "internal: the parser refuses nesting past PARSER_NESTING_LIMIT, so a depth fits a u16",
+    )
 }
 
 /// The chain of activation scopes currently open while walking a method or
@@ -64,7 +84,7 @@ fn binding_at(depth: usize, index: u16) -> Binding {
         Binding::Local(index)
     } else {
         Binding::OuterLocal {
-            depth: depth as u16,
+            depth: lexical_depth(depth),
             index,
         }
     }

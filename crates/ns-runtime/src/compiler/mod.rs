@@ -80,6 +80,15 @@ fn local_index(index: usize) -> u16 {
         .expect("internal: a local's index past u16::MAX in a body whose locals were checked")
 }
 
+/// The mixin-relative index of the slot at `index` among a mixin's slots,
+/// as `InitializeSlot` and its kin store it. Each slot is declared in the
+/// mixin's source by at least one byte, and the frontend refuses a source
+/// past `u32::MAX` bytes (`ns_syntax::source_too_long`).
+fn own_slot_index(index: usize) -> u32 {
+    u32::try_from(index)
+        .expect("internal: a mixin declares fewer slots than its source's bytes, which fit a u32")
+}
+
 /// The resolver index of a body's `offset`-th named temporary, which
 /// follows its parameters; `local_index`'s precondition holds.
 fn temporary_index(argument_count: u16, offset: usize) -> u16 {
@@ -489,10 +498,10 @@ fn compile_initializer_body(
             continue;
         };
         if let Some(block) = &future_blocks[own_index] {
-            lowerer.lower_simultaneous_slot_initializer(block, own_index as u32);
+            lowerer.lower_simultaneous_slot_initializer(block, own_slot_index(own_index));
             source = Some(merge_span(source, declaration.span));
         } else if let Some(initializer) = &declaration.initializer {
-            lowerer.lower_slot_initializer(initializer, own_index as u32);
+            lowerer.lower_slot_initializer(initializer, own_slot_index(own_index));
             source = Some(merge_span(source, declaration.span));
         }
     }
@@ -501,7 +510,7 @@ fn compile_initializer_body(
     // slot read back and stored resolved, in declaration order.
     for (own_index, future_block) in future_blocks.iter().enumerate() {
         if future_block.is_some() && !mixin.slots[own_index].lazy {
-            lowerer.lower_simultaneous_slot_end(own_index as u32);
+            lowerer.lower_simultaneous_slot_end(own_slot_index(own_index));
         }
     }
     for statement in &mixin.initializer_expressions {

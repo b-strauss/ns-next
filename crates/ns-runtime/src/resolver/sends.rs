@@ -4,6 +4,7 @@
 
 use ns_syntax::ast::{Expression, ExpressionKind, Selector};
 
+use super::scope::lexical_depth;
 use crate::Symbol;
 
 /// One entry in the lexical class-nesting chain currently open while
@@ -25,7 +26,7 @@ pub(super) struct EnclosingClass<'a> {
 pub(super) fn depth_search(chain: &[EnclosingClass], selector: Symbol) -> u16 {
     for (depth, class) in chain.iter().enumerate() {
         if class.members.contains(&selector) {
-            return depth as u16;
+            return lexical_depth(depth);
         }
     }
     0
@@ -42,7 +43,7 @@ pub(super) fn find_member_depth(chain: &[EnclosingClass], selector: Symbol) -> O
     chain
         .iter()
         .position(|class| class.members.contains(&selector))
-        .map(|depth| depth as u16)
+        .map(lexical_depth)
 }
 
 /// Finds the exact depth of the lexically enclosing class named `name`, for
@@ -53,7 +54,7 @@ pub(super) fn depth_of_named_outer(chain: &[EnclosingClass], name: Symbol) -> Op
     chain
         .iter()
         .position(|class| class.name == name)
-        .map(|depth| depth as u16)
+        .map(lexical_depth)
 }
 
 /// Recognizes whether `send.receiver` is the parser's implicit receiver:
