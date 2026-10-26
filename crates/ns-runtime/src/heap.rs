@@ -1137,31 +1137,39 @@ impl ActivationStack {
     /// below lies longer than the caller on its slots, since a push never
     /// lowers the top -- and its caller word records it as a distance
     /// from its start, so that the pop reads nothing of the caller's
-    /// header (`frames::caller_link_word`).
+    /// header (`frames::caller_link_word`). `flags` and `caller` are the
+    /// frame's flags and caller words, which the pop has already read:
+    /// taken rather than read again, since a read after the pop's own
+    /// stores is one the compiler cannot fold into the first.
     #[inline(always)]
-    fn top_without(&self, offset: u32) -> usize {
-        let start = self.frame_start(offset);
-        let word = self.header_word(offset, frame_header::CALLER);
-        if !word.is_small_integer() {
+    fn top_without(&self, offset: u32, flags: FrameFlags, caller: Word) -> usize {
+        let start = offset as usize - usize::from(flags.argument_count);
+        if !caller.is_small_integer() {
             return start;
         }
-        let top = start + frames::caller_top_above_start(word);
+        let top = start + frames::caller_top_above_start(caller);
         debug_assert!(
-            top >= self.window_end(frames::caller_offset_of(word)),
+            top >= self.window_end(frames::caller_offset_of(caller)),
             "internal: a frame's caller word records a top at or past its caller's window end"
         );
         top
     }
 
-    /// Takes the innermost frame, at `offset`, off the stack's words: the
-    /// top goes back to `top_without`'s, and nothing is written. A caller's
+    /// Takes the innermost frame, at `offset`, whose flags and caller words
+    /// are `flags` and `caller`, off the stack's words: the top goes back
+    /// to `top_without`'s, and nothing is written. A caller's
     /// registers a callee that lay on its slots gives back -- from the
     /// callee's header up -- are dead, and the collector's pre-pass nils
     /// them before any trace (`Heap::trace_stack`); a debug build writes
     /// `dead_register`'s word there, so that a read of one is refused.
     #[inline(always)]
-    fn take_off_words(&mut self, offset: u32) {
-        let top = self.top_without(offset);
+    fn take_off_words(&mut self, offset: u32, flags: FrameFlags, caller: Word) {
+        debug_assert!(
+            flags == self.flags(offset)
+                && caller.bits() == self.header_word(offset, frame_header::CALLER).bits(),
+            "internal: a pop takes off the frame by its own header's words"
+        );
+        let top = self.top_without(offset, flags, caller);
         #[cfg(debug_assertions)]
         if (offset as usize) < top {
             self.frames
@@ -6826,7 +6834,7 @@ impl<'gc> Heap<'gc> {
         // are dead, and every lowering writes them before it reads them
         // again (`compiler::reference::check_leftovers`), so the pop
         // writes none of them: the pre-pass nils them before a trace.
-        self.stack.take_off_words(activation.offset);
+        self.stack.take_off_words(activation.offset, flags, caller);
         // An offset is below 2^31, so the conversion is exact.
         self.stack.innermost = if caller.is_small_integer() {
             frames::caller_offset_of(caller)
@@ -6834,7 +6842,12 @@ impl<'gc> Heap<'gc> {
             NO_FRAME
         };
         self.stack.live -= 1;
-        self.stack.counted -= usize::from(flags.counted);
+        // A branch, not a subtraction of the flag: the two counts lie side
+        // by side, and subtracting both at once is one 16-byte load over
+        // the push's two narrower stores, which no store forwards.
+        if flags.counted {
+            self.stack.counted -= 1;
+        }
         // A delivering frame names no row, so a send's return reaches no
         // table; every other continuation is taken out of line.
         let then = if continuation.is_small_integer() {
@@ -7128,7 +7141,11 @@ impl<'gc> Heap<'gc> {
             if !space::is_young(frame.offset) && (holds_young || sender_is_young) {
                 self.remember(frame.offset);
             }
-            self.stack.take_off_words(offset);
+            self.stack.take_off_words(
+                offset,
+                flags,
+                self.stack.header_word(offset, frame_header::CALLER),
+            );
             self.stack.innermost = caller.unwrap_or(NO_FRAME);
             self.stack.live -= 1;
         }
