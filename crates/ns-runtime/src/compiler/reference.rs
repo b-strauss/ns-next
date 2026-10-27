@@ -987,7 +987,7 @@ fn check_shape(instructions: &[Instruction], first_scratch: u16) {
         }
         assert!(
             !matches!(instruction, Instruction::IntegerBinary { .. }),
-            "internal: the reference lowering emitted a branch: {instruction:?}"
+            "internal: the reference lowering inlined an integer operation: {instruction:?}"
         );
         // A `StoreLocal` writes a named local, the one way this lowering
         // may, and is checked below.

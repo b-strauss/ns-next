@@ -995,7 +995,9 @@ more than `PENDING_LIMIT` targets pending at once, stated and derived
 once, in `leftovers.rs`. A target is pending while a jump to it is open,
 so no more targets are pending than jumps are open:
 
-- **The reference lowering** emits no jump (`check_shape`).
+- **The reference lowering** emits jumps only in its loop
+  (`Body::while_loop`; `check_shape` refuses any other), the last row
+  below.
 - **The optimized lowering** opens forward jumps only in four inlined
   forms (`lower.rs`; `finish`'s target check lists every emitter):
 
@@ -1005,6 +1007,7 @@ so no more targets are pending than jumps are open:
   | `lower_while` | two: the guard and the exit branch over the body. The condition has none of this loop's | two |
   | `lower_mirror_send` | one: the jump past the failure block | two |
   | `lower_integer_binary` | none, since its operands are lowered before it | two, around the fallback send |
+| the reference lowering's `Body::while_loop` | none: its blocks are real closures, compiled as bodies of their own | two: the guard and the exit branch over the body's `value` send |
 
 - **What lies outside a form's jumps:** everything evaluated before a
   form's first jump (its receiver, its operands) has none of its jumps
@@ -1025,8 +1028,10 @@ so no more targets are pending than jumps are open:
 than `LOOP_LIMIT` loops open at once, nested each in the next, stated and
 derived once, in `leftovers.rs`:
 
-- Every loop either lowering emits is `lower_while`'s, with one back edge;
-  the reference lowering emits none.
+- Every loop either lowering emits is `lower_while`'s or the reference
+  lowering's `Body::while_loop`'s, with one back edge each; the reference
+  lowering's blocks are real closures, so one of its bodies never holds
+  two of its loops.
 - A loop's code is its condition's and its body's block literals, so a
   loop nested in another lies inside one of the outer loop's block
   literals, and the innermost of `depth` nested loops inside `depth - 1`

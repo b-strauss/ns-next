@@ -766,8 +766,9 @@ fn a_tiny_global_cache_answers_like_a_full_one() {
 
 /// Only the families that ran take room in the table: `used`'s own two sends
 /// (`+` in its block, `do:`) and the family of the `Array>>do:` it ran --
-/// its loop's sends and its failure block's `super do:`, ten entries --
-/// and nothing for `unused` or for an initializer with no sends.
+/// its loop's sends and its failure block's `super do:`, ten entries,
+/// twelve in all -- and nothing for `unused` or for an initializer with no
+/// sends.
 #[test]
 fn only_the_families_that_ran_take_room_in_the_cache_table() {
     let source = indoc! {"

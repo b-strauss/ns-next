@@ -332,7 +332,9 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
   inlines, `^[self value] whileTrue: [body value]`, and `Array>>do:` reads
   its size through its leaf and walks it with an inlined `whileTrue:`
   sending `at:` and `value:`; the mirror rows, the native loops and their
-  continuations are gone, and nothing a program can see changed. The
+  continuations are gone, and nothing a program can see changed but the
+  level at which a recursion through a loop over blocks held in variables
+  overflows, now that `Closure>>whileTrue:` is a counted activation. The
   reference lowering lowers a loop over two block literals as a naive loop
   of `value` sends to real closures, whose activations are exempt from the
   depth count. [core-library.md](design/core-library.md), "Real bodies for

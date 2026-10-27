@@ -2868,8 +2868,8 @@ Two things about the shape are enforced rather than conventional:
   since `TypedArraysFactory.ns` and `MirrorsFactory.ns` hold mirror sends of their own. The reference lowering
   marks a mirror send whose failure block the optimized lowering inlines as a
   `SendInlinable`, and that mark covers the whole send, so it would exempt
-  from the depth count a literal block the leaf itself activates — as
-  `value`'s would be, were a kernel method to pass it one — which the
+  from the depth count a literal block the leaf itself activates — as the
+  reference lowering's loop exempts the blocks it sends `value` — which the
   optimized lowering counts; the two lowerings would then overflow at
   different depths ([compiler.md](compiler.md), "How the limit counts"). A
   block a leaf activates is therefore passed as a parameter, which neither
@@ -4910,8 +4910,12 @@ a naive loop over real closures, since `Closure>>whileTrue:`'s own body would
 otherwise send itself until the depth limit ([compiler.md](compiler.md),
 "What it emits").
 
-The bodies keep what the leaves they replaced did, so nothing a program can
-see changed. `do:` reads the size once, when the loop starts, and each
+The bodies keep what the leaves they replaced did, but for one thing: a
+loop over blocks held in variables is now an activation of
+`Closure>>whileTrue:` or `whileFalse:`, counted under both lowerings, so a
+recursion through such a loop takes three counted activations a level
+where it took two and overflows at a lower level ([execution.md](execution.md),
+"The depth limit"). `do:` reads the size once, when the loop starts, and each
 element when the walk reaches it, so a store inside the block to a later index
 is seen (`goldens/library/collection/do_sees_a_store_made_inside_its_block`);
 an empty array sends nothing, whatever the argument

@@ -55,7 +55,9 @@ pub(crate) const PARSER_NESTING_LIMIT: usize = 128;
 ///
 /// Every forward jump the optimized lowering emits belongs to an inlined
 /// form (`emit_guarded_branch`, `lower_while`, `lower_mirror_send`,
-/// `lower_integer_binary`); the reference lowering emits none. Over the
+/// `lower_integer_binary`), and every one the reference lowering emits to
+/// its loop (`Body::while_loop`), which keeps two open over its body's
+/// `value` send and has no block literal of its code inline. Over the
 /// code inside one of its block literals a form keeps at most two of its
 /// own jumps open, and over its own instructions at most three: a guarded
 /// branch's guard, its false branch and its true arm's exit, just as the
@@ -70,11 +72,12 @@ pub(crate) const PENDING_LIMIT: usize = 2 * (PARSER_NESTING_LIMIT - 1) + 3;
 /// How many loops a compiled body has open at once -- nested, each inside
 /// the one around it -- at most.
 ///
-/// Every loop either lowering emits is an inlined `whileTrue:` or one of
-/// its relatives (`lower_while`, one back edge each); the reference
-/// lowering emits none. A loop's code is its condition's and its body's
-/// block literals, so a loop nested in another lies inside one of the
-/// outer one's block literals, and the innermost of `depth` nested loops
+/// Every loop either lowering emits is a `whileTrue:` or one of its
+/// relatives over block literals, with one back edge each (`lower_while`,
+/// and the reference lowering's `Body::while_loop`, whose blocks are real
+/// closures, so that one of its bodies never holds two of its loops). A
+/// loop's code is its condition's and its body's block literals, so a loop
+/// nested in another lies inside one of the outer one's block literals, and the innermost of `depth` nested loops
 /// lies inside `depth - 1` of them. Its own instructions lie inside at most
 /// `PARSER_NESTING_LIMIT - 1` block literals (`PENDING_LIMIT`), so at most
 /// `PARSER_NESTING_LIMIT` loops are open (`docs/design/compiler.md`, "What

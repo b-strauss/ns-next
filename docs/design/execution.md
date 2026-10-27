@@ -37,8 +37,8 @@
 > `interpreter/unwind.rs`, and forcing a future in `interpreter/future.rs`),
 > `compiler/capture.rs` (the capture analysis) and
 > `compiler/lower.rs` (the converted register layout),
-> `builtins/block.rs` and `builtins/collections.rs` (the natives that answer
-> trampoline steps), `crates/ns-cli/src/main.rs` (the interpreter thread and
+> `builtins/block.rs` (`value`'s leaf, which answers a block's activation as
+> a step), `crates/ns-cli/src/main.rs` (the interpreter thread and
 > its stack), `crates/ns-cli/src/commands/bench.rs` and
 > `benchmarks/are-we-fast-yet/` (what "Measurements" times).
 
@@ -7420,7 +7420,9 @@ L and L + 1 and the overruns of the machinery, a `pass`'s included.
   `Array>>do:`'s loop, an ordinary send, so it is always counted. A loop
   receiver or body that is no block literal is sent `value` by
   `Closure>>whileTrue:`'s loop, a `SendPublic` under both lowerings, and
-  counted. `&` and `|` share `and:`'s and `or:`'s
+  counted, as is the activation of `Closure>>whileTrue:` itself: a
+  recursion through such a loop takes three counted activations a level,
+  and overflows at about a third of the limit. `&` and `|` share `and:`'s and `or:`'s
   native and so carry the mark too, which is harmless: no lowering emits a
   `SendInlinable` for them, since `control_flow::recognize` accepts only the
   eight inlined selectors, and a crafted artifact that marks one meets the
