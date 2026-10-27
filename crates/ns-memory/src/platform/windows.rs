@@ -118,19 +118,49 @@ pub(crate) unsafe fn release(address: *mut u8, _bytes: usize) {
 const EXECUTABLE_VIEW_ACCESS: FILE_MAP = FILE_MAP_READ | FILE_MAP_EXECUTE;
 const EXECUTABLE_VIEW_PROTECTION: PAGE_PROTECTION_FLAGS = PAGE_EXECUTE_READ;
 
-/// The protection the executable view is mapped and committed with
-/// includes write.
+/// Any committed page of the executable view's first `committed` bytes is
+/// writable, as the system reports its protection now (`VirtualQuery`), so
+/// that a commit which left the view writable is caught, not only a
+/// mapping asked for with write.
 #[cfg(test)]
-pub(crate) fn executable_view_is_writable() -> bool {
-    use windows_sys::Win32::System::Memory::{PAGE_EXECUTE_WRITECOPY, PAGE_WRITECOPY};
+pub(crate) fn executable_view_is_writable(mapping: &CodeMapping, committed: usize) -> bool {
+    use windows_sys::Win32::System::Memory::{
+        VirtualQuery, MEMORY_BASIC_INFORMATION, PAGE_EXECUTE_WRITECOPY, PAGE_WRITECOPY,
+    };
     let writable_protections = [
         PAGE_READWRITE,
         PAGE_WRITECOPY,
         PAGE_EXECUTE_READWRITE,
         PAGE_EXECUTE_WRITECOPY,
     ];
-    EXECUTABLE_VIEW_ACCESS & FILE_MAP_WRITE != 0
-        || writable_protections.contains(&EXECUTABLE_VIEW_PROTECTION)
+    // The modifier bits (guard, no-cache, write-combine) sit above the base
+    // protection's byte.
+    let base_protection_mask: PAGE_PROTECTION_FLAGS = 0xFF;
+    let mut offset = 0;
+    while offset < committed {
+        let address = mapping.executable.as_ptr().wrapping_add(offset);
+        // SAFETY: `MEMORY_BASIC_INFORMATION` is plain data, for which all-zero
+        // is a valid value.
+        let mut information: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: querying an address inside our own view reads nothing the
+        // program owns and writes only the structure it is given.
+        let written = unsafe {
+            VirtualQuery(
+                address.cast::<c_void>(),
+                &mut information,
+                std::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
+            )
+        };
+        assert!(written != 0, "VirtualQuery failed: {}", last_error());
+        if information.State == MEM_COMMIT
+            && writable_protections.contains(&(information.Protect & base_protection_mask))
+        {
+            return true;
+        }
+        let region_end = information.BaseAddress as usize + information.RegionSize;
+        offset = region_end - mapping.executable.as_ptr() as usize;
+    }
+    false
 }
 
 /// The two views of one code zone. The section itself needs no handle: the

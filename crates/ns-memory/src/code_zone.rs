@@ -77,11 +77,11 @@ impl CodeZone {
         self.identity
     }
 
-    /// The address code at `offset` runs from. An offset past the zone
-    /// answers an address past it: what calls the address has the offset
-    /// from a body this zone installed.
+    /// The address code at `offset` runs from. Panics on an offset past the
+    /// zone, in every build: what is called at the answer would be memory
+    /// the zone does not own.
     pub fn executable_address(&self, offset: CodeOffset) -> usize {
-        debug_assert!(
+        assert!(
             (offset.0 as usize) < self.size,
             "an offset past the code zone"
         );
@@ -120,10 +120,13 @@ impl CodeZone {
         }
     }
 
-    /// The protection the executable view was mapped with includes write.
+    /// The executable view's committed pages are writable: on Windows as
+    /// the system reports them now, elsewhere as the view was mapped (see
+    /// each platform's `executable_view_is_writable`). Only committed pages
+    /// are asked about, so a test writes before it asks.
     #[cfg(test)]
     pub fn executable_view_is_writable(&self) -> bool {
-        platform::executable_view_is_writable()
+        platform::executable_view_is_writable(&self.mapping, self.committed)
     }
 
     /// Commits the pages from the committed prefix's end through `end`.
@@ -184,7 +187,9 @@ impl CodeWriter<'_> {
         }
         self.zone.commit_through(end)?;
         // SAFETY: `start..end` is inside the committed prefix, which the
-        // writable view maps read-write; `bytes` is the caller's own memory
+        // writable view maps read-write -- on Apple AArch64 for this thread,
+        // whose write switch stays on while any writer of it lives, this one
+        // included, however writers nest; `bytes` is the caller's own memory
         // and cannot overlap the zone, which lends nothing while the writer
         // holds it mutably.
         unsafe {
@@ -257,11 +262,39 @@ mod tests {
 
     #[test]
     fn the_executable_view_is_never_writable() {
-        // The platform's own query (VirtualQuery / /proc/self/maps or mincore
-        // plus a write probe is not portable): answer the protection the
-        // executable view was mapped with, through a test-only accessor.
-        let zone = CodeZone::reserve(1 << 16).expect("a zone");
+        // On Windows the system's own report of the committed pages
+        // (`VirtualQuery`), so the write comes first; elsewhere what the view
+        // was mapped with, POSIX having no portable query.
+        let mut zone = CodeZone::reserve(1 << 16).expect("a zone");
+        zone.writer()
+            .write(CodeOffset(0), &[0xC3])
+            .expect("written");
+        assert!(zone.bytes(0..1).is_some(), "a page is committed");
         assert!(!zone.executable_view_is_writable());
+    }
+
+    #[test]
+    fn nested_writers_on_one_thread_both_write() {
+        // The first writer must still write after the second ended: on Apple
+        // AArch64 the thread's write switch is shared by both.
+        let mut first_zone = CodeZone::reserve(1 << 16).expect("a zone");
+        let mut second_zone = CodeZone::reserve(1 << 16).expect("a zone");
+        let mut first = first_zone.writer();
+        let mut second = second_zone.writer();
+        second.write(CodeOffset(0), &[2]).expect("written");
+        drop(second);
+        first.write(CodeOffset(0), &[1]).expect("written");
+        drop(first);
+        assert_eq!(first_zone.bytes(0..1), Some(&[1][..]));
+        assert_eq!(second_zone.bytes(0..1), Some(&[2][..]));
+    }
+
+    #[test]
+    #[should_panic(expected = "an offset past the code zone")]
+    fn an_executable_address_past_the_zone_panics() {
+        let zone = CodeZone::reserve(1 << 16).expect("a zone");
+        let end = u32::try_from(zone.size()).expect("small");
+        zone.executable_address(CodeOffset(end));
     }
 
     #[test]

@@ -120,16 +120,21 @@ pub(crate) unsafe fn release(address: *mut u8, bytes: usize) {
 #[cfg(not(all(target_vendor = "apple", target_arch = "aarch64")))]
 const EXECUTABLE_VIEW_PROTECTION: libc::c_int = libc::PROT_READ | libc::PROT_EXEC;
 
-/// The protection the executable view is mapped with includes write.
+/// The protection the executable view was mapped with includes write. It
+/// answers the mapping's request, not a query of the pages: POSIX has no
+/// portable query of a page's protection, and a commit here never changes
+/// the view's protection, so what was mapped is what the pages have.
 #[cfg(all(test, not(all(target_vendor = "apple", target_arch = "aarch64"))))]
-pub(crate) fn executable_view_is_writable() -> bool {
+pub(crate) fn executable_view_is_writable(_mapping: &CodeMapping, _committed: usize) -> bool {
     EXECUTABLE_VIEW_PROTECTION & libc::PROT_WRITE != 0
 }
 
-/// Under `MAP_JIT` the one view is writable only on a thread that switched
-/// its write protection off, which only a `CodeWriter` does, for its life.
+/// Always `false`, by definition rather than by observation: the one
+/// `MAP_JIT` mapping is mapped readable, writable and executable, and what
+/// keeps a thread from writing it is the thread's write protection, which
+/// only a live `CodeWriter` switches off.
 #[cfg(all(test, target_vendor = "apple", target_arch = "aarch64"))]
-pub(crate) fn executable_view_is_writable() -> bool {
+pub(crate) fn executable_view_is_writable(_mapping: &CodeMapping, _committed: usize) -> bool {
     false
 }
 
@@ -347,20 +352,40 @@ pub(crate) unsafe fn unmap_code(mapping: &CodeMapping, bytes: usize) {
     }
 }
 
-/// Switches the calling thread's view of every `MAP_JIT` page to writable,
-/// and so no longer executable, until `end_code_write`.
 #[cfg(all(target_vendor = "apple", target_arch = "aarch64"))]
-pub(crate) fn begin_code_write() {
-    // SAFETY: the switch affects only the calling thread's access to
-    // `MAP_JIT` pages, and no machine code runs while a writer lives.
-    unsafe { libc::pthread_jit_write_protect_np(0) };
+thread_local! {
+    /// How many writers the calling thread holds. The switch is one per
+    /// thread, not one per writer, so only the first writer switches it to
+    /// writing and only the last switches it back: a writer that ended
+    /// while another lived would otherwise leave the other storing into
+    /// pages its thread may only execute.
+    static WRITERS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// Switches the calling thread back to executing its `MAP_JIT` pages.
+/// Switches the calling thread's view of every `MAP_JIT` page to writable,
+/// and so no longer executable, until the matching `end_code_write`.
+#[cfg(all(target_vendor = "apple", target_arch = "aarch64"))]
+pub(crate) fn begin_code_write() {
+    let writers = WRITERS.get();
+    if writers == 0 {
+        // SAFETY: the switch affects only the calling thread's access to
+        // `MAP_JIT` pages, and no machine code runs while a writer lives.
+        unsafe { libc::pthread_jit_write_protect_np(0) };
+    }
+    WRITERS.set(writers + 1);
+}
+
+/// Switches the calling thread back to executing its `MAP_JIT` pages when
+/// its last writer ends.
 #[cfg(all(target_vendor = "apple", target_arch = "aarch64"))]
 pub(crate) fn end_code_write() {
-    // SAFETY: as for `begin_code_write`.
-    unsafe { libc::pthread_jit_write_protect_np(1) };
+    let writers = WRITERS.get();
+    debug_assert!(writers > 0, "a writer ended that never began");
+    WRITERS.set(writers.saturating_sub(1));
+    if writers == 1 {
+        // SAFETY: as for `begin_code_write`.
+        unsafe { libc::pthread_jit_write_protect_np(1) };
+    }
 }
 
 /// Nothing: the two views are separate addresses, so no thread switches
