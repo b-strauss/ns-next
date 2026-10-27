@@ -271,7 +271,7 @@ impl Primitive {
                 ActivationPrimitive::Current
                 | ActivationPrimitive::Sender
                 | ActivationPrimitive::MethodName
-                | ActivationPrimitive::IsActiveHandler
+                | ActivationPrimitive::NextHandler
                 | ActivationPrimitive::HandlerClass
                 | ActivationPrimitive::HandlerBlock
                 | ActivationPrimitive::SetHandlerActive
@@ -784,7 +784,9 @@ pub enum ActivationPrimitive {
     /// declares the activation's method and its selector, `nil` for an
     /// activation running no method.
     MethodName,
-    IsActiveHandler,
+    /// The next activation outward whose `on:do:` handler is active,
+    /// reifying none it passes.
+    NextHandler,
     HandlerClass,
     HandlerBlock,
     SetHandlerActive,
@@ -1396,9 +1398,9 @@ pub const MIRROR: &[MirrorEntry] = &[
         Primitive::Activation(ActivationPrimitive::MethodName),
     ),
     mirror(
-        "activationIsActiveHandler:ifFail:",
-        "isActiveHandler",
-        Primitive::Activation(ActivationPrimitive::IsActiveHandler),
+        "activationNextHandler:ifFail:",
+        "nextHandler",
+        Primitive::Activation(ActivationPrimitive::NextHandler),
     ),
     mirror(
         "activationHandlerClass:ifFail:",

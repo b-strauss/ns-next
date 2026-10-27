@@ -129,6 +129,40 @@ impl<'gc> WalkedActivation<'gc> {
         }
     }
 
+    /// The running activation of `frame`: the stack frame it is married
+    /// to, or the frame itself when it is suspended. `None` once its
+    /// activation has returned.
+    pub(crate) fn of_running_frame(
+        heap: &Heap<'gc>,
+        frame: FrameReference<'gc>,
+    ) -> Option<WalkedActivation<'gc>> {
+        match heap.frame_activation(frame) {
+            Some(activation) => Some(WalkedActivation::Live(activation)),
+            None => heap
+                .frame_is_suspended(frame)
+                .then_some(WalkedActivation::Suspended(frame)),
+        }
+    }
+
+    /// The unwind marker of the code the activation runs, if it carries
+    /// one.
+    pub(crate) fn unwind_marker(self, heap: &Heap<'gc>) -> Option<UnwindMarker> {
+        match self {
+            WalkedActivation::Live(activation) => heap.activation_unwind_marker(activation),
+            WalkedActivation::Suspended(frame) => heap.frame_unwind_marker(frame),
+        }
+    }
+
+    /// The activation's frame object: a live one reified on the first
+    /// call and the same object on every later one, a suspended one the
+    /// frame it lives in.
+    pub(crate) fn reified(self, heap: &mut Heap<'gc>) -> FrameReference<'gc> {
+        match self {
+            WalkedActivation::Live(activation) => heap.reify(activation),
+            WalkedActivation::Suspended(frame) => frame,
+        }
+    }
+
     /// The VM error the activation is the `signal` of, if the unwinder
     /// pushed it to signal one (`Continuation::VmErrorSignalled`).
     pub(crate) fn signalled_vm_error(self, heap: &Heap<'gc>) -> Option<NewspeakError<'gc>> {

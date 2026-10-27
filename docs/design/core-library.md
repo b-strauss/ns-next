@@ -3535,7 +3535,18 @@ the `on:do:` activation and returns the value from it; `retry` unwinds to
 it and restarts it at its first instruction, evaluating the protected block
 again; `resume:` makes the value the result of `signal`, unwinding what
 lies between the handler and the signal; `pass` searches on from the
-handler's `on:do:` for the next handler out. A `^` out of a handler block is
+handler's `on:do:` for the next handler out. The walk goes through one
+leaf, `activationNextHandler:`, which answers the next enabled `on:do:`
+activation outward and reifies no activation it passes -- as Cog's handler
+search marries only the context it finds (`primitiveFindHandlerContext`,
+`prior-art/opensmalltalk-vm/src/spur64.sista/cointerp.c:84085-84112`) --
+so a signal allocates the same however deep below its handler it is
+raised, and a frame a compiled tier ran is never turned back into
+interpreted ones for being passed ([execution.md](execution.md),
+"Planned: the deoptimization contract", "Observers");
+`crates/ns-runtime/tests/exceptions.rs`'s
+`a_handler_search_reifies_no_frame_it_passes` pins it under both lowerings.
+A `^` out of a handler block is
 a non-local return through `signal` and the handler's activation, and goes
 through the same unwinder. An exception signalled in an `ensure:` block
 while an unwind is running behaves as any exception does at that point: if
@@ -4384,7 +4395,7 @@ needs a name for.
   `THIRD-PARTY-NOTICES.md` no entry for it; the module is written here, to
   Primordial Soup's API.
 - **The handler search keeps no `OrderedCollection`, built.** `invokeNextHandler`
-  counts the enabled `on:do:` activations it passes, and
+  counts the enabled `on:do:` activations `activationNextHandler:` answers, and
   `invokeHandlerAt:disabling:` fills an `Array new: count` by walking the same range
   again, then disables and re-enables them as it does today. A walk that
   kept nothing cannot replace it: once disabled, the handlers this search
