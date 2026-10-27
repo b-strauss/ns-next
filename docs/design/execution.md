@@ -7110,6 +7110,71 @@ tree's: the separation is the two sittings' levels pooled, not the
 change, and neither runs the handler search in its loop (Json signals
 only on a parse error).
 
+### What Newspeak loop bodies moved
+
+**Measured 2026-10-27, `ab0bff29` against `master` (`be211fe8`)**, by
+the protocol of the `measuring-performance` skill: three release builds a
+side with the pinned alignment, builds a, b and c varying the block
+layout inside `vm::run`, the same three on both sides; five rounds in a
+rotating order, two sittings; `bench --iterations 30` for the micro
+sources and `bench_do.ns`, `--iterations 3` for CD, Havlak, Mandelbrot,
+NBody and DeltaBlue and `--iterations 10` for the other Are We Fast Yet
+programs. `bench_do.ns` is spelled as "What spec-conformant lookup moved"
+describes it, today's syntax, with `{1. 2. … 10}` and `= Object new`;
+`bench_while.ns` is in the tree and ran under both. Each cell is the mean
+of a tree's medians over its builds, rounds and sittings, in
+milliseconds; "builds" is the range of its three builds' means, and
+"separated" says whether the two trees' ranges do not overlap.
+
+| Source | master (ms) | master builds | branch (ms) | branch builds | Change | Builds separated |
+|---|---|---|---|---|---|---|
+| `bench_block` | 7.220 | 7.207–7.234 | 7.157 | 7.119–7.192 | -0.9% | faster |
+| `bench_loop` | 2.171 | 2.159–2.188 | 2.157 | 2.146–2.179 | -0.7% | no |
+| `bench_megamorphic` | 4.677 | 4.649–4.695 | 4.671 | 4.658–4.678 | -0.1% | no |
+| `bench_send` | 3.234 | 3.220–3.252 | 3.240 | 3.228–3.248 | +0.2% | no |
+| `bench_signal` | 21.037 | 20.878–21.232 | 21.716 | 21.657–21.834 | +3.2% | slower |
+| `bench_while` | 33.984 | 33.713–34.400 | 50.107 | 50.022–50.166 | +47.4% | slower |
+| `bench_do` | 2.638 | 2.636–2.643 | 4.242 | 4.236–4.246 | +60.8% | slower |
+| `Bounce` | 0.896 | 0.895–0.897 | 1.051 | 1.044–1.055 | +17.3% | slower |
+| `CD` | 3386.693 | 3339.742–3410.251 | 3496.958 | 3460.322–3515.720 | +3.3% | slower |
+| `DeltaBlue` | 607.833 | 602.170–610.753 | 607.400 | 603.153–610.745 | -0.1% | no |
+| `DeltaBlueTon80` | 6.886 | 6.837–6.933 | 6.913 | 6.861–6.960 | +0.4% | no |
+| `Havlak` | 3191.442 | 3170.070–3218.323 | 3201.297 | 3177.402–3222.702 | +0.3% | no |
+| `Json` | 9.934 | 9.870–9.972 | 9.839 | 9.799–9.887 | -1.0% | no |
+| `List` | 0.925 | 0.922–0.926 | 0.923 | 0.920–0.926 | -0.1% | no |
+| `Mandelbrot` | 2702.151 | 2695.867–2712.388 | 2717.818 | 2713.844–2720.059 | +0.6% | slower |
+| `NBody` | 1975.922 | 1963.546–1988.244 | 2002.760 | 1999.071–2009.600 | +1.4% | slower |
+| `Permute` | 2.396 | 2.382–2.414 | 2.383 | 2.374–2.393 | -0.6% | no |
+| `Queens` | 1.973 | 1.963–1.980 | 1.971 | 1.959–1.987 | -0.1% | no |
+| `Richards` | 61.626 | 61.072–62.357 | 61.837 | 61.557–62.238 | +0.3% | no |
+| `RichardsTon80` | 4.349 | 4.326–4.364 | 4.335 | 4.319–4.356 | -0.3% | no |
+| `Sieve` | 1.373 | 1.364–1.379 | 1.375 | 1.365–1.381 | +0.1% | no |
+| `Storage` | 1.423 | 1.421–1.427 | 1.424 | 1.414–1.438 | +0.1% | no |
+| `Towers` | 3.070 | 3.043–3.100 | 3.074 | 3.035–3.101 | +0.1% | no |
+
+The geometric mean over the twenty-three sources is +4.8%, nearly all of
+it the programs that walk an `Array` with `do:` or loop over blocks held
+in variables: `bench_do.ns` +61%, `bench_while.ns` +47%, Bounce +17%,
+CD +3.3%, `bench_signal.ns` +3.2% and NBody +1.4%; the programs that
+loop only through inlined literals are level. It is the price the
+decision to write these bodies in Newspeak named before the JIT ("Kernel
+method bodies forward" in [core-library.md](core-library.md), and its
+exception): an element now costs a cached `at:` and a cached `value:`
+send and about ten instructions of the loop around them, some 32 ns more
+than the leaf's one step in `bench_do.ns`, and a turn of a loop that is
+not inlined a cached `value` to each block, about 39 ns more in
+`bench_while.ns`. Nothing in the code was found to be cheaper: an interim
+measurement (one pinned build a side, three rounds) of the two
+alternatives a kernel method has -- the element read through the
+`collection:at:ifFail:` leaf instead of `at:`, and also the blocks run
+through the `blockValue:ifFail:` and `block:value:ifFail:` leaves instead
+of `value` and `value:` -- measured both slower than the sends,
+`bench_do.ns` 4.77 and 5.14 ms against 4.25, Bounce 1.08 and 1.14 ms
+against 1.05, since a hit in a send's inline cache reaches the leaf for
+less than a mirror send's own dispatch. The cost is the baseline JIT's to
+recover, by inlining the loop's sends into it (road step 8,
+[OPEN-WORK.md](../OPEN-WORK.md)).
+
 ## The trampoline
 
 Sends do not recurse on the Rust stack. Every running activation lives on the

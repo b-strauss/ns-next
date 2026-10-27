@@ -24,7 +24,11 @@ contract"). The step between 7 and 8 is built: `Closure>>whileTrue:` and
 `whileFalse:` and `Array>>do:` are Newspeak loops, whose sends the JIT
 sees through
 ([core-library.md](design/core-library.md), "Real bodies for control
-flow and `do:`").
+flow and `do:`"); before the JIT they cost: `bench_do.ns` is 61%
+slower, Bounce 17%, CD 3.3%, the geometric mean 4.8%, which the
+baseline JIT is to recover by inlining the loops' sends
+([execution.md](design/execution.md), "What Newspeak loop bodies
+moved").
 
 7a′, 7b and 7a are built. The register windows overlap, in Cog's layout
 -- the arguments, then the header, then the other registers, the

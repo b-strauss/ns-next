@@ -6349,15 +6349,19 @@ parameter, a `whileFalse:` condition that goes non-Boolean, a payload-less
 `Array` subclass sent `do:`, `do:` on an empty array, and a recursion
 through a literal loop under both lowerings -- and the golden image
 fixture was regenerated, its fingerprint alone moving with the changed
-core library. The measurement is [execution.md](design/execution.md),
+core library. Before a JIT the loops cost: `bench_do.ns` is 61% slower,
+Bounce 17%, CD 3.3%, the geometric mean over twenty-three sources 4.8%,
+and the two leaf-based alternatives measured slower still. The
+measurement is [execution.md](design/execution.md),
 "What Newspeak loop bodies moved".
 
 - `e5ac62ac` -- the plan.
 - `6da36a2a` -- `whileTrue:` and `whileFalse:` in Newspeak, and the
   reference lowering's loop.
 - `ab0bff29` -- `Array>>do:` in Newspeak.
-- The commits that add `benchmarks/micro/bench_while.ns`, record the
-  measurement and close the documents.
+- `4d705b6e` -- the documents.
+- `38aea95f` -- `benchmarks/micro/bench_while.ns`.
+- The commit that records the measurement.
 
 What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the depth
 flag a continuation's push still takes, dead now, to be removed and
