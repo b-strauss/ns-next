@@ -18,6 +18,16 @@ use crate::{MemoryError, Operation};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CodeOffset(pub u32);
 
+/// A Rust function machine code calls through the shim: the context the
+/// code was entered with, and three argument words; it answers one word.
+pub type Leaf<C> = fn(&mut C, [u64; 3]) -> u64;
+
+/// The words of the block machine code is entered with. Word 0 is the
+/// context's address, word 1 the shim's, word 2 the leaf table's, word 3
+/// the number of leaves; `CodeZone::enter` writes these four on every
+/// entry. Words 4 to 15 belong to the caller (`jit::stubs` defines them).
+pub const ENTRY_BLOCK_WORDS: usize = 16;
+
 /// The next zone's identity. It starts at 1, so 0 is never an identity and
 /// can stand for "no zone" where one is recorded.
 static NEXT_IDENTITY: AtomicU64 = AtomicU64::new(1);
@@ -120,6 +130,44 @@ impl CodeZone {
         }
     }
 
+    /// Runs the code at `stub` with the platform's C calling convention, as
+    /// an `extern "C" fn(*mut u64) -> u64` given the block's address, and
+    /// answers what it answers. Words 0 to 3 of the block are written first
+    /// (`ENTRY_BLOCK_WORDS`), so the code reaches `context` and `leaves`
+    /// only through the shim.
+    ///
+    /// Safe on one trust: the code at `stub` was written by `ns-runtime`'s
+    /// JIT, which is the contract -- a complete function of the C calling
+    /// convention that touches only the block, its own frame and what its
+    /// leaves hand it, and returns. That is `unsafe` behind a safe
+    /// abstraction, as `docs/design/README.md`, "Principles", accepts: no
+    /// caller can check machine code, so no caller is asked to. Panics, as
+    /// `executable_address` does, on a stub past the zone. No writer can be
+    /// alive meanwhile: a writer holds the zone mutably.
+    pub fn enter<C>(
+        &self,
+        stub: CodeOffset,
+        block: &mut [u64; ENTRY_BLOCK_WORDS],
+        context: &mut C,
+        leaves: &[Leaf<C>],
+    ) -> u64 {
+        let address = self.executable_address(stub);
+        // The one pointer to the context the code and the shim use: derived
+        // once, and `context` is not touched again before the code returns,
+        // so every `&mut C` the shim makes from it is the only live one.
+        let context: *mut C = context;
+        block[0] = context.expose_provenance() as u64;
+        block[1] = (leaf_shim::<C> as *const ()).expose_provenance() as u64;
+        block[2] = leaves.as_ptr().expose_provenance() as u64;
+        block[3] = leaves.len() as u64;
+        let block = block.as_mut_ptr();
+        // SAFETY: `address` is inside the zone's executable view, which
+        // lives while `&self` does; that it holds a complete C function of
+        // this signature is the JIT's contract stated above.
+        let code = unsafe { std::mem::transmute::<usize, extern "C" fn(*mut u64) -> u64>(address) };
+        code(block)
+    }
+
     /// The executable view's committed pages are writable: on Windows as
     /// the system reports them now, elsewhere as the view was mapped (see
     /// each platform's `executable_view_is_writable`). Only committed pages
@@ -158,6 +206,48 @@ impl Drop for CodeZone {
         // `&mut self` in `drop` means nothing refers into it any more.
         unsafe { platform::unmap_code(&self.mapping, self.size) };
     }
+}
+
+/// The one way machine code calls Rust: `leaves[leaf](context, [first,
+/// second, third])`, the context and the leaf table read from the entry
+/// block (`ENTRY_BLOCK_WORDS`), whose address the code hands back as the
+/// first argument. It has the platform's C calling convention, so code
+/// calls it with the arguments in that convention's registers -- on
+/// Windows the fifth on the stack above the 32-byte shadow space.
+///
+/// Safety argument: machine code entered through `CodeZone::enter` is a
+/// function holding `context` mutably; it hands the block back only while
+/// it waits for the leaf, so the `&mut C` made here is the only live
+/// reference to the context, and the table is the `&[Leaf<C>]` `enter`
+/// still borrows. A leaf index at or past the count aborts the process: a
+/// panic must never unwind into machine code, and calling past the table
+/// would run whatever word lies there. For the same reason a panic in a
+/// leaf aborts too -- Rust aborts when a panic reaches an `extern "C"`
+/// boundary.
+extern "C" fn leaf_shim<C>(block: *mut u64, leaf: u64, first: u64, second: u64, third: u64) -> u64 {
+    // SAFETY: `block` is the address `enter` handed the code, of a block of
+    // `ENTRY_BLOCK_WORDS` words that `enter` borrows mutably until the code
+    // returns, and the code calls the shim only before it returns.
+    let (context, table, count) =
+        unsafe { (block.read(), block.add(2).read(), block.add(3).read()) };
+    if leaf >= count {
+        std::process::abort();
+    }
+    let table = std::ptr::with_exposed_provenance::<Leaf<C>>(word_as_address(table));
+    // SAFETY: the table is `enter`'s `leaves`, still borrowed, `count` long,
+    // and `leaf` is below `count`.
+    let function = unsafe { table.add(word_as_address(leaf)).read() };
+    let context = std::ptr::with_exposed_provenance_mut::<C>(word_as_address(context));
+    // SAFETY: the context pointer `enter` derived once from its `&mut C`,
+    // which nothing else uses until the code returns (the argument above).
+    function(unsafe { &mut *context }, [first, second, third])
+}
+
+/// A block word as an address or an index. Every target the code zone
+/// supports has 64-bit addresses, so this never aborts; it aborts rather
+/// than truncate because the shim must not panic.
+fn word_as_address(word: u64) -> usize {
+    usize::try_from(word).unwrap_or_else(|_| std::process::abort())
 }
 
 /// The one way code is written into a zone. Dropping it makes what it
@@ -328,5 +418,106 @@ mod tests {
         // executable view, which lives until the end of the test.
         let function = unsafe { std::mem::transmute::<usize, extern "C" fn() -> u32>(address) };
         assert_eq!(function(), 42);
+    }
+
+    /// `mov rax, [first argument + displacement]; ret`: a body answering one
+    /// word of the block it is entered with.
+    #[cfg(target_arch = "x86_64")]
+    fn a_body_answering_the_block_word(word: u8) -> [u8; 5] {
+        #[cfg(windows)]
+        let register_byte = 0x41;
+        #[cfg(not(windows))]
+        let register_byte = 0x47;
+        [0x48, 0x8B, register_byte, word * 8, 0xC3]
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn entered_code_answers_a_word_of_its_block() {
+        let mut zone = CodeZone::reserve(1 << 16).expect("a zone");
+        // mov rax, [argument + 32]; ret
+        #[cfg(windows)]
+        let code = [0x48, 0x8B, 0x41, 0x20, 0xC3];
+        #[cfg(not(windows))]
+        let code = [0x48, 0x8B, 0x47, 0x20, 0xC3];
+        zone.writer().write(CodeOffset(0), &code).expect("written");
+        let mut block = [0u64; ENTRY_BLOCK_WORDS];
+        block[4] = 42;
+        let mut context = ();
+        assert_eq!(zone.enter(CodeOffset(0), &mut block, &mut context, &[]), 42);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn the_entry_writes_the_context_and_the_shim_into_the_block() {
+        let mut zone = CodeZone::reserve(1 << 16).expect("a zone");
+        zone.writer()
+            .write(CodeOffset(0), &a_body_answering_the_block_word(0))
+            .expect("written");
+        zone.writer()
+            .write(CodeOffset(16), &a_body_answering_the_block_word(1))
+            .expect("written");
+        let mut block = [0u64; ENTRY_BLOCK_WORDS];
+        let mut context: u64 = 7;
+        let context_address = std::ptr::addr_of_mut!(context) as u64;
+        assert_eq!(
+            zone.enter(CodeOffset(0), &mut block, &mut context, &[]),
+            context_address
+        );
+        assert_eq!(
+            zone.enter(CodeOffset(16), &mut block, &mut context, &[]),
+            (leaf_shim::<u64> as *const ()).expose_provenance() as u64
+        );
+    }
+
+    #[test]
+    fn the_shim_calls_the_indexed_leaf_with_the_context() {
+        // Called from Rust with a block laid out as `enter` lays it out, so
+        // the dispatch is checked apart from any call sequence.
+        fn first(context: &mut u64, arguments: [u64; 3]) -> u64 {
+            *context += arguments[0];
+            1
+        }
+        fn second(context: &mut u64, arguments: [u64; 3]) -> u64 {
+            *context += arguments[1] * arguments[2];
+            2
+        }
+        let leaves: [Leaf<u64>; 2] = [first, second];
+        let mut context: u64 = 0;
+        let mut block = [0u64; ENTRY_BLOCK_WORDS];
+        block[0] = std::ptr::addr_of_mut!(context).expose_provenance() as u64;
+        block[2] = leaves.as_ptr().expose_provenance() as u64;
+        block[3] = 2;
+        let block = block.as_mut_ptr();
+        assert_eq!(leaf_shim::<u64>(block, 1, 0, 3, 5), 2);
+        assert_eq!(leaf_shim::<u64>(block, 0, 7, 0, 0), 1);
+        assert_eq!(context, 22);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn the_entry_writes_the_leaf_table_and_its_count_into_the_block() {
+        fn add_one(context: &mut u64, arguments: [u64; 3]) -> u64 {
+            *context += 1;
+            arguments[0]
+        }
+        let mut zone = CodeZone::reserve(1 << 16).expect("a zone");
+        zone.writer()
+            .write(CodeOffset(0), &a_body_answering_the_block_word(2))
+            .expect("written");
+        zone.writer()
+            .write(CodeOffset(16), &a_body_answering_the_block_word(3))
+            .expect("written");
+        let leaves: [Leaf<u64>; 2] = [add_one, add_one];
+        let mut block = [0u64; ENTRY_BLOCK_WORDS];
+        let mut context: u64 = 0;
+        assert_eq!(
+            zone.enter(CodeOffset(0), &mut block, &mut context, &leaves),
+            leaves.as_ptr() as u64
+        );
+        assert_eq!(
+            zone.enter(CodeOffset(16), &mut block, &mut context, &leaves),
+            2
+        );
     }
 }

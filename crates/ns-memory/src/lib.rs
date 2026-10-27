@@ -16,7 +16,8 @@
 //!
 //! The JIT's machine code lives in a `CodeZone`, mapped twice, one view
 //! executable and one writable, and written only through its `CodeWriter`
-//! (docs/design/execution.md, "Executable memory").
+//! (docs/design/execution.md, "Executable memory"); `CodeZone::enter` runs
+//! it, and it calls Rust back through the zone's leaf shim.
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(clippy::undocumented_unsafe_blocks)]
 
@@ -27,7 +28,7 @@ mod platform;
 use std::ops::Range;
 use std::ptr::NonNull;
 
-pub use code_zone::{CodeOffset, CodeWriter, CodeZone};
+pub use code_zone::{CodeOffset, CodeWriter, CodeZone, Leaf, ENTRY_BLOCK_WORDS};
 use page_map::PageMap;
 
 /// How a committed page range may be accessed.
