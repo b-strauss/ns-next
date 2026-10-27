@@ -31,7 +31,7 @@ groups (CLAUDE.md, \"The gates\", says when each runs):
   caches               every golden with a two-entry global cache (profile caches)
   memory               ns-memory's clippy for Linux and macOS
   benchmarks           the benchmark programs verified at full size (profile benchmarks-verify)
-  stress               the six stress modes over the suite, then run-corpus plain and under each
+  stress               the eight stress modes over the suite, then run-corpus plain and under each
   release-checks       the suite without debug assertions (cargo profile release-checks)
   codegen              the hot path's machine code against its budgets (cargo asm, release)
   plugin-verification  the plugin against several IDEs (verifyPlugin buildPlugin)
@@ -39,7 +39,9 @@ groups (CLAUDE.md, \"The gates\", says when each runs):
 
 /// The stress switches the runtime reads in a debug build
 /// (`docs/design/README.md`, "Gates").
-const STRESS_MODES: [&str; 6] = ["MOVES", "CACHES", "COLLECT", "SCAVENGE", "WIDE", "SUSPEND"];
+const STRESS_MODES: [&str; 8] = [
+    "MOVES", "CACHES", "COLLECT", "SCAVENGE", "WIDE", "SUSPEND", "JIT", "EXIT",
+];
 
 /// Where `ns-runtime`'s `build.rs` looks for the shipped modules' compiled
 /// mixins, relative to the repository root.
@@ -593,6 +595,14 @@ mod tests {
     }
 
     #[test]
+    fn the_stress_group_runs_eight_modes() {
+        assert_eq!(STRESS_MODES.len(), 8);
+        for mode in ["JIT", "EXIT"] {
+            assert!(STRESS_MODES.contains(&mode), "no stress mode {mode}");
+        }
+    }
+
+    #[test]
     fn a_stress_run_of_the_corpus_sets_its_switch() {
         let parts = group("stress").expect("a group");
         let Part::Steps(runs) = &parts[1] else {
@@ -604,10 +614,13 @@ mod tests {
             [("NS_NEXT_STRESS_MOVES".to_string(), "1".to_string())]
         );
         assert_eq!(runs.len(), 1 + STRESS_MODES.len());
-        assert_eq!(
-            runs.last().expect("a run").environment,
-            [("NS_NEXT_STRESS_SUSPEND".to_string(), "1".to_string())],
-            "the corpus also runs under the suspend stress mode"
-        );
+        for mode in ["SUSPEND", "JIT", "EXIT"] {
+            assert!(
+                runs.iter()
+                    .any(|run| run.environment
+                        == [(format!("NS_NEXT_STRESS_{mode}"), "1".to_string())]),
+                "the corpus also runs under the {mode} stress mode"
+            );
+        }
     }
 }

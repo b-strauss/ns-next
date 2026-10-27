@@ -274,18 +274,52 @@ pub(crate) struct JitState {
     counting: bool,
     statistics: JitStatistics,
     /// Whether a body exiting at entry is installed all the same, so that
-    /// a test fills a zone, or compiles a body anew, before any
+    /// a test fills a zone, or compiles a body anew, and the JIT stress
+    /// mode runs the entry stub and the exit on every push, before any
     /// instruction has a template.
-    #[cfg(test)]
     install_bodies_exiting_at_entry: bool,
+    /// The entry that compiles a body: its first under the JIT stress mode.
+    compile_at_entry: u32,
+}
+
+/// Whether `NS_NEXT_STRESS_JIT` asks for the JIT stress mode: set, and
+/// neither empty nor `0`. Debug builds only, like the other stress modes;
+/// read once per process. It forces the JIT on where it is available,
+/// compiles every body at its first entry and installs a body whose
+/// machine code exits at its first instruction, so that every program runs
+/// the entry stub, the exit and the resumption on every push rather than
+/// the interpreter alone (`docs/design/README.md`, "Gates").
+fn stress_jit_from_env() -> bool {
+    static REQUESTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    cfg!(debug_assertions)
+        && *REQUESTED.get_or_init(|| {
+            std::env::var_os("NS_NEXT_STRESS_JIT")
+                .is_some_and(|value| !value.is_empty() && value != "0")
+        })
+}
+
+/// Whether `NS_NEXT_STRESS_EXIT` asks for the exit stress mode: set, and
+/// neither empty nor `0`. Debug builds only; read once per process. Every
+/// poll the machine code passes then takes its exit, as if a safepoint
+/// were requested. It forces the JIT on where it is available, and has no
+/// effect until a template emits a poll (the back edges are the first).
+pub(crate) fn stress_exit_from_env() -> bool {
+    static REQUESTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    cfg!(debug_assertions)
+        && *REQUESTED.get_or_init(|| {
+            std::env::var_os("NS_NEXT_STRESS_EXIT")
+                .is_some_and(|value| !value.is_empty() && value != "0")
+        })
 }
 
 impl JitState {
     /// The state of a new interpreter: a zone of `DEFAULT_ZONE_BYTES`,
     /// unless `NS_NEXT_NO_JIT=1` turns the JIT off.
     pub(crate) fn new() -> JitState {
-        let wanted =
-            available() && std::env::var_os("NS_NEXT_NO_JIT").is_none_or(|value| value != "1");
+        let stress_jit = stress_jit_from_env();
+        let stress = stress_jit || stress_exit_from_env();
+        let wanted = available()
+            && (stress || std::env::var_os("NS_NEXT_NO_JIT").is_none_or(|value| value != "1"));
         let zone = if wanted {
             reserve_zone(DEFAULT_ZONE_BYTES)
         } else {
@@ -297,8 +331,8 @@ impl JitState {
             maps: Vec::new(),
             counting: false,
             statistics: JitStatistics::default(),
-            #[cfg(test)]
-            install_bodies_exiting_at_entry: false,
+            install_bodies_exiting_at_entry: stress_jit,
+            compile_at_entry: if stress_jit { 1 } else { COMPILE_AT_ENTRY },
         }
     }
 
@@ -353,6 +387,7 @@ impl JitState {
             counting: false,
             statistics: JitStatistics::default(),
             install_bodies_exiting_at_entry,
+            compile_at_entry: COMPILE_AT_ENTRY,
         }
     }
 }
@@ -430,7 +465,7 @@ pub(crate) fn note_entry(state: &mut JitState, code: &CompiledCode) {
         COMPILED => compile_into_slot(state, code),
         entries => {
             let entries = entries + 1;
-            if entries >= COMPILE_AT_ENTRY {
+            if entries >= state.compile_at_entry {
                 compile_into_slot(state, code);
             } else {
                 slot.state.set(entries);
@@ -467,11 +502,7 @@ fn compile(state: &mut JitState, code: &CompiledCode) -> Result<(CodeOffset, u32
     };
     let macro_assembler = macro_assembler::MacroAssembler::new(macro_assembler::Abi::host());
     let body = baseline::compile(code, macro_assembler)?;
-    #[cfg(test)]
-    let install_anyway = state.install_bodies_exiting_at_entry;
-    #[cfg(not(test))]
-    let install_anyway = false;
-    if body.exits_at_entry && !install_anyway {
+    if body.exits_at_entry && !state.install_bodies_exiting_at_entry {
         return Err(Refusal::ExitsAtEntry);
     }
     let map = u32::try_from(state.maps.len()).map_err(|_| Refusal::ZoneFull)?;

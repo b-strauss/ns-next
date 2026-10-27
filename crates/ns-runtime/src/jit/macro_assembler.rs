@@ -155,6 +155,9 @@ pub(crate) struct MacroAssembler {
     #[cfg(debug_assertions)]
     program_counter: u32,
     cold_paths: Vec<ColdPath>,
+    /// Whether a poll takes its exit unconditionally, as under
+    /// `NS_NEXT_STRESS_EXIT`: a safepoint is always requested.
+    exit_at_every_poll: bool,
 }
 
 impl MacroAssembler {
@@ -166,7 +169,15 @@ impl MacroAssembler {
             #[cfg(debug_assertions)]
             program_counter: 0,
             cold_paths: Vec::new(),
+            exit_at_every_poll: super::stress_exit_from_env(),
         }
+    }
+
+    /// Makes every poll emitted from now on exit at once (`true`) or only
+    /// on a requested safepoint, whatever `NS_NEXT_STRESS_EXIT` says.
+    #[cfg(test)]
+    pub(crate) fn set_exit_at_every_poll(&mut self, exit_at_every_poll: bool) {
+        self.exit_at_every_poll = exit_at_every_poll;
     }
 
     pub(crate) fn roles(&self) -> Roles {
@@ -341,7 +352,15 @@ impl MacroAssembler {
     /// flag is set, and falls through otherwise. Clobbers the flags and
     /// the idiom scratch register. The exit is out of line, so a poll that
     /// finds nothing costs two loads, a compare and a branch not taken.
+    ///
+    /// Under the exit stress mode the exit is unconditional, so that every
+    /// poll's exit, and the interpreter's resumption after it, run under
+    /// the whole suite without waiting for a safepoint to be requested.
     pub(crate) fn poll(&mut self, program_counter: u32) {
+        if self.exit_at_every_poll {
+            self.exit(ExitKind::Safepoint, program_counter);
+            return;
+        }
         let label = self.assembler.label();
         let scratch = self.roles.idiom_scratch;
         let flag = self.block_word(BlockWord::PollWord);

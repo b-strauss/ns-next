@@ -417,6 +417,7 @@ mod tests {
     fn a_poll_exits_only_when_a_safepoint_is_requested() {
         let mut machine = Machine::new();
         let body = machine.body(|macro_assembler| {
+            macro_assembler.set_exit_at_every_poll(false);
             macro_assembler.poll(3);
             macro_assembler.load_immediate_word(RAX, 42);
             macro_assembler.store_frame_register(0, RAX);
@@ -429,5 +430,21 @@ mod tests {
         let (exit, _) = machine.run(body, &mut frame, 0, &false, &mut (), &[]);
         assert_eq!(exit, MachineExit::Reexecute { program_counter: 4 });
         assert_eq!(frame[0], 42);
+    }
+
+    #[test]
+    fn a_poll_under_the_exit_stress_mode_exits_whatever_is_requested() {
+        let mut machine = Machine::new();
+        let body = machine.body(|macro_assembler| {
+            macro_assembler.set_exit_at_every_poll(true);
+            macro_assembler.poll(3);
+            macro_assembler.load_immediate_word(RAX, 42);
+            macro_assembler.store_frame_register(0, RAX);
+            macro_assembler.exit(ExitKind::Reexecute, 4);
+        });
+        let mut frame = [0u64; 8];
+        let (exit, _) = machine.run(body, &mut frame, 0, &false, &mut (), &[]);
+        assert_eq!(exit, MachineExit::Safepoint { program_counter: 3 });
+        assert_eq!(frame[0], 0, "nothing after the poll ran");
     }
 }
