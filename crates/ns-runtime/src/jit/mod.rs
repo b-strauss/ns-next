@@ -27,7 +27,7 @@ pub(crate) mod leaves;
     not(test),
     expect(
         dead_code,
-        reason = "only the exit is emitted while every instruction lowers to one; the templates                   and leaves of the next stage call the other idioms"
+        reason = "templates and leaves, which call the other idioms, come with the next stage"
     )
 )]
 pub(crate) mod macro_assembler;
@@ -69,9 +69,14 @@ pub(crate) fn available() -> bool {
 pub struct JitStatistics {
     /// Bodies compiled to machine code.
     pub compiled_bodies: u64,
-    /// Bodies the compiler refused -- too many instructions, or no room
-    /// left in the zone -- which stay interpreted for good.
+    /// Bodies the compiler refused -- too many instructions, code the
+    /// assembler could not lay out, or no room left in the zone -- which
+    /// stay interpreted for good.
     pub refused_bodies: u64,
+    /// Bodies whose first instruction lowers to an exit, so that their
+    /// machine code would leave at once: neither installed nor entered,
+    /// and interpreted for good.
+    pub bodies_exiting_at_entry: u64,
     /// Backward jumps machine code took, counted only while
     /// `Interpreter::set_jit_counting` is on, so that a loop in machine
     /// code pays nothing for the count otherwise.
@@ -81,14 +86,21 @@ pub struct JitStatistics {
 }
 
 /// What a body's `JitSlot` says once it is compiled.
-const COMPILED: u32 = u32::MAX - 1;
+const COMPILED: u32 = u32::MAX - 2;
+/// What a body's `JitSlot` says once its first instruction is known to
+/// lower to an exit, so that its machine code is never entered.
+const EXITS_AT_ENTRY: u32 = u32::MAX - 1;
 /// What a body's `JitSlot` says once it will never be compiled.
 const REFUSED: u32 = u32::MAX;
 
 /// A body's state in the JIT: *counting* its entries (`state` below
 /// `COMPILED`), *compiled* (`COMPILED`; `zone` names the zone its machine
-/// code lies in, `offset` where, `map` its program-counter map), or
-/// *refused* (`REFUSED`), after which the body is never looked at again.
+/// code lies in, `offset` where, `map` its program-counter map), *exiting
+/// at entry* (`EXITS_AT_ENTRY`: its code would leave at its first
+/// instruction, so entering it would be pure cost on every push), or
+/// *refused* (`REFUSED`). A body in either of the last two is never looked
+/// at again, so the two are the top values, which one compare tells from
+/// the others (`is_armed`).
 /// Interior-mutable, since a body is shared by every activation of it.
 ///
 /// A copy starts counting afresh: it is another body to the JIT, compiled
@@ -124,6 +136,7 @@ impl std::fmt::Debug for JitSlot {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.state.get() {
             REFUSED => formatter.write_str("JitSlot::Refused"),
+            EXITS_AT_ENTRY => formatter.write_str("JitSlot::ExitsAtEntry"),
             COMPILED => formatter
                 .debug_struct("JitSlot::Compiled")
                 .field("zone", &self.zone.get())
@@ -137,16 +150,21 @@ impl std::fmt::Debug for JitSlot {
 
 impl JitSlot {
     /// Whether an entry into the body has anything to do with the JIT:
-    /// false only once the body is refused. The one load and compare the
+    /// false once the body is refused or exits at entry. The one load and
+    /// compare the
     /// run loop makes on a push (`vm::run_stretch`); everything else is
     /// `entered`'s, out of line.
     #[inline(always)]
     pub(crate) fn is_armed(&self) -> bool {
-        self.state.get() != REFUSED
+        self.state.get() < EXITS_AT_ENTRY
     }
 
     fn refuse(&self) {
-        self.state.set(REFUSED);
+        self.settle(REFUSED);
+    }
+
+    fn settle(&self, state: u32) {
+        self.state.set(state);
         self.zone.set(0);
     }
 
@@ -233,6 +251,9 @@ pub(crate) enum Refusal {
     Unassembled,
     /// No room left in the zone, or its memory could not be committed.
     ZoneFull,
+    /// The first instruction lowers to an exit
+    /// (`JitStatistics::bodies_exiting_at_entry`).
+    ExitsAtEntry,
 }
 
 /// The JIT's state in one interpreter, held by its `Mutator` beside the
@@ -252,6 +273,11 @@ pub(crate) struct JitState {
     /// (`JitStatistics::machine_back_edges`).
     counting: bool,
     statistics: JitStatistics,
+    /// Whether a body exiting at entry is installed all the same, so that
+    /// a test fills a zone, or compiles a body anew, before any
+    /// instruction has a template.
+    #[cfg(test)]
+    install_bodies_exiting_at_entry: bool,
 }
 
 impl JitState {
@@ -271,6 +297,8 @@ impl JitState {
             maps: Vec::new(),
             counting: false,
             statistics: JitStatistics::default(),
+            #[cfg(test)]
+            install_bodies_exiting_at_entry: false,
         }
     }
 
@@ -279,10 +307,8 @@ impl JitState {
     }
 
     /// Turns compiling and entering bodies on or off; on only where a
-    /// zone can be reserved. A body entered while the JIT is off is
-    /// refused for good, unrecorded in the statistics, so that its later
-    /// entries cost the run loop no more than an interpreter without a
-    /// JIT pays.
+    /// zone can be reserved. While it is off, no body's slot changes, so
+    /// that a body is compiled once it is turned on again.
     pub(crate) fn set_enabled(&mut self, enabled: bool) {
         if enabled && self.zone.is_none() && available() {
             self.zone = reserve_zone(DEFAULT_ZONE_BYTES);
@@ -309,6 +335,22 @@ impl JitState {
     /// The identity of the zone bodies are compiled into, 0 for none.
     fn zone_identity(&self) -> u64 {
         self.zone.as_ref().map_or(0, |zone| zone.code.identity())
+    }
+
+    /// A state with the JIT on and a zone of `bytes`, whatever the
+    /// environment says, installing bodies that exit at entry when
+    /// `install_bodies_exiting_at_entry` is set.
+    #[cfg(all(test, target_arch = "x86_64"))]
+    fn for_test(bytes: usize, install_bodies_exiting_at_entry: bool) -> JitState {
+        let zone = reserve_zone(bytes).expect("a zone");
+        JitState {
+            zone: Some(zone),
+            maps: Vec::new(),
+            enabled: true,
+            counting: false,
+            statistics: JitStatistics::default(),
+            install_bodies_exiting_at_entry,
+        }
     }
 }
 
@@ -374,11 +416,10 @@ pub(crate) fn machine_entry(state: &JitState, code: &CompiledCode) -> Option<Cod
 pub(crate) fn note_entry(state: &mut JitState, code: &CompiledCode) {
     let slot = &code.jit;
     if !state.enabled {
-        slot.refuse();
         return;
     }
     match slot.state.get() {
-        REFUSED => {}
+        REFUSED | EXITS_AT_ENTRY => {}
         COMPILED if slot.zone.get() == state.zone_identity() => {}
         COMPILED => compile_into_slot(state, code),
         entries => {
@@ -400,6 +441,10 @@ fn compile_into_slot(state: &mut JitState, code: &CompiledCode) {
             code.jit.compiled(state.zone_identity(), offset, map);
             state.statistics.compiled_bodies += 1;
         }
+        Err(Refusal::ExitsAtEntry) => {
+            code.jit.settle(EXITS_AT_ENTRY);
+            state.statistics.bodies_exiting_at_entry += 1;
+        }
         Err(_) => {
             code.jit.refuse();
             state.statistics.refused_bodies += 1;
@@ -416,6 +461,13 @@ fn compile(state: &mut JitState, code: &CompiledCode) -> Result<(CodeOffset, u32
     };
     let macro_assembler = macro_assembler::MacroAssembler::new(macro_assembler::Abi::host());
     let body = baseline::compile(code, macro_assembler)?;
+    #[cfg(test)]
+    let install_anyway = state.install_bodies_exiting_at_entry;
+    #[cfg(not(test))]
+    let install_anyway = false;
+    if body.exits_at_entry && !install_anyway {
+        return Err(Refusal::ExitsAtEntry);
+    }
     let map = u32::try_from(state.maps.len()).map_err(|_| Refusal::ZoneFull)?;
     let offset = install(zone, &body.code.bytes)?;
     state.maps.push(body.map);
@@ -551,5 +603,95 @@ mod tests {
         slot.refuse();
         assert!(!slot.is_armed());
         assert_eq!(format!("{slot:?}"), "JitSlot::Refused");
+    }
+
+    /// The machine-code tests, on the one architecture that emits it.
+    #[cfg(target_arch = "x86_64")]
+    mod machine {
+        use crate::bytecode::{CodeKind, CompiledCode, Instruction, Literal};
+        use crate::jit::{machine_entry, note_entry, JitState};
+
+        fn body() -> CompiledCode {
+            CompiledCode::new(
+                CodeKind::Method,
+                vec![
+                    Instruction::LoadLiteral {
+                        destination: 13,
+                        literal: Literal::SmallInteger(3),
+                    },
+                    Instruction::Return { register: 13 },
+                ],
+                0,
+                14,
+                0,
+                Vec::new(),
+                ns_syntax::Span::new(0, 0),
+            )
+        }
+
+        fn enter_twice(state: &mut JitState, code: &CompiledCode) {
+            note_entry(state, code);
+            note_entry(state, code);
+        }
+
+        #[test]
+        fn a_body_whose_first_instruction_exits_is_never_entered() {
+            let mut state = JitState::for_test(1 << 16, false);
+            let code = body();
+            enter_twice(&mut state, &code);
+            assert_eq!(format!("{:?}", code.jit), "JitSlot::ExitsAtEntry");
+            assert!(!code.jit.is_armed(), "a push leaves it alone");
+            assert_eq!(machine_entry(&state, &code), None);
+            let statistics = state.statistics();
+            assert_eq!(statistics.bodies_exiting_at_entry, 1);
+            assert_eq!(statistics.compiled_bodies, 0);
+            assert_eq!(statistics.refused_bodies, 0);
+        }
+
+        #[test]
+        fn a_disabled_jit_leaves_slots_untouched() {
+            let mut state = JitState::for_test(1 << 16, true);
+            let code = body();
+            state.set_enabled(false);
+            enter_twice(&mut state, &code);
+            assert_eq!(format!("{:?}", code.jit), "JitSlot::Counting(0)");
+            state.set_enabled(true);
+            enter_twice(&mut state, &code);
+            assert!(machine_entry(&state, &code).is_some());
+            assert_eq!(state.statistics().compiled_bodies, 1);
+        }
+
+        #[test]
+        fn a_body_compiled_into_another_zone_is_compiled_again() {
+            let mut first = JitState::for_test(1 << 16, true);
+            let mut second = JitState::for_test(1 << 16, true);
+            let code = body();
+            enter_twice(&mut first, &code);
+            assert!(machine_entry(&first, &code).is_some());
+            assert_eq!(
+                machine_entry(&second, &code),
+                None,
+                "an offset into the first zone means nothing in the second"
+            );
+            note_entry(&mut second, &code);
+            assert!(machine_entry(&second, &code).is_some());
+            assert_eq!(machine_entry(&first, &code), None);
+            assert_eq!(second.statistics().compiled_bodies, 1);
+        }
+
+        #[test]
+        fn a_full_zone_refuses_bodies() {
+            let mut state = JitState::for_test(4096, true);
+            let bodies: Vec<CompiledCode> = (0..200).map(|_| body()).collect();
+            for code in &bodies {
+                enter_twice(&mut state, code);
+            }
+            let statistics = state.statistics();
+            assert!(statistics.compiled_bodies >= 1);
+            assert!(statistics.refused_bodies >= 1, "one page fills");
+            let last = bodies.last().expect("a body");
+            assert_eq!(format!("{:?}", last.jit), "JitSlot::Refused");
+            assert_eq!(machine_entry(&state, last), None);
+        }
     }
 }

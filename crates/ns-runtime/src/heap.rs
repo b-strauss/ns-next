@@ -8139,14 +8139,13 @@ impl<'gc> Heap<'gc> {
     // ---------- What machine code is entered with ----------
 
     /// The address of the safepoint flag, a Rust `bool`, which machine
-    /// code's poll reads (`jit::stubs::BlockWord::PollWord`). Only an
-    /// address: the flag lies inside the mutator that `CodeZone::enter`
-    /// is handed as its context and exposes, so a read through it is a
-    /// read through that context. Asked for at every entry, since nothing
-    /// keeps the heap at one address between entries.
+    /// code's poll reads (`jit::stubs::BlockWord::PollWord`), exposed as
+    /// the other addresses machine code is entered with are. Asked for at
+    /// every entry, since nothing keeps the heap at one address between
+    /// entries.
     #[cfg(target_arch = "x86_64")]
     pub(crate) fn safepoint_flag_address(&self) -> usize {
-        std::ptr::from_ref(&self.safepoint_requested).addr()
+        std::ptr::from_ref(&self.safepoint_requested).expose_provenance()
     }
 
     /// The object space's base address, every handle's origin

@@ -1,6 +1,6 @@
 //! The baseline compiler: a body's instructions, one after another, each
 //! lowered on its own through the one exhaustive `match` over
-//! `Instruction` (`lowering_of`), the extension point every instruction is
+//! `Instruction` (`lower`), the extension point every instruction is
 //! added through (`docs/design/execution.md`, "The foundation and the one
 //! extension point"). A baseline frame's registers are the interpreter's
 //! frame words, so each instruction's code starts and ends with every
@@ -9,7 +9,7 @@
 
 use crate::bytecode::{CompiledCode, Instruction};
 
-use super::macro_assembler::MacroAssembler;
+use super::macro_assembler::{LeafIndex, MacroAssembler, Operand};
 use super::stubs::ExitKind;
 use super::{ProgramCounterMap, Refusal};
 
@@ -18,24 +18,31 @@ use super::{ProgramCounterMap, Refusal};
 pub(crate) struct BaselineBody {
     pub(crate) code: ns_assembler::Assembled,
     pub(crate) map: ProgramCounterMap,
+    /// Whether the first instruction lowers to an exit, so that entering
+    /// the code would only leave it again at once (`jit::note_entry`).
+    pub(crate) exits_at_entry: bool,
 }
 
-/// How one instruction is lowered (`lowering_of`).
+/// What `lower` did with one instruction, and what `compile` still emits
+/// for it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Lowering {
-    /// Machine code written against the macro assembler's idioms.
+    /// The arm emitted the instruction's template itself.
     #[expect(
         dead_code,
         reason = "the instructions without a send take their templates in the next stage"
     )]
     Template,
-    /// The instruction's own interpreter step, called through the leaf
-    /// shim.
+    /// A call of `leaf` with `arguments`, the instruction's own
+    /// interpreter step.
     #[expect(
         dead_code,
         reason = "the instructions without a send take their leaves in the next stage"
     )]
-    Leaf,
+    Leaf {
+        leaf: LeafIndex,
+        arguments: [Operand; 3],
+    },
     /// An exit that hands the frame to the interpreter, which runs the
     /// instruction.
     Exit,
@@ -53,16 +60,21 @@ pub(crate) fn compile(
     let count =
         u16::try_from(code.instruction_count()).map_err(|_| Refusal::TooManyInstructions)?;
     let mut starts = Vec::with_capacity(usize::from(count));
+    let mut exits_at_entry = false;
     for program_counter in 0..u32::from(count) {
         let start = macro_assembler.assembler().label();
         macro_assembler.assembler().bind(start);
         starts.push(start);
         macro_assembler.set_program_counter(program_counter);
         let instruction = code.instruction(program_counter as usize);
-        match lowering_of(&instruction) {
-            Lowering::Exit => macro_assembler.exit(ExitKind::Reexecute, program_counter),
-            Lowering::Template | Lowering::Leaf => {
-                unreachable!("internal: no instruction has a template or a leaf yet")
+        // What every lowering ends with, not a second dispatch on the
+        // instruction: the instruction was decided by `lower`'s arm.
+        match lower(&instruction, &mut macro_assembler) {
+            Lowering::Template => {}
+            Lowering::Leaf { leaf, arguments } => macro_assembler.call_leaf(leaf, arguments),
+            Lowering::Exit => {
+                exits_at_entry |= program_counter == 0;
+                macro_assembler.exit(ExitKind::Reexecute, program_counter);
             }
         }
     }
@@ -77,6 +89,7 @@ pub(crate) fn compile(
     Ok(BaselineBody {
         code: assembled,
         map: ProgramCounterMap::new(starts),
+        exits_at_entry,
     })
 }
 
@@ -98,8 +111,13 @@ pub(crate) fn compile(
 ///    added.
 ///
 /// The match has an arm per instruction and no `_` arm, so a new
-/// instruction cannot compile until it chooses one.
-fn lowering_of(instruction: &Instruction) -> Lowering {
+/// instruction cannot compile until it chooses one, and it is the only
+/// dispatch on the instruction: a template's arm emits the template
+/// through `macro_assembler` and answers `Lowering::Template`, a leaf's
+/// answers the leaf and its operands, an exit's emits nothing.
+fn lower(instruction: &Instruction, macro_assembler: &mut MacroAssembler) -> Lowering {
+    // Read by the arms with a template, which come with the next stage.
+    let _ = &macro_assembler;
     match instruction {
         Instruction::LoadLiteral { .. } => Lowering::Exit,
         Instruction::LoadSelf { .. } => Lowering::Exit,

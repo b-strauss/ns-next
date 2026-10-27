@@ -651,14 +651,6 @@ impl FrameStack {
         &mut self.reservation.accessible_mut()[..self.top]
     }
 
-    /// Word `index` of a live frame. The register access of the run loop,
-    /// so it makes one bounds check, against the committed end (the
-    /// reservation's accessible words); that
-    /// `index` lies below the top -- inside a live frame's window -- is the
-    /// caller's, which a debug build checks here and the heap's
-    /// `register_slot` against the frame's own window. A release build
-    /// that broke it would read a stale word of this stack, never another
-    /// object's memory.
     /// The address of the stack's first word, exposed: machine code
     /// addresses a frame's registers from it (`jit::run_machine_code`).
     /// The base never moves, but the answer is asked for at every entry
@@ -672,6 +664,14 @@ impl FrameStack {
             .expose_provenance()
     }
 
+    /// Word `index` of a live frame. The register access of the run loop,
+    /// so it makes one bounds check, against the committed end (the
+    /// reservation's accessible words); that
+    /// `index` lies below the top -- inside a live frame's window -- is the
+    /// caller's, which a debug build checks here and the heap's
+    /// `register_slot` against the frame's own window. A release build
+    /// that broke it would read a stale word of this stack, never another
+    /// object's memory.
     #[inline(always)]
     pub(super) fn word(&self, index: usize) -> u64 {
         debug_assert!(

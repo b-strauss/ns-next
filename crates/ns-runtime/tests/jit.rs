@@ -60,52 +60,66 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
     JitStatistics {
         compiled_bodies: after.compiled_bodies - before.compiled_bodies,
         refused_bodies: after.refused_bodies - before.refused_bodies,
+        bodies_exiting_at_entry: after.bodies_exiting_at_entry - before.bodies_exiting_at_entry,
         machine_back_edges: after.machine_back_edges - before.machine_back_edges,
         safepoint_exits: after.safepoint_exits - before.safepoint_exits,
     }
 }
 
-ns_runtime::for_each_lowering! {
-    fn a_body_is_compiled_at_its_second_entry(lowering) {
-        let (mut interpreter, class) = load_with(THREE_ANSWERS, lowering);
-        let before = interpreter.jit_statistics();
-        assert_eq!(run(&mut interpreter, &class), 42);
-        let compiled = since(interpreter.jit_statistics(), before);
-        assert!(
-            compiled.compiled_bodies >= 1,
-            "`answer`, entered three times, is compiled"
-        );
-        assert_eq!(compiled.refused_bodies, 0);
+/// The bodies the JIT compiled or found exiting at entry: those it took
+/// up at their second entry. While every instruction lowers to an exit,
+/// every body it takes up exits at entry.
+fn taken_up(statistics: JitStatistics) -> u64 {
+    statistics.compiled_bodies + statistics.bodies_exiting_at_entry
+}
 
+ns_runtime::for_each_lowering! {
+    fn a_body_is_taken_up_at_its_second_entry(lowering) {
         let (mut interpreter, class) = load_with(THREE_ANSWERS, lowering);
-        interpreter.set_jit_enabled(false);
         let before = interpreter.jit_statistics();
         assert_eq!(run(&mut interpreter, &class), 42);
-        let compiled = since(interpreter.jit_statistics(), before);
-        assert_eq!(compiled.compiled_bodies, 0, "the JIT is off");
-        assert_eq!(compiled.refused_bodies, 0, "the JIT is off");
+        let done = since(interpreter.jit_statistics(), before);
+        assert!(taken_up(done) >= 1, "`answer`, entered three times, is taken up");
+        assert_eq!(done.refused_bodies, 0);
     }
 }
 
 ns_runtime::for_each_lowering! {
-    fn a_second_interpreter_does_not_run_the_first_ones_code(lowering) {
+    fn a_body_entered_while_the_jit_is_off_is_taken_up_once_it_is_on(lowering) {
+        let (mut interpreter, class) = load_with(THREE_ANSWERS, lowering);
+        interpreter.set_jit_enabled(false);
+        let before = interpreter.jit_statistics();
+        assert_eq!(run(&mut interpreter, &class), 42);
+        let done = since(interpreter.jit_statistics(), before);
+        assert_eq!(done, JitStatistics::default(), "the JIT is off");
+
+        interpreter.set_jit_enabled(true);
+        let before = interpreter.jit_statistics();
+        assert_eq!(run(&mut interpreter, &class), 42);
+        let done = since(interpreter.jit_statistics(), before);
+        assert!(taken_up(done) >= 1, "`answer` was left counting while the JIT was off");
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    fn a_second_interpreter_takes_up_its_own_bodies(lowering) {
         let (mut first, first_class) = load_with(THREE_ANSWERS, lowering);
         let (mut second, second_class) = load_with(THREE_ANSWERS, lowering);
         assert_eq!(run(&mut first, &first_class), 42);
         assert_eq!(run(&mut first, &first_class), 42);
         let before = second.jit_statistics();
         assert_eq!(run(&mut second, &second_class), 42);
-        let compiled = since(second.jit_statistics(), before);
-        assert!(
-            compiled.compiled_bodies >= 1,
-            "the second interpreter compiles `answer` into its own zone"
-        );
+        let done = since(second.jit_statistics(), before);
+        assert!(taken_up(done) >= 1, "the second interpreter takes up `answer` itself");
     }
 }
 
 ns_runtime::for_each_lowering! {
-    fn a_full_zone_leaves_bodies_interpreted(lowering) {
-        let count = 300;
+    /// That a full zone refuses bodies is `jit::tests`'s to pin, since no
+    /// body is installed while every one exits at entry; this pins that a
+    /// program with many bodies runs right in a zone of one page.
+    fn a_zone_of_one_page_leaves_the_output_right(lowering) {
+        let count: i64 = 300;
         let methods: String = (0..count)
             .map(|index| format!("  m{index} = (\n    ^{index}\n  )\n"))
             .collect();
@@ -123,9 +137,6 @@ ns_runtime::for_each_lowering! {
         "};
         let (mut interpreter, class) = load_with(&source, lowering);
         interpreter.set_jit_zone_bytes(4096);
-        let before = interpreter.jit_statistics();
         assert_eq!(run(&mut interpreter, &class), count * (count - 1));
-        let compiled = since(interpreter.jit_statistics(), before);
-        assert!(compiled.refused_bodies >= 1, "the zone of one page fills");
     }
 }
