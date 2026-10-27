@@ -9,7 +9,7 @@
 
 use ns_assembler::{Condition, Label, Register};
 
-use crate::bytecode::{CompiledCode, Instruction, IntegerOperation, Literal};
+use crate::bytecode::{successors, CompiledCode, Instruction, IntegerOperation, Literal};
 use crate::heap::{value_bits, Immediate};
 
 use super::leaves::Leaf;
@@ -22,9 +22,12 @@ use super::{ProgramCounterMap, Refusal};
 pub(crate) struct BaselineBody {
     pub(crate) code: ns_assembler::Assembled,
     pub(crate) map: ProgramCounterMap,
-    /// Whether the first instruction lowers to an exit, so that entering
-    /// the code would only leave it again at once (`jit::note_entry`).
-    pub(crate) exits_at_entry: bool,
+    /// Whether the code leaves before it can take a backward jump: every
+    /// path from the first instruction reaches an exit first, so the
+    /// code runs at most a few straight-line instructions the interpreter
+    /// would have run for less than the entry and the exit cost
+    /// (`jit::note_entry`).
+    pub(crate) leaves_before_a_loop: bool,
 }
 
 /// What `lower` did with one instruction, and what `compile` still emits
@@ -420,7 +423,7 @@ pub(crate) fn compile(
         program_counter: 0,
         backward_branches: Vec::new(),
     };
-    let mut exits_at_entry = false;
+    let mut exits = Vec::with_capacity(usize::from(count));
     for program_counter in 0..u32::from(count) {
         let start = body.starts[program_counter as usize];
         body.macro_assembler.assembler().bind(start);
@@ -429,7 +432,9 @@ pub(crate) fn compile(
         let instruction = code.instruction(program_counter as usize);
         // What every lowering ends with, not a second dispatch on the
         // instruction: the instruction was decided by `lower`'s arm.
-        match lower(&instruction, &mut body) {
+        let lowering = lower(&instruction, &mut body);
+        exits.push(lowering == Lowering::Exit);
+        match lowering {
             Lowering::Template => {}
             Lowering::Leaf { leaf, arguments } => {
                 let macro_assembler = &mut body.macro_assembler;
@@ -439,12 +444,12 @@ pub(crate) fn compile(
                 macro_assembler.exit_if(Condition::NotEqual, ExitKind::Reexecute, program_counter);
             }
             Lowering::Exit => {
-                exits_at_entry |= program_counter == 0;
                 body.macro_assembler
                     .exit(ExitKind::Reexecute, program_counter);
             }
         }
     }
+    let leaves_before_a_loop = !takes_a_backward_jump_before_an_exit(code, &exits);
     body.emit_backward_branches();
     let assembled = body
         .macro_assembler
@@ -461,8 +466,42 @@ pub(crate) fn compile(
     Ok(BaselineBody {
         code: assembled,
         map: ProgramCounterMap::new(starts),
-        exits_at_entry,
+        leaves_before_a_loop,
     })
+}
+
+/// Whether the code of `code`, whose instructions at the program counters
+/// `exits` marks lower to exits, can take a backward jump before its
+/// first exit: whether some instruction reachable from the first through
+/// templates and leaves alone jumps back. Only such code does work in
+/// machine code that pays for entering it; a leaf that declines exits,
+/// but is counted as falling through, since it declines only what the
+/// interpreter must run.
+fn takes_a_backward_jump_before_an_exit(code: &CompiledCode, exits: &[bool]) -> bool {
+    let mut reached = vec![false; exits.len()];
+    let mut pending = Vec::new();
+    if let Some(first) = reached.first_mut() {
+        *first = true;
+        pending.push(0_u32);
+    }
+    while let Some(program_counter) = pending.pop() {
+        if exits[program_counter as usize] {
+            continue;
+        }
+        let instruction = code.instruction(program_counter as usize);
+        for successor in successors(program_counter, &instruction) {
+            if successor <= program_counter {
+                return true;
+            }
+            if let Some(seen) = reached.get_mut(successor as usize) {
+                if !*seen {
+                    *seen = true;
+                    pending.push(successor);
+                }
+            }
+        }
+    }
+    false
 }
 
 /// The lowering of `instruction`. One of three, by what the instruction

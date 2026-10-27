@@ -28,7 +28,7 @@ Create a todo for each item.
    verifies the remembered set and scavenges at every safepoint, WIDE encodes
    every instruction in its wide form, SUSPEND suspends every activation into
    its frame and runs on from the frames, JIT compiles every body at its first
-   entry and enters machine code that exits at once, EXIT makes every poll in
+   entry and enters machine code that leaves before a loop, EXIT makes every poll in
    machine code take its exit. `stress` runs the eight suites at once,
    because each ends in a long tail of a few depth-limit tests that leaves most
    cores idle and the tails overlap (measured 2026-10-01 for the first three:

@@ -1465,10 +1465,10 @@ pub(crate) fn falls_through(instruction: &Instruction) -> bool {
 /// its callee returns, and an instruction that forces a future runs again
 /// from where it stands, so neither adds an edge.
 #[cfg_attr(
-    not(test),
+    not(any(test, target_arch = "x86_64")),
     expect(
         dead_code,
-        reason = "read by the tests that walk a body's control flow"
+        reason = "read by the baseline compiler, which only x64 builds, and the tests"
     )
 )]
 pub(crate) fn successors(index: u32, instruction: &Instruction) -> impl Iterator<Item = u32> {

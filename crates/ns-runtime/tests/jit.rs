@@ -60,17 +60,18 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
     JitStatistics {
         compiled_bodies: after.compiled_bodies - before.compiled_bodies,
         refused_bodies: after.refused_bodies - before.refused_bodies,
-        bodies_exiting_at_entry: after.bodies_exiting_at_entry - before.bodies_exiting_at_entry,
+        bodies_leaving_before_a_loop: after.bodies_leaving_before_a_loop
+            - before.bodies_leaving_before_a_loop,
         machine_back_edges: after.machine_back_edges - before.machine_back_edges,
         safepoint_exits: after.safepoint_exits - before.safepoint_exits,
         machine_entries: after.machine_entries - before.machine_entries,
     }
 }
 
-/// The bodies the JIT compiled or found exiting at entry: those it took
-/// up at their second entry.
+/// The bodies the JIT compiled or found leaving before a loop: those it
+/// took up at their second entry.
 fn taken_up(statistics: JitStatistics) -> u64 {
-    statistics.compiled_bodies + statistics.bodies_exiting_at_entry
+    statistics.compiled_bodies + statistics.bodies_leaving_before_a_loop
 }
 
 ns_runtime::for_each_lowering! {
@@ -86,7 +87,7 @@ ns_runtime::for_each_lowering! {
 
 ns_runtime::for_each_lowering! {
     /// The JIT stress mode's setting compiles every body at its first
-    /// entry and enters machine code that exits at once, so that a program
+    /// entry and enters machine code that leaves before a loop, so that a program
     /// runs the entry stub, the exit and the resumption on every push and
     /// still answers right.
     fn the_stress_setting_enters_machine_code_on_every_push(lowering) {
@@ -100,7 +101,7 @@ ns_runtime::for_each_lowering! {
             "`answer`, entered three times, runs its machine code from the first, and so do \
              the two base activations the host pushes, the factory's and `run`'s"
         );
-        assert_eq!(done.bodies_exiting_at_entry, 0, "installed, not left out");
+        assert_eq!(done.bodies_leaving_before_a_loop, 0, "installed, not left out");
         assert!(done.compiled_bodies >= 1);
         assert_eq!(done.refused_bodies, 0);
     }
@@ -156,8 +157,9 @@ ns_runtime::for_each_lowering! {
 
 ns_runtime::for_each_lowering! {
     /// A program with more bodies than a zone of one page holds, each
-    /// starting with a template, fills the zone, and the bodies refused
-    /// once it is full run interpreted with the output unchanged.
+    /// starting with a template and installed by the stress setting, fills
+    /// the zone, and the bodies refused once it is full run interpreted
+    /// with the output unchanged.
     fn a_zone_of_one_page_leaves_the_output_right(lowering) {
         let count: i64 = 300;
         let methods: String = (0..count)
@@ -177,6 +179,7 @@ ns_runtime::for_each_lowering! {
         "};
         let (mut interpreter, class) = load_with(&source, lowering);
         interpreter.set_jit_zone_bytes(4096);
+        interpreter.set_jit_stress(true);
         let before = interpreter.jit_statistics();
         assert_eq!(run(&mut interpreter, &class), count * (count - 1));
         assert!(since(interpreter.jit_statistics(), before).refused_bodies >= 1, "the page fills");

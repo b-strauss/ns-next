@@ -1894,7 +1894,7 @@ these five keeping the safepoint flag set while it is on,
 `NS_NEXT_STRESS_WIDE`, which emits every instruction in a wide form
 ([execution.md](execution.md), "The compact instruction encoding"),
 `NS_NEXT_STRESS_JIT`, which compiles every body at its first entry and
-enters its machine code even when that exits at once, and
+enters its machine code even when that leaves before a loop, and
 `NS_NEXT_STRESS_EXIT`, which makes every poll in machine code -- every
 backward jump it takes -- take its exit, as if a safepoint were
 requested.
