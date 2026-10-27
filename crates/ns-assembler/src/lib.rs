@@ -11,7 +11,12 @@
 //!
 //! An operation's encoding may be several machine instructions -- an
 //! AArch64 64-bit immediate, or the overflow check of its multiply, takes
-//! more than one -- so an encoder answers bytes, never one instruction. A
+//! more than one -- so an encoder answers bytes, never one instruction.
+//! AArch64 materializes a constant in place with a `movz`/`movk` sequence of
+//! at most four instructions and keeps no literal pool: the immediates the
+//! JIT embeds are small (tagged integers, 22-bit dispatch ids, offsets), so
+//! a pool would rarely save an instruction, and without one an operation's
+//! bytes are self-contained and [`Encoder`] admits AArch64 as it is. A
 //! branch's distance is known only once every operation before its target
 //! is, so branches are encoded in [`Assembler::finish`], in one pass: a
 //! backward branch, whose target is already placed, in its shortest form
@@ -55,11 +60,30 @@ pub struct Memory {
     pub displacement: i32,
 }
 
-/// The condition of a conditional jump, read from the flags the operation
-/// before it set. After `compare(left, right)` the signed conditions
-/// (`Less` … `GreaterOrEqual`) and the unsigned ones (`Below` …
-/// `AboveOrEqual`) compare `left` with `right`; after `multiply_checked`
-/// `Overflow` holds when the product did not fit.
+/// The condition of a conditional jump, read from the condition flags the
+/// last operation that set them left.
+///
+/// Every operation sets, keeps or clobbers the flags, and every
+/// [`Encoder`] honours the same contract, so a condition means the same on
+/// every architecture:
+///
+/// - **Sets, every condition defined**: `compare`, `compare_immediate` and
+///   `compare_memory`. The signed conditions (`Less` … `GreaterOrEqual`)
+///   and the unsigned ones (`Below` … `AboveOrEqual`) compare `left` with
+///   `right`; `Overflow` holds when `left - right` overflows.
+/// - **Sets, only `Equal` and `NotEqual` defined**: `test_immediate`.
+/// - **Sets, only `Overflow` and `NoOverflow` defined**: `add`, `subtract`
+///   and `multiply_checked`. No other condition may be read after them:
+///   the carry of an addition means opposite things on x64 and AArch64.
+/// - **Clobbers**, the flags undefined afterwards: `and_immediate`,
+///   `or_immediate`, `shift_left`, `shift_right_arithmetic` -- x64's
+///   instructions set the flags, AArch64's plain `and`, `orr`, `lsl` and
+///   `asr` keep them, so neither may be relied on -- and `call_register`,
+///   whose callee may do anything.
+/// - **Keeps**: every other operation -- `move_register`,
+///   `move_immediate`, `load`, `store`, `store_immediate32`, `push`, `pop`,
+///   `add_stack`, `jump`, `jump_if`, `return_` and `trap` -- so a compare
+///   may be separated from its branch by moves, loads and stores.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Condition {
     /// Equal; zero after `test_immediate`.
@@ -124,9 +148,9 @@ pub enum Operation {
     },
     /// The 64-bit word at `target` := `value` sign-extended.
     StoreImmediate32 { target: Memory, value: i32 },
-    /// `target := target + source`, setting the flags.
+    /// `target := target + source`, setting `Overflow`.
     Add { target: Register, source: Register },
-    /// `target := target - source`, setting the flags.
+    /// `target := target - source`, setting `Overflow`.
     Subtract { target: Register, source: Register },
     /// `target := target * source`, signed; `Overflow` when the product
     /// does not fit 64 bits.
@@ -153,7 +177,7 @@ pub enum Operation {
     Push { source: Register },
     /// Pops the machine stack into `target`.
     Pop { target: Register },
-    /// Adds `amount` bytes to the stack pointer.
+    /// Adds `amount` bytes to the stack pointer, keeping the flags.
     AddStack { amount: i32 },
     /// Returns to the caller.
     Return,
@@ -181,7 +205,14 @@ pub enum BranchForm {
 }
 
 /// The encoding of the operations for one architecture.
-pub trait Encoder: Default {
+///
+/// An encoder may emit several instructions for one operation, and may
+/// keep registers of its own out of the operands it is given (configured
+/// per target, as AArch64's x18 on Apple and Windows), but it honours
+/// [`Condition`]'s contract on the flags exactly: an operation that keeps
+/// them emits nothing that changes them, one that sets them defines every
+/// condition the contract names for it.
+pub trait Encoder {
     /// Appends the machine code of `operation` to `code`.
     ///
     /// # Panics
@@ -274,18 +305,27 @@ pub struct Assembler<E: Encoder> {
     bound: Vec<bool>,
 }
 
-impl<E: Encoder> Default for Assembler<E> {
+impl<E: Encoder + Default> Default for Assembler<E> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<E: Encoder> Assembler<E> {
-    /// An assembler with no code.
+impl<E: Encoder + Default> Assembler<E> {
+    /// An assembler with no code, over the encoder's default configuration.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_encoder(E::default())
+    }
+}
+
+impl<E: Encoder> Assembler<E> {
+    /// An assembler with no code, over `encoder` as configured for its
+    /// target.
+    #[must_use]
+    pub fn with_encoder(encoder: E) -> Self {
         Self {
-            encoder: E::default(),
+            encoder,
             encoded: Vec::new(),
             items: Vec::new(),
             bound: Vec::new(),
@@ -341,17 +381,19 @@ impl<E: Encoder> Assembler<E> {
         self.items.push(Item::Branch { kind, label });
     }
 
-    /// `target := source`.
+    /// `target := source`. Keeps the flags.
     pub fn move_register(&mut self, target: Register, source: Register) {
         self.emit(Operation::MoveRegister { target, source });
     }
 
-    /// `target := value`.
+    /// `target := value`. Never touches the flags, which is why x64 never
+    /// clears a register with `xor` here: a constant may be loaded between a
+    /// compare and its branch.
     pub fn move_immediate(&mut self, target: Register, value: u64) {
         self.emit(Operation::MoveImmediate { target, value });
     }
 
-    /// `target := [source]`, zero-extended from `width`.
+    /// `target := [source]`, zero-extended from `width`. Keeps the flags.
     pub fn load(&mut self, width: Width, target: Register, source: Memory) {
         self.emit(Operation::Load {
             width,
@@ -360,7 +402,7 @@ impl<E: Encoder> Assembler<E> {
         });
     }
 
-    /// `[target] := source`'s low `width` bits.
+    /// `[target] := source`'s low `width` bits. Keeps the flags.
     pub fn store(&mut self, width: Width, target: Memory, source: Register) {
         self.emit(Operation::Store {
             width,
@@ -369,105 +411,116 @@ impl<E: Encoder> Assembler<E> {
         });
     }
 
-    /// The 64-bit word at `target` := `value` sign-extended.
+    /// The 64-bit word at `target` := `value` sign-extended. Keeps the
+    /// flags.
     pub fn store_immediate32(&mut self, target: Memory, value: i32) {
         self.emit(Operation::StoreImmediate32 { target, value });
     }
 
-    /// `target := target + source`, setting the flags.
+    /// `target := target + source`. Sets the flags; only `Overflow` and
+    /// `NoOverflow` are defined after it.
     pub fn add(&mut self, target: Register, source: Register) {
         self.emit(Operation::Add { target, source });
     }
 
-    /// `target := target - source`, setting the flags.
+    /// `target := target - source`. Sets the flags; only `Overflow` and
+    /// `NoOverflow` are defined after it.
     pub fn subtract(&mut self, target: Register, source: Register) {
         self.emit(Operation::Subtract { target, source });
     }
 
-    /// `target := target * source`, signed, setting `Overflow` when the
-    /// product does not fit 64 bits.
+    /// `target := target * source`, signed. Sets the flags: `Overflow`
+    /// when the product does not fit 64 bits; only `Overflow` and
+    /// `NoOverflow` are defined after it.
     pub fn multiply_checked(&mut self, target: Register, source: Register) {
         self.emit(Operation::MultiplyChecked { target, source });
     }
 
-    /// `target := target & value` sign-extended.
+    /// `target := target & value` sign-extended. Clobbers the flags.
     pub fn and_immediate(&mut self, target: Register, value: i32) {
         self.emit(Operation::AndImmediate { target, value });
     }
 
-    /// `target := target | value` sign-extended.
+    /// `target := target | value` sign-extended. Clobbers the flags.
     pub fn or_immediate(&mut self, target: Register, value: i32) {
         self.emit(Operation::OrImmediate { target, value });
     }
 
-    /// `target := target << count`; `count` must be below 64.
+    /// `target := target << count`; `count` must be below 64. Clobbers
+    /// the flags.
     pub fn shift_left(&mut self, target: Register, count: u8) {
         self.emit(Operation::ShiftLeft { target, count });
     }
 
     /// `target := target >> count`, the sign copied in; `count` must be
-    /// below 64.
+    /// below 64. Clobbers the flags.
     pub fn shift_right_arithmetic(&mut self, target: Register, count: u8) {
         self.emit(Operation::ShiftRightArithmetic { target, count });
     }
 
-    /// Sets the flags to compare `left` with `right`.
+    /// Sets the flags to compare `left` with `right`; every condition is
+    /// defined after it.
     pub fn compare(&mut self, left: Register, right: Register) {
         self.emit(Operation::Compare { left, right });
     }
 
-    /// Sets the flags to compare `left` with `right` sign-extended.
+    /// Sets the flags to compare `left` with `right` sign-extended; every
+    /// condition is defined after it.
     pub fn compare_immediate(&mut self, left: Register, right: i32) {
         self.emit(Operation::CompareImmediate { left, right });
     }
 
-    /// Sets the flags to compare `left` with the 64-bit word at `right`.
+    /// Sets the flags to compare `left` with the 64-bit word at `right`;
+    /// every condition is defined after it.
     pub fn compare_memory(&mut self, left: Register, right: Memory) {
         self.emit(Operation::CompareMemory { left, right });
     }
 
-    /// Sets `Equal` when `left & right` sign-extended is zero, `NotEqual`
-    /// otherwise.
+    /// Sets the flags: `Equal` when `left & right` sign-extended is zero,
+    /// `NotEqual` otherwise; no other condition is defined after it.
     pub fn test_immediate(&mut self, left: Register, right: i32) {
         self.emit(Operation::TestImmediate { left, right });
     }
 
-    /// Jumps to `label`.
+    /// Jumps to `label`. Keeps the flags.
     pub fn jump(&mut self, label: Label) {
         self.branch(BranchKind::Unconditional, label);
     }
 
-    /// Jumps to `label` when `condition` holds.
+    /// Jumps to `label` when `condition` holds. Keeps the flags.
     pub fn jump_if(&mut self, condition: Condition, label: Label) {
         self.branch(BranchKind::Conditional(condition), label);
     }
 
-    /// Calls the address in `target`.
+    /// Calls the address in `target`. Clobbers the flags: the callee may
+    /// do anything with them.
     pub fn call_register(&mut self, target: Register) {
         self.emit(Operation::CallRegister { target });
     }
 
-    /// Pushes `source` on the machine stack.
+    /// Pushes `source` on the machine stack. Keeps the flags.
     pub fn push(&mut self, source: Register) {
         self.emit(Operation::Push { source });
     }
 
-    /// Pops the machine stack into `target`.
+    /// Pops the machine stack into `target`. Keeps the flags.
     pub fn pop(&mut self, target: Register) {
         self.emit(Operation::Pop { target });
     }
 
-    /// Adds `amount` bytes to the stack pointer.
+    /// Adds `amount` bytes to the stack pointer. Keeps the flags, so a
+    /// frame may be released between a compare and its branch.
     pub fn add_stack(&mut self, amount: i32) {
         self.emit(Operation::AddStack { amount });
     }
 
-    /// Returns to the caller.
+    /// Returns to the caller. Keeps the flags.
     pub fn return_(&mut self) {
         self.emit(Operation::Return);
     }
 
-    /// Stops the program with an illegal-instruction fault.
+    /// Stops the program with an illegal-instruction fault. Keeps the
+    /// flags.
     pub fn trap(&mut self) {
         self.emit(Operation::Trap);
     }

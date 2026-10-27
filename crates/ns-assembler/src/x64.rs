@@ -268,7 +268,15 @@ impl Encoder for X64 {
             }
             Operation::Push { source } => opcode_register(code, 0x50, source),
             Operation::Pop { target } => opcode_register(code, 0x58, target),
-            Operation::AddStack { amount } => immediate_group(code, 0, RSP, amount),
+            Operation::AddStack { amount } => {
+                // `lea` rather than `add`, which would clobber the flags the
+                // contract says this operation keeps.
+                let stack = Memory {
+                    base: RSP,
+                    displacement: amount,
+                };
+                register_memory(code, true, false, &[0x8D], number(RSP), stack);
+            }
             Operation::Return => code.push(0xC3),
             Operation::Trap => code.extend_from_slice(&[0x0F, 0x0B]),
         }

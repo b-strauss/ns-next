@@ -9313,9 +9313,16 @@ lowering of one instruction:
   unconditional jumps to labels, calls, returns -- and one encoder each for
   x64 and AArch64, with labels, branches sized in one pass (forward
   branches at their longest, backward ones exactly, as Cog's
-  `generateInstructionsAt` does, `:38529-38605`) and AArch64's literal
-  pools. It forbids `unsafe` and is tested on its own against a
-  disassembler.
+  `generateInstructionsAt` does, `:38529-38605`), and one contract on the
+  condition flags that every encoder honours: each operation sets, keeps
+  or clobbers them, and says which conditions it defines. AArch64
+  materializes a constant in place with a `movz`/`movk` sequence of at
+  most four instructions and keeps no literal pools: the immediates the
+  JIT embeds are small (tagged integers, 22-bit dispatch ids, offsets),
+  so a pool would rarely save an instruction, and without one each
+  operation's bytes are self-contained and the encoder trait admits
+  AArch64 unchanged. It forbids `unsafe` and is tested on its own against
+  a disassembler.
 - **The macro assembler**, `crates/ns-runtime/src/jit/`, which writes the
   VM's idioms once in the abstract operations: load an object's guard,
   check a cache cell, bump-allocate in eden, the write barrier, the depth

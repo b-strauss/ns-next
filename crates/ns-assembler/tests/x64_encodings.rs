@@ -374,10 +374,16 @@ fn calls_and_the_stack() {
             format!("pop {}", name(register))
         );
     }
-    for amount in IMMEDIATES {
+    for amount in DISPLACEMENTS.into_iter().chain([i32::MIN]) {
         assert_eq!(
             text(|assembler| assembler.add_stack(amount)),
-            format!("add rsp,{}", immediate(amount))
+            format!(
+                "lea rsp,{}",
+                memory_text(Memory {
+                    base: x64::RSP,
+                    displacement: amount
+                })
+            )
         );
     }
     assert_eq!(text(Assembler::return_), "ret");
@@ -548,4 +554,14 @@ fn a_forward_branch_is_patched_past_a_byte_s_reach() {
         (first.mnemonic(), first.len(), first.near_branch_target()),
         (Mnemonic::Jne, 6, 2006)
     );
+}
+
+#[test]
+fn an_assembler_over_a_configured_encoder() {
+    let mut assembler = Assembler::with_encoder(X64);
+    assembler.return_();
+    let Ok(assembled) = assembler.finish() else {
+        panic!("assembly failed");
+    };
+    assert_eq!(disassemble(&assembled.bytes), "ret");
 }
