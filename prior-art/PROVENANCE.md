@@ -32,6 +32,8 @@ that carry design weight.
 | `nova/` | [trynova/nova](https://github.com/trynova/nova) | A JavaScript engine in Rust. Not a Newspeak, and here for one specific reason: it is the model [memory.md](../docs/design/memory.md) names for the arena of typed handles, which ns-next now has. Its `GcScope`/`NoGcScope` root discipline is the comparison memory.md weighs and rejects in favour of a gc-arena-style lifetime brand ("Considered and rejected: Nova's scopes"). Rust is the point — a C++ engine's conventions do not carry over, because the borrow checker is available as an enforcement mechanism and their solutions do not use one. |
 | `opensmalltalk-vm/` | [OpenSmalltalk/opensmalltalk-vm](https://github.com/OpenSmalltalk/opensmalltalk-vm) | Cog and Spur, the Smalltalk VM lineage. The model [execution.md](../docs/design/execution.md) names for activations living on a stack and reified into first-class contexts only on demand, and the closest thing to a reference answer for what that costs and what it complicates. |
 | `strongtalk/` | [b-strauss/strongtalk](https://github.com/b-strauss/strongtalk) | The Animorphic Smalltalk system that Sun open-sourced in 2006, in a GitHub copy of the project's Google Code repository; its VM became the basis of HotSpot. The reference for the optimizing end still ahead: an interpreter whose sends carry inline caches in the bytecode (`vm/interpreter/interpretedIC.*`), polymorphic inline caches (`vm/code/compiledPIC.*`), a recompiler that inlines along the recorded receiver types (`vm/recompiler/`, `vm/compiler/inliner.*`), and deoptimization of optimized frames back into interpreted activations (`vm/runtime/vframe.*`, `DeltaProcess::deoptimize_*` in `vm/runtime/process.cpp`), which is what keeps optimized code debuggable. It is also Newspeak's ancestor: Gilad Bracha's optional type system and first-class mixins are documented under `documentation/`. |
+| `v8/` | [v8/v8](https://github.com/v8/v8) | Google's JavaScript engine. The reference for a tiered JIT over a register-machine bytecode: Ignition, whose register file lives in the frame as ns-next's does (`src/interpreter/`); Sparkplug, a baseline compiler that translates bytecode one instruction at a time into machine code keeping the interpreter's frame layout and sharing its feedback vector (`src/baseline/`); Maglev and TurboFan above it (`src/maglev/`, `src/compiler/`); its macro assemblers per architecture (`src/codegen/`); and deoptimization back into interpreter frames (`src/deoptimizer/`). |
+| `jdk/` | [openjdk/jdk](https://github.com/openjdk/jdk) | OpenJDK, whose VM is HotSpot, Strongtalk's descendant. The reference for the JIT tiers at production scale: the template interpreter generated at start-up by the macro assembler (`src/hotspot/share/interpreter/`, `src/hotspot/cpu/<arch>/templateTable_<arch>.cpp`), the C1 and C2 compilers (`src/hotspot/share/c1/`, `src/hotspot/share/opto/`), the code cache (`src/hotspot/share/code/`), deoptimization and its debug information at safepoints (`src/hotspot/share/runtime/deoptimization.cpp`, `src/hotspot/share/code/debugInfo*`), and the assemblers for x64 and AArch64 (`src/hotspot/cpu/x86/`, `src/hotspot/cpu/aarch64/`). |
 | `num-bigint/` | [rust-num/num-bigint](https://github.com/rust-num/num-bigint) | The arithmetic `crates/ns-runtime/src/arbitrary_integer/` adapts: addition and subtraction with carries, long, half-Karatsuba, Karatsuba and Toom-3 multiplication, multiplication by the number-theoretic transform, Knuth's algorithm D, Burnikel-Ziegler division, and the radix and `f64` conversions (not its divide-and-conquer radix conversion) (MIT OR Apache-2.0; taken under MIT, notices in `THIRD-PARTY-NOTICES.md`). |
 | `num-integer/` | [rust-num/num-integer](https://github.com/rust-num/num-integer) | The floor division `arbitrary_integer/` adapts (MIT OR Apache-2.0; taken under MIT, notices in `THIRD-PARTY-NOTICES.md`). |
 | `num-rational/` | [rust-num/num-rational](https://github.com/rust-num/num-rational) | The model for a future `Fraction` and for exact float-to-rational conversion (`docs/design/core-library.md`, "Gap: an integer has no `/`"). Nothing is taken from it yet. |
@@ -53,12 +55,19 @@ A submodule records one commit. These are the ones this repository points at.
 | `num-bigint` | `41f0b035d12971c5c7f7501917e31f0f6439c26c` | 2026-08-21 | 2026-09-29 |
 | `num-integer` | `765fd9b3eb9397471d41b9f613e530f6d9d6383f` | 2026-08-11 | 2026-09-29 |
 | `num-rational` | `cf95d6719c585d4721645c7ace5dfe1dd5f063e2` | 2026-07-07 | 2026-09-29 |
+| `v8` | `630f172aad7057ce97707363023c2ed630be8a63` | 2026-10-27 | 2026-10-27 |
+| `jdk` | `f2259dcd24013c73f86539cea2cec57aea8de9b9` | 2026-10-27 | 2026-10-27 |
 
 `strongtalk` is pinned on its `gcc-linux` branch, not its default `master`, and
 `.gitmodules` names that branch so `git submodule update --remote` follows it.
 `gcc-linux` is the port to GCC and Linux, with build trees for Linux, macOS and
 Windows, and is the newest line of the VM: it carries every change on `master`
 but one, a name added to `contributorLicenses.html`, and 61 commits of its own.
+
+`v8` and `jdk` are shallow: `.gitmodules` marks them `shallow = true`, so
+`git submodule update --init` fetches only the pinned commit, not the
+history of either (several gigabytes each). To move one forward, fetch the
+new commit by hash with `--depth 1` before checking it out.
 
 To move one forward: `git -C prior-art/<name> fetch && git -C prior-art/<name>
 checkout <commit>`, then commit the changed submodule pointer here and update
@@ -133,6 +142,13 @@ code. `ns-next`'s own license is at `LICENSE`.
   `prior-art/strongtalk/sourceLicense.html`. Contributions made after the
   release are under the New BSD license, per `contributorLicenses.html`
   beside it.
+- `v8` — the BSD-3-Clause licence of the V8 project authors; see
+  `prior-art/v8/LICENSE`, which also lists the third-party code in the tree
+  under its own terms.
+- `jdk` — GPL version 2 with the Classpath Exception, Oracle and the other
+  contributors; see `prior-art/jdk/LICENSE` and
+  `prior-art/jdk/ADDITIONAL_LICENSE_INFO`. GPL code is never copied into
+  `ns-next`; it is here to be read only.
 - `num-bigint`, `num-integer` and `num-rational` — each MIT OR Apache-2.0, at
   the licensee's choice, The Rust Project Developers; see `LICENSE-MIT` and
   `LICENSE-APACHE` in each tree.
@@ -161,6 +177,9 @@ everything else here combined (`strongtalk` 38 MB, `newspeak` 17 MB, `nova`
 trees, none of which is the interesting part — the Cog and Spur design lives in
 the Smalltalk-side sources and the comments. Initialize it by name when you
 want it rather than pulling everything.
+
+`jdk` (about 840 MB) and `v8` (about 200 MB) are larger still, even as the
+shallow checkouts they are; initialize them by name too.
 
 ## Nested submodules
 

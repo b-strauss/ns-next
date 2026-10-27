@@ -27,10 +27,11 @@ principles that decide between options are in `docs/design/README.md`,
    actually does, with file and line citations: Cog/OpenSmalltalk for
    activations and dispatch, Primordial Soup and SOMns for Newspeak itself,
    Strongtalk for inline caches and deoptimization, Nova for Rust arenas and
-   handles. V8 and HotSpot where the design documents already cite them.
-   `prior-art/PROVENANCE.md` says what each of the ten is for. A plain clone
+   handles, V8 (`v8`) and HotSpot (`jdk`) for the JIT tiers: baseline
+   compilation, tiering, code caches and deoptimization.
+   `prior-art/PROVENANCE.md` says what each of them is for. A plain clone
    does not fetch them: `git submodule update --init <name>`, by name, since
-   `opensmalltalk-vm` alone is ~255 MB. Nothing there is compiled or linked;
+   `jdk` alone is ~840 MB and `opensmalltalk-vm` ~255 MB. Nothing there is compiled or linked;
    copying code out of one is a licensing decision (`nova` is MPL-2.0, the
    most restrictive), made so far only for `num-bigint` and `num-integer`
    under MIT, with notices in `THIRD-PARTY-NOTICES.md` and a header in every

@@ -32,3 +32,11 @@
 [submodule "prior-art/are-we-fast-yet"]
 	path = prior-art/are-we-fast-yet
 	url = https://github.com/smarr/are-we-fast-yet.git
+[submodule "prior-art/v8"]
+	path = prior-art/v8
+	url = https://github.com/v8/v8.git
+	shallow = true
+[submodule "prior-art/jdk"]
+	path = prior-art/jdk
+	url = https://github.com/openjdk/jdk.git
+	shallow = true
