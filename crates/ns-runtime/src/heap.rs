@@ -748,11 +748,22 @@ fn dead_register() -> Word {
 #[cfg(debug_assertions)]
 #[inline(always)]
 fn assert_live_register(offset: u32, index: u16, bits: u64) {
-    assert!(
-        !Word::from_bits(bits).is_dead_register(),
+    if Word::from_bits(bits).is_dead_register() {
+        refuse_dead_register_read(offset, index);
+    }
+}
+
+/// The refusal of a read of a dead register: the interpreter's
+/// (`assert_live_register`) and machine code's, whose read exits to
+/// `Heap::refuse_dead_register`, so that both say the same.
+#[cfg(any(debug_assertions, target_arch = "x86_64"))]
+#[cold]
+#[inline(never)]
+fn refuse_dead_register_read(offset: u32, index: u16) -> ! {
+    panic!(
         "internal: the frame at stack word {offset} reads r{index}, which nothing wrote since \
          its push or its callee's return (the leftover analysis says nothing reads it)"
-    );
+    )
 }
 
 /// Refuses, in a debug build, a push that hands `code` other than its own
@@ -8123,6 +8134,48 @@ impl<'gc> Heap<'gc> {
     #[cfg(debug_assertions)]
     pub(crate) fn set_safepoint_requested(&mut self, requested: bool) {
         self.safepoint_requested = requested;
+    }
+
+    // ---------- What machine code is entered with ----------
+
+    /// The address of the safepoint flag, a Rust `bool`, which machine
+    /// code's poll reads (`jit::stubs::BlockWord::PollWord`). Only an
+    /// address: the flag lies inside the mutator that `CodeZone::enter`
+    /// is handed as its context and exposes, so a read through it is a
+    /// read through that context. Asked for at every entry, since nothing
+    /// keeps the heap at one address between entries.
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn safepoint_flag_address(&self) -> usize {
+        std::ptr::from_ref(&self.safepoint_requested).addr()
+    }
+
+    /// The object space's base address, every handle's origin
+    /// (`jit::stubs::BlockWord::ObjectSpaceBase`).
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn object_space_base_address(&mut self) -> usize {
+        self.space.base_address()
+    }
+
+    /// The activation stack's base address
+    /// (`jit::stubs::BlockWord::StackBase`).
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn activation_stack_base_address(&mut self) -> usize {
+        self.stack.frames.base_address()
+    }
+
+    /// Where `base`'s registers start, in words from the activation
+    /// stack's base (`jit::stubs::BlockWord::RegisterBase`).
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn register_base_words(base: RegisterBase) -> u64 {
+        u64::from(base.index)
+    }
+
+    /// Refuses machine code's read of `activation`'s dead register
+    /// `register` with the interpreter's own refusal
+    /// (`assert_live_register`).
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn refuse_dead_register(&self, activation: ActivationReference, register: u16) -> ! {
+        refuse_dead_register_read(activation.offset, register)
     }
 
     /// The write barrier: `holder` now stores `word`. An old object that

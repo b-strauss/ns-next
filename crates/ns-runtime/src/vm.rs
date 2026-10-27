@@ -32,6 +32,7 @@ use crate::interpreter::unwind::{non_boolean_condition, UnwindOutcome};
 use crate::interpreter::{
     EvaluationResult, FeedbackBase, HostResult, Interpreter, Mutator, Signal, Step,
 };
+use crate::jit::Resumption;
 use crate::types::*;
 use crate::Symbol;
 
@@ -1272,6 +1273,22 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                 program_counter = handoff.program_counter;
                 feedback_base = handoff.feedback_base;
                 register_base = mutator.heap.activation_register_base(activation);
+                // A push: the JIT counts the body's entry and runs its
+                // machine code, if any (`jit::entered`). A returned-to
+                // caller resumes past 0, and pays the one compare.
+                if program_counter == 0 && code.jit.is_armed() {
+                    match crate::jit::entered(mutator, activation, &code, register_base) {
+                        Resumption::Interpreted {
+                            program_counter: resumed,
+                        } => program_counter = resumed as usize,
+                        Resumption::Safepoint {
+                            program_counter: resumed,
+                        } => {
+                            program_counter = resumed as usize;
+                            break 'run;
+                        }
+                    }
+                }
                 if mutator.heap.safepoint_requested() {
                     break 'run;
                 }

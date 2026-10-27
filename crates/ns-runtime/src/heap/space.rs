@@ -184,6 +184,17 @@ impl Space {
         Ok(space)
     }
 
+    /// The address of the space's first byte, exposed: every handle is a
+    /// byte offset from it, so machine code reaches a field as this base
+    /// plus a handle (`jit::run_machine_code`).
+    #[cfg(target_arch = "x86_64")]
+    pub(in crate::heap) fn base_address(&mut self) -> usize {
+        self.reservation
+            .accessible_mut()
+            .as_mut_ptr()
+            .expose_provenance()
+    }
+
     pub(in crate::heap) fn region(&self, name: RegionName) -> Region {
         match name {
             RegionName::PastSurvivor => self.survivors[self.past],

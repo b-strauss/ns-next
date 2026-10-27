@@ -659,6 +659,19 @@ impl FrameStack {
     /// `register_slot` against the frame's own window. A release build
     /// that broke it would read a stale word of this stack, never another
     /// object's memory.
+    /// The address of the stack's first word, exposed: machine code
+    /// addresses a frame's registers from it (`jit::run_machine_code`).
+    /// The base never moves, but the answer is asked for at every entry
+    /// into machine code all the same, so that no address outlives the
+    /// borrow it was taken under.
+    #[cfg(target_arch = "x86_64")]
+    pub(super) fn base_address(&mut self) -> usize {
+        self.reservation
+            .accessible_mut()
+            .as_mut_ptr()
+            .expose_provenance()
+    }
+
     #[inline(always)]
     pub(super) fn word(&self, index: usize) -> u64 {
         debug_assert!(

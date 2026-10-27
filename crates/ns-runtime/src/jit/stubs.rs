@@ -19,6 +19,10 @@ use super::macro_assembler::{Abi, MacroAssembler};
 pub(crate) enum BlockWord {
     /// The leaf shim's address, which `call_leaf` calls. Words 0, 2 and 3,
     /// the context, the leaf table and its length, only the shim reads.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "read by `call_leaf`, which no lowering calls yet")
+    )]
     Shim = 1,
     /// The object space's base address, every handle's origin.
     ObjectSpaceBase = 4,

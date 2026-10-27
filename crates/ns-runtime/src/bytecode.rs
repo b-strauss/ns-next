@@ -607,6 +607,11 @@ pub struct CompiledCode {
     /// embedded shipped code -- and never on any wire. A `Cell` because the
     /// decoders attach a body after it was shared.
     declaration_code: std::cell::Cell<bool>,
+    /// Whether this body is compiled to machine code, and where, or how
+    /// often it has been entered until it is (`jit::JitSlot`). Never on
+    /// any wire: machine code lives in one interpreter's code zone, and a
+    /// copy starts counting afresh.
+    pub(crate) jit: crate::jit::JitSlot,
 }
 
 /// Every field of a `CompiledCode`, borrowed (`CompiledCode::fields`).
@@ -636,6 +641,8 @@ pub(crate) struct CompiledCodeFields<'code> {
     pub(crate) tainted_sets: &'code leftovers::TaintedSets,
     #[expect(dead_code, reason = "named so that a writer decides to leave it out")]
     pub(crate) declaration_code: &'code std::cell::Cell<bool>,
+    #[expect(dead_code, reason = "named so that a writer decides to leave it out")]
+    pub(crate) jit: &'code crate::jit::JitSlot,
 }
 
 impl CompiledCode {
@@ -730,6 +737,7 @@ impl CompiledCode {
             code_id_cache: crate::heap::CodeIdCache::default(),
             tainted_sets: leftovers::TaintedSets::default(),
             declaration_code: std::cell::Cell::new(false),
+            jit: crate::jit::JitSlot::default(),
         }
     }
 
@@ -754,6 +762,7 @@ impl CompiledCode {
             code_id_cache,
             tainted_sets,
             declaration_code,
+            jit,
         } = self;
         CompiledCodeFields {
             kind,
@@ -771,6 +780,7 @@ impl CompiledCode {
             code_id_cache,
             tainted_sets,
             declaration_code,
+            jit,
         }
     }
 
@@ -921,6 +931,8 @@ impl PartialEq for CompiledCode {
             // body: a body compiled alone and the same body attached to a
             // body-less mixin mean the same instructions.
             declaration_code: _,
+            // Whether this interpreter has compiled the body, not the body.
+            jit: _,
         } = self;
         *kind == other.kind
             && *argument_count == other.argument_count

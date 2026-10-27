@@ -398,6 +398,9 @@ impl Out {
             // Derived from the mixin the body is attached to, as the
             // decoder attaches it (`Mixin::mark_declaration_code`).
             declaration_code: _,
+            // Machine code lives in one interpreter's code zone; the
+            // decoded body counts its entries afresh.
+            jit: _,
         } = code.fields();
         self.u8(match kind {
             CodeKind::Method => 0,
