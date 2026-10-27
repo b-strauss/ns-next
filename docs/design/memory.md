@@ -2234,7 +2234,12 @@ and an interpreter, which holds `Rc`s throughout, is not `Send` either.
   and the slice refusal; why the heap protects nothing is in "The object
   space" and, for the nursery a scavenge vacates, "Generations".
 - **Executable memory for the JIT tiers** comes to the same crate when they
-  do, with its `unsafe` entry into generated code.
+  do, with its `unsafe` entry into generated code: a code zone mapped
+  twice, one view executable and one writable (`MAP_JIT` with its
+  per-thread switch on Apple AArch64), the one writer of code, the
+  instruction-cache flush, the entry, the shim through which machine code
+  calls Rust, and the bounds of the native stack
+  ([execution.md](execution.md), "Planned: the baseline JIT").
 
 ### The allocator of the Rust side
 

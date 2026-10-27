@@ -8957,7 +8957,8 @@ Each step gets its own design when it comes up.
   speculation, the inline caches and the allocation fast path emitted into
   the code, values kept in registers, for x64 and arm64, since images are
   portable across architectures. Executable memory comes from `ns-memory`
-  ([memory.md](memory.md), "The memory layer").
+  ([memory.md](memory.md), "The memory layer"). Designed on 2026-10-27:
+  "Planned: the baseline JIT" below.
 - **Step 9, an optimizing JIT with type feedback, inlining and deoptimization**,
   Strongtalk's and HotSpot's class: recompiling hot code along the receiver
   types the caches recorded, inlining the sends that make Newspeak slow when
@@ -9049,14 +9050,17 @@ section are to the generated C under
   materialized ("The exit materializes" below). A call so costs what
   HotSpot's costs, and less than Cog's machine-code frame, which writes
   five words (`cointerp.c:216`).
-- **The return addresses are on a machine stack of their own**, a
-  reservation of `ns-memory`'s, on which compiled code calls and returns
-  with the processor's `call` and `ret`, so a return is predicted by the
-  return stack buffer. It is a stack of its own because the activation
-  stack grows upwards and a native call needs one that grows downwards;
-  it holds only the return addresses of the compiled frames above the
-  run loop's latest entry into machine code, and the frame's own base
-  register addresses the activation stack.
+- **The return addresses are on the native stack** of the thread that
+  runs the interpreter, on which compiled code calls and returns with the
+  processor's `call` and `ret`, so a return is predicted by the return
+  stack buffer. They are not on the activation stack because it grows
+  upwards and a native call needs a stack that grows downwards; they are
+  on the thread's own stack rather than a reservation of their own so
+  that a call into Rust needs no switch of stacks, as HotSpot's and V8's
+  need none ("Planned: the baseline JIT", "The native stack carries the
+  return addresses"). It holds only the return addresses of the
+  compiled frames above the run loop's latest entry into machine code,
+  and the frame's own base register addresses the activation stack.
 - **Machine code holds no handle**, as compiled code holds none today
   ([compiler.md](compiler.md), "Readers of compiled code take the
   mixin"): a literal object is loaded through the heap's tables, so the
@@ -9274,6 +9278,296 @@ one activation. A closure the optimizer does not inline still reifies the
 frame it is created in, whatever it captured, since `enclosingActivation`
 and the debugger read that link ("The closure keeps its defining
 activation" above); one it inlines creates neither.
+
+## Planned: the baseline JIT
+
+Would change: a body that has run twice runs as machine code, for x64 and
+arm64, to the contract above. Road step 8, decided with the user on
+2026-10-27 after reading V8 (`prior-art/v8`), HotSpot (`prior-art/jdk`),
+Cog, Strongtalk, Primordial Soup and SOMns. Its measure is not the
+baseline's own speed alone: the peak of every one of those systems comes
+from its optimizing tier -- Strongtalk's from inlining along the receiver
+types its caches recorded, with three allocatable registers
+(`prior-art/strongtalk/vm/asm/x86_mapping.hpp:28`) -- so the baseline is
+built so that road step 9 finds the feedback, the frames, the assembler
+and the code zone it needs, and replaces nothing of them. V8's citations
+here are to `prior-art/v8/`, HotSpot's to `prior-art/jdk/src/hotspot/`,
+Cog's to the generated C under
+`prior-art/opensmalltalk-vm/src/spur64.sista/` (`cogitX64SysV.c` unless a
+file is named).
+
+### The foundation and the one extension point
+
+The JIT is a foundation that instructions are added to without touching
+it (the user's requirement). The foundation is every layer below the
+lowering of one instruction:
+
+- **`ns-memory`**: the code zone's reservation and its two mappings, the
+  one writer through which every byte of code is written, the
+  instruction-cache flush, the entry into machine code, the shim through
+  which machine code calls a Rust function, and the bounds of the native
+  stack. The only `unsafe` the JIT needs is here.
+- **`ns-assembler`, a crate of its own**, which knows nothing of the VM: a
+  set of abstract operations -- moves, loads and stores of the widths the
+  heap uses, arithmetic with overflow, compares, conditional and
+  unconditional jumps to labels, calls, returns -- and one encoder each for
+  x64 and AArch64, with labels, branches sized in one pass (forward
+  branches at their longest, backward ones exactly, as Cog's
+  `generateInstructionsAt` does, `:38529-38605`) and AArch64's literal
+  pools. It forbids `unsafe` and is tested on its own against a
+  disassembler.
+- **The macro assembler**, `crates/ns-runtime/src/jit/`, which writes the
+  VM's idioms once in the abstract operations: load an object's guard,
+  check a cache cell, bump-allocate in eden, the write barrier, the depth
+  check and the safepoint poll, load and store a frame register, spill
+  and fill the register cache. HotSpot's layering is the model -- encoder,
+  then `MacroAssembler` with every VM idiom, then one subclass per client
+  (`cpu/x86/macroAssembler_x86.hpp:44`; the interpreter, C1, C2 and the
+  stubs share `profile_receiver_type`, the poll and the allocation) -- and
+  V8 runs every tier on one `MacroAssembler` (`src/maglev/maglev-assembler.h:97`,
+  `src/compiler/backend/code-generator.h:449`). An idiom is written once
+  and every tier, the stubs and a generated interpreter if one comes
+  ("Planned: JIT tiers", "Open") call it, so they cannot drift.
+- **The runtime around the code**: the code zone and its compaction, the
+  per-code table between machine addresses and program counters, the
+  stubs (send, miss, polymorphic, megamorphic, leaf, exit), the exit that
+  materializes frames, the machine-readable cache cells, the compile
+  trigger and on-stack replacement.
+
+The extension point is **one exhaustive `match` over `Instruction`** in
+the baseline compiler, as `bytecode.rs`'s register-effect matches are
+exhaustive, so a new instruction cannot compile until it chooses one of
+three lowerings:
+
+1. **A template**: machine code written against the macro assembler's
+   idioms and the register cache's operand interface, never against an
+   encoder.
+2. **A leaf call**: the instruction's own interpreter step, a Rust
+   function shared with `vm::run`, called through the leaf stub with the
+   frame's registers flushed. Only an instruction that runs no Newspeak
+   code, cannot collect and reads no other activation may take it --
+   HotSpot's `JRT_LEAF` class (`share/runtime/interfaceSupport.inline.hpp:300-314`).
+3. **An exit that re-executes it**: the frame is materialized and handed
+   to the interpreter at that instruction, as a non-Boolean conditional
+   already is ("Between the tiers" above), and comes back to machine code
+   at its next back edge. Always correct, so every instruction has a
+   lowering from the day it is added.
+
+What the register cache flushes around an instruction it reads from the
+instruction's declared register effects (`registers_read`,
+`register_written`, `successors` in `bytecode.rs`), which every
+instruction already declares; whether its lowering can reach an observer
+it reads from the lowering chosen. So a new instruction adds one arm and,
+for a template, the idioms it lacks to the macro assembler; nothing below
+changes. A new architecture adds an encoder and the macro assembler's
+per-architecture idioms; nothing above changes.
+
+### Executable memory
+
+- **Strict W^X on every platform.** V8, HotSpot and Cog run code pages
+  read-write-execute on x64 Windows and Linux (`src/heap/memory-allocator.cc:682-697`;
+  `os/windows/os_windows.cpp:3740`; Cog's
+  `prior-art/opensmalltalk-vm/platforms/win32/vm/sqWin32SpurAlloc.c:190-205`), and switch per thread
+  on Apple AArch64 (`pthread_jit_write_protect_np`;
+  `src/common/code-memory-access-inl.h:323-332`;
+  `os_cpu/bsd_aarch64/os_bsd_aarch64.cpp:515-527`). Since the caches are
+  data ("Inline caches" below), code is written only when a body is
+  installed and when the zone is compacted, so strict W^X costs nothing
+  on the hot path. On Windows and Linux the zone is **mapped twice**, one
+  view executable, one writable, as Cog's dual-mapped zone is
+  (`prior-art/opensmalltalk-vm/platforms/unix/vm/sqUnixMemory.c:335-373`), which also lets road step
+  9 compile on a thread of its own while machine code runs -- V8 turns
+  concurrent Sparkplug off where it can only toggle
+  (`src/flags/flag-definitions.h:1269-1274`); on Apple AArch64 it is
+  `MAP_JIT` with the per-thread switch.
+- **One reservation of at most 128 MiB**, AArch64's `bl` reach, so every
+  call within the zone is direct on both architectures; the stubs sit at
+  its base and never move, as Cog's trampolines do (`:10724-10737`) and
+  as V8's short builtin calls rely on (`src/execution/isolate.cc:5872-5918`).
+- **AArch64's instruction cache is flushed once per install**, over the
+  installed range, as HotSpot batches it
+  (`AArch64ICacheInvalidationContext`, `share/runtime/icache.hpp:132-157`).
+  x64 needs no flush.
+
+### The native stack carries the return addresses
+
+This revises "Where a compiled frame lives" above, which put the return
+addresses on a reservation of their own: they are on the **native stack
+of the thread that runs the interpreter**. HotSpot and V8 call their
+runtime on the same stack their compiled code runs on, with no switch
+(`cpu/x86/c1_Runtime1_x86.cpp:78`; `src/builtins/x64/builtins-x64.cc:4524`,
+switching only for WebAssembly), while Cog switches to the C stack on
+every call into the runtime and back (`genSmalltalkToCStackSwitch`,
+`:8580-8592`). With the return addresses on the thread's own stack, a
+leaf call is a plain call, and Windows' stack probes and unwinder find
+the stack they expect -- Cog abandoned `longjmp` because MSVC's unwinder
+"gets hopelessly confused" by a stack switch (`:8264-8275`).
+
+- **The activation stack is unchanged**: compiled frames' words are
+  there, at the interpreter's positions; the native stack holds only the
+  return addresses of compiled frames above the latest entry, and leaf
+  calls while they run.
+- **The entry checks the native stack's room.** A counted activation
+  costs eight bytes of it, so the depth limit with its reserve bounds the
+  compiled frames at about 0.8 MB; the entry compares what is left of
+  the thread's stack (`ns-memory` reads its bounds) against that bound
+  plus the deepest leaf, and a thread with too little runs interpreted.
+  `ns-next` runs programs on a thread of 8 MiB
+  (`INTERPRETER_STACK_BYTES`, `crates/ns-cli/src/main.rs:160`).
+- **The exit resets the stack pointer in the entry stub** to the value
+  the entry saved, after the walk over the return addresses "The exit
+  materializes" above describes, and returns to the run loop. No Rust
+  frame lies between the entry and the compiled frames except a leaf
+  call's, which has returned before any exit.
+- **A panic never unwinds through machine code**: a leaf returns its
+  failure as a value, and a panic in one aborts.
+
+### Fixed registers and the calling convention
+
+The internal convention is ns-next's own; only the entry and the leaf
+shim cross the platform ABI. Pinned in callee-saved registers while
+machine code runs: **the frame base** on the activation stack, **the
+mutator's context** (HotSpot's `r15_thread`, Cog's `VarBaseReg`, `:351`),
+and **the object space's base**, since a handle is a byte offset and
+every field access is base plus offset (HotSpot's `r12_heapbase`, V8's
+`r14` pointer-compression base, `src/codegen/x64/register-x64.h:360-391`).
+A send passes the receiver and up to two arguments in machine registers
+as well as in their slots' places, the callee storing them only where it
+needs them (Cog's `numRegArgs`, `:2761`). Which machine register plays
+which role is the macro assembler's, per architecture.
+
+### Inline caches
+
+The caches stay data, shared with the interpreter; machine code reads
+and writes the same sites at the same `feedback_base`, so road step 9
+reads one profile whichever tier ran, as Maglev reads the feedback vector
+Ignition and Sparkplug share (`src/maglev/maglev-graph-builder.cc:6503-6564`;
+`builtins-x64.cc:1886-1929`). HotSpot has moved its compiled inline
+caches out of the code into data (`CompiledICData`,
+`share/code/compiledIC.hpp:57-97`); Cog keeps them in code and so scans
+the whole zone to unlink every send to a method on every install
+(`unlinkSendsToandFreeIf`, `:12523-12610`), which live editing would
+make frequent. "A cache records what the lookup decided; it never
+decides" holds unchanged.
+
+- **Every site gets a machine-readable cell** beside its `CacheEntry`: the
+  guard and an entry address, written whenever the Rust side fills,
+  widens or clears the entry. The entry address is the callee's machine
+  entry for a method with code, else a stub that acts on the entry's
+  `Target` through the leaf shim.
+- **A send in machine code** loads the receiver's guard (the header
+  word's low 22 bits, one load), compares it with the cell's, and calls
+  through the cell's entry address; a mismatch calls the polymorphic
+  stub, which scans the site's block of four (Strongtalk's compiled PIC
+  holds four, `code/compiledPIC.hpp:36`; Cog's six, SOMns's chain six),
+  and past that the megamorphic stub probes the global cache from
+  machine code, as Cog's open PIC probes the interpreter's method cache
+  (`:29031-29170`). A miss calls the lookup as a leaf, which fills the
+  entry and the cell.
+- **A lexical, `self`, `outer` or private send checks no receiver
+  guard** where the resolution does not depend on the receiver's class,
+  as SOMns's `LexicallyBoundDispatchNode` calls directly
+  (`prior-art/somns/src/som/interpreter/nodes/dispatch/LexicallyBoundDispatchNode.java:17-35`).
+- **Measured, not decided: an indirect call through the cell or a
+  patched direct call.** V8's Sparkplug+ and HotSpot patch only a call's
+  target, monotonically (`src/ic/ic.cc:851-869`, `:899-920`;
+  `share/code/compiledIC.cpp:190-255`); patching writes code, so it costs
+  a write through the second mapping and a flush on AArch64. The
+  baseline starts with the indirect call and measures; Strongtalk's
+  "10%" for a jump-table hop (`code/compiledIC.hpp:58-59`) is from 1995.
+- **No counts in the cache entries** in road step 8. HotSpot's C2 inlines
+  on receiver frequencies (`share/opto/doCall.cpp:258-350`) and pays about
+  30% for full profiling (`share/compiler/compilationPolicy.hpp:129-131`);
+  Strongtalk inlined on its caches' contents and callee invocation counts
+  alone (`compiler/rscope.cpp:318-355`). Whether road step 9 needs counts
+  is decided there.
+
+### The register cache
+
+Since a body's registers are frame slots, the baseline caches them in
+machine registers within a basic block and writes them back before every
+send, poll, merge point, exit and leaf call -- Cog's simulated stack and
+`ssFlushTo:` (`:40797-40860`, `:40924-40990`, `:38825-38840`), which keeps
+the contract's "every compiled frame's registers hold every value an
+observer can need" true by construction. V8's Sparkplug keeps nothing but
+its accumulator in a register (`docs/compiler/sparkplug/compiler-sparkplug.md:17`)
+and HotSpot's C1 keeps nothing across a call
+(`share/c1/c1_LinearScan.cpp:1254-1286`). Built in two measured stages:
+templates that read and write the slots, then the cache.
+
+### When a body is compiled
+
+- **Synchronously, at its second entry**, as Cog compiles on an
+  interpreter method-cache hit (`cointerp.c:5880-5905`); V8 compiles
+  Sparkplug code at about eight invocations weighted by length, in
+  batches (`src/execution/tiering-manager.cc:158-170`). The counter is
+  data on the compiled code, not in machine code. A body that cannot be
+  compiled -- past a size the zone's layout bounds -- is marked and never
+  tried again.
+- **On-stack replacement at a back edge** whose per-frame counter in the
+  flags word trips, as Cog's 40 back jumps (`cointerp.c:2759`,
+  `:8379-8409`); "Between the tiers" above says how.
+- **Compilation on a thread of its own** is road step 9's; the second
+  mapping keeps it open.
+
+### The code zone
+
+Machine code holds no handle, so nothing of it is patched or relocated by
+a collection -- V8 relocates embedded objects and pins pages with running
+code (`src/heap/mark-compact.cc:6339-6364`), HotSpot rewrites immediate
+oops (`share/code/nmethod.cpp:2073-2084`), Cog keeps a list of methods
+referring to young objects (`:9664`). Literals are loaded through the
+heap's tables. The zone is compacted only at an exit, when no return
+address into it exists, so moving a body updates only the cache cells
+that name it. Cog's policy decides what is freed: code with a frame on
+the activation stack stays, the rest by usage, until a quarter of the
+zone is free (`freeOlderMethodsForCompaction`, `:13099-13132`). Code
+dies with its mixin's row when a full collection reclaims it
+(`compiler.md`, "Readers of compiled code take the mixin"). Cog's default
+zone is 2.7 MiB (`:31554-31559`); the default here is chosen by
+measurement within the 128 MiB bound.
+
+### Polls and the depth check
+
+The entry's depth check is the poll ("Safepoints and the depth limit"
+above). A back edge compares against the same request word, one compare,
+as Cog's backward jumps check `stackLimit` (`:38851-38858`); V8 polls at
+a back edge only when its budget runs out
+(`src/interpreter/interpreter-generator.cc:2520-2521`). Whether the depth
+count lives in a machine register is measured.
+
+### What the templates emit inline
+
+Cog's machine code proves each: `SmallInteger` arithmetic with tag checks
+and an overflow fallback (`genSpecialSelectorArithmetic`, `:39772`),
+compares fused with the following branch (`:35512`), the Boolean test of
+a conditional -- one compare each here, `true` and `false` being
+immediates -- bump allocation in eden that requests a scavenge past the
+threshold and carries on into the slack, the collection waiting for the
+next safepoint (`genCreateFullClosure…`, `:19554-19620`), and the write
+barrier with its early outs -- an immediate value, a young destination, an
+old value, an already remembered object (`:21739-21780`).
+
+### Tests
+
+- **A seventh stress mode compiles every body at its first entry**, so
+  every golden runs through the JIT; an eighth takes the exit at every
+  poll, so every golden runs through materialization and resumption.
+- **The encoders are tested against disassemblers**, dev-dependencies of
+  `ns-assembler` only: `iced-x86` for x64 and one for AArch64.
+- **AArch64 runs under QEMU**: the suite cross-compiled for
+  `aarch64-unknown-linux-gnu`, run by `qemu-aarch64` in WSL2. QEMU does
+  not model an incoherent instruction cache, so a missing flush passes
+  there; Apple's `MAP_JIT` path is checked by clippy only.
+
+### Stages
+
+Each measured against the tree before it: the code zone and the x64
+encoder; entry, exit and the instructions without a send, every body
+compilable since an instruction without a template exits; sends and the
+caches; closures, non-local return, allocation and the barrier;
+on-stack replacement, the polls and the depth count's measurement; the
+register cache; the AArch64 encoder under QEMU.
 
 ## Decisions
 

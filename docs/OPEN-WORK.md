@@ -17,8 +17,13 @@ when they were written.
 
 **Road step 8, a baseline JIT**, Cog's class, for x64 and arm64, to the
 contract of 7c ("The road to a high-performance VM" below;
-[execution.md](design/execution.md), "Planned: JIT tiers"). Not planned
-yet. Road step 7 is complete: 7c wrote the contract the JIT tiers build
+[execution.md](design/execution.md), "Planned: the baseline JIT"),
+designed on 2026-10-27: a foundation -- `ns-memory`'s doubly mapped code
+zone, the `ns-assembler` crate, the macro assembler of the VM's idioms,
+the stubs, the exit and the code zone -- that instructions are added to
+through one exhaustive `match`, each choosing a template, a leaf call or
+an exit that re-executes it; the caches stay data shared with the
+interpreter; the return addresses are on the native stack. Road step 7 is complete: 7c wrote the contract the JIT tiers build
 to ([execution.md](design/execution.md), "Planned: the deoptimization
 contract"). The step between 7 and 8 is built: `Closure>>whileTrue:` and
 `whileFalse:` and `Array>>do:` are Newspeak loops, whose sends the JIT
@@ -342,11 +347,13 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
   emits"; [execution.md](design/execution.md), "What Newspeak loop bodies
   moved".
 - **Step 8, a baseline JIT**, Cog's class, for x64 and arm64, to the
-  contract of 7c. Left to it, and measured: whether the depth count
-  lives in a machine register while machine code runs, written back at
-  the exit, or stays in memory ([execution.md](design/execution.md),
-  "Planned: the deoptimization contract", "Safepoints and the depth
-  limit").
+  contract of 7c, designed ([execution.md](design/execution.md),
+  "Planned: the baseline JIT"). Left to it, and measured: whether the
+  depth count lives in a machine register while machine code runs,
+  written back at the exit, or stays in memory ("Planned: the
+  deoptimization contract", "Safepoints and the depth limit"); whether a
+  send calls through its cache cell or through a patched direct call;
+  and the code zone's default size.
 - **Step 9, an optimizing JIT** with type feedback, inlining and
   deoptimization, Strongtalk's and HotSpot's class.
   - **The home of a closure created in an inlined scope** (noted with the
