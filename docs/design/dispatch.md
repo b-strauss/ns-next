@@ -576,7 +576,7 @@ boundary"). `enum Primitive` names every native operation, one variant each,
 grouped by the builtin family whose module executes it —
 `Primitive::Integer(IntegerPrimitive::Add)`,
 `Primitive::Activation(ActivationPrimitive::Restart)`,
-`Primitive::Collection(CollectionPrimitive::Enumerate)` for `do:`,
+`Primitive::Collection(CollectionPrimitive::ElementAt)` for `at:`,
 `Primitive::Platform(PlatformPrimitive::Show)` and the rest — and a `MIRROR`
 row names the one it runs. One function,
 `builtins::execute(mutator, primitive, receiver, selector, arguments)`,
@@ -812,8 +812,9 @@ literal block its `value` then activates fails the exemption's condition,
 since that activation did not create it — two counted where the optimized
 lowering, which inlines the whole send, counts none. With it, the quick
 method answers the block straight to the `SendInlinable`'s sender, and the
-exemption applies unchanged. `whileTrue:` and `whileFalse:` reach a
-primitive method and its leaf the same way.
+exemption applies unchanged. A literal `whileTrue:` or `whileFalse:` needs
+no fast path: the reference lowering sends `value` to its blocks itself
+([compiler.md](compiler.md), "What it emits").
 `goldens/runtime/depth-limit/recursion_through_the_core_library_counts_alike_under_both_lowerings`
 and `goldens/runtime/depth-limit/recursion_through_and_or_counts_alike_under_both_lowerings`
 pin it.
@@ -821,9 +822,8 @@ pin it.
 **`NS_NEXT_NO_PRIMITIVE_METHODS=1` compiles the kernel without the marks, for
 measuring only.** It lets one binary run with and without the fast path, so a
 measurement can report both what the move costs and what the fast path
-recovers. It leaves the quick methods alone, but breaks the agreement above
-for `whileTrue:` and `whileFalse:`, so an overflow compared across the
-lowerings is not valid under it, and no gate runs with it. It is read once per
+recovers. It leaves the quick methods alone, and no gate runs with it. It
+is read once per
 process, and only once a mirror send in shipped source has been recognized,
 so no user method consults the environment.
 

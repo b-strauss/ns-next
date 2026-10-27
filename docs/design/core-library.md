@@ -19,10 +19,9 @@
 > tower") --, its `ByteArray` and `StringBuilder`, with the typed arrays (a
 > module of their own) and `DataView` beside them ("`ByteArray`,
 > `StringBuilder` and the views"), and its weak references, `WeakArray`,
-> `Ephemeron` and `WeakMap` ("Weak references").
-> **Planned:** real bodies for control flow and `do:` before the baseline
-> JIT ("Planned: real bodies for control flow and `do:`, before the
-> baseline JIT").
+> `Ephemeron` and `WeakMap` ("Weak references"). `Closure`'s `whileTrue:`
+> and `whileFalse:` and `Array>>do:` are Newspeak loops, for the JIT tiers
+> to see through ("Real bodies for control flow and `do:`").
 > Every member of `Kernel.ns`, `PlatformFactory.ns`, `TranscriptFactory.ns`,
 > `TimeFactory.ns`, `CollectionsFactory.ns`, `TypedArraysFactory.ns` and
 > `MirrorsFactory.ns` -- public, protected and private -- is documented
@@ -255,16 +254,18 @@ and `asString`, and on its class side `parse:` ("A Float's text" below);
 `asSymbol`, `printString`, `indexOf:startingAt:` and
 `lastIndexOf:startingAt:`, and on its class side `with:` and `withAll:`;
 `Symbol`'s
-`asString`, `=`, `hash` and `printString`; `Array`'s `do:`, `at:put:`, `size`,
+`asString`, `=`, `hash` and `printString`; `Array`'s `at:put:`, `size`,
 `at:`, `copyFrom:to:` and `replaceFrom:to:with:startingAt:`; `ByteArray`'s
 `size`, `at:`, `at:put:`, `copyFrom:to:`, `replaceFrom:to:with:startingAt:`,
 `,`, `indexOf:startingAt:`, `lastIndexOf:startingAt:`, `startsWith:`,
 `endsWith:` and `at:putCodePoint:`, and on its class side `new:`;
 `String`'s `asUtf8` and `utf8Size` and its class side's
 `fromUtf8:from:to:`; `Closure`'s
-`value` to `value:value:value:`, `numArgs`, `whileTrue:` and `whileFalse:`. `PlatformFactory.ns`'s `Transcript` forwards `show:` and
+`value` to `value:value:value:` and `numArgs`. `PlatformFactory.ns`'s `Transcript` forwards `show:` and
 `newLine` the same way, and its `Stopwatch` its clock reading ("The platform"
-below). `Number`'s `to:do:` and `to:by:do:` are
+below). `Closure`'s `whileTrue:` and `whileFalse:` and `Array`'s `do:` are
+Newspeak loops ("Real bodies for control flow and `do:`" below), `do:`
+reading its size through the `collectionSize:` leaf. `Number`'s `to:do:` and `to:by:do:` are
 ordinary Newspeak (below), and so are `Number>>max:` and
 `Integer>>timesRepeat:`, Primordial Soup's bodies, and `Number`'s `min:`,
 `between:and:`, `negated`, `abs`, `raisedTo:`, its mathematics through
@@ -2633,9 +2634,9 @@ block answers it as a trampoline step instead of calling it:
 | Selector | How it runs its block |
 |---|---|
 | `ifTrue:ifFalse:`, `ifFalse:ifTrue:`, `ifTrue:`, `ifFalse:`, `and:`, `or:` | Lowered by the compiler for a literal block, with the kernel method kept as the guarded fallback. There is no leaf: `True`'s or `False`'s method is a quick method, and one whose body is `^<parameter> value` answers the block as a trampoline step instead of calling it ("`True` and `False` are quick methods" below; [execution.md](execution.md), "The trampoline") |
-| `whileTrue:`, `whileFalse:` | The same, both halves: the leaf is a trampoline step that returns the condition block, and its continuation activates the body -- or, for a non-block, sends it `value` through `Closure>>valueOf:` -- or ends the loop |
+| `whileTrue:`, `whileFalse:` | Lowered by the compiler as a loop for literal blocks. There is no leaf: `Closure`'s method is that same inlined loop, `^[self value] whileTrue: [body value]`, which sends `value` to both blocks ("Real bodies for control flow and `do:`" below) |
 | `value`, `value:`, … | A trampoline step that returns the block to activate: activating a closure is what the activation stack does. See [execution.md](execution.md) |
-| `do:` | A trampoline step: it answers the block for the first element -- or, for a non-block, its send of `value:` through `Closure>>valueOf:with:` -- and its continuation does the same for each next one ([execution.md](execution.md), "No re-entry from Rust"). `Array>>do:` is a kernel method forwarding to it; a Newspeak loop is "Planned: real bodies for control flow and `do:`, before the baseline JIT" below |
+| `do:` | There is no leaf: `Array>>do:` reads its size through the `collectionSize:` leaf and walks it in an inlined `whileTrue:` loop that sends `at:` and `value:` ("Real bodies for control flow and `do:`" below) |
 
 So no native calls back into Newspeak, which the root discipline needs as well:
 no Rust frame may be live below a safepoint ([memory.md](memory.md), "No Rust
@@ -2842,8 +2843,9 @@ and
 pin it, and
 `goldens/library/builtin-subclass/a_subclass_of_a_builtin_falls_to_objects_methods`
 pins it family by family: `Object`'s `=` and `printString` for each, and
-for `Array`'s `size` `Collection`'s, which counts through `do:`, whose leaf
-declines in turn and reaches `Collection`'s abstract `do:`, so the golden
+for `Array`'s `size` `Collection`'s, which counts through `do:`, whose
+`collectionSize:` leaf declines in turn and reaches `Collection`'s abstract
+`do:`, so the golden
 ends in the `Error` `subclassResponsibility` signals, 'Collection>>do: is
 abstract: MyArray must implement it'. `Object`'s own leaves never decline,
 so its blocks are unreachable; they keep the shape so that one rule, and
@@ -2867,7 +2869,7 @@ Two things about the shape are enforced rather than conventional:
   marks a mirror send whose failure block the optimized lowering inlines as a
   `SendInlinable`, and that mark covers the whole send, so it would exempt
   from the depth count a literal block the leaf itself activates — as
-  `whileTrue:`'s would be, were a kernel method to pass it one — which the
+  `value`'s would be, were a kernel method to pass it one — which the
   optimized lowering counts; the two lowerings would then overflow at
   different depths ([compiler.md](compiler.md), "How the limit counts"). A
   block a leaf activates is therefore passed as a parameter, which neither
@@ -3747,7 +3749,7 @@ with an argument that is no `Message` fails inside the handler, on
   handler whose `on:do:` has returned are -- signal a `CannotReturn`
   carrying the value returned (nil for `restart`, which returns none). A
   `whileTrue:` or `whileFalse:` whose condition answers no Boolean, inlined
-  or native, under either lowering, signals a `NonBooleanReceiver`
+  or sent, under either lowering, signals a `NonBooleanReceiver`
   carrying that answer, its selector `value`, the send whose answer was
   no Boolean ([compiler.md](compiler.md), "Control-flow inlining"). An
   inlined conditional is not such a site: a receiver that is no Boolean is
@@ -4873,37 +4875,58 @@ decline for one where they would answer "no"
 (`Primitive::answers_false_to_a_stranger`). The design is
 [object-model.md](object-model.md), "Simultaneous slots".
 
-### Planned: real bodies for control flow and `do:`, before the baseline JIT
+### Real bodies for control flow and `do:`
 
-Would change: `Closure`'s `whileTrue:` and `whileFalse:` and the
-collections' `do:` become real Newspeak loops instead of forwarders to
-today's leaves. The branches are done: `True`'s and `False`'s methods are
-already Newspeak ("`True` and `False` are quick methods" above).
+`Closure`'s `whileTrue:` and `whileFalse:` and `Array>>do:` are Newspeak
+loops, not forwarders to leaves (decided with the user on 2026-10-27), as
+`True`'s and `False`'s branches are Newspeak ("`True` and `False` are quick
+methods" above). `whileTrue: body` is `^[self value] whileTrue: [body
+value]`, `whileFalse:` its twin: the loop the compiler inlines over two
+block literals ([compiler.md](compiler.md), "Control-flow inlining"), so this
+method serves every send the compiler does not inline -- a receiver or a body
+held in a variable -- and its own loop is that inlined form. `Array>>do:
+action` reads its size through the `collectionSize:` leaf, `count = vmMirror
+collectionSize: self ifFail: [^super do: action]`, and walks it with an
+inlined `[index <= count] whileTrue: [action value: (self at: index). index::
+index + 1]`, answering the receiver.
 
-**Kernel method bodies forward; they do not reimplement** (decided with the
-user on 2026-09-22). The loops and `do:` are forwarders over
-the trampoline-step leaves, as mirror primitives, so `do:`'s loop is still
-opaque: nothing can inline its block or compile the loop as a unit. Rewriting
-them must happen **before the baseline JIT** — they are what the tiers need to
-see through — and pays off **only with one**: before a JIT a Newspeak loop is
-more sends and activations than the leaf it replaces, and costs. Its place is
-therefore as late as it can come: after the execution model for compiled
-code, road step 7, and before the baseline JIT, road step 8
-([object-model.md](object-model.md), "Planned: the road to a
-high-performance VM"; [execution.md](execution.md), "Planned: JIT tiers").
+The reason is the JIT tiers. A leaf that runs a block is opaque: nothing can
+inline its block, specialize its sends or compile the loop as a unit. Written
+in Newspeak, every send of the loop -- `value`, `value:`, `at:` -- is an
+ordinary virtual send with a call site of its own, which road step 8's
+baseline JIT and the tiers after it see through ([object-model.md](object-model.md),
+"Planned: the road to a high-performance VM"; [execution.md](execution.md),
+"Planned: JIT tiers"). Before a JIT the loop is more sends than the leaf it
+replaced, which is why it came as late as it could, right before the JIT
+([execution.md](execution.md), "What Newspeak loop bodies moved"). The loop
+is written out in `do:` rather than as `1 to: count do:`, which is a send to
+`Number>>to:do:` and would put a second activation under every element; the
+size is read through its leaf, as `ByteArray>>do:` reads its own, so that an
+instance of a user subclass of `Array` that holds no elements goes on to
+`Collection>>do:` rather than counting through `size`
+(`goldens/library/builtin-subclass/a_payload_less_array_subclass_instance_falls_to_collection_do`).
+Under the reference lowering, which inlines no other send, a literal loop is
+a naive loop over real closures, since `Closure>>whileTrue:`'s own body would
+otherwise send itself until the depth limit ([compiler.md](compiler.md),
+"What it emits").
 
-What a Newspeak body must keep is what the leaves do today, so that the
-step changes nothing a program can see; no semantic question is left to
-it. `do:` reads the size once, when the loop starts, and each element when
-the walk reaches it, so a store inside the block to a later index is seen,
-as a Newspeak loop from 1 to `size` over `at:` sees it
-(`goldens/library/collection/do_sees_a_store_made_inside_its_block`). `do:`
+The bodies keep what the leaves they replaced did, so nothing a program can
+see changed. `do:` reads the size once, when the loop starts, and each
+element when the walk reaches it, so a store inside the block to a later index
+is seen (`goldens/library/collection/do_sees_a_store_made_inside_its_block`);
+an empty array sends nothing, whatever the argument
+(`goldens/library/collection/do_on_an_empty_array_sends_nothing`). `do:`
 sends `value:` to an argument that is no block, once per element, and
-`whileTrue:` and `whileFalse:` send `value` to such a body, once per
-iteration, through `Closure`'s private `valueOf:with:` and `valueOf:`
-(`builtins::collections`, `do_step`; `builtins::block`, `body_step`;
-`goldens/library/collection/do_sends_value_to_a_non_block`,
-`goldens/language/control-flow/a_loop_sends_value_to_a_body_that_is_no_block`).
+`whileTrue:` and `whileFalse:` send `value` to such a receiver or body, once
+per iteration, as any send does
+(`goldens/library/collection/do_sends_value_to_a_non_block`,
+`goldens/language/control-flow/a_loop_sends_value_to_a_body_that_is_no_block`);
+a future is seen through by that send. A block of the wrong arity signals the
+`ArgumentError` that `value` or `value:` gives it, once, before any body runs
+(`goldens/language/control-flow/a_loop_receiver_that_takes_a_parameter_signals_once`),
+and a condition that answers no Boolean signals the `NonBooleanReceiver` of
+the inlined loop's guard, for `whileFalse:` as for `whileTrue:`
+(`goldens/language/control-flow/a_while_false_condition_that_goes_non_boolean_signals_non_boolean_receiver`).
 A conditional sends `value` to such an argument too, and nothing answers
 it ("`True` and `False` are quick methods" above).
 
@@ -5062,8 +5085,7 @@ a non-integral literal is a binary float" above), and there is no
 - **The kernel's names and loops aligned with Primordial Soup's core API**
   (decided with the user on 2026-10-06, built the same day): `Closure`,
   `sendTo:`, `Array>>at:put:` answering the value, and loops that send
-  `value`/`value:` to a non-block through `Closure>>valueOf:` and
-  `valueOf:with:`
+  `value`/`value:` to a non-block
   ([plan](../superpowers/plans/2026-10-06-0311-ns-next-kernel-aligning.md)).
 
 - **The kernel's foundations** (decided with the user on 2026-10-06, built
@@ -5216,8 +5238,8 @@ a non-integral literal is a binary float" above), and there is no
   refusals are the view's own" above).
 
 - **`True` and `False` are Newspeak, over quick methods** (decided with the
-  user on 2026-09-24, built the same day): the Boolean half of "Planned:
-  real bodies for control flow and `do:`" moved ahead of the rest; the
+  user on 2026-09-24, built the same day): the Boolean half of "Real
+  bodies for control flow and `do:`", built ahead of the loops; the
   kernel compiler runs `^true`, `^false`, `^nil`, `^<parameter>` and
   `^<parameter> value` bodies without an activation, as Squeak's and Cog's
   quick methods, so the depth count still agrees under both lowerings;
@@ -5366,9 +5388,10 @@ date given
    both lowerings — [dispatch.md](dispatch.md), "Primitive methods".
 6. **The fast path was built early, with a measurement-only switch**
    (2026-09-22), `NS_NEXT_NO_PRIMITIVE_METHODS=1`.
-7. **Kernel method bodies forward; they do not reimplement** (2026-09-22) —
-   "Planned: real bodies for control flow and `do:`, before the baseline JIT"
-   above.
+7. **Kernel method bodies forward; they do not reimplement** (2026-09-22),
+   with one decided exception: `Closure`'s `whileTrue:` and `whileFalse:`
+   and `Array>>do:` are Newspeak loops, so that the JIT tiers see through
+   them (2026-10-27) — "Real bodies for control flow and `do:`" above.
 8. **`True` and `False` are subclasses of `Boolean`** (2026-09-22), as both
    references declare them.
 9. **A builtin subclass's own `doesNotUnderstand:` is passed by, per §5.10**

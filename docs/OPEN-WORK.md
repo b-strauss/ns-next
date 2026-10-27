@@ -15,16 +15,16 @@ when they were written.
 
 ## Next
 
-**Real Newspeak bodies for `whileTrue:`, `whileFalse:` and `do:`**,
-between road steps 7 and 8 ("The road to a high-performance VM" below;
-[core-library.md](design/core-library.md), "Planned: real bodies for
-control flow and `do:`, before the baseline JIT"): `Closure`'s loops and
-the collections' `do:` become Newspeak loops instead of forwarders to
-trampoline-step leaves, so that the baseline JIT of road step 8 sees
-through them, keeping everything the leaves settle today. Not planned
+**Road step 8, a baseline JIT**, Cog's class, for x64 and arm64, to the
+contract of 7c ("The road to a high-performance VM" below;
+[execution.md](design/execution.md), "Planned: JIT tiers"). Not planned
 yet. Road step 7 is complete: 7c wrote the contract the JIT tiers build
 to ([execution.md](design/execution.md), "Planned: the deoptimization
-contract").
+contract"). The step between 7 and 8 is built: `Closure>>whileTrue:` and
+`whileFalse:` and `Array>>do:` are Newspeak loops, whose sends the JIT
+sees through
+([core-library.md](design/core-library.md), "Real bodies for control
+flow and `do:`").
 
 7a′, 7b and 7a are built. The register windows overlap, in Cog's layout
 -- the arguments, then the header, then the other registers, the
@@ -64,16 +64,19 @@ master (`733c15bd`) and task by task: every program within noise, but
 `bench_megamorphic.ns`, +1.3-2.1% after the private and super accessor
 check, at the edge of build noise and not diagnosed ("Planned: performance
 and representation" below). Everything up to road step 6 on the road
-is built, and `new` as compiled code and road steps 7b, 7a and 7a′ after it;
+is built, and `new` as compiled code, road steps 7b, 7a and 7a′, 7c's
+contract and the loops' Newspeak bodies after it;
 each step has its entry in [PROGRESS.md](PROGRESS.md), and the whole road is below.
 
 **Measuring.** The protocol is [execution.md](design/execution.md)'s "What
 removing the re-entries moved"; every compared binary, the current tree
 included, is built with the same explicit `RUSTFLAGS` (`CLAUDE.md`,
 "Working in this repository"), and the three builds a side vary the block
-layout inside `vm::run` as that section says. Five of the nine measurement sources are
+layout inside `vm::run` as that section says. Six of the ten measurement sources are
 under `benchmarks/micro/`, `bench_signal.ns` the one an exception's
-handler search moves; the other four -- `bench_new.ns`,
+handler search moves and `bench_while.ns` the one that runs `whileTrue:`
+and `whileFalse:` over blocks held in slots, which the compiler does not
+inline; the other four -- `bench_new.ns`,
 `bench_new2.ns`, `bench_newarg.ns` and `bench_do.ns` -- are not in the tree
 and must be written out from [execution.md](design/execution.md), "What
 spec-conformant lookup moved", never reconstructed from a prose
@@ -318,13 +321,20 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
   loop, before any observer runs; deoptimization and on-stack
   replacement of baseline frames in place, of optimized frames lazily
   through the suspended frames of 7b; metadata only at interrupt points.
-- **Between steps 7 and 8, real Newspeak bodies for `whileTrue:`, `whileFalse:` and
-  `do:`.** Making them Newspeak loops keeps what their leaves settle --
-  `do:` reads each element as it goes and sends `value:` to a non-block,
-  `whileTrue:` and `whileFalse:` send `value` to a non-block body -- and
-  changes nothing a program can see.
-  [core-library.md](design/core-library.md), "Planned: real bodies for
-  control flow and `do:`, before the baseline JIT".
+- **Between steps 7 and 8, real Newspeak bodies for `whileTrue:`,
+  `whileFalse:` and `do:` -- built** (2026-10-27,
+  [its plan](superpowers/plans/2026-10-27-1529-loop-bodies.md)):
+  `Closure>>whileTrue:` and `whileFalse:` are the loop the compiler
+  inlines, `^[self value] whileTrue: [body value]`, and `Array>>do:` reads
+  its size through its leaf and walks it with an inlined `whileTrue:`
+  sending `at:` and `value:`; the mirror rows, the native loops and their
+  continuations are gone, and nothing a program can see changed. The
+  reference lowering lowers a loop over two block literals as a naive loop
+  of `value` sends to real closures, whose activations are exempt from the
+  depth count. [core-library.md](design/core-library.md), "Real bodies for
+  control flow and `do:`"; [compiler.md](design/compiler.md), "What it
+  emits"; [execution.md](design/execution.md), "What Newspeak loop bodies
+  moved".
 - **Step 8, a baseline JIT**, Cog's class, for x64 and arm64, to the
   contract of 7c. Left to it, and measured: whether the depth count
   lives in a machine register while machine code runs, written back at
@@ -373,6 +383,20 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 
 ## Planned: performance and representation
 
+- **The depth flag a continuation's push takes is dead** (2026-10-27).
+  `Mutator::push_continuation` takes `replaced_counted`, whether the
+  activation a continuation replaces counted against the depth limit,
+  which `vm::finish` and `apply_continuation` thread through from the
+  popped frame (`Popped::counted`), so that a block a continuation pushes
+  in its place could stay exempt. Only the native loops ever replaced an
+  exempt activation; since `whileTrue:`, `whileFalse:` and `Array>>do:`
+  are Newspeak, every exempt activation delivers, and everything
+  `push_continuation` pushes is counted. Removing the flag, and
+  `Popped::counted` with it if nothing else reads it, changes the return
+  path, which `cargo xtask gates codegen` holds to a budget and the
+  protocol of "Measuring" above must time before it is kept.
+  [compiler.md](design/compiler.md), "How the limit counts";
+  [execution.md](design/execution.md), "The depth limit".
 - **`vm::run` reloads the `Mutator` pointer from its frame** (2026-10-25).
   Since the first stage of road step 7a′ the pointer arrives in a
   callee-saved register (`r12`) but is also spilled to the frame and
@@ -795,8 +819,8 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 
 - **Suspend and resume.** Needs a yield path out of `vm::run`, a re-entry
   that continues a decoded frame, and an encoding for the side table of
-  suspended activations -- every `Continuation` variant (`WhileLoop`,
-  `DoLoop`, `NestedClassCreation`, `Unwind`, `VmErrorSignalled`, `Future`,
+  suspended activations -- every `Continuation` variant (`NestedClass`,
+  holding a `NestedClassCreation`, `Unwind`, `VmErrorSignalled`, `Future`,
   `ReturnToSuspended`), the counting, the entered level -- and for
   `depth_reserve`; suspending the whole stack into its frames exists
   (`Heap::suspend_activations`). The decoder refuses every frame not

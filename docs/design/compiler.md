@@ -119,7 +119,8 @@ assignment's value.
 - `SendInlinable { selector, receiver_register, argument_base,
   argument_sources, destination, call_site }` — the same send, decided
   exactly as `SendPublic` is, marking one the optimized lowering would have
-  inlined. Only the reference lowering emits it, and only the depth count
+  inlined, or the `value` its loop sends to a block the optimized lowering
+  runs inline. Only the reference lowering emits it, and only the depth count
   reads the mark; see "How the limit counts".
 - `SendLexical { depth, selector, argument_base, argument_sources,
   destination, call_site }` — `Binding::LexicalSend`. **No receiver
@@ -584,14 +585,16 @@ construction, so its class is always `Closure` and there is no receiver ambiguit
 fall back from; what the guard checks is the **condition block's value** each
 iteration. A non-Boolean condition cannot fall back to re-sending `whileTrue:` to
 a materialized closure, because that would re-run the condition body and duplicate
-its side effects before the native could report anything — an observable
-difference. Instead the natives define the behaviour and the inlined form
-reproduces it: both signal a `NonBooleanReceiver` carrying the offending value,
-built by the one function `interpreter::unwind::non_boolean_condition`. The
-inlined loop's guard-failure path is the single instruction `SignalNonBoolean`,
-which ends the path as a return does; the native loop's continuation raises the
-same error, so class, text, selector and receiver are identical under both
-lowerings. A loop's behaviour is the library's to define, so there is no message
+its side effects before the method could report anything — an observable
+difference. Instead the guard-failure path is the single instruction
+`SignalNonBoolean`, which signals a `NonBooleanReceiver` carrying the offending
+value, built by the one function `interpreter::unwind::non_boolean_condition`,
+and ends the path as a return does. `Closure>>whileTrue:` and `whileFalse:`
+are this same inlined loop -- `^[self value] whileTrue: [body value]` --, so a
+loop over blocks held in variables meets the same guard, and the reference
+lowering's loop ("What it emits") ends in the same instruction: class, text,
+selector and receiver are identical under both lowerings and for every
+receiver. A loop's behaviour is the library's to define, so there is no message
 a program could implement to answer a non-Boolean condition.
 
 ### Lexical addressing inside an inlined block
@@ -633,7 +636,8 @@ must signal the identical `NonBooleanReceiver`.
 
 Those paths are pinned by recorded answers, which both lowerings must produce:
 `goldens/language/control-flow/` holds the non-Boolean receiver and the non-Boolean loop
-condition and a block held in a variable that takes the native loop,
+condition and a block held in a variable that takes `Closure>>whileTrue:`'s
+own loop,
 `goldens/language/block/` a `^` out of an inlined loop body;
 `goldens/language/control-flow/control_flow_fallback.ns` runs a user
 `ifTrue:ifFalse:`; and the compiler's own tests (`compiler/lower.rs`,
@@ -1310,10 +1314,11 @@ against code nothing had checked.
    a `LoadOuterLocal`. There are no inlined scopes, so the hop
    count is the resolver's depth unchanged.
 4. Every send is a real send, receiver then arguments from left to right.
-   Nothing is inlined. Every send the optimized lowering inlines — exactly the
-   sends `control_flow::recognize` accepts, and the mirror sends
-   `recognize_mirror_send` accepts — is a `SendInlinable`, and every other
-   explicit-receiver send a `SendPublic` ("How the limit counts" below). A
+   Nothing is inlined but the loop of rule 11. Every other send the optimized
+   lowering inlines — exactly the sends `control_flow::recognize` accepts,
+   and the mirror sends `recognize_mirror_send` accepts — is a
+   `SendInlinable` of its own selector, and every other explicit-receiver
+   send a `SendPublic` ("How the limit counts" below). A
    mirror send is therefore an ordinary send to the mirror object here, its
    failure block a real closure ("Mirror sends"). A send's argument slots
    are allocated after its receiver, and each argument is produced in its
@@ -1343,9 +1348,26 @@ against code nothing had checked.
    the `initExprs`.
 10. `statement_program_counter` and `register_count` follow the same rules as in
     `lower.rs`. Every send carries `CallSite::UNCACHED`, and `family_size` is 0.
+11. A `whileTrue:` or `whileFalse:` that `control_flow::recognize` accepts --
+    receiver and argument both block literals without parameters or
+    temporaries -- is a naive loop (`Body::while_loop`): both blocks real
+    closures, made once before it; each turn a `SendInlinable` of `value` to
+    the condition closure, a `JumpIfNotBoolean` to a `SignalNonBoolean`, a
+    `BranchIfFalse` (`whileTrue:`) or `BranchIfTrue` (`whileFalse:`) to the
+    exit, a `SendInlinable` of `value` to the body closure, and a `Jump`
+    back; the loop's value is a `LoadLiteral` of `nil` at the exit. A loop
+    has to bottom out somewhere: `Closure>>whileTrue:`'s own body is this
+    shape ([core-library.md](core-library.md), "Real bodies for control flow
+    and `do:`"), and as a send of `whileTrue:` it would send itself until the
+    depth limit. Everything the loop does besides branching is still a real
+    send of a real closure, and its activations are exempt from the depth
+    count as the optimized lowering's inlined bodies have none ("How the
+    limit counts").
 
 Its `finish` checks that shape in a debug build, which is what the test suite
-runs (`check_shape`): no branch instruction, since only inlining emits one;
+runs (`check_shape`): no branch instruction but rule 11's loop's -- its `Jump`
+the one jump backwards, its two exits the only forward ones -- and no
+`IntegerBinary`, which only arithmetic inlining emits;
 every scratch register written by exactly one instruction; a named local
 written only by `StoreLocal`; and a named local read only by `Move`, every other
 operand being a scratch register — rule 3, the property that keeps a value from
@@ -1383,8 +1405,8 @@ A command that dropped the switch would compare the optimized lowering with
 itself, and no program's output would show it. The tests therefore read the
 code instead: `disasm`'s listing (`crates/ns-analyzer/tests/lowering.rs`), and
 the inspector's full listing of an artifact `build` wrote
-(`crates/ns-cli/tests/lowering.rs`), have no branch under the reference
-lowering and one under the optimized. `run` writes nothing to read; it is
+(`crates/ns-cli/tests/lowering.rs`), make the loop's blocks closures under
+the reference lowering and none under the optimized. `run` writes nothing to read; it is
 covered by handing the switch to the same `program::load_program` call.
 
 ### The harness
@@ -1392,7 +1414,7 @@ covered by handing the switch to the same `program::load_program` call.
 - `crates/ns-cli/tests/run_goldens.rs` and `golden_round_trips.rs` run every golden
   under both lowerings against the same recorded answer. Under the reference
   lowering `golden_round_trips.rs` also takes the encoder and decoder over code with
-  no jumps and many registers.
+  hardly any jumps and many registers.
 - `run-corpus` runs every row four ways — `run` of its generated application,
   and `build` then `load` of it, under each lowering — with no switch, because
   a gate must not be optional. A row fails if any of the four differs, and the
@@ -1443,8 +1465,9 @@ by exempting it from the comparison:
 Everything else was checked and agrees: all eight inlined forms exist as
 kernel methods that follow the rules the inlined code reproduces (`True`'s
 and `False`'s quick methods for the six branches, which answer the block's
-value as it is, and leaves for the two loops, which signal `NonBooleanReceiver`
-for a non-Boolean loop condition); a mirror send's failure block runs the same code
+value as it is, and `Closure`'s two loops, whose bodies are the inlined loop
+itself and signal `NonBooleanReceiver` for a non-Boolean loop condition, as
+the reference lowering's loop does); a mirror send's failure block runs the same code
 whether it is inlined or activated; a
 method's `^` inside a block the optimized lowering inlines is a `Return` there
 and a `NonLocalReturn` here, whose unwind ends at the method's activation, with
@@ -1466,23 +1489,33 @@ level optimized and two under the reference lowering.
 
 **The limit counts every activation on the activation stack — method, block,
 factory, initializer level and superclass clause — except a block activation
-that a builtin control-flow step performs for a `SendInlinable`, and a mirror
-send's failure block activated for one.** The steps are `ifTrue:`,
+that a builtin control-flow step performs for a `SendInlinable`, a mirror
+send's failure block activated for one, and a block a `SendInlinable` of
+`value` activates -- the reference lowering's loop.** The steps are `ifTrue:`,
 `ifFalse:`, `ifTrue:ifFalse:`, `ifFalse:ifTrue:`, `and:` and `or:` on a
 Boolean, answered by `True`'s and `False`'s `^<parameter> value` quick
 methods ([core-library.md](core-library.md), "`True` and `False` are quick
-methods"), and `whileTrue:` and `whileFalse:` on a block, answered by their
-leaves through their kernel methods; the failure block is the one `interpreter::mirror`'s
+methods"); the failure block is the one `interpreter::mirror`'s
 `execute_sent` activates when a sent mirror send's leaf declines, which it
-marks as a control-flow block. `SendInlinable` is an ordinary public send
+marks as a control-flow block; and the loop's condition and body are the
+closures rule 11 of "What it emits" sends `value` each turn, which the
+optimized lowering runs inline. `SendInlinable` is an ordinary public send
 that only the reference lowering emits, for exactly the sends
-`control_flow::recognize` and `recognize_mirror_send` accept.
+`control_flow::recognize` and `recognize_mirror_send` accept, and for the
+loop's `value` sends.
 
 - **The count agrees at every point of every program.** The optimized lowering
   omits exactly these activations and no others. On a non-Boolean receiver
   both lowerings make the same real send with real closures, and from there
   count alike; a non-Boolean loop condition signals its `NonBooleanReceiver`
-  from the same depth under both. That holds for an
+  from the same depth under both. A recursion from a literal loop's body
+  counts one activation a level under both
+  (`goldens/runtime/depth-limit/recursion_through_a_literal_loop_counts_alike_under_both_lowerings`).
+  A loop over blocks held in variables is a real send of `whileTrue:` under
+  both, one counted `Closure>>whileTrue:` activation, whose own literal loop
+  each lowering lowers as above; the receiver and argument blocks it sends
+  `value` are no literals of that activation's, so they are counted under
+  both. That holds for an
   instance of a user subclass of `True`, which reaches `True`'s quick methods:
   they mark the block as a control-flow step only for a Boolean receiver, so
   its block is counted under both lowerings
@@ -1495,11 +1528,9 @@ that only the reference lowering emits, for exactly the sends
   it — two counted where the optimized lowering counts none. As a quick
   method it is never activated for a block argument: it answers the block
   straight to the `SendInlinable`'s sender, and the exemption applies as it
-  always did; `whileTrue:`'s primitive method does the same through its leaf
-  ([dispatch.md](dispatch.md), "Primitive methods").
-  `NS_NEXT_NO_PRIMITIVE_METHODS=1`, which compiles the kernel without its
-  primitive methods — the quick methods stay — breaks the agreement for the
-  loops, and is for measuring only.
+  always did ([dispatch.md](dispatch.md), "Primitive methods"). A literal
+  loop needs no fast path: the reference lowering sends `value` to its
+  blocks directly, never `whileTrue:`.
 - **Depth stays bounded.** A literal block can run again only if the body
   enclosing it runs again, so every recursive cycle contains a counted
   activation, and the uncounted activations per counted one are bounded by the
@@ -1544,15 +1575,18 @@ and its body arms, for a factory, an initializer level and a superclass
 clause, record `counted: true`. The flag
 rides on the stack frame, and the push refuses a counted push at the limit:
 `Mutator::push_above` and `Mutator::push_on_slots` each compare the depth,
-whichever of the two `Mutator::push_placed` chooses. A block is exempt when it carries
+whichever of the two `Mutator::push_placed` chooses. A block is exempt when
+the send that led to it was a `SendInlinable`, it carries either
 `StepArguments::ControlFlow` — the arguments only the control-flow leaves and a
-declining sent mirror send build —
-the send that led to it was a `SendInlinable`, and its `captured_frame` is the
+declining sent mirror send build — or `StepArguments::Send`, a block
+activated with the send's own arguments, which for a `SendInlinable` only the
+reference lowering's loop's `value` answers, and its `captured_frame` is the
 sending activation's reified frame. The VM decides a `SendInlinable` exactly as
-it does a `SendPublic` and only hands `push_step` the fact that it was one. A
-native loop's next block is pushed by `Mutator::push_continuation`, which
-exempts it only if the one it replaces was; the VM forwards the popped entry's
-flag and decides nothing. `&` and
+it does a `SendPublic` and only hands `push_step` the fact that it was one.
+No continuation replaces an exempt activation: `Mutator::push_continuation`
+still takes a flag that would carry the exemption over from the activation
+it replaces, which the VM forwards from the popped entry, but nothing that
+pushes through it now pops an exempt one ([OPEN-WORK.md](../OPEN-WORK.md)). `&` and
 `|` share `and:`'s and `or:`'s native, so their block carries the mark as
 well, but no lowering emits a `SendInlinable` for them, since `recognize` does
 not accept them ([execution.md](execution.md), "The depth limit").

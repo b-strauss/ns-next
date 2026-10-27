@@ -232,7 +232,7 @@ pub struct ActivationReference {
   fills its named locals above it with nil -- those below its body's
   `local_count` -- and no scratch register. Every other push
   (`Heap::push_activation`) -- a host's, a `doesNotUnderstand:` handler's,
-  `Message>>sendTo:`'s, a native loop's block, an unwind block, the
+  `Message>>sendTo:`'s, a control-flow step's block, an unwind block, the
   initializer a factory enters, a resumed or forcing activation -- takes
   its arguments, the header and the registers above from the top, above
   the sender's whole window: the frame stack answers the frame's words and
@@ -523,20 +523,21 @@ loop applies to its value when it is popped; and `counted`, whether it counts ag
 stored: the frame's continuation word is nil, so a send's return tests one
 word and reaches no table. Every other continuation lives in a row of the
 heap's side table of continuations (`Heap`'s `continuations`), since most
-of them carry Rust state no word can (`NewspeakError`, the boxed loop and
-unwind records), minted smallest free row first as `Suspensions`' rows are
+of them carry Rust state no word can (`NewspeakError`, the boxed
+nested-class, unwind and forcing records), minted smallest free row first as `Suspensions`' rows are
 and taken out and freed by the pop; the table is a root
-([memory.md](memory.md), "What the collector traces"). A native loop over a
-block the compiler did not inline (`whileTrue:`, `do:`) gives its row back
-and takes one again on every step, and its row is the last: the last row is
+([memory.md](memory.md), "What the collector traces"). An activation with a
+continuation of its own -- a future's computation, a nested class's clause
+-- takes a row and gives it back when it returns, and its row is usually
+the last: the last row is
 never free, so that pop and that push each touch only the end of the
 table's vector, inline, and only a row below the last takes the free list,
 out of line. A suspension takes its
 activation's continuation out of the table into its suspension row, and a
-resume puts it back. `WhileCondition`, `WhileBody` and `DoElement` leave
-with the real bodies of `whileTrue:`, `whileFalse:` and `do:`
-([core-library.md](core-library.md), "Planned: real bodies for control
-flow and `do:`, before the baseline JIT").
+resume puts it back. No loop has a continuation: `whileTrue:`,
+`whileFalse:` and `Array>>do:` are Newspeak loops whose blocks deliver as
+any send's callee does ([core-library.md](core-library.md), "Real bodies
+for control flow and `do:`").
 
 `program_counter` is an instruction index into the activation's compiled body.
 
@@ -735,14 +736,12 @@ activations from its callers'.
   caller: `resume_caller` reads the `program_counter` the caller stored at its send, writes
   the value to that send's `destination` and continues at the next instruction — or,
   when the popped activation was `base`, the loop leaves `run` with it. Every
-  other continuation — a native loop's, `do:`'s, the nested-class
-  accessor's — is applied by `Mutator::resume`, which
-  calls into `builtins/` or `interpreter/`; it may answer a value, or another
-  activation — a native loop's next block, `do:`'s block for the next element,
-  or the `valueOf:` that runs a loop body which
-  is no block — which `Mutator::push_continuation` pushes
-  in the popped activation's place; a native loop whose condition answers no
-  Boolean signals `NonBooleanReceiver` instead ("The trampoline" below). A future's
+  other continuation — the nested-class accessor's, an unwind's, a VM
+  error's `signal` — is applied by `Mutator::resume`, which
+  calls into `interpreter/`; it may answer a value, another
+  activation — the next step of a nested class's creation — which
+  `Mutator::push_continuation` pushes in the popped activation's place, or
+  a signal, an unwind carried on ("The trampoline" below). A future's
   forcing, `Continuation::Future`, is the one `finish` does not hand to
   `resume`: `Mutator::future_computed` records the value, and the loop
   delivers it, forces the next future of a chain, or runs the caller's
@@ -768,9 +767,8 @@ Five kinds of body run, and each reaches the loop one way:
    activation catches a `^` that targets it (`Mutator::catches_return`).
 2. **Block body** — pushed by `push_step` for a `Step::Block`, which names the
    closure object; the activation runs the code that object's code id
-   names. `value`, the control-flow steps — `whileTrue:`'s and
-   `whileFalse:`'s leaves and `True`'s and `False`'s `^<parameter> value`
-   quick methods — and `do:` answer the block as a step.
+   names. `value` and the control-flow steps — `True`'s and `False`'s
+   `^<parameter> value` quick methods — answer the block as a step.
 3. **Factory body** — pushed by `push_step` for a `Step::Factory`, which
    `act` answers for a factory entry the lookup found, on the class object
    the factory was sent to; its value is delivered like a method's. A send
@@ -837,7 +835,7 @@ outside the stack holds them while it is decided.
 **The VM has no dispatch logic, no `doesNotUnderstand:` construction, no native
 dispatch and no error text of its own.** It pushes, pops, switches, writes
 registers and reads instructions' operands; which body runs next is always
-decided in `interpreter/` or `builtins/`, a native loop's next block included.
+decided in `interpreter/` or `builtins/`.
 Every error a program can observe is produced there. That keeps dispatch in
 one place, which the reference lowering and a later JIT will reach unchanged —
 and it is why `CLAUDE.md`'s "`vm.rs` holds no dispatch logic" forbids copying
@@ -934,8 +932,8 @@ suspended sender of the frame it pops before abandoning that frame's
 continuation. So the unwinder resumes a target only when it is suspended, and
 only by popping down to it, as `retry` keeps popping down to its `on:do:`
 activation ("Suspending and resuming" above). The popped activations'
-continuations are not applied, so a `^` out of an `and:` block, a native
-loop's body or a `do:` block abandons the coercion or the loop; they go to
+continuations are not applied, so a `^` out of a superclass clause or an
+`ensure:` block abandons the class's creation or the unwind; they go to
 `Mutator::abandon` instead, which unmarks a nested class's creation in its
 cache slot and drops every other. A return whose target catches none, or has
 returned meanwhile, pops every activation of the run, `base` included, in the
@@ -6545,11 +6543,11 @@ What the stage taught, as reasons the current design still stands on:
   one always are -- tests a two-argument send's with one comparison, and
   places only non-consecutive sources, out of line (`vm::place_arguments`).
 - **A push that indexes the whole frame stack again after taking its frame
-  pays reloads and bounds checks on every block a native loop pushes.**
+  pays reloads and bounds checks on every push.**
   Indexing `words_mut()` with computed offsets after storing the
   continuation row reloaded the stack's base, length and top and checked
-  three ranges per activation: about 2 ns per block a continuation pushes
-  (`bench_do.ns`'s `do:`, a native `whileTrue:`), independent of the
+  three ranges per activation: about 2 ns per block pushed
+  (`bench_do.ns`'s `do:`, a `whileTrue:` the compiler did not inline), independent of the
   block's body and of where the frames sit, `Mutator::push_step` holding a
   quarter to a third more samples. So `FrameStack::push` answers the words
   below the frame and the frame's own as two slices, and
@@ -7166,19 +7164,11 @@ Three things the trampoline settles on its own:
   and its value is the send's (`Continuation::Deliver`) -- `True`'s and
   `False`'s `^<parameter> value` quick methods answer it, with no leaf
   ([core-library.md](core-library.md), "`True` and `False` are quick
-  methods"); `whileTrue:` and
-  `whileFalse:` on a block answer the condition block with
-  `Continuation::WhileCondition`, which, when it returns, activates the body or
-  ends the loop (`builtins::block::after_condition`), and the body's
-  `Continuation::WhileBody` activates the condition again. A body that is no
-  block is sent `value` instead, through `Closure`'s private `valueOf:`
-  pushed with the loop's continuation, as `do:` sends `value:` ("No
-  re-entry from Rust" below); its answer is dropped. The continuation is a
-  row of the heap's side table of continuations that the block
-  activation's frame names in its continuation word, and `vm::finish`
-  applies it, through `Mutator::resume`, when it pops the activation, so a
-  loop's condition and body replace each other on the stack instead of
-  nesting. This
+  methods"). `whileTrue:` and `whileFalse:` need no step: `Closure`'s
+  methods are the loop the compiler inlines, `^[self value] whileTrue:
+  [body value]`, whose condition and body are ordinary `value` sends that
+  deliver to it ([core-library.md](core-library.md), "Real bodies for
+  control flow and `do:`"). This
   is Primordial Soup's model with one activation
   fewer: there `True>>ifTrue: then = (^then value)` is a Newspeak method whose
   `value` is primitive 156, `ActivateClosure`, which pushes a frame and returns
@@ -7187,16 +7177,13 @@ Three things the trampoline settles on its own:
   costs native stack per level under the reference lowering only, growing with
   the static nesting of `and:` and `while` blocks, so no fixed native stack
   would guarantee that the count trips before the native stack under both
-  lowerings. `do:` answers its block as a step too ("No re-entry from Rust"
-  below). Since step 6 each of these is the leaf a `Kernel.ns` method
-  forwards to; rewriting them as Newspeak loops and branches is a separate
-  step before the baseline JIT ([core-library.md](core-library.md), "Planned:
-  real bodies for control flow and `do:`, before the baseline JIT").
+  lowerings. `Array>>do:` is a Newspeak loop of `value:` sends as well.
 - **Recursion depth is a checkable limit and an ordinary Newspeak error**
   instead of a native stack overflow that aborts the process. That closes the
   exposure [image-format.md](image-format.md) records against a loaded
   artifact. The limit counts every activation except a block activation that a
-  builtin control-flow step performs for a `SendInlinable`, the send only the
+  builtin control-flow step, or the reference lowering's loop, performs for a
+  `SendInlinable`, the send only the
   reference lowering emits where the optimized one inlines. That makes the
   count agree under both lowerings at every point of every program, so the
   reference lowering checks an overflow too ([compiler.md](compiler.md), "How
@@ -7237,8 +7224,9 @@ code that carries `SendInlinable` gets there — the reference lowering's, or an
 artifact's — recursing through 128 nested control-flow blocks at every level;
 the optimized lowering never emits it, so under it the stack holds at most L
 frames. The limit agrees under both lowerings, because the control-flow
-natives, `do:`, instantiation and the nested-class accessor are all trampoline
-steps: no recursion costs native stack under one lowering and not the other.
+natives, instantiation and the nested-class accessor are all trampoline
+steps, and the loops and `do:` are Newspeak: no recursion costs native stack
+under one lowering and not the other.
 The error text does not name its number, as Lua's, CPython's, V8's and Nova's
 do not, so that changing the value later changes no recorded answer. It is
 signalled as an `Error` like every other Newspeak error, so `on: Error do:`
@@ -7344,24 +7332,30 @@ L and L + 1 and the overruns of the machinery, a `pass`'s included.
   body an instantiation or a nested-class accessor runs — a factory, an
   initializer level, a superclass clause — are counted by construction.
 - **The exemption is marked by the arguments.** A control-flow step's block —
-  one a `whileTrue:` or `whileFalse:` leaf activates, or one a Boolean
-  receiver's `^<parameter> value` quick method answers — and the failure
+  one a Boolean receiver's `^<parameter> value` quick method answers — and
+  the failure
   block a sent mirror send activates when its leaf declines
   ([compiler.md](compiler.md), "Mirror sends"), carry
   `StepArguments::ControlFlow` — none has arguments, and only those build
-  that variant — and `push_step` exempts one when the send
+  that variant —, and the block a `value` send activates carries
+  `StepArguments::Send`, its send's own arguments; `push_step` exempts
+  either when the send
   was a `SendInlinable` and the block's `captured_frame` is the reified frame
   of the activation that sent it ([compiler.md](compiler.md), "How the limit
-  counts"). A native loop's next block goes through
-  `Mutator::push_continuation`, which exempts it only if the one it
-  replaces was; the loop forwards that frame's flag and decides nothing. The
+  counts"). For a `SendInlinable`, only the reference lowering's loop answers
+  a block with the send's own arguments: the `value` it sends each turn to
+  its condition and body. `Mutator::push_continuation` still takes the
+  flag of the activation a continuation replaces, which the loop forwards,
+  but no continuation now replaces an exempt one
+  ([OPEN-WORK.md](../OPEN-WORK.md)). The
   mark rides on the arguments rather than in a field of its own
   because the field measured 4–8% slower ("What the trampoline moved" above);
   so a future native that activates a block with no arguments for any other
-  reason must not build `ControlFlow`. `do:`'s block has an argument, so it is
-  always counted. Neither lowering emits a `SendInlinable` for a loop
-  body that is no block, so both reach the leaf, which sends it `value`
-  through a method and counts that method. `&` and `|` share `and:`'s and `or:`'s
+  reason must not build `ControlFlow`. `do:`'s block is sent `value:` by
+  `Array>>do:`'s loop, an ordinary send, so it is always counted. A loop
+  receiver or body that is no block literal is sent `value` by
+  `Closure>>whileTrue:`'s loop, a `SendPublic` under both lowerings, and
+  counted. `&` and `|` share `and:`'s and `or:`'s
   native and so carry the mark too, which is harmless: no lowering emits a
   `SendInlinable` for them, since `control_flow::recognize` accepts only the
   eight inlined selectors, and a crafted artifact that marks one meets the
@@ -7459,50 +7453,23 @@ one bound, L ("The depth limit" above), is all it needs.
 
 Rust enters the run loop only as its outermost caller — a host's `send` or
 `instantiate`, an application's assembly and its `main:args:` among them — and never from inside a
-running computation. `do:` and the nested-class accessor, two of the three
-paths that used to run Newspeak code from Rust, are trampoline steps, and
-the third, instantiation, is compiled code that runs in the loop like any
-method.
+running computation. Of the three paths that used to run Newspeak code from
+Rust, `do:` is a Newspeak loop -- `Array>>do:`, which sends `value:` for
+each element as any send does ([core-library.md](core-library.md), "Real
+bodies for control flow and `do:`") --, the nested-class accessor is a
+trampoline step, and instantiation is compiled code that runs in the loop
+like any method.
 This was step 2a of Milestone 4, decided 2026-09-13, and it is what the root
 discipline stands on ([memory.md](memory.md), "No Rust frame is live below a
 safepoint"): between two instructions no Rust frame between the host and the
 loop holds a value.
 
-The first two follow the pattern `whileTrue:` set: a decision answers an
-activation together with a `Continuation`, the continuation is a row of the
-side table of continuations the activation's frame names, and
-`Mutator::resume` applies it when the activation returns. The semantics and
-the order of every observable effect are what they were when these paths ran
-in nested runs of the loop.
+A trampoline step answers an activation together with a `Continuation`, the
+continuation is a row of the side table of continuations the activation's
+frame names, and `Mutator::resume` applies it when the activation returns.
+The semantics and the order of every observable effect are what they were
+when these paths ran in nested runs of the loop.
 
-- **`do:`** (`builtins/collections.rs`) reads the size once, when the walk
-  starts, and each element when it reaches it, so a store the action makes
-  to a later index is seen, as in a loop from 1 to the size over `at:`. An
-  empty array answers the receiver at once. Otherwise `do_step` decides,
-  once, what the loop runs (`LoopAction`): a closure it activates itself, or
-  any other object, which it sends `value:` -- a future excepted, which it
-  declines so that the failure path sees through it. For the first element
-  it answers `Step::Block`, or for a non-block the `Step::MethodThen` of
-  `Mutator::send_value_then`, which activates `Closure`'s private
-  `valueOf:with:` -- `^action value: element` -- as a method, given the
-  loop's continuation once pushed, as the unwinder pushes `valueOnUnwind:`
-  ("Unwinding"): what the send of `value:` decides may be a method, a block,
-  a value or an instantiation of several activations, and only the helper's
-  own return is one place to hang the continuation on. The continuation is
-  `Continuation::DoElement`, whose `DoLoop` carries the receiver, the
-  action, the size and the next index; `resume` hands it to
-  `after_element`, which runs the action for the next element or answers
-  the receiver. `collections::execute` matches the enumerated
-  `CollectionPrimitive` a lookup found ([dispatch.md](dispatch.md),
-  "Primitives"): `Enumerate` (`do:`) answers `do_step`'s step directly, and
-  every other primitive's leaf result is lifted into a step through
-  `leaf_step`. These are `Array`'s leaves alone. Each element's activation is
-  counted, like any block a `value` send activates; a `^` in it unwinds like
-  any other activation's, and its arity is checked by the same
-  `check_block_arity`. Its argument is a one-element vector, allocated per
-  element: a `StepArguments` variant that carried one value would avoid that,
-  and would change `Step`'s layout, which the trampoline measured as a 4–8%
-  risk ("What the trampoline moved" above).
 - **The nested-class accessor** (`interpreter/nested.rs`) answers the class as
   a value when the receiver's cache already holds it, and also when the
   declaration has no superclass clause, whose superclass is `Object` with no
@@ -7703,10 +7670,10 @@ walking that chain (`ActivationMirrorTesting.ns`, `describeActivation:to:`),
 the creator is still answered after its method has returned
 (`testClosureActivation`, on a block `seven` returned), and a block evaluated
 directly in its method has `sender = enclosingActivation`
-(`testEnclosingActivationEquality`). Once the collection iterators are
+(`testEnclosingActivationEquality`). The collection iterators are
 Newspeak loops rather than forwarders to a leaf ([core-library.md](core-library.md),
-"Planned: real bodies for control flow and `do:`, before the baseline JIT"),
-every block one runs is such an entry.
+"Real bodies for control flow and `do:`"), so every block one runs is such
+an entry.
 
 The alternative — reify nothing for a block without `^`, carry only what it
 captured, as the JVM does (a lambda holds its captured values and no frame;
@@ -8795,7 +8762,7 @@ callee                      | r0 .. r(argc-1)       | header (13) | r(argc+13) .
 - **A push without the arguments in the caller's registers copies them**
   to the top of the stack, above the caller's whole window: a
   `doesNotUnderstand:` handler's message, `Message>>sendTo:`, `cull:`, a
-  native loop's next block, an unwind block, a host's entry, a resumed
+  future's forcing, an unwind block, a host's entry, a resumed
   frame, and the initializer a factory enters, whose arguments are the
   factory's own and lie below its header. A future forced before a send
   is re-run lands above the caller's window too, so the slots it re-reads
@@ -8873,9 +8840,9 @@ eight-byte value, the object space with its header word, class word and inline
 fields, generations and inline allocation ([memory.md](memory.md),
 [object-model.md](object-model.md)) -- which give generated code fixed field
 offsets, a guard read in one load, a cheap write barrier and a bump
-allocation it can emit itself, and on real Newspeak bodies for
-`whileTrue:`, `whileFalse:` and `do:` ([core-library.md](core-library.md),
-"Planned: real bodies for control flow and `do:`, before the baseline JIT").
+allocation it can emit itself, and on the real Newspeak bodies of
+`whileTrue:`, `whileFalse:` and `Array>>do:` ([core-library.md](core-library.md),
+"Real bodies for control flow and `do:`").
 Each step gets its own design when it comes up.
 
 - **Step 7, an execution model for compiled code.** Frames that interpreted and
@@ -9294,8 +9261,10 @@ activation" above); one it inlines creates neither.
   because code runs while an unwind is in progress and a release build
   does not check an activation's generation.
 - **Rust does not re-enter the run loop** (decided 2026-09-13, "No re-entry
-  from Rust"): `do:` and the nested-class accessor are trampoline steps,
-  and instantiation is compiled code since `new` is (decided with the user
+  from Rust"): the nested-class accessor is a trampoline step, `do:` a
+  Newspeak loop since the loops' real bodies (decided with the user on
+  2026-10-27, [core-library.md](core-library.md), "Real bodies for control
+  flow and `do:`"), and instantiation is compiled code since `new` is (decided with the user
   on 2026-10-22, [object-model.md](object-model.md), "Decisions"), so that
   no Rust frame is live below a safepoint and the root discipline has
   nothing to root but the host's values. The bound on re-entries went with
