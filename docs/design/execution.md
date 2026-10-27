@@ -7103,7 +7103,8 @@ layouts of `vm::run` differ was not made; the change does not touch
 The geometric mean over the twenty-one sources is -3.8%, all of it
 `bench_signal.ns`'s: a signal caught fifty activations down takes 58%
 less time, since the search no longer reifies the activations it passes
--- two per activation per signal before, one in each of its walks
+-- a frame object for every activation it passed before, made by its
+first walk and found again by its second
 (`a_handler_search_reifies_no_frame_it_passes`). Every other source is
 level. `bench_megamorphic.ns` and Json come out +0.4% with their pooled
 ranges apart, but within either sitting their builds overlap the other

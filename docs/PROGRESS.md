@@ -6290,7 +6290,7 @@ Decided with the user on 2026-10-27, after road step 7c, which asked for
 it ([execution.md](design/execution.md), "Planned: the deoptimization
 contract", "Observers"). `Exception>>invokeNextHandler` walked the
 senders through `activationSender:`, which reified every activation it
-passed, in both of its walks; it now steps with one leaf,
+passed -- a frame object each; it now steps with one leaf,
 `activationNextHandler:ifFail:`, which walks the frames along
 `interpreter::unwind`'s `WalkedActivation` -- live, then suspended -- and
 reifies only the next enabled `on:do:` activation it answers, as Cog's

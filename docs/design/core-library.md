@@ -3661,9 +3661,11 @@ with an argument that is no `Message` fails inside the handler, on
   `Class>>name` and `Metaclass>>name` answer, and the selector its mixin
   holds that code under, or nil for a returned activation or one running a
   block, an initializer or a clause -- for `Object>>subclassResponsibility`;
-  the three the `on:do:` marker's registers answer, `isActiveHandler` (false
-  for a returned activation or one with no marker), `handlerClass` and
-  `handlerBlock`, and `handlerActive:`, which writes the flag;
+  `nextHandler`, the next activation outward whose code carries the
+  `on:do:` marker and whose handler is active, reifying none it passes,
+  or nil past the bottom or for a returned activation; the two the
+  marker's registers answer, `handlerClass` and `handlerBlock`, and
+  `handlerActive:`, which writes the flag;
   `returnValue:` and `restart`, which answer the signals the unwinder
   carries out (a returned target is §7.2's "cannotReturn: the activation has
   already returned"); `inheritsMixinOf:` for `Class>>handles:`; and

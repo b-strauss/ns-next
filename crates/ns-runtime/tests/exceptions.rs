@@ -564,3 +564,35 @@ ns_runtime::for_each_lowering! {
         );
     }
 }
+
+ns_runtime::for_each_lowering! {
+    /// Under the suspend stress mode every activation below the running
+    /// one lives in its frame at the safepoints the schedule picks, so the
+    /// handler search walks from a live frame into suspended ones and
+    /// finds its handler there, an enabled one and past a disabled one.
+    fn a_handler_search_finds_a_handler_in_a_suspended_frame(lowering) {
+        let (mut interpreter, signaller) = a_signaller(lowering);
+        // The stress modes exist only in a debug build; a release build
+        // runs the same sends unsuspended.
+        #[cfg(debug_assertions)]
+        interpreter.set_stress_suspend(true);
+        let caught = expect_ok(
+            send_integers(&mut interpreter, &signaller, "catchFrom:", &[10]),
+            "catchFrom:",
+        );
+        assert_eq!(
+            small_integer(&mut interpreter, &caught, "catchFrom:"),
+            1,
+            "{lowering:?}: the handler in a suspended frame answers"
+        );
+        let outer = expect_ok(
+            interpreter.send(&signaller, Symbol::intern("catchInHandler"), &[]),
+            "catchInHandler",
+        );
+        assert_eq!(
+            small_integer(&mut interpreter, &outer, "catchInHandler"),
+            2,
+            "{lowering:?}: the search passes the disabled handler in a suspended frame"
+        );
+    }
+}
