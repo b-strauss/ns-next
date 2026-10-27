@@ -56,7 +56,7 @@ first.
 | Four clippy lints: every lint exception states its reason, every unsafe block its safety, and every narrowing cast outside tests the bound that makes it exact | Complete | 2026-10-26 | [clippy-lints](superpowers/plans/2026-10-26-1227-clippy-lints.md) |
 | Road step 7c — the deoptimization contract and the protocol between interpreted and compiled frames, written into `execution.md` for road steps 8 and 9 to build to | Complete | 2026-10-27 | — |
 | The handler search as a leaf: `activationNextHandler:` walks the frames and reifies only the `on:do:` activation it answers | Complete | 2026-10-27 | [handler-search-leaf](superpowers/plans/2026-10-27-0126-handler-search-leaf.md) |
-| Between road steps 7 and 8 — real Newspeak bodies for `whileTrue:`, `whileFalse:` and `do:` | Not started | — | — |
+| Between road steps 7 and 8 — real Newspeak bodies for `whileTrue:`, `whileFalse:` and `Array>>do:`, and a loop in the reference lowering | Complete | 2026-10-27 | [loop-bodies](superpowers/plans/2026-10-27-1529-loop-bodies.md) |
 | Road step 8 (M5) — a baseline JIT | Not started | — | — |
 | Road step 9 (M6) — an optimizing JIT | Not started | — | — |
 
@@ -6361,7 +6361,8 @@ measurement is [execution.md](design/execution.md),
 - `ab0bff29` -- `Array>>do:` in Newspeak.
 - `4d705b6e` -- the documents.
 - `38aea95f` -- `benchmarks/micro/bench_while.ns`.
-- The commit that records the measurement.
+- `4f736bc7` -- the measurement.
+- `bc3f2843` -- the final review's findings.
 
 What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the depth
 flag a continuation's push still takes, dead now, to be removed and
