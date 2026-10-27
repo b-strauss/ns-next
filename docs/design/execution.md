@@ -7060,6 +7060,57 @@ started at its `Return`), nor exercises `super` sends or body-less
 declarations: their correctness is held by the goldens and the debug
 cross-check, their speed is unmeasured.
 
+### What the handler-search leaf moved
+
+**Measured 2026-10-27, `67a10605` against `master` (`31970511`)**, by
+the protocol of the `measuring-performance` skill: three release builds a
+side with the pinned alignment, builds a, b and c varying the block
+layout inside `vm::run`, the same three on both sides; five rounds in a
+rotating order, two sittings; `bench --iterations 30` for the micro
+sources, `--iterations 3` for CD, Havlak, Mandelbrot, NBody and DeltaBlue
+and `--iterations 10` for the other Are We Fast Yet programs. Each cell
+is the mean of a tree's medians over its builds, rounds and sittings, in
+milliseconds; "builds" is the range of its three builds' means, and
+"separated" says whether the two trees' ranges do not overlap. The
+builds carried no debug information, so the check that the three
+layouts of `vm::run` differ was not made; the change does not touch
+`vm::run`.
+
+| Source | master (ms) | master builds | branch (ms) | branch builds | Change | Builds separated |
+|---|---|---|---|---|---|---|
+| `bench_block` | 7.155 | 7.120–7.206 | 7.128 | 7.110–7.162 | -0.4% | no |
+| `bench_loop` | 2.166 | 2.155–2.183 | 2.158 | 2.144–2.174 | -0.4% | no |
+| `bench_megamorphic` | 4.670 | 4.665–4.678 | 4.688 | 4.680–4.698 | +0.4% | slower |
+| `bench_send` | 3.226 | 3.213–3.251 | 3.221 | 3.198–3.250 | -0.2% | no |
+| `bench_signal` | 49.985 | 49.469–50.372 | 21.012 | 20.897–21.145 | -58.0% | faster |
+| `Bounce` | 0.902 | 0.900–0.905 | 0.903 | 0.894–0.916 | +0.1% | no |
+| `CD` | 3383.721 | 3322.989–3433.578 | 3406.675 | 3372.417–3440.982 | +0.7% | no |
+| `DeltaBlue` | 606.241 | 601.632–609.916 | 609.853 | 605.364–613.565 | +0.6% | no |
+| `DeltaBlueTon80` | 6.861 | 6.825–6.898 | 6.875 | 6.861–6.899 | +0.2% | no |
+| `Havlak` | 3191.588 | 3158.358–3226.197 | 3195.889 | 3174.248–3219.063 | +0.1% | no |
+| `Json` | 9.852 | 9.829–9.864 | 9.891 | 9.887–9.898 | +0.4% | slower |
+| `List` | 0.928 | 0.920–0.940 | 0.929 | 0.925–0.932 | +0.1% | no |
+| `Mandelbrot` | 2696.295 | 2690.258–2699.594 | 2704.211 | 2696.012–2714.511 | +0.3% | no |
+| `NBody` | 1973.949 | 1962.681–1986.873 | 1976.676 | 1967.654–1988.002 | +0.1% | no |
+| `Permute` | 2.375 | 2.363–2.387 | 2.382 | 2.374–2.395 | +0.3% | no |
+| `Queens` | 1.944 | 1.939–1.952 | 1.949 | 1.939–1.956 | +0.3% | no |
+| `Richards` | 61.706 | 61.299–62.296 | 61.846 | 61.061–62.799 | +0.2% | no |
+| `RichardsTon80` | 4.274 | 4.230–4.326 | 4.329 | 4.317–4.338 | +1.3% | no |
+| `Sieve` | 1.359 | 1.351–1.373 | 1.365 | 1.364–1.365 | +0.4% | no |
+| `Storage` | 1.407 | 1.397–1.415 | 1.411 | 1.403–1.421 | +0.3% | no |
+| `Towers` | 3.017 | 2.972–3.047 | 3.023 | 2.995–3.044 | +0.2% | no |
+
+The geometric mean over the twenty-one sources is -3.8%, all of it
+`bench_signal.ns`'s: a signal caught fifty activations down takes 58%
+less time, since the search no longer reifies the activations it passes
+-- two per activation per signal before, one in each of its walks
+(`a_handler_search_reifies_no_frame_it_passes`). Every other source is
+level. `bench_megamorphic.ns` and Json come out +0.4% with their pooled
+ranges apart, but within either sitting their builds overlap the other
+tree's: the separation is the two sittings' levels pooled, not the
+change, and neither runs the handler search in its loop (Json signals
+only on a parse error).
+
 ## The trampoline
 
 Sends do not recurse on the Rust stack. Every running activation lives on the
@@ -9142,16 +9193,17 @@ sees.
 
 ### Observers
 
-- **A walk over activations marries only what it answers.** The kernel's
-  handler search today reifies every sender it passes
-  (`activationSender:`), which would deoptimize every optimized frame it
-  passes and already allocates a frame object per frame per signal. The
-  handler search and the search for unwind markers become leaves that
-  walk the frames themselves and reify only the activation they answer,
-  as Cog's handler search does (`primitiveFindHandlerContext`, primitive
-  197, `cointerp.c:84085-84112`, beside `primitiveFindNextUnwindContext`), so an
-  exception through optimized code converts nothing it does not stop
-  at.
+- **A walk over activations marries only what it answers.** The
+  kernel's handler search steps with one leaf, `activationNextHandler:`,
+  which walks the frames itself and reifies only the `on:do:` activation
+  it answers, as Cog's handler search does (`primitiveFindHandlerContext`,
+  primitive 197, `cointerp.c:84085-84112`), so an exception through
+  optimized code converts nothing it does not stop at
+  ([core-library.md](core-library.md), "Exceptions"). The search for
+  unwind markers is the Rust unwinder's, which reads each frame's marker
+  where it lies and reifies nothing ("Unwinding" above), so it needs no
+  leaf, where Cog's `primitiveFindNextUnwindContext` serves an unwinder
+  written in the image.
 - **What is observed is never inlined.** `on:do:`, `ensure:`,
   `ifCurtailed:` and every kernel method whose activation a leaf reads or
   marks (`signal`, the handler's, the unwind marker's) stay frames of
@@ -9181,8 +9233,7 @@ sees.
 
 What the contract leaves to road steps 8 and 9 is in
 [OPEN-WORK.md](../OPEN-WORK.md): where the depth count lives in machine
-code, measured; the two walking leaves, which serve the interpreter's
-exceptions already; and the home of a closure created in an inlined
+code, measured; and the home of a closure created in an inlined
 scope, since a frame object is married only to a frame that stands for
 one activation. A closure the optimizer does not inline still reifies the
 frame it is created in, whatever it captured, since `enclosingActivation`

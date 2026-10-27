@@ -55,6 +55,7 @@ first.
 | Road step 7a′ — overlapping register windows: a send's arguments in contiguous slots read in place, its own callee laid on its slots, the header 13 words in every build and out of the register numbering, the leftover analysis that lets neither a push nor a pop write a scratch register, stated construct limits, the codegen gate | Complete | 2026-10-26 | [register-windows](superpowers/plans/2026-10-24-2054-register-windows.md), [leftover-analysis](superpowers/plans/2026-10-25-1248-leftover-analysis.md) (superseded from its Task 1 on), [leftover-bitsets](superpowers/plans/2026-10-25-1635-leftover-bitsets.md) |
 | Four clippy lints: every lint exception states its reason, every unsafe block its safety, and every narrowing cast outside tests the bound that makes it exact | Complete | 2026-10-26 | [clippy-lints](superpowers/plans/2026-10-26-1227-clippy-lints.md) |
 | Road step 7c — the deoptimization contract and the protocol between interpreted and compiled frames, written into `execution.md` for road steps 8 and 9 to build to | Complete | 2026-10-27 | — |
+| The handler search as a leaf: `activationNextHandler:` walks the frames and reifies only the `on:do:` activation it answers | Complete | 2026-10-27 | [handler-search-leaf](superpowers/plans/2026-10-27-0126-handler-search-leaf.md) |
 | Between road steps 7 and 8 — real Newspeak bodies for `whileTrue:`, `whileFalse:` and `do:` | Not started | — | — |
 | Road step 8 (M5) — a baseline JIT | Not started | — | — |
 | Road step 9 (M6) — an optimizing JIT | Not started | — | — |
@@ -6282,3 +6283,34 @@ background. Only Markdown changed.
 
 What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md): real Newspeak
 bodies for the loops and `do:`, next.
+
+## The handler search as a leaf (2026-10-27)
+
+Decided with the user on 2026-10-27, after road step 7c, which asked for
+it ([execution.md](design/execution.md), "Planned: the deoptimization
+contract", "Observers"). `Exception>>invokeNextHandler` walked the
+senders through `activationSender:`, which reified every activation it
+passed, in both of its walks; it now steps with one leaf,
+`activationNextHandler:ifFail:`, which walks the frames along
+`interpreter::unwind`'s `WalkedActivation` -- live, then suspended -- and
+reifies only the next enabled `on:do:` activation it answers, as Cog's
+`primitiveFindHandlerContext` marries only the context it finds.
+`activationIsActiveHandler:ifFail:` lost its only caller and is gone. A
+signal allocates the same however deep below its handler it is raised
+(`a_handler_search_reifies_no_frame_it_passes`, under both lowerings).
+The search for unwind markers needed no leaf: the Rust unwinder reads
+them where they lie and reifies nothing, so the contract's sentence that
+named two leaves was corrected. Measured against `master`,
+`benchmarks/micro/bench_signal.ns`, a new microbenchmark, takes 58% less
+time and every other source is level ([execution.md](design/execution.md),
+"What the handler-search leaf moved"). No golden, `run-corpus` output or
+benchmark outcome changed; the golden image fixture was regenerated, its
+fingerprint alone moving with the changed core library.
+
+- `46d4265b` -- the plan.
+- `d11c77d8` -- `bench_signal.ns`.
+- `67a10605` -- the leaf and the search over it.
+- The commit that records the measurement and closes the documents.
+
+What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): real
+Newspeak bodies for the loops and `do:`, next.
