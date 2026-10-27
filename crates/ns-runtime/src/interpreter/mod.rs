@@ -980,8 +980,10 @@ impl Interpreter {
     }
 
     /// Turns the JIT on or off for the bodies entered from now on, as
-    /// `NS_NEXT_NO_JIT=1` turns it off for a new interpreter. A test hook:
-    /// a body entered while it is off stays interpreted for good.
+    /// `NS_NEXT_NO_JIT=1` turns it off for a new interpreter. A test hook,
+    /// set before the code it is meant for runs: a body entered while the
+    /// JIT is off is refused and stays interpreted for good, so turning
+    /// the JIT on later does not revive it.
     #[doc(hidden)]
     pub fn set_jit_enabled(&mut self, enabled: bool) {
         self.enter(|mutator| mutator.jit.set_enabled(enabled));

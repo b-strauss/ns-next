@@ -69,9 +69,10 @@ pub(crate) fn available() -> bool {
 pub struct JitStatistics {
     /// Bodies compiled to machine code.
     pub compiled_bodies: u64,
-    /// Bodies the compiler refused -- too many instructions, code the
-    /// assembler could not lay out, or no room left in the zone -- which
-    /// stay interpreted for good.
+    /// Bodies refused -- entered while the JIT was off, or refused by the
+    /// compiler: too many instructions, code the assembler could not lay
+    /// out, or no room left in the zone -- which stay interpreted for
+    /// good.
     pub refused_bodies: u64,
     /// Bodies whose first instruction lowers to an exit, so that their
     /// machine code would leave at once: neither installed nor entered,
@@ -151,9 +152,8 @@ impl std::fmt::Debug for JitSlot {
 impl JitSlot {
     /// Whether an entry into the body has anything to do with the JIT:
     /// false once the body is refused or exits at entry. The one load and
-    /// compare the
-    /// run loop makes on a push (`vm::run_stretch`); everything else is
-    /// `entered`'s, out of line.
+    /// compare the run loop makes on a push (`vm::run_stretch`);
+    /// everything else is `entered`'s, out of line.
     #[inline(always)]
     pub(crate) fn is_armed(&self) -> bool {
         self.state.get() < EXITS_AT_ENTRY
@@ -307,8 +307,11 @@ impl JitState {
     }
 
     /// Turns compiling and entering bodies on or off; on only where a
-    /// zone can be reserved. While it is off, no body's slot changes, so
-    /// that a body is compiled once it is turned on again.
+    /// zone can be reserved. While it is off, a body is refused at its
+    /// first entry, so that every later push of it pays only the run
+    /// loop's one compare, as an interpreter without a JIT would; turning
+    /// the JIT on again does not revive a body entered meanwhile, so a
+    /// caller decides before it runs code.
     pub(crate) fn set_enabled(&mut self, enabled: bool) {
         if enabled && self.zone.is_none() && available() {
             self.zone = reserve_zone(DEFAULT_ZONE_BYTES);
@@ -410,12 +413,15 @@ pub(crate) fn machine_entry(state: &JitState, code: &CompiledCode) -> Option<Cod
 }
 
 /// Counts an entry into `code`; at its `COMPILE_AT_ENTRY`th, compiles it.
+/// While the JIT is off, refuses it at once (`JitState::set_enabled`).
 /// A body that cannot be compiled is refused for good. A body compiled
 /// into a zone that is not this interpreter's -- another interpreter's, or
 /// one since replaced -- is compiled again into this one.
 pub(crate) fn note_entry(state: &mut JitState, code: &CompiledCode) {
     let slot = &code.jit;
     if !state.enabled {
+        slot.refuse();
+        state.statistics.refused_bodies += 1;
         return;
     }
     match slot.state.get() {
@@ -649,16 +655,19 @@ mod tests {
         }
 
         #[test]
-        fn a_disabled_jit_leaves_slots_untouched() {
+        fn a_disabled_jit_refuses_a_body_at_its_first_entry() {
             let mut state = JitState::for_test(1 << 16, true);
             let code = body();
             state.set_enabled(false);
-            enter_twice(&mut state, &code);
-            assert_eq!(format!("{:?}", code.jit), "JitSlot::Counting(0)");
+            note_entry(&mut state, &code);
+            assert_eq!(format!("{:?}", code.jit), "JitSlot::Refused");
+            assert!(!code.jit.is_armed(), "a later push pays only the compare");
+            assert_eq!(state.statistics().refused_bodies, 1);
             state.set_enabled(true);
-            enter_twice(&mut state, &code);
-            assert!(machine_entry(&state, &code).is_some());
-            assert_eq!(state.statistics().compiled_bodies, 1);
+            note_entry(&mut state, &code);
+            assert_eq!(machine_entry(&state, &code), None, "not revived");
+            assert_eq!(state.statistics().refused_bodies, 1);
+            assert_eq!(state.statistics().compiled_bodies, 0);
         }
 
         #[test]

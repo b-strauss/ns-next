@@ -85,19 +85,24 @@ ns_runtime::for_each_lowering! {
 }
 
 ns_runtime::for_each_lowering! {
-    fn a_body_entered_while_the_jit_is_off_is_taken_up_once_it_is_on(lowering) {
+    /// A body entered while the JIT is off is refused at once, so that
+    /// its later pushes never reach the JIT again: a second run refuses
+    /// nothing more and takes nothing up.
+    fn a_body_entered_while_the_jit_is_off_is_refused_for_good(lowering) {
         let (mut interpreter, class) = load_with(THREE_ANSWERS, lowering);
         interpreter.set_jit_enabled(false);
         let before = interpreter.jit_statistics();
         assert_eq!(run(&mut interpreter, &class), 42);
         let done = since(interpreter.jit_statistics(), before);
-        assert_eq!(done, JitStatistics::default(), "the JIT is off");
+        assert!(done.refused_bodies >= 1, "`run` and `answer` are refused");
+        assert_eq!(taken_up(done), 0, "the JIT is off");
 
         interpreter.set_jit_enabled(true);
         let before = interpreter.jit_statistics();
         assert_eq!(run(&mut interpreter, &class), 42);
         let done = since(interpreter.jit_statistics(), before);
-        assert!(taken_up(done) >= 1, "`answer` was left counting while the JIT was off");
+        assert_eq!(done.refused_bodies, 0, "refused once, at the first entry");
+        assert_eq!(taken_up(done), 0, "not revived by turning the JIT on");
     }
 }
 
