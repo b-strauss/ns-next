@@ -63,6 +63,7 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
         bodies_exiting_at_entry: after.bodies_exiting_at_entry - before.bodies_exiting_at_entry,
         machine_back_edges: after.machine_back_edges - before.machine_back_edges,
         safepoint_exits: after.safepoint_exits - before.safepoint_exits,
+        machine_entries: after.machine_entries - before.machine_entries,
     }
 }
 
@@ -80,6 +81,27 @@ ns_runtime::for_each_lowering! {
         assert_eq!(run(&mut interpreter, &class), 42);
         let done = since(interpreter.jit_statistics(), before);
         assert!(taken_up(done) >= 1, "`answer`, entered three times, is taken up");
+        assert_eq!(done.refused_bodies, 0);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// The JIT stress mode's setting compiles every body at its first
+    /// entry and enters machine code that exits at once, so that a program
+    /// runs the entry stub, the exit and the resumption on every push and
+    /// still answers right.
+    fn the_stress_setting_enters_machine_code_on_every_push(lowering) {
+        let (mut interpreter, class) = load_with(THREE_ANSWERS, lowering);
+        interpreter.set_jit_stress(true);
+        let before = interpreter.jit_statistics();
+        assert_eq!(run(&mut interpreter, &class), 42);
+        let done = since(interpreter.jit_statistics(), before);
+        assert_eq!(
+            done.machine_entries, 3,
+            "`answer`, entered three times, runs its machine code from the first"
+        );
+        assert_eq!(done.bodies_exiting_at_entry, 0, "installed, not left out");
+        assert!(done.compiled_bodies >= 1);
         assert_eq!(done.refused_bodies, 0);
     }
 }

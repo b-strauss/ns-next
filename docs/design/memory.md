@@ -68,8 +68,9 @@
 > traces, marking, forwarding and scavenging alike, in every build),
 > `interpreter/safepoint.rs`
 > (the safepoint, `Interpreter::tenure_now`, `Interpreter::collect_now` and
-> the switches of the six stress modes: moves, caches, collection,
-> scavenges, every instruction wide, and suspensions),
+> the switches of the memory-facing stress modes: moves, caches, collection,
+> scavenges, every instruction wide, and suspensions; the two JIT modes' are
+> in `jit/mod.rs`),
 > `vm.rs` (one entry per stretch between two safepoints, and the poll),
 > `heap/value.rs` (`Value`, and `Word`, what a heap object stores),
 > `mixin.rs` (layout, and the one remaining iterative
@@ -1883,15 +1884,20 @@ are different: **premature reclamation** — a missed root, a reachable object
 gone, silent wrong output at exit status 0 — and **false retention**, which no
 test sees at all and only a measurement shows.
 
-There are six stress modes, each a gate of its own at the end of a batch,
+There are eight stress modes, each a gate of its own at the end of a batch,
 each set by an environment variable to anything but empty or `0`, all of
 them debug builds only: `NS_NEXT_STRESS_MOVES` ("The move stress mode"),
 `NS_NEXT_STRESS_CACHES` ([dispatch.md](dispatch.md), "Invalidation"),
 `NS_NEXT_STRESS_COLLECT`, `NS_NEXT_STRESS_SCAVENGE` ("Finding a missed
 barrier: the scavenge stress mode"), `NS_NEXT_STRESS_SUSPEND`, each of
-these five keeping the safepoint flag set while it is on, and
+these five keeping the safepoint flag set while it is on,
 `NS_NEXT_STRESS_WIDE`, which emits every instruction in a wide form
-([execution.md](execution.md), "The compact instruction encoding").
+([execution.md](execution.md), "The compact instruction encoding"),
+`NS_NEXT_STRESS_JIT`, which compiles every body at its first entry and
+enters machine code that exits at once, and `NS_NEXT_STRESS_EXIT`, which
+makes every poll in machine code take its exit, as if a safepoint were
+requested (no template emits a poll yet, so it changes nothing until one
+does).
 
 `NS_NEXT_STRESS_COLLECT=1` runs a full collection at every safepoint rather
 than at a limit, paced by heap size like `STRESS_MOVE_BUDGET`
@@ -2452,7 +2458,7 @@ after the last tenure, and never polls a safepoint, so the peak argument
 stands; the handle paragraphs describe a 64-bit byte offset and name no
 frame arena; "A cache records what the lookup decided" reads the builtin
 tag as a field of the class object, which `act` still reads afresh on every
-send; the end-of-batch gates name six stress modes, `SCAVENGE` among them;
+send; the end-of-batch gates name eight stress modes, `SCAVENGE` among them;
 and "Every store into an existing object goes through `heap.rs`'s store
 accessors and their write barrier" is an invariant of its own; and "The
 VM mirror is a capability" says that the MirrorBuilder refuses every edit

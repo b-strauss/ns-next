@@ -996,6 +996,15 @@ impl Interpreter {
         self.enter(|mutator| mutator.jit.replace_zone(bytes));
     }
 
+    /// Turns the JIT stress mode (`NS_NEXT_STRESS_JIT`) on or off for this
+    /// interpreter: every body compiled at its first entry, and one whose
+    /// machine code exits at once entered all the same. A test hook, set
+    /// before the code it is meant for runs.
+    #[doc(hidden)]
+    pub fn set_jit_stress(&mut self, stress: bool) {
+        self.enter(|mutator| mutator.jit.set_stress(stress));
+    }
+
     /// Makes machine code count its backward jumps
     /// (`JitStatistics::machine_back_edges`), which it otherwise leaves
     /// uncounted so that a loop pays nothing for the count. A test hook.

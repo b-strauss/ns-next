@@ -84,6 +84,9 @@ pub struct JitStatistics {
     pub machine_back_edges: u64,
     /// Exits of machine code at a poll that found a safepoint requested.
     pub safepoint_exits: u64,
+    /// Entries into machine code, counted on the cold path of a push that
+    /// found compiled code, whatever the code did next.
+    pub machine_entries: u64,
 }
 
 /// What a body's `JitSlot` says once it is compiled.
@@ -365,6 +368,15 @@ impl JitState {
         self.enabled = self.enabled && self.zone.is_some();
     }
 
+    /// Turns the JIT stress mode on or off for this state, as
+    /// `NS_NEXT_STRESS_JIT` does at its creation: every body compiled at
+    /// its first entry, and one whose machine code exits at once installed
+    /// and entered all the same. Set before the code it is meant for runs.
+    pub(crate) fn set_stress(&mut self, stress: bool) {
+        self.install_bodies_exiting_at_entry = stress;
+        self.compile_at_entry = if stress { 1 } else { COMPILE_AT_ENTRY };
+    }
+
     pub(crate) fn set_counting(&mut self, counting: bool) {
         self.counting = counting;
     }
@@ -580,6 +592,7 @@ fn run_machine_code(
     block[BlockWord::PollWord.index()] = mutator.heap.safepoint_flag_address() as u64;
     block[BlockWord::ExitStub.index()] = code.executable_address(exit_stub) as u64;
     let leaves = leaves::table();
+    mutator.jit.statistics.machine_entries += 1;
     let kind = code.enter(entry_stub, &mut block, mutator, &leaves);
     match stubs::decode_exit(&block, kind) {
         MachineExit::Reexecute { program_counter } => Resumption::Interpreted { program_counter },
