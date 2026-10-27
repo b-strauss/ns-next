@@ -536,6 +536,11 @@ and Are We Fast Yet (`benchmarks/are-we-fast-yet/java/`).
   explains a decision, as the rule above asks, goes after it.
   `crates/ns-runtime/tests/core_library_documentation.rs` holds every
   member to having one.
+- **Every encoding constant of `ns-assembler` is a named `const` documented with its
+  official source** -- the Intel SDM volume and section title for x64, the
+  developer.arm.com page of the instruction for AArch64 -- and no hexadecimal or
+  binary literal stands in a function body; held by
+  `crates/ns-assembler/tests/encoding_sources.rs`.
 - **Object, frame and activation access goes through
   `crates/ns-runtime/src/heap.rs`.** The handles' inner index is private to the
   `heap` module (`heap.rs` and its submodules, `heap/value.rs` among them, which
