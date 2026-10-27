@@ -478,9 +478,13 @@ fn a_signaller(lowering: Lowering) -> (Interpreter, Root) {
     )
     .expect("resolve");
     let mut interpreter = Interpreter::bootstrap_with(lowering);
-    interpreter.set_stress_collect(false);
-    interpreter.set_stress_scavenge(false);
-    interpreter.set_stress_suspend(false);
+    // The stress modes exist only in a debug build.
+    #[cfg(debug_assertions)]
+    {
+        interpreter.set_stress_collect(false);
+        interpreter.set_stress_scavenge(false);
+        interpreter.set_stress_suspend(false);
+    }
     let class = interpreter.load_module(&resolved);
     let signaller = expect_ok(interpreter.instantiate(&class, &[]), "Signaller new");
     (interpreter, signaller)
