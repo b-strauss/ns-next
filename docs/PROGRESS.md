@@ -57,7 +57,7 @@ first.
 | Road step 7c — the deoptimization contract and the protocol between interpreted and compiled frames, written into `execution.md` for road steps 8 and 9 to build to | Complete | 2026-10-27 | — |
 | The handler search as a leaf: `activationNextHandler:` walks the frames and reifies only the `on:do:` activation it answers | Complete | 2026-10-27 | [handler-search-leaf](superpowers/plans/2026-10-27-0126-handler-search-leaf.md) |
 | Between road steps 7 and 8 — real Newspeak bodies for `whileTrue:`, `whileFalse:` and `Array>>do:`, and a loop in the reference lowering | Complete | 2026-10-27 | [loop-bodies](superpowers/plans/2026-10-27-1529-loop-bodies.md) |
-| Road step 8 (M5) — a baseline JIT | Not started | — | — |
+| Road step 8 (M5) — a baseline JIT: its foundation, stages 1 and 2 -- the doubly mapped code zone and the entry into machine code, `ns-assembler` and its x64 encoder, the macro assembler and the stubs, the baseline compiler's one exhaustive `match` with templates for moves, literals, jumps and `SmallInteger` arithmetic, two stress modes | In progress | 2026-10-28 | [baseline-jit-foundation](superpowers/plans/2026-10-27-2047-baseline-jit-foundation.md) |
 | Road step 9 (M6) — an optimizing JIT | Not started | — | — |
 
 ## Notes
@@ -6367,3 +6367,54 @@ measurement is [execution.md](design/execution.md),
 What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the depth
 flag a continuation's push still takes, dead now, to be removed and
 measured; road step 8, the baseline JIT, next.
+
+## The baseline JIT's foundation (2026-10-28)
+
+Road step 8, designed with the user on 2026-10-27
+([execution.md](design/execution.md), "Planned: the baseline JIT"), its
+first two stages built ("The baseline JIT's foundation"). `ns-memory`
+gained the code zone: one reservation of at most 128 MiB mapped twice,
+an executable view and a writable one its one writer stores through,
+the entry into machine code and the shim through which machine code
+calls a Rust leaf. The new crate `ns-assembler` holds the abstract
+operations, with a stated contract on the condition flags, and the x64
+encoder, every encoding constant named and cited from the Intel SDM --
+a rule `tests/encoding_sources.rs` holds every encoder file to, asked for
+by the user -- and every encoding checked against `iced-x86`.
+`crates/ns-runtime/src/jit/` holds the macro assembler of the VM's
+idioms, the entry and exit stubs (an exit jumps to its stub), the
+baseline compiler's one exhaustive `match` over `Instruction`, the
+generic leaf that runs a straight-line instruction through the
+interpreter's own function, and the trigger: a body is compiled at its
+second entry, a run's base activation included, and runs as machine code
+up to its first instruction without a template -- moves, immediate
+literals, jumps with a poll on every back edge and `IntegerBinary`'s
+`SmallInteger` arithmetic have one. Two stress modes, the seventh and
+eighth, compile and enter every body at its first entry and take the
+exit at every poll. Entering every body whose first instruction had a
+template measured up to 31% slower on the send benchmarks, so a body is
+entered only when its code can loop before its first exit; after that,
+measured with three builds a side, no program is slower than `master`
+with its builds separated and the geometric mean over twenty-two sources
+is -0.34% ([execution.md](design/execution.md), "What the baseline JIT's
+foundation moved"). No golden, `run-corpus` output or benchmark outcome
+changed; two goldens were added under `goldens/runtime/jit/`, a counting
+loop and an overflow in machine code.
+
+- `ed59a9be` -- the design.
+- `7e2d8043` -- the plan.
+- `019746e5`, `8d74cecb` -- the code zone.
+- `78036725` -- the entry into machine code and the leaf shim.
+- `68c44934`, `d0645af3` -- `ns-assembler` and its flag contract.
+- `d81285cf`, `580ccd7c` -- the macro assembler and the stubs.
+- `9758e77a`, `068a7c24`, `84600a82` -- the compile trigger and the
+  exhaustive `match`.
+- `632ac13a`, `6926271e` -- named, sourced encodings, held by a test.
+- `c4a689c0`, `f28c283c` -- the two stress modes.
+- `90fb6ae3` -- the templates and the generic leaf.
+- `56c6e8ac` -- a body leaving before a loop is never entered.
+- The commit that records the measurement and closes the documents.
+
+What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): road step
+8's third stage, sends and the caches in machine code, next, and what the
+foundation's reviews left to the stages after it.

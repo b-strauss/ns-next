@@ -76,7 +76,8 @@
 > `mixin.rs` (layout, and the one remaining iterative
 > `Drop`), and the memory layer's `crates/ns-memory/src/lib.rs`
 > (`Reservation`, and the bump cursor it holds, `Reservation::bump`),
-> `page_map.rs` and `platform/{mod,windows,posix}.rs`.
+> `page_map.rs`, `code_zone.rs` (the JIT's code zone and the entry into
+> machine code) and `platform/{mod,windows,posix}.rs`.
 
 ## What exists
 
@@ -2239,13 +2240,18 @@ and an interpreter, which holds `Rc`s throughout, is not `Send` either.
   accessor's bounds check at once. The crate supplies `Protection::NoAccess`
   and the slice refusal; why the heap protects nothing is in "The object
   space" and, for the nursery a scavenge vacates, "Generations".
-- **Executable memory for the JIT tiers** comes to the same crate when they
-  do, with its `unsafe` entry into generated code: a code zone mapped
-  twice, one view executable and one writable (`MAP_JIT` with its
-  per-thread switch on Apple AArch64), the one writer of code, the
-  instruction-cache flush, the entry, the shim through which machine code
-  calls Rust, and the bounds of the native stack
-  ([execution.md](execution.md), "Planned: the baseline JIT").
+- **Executable memory for the JIT tiers** is in the same crate, with its
+  `unsafe` entry into generated code (`code_zone.rs`): a code zone of at
+  most 128 MiB mapped twice, one view executable and one writable
+  (`MAP_JIT` with its per-thread switch on Apple AArch64), the one writer
+  of code, which commits pages as code is installed and flushes the
+  instruction cache over what it wrote, the entry, and the shim through
+  which machine code calls Rust ([execution.md](execution.md), "The
+  baseline JIT's foundation", "Executable memory"). Only the x64 Windows
+  path runs here; the Linux, BSD and Apple AArch64 paths are checked by
+  clippy alone (the `memory` gate). Reading the bounds of the native
+  stack, which the entry is to check once compiled frames nest, comes with
+  road step 8's third stage ([OPEN-WORK.md](../OPEN-WORK.md)).
 
 ### The allocator of the Rust side
 
@@ -3115,7 +3121,7 @@ moved".
   `ns-runtime` keeps `#![forbid(unsafe_code)]`: a crate boundary is one the compiler checks,
   where a crate-level `deny` with a scoped `allow` admits the next `allow`
   without anyone noticing. The executable memory and the entry into generated
-  code of the JIT tiers are to go to the same crate. Its operating-system calls
+  code of the JIT tiers are in the same crate (`code_zone.rs`). Its operating-system calls
   come from `windows-sys` and `libc`, declaration-only crates, rather than
   hand-written declarations whose constants differ per platform and would be
   wrong only on the platforms nobody here runs.

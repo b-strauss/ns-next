@@ -2,7 +2,7 @@
 
 A native Rust runtime for [Newspeak](https://newspeaklanguage.org/): lexer, parser,
 resolver, bytecode compiler and register VM, and a versioned image format.
-Rust 1.98.0, edition 2021, six crates:
+Rust 1.98.0, edition 2021, seven crates:
 
 - `crates/ns-syntax` — lexer, recursive-descent + Pratt parser, AST, `Span`;
   the AST is lossless except for layout -- parentheses, literal spellings,
@@ -18,7 +18,14 @@ Rust 1.98.0, edition 2021, six crates:
   checked against the reference lowering in `compiler/reference.rs`), the
   instructions (`bytecode.rs`, stored and run in the eight-byte encoding of
   `bytecode/compact.rs`; what a callee leaves in a frame's registers is
-  `bytecode/leftovers.rs`'s analysis), the VM (`vm.rs`) and the send machinery it calls
+  `bytecode/leftovers.rs`'s analysis), the VM (`vm.rs`), the baseline JIT
+  (`jit/`, x64 only so far: a body compiled at its second entry through
+  the one exhaustive `match` over `Instruction` in `jit/baseline.rs`, each
+  instruction a template, the generic leaf of `jit/leaves.rs` or an exit
+  that hands the frame to the interpreter; the VM's idioms in
+  `jit/macro_assembler.rs`, the entry and exit stubs in `jit/stubs.rs`,
+  the trigger and the entry in `jit/mod.rs`; `execution.md`, "The baseline
+  JIT's foundation") and the send machinery it calls
   (`interpreter/`: inline caches in `inline_cache.rs` in front of the lookups
   in `resolve.rs`, the one unwinder in `unwind.rs`, the VM mirror in
   `mirror.rs` and its leaves in `builtins/`, a MirrorBuilder's edit
@@ -92,9 +99,21 @@ Rust 1.98.0, edition 2021, six crates:
   of its own so the analyzer's server dependencies never reach `ns-next`; it depends
   on `ns-syntax` and `ns-runtime` only.
 - `crates/ns-memory` — the memory layer (page-range reservation on Windows and
-  POSIX) and the bump cursor eden's young allocations take their memory from. The only crate with `unsafe`; `ns-runtime`, `ns-tooling` and `ns-analyzer` forbid it.
+  POSIX), the bump cursor eden's young allocations take their memory from,
+  and the JIT's code zone (`code_zone.rs`): one reservation mapped twice,
+  an executable view and a writable one its one writer stores through, the
+  entry into machine code and the shim through which machine code calls a
+  Rust leaf. The only crate with `unsafe`; `ns-runtime`, `ns-assembler`,
+  `ns-tooling` and `ns-analyzer` forbid it.
   The heap's object space is its user (`docs/design/memory.md`, "The memory
-  layer", "The object space").
+  layer", "The object space"), and the JIT (`execution.md`, "Executable
+  memory").
+- `crates/ns-assembler` — the abstract machine operations the JIT emits and
+  the x64 encoder, knowing nothing of the VM: labels, branches sized in one
+  pass, a stated contract on the condition flags, every encoding constant
+  named and sourced (Conventions, below), every encoding checked against
+  `iced-x86`, a dev-dependency only (`execution.md`, "The foundation and
+  the one extension point").
 
 `xtask/` — the repository's own tasks, run as `cargo xtask <task>`: the gates
 of "The gates" below, grouped, and `shipped-code`, which writes that

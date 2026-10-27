@@ -4,7 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Reserved, committed and protected memory for ns-next's object space"
+description = "Reserved, committed and protected memory for ns-next's object space and activation stack, and the JIT's code zone with the entry into machine code"
 
 # The operating-system calls, and nothing else: both crates are declarations
 # only, with no run-time code of their own. Hand-written declarations would

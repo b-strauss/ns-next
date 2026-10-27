@@ -15,8 +15,12 @@
 > as words moved"), and a send's own callee lies on its argument slots,
 > which are the callee's first registers (road step 7a′, "Overlapping
 > register windows"). The contract compiled frames will keep with
-> interpreted ones is written, not built (road step 7c, "Planned: the
-> deoptimization contract").
+> interpreted ones is written (road step 7c, "Planned: the
+> deoptimization contract"), and the baseline JIT's foundation is built
+> on x64: a body that can loop before its first instruction without a
+> template runs as machine code from its second entry up to that
+> instruction, then the interpreter goes on (road step 8's first two
+> stages, "The baseline JIT's foundation").
 > **Code:** `crates/ns-runtime/src/heap.rs` (the activation stack, the frame
 > objects, the `ActivationReference` and `FrameReference` handles, every read and write of an
 > activation, the copied values a closure carries and whether a frame keeps its
@@ -38,7 +42,12 @@
 > `compiler/capture.rs` (the capture analysis) and
 > `compiler/lower.rs` (the converted register layout),
 > `builtins/block.rs` (`value`'s leaf, which answers a block's activation as
-> a step), `crates/ns-cli/src/main.rs` (the interpreter thread and
+> a step), `jit/` (the baseline JIT: the trigger and the entry in
+> `jit/mod.rs`, the compiler in `jit/baseline.rs`, the idioms in
+> `jit/macro_assembler.rs`, the stubs in `jit/stubs.rs`, the generic leaf
+> in `jit/leaves.rs`), `crates/ns-assembler` (the operations and the x64
+> encoder), `crates/ns-memory/src/code_zone.rs` (the code zone and the
+> entry into machine code), `crates/ns-cli/src/main.rs` (the interpreter thread and
 > its stack), `crates/ns-cli/src/commands/bench.rs` and
 > `benchmarks/are-we-fast-yet/` (what "Measurements" times).
 
@@ -7175,6 +7184,110 @@ less than a mirror send's own dispatch. The cost is the baseline JIT's to
 recover, by inlining the loop's sends into it (road step 8,
 [OPEN-WORK.md](../OPEN-WORK.md)).
 
+### What the baseline JIT's foundation moved
+
+**Measured 2026-10-28, `56c6e8ac` against `master` (`5d970d1a`)**, by
+the protocol of the `measuring-performance` skill: three release builds a
+side with the pinned alignment, builds a, b and c varying the block
+layout inside `vm::run` (checked in a `dumpbin /disasm` of each with debug
+information: `vm::run` spans 40,118, 43,190 and 46,198 bytes on the
+branch, built at `90fb6ae3` -- `56c6e8ac` changed nothing `vm::run`
+inlines -- and 44,543, 48,063 and 50,751 on `master`, and neither tree
+has a `run_stretch` or a `vm::run` closure of its own); five rounds in a
+rotating order, two sittings; `bench --iterations 30` for the micro
+sources, `--iterations 3` for CD, Havlak, Mandelbrot, NBody and DeltaBlue
+and `--iterations 10` for the other Are We Fast Yet programs. The same
+three branch binaries ran a third time with `NS_NEXT_NO_JIT=1`, which
+reserves no zone and refuses every body at its first entry, so that what
+they measure is the push's added check alone. Each cell is the mean of a
+tree's medians over its builds, rounds and sittings, in milliseconds;
+"builds" is the range of its three builds' means, and "separated" says
+whether the two trees' ranges do not overlap.
+
+| Source | master (ms) | master builds | branch (ms) | branch builds | Change | Builds separated |
+|---|---|---|---|---|---|---|
+| `CD` | 3518.433 | 3484.347–3541.613 | 3490.952 | 3471.058–3512.047 | -0.8% | no |
+| `Havlak` | 3204.296 | 3185.281–3226.334 | 3201.647 | 3195.178–3206.840 | -0.1% | no |
+| `Mandelbrot` | 2730.548 | 2729.757–2730.961 | 2709.835 | 2706.465–2714.718 | -0.8% | faster |
+| `NBody` | 2011.961 | 2006.366–2022.940 | 2009.661 | 2008.259–2011.497 | -0.1% | no |
+| `DeltaBlue` | 608.524 | 604.286–613.027 | 607.038 | 602.346–611.931 | -0.2% | no |
+| `bench_block` | 7.138 | 7.052–7.204 | 6.990 | 6.982–6.995 | -2.1% | faster |
+| `bench_loop` | 2.178 | 2.161–2.193 | 2.115 | 2.113–2.116 | -2.9% | faster |
+| `bench_megamorphic` | 4.645 | 4.633–4.657 | 4.642 | 4.626–4.654 | -0.1% | no |
+| `bench_send` | 3.211 | 3.209–3.213 | 3.209 | 3.205–3.215 | -0.1% | no |
+| `bench_signal` | 21.674 | 21.537–21.948 | 21.508 | 21.397–21.644 | -0.8% | no |
+| `bench_while` | 50.326 | 50.223–50.409 | 50.382 | 50.265–50.464 | +0.1% | no |
+| `Bounce` | 1.047 | 1.046–1.049 | 1.052 | 1.049–1.056 | +0.5% | no |
+| `DeltaBlueTon80` | 6.817 | 6.746–6.873 | 6.847 | 6.803–6.905 | +0.4% | no |
+| `Json` | 9.777 | 9.721–9.846 | 9.805 | 9.783–9.820 | +0.3% | no |
+| `List` | 0.926 | 0.925–0.928 | 0.920 | 0.918–0.921 | -0.7% | faster |
+| `Permute` | 2.352 | 2.342–2.364 | 2.348 | 2.336–2.356 | -0.2% | no |
+| `Queens` | 1.968 | 1.965–1.972 | 1.961 | 1.949–1.969 | -0.4% | no |
+| `Richards` | 61.763 | 61.580–61.857 | 61.186 | 60.971–61.362 | -0.9% | faster |
+| `RichardsTon80` | 4.210 | 4.199–4.220 | 4.177 | 4.140–4.220 | -0.8% | no |
+| `Sieve` | 1.335 | 1.326–1.347 | 1.344 | 1.341–1.349 | +0.6% | no |
+| `Storage` | 1.393 | 1.383–1.402 | 1.397 | 1.391–1.405 | +0.4% | no |
+| `Towers` | 3.059 | 3.042–3.077 | 3.096 | 3.032–3.222 | +1.2% | no |
+
+No program is slower than `master` with its builds separated; five are
+faster -- `bench_block`, `bench_loop`, List, Mandelbrot and Richards --
+and the geometric mean over the twenty-two sources is -0.34%. With the
+JIT off the same binaries measure -0.55%:
+
+| Source | master (ms) | master builds | `NS_NEXT_NO_JIT=1` (ms) | its builds | Change | Builds separated |
+|---|---|---|---|---|---|---|
+| `CD` | 3518.433 | 3484.347–3541.613 | 3483.135 | 3472.269–3490.735 | -1.0% | no |
+| `Havlak` | 3204.296 | 3185.281–3226.334 | 3199.104 | 3197.860–3200.273 | -0.2% | no |
+| `Mandelbrot` | 2730.548 | 2729.757–2730.961 | 2716.580 | 2699.172–2728.004 | -0.5% | faster |
+| `NBody` | 2011.961 | 2006.366–2022.940 | 2010.158 | 2005.578–2018.778 | -0.1% | no |
+| `DeltaBlue` | 608.524 | 604.286–613.027 | 606.810 | 603.297–608.711 | -0.3% | no |
+| `bench_block` | 7.138 | 7.052–7.204 | 7.037 | 6.995–7.069 | -1.4% | no |
+| `bench_loop` | 2.178 | 2.161–2.193 | 2.120 | 2.117–2.124 | -2.7% | faster |
+| `bench_megamorphic` | 4.645 | 4.633–4.657 | 4.641 | 4.599–4.673 | -0.1% | no |
+| `bench_send` | 3.211 | 3.209–3.213 | 3.200 | 3.173–3.226 | -0.3% | no |
+| `bench_signal` | 21.674 | 21.537–21.948 | 21.524 | 21.425–21.597 | -0.7% | no |
+| `bench_while` | 50.326 | 50.223–50.409 | 50.261 | 50.171–50.344 | -0.1% | no |
+| `Bounce` | 1.047 | 1.046–1.049 | 1.049 | 1.045–1.054 | +0.2% | no |
+| `DeltaBlueTon80` | 6.817 | 6.746–6.873 | 6.810 | 6.796–6.830 | -0.1% | no |
+| `Json` | 9.777 | 9.721–9.846 | 9.779 | 9.766–9.798 | +0.0% | no |
+| `List` | 0.926 | 0.925–0.928 | 0.918 | 0.917–0.920 | -0.8% | faster |
+| `Permute` | 2.352 | 2.342–2.364 | 2.335 | 2.321–2.353 | -0.7% | no |
+| `Queens` | 1.968 | 1.965–1.972 | 1.957 | 1.951–1.961 | -0.6% | faster |
+| `Richards` | 61.763 | 61.580–61.857 | 61.220 | 61.007–61.395 | -0.9% | faster |
+| `RichardsTon80` | 4.210 | 4.199–4.220 | 4.172 | 4.147–4.207 | -0.9% | no |
+| `Sieve` | 1.335 | 1.326–1.347 | 1.337 | 1.330–1.342 | +0.1% | no |
+| `Storage` | 1.393 | 1.383–1.402 | 1.386 | 1.377–1.391 | -0.5% | no |
+| `Towers` | 3.059 | 3.042–3.077 | 3.046 | 3.034–3.068 | -0.4% | no |
+
+So the push's check, one load and one compare of the body's `JitSlot`,
+costs nothing measurable, and nor does the JIT on: the few bodies whose
+code can loop before their first exit run their loops in machine code,
+and the rest are never entered. `bench_loop` and `bench_block` are
+nearly as much faster with the JIT off, so they are the run loop's new
+layout, not machine code.
+
+**Entering every body cost up to 31%.** The first measurement of this
+branch, before `56c6e8ac` (one round, three builds a side), entered every
+body whose first instruction had a template. Such a body -- `tick: x`'s
+`^x + 1`, an `IntegerBinary` and a return -- runs one or two templates,
+exits at its return or first send, and the interpreter runs the rest, so
+every push of it paid the cold call, the entry block, the entry stub and
+the exit for nothing: `bench_block` +31.5%, `bench_send` +21.7%,
+`bench_megamorphic` +18.9%, Sieve +13.8%, `bench_signal` +10.3%, the
+geometric mean over seventeen sources +7.3%, while the same binaries with
+`NS_NEXT_NO_JIT=1` measured -1.3%. `bench_send`'s 0.7 ms over its
+50,000 entries of `tick:` is about 14 ns an entry and exit. Since then a
+body is entered only when its code can take a backward jump before its
+first exit ("The baseline JIT's foundation"), and the interim
+measurement after it already found every program level.
+
+What it does not cover: no benchmark program spends its time in a loop
+the templates cover whole, so the measurement shows that the foundation
+costs nothing, not what machine code gains; that is stage 3's and later
+stages' to measure, once sends and returns run in machine code. The
+counting loop of `goldens/runtime/jit/counting_loop.ns` is the one such
+loop in the tree, and it is a golden, not a benchmark.
+
 ## The trampoline
 
 Sends do not recurse on the Rust stack. Every running activation lives on the
@@ -8958,7 +9071,8 @@ Each step gets its own design when it comes up.
   the code, values kept in registers, for x64 and arm64, since images are
   portable across architectures. Executable memory comes from `ns-memory`
   ([memory.md](memory.md), "The memory layer"). Designed on 2026-10-27:
-  "Planned: the baseline JIT" below.
+  "Planned: the baseline JIT" below; its first two stages, the
+  foundation, are built ("The baseline JIT's foundation").
 - **Step 9, an optimizing JIT with type feedback, inlining and deoptimization**,
   Strongtalk's and HotSpot's class: recompiling hot code along the receiver
   types the caches recorded, inlining the sends that make Newspeak slow when
@@ -9279,6 +9393,141 @@ frame it is created in, whatever it captured, since `enclosingActivation`
 and the debugger read that link ("The closure keeps its defining
 activation" above); one it inlines creates neither.
 
+## The baseline JIT's foundation
+
+Road step 8's first two stages are built ("Planned: the baseline JIT",
+"Stages" below): the code zone and the x64 encoder, then the entry, the
+exit and the instructions without a send. On x64 a body is compiled at
+its second entry, and its machine code runs from its push until the first
+instruction that has no template -- in most bodies their first send or
+their return -- where it exits and the interpreter runs that instruction
+and the rest of the body. Since no send, return or closure has a template
+yet, the foundation is not expected to be faster than the interpreter,
+and machine code is entered only where it can loop ("What the baseline
+JIT's foundation moved" has the measurement). Only x64 has an encoder:
+elsewhere `jit::available` answers `false` and every body stays
+interpreted. What the design names beyond this -- the sends and the cache
+cells, closures and allocation, the exit that materializes several
+compiled frames, on-stack replacement, the register cache, compacting the
+zone, the AArch64 encoder -- is stages 3 to 7, still planned.
+
+- **The code zone** (`crates/ns-memory/src/code_zone.rs`): one
+  reservation of at most 128 MiB (`CodeZone::MAXIMUM_BYTES`, AArch64's
+  `bl` reach), mapped twice on Windows and Linux -- an executable view
+  code runs from and a writable view the zone's one `CodeWriter` stores
+  through -- and one `MAP_JIT` mapping with the per-thread switch on Apple
+  AArch64, so no page is ever writable and executable at once. Code is
+  installed from the base up, the writer committing pages as it goes and
+  flushing the instruction cache over what it wrote when it is dropped
+  (nothing on x64). `CodeZone::enter` calls the entry stub with the
+  platform's C convention, handing it a block of sixteen words, and the
+  leaf shim calls a Rust function `fn(&mut C, [u64; 3]) -> u64` back.
+  Every zone has an identity of its own, never 0, so that a body records
+  which zone its code lies in. The native stack's bounds, which the entry
+  is to check once compiled frames nest, are not read yet
+  ([OPEN-WORK.md](../OPEN-WORK.md)).
+- **`ns-assembler`** (`crates/ns-assembler`): the abstract operations and
+  the x64 encoder (`X64`), branches sized in one pass, among them
+  `jump_register`, `add_immediate`, `move_if` (a conditional move) and
+  `divide_signed`; `Assembler::with_encoder` assembles with a configured
+  encoder. The flag contract is stated per operation: each sets, keeps or
+  clobbers the condition flags, and `Condition::Overflow` is defined only
+  after an add, a subtract or `multiply_checked`. Every constant of an
+  encoder is a named `const` citing its official source -- the Intel SDM's
+  volume and section for x64, the instruction's developer.arm.com page
+  for AArch64 -- and no integer literal but 0 and 1 stands outside one,
+  which `tests/encoding_sources.rs` holds every encoder file to; every
+  encoding is checked against `iced-x86`'s disassembly
+  (`tests/x64_encodings.rs`).
+- **The macro assembler** (`jit/macro_assembler.rs`) decides which machine
+  register plays which role, the same under both x64 conventions, since
+  the pinned ones are registers both have a callee preserve: `rbx` the
+  address of the frame's register 0, `r14` the entry block, `r15` the
+  object space's base, `r13` the stack pointer a leaf call aligned away
+  from, `r11` the idioms' own scratch, `rax` a leaf's answer, and nine
+  scratch registers for the templates. Its idioms are the only way a
+  template touches a frame, the block, a leaf, a poll or an exit: load and
+  store a frame register, load the receiver, load an immediate word, call
+  a leaf (aligning the native stack at run time, as Cog aligns the C
+  stack before each call into the runtime), exit, exit on a condition,
+  poll, and count a back edge for the tests. In a debug build a frame
+  register's load refuses a dead register's poison word as the
+  interpreter's read does, by an exit of its own (`ExitKind::DeadRegister`,
+  the register's index in block word `ExitRegister`, 12), after which Rust
+  panics with `heap.rs`'s message for it.
+- **The stubs** (`jit/stubs.rs`), at the zone's base: the entry stub saves
+  every general-purpose register either convention has its callee
+  preserve (no vector register: a template that uses `xmm6`-`xmm15` on
+  Win64 must have the stub save them first), loads the pinned roles from
+  the block, saves the stack pointer in block word `SavedStackPointer`
+  (10) and calls the body. A body never returns to it: an exit **jumps**
+  to the exit stub through block word `ExitStub` (13), so no `call` that
+  never returns unbalances the processor's return-address predictor and
+  no body holds an absolute address; the exit stub writes the program
+  counter and the kind (block words 8 and 9), resets the stack pointer to
+  the saved one and returns to `enter`'s caller. The running activation
+  travels in block word `Activation` (14), for the leaves.
+- **The baseline compiler** (`jit/baseline.rs`) lowers a body instruction
+  by instruction through the one exhaustive `match` over `Instruction`
+  (`lower`), recording where each instruction's code starts
+  (`ProgramCounterMap`). Templates: `LoadLiteral` of a literal whose value
+  is a word (`nil`, a Boolean, a `SmallInteger`, an immediate float),
+  `LoadSelf`, `Move`, `StoreLocal`, `Jump`, `JumpIfNotBoolean`,
+  `BranchIfFalse`, `BranchIfTrue`, and `IntegerBinary`'s `SmallInteger`
+  fast path -- add, subtract, multiply, floor divide and the five
+  compares, with their tag checks, declining to the send at the
+  instruction's target, before anything is written, on an operand that
+  is no `SmallInteger`, an overflow or a zero divisor. A backward jump
+  polls the heap's safepoint flag (block word `PollWord`, 11) first and
+  exits as a safepoint there, so a loop that makes no send still reaches
+  one. The generic leaf, `Leaf::Step` (`jit/leaves.rs`), runs a
+  straight-line instruction through the interpreter's own function for
+  it -- a `LoadLiteral` that allocates, `MakeArray`, `MakeVector`,
+  `LoadVector`, `StoreVector` -- and answers "re-execute" only before it
+  has changed anything, so the interpreter raises the error itself. Every
+  other instruction exits and the interpreter runs it.
+- **The trigger and the entry** (`jit/mod.rs`): every `CompiledCode`
+  carries a `JitSlot`, never encoded, which a clone answers fresh,
+  counting its entries; at the second, `note_entry` compiles the body
+  into the zone of the running interpreter, whose state -- the zone, 16
+  MiB by default (`DEFAULT_ZONE_BYTES`, a first guess), the
+  program-counter maps and the statistics (`Interpreter::jit_statistics`)
+  -- is held on the `Mutator`. A push in `vm::run_stretch` pays one load
+  and one compare (`JitSlot::is_armed`); everything else is
+  `jit::entered`, out of line and `#[cold]`. A run's base activation,
+  which the host pushed, is entered at `vm::run`'s start like any push,
+  or a host's entry send would never run compiled. **A body whose machine
+  code cannot take a backward jump before its first exit is neither
+  installed nor entered** (`JitStatistics::bodies_leaving_before_a_loop`):
+  such code runs a few straight-line instructions the interpreter runs as
+  fast, for an entry and an exit on every push, which measured up to 31%
+  slower on the programs that send most ("What the baseline JIT's
+  foundation moved"). A body the compiler refuses -- more instructions
+  than a `u16` counts, code the assembler cannot lay out, no room left in
+  the zone -- stays interpreted for good, and so does one entered while
+  the JIT is off (`NS_NEXT_NO_JIT=1` for a process,
+  `Interpreter::set_jit_enabled` for a test): enabling the JIT later does
+  not revive it, so that a disabled JIT costs every later push only the
+  compare. A body compiled by another interpreter, whose slot names
+  another zone's identity, is compiled again into this one rather than
+  entered at an offset that means nothing here. A panic inside a leaf
+  never unwinds through machine code: it aborts the process at the shim,
+  so a debug build's dead-register read inside a leaf ends the process
+  rather than failing one test.
+- **Two stress modes** run every golden through machine code: under
+  `NS_NEXT_STRESS_JIT` every body is compiled at its first entry and
+  entered even when its machine code leaves before a loop, and under
+  `NS_NEXT_STRESS_EXIT` every poll takes its exit as if a safepoint were
+  requested ([README.md](README.md), "Gates").
+  `crates/ns-runtime/tests/jit.rs` pins the trigger, the zone's identity,
+  a full zone and a body exiting mid-way, and `goldens/runtime/jit/` a
+  counting loop and an overflow in machine code.
+
+Since compiled code calls no compiled code yet, an entry runs exactly one
+compiled frame, whose words the interpreter's push wrote: the exit writes
+only where the interpreter resumes, and the machine stack holds nothing
+to walk.
+
 ## Planned: the baseline JIT
 
 Would change: a body that has run twice runs as machine code, for x64 and
@@ -9574,7 +9823,9 @@ encoder; entry, exit and the instructions without a send, every body
 compilable since an instruction without a template exits; sends and the
 caches; closures, non-local return, allocation and the barrier;
 on-stack replacement, the polls and the depth count's measurement; the
-register cache; the AArch64 encoder under QEMU.
+register cache; the AArch64 encoder under QEMU. The first two are built
+("The baseline JIT's foundation" above); the third, sends and the caches
+in machine code, is next ([OPEN-WORK.md](../OPEN-WORK.md), "Next").
 
 ## Decisions
 

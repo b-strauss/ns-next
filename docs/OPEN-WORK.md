@@ -15,15 +15,31 @@ when they were written.
 
 ## Next
 
-**Road step 8, a baseline JIT**, Cog's class, for x64 and arm64, to the
-contract of 7c ("The road to a high-performance VM" below;
-[execution.md](design/execution.md), "Planned: the baseline JIT"),
-designed on 2026-10-27: a foundation -- `ns-memory`'s doubly mapped code
-zone, the `ns-assembler` crate, the macro assembler of the VM's idioms,
-the stubs, the exit and the code zone -- that instructions are added to
-through one exhaustive `match`, each choosing a template, a leaf call or
-an exit that re-executes it; the caches stay data shared with the
-interpreter; the return addresses are on the native stack. Road step 7 is complete: 7c wrote the contract the JIT tiers build
+**Road step 8's third stage: sends and the caches in machine code**
+([execution.md](design/execution.md), "Planned: the baseline JIT",
+"Inline caches", "Stages"): a machine-readable cell beside every
+`CacheEntry`, the send, miss, polymorphic and megamorphic stubs, a
+send's template that compares the receiver's guard with the cell's and
+calls through it, returns in machine code, and with them the native
+stack's room checked at the entry and the exit that walks the return
+addresses of nested compiled frames and materializes them. Its first two
+stages are built ("The baseline JIT's foundation"): `ns-memory`'s doubly
+mapped code zone and the entry into machine code, `ns-assembler` with
+the x64 encoder, and in `jit/` the macro assembler of the VM's idioms,
+the entry and exit stubs and the baseline compiler's one exhaustive
+`match`, whose templates cover moves, immediate literals, jumps with a
+poll on every back edge and `SmallInteger` arithmetic, and whose generic
+leaf runs the straight-line instructions that allocate. Every program
+measured level with `master` or faster ("What the baseline JIT's
+foundation moved"), since a body runs compiled only up to its first
+instruction without a template, usually its first send, and is entered
+only when its code can loop before it: stage 3 is where the JIT starts
+to pay. The stages after it, each measured against the tree before it:
+closures, non-local return, allocation and the write barrier; on-stack
+replacement, the polls and the depth count's measurement; the register
+cache; the AArch64 encoder under QEMU. Road step 8 as a whole, Cog's
+class, for x64 and arm64, is "The road to a high-performance VM" below.
+Road step 7 is complete: 7c wrote the contract the JIT tiers build
 to ([execution.md](design/execution.md), "Planned: the deoptimization
 contract"). The step between 7 and 8 is built: `Closure>>whileTrue:` and
 `whileFalse:` and `Array>>do:` are Newspeak loops, whose sends the JIT
@@ -348,12 +364,53 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
   moved".
 - **Step 8, a baseline JIT**, Cog's class, for x64 and arm64, to the
   contract of 7c, designed ([execution.md](design/execution.md),
-  "Planned: the baseline JIT"). Left to it, and measured: whether the
-  depth count lives in a machine register while machine code runs,
-  written back at the exit, or stays in memory ("Planned: the
-  deoptimization contract", "Safepoints and the depth limit"); whether a
-  send calls through its cache cell or through a patched direct call;
-  and the code zone's default size.
+  "Planned: the baseline JIT"), its first two stages built (2026-10-27,
+  [their plan](superpowers/plans/2026-10-27-2047-baseline-jit-foundation.md);
+  "The baseline JIT's foundation"), stage 3 next ("Next" above). Left to
+  it, and measured: whether the depth count lives in a machine register
+  while machine code runs, written back at the exit, or stays in memory
+  ("Planned: the deoptimization contract", "Safepoints and the depth
+  limit"); whether a send calls through its cache cell or through a
+  patched direct call; and the code zone's default size, 16 MiB today
+  (`jit::DEFAULT_ZONE_BYTES`), a first guess. What the foundation leaves
+  to the stages after it (noted in its reviews, 2026-10-27):
+  - **Which bodies are entered, once sends and returns have templates.**
+    A body is entered only when its code can take a backward jump before
+    its first exit (`jit/baseline.rs`, `takes_a_backward_jump_before_an_exit`),
+    since code that exits after a few straight-line instructions cost up
+    to 31% on the send benchmarks ("What the baseline JIT's foundation
+    moved"). Once a body's code runs to its return, the rule has to admit
+    it; stage 3 decides and measures the rule then.
+  - **Installing code while machine code runs.** `jit::install` takes the
+    zone through `Rc::get_mut` and panics when machine code holds it, so
+    no leaf may yet trigger a compilation; a leaf that can reach a push --
+    stage 3's miss and send stubs -- needs the install restructured first.
+  - **`jit::entered` is `#[cold]`**, right while almost every push of a
+    compiled body only counts; once templates make entering the common
+    path of a compiled body's push, its placement is to be measured
+    again.
+  - **`load_frame_register` has no unchecked variant.** Every frame
+    register a template loads is checked against the dead-register poison
+    in a debug build, as the interpreter checks a read; a copy the
+    interpreter does not treat as a read -- placing a send's argument
+    slots -- needs a load without the check, with stage 3's sends.
+  - **The idioms' scratch register is guarded by a `debug_assert!` alone**
+    (`r11`, `load_frame_register`): a template that kept a value in it
+    across an idiom would be found only by a debug build that reaches it.
+  - **A panic inside a leaf aborts the process**, by design, since nothing
+    unwinds through machine code; a debug build's dead-register read
+    inside a leaf therefore ends the whole test run rather than failing
+    one test. A leaf that is to report such a defect returns it as a
+    value, as a template's read does (`ExitKind::DeadRegister`).
+  - **Paths compiled for no target here**: the code zone's Linux, BSD and
+    Apple AArch64 paths are checked by clippy for
+    `x86_64-unknown-linux-gnu` and `aarch64-apple-darwin` (the `memory`
+    gate) and never run; the AArch64 encoder's stage runs the suite under
+    QEMU.
+  - **Small leftovers**: `ns-memory`'s `map_code` is an `unsafe fn` though
+    its safety section asks nothing of its caller; the leaf shim could be
+    `unsafe extern "C"`; `crates/ns-assembler/tests/encoding_sources.rs`
+    reads a raw string as an ordinary one.
 - **Step 9, an optimizing JIT** with type feedback, inlining and
   deoptimization, Strongtalk's and HotSpot's class.
   - **The home of a closure created in an inlined scope** (noted with the
