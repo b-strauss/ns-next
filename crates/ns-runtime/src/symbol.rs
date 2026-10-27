@@ -49,7 +49,6 @@ well_known_symbols! {
     NEW => "new",
     VALUE => "value",
     VALUE_OF => "valueOf:",
-    VALUE_OF_WITH => "valueOf:with:",
     DOES_NOT_UNDERSTAND => "doesNotUnderstand:",
     CARET => "^",
     OBJECT => "Object",

@@ -407,10 +407,6 @@ pub enum ActivationKind<'gc> {
 pub enum Continuation<'gc> {
     /// Hand the value to the send that made the activation.
     Deliver,
-    /// A native `do:` loop's block returned for one element: activate it for
-    /// the next, or answer the receiver
-    /// (`builtins::collections::after_element`).
-    DoElement(Box<DoLoop<'gc>>),
     /// The superclass clause the nested-class accessor evaluated returned the
     /// superclass: build, cache and answer the class
     /// (`interpreter::nested::after_clause`).
@@ -478,40 +474,6 @@ pub enum UnwindAction<'gc> {
     /// runs every pending `ensure:` and `ifCurtailed:` block down to the
     /// run's floor, and the run then leaves with this error.
     Terminate(NewspeakError<'gc>),
-}
-
-/// What a native loop runs for each step: a closure it activates itself,
-/// or any other object, which it sends `value` or `value:` as a block
-/// would be sent them. Decided once, when the loop starts: an object never
-/// stops or starts being a closure.
-#[derive(Debug, Clone, Copy)]
-pub enum LoopAction<'gc> {
-    Closure(ObjectReference<'gc>),
-    Sent(Value<'gc>),
-}
-
-impl<'gc> LoopAction<'gc> {
-    pub(crate) fn of(heap: &crate::Heap<'gc>, value: Value<'gc>) -> Self {
-        match value.as_object() {
-            Some(object) if heap.is_closure(object) => LoopAction::Closure(object),
-            _ => LoopAction::Sent(value),
-        }
-    }
-}
-
-/// A native `do:` loop in progress: the array it walks and answers when it
-/// is done, what it runs for each element, the size it read when it began
-/// -- the walk ends there, as a loop from 1 to the size does -- and the
-/// index of the next element, which is read from the array only when the
-/// walk reaches it, so a store the action makes to a later index is seen.
-///
-/// Boxed in its continuation, and owned by exactly one activation.
-#[derive(Debug, Clone)]
-pub struct DoLoop<'gc> {
-    pub(crate) receiver: ObjectReference<'gc>,
-    pub(crate) action: LoopAction<'gc>,
-    pub(crate) size: usize,
-    pub(crate) next: usize,
 }
 
 /// A nested class being created for one enclosing object

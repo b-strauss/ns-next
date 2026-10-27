@@ -1079,7 +1079,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                     )
                                 }
                                 // An inlined loop's condition answered no Boolean: the error
-                                // is `unwind`'s to build, as the native loop's is.
+                                // is `unwind`'s to build.
                                 CompactInstruction::SignalNonBoolean { register } => {
                                     let value =
                                         mutator.heap.register(register_base, u16::from(register));
@@ -2258,10 +2258,10 @@ fn deliver<'gc>(
 
 /// `activation` has returned `value`: pop it and do what its continuation says.
 /// A value -- the usual case -- goes to the send in the caller, which resumes,
-/// or out of `run` when there is no caller in this run; a native loop's
-/// continuation may instead decide another activation -- a native loop's next
-/// block, or the `valueOf:` that runs a body which is no block -- which runs
-/// in the popped activation's place. `Mutator::resume` applies the
+/// or out of `run` when there is no caller in this run; a continuation may
+/// instead decide another activation -- the `valueOf:` that sends a future's
+/// computation `value`, or a nested class's next step -- which runs in the
+/// popped activation's place. `Mutator::resume` applies the
 /// continuation and
 /// `Mutator::push_continuation` pushes what it decided, depth count included;
 /// the loop only forwards the popped frame's flag. A future's forcing
@@ -2323,7 +2323,7 @@ fn apply_continuation<'gc>(
         },
         then => match mutator.resume(then, value) {
             // Forgotten rather than dropped, as `deliver` forgets a value's
-            // step: a native loop's every step answers one.
+            // step.
             resumed @ Ok(Step::Value(value)) => {
                 std::mem::forget(resumed);
                 value

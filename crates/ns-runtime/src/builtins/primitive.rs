@@ -70,10 +70,9 @@ impl Primitive {
     /// see through one: it has no operand but its own subject, or it stores,
     /// forwards or ignores the operand (`ElementAtPut`'s element, `Closure`'s
     /// `Value` arguments, `Message`'s `SendTo` receiver, `ReturnValue`'s
-    /// value). The three that take a block, or a text they render, and would
-    /// otherwise answer as though a future were a value of its own --
-    /// `Enumerate`'s and the loops' block, `Terminate`'s arguments --
-    /// decline for a future instead.
+    /// value). `Terminate`, which renders its arguments as a text and would
+    /// otherwise answer as though a future were a value of its own,
+    /// declines for a future instead.
     pub(crate) fn answers_false_to_a_stranger(self) -> bool {
         match self {
             Primitive::Object(ObjectPrimitive::Identical | ObjectPrimitive::Equal) => true,
@@ -229,8 +228,7 @@ impl Primitive {
                 SymbolPrimitive::AsString | SymbolPrimitive::Hash | SymbolPrimitive::PrintString,
             ) => false,
             Primitive::Collection(
-                CollectionPrimitive::Enumerate
-                | CollectionPrimitive::Size
+                CollectionPrimitive::Size
                 | CollectionPrimitive::ElementAt
                 | CollectionPrimitive::ElementAtPut
                 | CollectionPrimitive::Allocate
@@ -564,7 +562,6 @@ pub enum SymbolPrimitive {
 /// `Array`'s primitives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CollectionPrimitive {
-    Enumerate,
     Size,
     ElementAt,
     ElementAtPut,
@@ -1271,11 +1268,6 @@ pub const MIRROR: &[MirrorEntry] = &[
         "symbolPrintString:ifFail:",
         "printString",
         Primitive::Symbol(SymbolPrimitive::PrintString),
-    ),
-    mirror(
-        "collection:do:ifFail:",
-        "do:",
-        Primitive::Collection(CollectionPrimitive::Enumerate),
     ),
     mirror(
         "collectionSize:ifFail:",

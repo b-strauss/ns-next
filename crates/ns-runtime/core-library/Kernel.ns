@@ -4186,8 +4186,22 @@ class Kernel vmMirror: mirror = Value (
     /// Signals an ArgumentError carrying the block, 'wrong number of
     /// block arguments: block takes …, got 1', for a block that does
     /// not take one argument.
+    ///
+    /// The size is read through its leaf, as ByteArray's `do:` reads its
+    /// own and for the same reason: a receiver holding no elements -- an
+    /// instance of a subclass -- goes on to Collection's `do:` rather
+    /// than counting through `size`. The walk is a loop here rather than
+    /// `to:do:`, which is a send and would put a second activation under
+    /// every element.
     public do: action = (
-      ^vmMirror collection: self do: action ifFail: [^super do: action].
+      |
+        count = vmMirror collectionSize: self ifFail: [^super do: action].
+        index ::= 1.
+      |
+      [index <= count] whileTrue: [
+        action value: (self at: index).
+        index:: index + 1.
+      ].
     )
 
     /// Stores `value` at `index` and answers `value`.
@@ -6200,16 +6214,6 @@ class Kernel vmMirror: mirror = Value (
     /// action: any object; sent `value`.
     private valueOf: action = (
       ^action value.
-    )
-
-    /// Sends `value:` with `element` to `action` and answers what it
-    /// answers. `do:` activates it for an action that is no block, as
-    /// `valueOf:` serves a future's computation.
-    ///
-    /// action: any object; sent `value:`.
-    /// element: the element of this turn of the walk.
-    private valueOf: action with: element = (
-      ^action value: element.
     )
   )
 

@@ -1,0 +1,33 @@
+/// `Array>>do:` on an empty array sends nothing and answers the array,
+/// whatever its argument: a block of the wrong arity, nil, a number. A
+/// walk an action leaves by signalling ends there: no later element is
+/// reached.
+class DoOnAnEmptyArraySendsNothing = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      empty = {}.
+    |
+    transcript
+        show: ((empty do: [:first :second | 1]) == empty) printString;
+        newLine.
+    transcript
+        show: ((empty do: nil) == empty) printString;
+        newLine.
+    transcript
+        show: ((empty do: 3) == empty) printString;
+        newLine.
+    [
+      {1. 2. 3} do: [:each |
+        each = 2 ifTrue: [Error signal: 'two'].
+        transcript
+            show: each printString;
+            newLine.
+      ].
+    ] on: Error do: [:error |
+      transcript
+          show: error messageText;
+          newLine.
+    ].
+  )
+)

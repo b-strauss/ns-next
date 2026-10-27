@@ -765,13 +765,9 @@ fn a_tiny_global_cache_answers_like_a_full_one() {
 }
 
 /// Only the families that ran take room in the table: `used`'s own two sends
-/// (`+` in its block, `do:`), and nothing for `unused` or for an initializer
-/// with no sends. `do:` is a kernel primitive method (`Kernel.ns`):
-/// caching its call site as a `CachedTargetKind::Method` also reserves
-/// the target's own family -- `Array>>do:`'s two sends (the lexical read of
-/// `vmMirror` and its `collection:do:ifFail:` send) -- which a
-/// `CachedTargetKind::Primitive` target never did, so the table holds four
-/// entries, not two.
+/// (`+` in its block, `do:`) and the family of the `Array>>do:` it ran --
+/// its loop's sends and its failure block's `super do:`, ten entries --
+/// and nothing for `unused` or for an initializer with no sends.
 #[test]
 fn only_the_families_that_ran_take_room_in_the_cache_table() {
     let source = indoc! {"
@@ -793,7 +789,7 @@ fn only_the_families_that_ran_take_room_in_the_cache_table() {
     assert_eq!(interpreter.cache_statistics().site_entries, booted);
     let answer = send(&mut interpreter, &instance, "used", &[]);
     assert_eq!(small_integer(&mut interpreter, &answer), 3);
-    assert_eq!(interpreter.cache_statistics().site_entries, booted + 4);
+    assert_eq!(interpreter.cache_statistics().site_entries, booted + 12);
 }
 
 /// A cached kernel method whose leaf declines on a receiver of its own class
