@@ -538,9 +538,9 @@ and Are We Fast Yet (`benchmarks/are-we-fast-yet/java/`).
   member to having one.
 - **Every encoding constant of `ns-assembler` is a named `const` documented with its
   official source** -- the Intel SDM volume and section title for x64, the
-  developer.arm.com page of the instruction for AArch64 -- and no hexadecimal or
-  binary literal stands in a function body; held by
-  `crates/ns-assembler/tests/encoding_sources.rs`.
+  developer.arm.com page of the instruction for AArch64 -- and no integer literal
+  other than 0 and 1 stands outside a `const`; held, for every encoder file under
+  `src/`, by `crates/ns-assembler/tests/encoding_sources.rs`.
 - **Object, frame and activation access goes through
   `crates/ns-runtime/src/heap.rs`.** The handles' inner index is private to the
   `heap` module (`heap.rs` and its submodules, `heap/value.rs` among them, which

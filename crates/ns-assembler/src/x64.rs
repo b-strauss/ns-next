@@ -16,29 +16,77 @@
 
 use crate::{BranchForm, BranchKind, Condition, Encoder, Memory, Operation, Register, Width};
 
+/// `rax`: register number 0, as ModRM, SIB and opcode fields name it.
+///
+/// Intel SDM Vol. 2A, 2.1.5 Addressing-Mode Encoding of ModR/M and SIB Bytes.
 pub const RAX: Register = Register(0);
+/// `rcx`: register number 1, as ModRM, SIB and opcode fields name it.
+///
+/// Intel SDM Vol. 2A, 2.1.5 Addressing-Mode Encoding of ModR/M and SIB Bytes.
 pub const RCX: Register = Register(1);
+/// `rdx`: register number 2, as ModRM, SIB and opcode fields name it.
+///
+/// Intel SDM Vol. 2A, 2.1.5 Addressing-Mode Encoding of ModR/M and SIB Bytes.
 pub const RDX: Register = Register(2);
+/// `rbx`: register number 3, as ModRM, SIB and opcode fields name it.
+///
+/// Intel SDM Vol. 2A, 2.1.5 Addressing-Mode Encoding of ModR/M and SIB Bytes.
 pub const RBX: Register = Register(3);
+/// `rsp`: register number 4, as ModRM, SIB and opcode fields name it.
+///
+/// Intel SDM Vol. 2A, 2.1.5 Addressing-Mode Encoding of ModR/M and SIB Bytes.
 pub const RSP: Register = Register(4);
+/// `rbp`: register number 5, as ModRM, SIB and opcode fields name it.
+///
+/// Intel SDM Vol. 2A, 2.1.5 Addressing-Mode Encoding of ModR/M and SIB Bytes.
 pub const RBP: Register = Register(5);
+/// `rsi`: register number 6, as ModRM, SIB and opcode fields name it.
+///
+/// Intel SDM Vol. 2A, 2.1.5 Addressing-Mode Encoding of ModR/M and SIB Bytes.
 pub const RSI: Register = Register(6);
+/// `rdi`: register number 7, as ModRM, SIB and opcode fields name it.
+///
+/// Intel SDM Vol. 2A, 2.1.5 Addressing-Mode Encoding of ModR/M and SIB Bytes.
 pub const RDI: Register = Register(7);
+/// `r8`: register number 8, as ModRM, SIB and opcode fields name it.
+///
+/// Intel SDM Vol. 2A, 2.1.5 Addressing-Mode Encoding of ModR/M and SIB Bytes.
 #[expect(
     clippy::min_ident_chars,
     reason = "the architecture's own name of the register"
 )]
 pub const R8: Register = Register(8);
+/// `r9`: register number 9, as ModRM, SIB and opcode fields name it.
+///
+/// Intel SDM Vol. 2A, 2.1.5 Addressing-Mode Encoding of ModR/M and SIB Bytes.
 #[expect(
     clippy::min_ident_chars,
     reason = "the architecture's own name of the register"
 )]
 pub const R9: Register = Register(9);
+/// `r10`: register number 10, as ModRM, SIB and opcode fields name it.
+///
+/// Intel SDM Vol. 2A, 2.1.5 Addressing-Mode Encoding of ModR/M and SIB Bytes.
 pub const R10: Register = Register(10);
+/// `r11`: register number 11, as ModRM, SIB and opcode fields name it.
+///
+/// Intel SDM Vol. 2A, 2.1.5 Addressing-Mode Encoding of ModR/M and SIB Bytes.
 pub const R11: Register = Register(11);
+/// `r12`: register number 12, as ModRM, SIB and opcode fields name it.
+///
+/// Intel SDM Vol. 2A, 2.1.5 Addressing-Mode Encoding of ModR/M and SIB Bytes.
 pub const R12: Register = Register(12);
+/// `r13`: register number 13, as ModRM, SIB and opcode fields name it.
+///
+/// Intel SDM Vol. 2A, 2.1.5 Addressing-Mode Encoding of ModR/M and SIB Bytes.
 pub const R13: Register = Register(13);
+/// `r14`: register number 14, as ModRM, SIB and opcode fields name it.
+///
+/// Intel SDM Vol. 2A, 2.1.5 Addressing-Mode Encoding of ModR/M and SIB Bytes.
 pub const R14: Register = Register(14);
+/// `r15`: register number 15, as ModRM, SIB and opcode fields name it.
+///
+/// Intel SDM Vol. 2A, 2.1.5 Addressing-Mode Encoding of ModR/M and SIB Bytes.
 pub const R15: Register = Register(15);
 
 /// The x64 encoder.
@@ -51,7 +99,10 @@ pub struct X64;
 /// Intel SDM Vol. 2A, 2.1.3 ModR/M and SIB Bytes.
 const LOW_BITS: u8 = 0b111;
 
-/// The number of registers: a register number is 0 to 15.
+/// The number of registers: a register number is 0 to 15, its fourth bit
+/// the REX bit.
+///
+/// Intel SDM Vol. 2A, 2.2.1 REX Prefixes.
 const REGISTER_COUNT: u8 = 16;
 
 /// The first register that is a byte register only behind a REX prefix
@@ -170,12 +221,12 @@ const MOVE_IMMEDIATE_EXTENSION: u8 = 0;
 
 /// `MOVZX r32, r/m8` (`0F B6 /r`) — the byte load, zero-extended.
 ///
-/// Intel SDM Vol. 2B, MOVZX—Move with Zero-Extend.
+/// Intel SDM Vol. 2B, MOVZX—Move With Zero-Extend.
 const MOVE_ZERO_EXTENDED_BYTE: [u8; 2] = [0x0F, 0xB6];
 
 /// `MOVZX r32, r/m16` (`0F B7 /r`) — the 16-bit load, zero-extended.
 ///
-/// Intel SDM Vol. 2B, MOVZX—Move with Zero-Extend.
+/// Intel SDM Vol. 2B, MOVZX—Move With Zero-Extend.
 const MOVE_ZERO_EXTENDED_HALF: [u8; 2] = [0x0F, 0xB7];
 
 /// `ADD r/m64, r64` (`01 /r`) — add a register to a register.
@@ -285,12 +336,12 @@ const INDIRECT_JUMP_EXTENSION: u8 = 4;
 
 /// `PUSH r64` (`50+rd`) — the opcode whose low three bits are the register.
 ///
-/// Intel SDM Vol. 2B, PUSH—Push Word, Doubleword or Quadword Onto the Stack.
+/// Intel SDM Vol. 2B, PUSH—Push Word, Doubleword, or Quadword Onto the Stack.
 const PUSH_REGISTER_BASE: u8 = 0x50;
 
 /// `POP r64` (`58+rd`) — the opcode whose low three bits are the register.
 ///
-/// Intel SDM Vol. 2B, POP—Pop a Value from the Stack.
+/// Intel SDM Vol. 2B, POP—Pop a Value From the Stack.
 const POP_REGISTER_BASE: u8 = 0x58;
 
 /// `LEA r64, m` (`8D /r`) — load an effective address without touching the
@@ -301,7 +352,7 @@ const LOAD_EFFECTIVE_ADDRESS: [u8; 1] = [0x8D];
 
 /// `RET` (`C3`) — near return.
 ///
-/// Intel SDM Vol. 2B, RET—Return from Procedure.
+/// Intel SDM Vol. 2B, RET—Return From Procedure.
 const RETURN_NEAR: u8 = 0xC3;
 
 /// `UD2` (`0F 0B`) — the instruction that always raises an invalid-opcode
@@ -400,13 +451,19 @@ const CONDITION_GREATER: u8 = 0xF;
 
 /// The length in bytes of [`JUMP_SHORT`] and of `Jcc rel8`: opcode and
 /// 8-bit displacement. A displacement is measured from the instruction's end.
+///
+/// Intel SDM Vol. 2A, Jcc—Jump if Condition Is Met.
 const SHORT_BRANCH_SIZE: i64 = 2;
 
 /// The length in bytes of [`JUMP_NEAR`]: opcode and 32-bit displacement.
+///
+/// Intel SDM Vol. 2A, JMP—Jump.
 const JUMP_NEAR_SIZE: i64 = 5;
 
 /// The length in bytes of `Jcc rel32`: two opcode bytes and a 32-bit
 /// displacement.
+///
+/// Intel SDM Vol. 2A, Jcc—Jump if Condition Is Met.
 const JUMP_NEAR_IF_SIZE: i64 = 6;
 
 fn number(register: Register) -> u8 {

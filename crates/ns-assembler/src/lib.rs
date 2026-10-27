@@ -24,14 +24,15 @@
 //! placed. A forward branch never shrinks, so no offset placed before it
 //! ever moves and one pass suffices.
 //!
-//! Every encoding constant of an encoder -- an opcode, a prefix, an opcode
-//! extension, a condition code, a field's bits -- is a named `const`
-//! documented with its official source: the Intel SDM volume and section
-//! title for x64, the developer.arm.com page of the instruction for AArch64.
-//! A reader checks a byte against the manual instead of trusting it, and
-//! `tests/encoding_sources.rs` (`every_encoding_constant_is_named_and_sourced`)
-//! fails on a hexadecimal or binary literal outside a `const`, or in a
-//! `const` without its citation, in every encoder file.
+//! Every constant of an encoder -- an opcode, a prefix, an opcode extension,
+//! a condition code, a field's bits, an instruction's size -- is a named
+//! `const` documented with its official source: the Intel SDM volume and
+//! section title for x64, the developer.arm.com page of the instruction for
+//! AArch64. A reader checks a byte against the manual instead of trusting
+//! it. `tests/encoding_sources.rs` (`every_encoding_constant_is_named_and_sourced`)
+//! holds every encoder file under `src/`, subdirectories included, to it:
+//! each `const` cites its source, and no integer literal other than 0 and 1
+//! stands outside a `const`.
 
 #![forbid(unsafe_code)]
 
