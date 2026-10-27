@@ -2,7 +2,7 @@
 source: crates/ns-analyzer/tests/disasm_snapshots.rs
 expression: "disasm(\"language/control-flow/while_loop\",\n&[\"main:args:\", \"--lowering\", \"reference\"])"
 ---
-method main:args: (args 2, registers 33)
+method main:args: (args 2, registers 37)
    0   stmt 0  MakeClosure r15, [] ->
         block block (args 0, registers 16)
            0   stmt 0  SendLexical r13 <- depth 0 #n () @-
@@ -20,31 +20,43 @@ method main:args: (args 2, registers 33)
            6   stmt 1  SendPublic r19 <- r17 #+ (r18) @-
            7   stmt 1  SendLexical r20 <- depth 0 #n: (r19) @-
            8        -  ImplicitReturn r19
-   2   stmt 0  SendInlinable r17 <- r15 #whileTrue: (r16) @-
-   3   stmt 1  MakeClosure r18, [] ->
+   2   stmt 0  SendInlinable r17 <- r15 #value () @-
+   3   stmt 0  JumpIfNotBoolean r17 -> 7
+   4   stmt 0  BranchIfFalse r17 -> 8
+   5   stmt 0  SendInlinable r18 <- r16 #value () @-
+   6   stmt 0  Jump -> 2
+   7   stmt 0  SignalNonBoolean r17
+   8   stmt 0  LoadLiteral r19, nil
+   9   stmt 1  MakeClosure r20, [] ->
         block block (args 0, registers 16)
            0   stmt 0  SendLexical r13 <- depth 0 #n () @-
            1   stmt 0  LoadLiteral r14, 0
            2   stmt 0  SendPublic r15 <- r13 #= (r14) @-
            3        -  ImplicitReturn r15
-   4   stmt 1  MakeClosure r19, [] ->
+  10   stmt 1  MakeClosure r21, [] ->
         block block (args 0, registers 17)
            0   stmt 0  SendLexical r13 <- depth 0 #n () @-
            1   stmt 0  LoadLiteral r14, 1
            2   stmt 0  SendPublic r15 <- r13 #- (r14) @-
            3   stmt 0  SendLexical r16 <- depth 0 #n: (r15) @-
            4        -  ImplicitReturn r15
-   5   stmt 1  SendInlinable r20 <- r18 #whileFalse: (r19) @-
-   6   stmt 2  Move r21, r0
-   7   stmt 2  SendPublic r22 <- r21 #transcript () @-
-   8   stmt 2  SendLexical r24 <- depth 0 #sum () @-
-   9   stmt 2  SendPublic r23 <- r24 #printString () @-
-  10   stmt 2  SendPublic r25 <- r22 #show: (r23) @-
-  11   stmt 2  LoadLiteral r26, ' '
-  12   stmt 2  SendPublic r27 <- r22 #show: (r26) @-
-  13   stmt 2  SendLexical r29 <- depth 0 #n () @-
-  14   stmt 2  SendPublic r28 <- r29 #printString () @-
-  15   stmt 2  SendPublic r30 <- r22 #show: (r28) @-
-  16   stmt 2  SendPublic r31 <- r22 #newLine () @-
-  17        -  LoadSelf r32
-  18        -  ImplicitReturn r32
+  11   stmt 1  SendInlinable r22 <- r20 #value () @-
+  12   stmt 1  JumpIfNotBoolean r22 -> 16
+  13   stmt 1  BranchIfTrue r22 -> 17
+  14   stmt 1  SendInlinable r23 <- r21 #value () @-
+  15   stmt 1  Jump -> 11
+  16   stmt 1  SignalNonBoolean r22
+  17   stmt 1  LoadLiteral r24, nil
+  18   stmt 2  Move r25, r0
+  19   stmt 2  SendPublic r26 <- r25 #transcript () @-
+  20   stmt 2  SendLexical r28 <- depth 0 #sum () @-
+  21   stmt 2  SendPublic r27 <- r28 #printString () @-
+  22   stmt 2  SendPublic r29 <- r26 #show: (r27) @-
+  23   stmt 2  LoadLiteral r30, ' '
+  24   stmt 2  SendPublic r31 <- r26 #show: (r30) @-
+  25   stmt 2  SendLexical r33 <- depth 0 #n () @-
+  26   stmt 2  SendPublic r32 <- r33 #printString () @-
+  27   stmt 2  SendPublic r34 <- r26 #show: (r32) @-
+  28   stmt 2  SendPublic r35 <- r26 #newLine () @-
+  29        -  LoadSelf r36
+  30        -  ImplicitReturn r36

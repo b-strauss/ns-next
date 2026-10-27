@@ -70,10 +70,9 @@ impl Primitive {
     /// see through one: it has no operand but its own subject, or it stores,
     /// forwards or ignores the operand (`ElementAtPut`'s element, `Closure`'s
     /// `Value` arguments, `Message`'s `SendTo` receiver, `ReturnValue`'s
-    /// value). The three that take a block, or a text they render, and would
-    /// otherwise answer as though a future were a value of its own --
-    /// `Enumerate`'s and the loops' block, `Terminate`'s arguments --
-    /// decline for a future instead.
+    /// value). `Terminate`, which renders its arguments as a text and would
+    /// otherwise answer as though a future were a value of its own,
+    /// declines for a future instead.
     pub(crate) fn answers_false_to_a_stranger(self) -> bool {
         match self {
             Primitive::Object(ObjectPrimitive::Identical | ObjectPrimitive::Equal) => true,
@@ -229,8 +228,7 @@ impl Primitive {
                 SymbolPrimitive::AsString | SymbolPrimitive::Hash | SymbolPrimitive::PrintString,
             ) => false,
             Primitive::Collection(
-                CollectionPrimitive::Enumerate
-                | CollectionPrimitive::Size
+                CollectionPrimitive::Size
                 | CollectionPrimitive::ElementAt
                 | CollectionPrimitive::ElementAtPut
                 | CollectionPrimitive::Allocate
@@ -255,12 +253,7 @@ impl Primitive {
             // A write stores its element, and a value of the wrong kind is
             // an error rather than `false`.
             Primitive::Element(_) => false,
-            Primitive::Block(
-                BlockPrimitive::Value
-                | BlockPrimitive::ArgumentCount
-                | BlockPrimitive::WhileTrue
-                | BlockPrimitive::WhileFalse,
-            ) => false,
+            Primitive::Block(BlockPrimitive::Value | BlockPrimitive::ArgumentCount) => false,
             Primitive::Platform(
                 PlatformPrimitive::Show
                 | PlatformPrimitive::NewLine
@@ -569,7 +562,6 @@ pub enum SymbolPrimitive {
 /// `Array`'s primitives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CollectionPrimitive {
-    Enumerate,
     Size,
     ElementAt,
     ElementAtPut,
@@ -760,8 +752,6 @@ impl ElementAccess {
 pub enum BlockPrimitive {
     Value,
     ArgumentCount,
-    WhileTrue,
-    WhileFalse,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1280,11 +1270,6 @@ pub const MIRROR: &[MirrorEntry] = &[
         Primitive::Symbol(SymbolPrimitive::PrintString),
     ),
     mirror(
-        "collection:do:ifFail:",
-        "do:",
-        Primitive::Collection(CollectionPrimitive::Enumerate),
-    ),
-    mirror(
         "collectionSize:ifFail:",
         "size",
         Primitive::Collection(CollectionPrimitive::Size),
@@ -1333,16 +1318,6 @@ pub const MIRROR: &[MirrorEntry] = &[
         "blockNumArgs:ifFail:",
         "numArgs",
         Primitive::Block(BlockPrimitive::ArgumentCount),
-    ),
-    mirror(
-        "block:whileTrue:ifFail:",
-        "whileTrue:",
-        Primitive::Block(BlockPrimitive::WhileTrue),
-    ),
-    mirror(
-        "block:whileFalse:ifFail:",
-        "whileFalse:",
-        Primitive::Block(BlockPrimitive::WhileFalse),
     ),
     mirror(
         "transcript:show:ifFail:",

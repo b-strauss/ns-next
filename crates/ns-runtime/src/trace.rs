@@ -56,10 +56,6 @@ impl Trace for Continuation<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         match self {
             Continuation::Deliver => {}
-            Continuation::WhileCondition(state) | Continuation::WhileBody(state) => {
-                state.trace(tracer)
-            }
-            Continuation::DoElement(state) => state.trace(tracer),
             Continuation::NestedClass(state) => state.trace(tracer),
             Continuation::Unwind(pending) => pending.trace(tracer),
             Continuation::VmErrorSignalled(error) => {
@@ -115,40 +111,6 @@ impl Trace for PendingUnwind<'_> {
                 tracer.value(&mut error.receiver);
                 tracer.value(&mut error.subject);
             }
-        }
-    }
-}
-
-impl Trace for WhileLoop<'_> {
-    fn trace<T: Tracer>(&mut self, tracer: &mut T) {
-        let WhileLoop {
-            condition,
-            body,
-            expect: _,
-        } = self;
-        tracer.object(condition);
-        body.trace(tracer);
-    }
-}
-
-impl Trace for DoLoop<'_> {
-    fn trace<T: Tracer>(&mut self, tracer: &mut T) {
-        let DoLoop {
-            receiver,
-            action,
-            size: _,
-            next: _,
-        } = self;
-        tracer.object(receiver);
-        action.trace(tracer);
-    }
-}
-
-impl Trace for LoopAction<'_> {
-    fn trace<T: Tracer>(&mut self, tracer: &mut T) {
-        match self {
-            LoopAction::Closure(closure) => tracer.object(closure),
-            LoopAction::Sent(value) => tracer.value(value),
         }
     }
 }

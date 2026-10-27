@@ -230,7 +230,7 @@ impl<'gc> Mutator<'gc> {
                 arguments: StepArguments::Owned(Vec::new()),
                 then,
             },
-            _ => self.send_value_then(computation, computation, None, then),
+            _ => self.send_value_then(computation, computation, then),
         }
     }
 

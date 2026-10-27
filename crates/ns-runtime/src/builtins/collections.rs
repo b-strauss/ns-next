@@ -6,7 +6,7 @@
 use crate::builtins::first_argument;
 use crate::builtins::primitive::CollectionPrimitive;
 use crate::interpreter::Arguments;
-use crate::interpreter::{Signal, Step, StepArguments};
+use crate::interpreter::{Signal, Step};
 use crate::types::*;
 use crate::{Heap, Mutator, Symbol};
 
@@ -446,7 +446,6 @@ pub(crate) fn execute<'gc>(
     arguments: Arguments<'_, 'gc>,
 ) -> Option<Result<Step<'gc>, Signal<'gc>>> {
     match primitive {
-        CollectionPrimitive::Enumerate => do_step(mutator, receiver, selector, arguments),
         CollectionPrimitive::Size => leaf_step(size(mutator, receiver)),
         CollectionPrimitive::ElementAt => {
             leaf_step(element_at(mutator, receiver, selector, arguments))
@@ -461,89 +460,5 @@ pub(crate) fn execute<'gc>(
             leaf_step(copy_range(mutator, receiver, selector, arguments))
         }
         CollectionPrimitive::Replace => leaf_step(replace(mutator, receiver, selector, arguments)),
-    }
-}
-
-/// `do:` on an `Array`: what runs for each element in turn, as trampoline
-/// steps -- the first here, each next one by `after_element` when the one
-/// before it returns -- so no Rust frame waits on Newspeak code
-/// (`docs/design/execution.md`, "No re-entry from Rust").
-/// `None` when `receiver` is no `ObjectShape::Array`, so the send
-/// falls through to `doesNotUnderstand:` as every other selector here does.
-fn do_step<'gc>(
-    mutator: &mut Mutator<'gc>,
-    receiver: Value<'gc>,
-    selector: Symbol,
-    arguments: Arguments<'_, 'gc>,
-) -> Option<Result<Step<'gc>, Signal<'gc>>> {
-    let object = receiver.as_object()?;
-    let size = mutator.heap.array_element_count(object)?;
-    let Some(action) = arguments.first(&mutator.heap) else {
-        return Some(Err(Signal::Error(NewspeakError::argument_error(
-            selector,
-            receiver,
-            Value::nil(),
-            "do: requires a block argument",
-        ))));
-    };
-    // No element, nothing to run or send: the loop is over before it starts,
-    // so it needs no state either.
-    if size == 0 {
-        return Some(Ok(Step::Value(receiver)));
-    }
-    let action = LoopAction::of(&mutator.heap, action);
-    // A future stands for its value, which may well be a block: declining
-    // hands it to the caller's failure path, which sees through it.
-    if let LoopAction::Sent(sent) = action {
-        if mutator.as_future(sent).is_some() {
-            return None;
-        }
-    }
-    Some(Ok(element_step(
-        mutator,
-        Box::new(DoLoop {
-            receiver: object,
-            action,
-            size,
-            next: 0,
-        }),
-    )))
-}
-
-/// The action returned for one element. Its value is dropped, as `do:`
-/// always dropped it, and what runs for the next element takes its place on
-/// the stack.
-pub(crate) fn after_element<'gc>(mutator: &mut Mutator<'gc>, state: Box<DoLoop<'gc>>) -> Step<'gc> {
-    element_step(mutator, state)
-}
-
-/// What runs for the element at `state.next`, read now, or the array once
-/// the walk has reached the size it read at the start. A closure is
-/// activated as `value:` activates it, counted -- its arguments are
-/// `StepArguments::Owned`, never the `ControlFlow` mark; anything else is
-/// sent `value:`.
-fn element_step<'gc>(mutator: &mut Mutator<'gc>, mut state: Box<DoLoop<'gc>>) -> Step<'gc> {
-    let receiver = Value::object(state.receiver);
-    if state.next >= state.size {
-        return Step::Value(receiver);
-    }
-    // Present while an array's size is fixed; a receiver whose shape has
-    // changed under the walk ends it rather than failing.
-    let Some(element) = mutator.heap.array_element(state.receiver, state.next) else {
-        return Step::Value(receiver);
-    };
-    state.next += 1;
-    match state.action {
-        LoopAction::Closure(closure) => Step::Block {
-            closure,
-            arguments: StepArguments::Owned(vec![element]),
-            then: Continuation::DoElement(state),
-        },
-        LoopAction::Sent(action) => mutator.send_value_then(
-            receiver,
-            action,
-            Some(element),
-            Continuation::DoElement(state),
-        ),
     }
 }

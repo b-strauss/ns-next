@@ -253,8 +253,8 @@ parameter count is the body's; everything is inline in the closure object,
 never behind an `Rc` of its own, because a handle lives only where the tracer
 can rewrite it in place ([memory.md](memory.md), "What the collector traces")
 and an `Rc` shared by several holders is not such a place. So a block's
-activation (`FrameKind::Closure`), a native `whileTrue:` or `do:` loop's state
-and a decided block step name the closure object, and reach its body and its
+activation (`FrameKind::Closure`) and a decided block step name the closure
+object, and reach its body and its
 captured frame through it. **The home is a `FrameReference`, not an
 `ObjectReference`** — it names the lexically enclosing *method* or initializer
 activation, which is what a non-local return aims at, and a frame records it
@@ -1222,9 +1222,12 @@ instance of `FutureImplementation` until the program has made one.
   future among them, so the failure path sees through one without it. `==`
   is symmetric, unlike Primordial Soup's.
 - *The leaves that keep or render an operand* and would take a future for a
-  value of its own — `do:`'s block, `whileTrue:`'s and `whileFalse:`'s body,
-  and the selector and description an unhandled exception's termination
-  reports — decline for a future, so the failure path sees through it. Every
+  value of its own — the selector and description an unhandled exception's
+  termination reports — decline for a future, so the failure path sees
+  through it. `do:`'s block and a loop's body are no leaf's operands: the
+  Newspeak loops send them `value:` and `value`, and a future is seen
+  through by that send ([core-library.md](core-library.md), "Real bodies
+  for control flow and `do:`"). Every
   other leaf that answers for any operand stores or forwards it
   (`at:put:`'s element, `value:`'s arguments, `sendTo:`'s receiver,
   `returnValue:`'s value), and a future there is the value it stands for to
@@ -2096,8 +2099,8 @@ road, each step landing green on its own:
 7. **The execution model for compiled code** ([execution.md](execution.md),
    "Planned: JIT tiers").
    - **Between road steps 7 and 8, real Newspeak bodies for `whileTrue:`,
-     `whileFalse:` and `do:`** ([core-library.md](core-library.md), "Planned:
-     real bodies for control flow and `do:`, before the baseline JIT").
+     `whileFalse:` and `do:`** -- built ([core-library.md](core-library.md),
+     "Real bodies for control flow and `do:`").
 8. **A baseline JIT**, and
 9. **an optimizing JIT** ([execution.md](execution.md), "Planned: JIT tiers").
 

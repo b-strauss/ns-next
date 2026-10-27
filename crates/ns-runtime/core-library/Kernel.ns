@@ -4186,8 +4186,22 @@ class Kernel vmMirror: mirror = Value (
     /// Signals an ArgumentError carrying the block, 'wrong number of
     /// block arguments: block takes …, got 1', for a block that does
     /// not take one argument.
+    ///
+    /// The size is read through its leaf, as ByteArray's `do:` reads its
+    /// own and for the same reason: a receiver holding no elements -- an
+    /// instance of a subclass -- goes on to Collection's `do:` rather
+    /// than counting through `size`. The walk is a loop here rather than
+    /// `to:do:`, which is a send and would put a second activation under
+    /// every element.
     public do: action = (
-      ^vmMirror collection: self do: action ifFail: [^super do: action].
+      |
+        count = vmMirror collectionSize: self ifFail: [^super do: action].
+        index ::= 1.
+      |
+      [index <= count] whileTrue: [
+        action value: (self at: index).
+        index:: index + 1.
+      ].
     )
 
     /// Stores `value` at `index` and answers `value`.
@@ -6104,14 +6118,19 @@ class Kernel vmMirror: mirror = Value (
     /// answers anything else, and an ArgumentError, 'wrong number of
     /// block arguments: block takes …, got 0', for a receiver or a
     /// `body` that declares parameters.
+    ///
+    /// The compiler inlines a send of this message whose receiver and
+    /// argument are block literals; this method serves every other
+    /// send, and its own loop is that inlined form, whose guard signals
+    /// the NonBooleanReceiver.
     public whileTrue: body = (
-      ^vmMirror block: self whileTrue: body ifFail: [^super whileTrue: body].
+      ^[self value] whileTrue: [body value].
     )
 
     /// As `whileTrue:`, evaluating `body` while the receiver answers
     /// false.
     public whileFalse: body = (
-      ^vmMirror block: self whileFalse: body ifFail: [^super whileFalse: body].
+      ^[self value] whileFalse: [body value].
     )
 
     /// Evaluates the receiver and answers its value. An exception
@@ -6187,24 +6206,14 @@ class Kernel vmMirror: mirror = Value (
       ^onUnwind value.
     )
 
-    /// Sends `value` to `action` and answers what it answers. A native
-    /// loop activates it for a loop body that is no block, so that the
-    /// loop carries on from this activation's return whatever the send
-    /// decides.
+    /// Sends `value` to `action` and answers what it answers. The
+    /// forcing of a future activates it for a computation that is no
+    /// block, so that the forcing carries on from this activation's
+    /// return whatever the send decides.
     ///
     /// action: any object; sent `value`.
     private valueOf: action = (
       ^action value.
-    )
-
-    /// Sends `value:` with `element` to `action` and answers what it
-    /// answers. `do:` activates it for an action that is no block, as
-    /// `valueOf:` serves a loop body.
-    ///
-    /// action: any object; sent `value:`.
-    /// element: the element of this turn of the walk.
-    private valueOf: action with: element = (
-      ^action value: element.
     )
   )
 

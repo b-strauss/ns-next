@@ -2451,14 +2451,14 @@ call stack ([execution.md](execution.md), "The trampoline") and nothing
 re-enters the run loop from Rust ([execution.md](execution.md), "No re-entry
 from Rust"). What is missing is a yield path out of `vm::run`, a re-entry point
 that would continue a decoded frame at its `program_counter`, and an encoding
-for what each activation's `Continuation` carries in Rust: a native loop's
-`WhileLoop` or `DoLoop`, a nested class's `NestedClassCreation`, the unwind an `ensure:` block's return carries
+for what each activation's `Continuation` carries in Rust: a nested class's
+`NestedClassCreation`, the unwind an `ensure:` block's return carries
 on (`Unwind`, holding a `PendingUnwind`: its target frame and whether it returns
 a value, restarts or terminates), the end of the run a VM error's `signal`
 returns into (`VmErrorSignalled`) and a future's forcing (`Future`, holding a
 `FutureForcing`). An image records none of them today, and a suspended
-activation without its continuation would resume without the rest of the loop,
-the class creation or the unwind it belongs to. The depth limit's
+activation without its continuation would resume without the rest of the
+class creation, the unwind or the forcing it belongs to. The depth limit's
 reserve (`Mutator.depth_reserve`), a frame held while an error near the limit is
 signalled, would have to travel with the stack as well
 ([execution.md](execution.md), "The depth limit"). Every reified frame has

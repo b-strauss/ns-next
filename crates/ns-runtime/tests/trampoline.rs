@@ -191,9 +191,11 @@ ns_runtime::for_each_lowering! {
 }
 
 /// A recursion through blocks the optimized lowering does *not* inline --
-/// each held in a variable -- runs through the natives, and none of them
-/// calls back into the loop, so forty thousand levels fit on a test thread's
-/// stack under either lowering.
+/// each held in a variable -- runs through the natives and the library's
+/// loop, and none of them calls back into the run loop, so thirty thousand
+/// levels fit on a test thread's stack under either lowering. Thirty, since
+/// `viaWhile:` takes three counted activations a level -- itself,
+/// `Closure>>whileTrue:` and its body -- and forty would pass the limit.
 const THROUGH_NATIVES: &str = indoc! {"
     class N = Object new (
     ) (
@@ -213,7 +215,7 @@ ns_runtime::for_each_lowering! {
                 interpreter.send(
                     &instance,
                     Symbol::intern(selector),
-                    &[interpreter.stash(Value::small_integer(40_000))],
+                    &[interpreter.stash(Value::small_integer(30_000))],
                 ),
                 selector,
             );

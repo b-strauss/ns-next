@@ -191,8 +191,8 @@ pub(crate) enum Step<'gc> {
     /// built, cached and answered (`nested::after_clause`).
     SuperclassClause(Box<NestedClassCreation<'gc>>),
     /// Activate `method`, as `Step::Method` with owned arguments does, and
-    /// do `then` with its value: how a native loop sends `value` or
-    /// `value:` to an action that is no block and carries on afterwards
+    /// do `then` with its value: how a future's forcing sends `value` to a
+    /// computation that is no block and carries on afterwards
     /// (`Mutator::send_value_then`). Boxed, so that `Step` keeps the size
     /// the hot path was measured at.
     MethodThen(Box<MethodThen<'gc>>),
@@ -1696,7 +1696,16 @@ impl<'gc> Mutator<'gc> {
                 arguments,
                 then,
             } => {
-                let control_flow = matches!(arguments, StepArguments::ControlFlow);
+                // A block a control-flow step activates, or one a
+                // `SendInlinable` sends `value` -- the reference lowering's
+                // loop (`compiler::reference`'s `while_loop`); no other
+                // decision about an inlinable send answers a block with the
+                // send's own arguments.
+                let control_flow = match arguments {
+                    StepArguments::ControlFlow => true,
+                    StepArguments::Send => inlinable,
+                    StepArguments::Owned(_) => false,
+                };
                 let slots = on_slots(&arguments);
                 let owned = arguments.owned();
                 let arguments = arguments.window(send_arguments, &owned);
@@ -1997,10 +2006,8 @@ impl<'gc> Mutator<'gc> {
     /// waits for instead of a Rust frame. `then` is the continuation of the
     /// block's activation, which the loop has just popped. It answers the
     /// value for the caller, or another activation to run in the popped
-    /// one's place -- a native loop's next block, or the `valueOf:` that
-    /// runs a body which is no block -- which the loop hands to
-    /// `push_continuation`; or the signal of a non-Boolean condition's
-    /// `NonBooleanReceiver`.
+    /// one's place, which the loop hands to `push_continuation`; or a
+    /// signal.
     pub(crate) fn resume(
         &mut self,
         then: Continuation<'gc>,
@@ -2008,13 +2015,6 @@ impl<'gc> Mutator<'gc> {
     ) -> Result<Step<'gc>, Signal<'gc>> {
         match then {
             Continuation::Deliver => Ok(Step::Value(value)),
-            Continuation::WhileCondition(state) => {
-                crate::builtins::block::after_condition(self, state, value)
-            }
-            Continuation::WhileBody(state) => Ok(crate::builtins::block::after_body(state)),
-            Continuation::DoElement(state) => {
-                Ok(crate::builtins::collections::after_element(self, state))
-            }
             Continuation::NestedClass(creation) => {
                 nested::end_creation(self, &creation);
                 nested::after_clause(self, *creation, value)
@@ -2075,19 +2075,17 @@ impl<'gc> Mutator<'gc> {
 
     /// Pushes the activation a continuation decided (`resume`), in place of
     /// the one just popped; `replaced_counted` is that one's
-    /// `Popped::counted`. The exemption's rule for a native loop lives here
-    /// rather than in the run loop, which only forwards the flag, so a JIT
-    /// driving continuations reaches the same rule: the next block is exempt
-    /// only if the one it replaces was, and only if it too was created by
-    /// the activation below it -- the loop's sender, now the top of the
-    /// stack -- which `push_step` checks. A method is counted whatever it
-    /// replaces.
+    /// `Popped::counted`. The rule lives here rather than in the run loop,
+    /// which only forwards the flag: a block is exempt only if the
+    /// activation it replaces was, and only if it too was created by the
+    /// activation below it, which `push_step` checks. A method is counted
+    /// whatever it replaces. No continuation replaces an exempt activation
+    /// any more -- every exempt one delivers -- so everything pushed here
+    /// is counted, and the flag is open work (`docs/OPEN-WORK.md`).
     ///
     /// It takes the flag rather than the whole `Popped`, whose continuation
     /// `resume` has consumed by then: a version that took the `Popped` and
-    /// pushed inside `resume` measured about 1.3% slower on a native
-    /// `whileTrue:` loop, and this one level with the rule inline in the
-    /// loop.
+    /// pushed inside `resume` measured about 1.3% slower.
     pub(crate) fn push_continuation(
         &mut self,
         step: Step<'gc>,
@@ -2102,9 +2100,8 @@ impl<'gc> Mutator<'gc> {
         self.push_step(step, Arguments::NONE, sender, !replaced_counted)
     }
 
-    /// The step that sends `value` to `action`, or `value:` with
-    /// `argument`, through `Closure`'s private `valueOf:` or
-    /// `valueOf:with:` activated on `receiver`, and does `then` with the
+    /// The step that sends `value` to `action`, through `Closure`'s
+    /// private `valueOf:` activated on `receiver`, and does `then` with the
     /// answer. A send's decision may be a method, a block, a value or an
     /// instantiation of several activations; the helper's own return is
     /// the one place to hang `then` on for all of them.
@@ -2112,24 +2109,19 @@ impl<'gc> Mutator<'gc> {
         &mut self,
         receiver: Value<'gc>,
         action: Value<'gc>,
-        argument: Option<Value<'gc>>,
         then: Continuation<'gc>,
     ) -> Step<'gc> {
         let closure_class = self.builtin_class(BuiltinClass::Closure);
-        let (selector, arguments) = match argument {
-            None => (Symbol::VALUE_OF, vec![action]),
-            Some(argument) => (Symbol::VALUE_OF_WITH, vec![action, argument]),
-        };
         let method = self
             .heap
             .class_application(closure_class)
-            .and_then(|application| application.mixin.compiled_method(selector).cloned())
-            .expect("internal: Kernel.ns's Closure declares valueOf: and valueOf:with:");
+            .and_then(|application| application.mixin.compiled_method(Symbol::VALUE_OF).cloned())
+            .expect("internal: Kernel.ns's Closure declares valueOf:");
         Step::MethodThen(Box::new(MethodThen {
             receiver,
             method,
             defining_class: closure_class,
-            arguments,
+            arguments: vec![action],
             then,
         }))
     }
@@ -3324,50 +3316,6 @@ mod tests {
                 Ok(Step::Value(answer)) if answer.as_small_integer() == Some(7) => {}
                 _ => panic!("a native leaf is decided as its value"),
             }
-        });
-    }
-
-    /// `do:` is decided as the activation of its block for the first
-    /// element, with the rest of the loop in the continuation: nothing runs,
-    /// and nothing is pushed (`docs/design/execution.md`, "No re-entry from
-    /// Rust").
-    #[test]
-    fn deciding_do_answers_its_block_for_the_first_element() {
-        let source = indoc! {"
-            class X = Object new (
-            ) (
-              public items = ( ^{10. 20. 30} )
-              public echo = ( ^[:e | e] )
-            ) : ()
-        "};
-        let (mut interpreter, class) = load(source);
-        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-        let items = expect_ok(
-            interpreter.send(&instance, Symbol::intern("items"), &[]),
-            "items",
-        );
-        let echo = expect_ok(
-            interpreter.send(&instance, Symbol::intern("echo"), &[]),
-            "echo",
-        );
-        interpreter.enter(|mutator| {
-            let (items, echo) = (mutator.fetch(&items), mutator.fetch(&echo));
-            match mutator.decide_send(items, Symbol::intern("do:"), Arguments::Values(&[echo].as_slice())) {
-                Ok(Step::Block {
-                    arguments: StepArguments::Owned(arguments),
-                    then: Continuation::DoElement(state),
-                    ..
-                }) => {
-                    assert!(
-                        matches!(arguments.as_slice(), [element] if element.as_small_integer() == Some(10)),
-                        "the first element"
-                    );
-                    assert_eq!(state.next, 1, "the second element is next");
-                    assert_eq!(state.size, 3, "the size read when the walk began");
-                }
-                _ => panic!("`do:` is decided as its block's first activation"),
-            }
-            assert_eq!(mutator.heap().activation_depth(), 0, "nothing was pushed");
         });
     }
 

@@ -1,0 +1,24 @@
+/// An instance of a user subclass of Array holds no array payload, so
+/// Array's `do:` reads no size for it and sends it on to Collection's
+/// `do:`, which signals its subclass responsibility; it never counts
+/// through `size`, which for such an instance would come back to `do:`.
+class APayloadLessArraySubclassInstanceFallsToCollectionDo = Object new () (
+  class Bag = Array new () ()
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    [
+      Bag new do: [:each |
+        transcript
+            show: 'element';
+            newLine.
+      ].
+    ] on: Error do: [:error |
+      transcript
+          show: error messageText;
+          newLine.
+    ].
+  )
+)

@@ -23,14 +23,14 @@ fn a_golden_runs_under_the_reference_lowering() {
 /// inlining emits. Read through `ns-runtime`'s inspector, the listing
 /// `ns-next-analyzer inspect --full` prints, because a test starts only its
 /// own crate's binary.
-fn has_branch(artifact: &std::path::Path) -> bool {
+fn has_closure(artifact: &std::path::Path) -> bool {
     let bytes = std::fs::read(artifact).expect("read the artifact");
     let report = match ns_runtime::image::inspect::inspect(&bytes) {
         Ok(report) => report,
         Err(error) => panic!("{error}"),
     };
     let listing = ns_runtime::image::inspect::render_full(&report);
-    listing.contains("Jump") || listing.contains("Branch")
+    listing.contains("MakeClosure")
 }
 
 /// The harnesses compare the two lowerings through `run` and `build`. A
@@ -57,9 +57,9 @@ fn build_compiles_with_the_lowering_it_is_given() {
         "reference".as_ref(),
     ]);
     assert!(ok, "{error}");
-    assert!(has_branch(&optimized), "the optimized loop is inlined");
+    assert!(!has_closure(&optimized), "the optimized loop is inlined");
     assert!(
-        !has_branch(&reference),
-        "the reference lowering inlines nothing"
+        has_closure(&reference),
+        "the reference lowering runs the loop's blocks as closures"
     );
 }

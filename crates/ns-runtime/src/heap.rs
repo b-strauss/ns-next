@@ -624,8 +624,9 @@ impl FrameHeaderWords {
 pub struct Popped<'gc> {
     /// The popped activation's continuation.
     pub then: Continuation<'gc>,
-    /// Whether the popped activation counted against the depth limit: the
-    /// next block of a native loop may be exempt only if this one was.
+    /// Whether the popped activation counted against the depth limit: what
+    /// its continuation pushes in its place may be exempt only if this one
+    /// was (`Mutator::push_continuation`).
     pub counted: bool,
 }
 
@@ -1351,8 +1352,9 @@ impl<'gc> Continuations<'gc> {
     }
 
     /// Stores `continuation`, never a `Deliver`, in the smallest free row.
-    /// A native loop over a block that is not inlined takes a row and
-    /// gives it back on every step, and its row is the last one, so the
+    /// An activation with a continuation of its own -- a future's
+    /// computation, a nested class's clause -- takes a row and gives it
+    /// back when it returns, and its row is usually the last one, so the
     /// common case appends to a table with no free row and is inline in
     /// the push; only a table with holes takes the free list's way.
     #[inline(always)]
@@ -1391,7 +1393,7 @@ impl<'gc> Continuations<'gc> {
 
     /// Takes the continuation out of `row` and frees the row. The last row
     /// is never free -- trailing free rows are truncated -- so taking it,
-    /// a native loop's every step, pops it without the free list; a row
+    /// the common case, pops it without the free list; a row
     /// below it, or a hole the pop uncovers, takes the free list's way.
     #[inline]
     fn take(&mut self, row: ContinuationRow) -> Continuation<'gc> {
@@ -6655,8 +6657,7 @@ impl<'gc> Heap<'gc> {
                     }
                 }
             }
-            // One value is copied on its own, as one slot is: a native
-            // loop's next block takes one element per push.
+            // One value is copied on its own, as one slot is.
             Arguments::Values(values) => match argument_registers {
                 [] => {}
                 [only] => *only = values[0].word().bits(),

@@ -1,0 +1,3 @@
+stdout = '''
+Collection>>do: is abstract: Bag must implement it
+'''

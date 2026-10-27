@@ -514,11 +514,11 @@ anyway.
 ### No Rust frame is live below a safepoint
 
 Rust enters the run loop only as the host, its outermost caller
-(`Interpreter::run_from_host`). `do:` and the nested-class accessor, which
-once ran Newspeak code in nested runs of the loop, are trampoline steps
-with continuations, as `whileTrue:` is (step 2a, built), and instantiation,
-which did too, is compiled code that runs in the loop like a method
-([execution.md](execution.md), "No re-entry from Rust"). A Rust frame below a
+(`Interpreter::run_from_host`). The nested-class accessor, which once ran
+Newspeak code in a nested run of the loop, is a trampoline step with a
+continuation (step 2a, built); `do:`, which did too, is a Newspeak loop, as
+`whileTrue:` is; and instantiation is compiled code that runs in the loop
+like a method ([execution.md](execution.md), "No re-entry from Rust"). A Rust frame below a
 nested run would hold values across that run's safepoints, and rooting them is
 what Nova's `Scoped` values are for; ns-next removed the frames instead. So at
 every point between two instructions the Rust stack holds the host and the run
@@ -805,10 +805,8 @@ check").
 - The side table of continuations (`Heap`'s `continuations`): each running
   activation's continuation other than `Deliver`, which its stack frame
   names by row (a frame that delivers names none), and the state it
-  carries — a `WhileLoop`'s condition and
-  body, a `DoLoop`'s receiver and action, a `NestedClassCreation`'s
-  enclosing object and declaring class, an `Instantiation`'s instance, levels
-  with their arguments, and phase, an `Unwind`'s target frame and the value or error it carries,
+  carries — a `NestedClassCreation`'s
+  enclosing object and declaring class, an `Unwind`'s target frame and the value or error it carries,
   a `VmErrorSignalled` error's receiver, and a `Future` forcing's future and
   that of every forcing chained behind it, and a `ReturnToSuspended`'s
   suspended sender with the continuation it wraps
@@ -897,11 +895,10 @@ So a closure's handles live in the closure object's own words, and its code,
 which holds no handle, is named by a code id into the heap's table of
 compiled code, shared with the `MakeClosure` instruction that made it; and
 everything else that needs a closure — `FrameKind::Closure` on each of its
-activations, `WhileLoop.condition` and `.body`, a `DoLoop`'s
-`LoopAction::Closure`, `Step::Block` — names the closure object, whose
+activations, `Step::Block` — names the closure object, whose
 captured frame and copied values the tracer then rewrites once, in its
-words. A native loop's state is boxed in its continuation (`Box<WhileLoop>`,
-`Box<DoLoop>`), owned by exactly one activation.
+words. A continuation's state is boxed in it (`Box<NestedClassCreation>`,
+`Box<PendingUnwind>`), owned by exactly one activation.
 
 The inline caches ([dispatch.md](dispatch.md), "3b — The caches") add
 nothing to this list, by design, and are not traced: an entry holds a
@@ -1069,10 +1066,11 @@ was built directly rather than after it.
 
 The heap stores handles at rest and a step sees them branded. Converting each
 payload safely at the boundary — at a push, a pop, an allocation — rebuilds
-it, and a `Box<WhileLoop>`, `Box<DoLoop>` or `Box<NestedClassCreation>`
-can change its lifetime in safe Rust only by reallocating: at every push
-and pop of a stack frame that carries one, which is every iteration of a
-native `whileTrue:` or `do:`. Rejected for that cost, with the user, on
+it, and a boxed continuation such as `Box<NestedClassCreation>` can change
+its lifetime in safe Rust only by reallocating: at every push and pop of a
+stack frame that carries one, which, when this was decided, was every
+iteration of a `whileTrue:` or `do:` over blocks the compiler did not
+inline, both then Rust loops. Rejected for that cost, with the user, on
 2026-09-13. Nothing is converted at a push, a pop or
 an allocation: the whole step state is handed over as it rests.
 

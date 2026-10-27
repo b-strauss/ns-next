@@ -1,0 +1,26 @@
+/// Loops the compiler does not inline: the condition and the body are
+/// blocks held in slots, so every `whileTrue:` and `whileFalse:` is a send
+/// to `Closure`'s method, whose own loop sends them `value`.
+class BenchWhile = Object new (
+  |
+    count ::= 0.
+    sum ::= 0.
+    condition = [count < 200000].
+    body = [
+      sum:: sum + count.
+      count:: count + 1.
+    ].
+    stop = [count >= 400000].
+  |
+) (
+  public main: p args: a = (
+    condition whileTrue: body.
+    p transcript
+        show: sum printString;
+        newLine.
+    stop whileFalse: body.
+    p transcript
+        show: sum printString;
+        newLine.
+  )
+)

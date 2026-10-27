@@ -56,7 +56,7 @@ first.
 | Four clippy lints: every lint exception states its reason, every unsafe block its safety, and every narrowing cast outside tests the bound that makes it exact | Complete | 2026-10-26 | [clippy-lints](superpowers/plans/2026-10-26-1227-clippy-lints.md) |
 | Road step 7c — the deoptimization contract and the protocol between interpreted and compiled frames, written into `execution.md` for road steps 8 and 9 to build to | Complete | 2026-10-27 | — |
 | The handler search as a leaf: `activationNextHandler:` walks the frames and reifies only the `on:do:` activation it answers | Complete | 2026-10-27 | [handler-search-leaf](superpowers/plans/2026-10-27-0126-handler-search-leaf.md) |
-| Between road steps 7 and 8 — real Newspeak bodies for `whileTrue:`, `whileFalse:` and `do:` | Not started | — | — |
+| Between road steps 7 and 8 — real Newspeak bodies for `whileTrue:`, `whileFalse:` and `Array>>do:`, and a loop in the reference lowering | Complete | 2026-10-27 | [loop-bodies](superpowers/plans/2026-10-27-1529-loop-bodies.md) |
 | Road step 8 (M5) — a baseline JIT | Not started | — | — |
 | Road step 9 (M6) — an optimizing JIT | Not started | — | — |
 
@@ -887,13 +887,13 @@ show").
    commit reported the known gap. `Heap::activation_is_live` is the one
    question a popped handle may be asked, and the gap is reported as before,
    pinned under both lowerings.
-4. **Blocks as steps.** `Step::Block` carries a `Continuation` — `Deliver`,
-   `Truthy`, `WhileCondition` or `WhileBody` — that rides on the block's stack
-   entry and is applied, through `Interpreter::resume`, when the loop pops the
-   block, so a native loop's condition and body replace each other on the
-   stack. `value` and the control-flow natives answer steps;
-   `invoke_closure` remains only for `do:`. A non-Boolean loop condition's
-   error is raised by the loop's continuation instead of re-entering it.
+4. **Blocks as steps.** `Step::Block` carried a `Continuation` — `Deliver`,
+   `Truthy`, `WhileCondition` or `WhileBody` — that rode on the block's stack
+   entry and was applied, through `Interpreter::resume`, when the loop popped the
+   block, so a native loop's condition and body replaced each other on the
+   stack. `value` and the control-flow natives answered steps;
+   `invoke_closure` remained only for `do:`. A non-Boolean loop condition's
+   error was raised by the loop's continuation instead of re-entering it.
    Three golden outcomes were added first and passed before the change, pinning
    the behaviour it had to keep.
 5. **The two bounds.** `MAX_ACTIVATION_DEPTH` and `MAX_NATIVE_DEPTH`;
@@ -928,7 +928,7 @@ show").
    counted one are bounded by that nesting, which nothing capped in an
    artifact, and dropping a deep chain of decoded bodies overflowed the stack
    ([image-format.md](design/image-format.md), "Verification"). The run loop
-   no longer decides a native loop's exemption itself
+   stopped deciding a native loop's exemption itself
    (`Interpreter::push_continuation`). New tests pin the iterative superclass
    walk under instantiation, the crafted artifact with a reified sender, and
    the continuations at a run's floor.
@@ -977,7 +977,7 @@ Plan: [ns-next-no-reentry](superpowers/plans/2026-09-13-0149-ns-next-no-reentry.
 Step 2a, the first part of the root discipline. Rust enters the run loop only
 as the host, its outermost caller: `do:`, instantiation and the nested-class
 accessor, the three paths that ran Newspeak code in nested runs of the loop,
-are trampoline steps, so no Rust frame is live below a safepoint — the ground
+became trampoline steps, so no Rust frame is live below a safepoint — the ground
 2b and 2c stand on ([execution.md](design/execution.md), "No re-entry from
 Rust"; [memory.md](design/memory.md), "No Rust frame is live below a
 safepoint"). The design was settled and recorded in the design documents
@@ -998,9 +998,9 @@ safepoint"). The design was settled and recorded in the design documents
 
 **What changed**, in the plan's order:
 
-1. **`do:` as a step.** `do:` answers its block for the first element with
-   `Continuation::DoElement`, whose `DoLoop` carries the snapshot and the next
-   index, and `builtins::collections::after_element` activates the block for
+1. **`do:` as a step.** `do:` answered its block for the first element with
+   `Continuation::DoElement`, whose `DoLoop` carried the snapshot and the next
+   index, and `builtins::collections::after_element` activated the block for
    each next element. **A deviation:** the plan routed `do:` through a guarded
    arm in `dispatch_native`; `collections::dispatch_array` and
    `dispatch_ordered_collection` check for `do:` themselves and answer its step,
@@ -1149,7 +1149,7 @@ collector"). The step's commits follow the plan (`0cfe9dd`) on
    safepoints: the pacing a collector's allocation-driven trigger has, where
    the prior art's fixed intervals would take coverage from small tests.
 2. **`ClosureData` is inline in the closure object**, and everything else that
-   needs a closure names the object; the native loops' state is a
+   needs a closure names the object; the native loops' state was a
    `Box<WhileLoop>` owned by one stack entry. A closure frame record names its
    closure object: `FRAME_CLOSURE` (1) is retired for `FRAME_CLOSURE_OBJECT`
    (6), and a record naming a non-closure is `NotAClosureReference`.
@@ -1168,7 +1168,7 @@ collector"). The step's commits follow the plan (`0cfe9dd`) on
 **What changed**, in the plan's order:
 
 1. **The closure split** (`f842f6f`). `FrameKind::Closure`,
-   `WhileLoop.condition`, `DoLoop.block` and `Step::Block` name the closure
+   `WhileLoop.condition`, `DoLoop.block` and `Step::Block` named the closure
    object; the image format's closure frame names it by object id.
 2. **The root table and the rooted host API** (`cfa87b0`, `03100f7`,
    `a49139a`). `Root`, `Interpreter::stash`/`fetch`, and `send`,
@@ -2785,14 +2785,15 @@ rows of `MIRROR`, `BooleanPrimitive`, `builtins/boolean.rs` and
 `Continuation::Truthy` are gone ([core-library.md](design/core-library.md),
 "`True` and `False` are quick methods";
 [plan](superpowers/plans/2026-09-24-2320-ns-next-boolean-quick-methods.md)).
-This is the Boolean half of "Planned: real bodies for control flow and
-`do:`", moved ahead of the rest; `whileTrue:`, `whileFalse:`, `do:` and
-`value` stay leaves.
+This is the Boolean half of "Real bodies for control flow and `do:`"
+([core-library.md](design/core-library.md)), built ahead of the rest;
+`whileTrue:`, `whileFalse:` and `do:` stayed leaves until those bodies
+were built (2026-10-27), and `value` is one still.
 
 Four decisions, taken with the user on 2026-09-24:
 
 - **The Boolean family moves now**, the loops later, as decision 7 of the
-  kernel move still says for them.
+  kernel move said for them.
 - **Quick methods keep the depth count agreeing.** The kernel compiler runs
   a body that is `^true`, `^false`, `^nil`, `^<parameter>` or
   `^<parameter> value` without an activation (`MethodFastPath::Constant`,
@@ -4526,9 +4527,10 @@ Soup's core API. The closure class is `Closure`, as §5.1.8 names it, and
 `Message>>sendTo:` replaces `sentTo:`. `Array>>at:put:` answers the value it
 stored, and `Array>>do:` reads each element as it goes and sends `value:` to
 whatever it is given. `whileTrue:` and `whileFalse:` send `value` to a body
-that is no block, through the trampoline step `Step::MethodThen` and
-`Closure>>valueOf:` and `valueOf:with:`, so the send runs under both
-lowerings with the same depth count.
+that is no block. The step did both in the native loops, through the
+trampoline step `Step::MethodThen` and `Closure>>valueOf:` and
+`valueOf:with:`, so the send ran under both lowerings with the same depth
+count; the loops' Newspeak bodies (2026-10-27) keep the behaviour.
 
 - `c2caeb42` -- the closure class is `Closure`.
 - `cbc007d0` -- `Message>>sentTo:` becomes `sendTo:`.
@@ -4555,8 +4557,9 @@ it was signalled for in a public slot and keeping today's text as its
 `messageText`. The Rust site that finds an error names its class through
 `ErrorClass`, and `Mutator::signal_vm_error` builds it; a loop's condition
 that answers no Boolean signals `NonBooleanReceiver` through the new
-instruction `SignalNonBoolean` (tag 40) or the native loop's continuation,
-and `mustBeBoolean` is gone. `Object` gains `yourself` and `identityHash`,
+instruction `SignalNonBoolean` (tag 40) -- and, while the loops were
+leaves, through the native loop's continuation --, and `mustBeBoolean` is
+gone. `Object` gains `yourself` and `identityHash`,
 an `isKindOf…` question nobody declared answers `false`, and every core
 class answers its own. `Proxy` is public; the runtime's future is the
 private `FutureImplementation` below it (tag 30), and the public `Future`'s
@@ -6027,8 +6030,8 @@ Staged so that each part removed one field that was not a word while the
 vectors still existed: a
 frame names its code by its `CodeId`, its kind is a copyable view whose
 tag and argument count a flags word packs, and a continuation other than
-`Deliver` is a row of a side table of the heap's, native loops keeping
-theirs. Every word of a frame is a valid tagged value, so the collector
+`Deliver` is a row of a side table of the heap's, the native loops of the
+time keeping theirs. Every word of a frame is a valid tagged value, so the collector
 traces every word of the stack with no stack map, as Primordial Soup
 scans its stack; an `ActivationReference` is the frame's word offset,
 and a register access one bounds check against the committed end. The
@@ -6314,3 +6317,53 @@ fingerprint alone moving with the changed core library.
 
 What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): real
 Newspeak bodies for the loops and `do:`, next.
+
+## Real Newspeak bodies for the loops and `do:` (2026-10-27)
+
+Decided with the user on 2026-10-27, the step between road steps 7 and 8
+([core-library.md](design/core-library.md), "Real bodies for control flow
+and `do:`"). `Closure>>whileTrue:` and `whileFalse:` are
+`^[self value] whileTrue: [body value]` and its twin, the loop the
+compiler inlines, and `Array>>do:` reads its size through the
+`collectionSize:` leaf -- so an instance of a user subclass of `Array`
+with no elements goes on to `Collection>>do:` -- and walks it with an
+inlined `whileTrue:` sending `at:` and `value:`, one activation per
+element. The mirror rows `block:whileTrue:ifFail:`,
+`block:whileFalse:ifFail:` and `collection:do:ifFail:`, the native loops
+`WhileLoop` and `DoLoop`, `LoopAction`, the continuations
+`WhileCondition`, `WhileBody` and `DoElement`, and `Closure>>valueOf:with:`
+are gone; `Closure>>valueOf:` stays, for a future's forcing. The reference
+lowering, which inlined nothing, sent `Closure>>whileTrue:`'s own loop to
+itself until the depth limit, so it now lowers a `whileTrue:` or
+`whileFalse:` over two block literals as a naive loop -- real closures,
+made once, a `SendInlinable` of `value` to each per turn, the guard and a
+back edge -- whose block activations are exempt from the depth count as a
+control-flow step's are, so both lowerings still overflow at the same
+level ([compiler.md](design/compiler.md), "What it emits", "How the limit
+counts"). A loop over blocks held in variables now takes one counted
+`Closure>>whileTrue:` activation under both lowerings, so
+`tests/trampoline.rs`'s recursion through the natives runs 30,000 levels
+instead of 40,000. No golden, `run-corpus` output or benchmark outcome
+changed; five goldens were added -- a loop receiver that takes a
+parameter, a `whileFalse:` condition that goes non-Boolean, a payload-less
+`Array` subclass sent `do:`, `do:` on an empty array, and a recursion
+through a literal loop under both lowerings -- and the golden image
+fixture was regenerated, its fingerprint alone moving with the changed
+core library. Before a JIT the loops cost: `bench_do.ns` is 61% slower,
+Bounce 17%, CD 3.3%, the geometric mean over twenty-three sources 4.8%,
+and the two leaf-based alternatives measured slower still. The
+measurement is [execution.md](design/execution.md),
+"What Newspeak loop bodies moved".
+
+- `e5ac62ac` -- the plan.
+- `6da36a2a` -- `whileTrue:` and `whileFalse:` in Newspeak, and the
+  reference lowering's loop.
+- `ab0bff29` -- `Array>>do:` in Newspeak.
+- `4d705b6e` -- the documents.
+- `38aea95f` -- `benchmarks/micro/bench_while.ns`.
+- `4f736bc7` -- the measurement.
+- `bc3f2843` -- the final review's findings.
+
+What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the depth
+flag a continuation's push still takes, dead now, to be removed and
+measured; road step 8, the baseline JIT, next.

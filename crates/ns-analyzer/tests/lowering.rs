@@ -4,15 +4,16 @@
 mod common;
 use common::{build_image, golden, ns_next_analyzer, ScratchDirectory};
 
-/// Only control-flow inlining emits a branch, so a listing under the
-/// reference lowering has none, and the optimized one of the same loop does.
+/// The optimized lowering inlines a loop's blocks; the reference lowering
+/// runs them as real closures, each sent `value` by its loop.
 #[test]
-fn the_reference_lowering_inlines_nothing() {
+fn the_reference_lowering_runs_a_loops_blocks_as_closures() {
     let source = golden("language/control-flow/while_loop");
     let (ok, optimized, error) =
         ns_next_analyzer(&["disasm".as_ref(), source.as_os_str(), "main:args:".as_ref()]);
     assert!(ok, "{error}");
     assert!(optimized.contains("Jump"), "{optimized}");
+    assert!(!optimized.contains("MakeClosure"), "{optimized}");
     let (ok, reference, error) = ns_next_analyzer(&[
         "disasm".as_ref(),
         source.as_os_str(),
@@ -21,9 +22,10 @@ fn the_reference_lowering_inlines_nothing() {
         "reference".as_ref(),
     ]);
     assert!(ok, "{error}");
-    assert!(!reference.contains("Jump"), "{reference}");
-    assert!(!reference.contains("Branch"), "{reference}");
-    assert!(reference.contains("#whileTrue:"), "{reference}");
+    assert!(reference.contains("MakeClosure"), "{reference}");
+    assert!(reference.contains("SendInlinable"), "{reference}");
+    assert!(reference.contains("#value"), "{reference}");
+    assert!(!reference.contains("#whileTrue:"), "{reference}");
 }
 
 /// An artifact carries the code it was built with, so asking `disasm` to

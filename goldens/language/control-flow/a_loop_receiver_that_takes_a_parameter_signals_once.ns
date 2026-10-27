@@ -1,0 +1,28 @@
+/// A loop receiver held in a variable that declares a parameter signals
+/// the arity `ArgumentError` of `value` once, before any body runs, under
+/// `whileTrue:` and `whileFalse:` alike: the library's loop sends the
+/// receiver `value` as the inlined loop would evaluate it
+/// (docs/design/core-library.md, "Real bodies for control flow and `do:`").
+class ALoopReceiverThatTakesAParameterSignalsOnce = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      condition = [:each | true].
+      body = [
+        transcript
+            show: 'body';
+            newLine.
+      ].
+    |
+    [condition whileTrue: body] on: Error do: [:error |
+      transcript
+          show: error messageText;
+          newLine.
+    ].
+    [condition whileFalse: body] on: Error do: [:error |
+      transcript
+          show: error messageText;
+          newLine.
+    ].
+  )
+)

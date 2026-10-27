@@ -1135,10 +1135,13 @@ mod tests {
         // `cull:` tests its own arity, which no quick method does; the quick
         // methods of the nil protocol do what it says without sending it.
         ("Closure", "cull:"),
-        // A native loop's send of `value:` to an action that is no block,
-        // pushed as a method so that its return carries the loop on
-        // (`Mutator::send_value_then`): a send, no leaf.
-        ("Closure", "valueOf:with:"),
+        // A loop is Newspeak, its sends visible to the JIT tiers: the
+        // inlined loop of `[self value] whileTrue: [body value]`.
+        ("Closure", "whileTrue:"),
+        ("Closure", "whileFalse:"),
+        // A walk in Newspeak, over the size its leaf reads: a loop sending
+        // `at:` and `value:`.
+        ("Array", "do:"),
         // Iteration is Newspeak, after Primordial Soup's `Number`: a loop that
         // sends `<=`, `>=` and `+` to its receiver, which no leaf could do.
         ("Number", "to:do:"),
@@ -1735,8 +1738,8 @@ mod tests {
             "valueOnUnwind:",
             MethodFastPath::ValueOfParameter(0),
         ),
-        // Quick in shape too, though only a native loop activates it, pushing
-        // it as a method so that its return carries the loop on
+        // Quick in shape too, though only a future's forcing activates it,
+        // pushing it as a method so that its return carries the forcing on
         // (`Mutator::send_value_then`).
         (
             BuiltinClass::Closure,

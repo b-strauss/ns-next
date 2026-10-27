@@ -1,10 +1,9 @@
-//! Three of the control-flow steps behind the compiler's inlined forms
+//! Three of the methods behind the compiler's inlined forms
 //! (`Closure>>whileTrue:`, `Closure>>whileFalse:`, `True>>ifFalse:ifTrue:`).
-//! Every block reaches
-//! the send through a variable: the compiler inlines only literal blocks, so
-//! a variable is what makes these the natives running rather than the
-//! inlined form, which the compiler's own tests and the goldens under
-//! `goldens/language/control-flow/` covers.
+//! Every block reaches the send through a variable: the compiler inlines
+//! only literal blocks, so a variable is what makes these methods run
+//! rather than the inlined form, which the compiler's own tests and the
+//! goldens under `goldens/language/control-flow/` cover.
 
 use indoc::{formatdoc, indoc};
 use std::path::PathBuf;
