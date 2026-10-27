@@ -13,15 +13,21 @@
 //! stack access is the index's. The heap's young allocations bump a cursor
 //! the reservation holds (`Reservation::bump`), one comparison against a
 //! limit inside that prefix.
+//!
+//! The JIT's machine code lives in a `CodeZone`, mapped twice, one view
+//! executable and one writable, and written only through its `CodeWriter`
+//! (docs/design/execution.md, "Executable memory").
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(clippy::undocumented_unsafe_blocks)]
 
+mod code_zone;
 mod page_map;
 mod platform;
 
 use std::ops::Range;
 use std::ptr::NonNull;
 
+pub use code_zone::{CodeOffset, CodeWriter, CodeZone};
 use page_map::PageMap;
 
 /// How a committed page range may be accessed.
@@ -44,6 +50,8 @@ pub enum Operation {
     Commit,
     Decommit,
     Protect,
+    /// Creating and mapping a code zone's views.
+    Map,
 }
 
 /// Why an operation on a reservation did not happen. Nothing here panics:
@@ -76,6 +84,7 @@ impl std::fmt::Display for MemoryError {
                     Operation::Commit => "commit",
                     Operation::Decommit => "decommit",
                     Operation::Protect => "protect",
+                    Operation::Map => "map",
                 };
                 write!(
                     formatter,

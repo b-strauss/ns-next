@@ -2,14 +2,20 @@
 //! `VirtualProtect` protects -- Strongtalk's `ReservedSpace`/`VirtualSpace`
 //! shape (prior-art/strongtalk/vm/runtime/os_nt.cpp:403-414). Windows accounts
 //! every commit, so a commit the system cannot back fails here as a value.
+//!
+//! The code zone is a pagefile-backed section mapped twice, one view
+//! executable and one writable, so no page is ever writable and executable
+//! at once (docs/design/execution.md, "Executable memory").
 
 use std::ffi::c_void;
 use std::ptr::NonNull;
 
-use windows_sys::Win32::Foundation::GetLastError;
+use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::System::Memory::{
-    VirtualAlloc, VirtualFree, VirtualProtect, MEM_COMMIT, MEM_DECOMMIT, MEM_RELEASE, MEM_RESERVE,
-    PAGE_NOACCESS, PAGE_PROTECTION_FLAGS, PAGE_READWRITE,
+    CreateFileMappingW, MapViewOfFile, UnmapViewOfFile, VirtualAlloc, VirtualFree, VirtualProtect,
+    FILE_MAP, FILE_MAP_EXECUTE, FILE_MAP_READ, FILE_MAP_WRITE, MEMORY_MAPPED_VIEW_ADDRESS,
+    MEM_COMMIT, MEM_DECOMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE,
+    PAGE_NOACCESS, PAGE_PROTECTION_FLAGS, PAGE_READWRITE, SEC_RESERVE,
 };
 use windows_sys::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
 
@@ -105,3 +111,182 @@ pub(crate) unsafe fn release(address: *mut u8, _bytes: usize) {
         last_error()
     );
 }
+
+/// How the code zone's executable view may be accessed. Neither ever
+/// includes write, which is what keeps a stray store from rewriting code
+/// that runs.
+const EXECUTABLE_VIEW_ACCESS: FILE_MAP = FILE_MAP_READ | FILE_MAP_EXECUTE;
+const EXECUTABLE_VIEW_PROTECTION: PAGE_PROTECTION_FLAGS = PAGE_EXECUTE_READ;
+
+/// The protection the executable view is mapped and committed with
+/// includes write.
+#[cfg(test)]
+pub(crate) fn executable_view_is_writable() -> bool {
+    use windows_sys::Win32::System::Memory::{PAGE_EXECUTE_WRITECOPY, PAGE_WRITECOPY};
+    let writable_protections = [
+        PAGE_READWRITE,
+        PAGE_WRITECOPY,
+        PAGE_EXECUTE_READWRITE,
+        PAGE_EXECUTE_WRITECOPY,
+    ];
+    EXECUTABLE_VIEW_ACCESS & FILE_MAP_WRITE != 0
+        || writable_protections.contains(&EXECUTABLE_VIEW_PROTECTION)
+}
+
+/// The two views of one code zone. The section itself needs no handle: the
+/// views keep it alive, and unmapping both releases it.
+pub(crate) struct CodeMapping {
+    pub(crate) executable: NonNull<u8>,
+    pub(crate) writable: NonNull<u8>,
+}
+
+/// # Safety
+/// None beyond the call itself; the answer is two fresh views no one else
+/// holds. `bytes` is a multiple of the reservation granularity.
+pub(crate) unsafe fn map_code(bytes: usize) -> Result<CodeMapping, i32> {
+    let size = u64::try_from(bytes).map_err(|_| 0)?;
+    let high = u32::try_from(size >> 32).map_err(|_| 0)?;
+    let low = u32::try_from(size & u64::from(u32::MAX)).map_err(|_| 0)?;
+    // SAFETY: a pagefile-backed, unnamed section touches no memory the
+    // program owns. `SEC_RESERVE` reserves its pages without committing
+    // them, so a zone commits only what code fills; the section's maximum
+    // protection must admit both views.
+    let section = unsafe {
+        CreateFileMappingW(
+            INVALID_HANDLE_VALUE,
+            std::ptr::null(),
+            PAGE_EXECUTE_READWRITE | SEC_RESERVE,
+            high,
+            low,
+            std::ptr::null(),
+        )
+    };
+    if section.is_null() {
+        return Err(last_error());
+    }
+    let map = |access: FILE_MAP| {
+        // SAFETY: `section` is the live section just created, `bytes` long.
+        let view = unsafe { MapViewOfFile(section, access, 0, 0, bytes) };
+        NonNull::new(view.Value.cast::<u8>()).ok_or_else(last_error)
+    };
+    let views = map(EXECUTABLE_VIEW_ACCESS).and_then(|executable| match map(FILE_MAP_WRITE) {
+        Ok(writable) => Ok(CodeMapping {
+            executable,
+            writable,
+        }),
+        Err(code) => {
+            // SAFETY: the view was mapped above and nothing refers into it.
+            unsafe { unmap_view(executable) };
+            Err(code)
+        }
+    });
+    // SAFETY: each view holds its own reference to the section, so closing
+    // the handle now frees it when the last view goes.
+    unsafe { CloseHandle(section) };
+    views
+}
+
+/// # Safety
+/// `view` is the base of a view this crate mapped, and nothing refers into
+/// it.
+unsafe fn unmap_view(view: NonNull<u8>) {
+    // SAFETY: the caller guarantees the view is ours and no longer used.
+    let answer = unsafe {
+        UnmapViewOfFile(MEMORY_MAPPED_VIEW_ADDRESS {
+            Value: view.as_ptr().cast::<c_void>(),
+        })
+    };
+    debug_assert!(answer != 0, "UnmapViewOfFile failed: {}", last_error());
+}
+
+/// # Safety
+/// `offset..offset + bytes` lies inside the mapping's zone and is
+/// page-aligned, and no reference into it is alive.
+pub(crate) unsafe fn commit_code(
+    mapping: &CodeMapping,
+    offset: usize,
+    bytes: usize,
+) -> Result<(), i32> {
+    // SAFETY: the caller guarantees the range is inside the views; committing
+    // through one view commits the section's pages behind both, and keeps
+    // the contents of pages committed before.
+    let answer = unsafe {
+        VirtualAlloc(
+            mapping
+                .writable
+                .as_ptr()
+                .wrapping_add(offset)
+                .cast::<c_void>(),
+            bytes,
+            MEM_COMMIT,
+            PAGE_READWRITE,
+        )
+    };
+    if answer.is_null() {
+        return Err(last_error());
+    }
+    let mut previous: PAGE_PROTECTION_FLAGS = 0;
+    // SAFETY: the same pages, now committed, through the executable view;
+    // the protection names read and execute only.
+    let protected = unsafe {
+        VirtualProtect(
+            mapping
+                .executable
+                .as_ptr()
+                .wrapping_add(offset)
+                .cast::<c_void>(),
+            bytes,
+            EXECUTABLE_VIEW_PROTECTION,
+            &mut previous,
+        )
+    };
+    if protected == 0 {
+        Err(last_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// # Safety
+/// `mapping` is a live mapping this crate made, and nothing refers into it.
+pub(crate) unsafe fn unmap_code(mapping: &CodeMapping, _bytes: usize) {
+    for view in [mapping.executable, mapping.writable] {
+        // SAFETY: the caller guarantees the view is ours and no longer used.
+        unsafe { unmap_view(view) };
+    }
+}
+
+/// Nothing: the two views are separate addresses, so no thread switches
+/// between writing and executing.
+pub(crate) fn begin_code_write() {}
+
+/// As `begin_code_write`.
+pub(crate) fn end_code_write() {}
+
+/// Makes code just written through the writable view visible to the
+/// instruction fetch at `address`, its executable address. x64 keeps its
+/// instruction cache coherent with stores, so there it does nothing.
+///
+/// # Safety
+/// `address..address + bytes` lies inside a live executable view.
+#[cfg(target_arch = "aarch64")]
+pub(crate) unsafe fn flush_instruction_cache(address: *const u8, bytes: usize) {
+    use windows_sys::Win32::System::Diagnostics::Debug::FlushInstructionCache;
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    // SAFETY: the caller guarantees the range is mapped; flushing reads
+    // nothing and writes nothing the program owns.
+    let answer =
+        unsafe { FlushInstructionCache(GetCurrentProcess(), address.cast::<c_void>(), bytes) };
+    debug_assert!(
+        answer != 0,
+        "FlushInstructionCache failed: {}",
+        last_error()
+    );
+}
+
+/// As above: x64 needs no flush.
+///
+/// # Safety
+/// None.
+#[cfg(not(target_arch = "aarch64"))]
+pub(crate) unsafe fn flush_instruction_cache(_address: *const u8, _bytes: usize) {}
