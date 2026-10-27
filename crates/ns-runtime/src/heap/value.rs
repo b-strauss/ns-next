@@ -98,6 +98,21 @@ impl Word {
     #[cfg(debug_assertions)]
     pub(super) const DEAD_REGISTER: Word = Word((0x5EAD_5EAD << TAG_BITS) | DEAD_REGISTER_TAG);
 
+    /// `DEAD_REGISTER`'s bits, which machine code compares a loaded
+    /// register with, so that a compiled read of a dead register is
+    /// refused as the interpreter's is (`jit::macro_assembler`'s
+    /// `load_frame_register`).
+    #[cfg(debug_assertions)]
+    #[cfg_attr(
+        not(all(test, target_arch = "x86_64")),
+        expect(
+            dead_code,
+            reason = "machine code is emitted on x86_64 alone, and run only by tests until the \
+                      JIT state enters it"
+        )
+    )]
+    pub(crate) const DEAD_REGISTER_BITS: u64 = Word::DEAD_REGISTER.0;
+
     /// Whether this is the debug build's dead register word.
     #[cfg(debug_assertions)]
     pub(super) fn is_dead_register(self) -> bool {

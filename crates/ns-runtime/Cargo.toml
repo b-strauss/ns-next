@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+ns-assembler = { path = "../ns-assembler" }
 ns-memory = { path = "../ns-memory" }
 ns-syntax = { path = "../ns-syntax" }
 

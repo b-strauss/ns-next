@@ -419,6 +419,7 @@ version = "0.1.0"
 dependencies = [
  "indoc",
  "libtest-mimic",
+ "ns-assembler",
  "ns-memory",
  "ns-syntax",
 ]

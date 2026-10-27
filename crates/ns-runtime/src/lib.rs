@@ -18,6 +18,7 @@ pub mod hash;
 pub mod heap;
 pub mod image;
 pub mod interpreter;
+mod jit;
 pub mod mixin;
 pub(crate) mod numeric;
 pub mod platform;
