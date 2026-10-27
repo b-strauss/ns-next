@@ -1,0 +1,21 @@
+class BenchSignal = Object new (
+  |
+    n ::= 0.
+    sum ::= 0.
+  |
+) (
+  descend: depth = (
+    depth = 0 ifTrue: [^Error new signal].
+    ^self descend: depth - 1.
+  )
+
+  public main: p args: a = (
+    [n < 5000] whileTrue: [
+      sum:: sum + ([self descend: 50] on: Error do: [:error | error return: 1]).
+      n:: n + 1.
+    ].
+    p transcript
+        show: sum printString;
+        newLine.
+  )
+)

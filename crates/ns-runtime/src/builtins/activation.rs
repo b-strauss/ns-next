@@ -13,6 +13,7 @@ use std::rc::Rc;
 use crate::builtins::primitive::{ActivationPrimitive, Primitive};
 use crate::bytecode::{CodeKind, UnwindMarker};
 use crate::heap::{ActivationReference, FrameReference};
+use crate::interpreter::unwind::WalkedActivation;
 use crate::interpreter::{unwind, Signal, Step};
 use crate::types::*;
 use crate::{Mutator, Symbol};
@@ -85,8 +86,8 @@ pub(crate) fn execute<'gc>(
         ActivationPrimitive::MethodName => {
             activation_leaf(mutator, SubjectLeaf::MethodName, subject, arguments)
         }
-        ActivationPrimitive::IsActiveHandler => {
-            activation_leaf(mutator, SubjectLeaf::IsActiveHandler, subject, arguments)
+        ActivationPrimitive::NextHandler => {
+            activation_leaf(mutator, SubjectLeaf::NextHandler, subject, arguments)
         }
         ActivationPrimitive::HandlerClass => {
             activation_leaf(mutator, SubjectLeaf::HandlerClass, subject, arguments)
@@ -113,7 +114,7 @@ pub(crate) fn execute<'gc>(
 enum SubjectLeaf {
     Sender,
     MethodName,
-    IsActiveHandler,
+    NextHandler,
     HandlerClass,
     HandlerBlock,
     SetHandlerActive,
@@ -150,16 +151,14 @@ fn activation_leaf<'gc>(
             Some(name) => Value::object(mutator.new_string(name)),
             None => Value::nil(),
         },
-        SubjectLeaf::IsActiveHandler => {
-            let active = running
-                .then(|| {
-                    let (_, _, active_register) = handler_registers(mutator, frame)?;
-                    Some(mutator.heap.frame_local(frame, active_register))
-                })
-                .flatten()
-                .is_some_and(|value| value.as_boolean() == Some(true));
-            Value::boolean(active)
-        }
+        // The running activation the walk starts from, or none for a
+        // returned one, which is the `running` test made once.
+        SubjectLeaf::NextHandler => match WalkedActivation::of_running_frame(&mutator.heap, frame)
+            .and_then(|start| next_active_handler(mutator, start))
+        {
+            Some(handler) => Value::object(mutator.new_activation_object(handler)),
+            None => Value::nil(),
+        },
         SubjectLeaf::HandlerClass => {
             if !running {
                 return None;
@@ -261,6 +260,33 @@ fn method_name<'gc>(mutator: &Mutator<'gc>, frame: FrameReference<'gc>) -> Optio
         mutator.heap.class_display_name(class),
         method.selector
     ))
+}
+
+/// The frame of the first activation outward of `start` -- not `start`
+/// itself -- whose code carries the `on:do:` marker and whose
+/// handler is active, reified only once it is found; `None` past the
+/// run's base. The walk goes on into suspended frames, as `sender` does.
+/// It reifies nothing it passes, so that a signal allocates the same
+/// however many activations lie between it and its handler, and a frame a
+/// compiled tier ran is not turned back into interpreted ones only for
+/// being passed (`docs/design/execution.md`, "Planned: the deoptimization
+/// contract", "Observers").
+fn next_active_handler<'gc>(
+    mutator: &mut Mutator<'gc>,
+    start: WalkedActivation<'gc>,
+) -> Option<FrameReference<'gc>> {
+    let mut walked = start;
+    loop {
+        walked = walked.sender(&mutator.heap)?;
+        if let Some(UnwindMarker::Handler {
+            active_register, ..
+        }) = walked.unwind_marker(&mutator.heap)
+        {
+            if walked.local(&mutator.heap, active_register).as_boolean() == Some(true) {
+                return Some(walked.reified(&mut mutator.heap));
+            }
+        }
+    }
 }
 
 /// The registers of the `on:do:` marker of the code `frame`'s activation

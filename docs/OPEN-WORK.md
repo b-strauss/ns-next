@@ -71,8 +71,9 @@ each step has its entry in [PROGRESS.md](PROGRESS.md), and the whole road is bel
 removing the re-entries moved"; every compared binary, the current tree
 included, is built with the same explicit `RUSTFLAGS` (`CLAUDE.md`,
 "Working in this repository"), and the three builds a side vary the block
-layout inside `vm::run` as that section says. Four of the eight measurement sources are
-goldens under `benchmarks/micro/`; the other four -- `bench_new.ns`,
+layout inside `vm::run` as that section says. Five of the nine measurement sources are
+under `benchmarks/micro/`, `bench_signal.ns` the one an exception's
+handler search moves; the other four -- `bench_new.ns`,
 `bench_new2.ns`, `bench_newarg.ns` and `bench_do.ns` -- are not in the tree
 and must be written out from [execution.md](design/execution.md), "What
 spec-conformant lookup moved", never reconstructed from a prose
@@ -371,20 +372,6 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
 Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 
 ## Planned: performance and representation
-
-- **The handler search and the search for unwind markers walk the
-  frames themselves** (noted with the user on 2026-10-27). The kernel's
-  handler search walks the senders through `activationSender:`, which
-  reifies every activation it passes: a frame object per frame per
-  signal in the interpreter today, and, under the deoptimization
-  contract, the deoptimization of every optimized frame it passes. Two
-  leaves that walk the stack and reify only the activation they answer
-  would remove both, as Cog's `primitiveFindHandlerContext` and
-  `primitiveFindNextUnwindContext` do
-  (`prior-art/opensmalltalk-vm/src/spur64.sista/cointerp.c:84085-84160`).
-  Needed before road step 9; worth measuring on the interpreter before.
-  [execution.md](design/execution.md), "Planned: the deoptimization
-  contract", "Observers".
 
 - **`vm::run` reloads the `Mutator` pointer from its frame** (2026-10-25).
   Since the first stage of road step 7a′ the pointer arrives in a

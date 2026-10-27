@@ -760,10 +760,15 @@ class Kernel vmMirror: mirror = Value (
     /// the handler's included; with none, marks the default reached and
     /// answers what `defaultAction` answers.
     ///
-    /// The search walks the senders from where the last one stopped,
-    /// counting every enabled `on:do:` it passes. When one handles this
-    /// exception, it walks the same range again and collects the
-    /// activations it counted, the handler last, into an array for
+    /// Each step is one `activationNextHandler:`, which answers the next
+    /// enabled `on:do:` activation outward and reifies no activation it
+    /// passes, so a signal allocates the same however deep it is raised
+    /// below its handler.
+    ///
+    /// The search walks from where the last one stopped, counting every
+    /// enabled `on:do:` it meets. When one handles this exception, it
+    /// walks the same range again and collects the activations it
+    /// counted, the handler last, into an array for
     /// `invokeHandlerAt:disabling:`. It cannot collect as it goes
     /// without a growable collection, and a walk after the disabling
     /// could not tell the handlers this search passed from ones
@@ -776,26 +781,24 @@ class Kernel vmMirror: mirror = Value (
         handlers
         index
         count ::= 0.
-        activation ::= vmMirror activationSender: handlerActivation ifFail: [nil].
+        activation ::= vmMirror activationNextHandler: handlerActivation ifFail: [nil].
       |
       [activation isNil] whileFalse: [
-        (vmMirror activationIsActiveHandler: activation ifFail: [false]) ifTrue: [
-          count:: count + 1.
-          (self isHandledAt: activation) ifTrue: [
-            handlers:: outer Kernel Array new: count.
-            index:: 0.
-            activation:: vmMirror activationSender: handlerActivation ifFail: [nil].
-            [index < count] whileTrue: [
-              (vmMirror activationIsActiveHandler: activation ifFail: [false]) ifTrue: [
-                index:: index + 1.
-                handlers at: index put: activation.
-              ].
-              activation:: vmMirror activationSender: activation ifFail: [nil].
+        count:: count + 1.
+        (self isHandledAt: activation) ifTrue: [
+          handlers:: outer Kernel Array new: count.
+          index:: 0.
+          activation:: vmMirror activationNextHandler: handlerActivation ifFail: [nil].
+          [index < count] whileTrue: [
+            index:: index + 1.
+            handlers at: index put: activation.
+            index < count ifTrue: [
+              activation:: vmMirror activationNextHandler: activation ifFail: [nil].
             ].
-            ^self invokeHandlerAt: (handlers at: count) disabling: handlers.
           ].
+          ^self invokeHandlerAt: (handlers at: count) disabling: handlers.
         ].
-        activation:: vmMirror activationSender: activation ifFail: [nil].
+        activation:: vmMirror activationNextHandler: activation ifFail: [nil].
       ].
       reachedDefault:: true.
       searching:: false.

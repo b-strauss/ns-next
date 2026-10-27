@@ -440,3 +440,161 @@ ns_runtime::for_each_lowering! {
         );
     }
 }
+
+const SIGNALLER: &str = indoc! {"
+    class Signaller = Object new () (
+        public catchFrom: depth = (
+            ^[self descend: depth] on: Error do: [:error | error return: 1]
+        )
+        descend: depth = (
+            depth = 0 ifTrue: [^Error new signal].
+            ^self descend: depth - 1
+        )
+        public returnFrom: depth = (
+            ^[self quiet: depth] on: Error do: [:error | error return: 1]
+        )
+        quiet: depth = (
+            depth = 0 ifTrue: [^1].
+            ^self quiet: depth - 1
+        )
+        public catchInHandler = (
+            ^[[Error new signal] on: Error do: [:error | Error new signal]]
+                on: Error
+                do: [:error | error return: 2]
+        )
+    ) : ()
+"};
+
+/// A `Signaller` in an interpreter compiling with `lowering`, with every
+/// stress mode that allocates or frees at a safepoint turned off: a
+/// collection or a scavenge would change the count of objects in the
+/// space, and a suspension reifies every frame it suspends.
+fn a_signaller(lowering: Lowering) -> (Interpreter, Root) {
+    let module = ns_syntax::parse(SIGNALLER).expect("parse");
+    let resolved = ns_runtime::resolve(
+        module,
+        SIGNALLER.into(),
+        ns_runtime::SourceOrigin::File("signaller.ns".into()),
+    )
+    .expect("resolve");
+    let mut interpreter = Interpreter::bootstrap_with(lowering);
+    // The stress modes exist only in a debug build.
+    #[cfg(debug_assertions)]
+    {
+        interpreter.set_stress_collect(false);
+        interpreter.set_stress_scavenge(false);
+        interpreter.set_stress_suspend(false);
+    }
+    let class = interpreter.load_module(&resolved);
+    let signaller = expect_ok(interpreter.instantiate(&class, &[]), "Signaller new");
+    (interpreter, signaller)
+}
+
+/// The small integer `result` holds.
+fn small_integer(interpreter: &mut Interpreter, result: &Root, what: &str) -> i64 {
+    interpreter.enter(|mutator| match mutator.fetch(result).kind() {
+        ns_runtime::ValueKind::SmallInteger(integer) => integer,
+        _ => panic!("{what} answers a small integer"),
+    })
+}
+
+/// How many objects one send of `selector` with `depth` adds to the
+/// space, and what it answers.
+fn objects_made_by(
+    interpreter: &mut Interpreter,
+    signaller: &Root,
+    selector: &str,
+    depth: i64,
+) -> (usize, i64) {
+    let before = interpreter.heap_statistics().live_objects;
+    let result = expect_ok(
+        send_integers(interpreter, signaller, selector, &[depth]),
+        selector,
+    );
+    let after = interpreter.heap_statistics().live_objects;
+    (
+        after
+            .checked_sub(before)
+            .expect("no collection ran during the measured send"),
+        small_integer(interpreter, &result, selector),
+    )
+}
+
+/// How many more objects a signal caught `depth` activations down adds
+/// than the same descent returning normally: what the signal and its
+/// handler search allocate, without what the descent allocates itself --
+/// under the reference lowering a closure and a reified frame per
+/// activation, for the `ifTrue:` it does not inline.
+fn objects_a_signal_makes(interpreter: &mut Interpreter, signaller: &Root, depth: i64) -> usize {
+    let (signalling, caught) = objects_made_by(interpreter, signaller, "catchFrom:", depth);
+    let (returning, returned) = objects_made_by(interpreter, signaller, "returnFrom:", depth);
+    assert_eq!((caught, returned), (1, 1), "both sends answer 1");
+    signalling - returning
+}
+
+ns_runtime::for_each_lowering! {
+    /// The handler search walks the frames itself and reifies only the
+    /// `on:do:` activation it answers, so what a signal allocates does not
+    /// grow with the frames between it and its handler.
+    fn a_handler_search_reifies_no_frame_it_passes(lowering) {
+        let (mut interpreter, signaller) = a_signaller(lowering);
+        // Fills every cache the sends below take, so neither measured
+        // send allocates anything the other does not.
+        objects_a_signal_makes(&mut interpreter, &signaller, 5);
+        let objects_at_10 = objects_a_signal_makes(&mut interpreter, &signaller, 10);
+        let objects_at_200 = objects_a_signal_makes(&mut interpreter, &signaller, 200);
+        assert_eq!(
+            objects_at_200, objects_at_10,
+            "{lowering:?}: a signal's allocation grows with the frames its search passes"
+        );
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// An `on:do:` whose handler is running is disabled, so a signal its
+    /// handler raises passes it and reaches the one outside.
+    fn a_handler_search_skips_a_disabled_handler(lowering) {
+        let (mut interpreter, signaller) = a_signaller(lowering);
+        let result = expect_ok(
+            interpreter.send(&signaller, Symbol::intern("catchInHandler"), &[]),
+            "catchInHandler",
+        );
+        assert_eq!(
+            small_integer(&mut interpreter, &result, "catchInHandler"),
+            2,
+            "{lowering:?}: the outer handler answers"
+        );
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// Under the suspend stress mode every activation below the running
+    /// one lives in its frame at the safepoints the schedule picks, so the
+    /// handler search walks from a live frame into suspended ones and
+    /// finds its handler there, an enabled one and past a disabled one.
+    fn a_handler_search_finds_a_handler_in_a_suspended_frame(lowering) {
+        let (mut interpreter, signaller) = a_signaller(lowering);
+        // The stress modes exist only in a debug build; a release build
+        // runs the same sends unsuspended.
+        #[cfg(debug_assertions)]
+        interpreter.set_stress_suspend(true);
+        let caught = expect_ok(
+            send_integers(&mut interpreter, &signaller, "catchFrom:", &[10]),
+            "catchFrom:",
+        );
+        assert_eq!(
+            small_integer(&mut interpreter, &caught, "catchFrom:"),
+            1,
+            "{lowering:?}: the handler in a suspended frame answers"
+        );
+        let outer = expect_ok(
+            interpreter.send(&signaller, Symbol::intern("catchInHandler"), &[]),
+            "catchInHandler",
+        );
+        assert_eq!(
+            small_integer(&mut interpreter, &outer, "catchInHandler"),
+            2,
+            "{lowering:?}: the search passes the disabled handler in a suspended frame"
+        );
+    }
+}
