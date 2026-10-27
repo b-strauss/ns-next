@@ -513,7 +513,9 @@ fn objects_made_by(
     );
     let after = interpreter.heap_statistics().live_objects;
     (
-        after - before,
+        after
+            .checked_sub(before)
+            .expect("no collection ran during the measured send"),
         small_integer(interpreter, &result, selector),
     )
 }

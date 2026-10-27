@@ -151,9 +151,10 @@ fn activation_leaf<'gc>(
             Some(name) => Value::object(mutator.new_string(name)),
             None => Value::nil(),
         },
-        SubjectLeaf::NextHandler => match running
-            .then(|| next_active_handler(mutator, frame))
-            .flatten()
+        // The running activation the walk starts from, or none for a
+        // returned one, which is the `running` test made once.
+        SubjectLeaf::NextHandler => match WalkedActivation::of_running_frame(&mutator.heap, frame)
+            .and_then(|start| next_active_handler(mutator, start))
         {
             Some(handler) => Value::object(mutator.new_activation_object(handler)),
             None => Value::nil(),
@@ -261,8 +262,8 @@ fn method_name<'gc>(mutator: &Mutator<'gc>, frame: FrameReference<'gc>) -> Optio
     ))
 }
 
-/// The frame of the first activation outward of `frame`'s running one --
-/// not that one itself -- whose code carries the `on:do:` marker and whose
+/// The frame of the first activation outward of `start` -- not `start`
+/// itself -- whose code carries the `on:do:` marker and whose
 /// handler is active, reified only once it is found; `None` past the
 /// run's base. The walk goes on into suspended frames, as `sender` does.
 /// It reifies nothing it passes, so that a signal allocates the same
@@ -272,9 +273,9 @@ fn method_name<'gc>(mutator: &Mutator<'gc>, frame: FrameReference<'gc>) -> Optio
 /// contract", "Observers").
 fn next_active_handler<'gc>(
     mutator: &mut Mutator<'gc>,
-    frame: FrameReference<'gc>,
+    start: WalkedActivation<'gc>,
 ) -> Option<FrameReference<'gc>> {
-    let mut walked = WalkedActivation::of_running_frame(&mutator.heap, frame)?;
+    let mut walked = start;
     loop {
         walked = walked.sender(&mutator.heap)?;
         if let Some(UnwindMarker::Handler {
