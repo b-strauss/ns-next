@@ -104,12 +104,8 @@ impl Word {
     /// `load_frame_register`).
     #[cfg(debug_assertions)]
     #[cfg_attr(
-        not(all(test, target_arch = "x86_64")),
-        expect(
-            dead_code,
-            reason = "machine code is emitted on x86_64 alone, and run only by tests until the \
-                      JIT state enters it"
-        )
+        not(target_arch = "x86_64"),
+        expect(dead_code, reason = "machine code is emitted on x86_64 alone")
     )]
     pub(crate) const DEAD_REGISTER_BITS: u64 = Word::DEAD_REGISTER.0;
 
@@ -165,6 +161,17 @@ impl std::fmt::Debug for Word {
     }
 }
 
+/// What machine code's `SmallInteger` arithmetic reads off a word
+/// (`jit::baseline`'s templates), as `Value`'s own tagged arithmetic
+/// does: the tag in the low bits, and how many bits it takes.
+pub(crate) mod machine {
+    /// Bit 0, set in every `SmallInteger` and in no other word a value
+    /// can be.
+    pub(crate) const SMALL_INTEGER_TAG: u64 = super::SMALL_INTEGER_TAG;
+    /// How far a `SmallInteger`'s payload is shifted above its tag.
+    pub(crate) const TAG_BITS: u32 = super::TAG_BITS;
+}
+
 /// A value that holds no handle -- `nil`, a Boolean, a `SmallInteger`, a
 /// `SmallFloat64` -- kept as the word it is, so that compiled code can
 /// carry its constants beside its instructions
@@ -186,6 +193,13 @@ pub enum ImmediateKind {
 impl Immediate {
     /// `nil`, as an immediate word.
     pub const NIL: Immediate = Immediate(NIL_WORD);
+
+    /// The word itself, which machine code writes into a register as it
+    /// is: an immediate names no object, so it means the same in every
+    /// heap and across every move.
+    pub(crate) const fn bits(self) -> u64 {
+        self.0
+    }
 
     /// `true` or `false`, as an immediate word.
     pub const fn boolean(value: bool) -> Immediate {

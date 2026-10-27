@@ -310,6 +310,10 @@ fn immediate_operations() {
                 format!("or {register},{operand}")
             );
             assert_eq!(
+                text(|assembler| assembler.add_immediate(target, value)),
+                format!("add {register},{operand}")
+            );
+            assert_eq!(
                 text(|assembler| assembler.compare_immediate(target, value)),
                 format!("cmp {register},{operand}")
             );
@@ -568,4 +572,61 @@ fn an_assembler_over_a_configured_encoder() {
         panic!("assembly failed");
     };
     assert_eq!(disassemble(&assembled.bytes), "ret");
+}
+
+/// The conditional move's mnemonic suffix of each condition, as the
+/// Intel formatter writes it.
+const MOVE_SUFFIXES: [(Condition, &str); 12] = [
+    (Condition::Equal, "e"),
+    (Condition::NotEqual, "ne"),
+    (Condition::Less, "l"),
+    (Condition::LessOrEqual, "le"),
+    (Condition::Greater, "g"),
+    (Condition::GreaterOrEqual, "ge"),
+    (Condition::Below, "b"),
+    (Condition::BelowOrEqual, "be"),
+    (Condition::Above, "a"),
+    (Condition::AboveOrEqual, "ae"),
+    (Condition::Overflow, "o"),
+    (Condition::NoOverflow, "no"),
+];
+
+#[test]
+fn a_conditional_move_of_every_condition() {
+    for (condition, suffix) in MOVE_SUFFIXES {
+        for target in registers() {
+            for source in registers() {
+                assert_eq!(
+                    text(|assembler| assembler.move_if(condition, target, source)),
+                    format!("cmov{suffix} {},{}", name(target), name(source))
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_signed_division_sign_extends_rax_then_divides() {
+    for divisor in registers().filter(|register| *register != x64::RAX && *register != x64::RDX) {
+        assert_eq!(
+            text(|assembler| assembler.divide_signed(x64::RAX, x64::RDX, divisor)),
+            format!(
+                "cqo
+idiv {}",
+                name(divisor)
+            )
+        );
+    }
+}
+
+#[test]
+#[should_panic(expected = "x64 divides rax")]
+fn a_division_of_another_register_is_refused() {
+    let _ = bytes(|assembler| assembler.divide_signed(x64::RCX, x64::RDX, x64::RSI));
+}
+
+#[test]
+#[should_panic(expected = "divisor cannot be rax or rdx")]
+fn a_division_by_rdx_is_refused() {
+    let _ = bytes(|assembler| assembler.divide_signed(x64::RAX, x64::RDX, x64::RDX));
 }

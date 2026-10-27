@@ -1,0 +1,30 @@
+/// A loop of moves, constants and `SmallInteger` arithmetic, summing the
+/// integers up to a million. The method runs twice, so that its second run
+/// is the machine code it compiles to at its second entry, every back edge
+/// polling for a safepoint (`docs/design/execution.md`, "Planned: the
+/// baseline JIT").
+class CountingLoop = Object new () (
+  sumTo: limit = (
+    |
+      sum ::= 0.
+      index ::= 1.
+    |
+    [index <= limit] whileTrue: [
+      sum:: sum + index.
+      index:: index + 1.
+    ].
+    ^sum.
+  )
+
+  public main: platform args: args = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        show: (self sumTo: 1000000) printString;
+        newLine.
+    transcript
+        show: (self sumTo: 1000000) printString;
+        newLine.
+  )
+)

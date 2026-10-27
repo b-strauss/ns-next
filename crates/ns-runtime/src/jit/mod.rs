@@ -23,13 +23,6 @@ pub(crate) mod baseline;
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod leaves;
 #[cfg(target_arch = "x86_64")]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "templates and leaves, which call the other idioms, come with the next stage"
-    )
-)]
 pub(crate) mod macro_assembler;
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod stubs;
@@ -78,9 +71,10 @@ pub struct JitStatistics {
     /// machine code would leave at once: neither installed nor entered,
     /// and interpreted for good.
     pub bodies_exiting_at_entry: u64,
-    /// Backward jumps machine code took, counted only while
-    /// `Interpreter::set_jit_counting` is on, so that a loop in machine
-    /// code pays nothing for the count otherwise.
+    /// Backward jumps machine code took, counted only by the code compiled
+    /// while `Interpreter::set_jit_counting` is on, and only while it is
+    /// on, so that a loop in machine code compiled otherwise pays nothing
+    /// for the count.
     pub machine_back_edges: u64,
     /// Exits of machine code at a poll that found a safepoint requested.
     pub safepoint_exits: u64,
@@ -278,8 +272,8 @@ pub(crate) struct JitState {
     statistics: JitStatistics,
     /// Whether a body exiting at entry is installed all the same, so that
     /// a test fills a zone, or compiles a body anew, and the JIT stress
-    /// mode runs the entry stub and the exit on every push, before any
-    /// instruction has a template.
+    /// mode runs the entry stub and the exit on every push, whatever the
+    /// body's first instruction.
     install_bodies_exiting_at_entry: bool,
     /// The entry that compiles a body: its first under the JIT stress mode.
     compile_at_entry: u32,
@@ -304,8 +298,8 @@ fn stress_jit_from_env() -> bool {
 /// Whether `NS_NEXT_STRESS_EXIT` asks for the exit stress mode: set, and
 /// neither empty nor `0`. Debug builds only; read once per process. Every
 /// poll the machine code passes then takes its exit, as if a safepoint
-/// were requested. It forces the JIT on where it is available, and has no
-/// effect until a template emits a poll (the back edges are the first).
+/// were requested: so far every backward jump machine code takes. It
+/// forces the JIT on where it is available.
 pub(crate) fn stress_exit_from_env() -> bool {
     static REQUESTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     cfg!(debug_assertions)
@@ -377,6 +371,8 @@ impl JitState {
         self.compile_at_entry = if stress { 1 } else { COMPILE_AT_ENTRY };
     }
 
+    /// Makes the bodies compiled from now on count their back edges, and
+    /// the counts reach the statistics while it is on.
     pub(crate) fn set_counting(&mut self, counting: bool) {
         self.counting = counting;
     }
@@ -512,7 +508,8 @@ fn compile(state: &mut JitState, code: &CompiledCode) -> Result<(CodeOffset, u32
     let Some(zone) = state.zone.as_mut() else {
         panic!("internal: the JIT is on without a zone");
     };
-    let macro_assembler = macro_assembler::MacroAssembler::new(macro_assembler::Abi::host());
+    let mut macro_assembler = macro_assembler::MacroAssembler::new(macro_assembler::Abi::host());
+    macro_assembler.set_count_back_edges(state.counting);
     let body = baseline::compile(code, macro_assembler)?;
     if body.exits_at_entry && !state.install_bodies_exiting_at_entry {
         return Err(Refusal::ExitsAtEntry);
@@ -558,6 +555,22 @@ pub(crate) fn entered(
     }
 }
 
+/// The run loop's start at a run's base activation, which the host
+/// pushed: `entered`, when the body's slot is armed, as for a push inside
+/// the run.
+pub(crate) fn entered_at_start(
+    mutator: &mut Mutator<'_>,
+    activation: ActivationReference,
+    code: &CompiledCode,
+    register_base: RegisterBase,
+) -> Resumption {
+    if code.jit.is_armed() {
+        entered(mutator, activation, code, register_base)
+    } else {
+        Resumption::Interpreted { program_counter: 0 }
+    }
+}
+
 /// Runs the machine code at `entry` on `activation`'s frame, whose
 /// registers start at `register_base`, and answers where the interpreter
 /// goes on. Every address the code needs is asked of the heap afresh, as
@@ -591,9 +604,13 @@ fn run_machine_code(
     block[BlockWord::MachineEntry.index()] = code.executable_address(entry) as u64;
     block[BlockWord::PollWord.index()] = mutator.heap.safepoint_flag_address() as u64;
     block[BlockWord::ExitStub.index()] = code.executable_address(exit_stub) as u64;
+    block[BlockWord::Activation.index()] = crate::heap::Heap::activation_word(activation);
     let leaves = leaves::table();
     mutator.jit.statistics.machine_entries += 1;
     let kind = code.enter(entry_stub, &mut block, mutator, &leaves);
+    if mutator.jit.counting {
+        mutator.jit.statistics.machine_back_edges += block[BlockWord::BackEdges.index()];
+    }
     match stubs::decode_exit(&block, kind) {
         MachineExit::Reexecute { program_counter } => Resumption::Interpreted { program_counter },
         MachineExit::Safepoint { program_counter } => {
@@ -679,6 +696,19 @@ mod tests {
             )
         }
 
+        /// A body whose first instruction, a return, has no template yet.
+        fn body_returning_at_once() -> CompiledCode {
+            CompiledCode::new(
+                CodeKind::Method,
+                vec![Instruction::Return { register: 13 }],
+                0,
+                14,
+                0,
+                Vec::new(),
+                ns_syntax::Span::new(0, 0),
+            )
+        }
+
         fn enter_twice(state: &mut JitState, code: &CompiledCode) {
             note_entry(state, code);
             note_entry(state, code);
@@ -687,7 +717,7 @@ mod tests {
         #[test]
         fn a_body_whose_first_instruction_exits_is_never_entered() {
             let mut state = JitState::for_test(1 << 16, false);
-            let code = body();
+            let code = body_returning_at_once();
             enter_twice(&mut state, &code);
             assert_eq!(format!("{:?}", code.jit), "JitSlot::ExitsAtEntry");
             assert!(!code.jit.is_armed(), "a push leaves it alone");
@@ -696,6 +726,16 @@ mod tests {
             assert_eq!(statistics.bodies_exiting_at_entry, 1);
             assert_eq!(statistics.compiled_bodies, 0);
             assert_eq!(statistics.refused_bodies, 0);
+        }
+
+        #[test]
+        fn a_body_whose_first_instruction_has_a_template_is_compiled() {
+            let mut state = JitState::for_test(1 << 16, false);
+            let code = body();
+            enter_twice(&mut state, &code);
+            assert!(machine_entry(&state, &code).is_some());
+            assert_eq!(state.statistics().compiled_bodies, 1);
+            assert_eq!(state.statistics().bodies_exiting_at_entry, 0);
         }
 
         #[test]

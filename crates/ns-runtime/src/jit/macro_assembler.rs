@@ -7,7 +7,8 @@
 //! calling convention").
 
 use ns_assembler::x64::{
-    R10, R11, R12, R13, R14, R15, R8, R9, RAX, RBP, RBX, RCX, RDI, RDX, RSI, RSP,
+    DIVIDEND, R10, R11, R12, R13, R14, R15, R8, R9, RAX, RBP, RBX, RCX, RDI, RDX, REMAINDER, RSI,
+    RSP,
 };
 use ns_assembler::{
     Assembled, Assembler, AssemblyError, Condition, Label, Memory, Register, Width, X64,
@@ -72,6 +73,11 @@ pub(crate) struct Roles {
     /// The registers templates may use freely; none survives a leaf call
     /// or an exit.
     pub(crate) scratch: &'static [Register],
+    /// The scratch register a division divides and leaves its quotient
+    /// in, where the encoder fixes it (`Assembler::divide_signed`).
+    pub(crate) dividend: Register,
+    /// The scratch register a division leaves its remainder in.
+    pub(crate) remainder: Register,
 }
 
 impl Roles {
@@ -93,6 +99,8 @@ impl Roles {
                 leaf_stack: R13,
                 leaf_result: RAX,
                 scratch: &[RAX, RCX, RDX, RSI, RDI, R8, R9, R10, R12],
+                dividend: DIVIDEND,
+                remainder: REMAINDER,
             },
         }
     }
@@ -120,6 +128,9 @@ pub(crate) enum Operand {
     Register(Register),
     /// A constant word.
     Immediate(u64),
+    /// A word of the entry block: what differs from one entry to the
+    /// next, as the running activation does.
+    Block(BlockWord),
 }
 
 /// Code placed after the body's last instruction, out of the straight
@@ -158,6 +169,8 @@ pub(crate) struct MacroAssembler {
     /// Whether a poll takes its exit unconditionally, as under
     /// `NS_NEXT_STRESS_EXIT`: a safepoint is always requested.
     exit_at_every_poll: bool,
+    /// Whether a back edge counts itself (`count_back_edge`).
+    count_back_edges: bool,
 }
 
 impl MacroAssembler {
@@ -170,7 +183,14 @@ impl MacroAssembler {
             program_counter: 0,
             cold_paths: Vec::new(),
             exit_at_every_poll: super::stress_exit_from_env(),
+            count_back_edges: false,
         }
+    }
+
+    /// Makes `count_back_edge` emit its count (`true`) or nothing, so that
+    /// code compiled while nobody counts pays nothing for the count.
+    pub(crate) fn set_count_back_edges(&mut self, count_back_edges: bool) {
+        self.count_back_edges = count_back_edges;
     }
 
     /// Makes every poll emitted from now on exit at once (`true`) or only
@@ -246,6 +266,14 @@ impl MacroAssembler {
         }
     }
 
+    /// `target :=` the receiver of a frame whose code takes
+    /// `argument_count` arguments: a header word, which is never dead, so
+    /// nothing is checked. Keeps the flags.
+    pub(crate) fn load_receiver(&mut self, target: Register, argument_count: u16) {
+        let slot = self.frame_slot(crate::heap::Heap::receiver_register(argument_count));
+        self.assembler.load(Width::Word64, target, slot);
+    }
+
     /// The frame's register `register := source`. Keeps the flags.
     pub(crate) fn store_frame_register(&mut self, register: u16, source: Register) {
         let slot = self.frame_slot(register);
@@ -267,7 +295,8 @@ impl MacroAssembler {
     /// depths it cannot know -- as Cog aligns the C stack before each call
     /// into the runtime. Every operand held in a register is copied to the
     /// stack before any argument register is written, so an operand may
-    /// sit in any register, an argument register included.
+    /// sit in any register, an argument register included; a block word is
+    /// read through the context register, which no argument overwrites.
     ///
     /// # Panics
     ///
@@ -303,6 +332,20 @@ impl MacroAssembler {
                     self.assembler.load(Width::Word64, target, stack_slot(copy));
                 }
                 (Operand::Register(_), Place::Stack(_)) => {}
+                (Operand::Block(word), Place::Register(target)) => {
+                    let address = self.block_word(word);
+                    self.assembler.load(Width::Word64, target, address);
+                }
+                (Operand::Block(word), Place::Stack(displacement)) => {
+                    let address = self.block_word(word);
+                    self.assembler
+                        .load(Width::Word64, roles.idiom_scratch, address);
+                    self.assembler.store(
+                        Width::Word64,
+                        stack_slot(displacement),
+                        roles.idiom_scratch,
+                    );
+                }
                 (Operand::Immediate(word), Place::Register(target)) => {
                     self.assembler.move_immediate(target, word);
                 }
@@ -346,6 +389,33 @@ impl MacroAssembler {
         self.assembler
             .load(Width::Word64, roles.idiom_scratch, stub);
         self.assembler.jump_register(roles.idiom_scratch);
+    }
+
+    /// Takes `exit(kind, program_counter)` when `condition` holds, out of
+    /// line, and falls through otherwise. Keeps the flags on the path
+    /// that falls through.
+    pub(crate) fn exit_if(&mut self, condition: Condition, kind: ExitKind, program_counter: u32) {
+        let label = self.assembler.label();
+        self.assembler.jump_if(condition, label);
+        self.cold_paths.push(ColdPath::Exit {
+            label,
+            kind,
+            program_counter,
+        });
+    }
+
+    /// Adds one to the entry block's `BackEdges` when the code counts its
+    /// back edges (`set_count_back_edges`), and emits nothing otherwise.
+    /// Clobbers the flags and the idiom scratch register.
+    pub(crate) fn count_back_edge(&mut self) {
+        if !self.count_back_edges {
+            return;
+        }
+        let scratch = self.roles.idiom_scratch;
+        let count = self.block_word(BlockWord::BackEdges);
+        self.assembler.load(Width::Word64, scratch, count);
+        self.assembler.add_immediate(scratch, 1);
+        self.assembler.store(Width::Word64, count, scratch);
     }
 
     /// Takes `exit(Safepoint, program_counter)` when the heap's safepoint

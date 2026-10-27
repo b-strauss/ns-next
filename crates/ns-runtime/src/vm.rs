@@ -170,11 +170,27 @@ impl Handoff {
 /// and whatever the callee left in them with them. Nothing reads
 /// `program_counter` while a straight-line instruction executes.
 pub(crate) fn run(interpreter: &mut Interpreter, base: ActivationReference) -> HostResult {
-    let (floor, mut frame) = interpreter.enter(|mutator| {
-        (
-            mutator.heap.activation_position(base),
-            FrameRegisters::of(mutator, base, 0),
-        )
+    let (floor, mut frame, mut safepoint_at_start) = interpreter.enter(|mutator| {
+        let mut frame = FrameRegisters::of(mutator, base, 0);
+        // The base activation is a push too, the host's, so the JIT
+        // counts its entry and runs its machine code as the stretch does
+        // for a push of its own (`jit::entered_at_start`): a host's entry
+        // send would otherwise never run compiled.
+        let safepoint =
+            match crate::jit::entered_at_start(mutator, base, &frame.code, frame.register_base) {
+                Resumption::Interpreted { program_counter } => {
+                    frame.program_counter = program_counter as usize;
+                    false
+                }
+                Resumption::Safepoint { program_counter } => {
+                    frame.program_counter = program_counter as usize;
+                    mutator
+                        .heap
+                        .activation_set_program_counter(base, frame.program_counter);
+                    true
+                }
+            };
+        (mutator.heap.activation_position(base), frame, safepoint)
     });
     loop {
         // The stretch is forced into the loop rather than left to the
@@ -191,10 +207,18 @@ pub(crate) fn run(interpreter: &mut Interpreter, base: ActivationReference) -> H
         // (`docs/design/execution.md`, "What the inline caches moved"). The
         // step sits near the threshold: anything added to a send's hit path
         // lands here.
-        match interpreter.enter(
-            #[inline(always)]
-            |mutator| run_stretch(mutator, &mut frame, floor),
-        ) {
+        // The base activation's machine code left at a poll that found a
+        // safepoint requested: it is taken before the first stretch, as
+        // one a stretch leaves for.
+        let leave = if std::mem::take(&mut safepoint_at_start) {
+            Leave::Safepoint
+        } else {
+            interpreter.enter(
+                #[inline(always)]
+                |mutator| run_stretch(mutator, &mut frame, floor),
+            )
+        };
+        match leave {
             Leave::Safepoint => {
                 // The suspend stress mode put a different frame on top --
                 // the running activation, suspended and resumed -- whose
@@ -1786,7 +1810,7 @@ fn run_wide<'gc>(
 // `Instruction`'s own.
 
 #[inline(always)]
-fn load_literal_into<'gc>(
+pub(crate) fn load_literal_into<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
     register_base: RegisterBase,
@@ -1964,7 +1988,7 @@ fn make_closure_into(
 }
 
 #[inline(always)]
-fn make_array_into(
+pub(crate) fn make_array_into(
     mutator: &mut Mutator<'_>,
     register_base: RegisterBase,
     destination: u16,
@@ -1975,7 +1999,7 @@ fn make_array_into(
 }
 
 #[inline(always)]
-fn make_vector_into(
+pub(crate) fn make_vector_into(
     mutator: &mut Mutator<'_>,
     register_base: RegisterBase,
     destination: u16,
@@ -1986,7 +2010,7 @@ fn make_vector_into(
 }
 
 #[inline(always)]
-fn load_vector_into<'gc>(
+pub(crate) fn load_vector_into<'gc>(
     mutator: &mut Mutator<'gc>,
     register_base: RegisterBase,
     destination: u16,

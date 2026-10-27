@@ -1,0 +1,62 @@
+/// `SmallInteger` arithmetic that leaves 61 bits inside a loop: the
+/// largest `SmallInteger` plus one, the smallest minus one and a product
+/// past the largest are `LargeInteger`s, which the machine code declines to
+/// the send that answers them; every operation after it declines too, its
+/// operand no longer a `SmallInteger`. Each method runs twice, so that its
+/// second run is the machine code it compiles to at its second entry.
+class Overflow = Object new () (
+  countUpFrom: start times: count = (
+    |
+      value ::= start.
+      index ::= 0.
+    |
+    [index < count] whileTrue: [
+      value:: value + 1.
+      index:: index + 1.
+    ].
+    ^value.
+  )
+
+  countDownFrom: start times: count = (
+    |
+      value ::= start.
+      index ::= 0.
+    |
+    [index < count] whileTrue: [
+      value:: value - 1.
+      index:: index + 1.
+    ].
+    ^value.
+  )
+
+  double: start times: count = (
+    |
+      value ::= start.
+      index ::= 0.
+    |
+    [index < count] whileTrue: [
+      value:: value * 2.
+      index:: index + 1.
+    ].
+    ^value.
+  )
+
+  public main: platform args: args = (
+    |
+      transcript = platform transcript.
+      largest = 1152921504606846975.
+      smallest = largest negated - 1.
+    |
+    2 timesRepeat: [
+      transcript
+          show: (self countUpFrom: largest - 2 times: 4) printString;
+          newLine.
+      transcript
+          show: (self countDownFrom: smallest + 2 times: 4) printString;
+          newLine.
+      transcript
+          show: (self double: largest // 8 times: 4) printString;
+          newLine.
+    ].
+  )
+)

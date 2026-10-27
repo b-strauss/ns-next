@@ -12,9 +12,10 @@ use super::macro_assembler::{Abi, MacroAssembler};
 
 /// The words of the entry block, by index. `CodeZone::enter` writes the
 /// first four on every entry; the caller of `enter` writes the inputs
-/// (`ObjectSpaceBase` … `MachineEntry`, `PollWord`, `ExitStub`) before it,
-/// and the exit stub the outputs (`ExitProgramCounter`, `ExitKind`, and
-/// `ExitRegister` for a dead register's exit).
+/// (`ObjectSpaceBase` … `MachineEntry`, `PollWord`, `ExitStub`,
+/// `Activation`, and `BackEdges`' zero) before it, the exit stub the
+/// outputs (`ExitProgramCounter`, `ExitKind`, and `ExitRegister` for a
+/// dead register's exit), and code that counts its back edges `BackEdges`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum BlockWord {
     /// The leaf shim's address, which `call_leaf` calls. Words 0, 2 and 3,
@@ -43,6 +44,12 @@ pub(crate) enum BlockWord {
     /// rather than an address of its own, so its code holds no absolute
     /// address and can be moved within the zone.
     ExitStub = 13,
+    /// The running activation, as `Heap::activation_word` makes it, which
+    /// a leaf that steps an instruction is handed.
+    Activation = 14,
+    /// The backward jumps code compiled to count them took since the entry
+    /// (`JitStatistics::machine_back_edges`).
+    BackEdges = 15,
 }
 
 impl BlockWord {
@@ -57,7 +64,7 @@ impl BlockWord {
     }
 }
 
-const _: () = assert!((BlockWord::ExitStub as usize) < ENTRY_BLOCK_WORDS);
+const _: () = assert!((BlockWord::BackEdges as usize) < ENTRY_BLOCK_WORDS);
 
 /// Why machine code left, as the exit stub answers it in `ExitKind`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

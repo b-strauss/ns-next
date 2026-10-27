@@ -1894,10 +1894,10 @@ these five keeping the safepoint flag set while it is on,
 `NS_NEXT_STRESS_WIDE`, which emits every instruction in a wide form
 ([execution.md](execution.md), "The compact instruction encoding"),
 `NS_NEXT_STRESS_JIT`, which compiles every body at its first entry and
-enters machine code that exits at once, and `NS_NEXT_STRESS_EXIT`, which
-makes every poll in machine code take its exit, as if a safepoint were
-requested (no template emits a poll yet, so it changes nothing until one
-does).
+enters its machine code even when that exits at once, and
+`NS_NEXT_STRESS_EXIT`, which makes every poll in machine code -- every
+backward jump it takes -- take its exit, as if a safepoint were
+requested.
 
 `NS_NEXT_STRESS_COLLECT=1` runs a full collection at every safepoint rather
 than at a limit, paced by heap size like `STRESS_MOVE_BUDGET`

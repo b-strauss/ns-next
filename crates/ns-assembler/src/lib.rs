@@ -82,15 +82,17 @@ pub struct Memory {
 ///   and the unsigned ones (`Below` … `AboveOrEqual`) compare `left` with
 ///   `right`; `Overflow` holds when `left - right` overflows.
 /// - **Sets, only `Equal` and `NotEqual` defined**: `test_immediate`.
-/// - **Sets, only `Overflow` and `NoOverflow` defined**: `add`, `subtract`
-///   and `multiply_checked`. No other condition may be read after them:
-///   the carry of an addition means opposite things on x64 and AArch64.
+/// - **Sets, only `Overflow` and `NoOverflow` defined**: `add`,
+///   `add_immediate`, `subtract` and `multiply_checked`. No other
+///   condition may be read after them: the carry of an addition means
+///   opposite things on x64 and AArch64.
 /// - **Clobbers**, the flags undefined afterwards: `and_immediate`,
 ///   `or_immediate`, `shift_left`, `shift_right_arithmetic` -- x64's
 ///   instructions set the flags, AArch64's plain `and`, `orr`, `lsl` and
-///   `asr` keep them, so neither may be relied on -- and `call_register`,
-///   whose callee may do anything.
-/// - **Keeps**: every other operation -- `move_register`,
+///   `asr` keep them, so neither may be relied on -- `divide_signed`,
+///   whose flags x64 leaves undefined, and `call_register`, whose callee
+///   may do anything.
+/// - **Keeps**: every other operation -- `move_register`, `move_if`,
 ///   `move_immediate`, `load`, `store`, `store_immediate32`, `push`, `pop`,
 ///   `add_stack`, `jump`, `jump_if`, `jump_register`, `return_` and `trap` -- so a compare
 ///   may be separated from its branch by moves, loads and stores.
@@ -142,6 +144,13 @@ impl Label {
 pub enum Operation {
     /// `target := source`.
     MoveRegister { target: Register, source: Register },
+    /// `target := source` when `condition` holds; `target` unchanged
+    /// otherwise.
+    MoveIf {
+        condition: Condition,
+        target: Register,
+        source: Register,
+    },
     /// `target := value`.
     MoveImmediate { target: Register, value: u64 },
     /// `target := [source]`, zero-extended from `width`.
@@ -160,11 +169,23 @@ pub enum Operation {
     StoreImmediate32 { target: Memory, value: i32 },
     /// `target := target + source`, setting `Overflow`.
     Add { target: Register, source: Register },
+    /// `target := target + value` sign-extended, setting `Overflow`.
+    AddImmediate { target: Register, value: i32 },
     /// `target := target - source`, setting `Overflow`.
     Subtract { target: Register, source: Register },
     /// `target := target * source`, signed; `Overflow` when the product
     /// does not fit 64 bits.
     MultiplyChecked { target: Register, source: Register },
+    /// `dividend := dividend / divisor`, signed and truncated toward zero,
+    /// and `remainder :=` what is left, with the dividend's sign. The
+    /// divisor is neither zero nor -1 under the most negative dividend;
+    /// an encoder may require particular registers for the three
+    /// operands (`Assembler::divide_signed`).
+    DivideSigned {
+        dividend: Register,
+        remainder: Register,
+        divisor: Register,
+    },
     /// `target := target & value` sign-extended.
     AndImmediate { target: Register, value: i32 },
     /// `target := target | value` sign-extended.
@@ -398,6 +419,18 @@ impl<E: Encoder> Assembler<E> {
         self.emit(Operation::MoveRegister { target, source });
     }
 
+    /// `target := source` when `condition` holds, as the flags the last
+    /// operation that set them define it; `target` keeps its value
+    /// otherwise. Keeps the flags, so one compare may decide several
+    /// moves.
+    pub fn move_if(&mut self, condition: Condition, target: Register, source: Register) {
+        self.emit(Operation::MoveIf {
+            condition,
+            target,
+            source,
+        });
+    }
+
     /// `target := value`. Never touches the flags, which is why x64 never
     /// clears a register with `xor` here: a constant may be loaded between a
     /// compare and its branch.
@@ -435,6 +468,12 @@ impl<E: Encoder> Assembler<E> {
         self.emit(Operation::Add { target, source });
     }
 
+    /// `target := target + value` sign-extended. Sets the flags; only
+    /// `Overflow` and `NoOverflow` are defined after it.
+    pub fn add_immediate(&mut self, target: Register, value: i32) {
+        self.emit(Operation::AddImmediate { target, value });
+    }
+
     /// `target := target - source`. Sets the flags; only `Overflow` and
     /// `NoOverflow` are defined after it.
     pub fn subtract(&mut self, target: Register, source: Register) {
@@ -446,6 +485,23 @@ impl<E: Encoder> Assembler<E> {
     /// `NoOverflow` are defined after it.
     pub fn multiply_checked(&mut self, target: Register, source: Register) {
         self.emit(Operation::MultiplyChecked { target, source });
+    }
+
+    /// `dividend := dividend / divisor`, signed and truncated toward zero,
+    /// and `remainder := dividend - quotient * divisor`, which takes the
+    /// dividend's sign. Clobbers the flags.
+    ///
+    /// The caller excludes a zero divisor, and -1 under the most negative
+    /// dividend, whose quotient does not fit: x64 faults on both. An
+    /// encoder may fix the operands' registers -- x64's `idiv` divides
+    /// [`x64::DIVIDEND`] and leaves the remainder in [`x64::REMAINDER`]
+    /// -- and panics on others, as on a register it has no encoding for.
+    pub fn divide_signed(&mut self, dividend: Register, remainder: Register, divisor: Register) {
+        self.emit(Operation::DivideSigned {
+            dividend,
+            remainder,
+            divisor,
+        });
     }
 
     /// `target := target & value` sign-extended. Clobbers the flags.

@@ -89,6 +89,18 @@ pub const R14: Register = Register(14);
 /// Intel SDM Vol. 2A, 2.1.5 Addressing-Mode Encoding of ModR/M and SIB Bytes.
 pub const R15: Register = Register(15);
 
+/// The register `IDIV r/m64` divides and leaves its quotient in: the low
+/// half of the dividend `RDX:RAX`.
+///
+/// Intel SDM Vol. 2A, IDIV—Signed Divide.
+pub const DIVIDEND: Register = RAX;
+
+/// The register `IDIV r/m64` takes the dividend's high half from and
+/// leaves its remainder in.
+///
+/// Intel SDM Vol. 2A, IDIV—Signed Divide.
+pub const REMAINDER: Register = RDX;
+
 /// The x64 encoder.
 #[derive(Clone, Copy, Default, Debug)]
 pub struct X64;
@@ -234,6 +246,36 @@ const MOVE_ZERO_EXTENDED_HALF: [u8; 2] = [0x0F, 0xB7];
 /// Intel SDM Vol. 2A, ADD—Add.
 const ADD_REGISTER_TO_RM: [u8; 1] = [0x01];
 
+/// `CMOVcc r64, r/m64` (`0F 40+cc /r`) — the escape byte of the
+/// conditional move.
+///
+/// Intel SDM Vol. 2A, CMOVcc—Conditional Move.
+const CONDITIONAL_MOVE_ESCAPE: u8 = 0x0F;
+
+/// The second opcode byte of `CMOVcc r64, r/m64`, to which a condition
+/// code is added.
+///
+/// Intel SDM Vol. 2A, CMOVcc—Conditional Move.
+const CONDITIONAL_MOVE_BASE: u8 = 0x40;
+
+/// `CQO` (`REX.W 99`) — sign-extends `RAX` into `RDX:RAX`, the dividend
+/// of a 64-bit `IDIV`.
+///
+/// Intel SDM Vol. 2A, CWD/CDQ/CQO—Convert Word to Doubleword/Convert
+/// Doubleword to Quadword.
+const CONVERT_QUADWORD_TO_OCTWORD: u8 = 0x99;
+
+/// `IDIV r/m64` (`F7 /7`) — signed divide of `RDX:RAX`, the quotient into
+/// `RAX`, the remainder into `RDX`.
+///
+/// Intel SDM Vol. 2A, IDIV—Signed Divide.
+const SIGNED_DIVIDE: [u8; 1] = [0xF7];
+
+/// The `/7` extension of [`SIGNED_DIVIDE`].
+///
+/// Intel SDM Vol. 2A, IDIV—Signed Divide.
+const SIGNED_DIVIDE_EXTENSION: u8 = 7;
+
 /// `SUB r/m64, r64` (`29 /r`) — subtract a register from a register.
 ///
 /// Intel SDM Vol. 2B, SUB—Subtract.
@@ -278,6 +320,11 @@ const GROUP_ONE_BYTE_IMMEDIATE: u8 = 0x83;
 ///
 /// Intel SDM Vol. 2A, AND—Logical AND (the form `AND r/m64, imm32`).
 const GROUP_ONE_DOUBLEWORD_IMMEDIATE: u8 = 0x81;
+
+/// The `/0` extension of the immediate group: `ADD r/m64, imm`.
+///
+/// Intel SDM Vol. 2A, ADD—Add.
+const GROUP_ONE_ADD: u8 = 0;
 
 /// The `/1` extension of the immediate group: `OR r/m64, imm`.
 ///
@@ -612,6 +659,21 @@ impl Encoder for X64 {
             Operation::MoveRegister { target, source } => {
                 register_register(code, &MOVE_REGISTER_TO_RM, source, target);
             }
+            Operation::MoveIf {
+                condition,
+                target,
+                source,
+            } => {
+                register_register(
+                    code,
+                    &[
+                        CONDITIONAL_MOVE_ESCAPE,
+                        CONDITIONAL_MOVE_BASE + condition_code(condition),
+                    ],
+                    target,
+                    source,
+                );
+            }
             Operation::MoveImmediate { target, value } => {
                 let register = number(target);
                 if let Ok(doubleword) = u32::try_from(value) {
@@ -692,11 +754,34 @@ impl Encoder for X64 {
             Operation::Add { target, source } => {
                 register_register(code, &ADD_REGISTER_TO_RM, source, target);
             }
+            Operation::AddImmediate { target, value } => {
+                immediate_group(code, GROUP_ONE_ADD, target, value);
+            }
             Operation::Subtract { target, source } => {
                 register_register(code, &SUBTRACT_REGISTER_FROM_RM, source, target);
             }
             Operation::MultiplyChecked { target, source } => {
                 register_register(code, &MULTIPLY_SIGNED, target, source);
+            }
+            Operation::DivideSigned {
+                dividend,
+                remainder,
+                divisor,
+            } => {
+                assert!(
+                    dividend == DIVIDEND && remainder == REMAINDER,
+                    "x64 divides rax and leaves the remainder in rdx"
+                );
+                assert!(
+                    divisor != DIVIDEND && divisor != REMAINDER,
+                    "x64's divisor cannot be rax or rdx, which the division writes"
+                );
+                code.push(REX_BASE | REX_WIDE);
+                code.push(CONVERT_QUADWORD_TO_OCTWORD);
+                let divisor = number(divisor);
+                rex(code, true, 0, divisor, false);
+                code.extend_from_slice(&SIGNED_DIVIDE);
+                code.push(modrm(MODRM_MODE_REGISTER, SIGNED_DIVIDE_EXTENSION, divisor));
             }
             Operation::AndImmediate { target, value } => {
                 immediate_group(code, GROUP_ONE_AND, target, value);

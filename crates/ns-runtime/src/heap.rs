@@ -70,6 +70,8 @@ use space::{
 pub use tables::{ApplicationIndex, CodeId, MixinId};
 pub(crate) use tables::{CodeEntry, CodeIdCache, MixinRow, Tables};
 pub(crate) use value::is_small_float_bits;
+#[cfg(target_arch = "x86_64")]
+pub(crate) use value::machine as value_bits;
 use value::{at_rest, branded};
 pub use value::{
     fits_small_integer, Immediate, ImmediateKind, Value, ValueKind, Word, SMALL_INTEGER_MAX,
@@ -8167,6 +8169,63 @@ impl<'gc> Heap<'gc> {
     #[cfg(target_arch = "x86_64")]
     pub(crate) fn register_base_words(base: RegisterBase) -> u64 {
         u64::from(base.index)
+    }
+
+    /// The word machine code carries `activation` in
+    /// (`jit::stubs::BlockWord::Activation`), which a leaf turns back into
+    /// the handle (`machine_activation`): its offset, and in a debug build
+    /// its generation above it, so that the handle a leaf gets back is
+    /// checked as the one the run loop held.
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn activation_word(activation: ActivationReference) -> u64 {
+        #[cfg(debug_assertions)]
+        {
+            u64::from(activation.offset) | (u64::from(activation.generation) << 32)
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            u64::from(activation.offset)
+        }
+    }
+
+    /// The running activation machine code named by `word`
+    /// (`activation_word`).
+    ///
+    /// # Panics
+    ///
+    /// On a word `activation_word` did not make, which only a defect of
+    /// the JIT passes; a debug build also refuses a frame since popped.
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn machine_activation(&self, word: u64) -> ActivationReference {
+        let Ok(offset) = u32::try_from(word & u64::from(u32::MAX)) else {
+            unreachable!("internal: the low half of a word fits 32 bits");
+        };
+        #[cfg(not(debug_assertions))]
+        if word >> 32 != 0 {
+            panic!("internal: machine code named activation word {word:#x}");
+        }
+        let activation = ActivationReference {
+            offset,
+            #[cfg(debug_assertions)]
+            origin: self.heap_id,
+            #[cfg(debug_assertions)]
+            generation: u32::try_from(word >> 32)
+                .expect("internal: the high half of a word fits 32 bits"),
+        };
+        self.check_activation(activation);
+        activation
+    }
+
+    /// The register number machine code reads a frame's receiver at: the
+    /// header word `RECEIVER`, which lies `argument_count` registers above
+    /// register 0, since the header follows the arguments
+    /// (`bytecode::HEADER_REGISTERS`).
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn receiver_register(argument_count: u16) -> u16 {
+        let Ok(receiver) = u16::try_from(frame_header::RECEIVER) else {
+            unreachable!("internal: the header's words are numbered from 0 to 12");
+        };
+        argument_count + receiver
     }
 
     /// Refuses machine code's read of `activation`'s dead register

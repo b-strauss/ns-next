@@ -391,7 +391,7 @@ NS_NEXT_STRESS_SCAVENGE=1 cargo nextest run --workspace # scavenging at every sa
 NS_NEXT_STRESS_WIDE=1 cargo nextest run --workspace     # every instruction in its wide form
 NS_NEXT_STRESS_SUSPEND=1 cargo nextest run --workspace  # suspending every activation into its frame at safepoints
 NS_NEXT_STRESS_JIT=1 cargo nextest run --workspace      # every body compiled at its first entry, and entered even when its machine code exits at once
-NS_NEXT_STRESS_EXIT=1 cargo nextest run --workspace     # every poll in machine code taking its exit, as if a safepoint were requested (no effect until a template emits a poll)
+NS_NEXT_STRESS_EXIT=1 cargo nextest run --workspace     # every poll in machine code -- every backward jump it takes -- taking its exit, as if a safepoint were requested
 # and `cargo run -p ns-cli -- run-corpus corpus/modules` under each, as plain:
 # "ran 6, failed 0, skipped 205" -- every row under both lowerings
 # `cargo xtask gates stress` runs the eight at once, each into its own log
