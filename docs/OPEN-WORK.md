@@ -1987,6 +1987,14 @@ that only answers `isKindOfArray` or `isKindOfString`, the error of a
 
 Small, deliberately left, none affecting an outcome.
 
+- Leftovers of the handler-search leaf's review (noted 2026-10-27):
+  `WalkedActivation::of_running_frame` answers `None` for a returned
+  frame, a test `builtins/activation.rs`'s `activation_leaf` has already
+  made before `next_active_handler` runs, so the `?` there repeats it;
+  and `tests/exceptions.rs`'s `objects_made_by` subtracts two object
+  counts as `usize`, which a scavenge inside the measured send would turn
+  into an overflow panic rather than a legible failure -- deterministic
+  today, eden being far larger than what the sends allocate.
 - Leftovers of the cast lints' reviews (noted 2026-10-26): no 32-bit
   target is installed or gated, so the `cfg(not(target_pointer_width =
   "64"))` paths and the 32-bit index fix (`builtins/collections.rs`'s
