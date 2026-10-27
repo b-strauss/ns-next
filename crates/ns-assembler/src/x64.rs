@@ -266,6 +266,12 @@ impl Encoder for X64 {
                 code.push(0xFF);
                 code.push(modrm(0b11, 2, target));
             }
+            Operation::JumpRegister { target } => {
+                let target = number(target);
+                rex(code, false, 0, target, false);
+                code.push(0xFF);
+                code.push(modrm(0b11, 4, target));
+            }
             Operation::Push { source } => opcode_register(code, 0x50, source),
             Operation::Pop { target } => opcode_register(code, 0x58, target),
             Operation::AddStack { amount } => {

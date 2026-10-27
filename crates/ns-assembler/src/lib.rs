@@ -82,7 +82,7 @@ pub struct Memory {
 ///   whose callee may do anything.
 /// - **Keeps**: every other operation -- `move_register`,
 ///   `move_immediate`, `load`, `store`, `store_immediate32`, `push`, `pop`,
-///   `add_stack`, `jump`, `jump_if`, `return_` and `trap` -- so a compare
+///   `add_stack`, `jump`, `jump_if`, `jump_register`, `return_` and `trap` -- so a compare
 ///   may be separated from its branch by moves, loads and stores.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Condition {
@@ -173,6 +173,8 @@ pub enum Operation {
     TestImmediate { left: Register, right: i32 },
     /// Calls the address in `target`.
     CallRegister { target: Register },
+    /// Jumps to the address in `target`.
+    JumpRegister { target: Register },
     /// Pushes `source` on the machine stack.
     Push { source: Register },
     /// Pops the machine stack into `target`.
@@ -496,6 +498,13 @@ impl<E: Encoder> Assembler<E> {
     /// do anything with them.
     pub fn call_register(&mut self, target: Register) {
         self.emit(Operation::CallRegister { target });
+    }
+
+    /// Jumps to the address in `target`, pushing nothing: a jump that
+    /// never comes back, which a `call_register` would leave unbalanced on
+    /// the processor's return-address predictor. Keeps the flags.
+    pub fn jump_register(&mut self, target: Register) {
+        self.emit(Operation::JumpRegister { target });
     }
 
     /// Pushes `source` on the machine stack. Keeps the flags.

@@ -366,6 +366,10 @@ fn calls_and_the_stack() {
             format!("call {}", name(register))
         );
         assert_eq!(
+            text(|assembler| assembler.jump_register(register)),
+            format!("jmp {}", name(register))
+        );
+        assert_eq!(
             text(|assembler| assembler.push(register)),
             format!("push {}", name(register))
         );

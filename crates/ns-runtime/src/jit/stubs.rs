@@ -113,9 +113,11 @@ pub(crate) fn decode_exit(block: &[u64; ENTRY_BLOCK_WORDS], kind: u64) -> Machin
 }
 
 /// The entry stub: a function of `abi`'s C calling convention taking the
-/// block's address, as `CodeZone::enter` calls it. It saves every register
-/// the convention has its callee preserve, so a body may use them all;
-/// pins the roles from the block; saves the stack pointer for the exit
+/// block's address, as `CodeZone::enter` calls it. It saves every
+/// general-purpose register the convention has its callee preserve, so a
+/// body may use them all -- but no vector register: on Win64 XMM6-XMM15
+/// are callee-preserved too, so a template that uses one of them requires
+/// this stub to save them; pins the roles from the block; saves the stack pointer for the exit
 /// stub; and calls the body. A body never returns to it: it leaves only
 /// through the exit stub, which unwinds the native stack to the saved
 /// pointer, so what follows the call traps.
@@ -152,11 +154,10 @@ fn finish_stub(macro_assembler: MacroAssembler) -> Assembled {
     }
 }
 
-/// The exit stub, which a body calls with the exit's kind and program
+/// The exit stub, which a body jumps to with the exit's kind and program
 /// counter in the roles' `exit_kind` and `exit_program_counter`: it writes
 /// both into the block, resets the stack pointer to the one the entry stub
-/// saved -- dropping every return address a body pushed, the call into
-/// this stub's own included -- restores the registers the entry stub
+/// saved -- dropping every return address a body pushed -- restores the registers the entry stub
 /// saved and returns the kind to `enter`'s caller.
 pub(crate) fn assemble_exit_stub(abi: Abi) -> Assembled {
     let mut macro_assembler = MacroAssembler::new(abi);

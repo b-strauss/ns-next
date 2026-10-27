@@ -78,8 +78,11 @@ impl Roles {
     /// The roles under `abi`. They are the same under both x64
     /// conventions: the pinned roles sit in registers both have their
     /// callees preserve, so a leaf call keeps them, and the entry stub
-    /// saves every register either convention preserves, so a body may
-    /// use the rest freely.
+    /// saves every general-purpose register either convention preserves,
+    /// so a body may use the rest of them freely. It saves no vector
+    /// register: Win64 has its callee preserve XMM6-XMM15 as well, so a
+    /// template that uses one of those requires the entry stub to save
+    /// them first.
     pub(crate) fn of(abi: Abi) -> Roles {
         match abi {
             Abi::Windows64 | Abi::SystemV => Roles {
@@ -137,6 +140,12 @@ enum ColdPath {
 }
 
 /// The assembler of one piece of machine code, speaking in the VM's idioms.
+///
+/// A template reaches the frame's registers, the entry block, a leaf, the
+/// poll and an exit only through the idioms below, never by emitting their
+/// operations again through `assembler()`, which is for what no idiom
+/// covers: an idiom is the one place its layout, its debug check and its
+/// calling sequence are decided, so a copy would drift from it.
 pub(crate) struct MacroAssembler {
     assembler: Assembler<X64>,
     roles: Roles,
@@ -313,8 +322,9 @@ impl MacroAssembler {
 
     /// Leaves machine code through the exit stub, which writes `kind` and
     /// `program_counter` into the block and returns to `enter`'s caller.
-    /// The call into the stub never returns: the stub drops its return
-    /// address with the rest of the native stack.
+    /// A jump rather than a call: the stub never returns here, and a call
+    /// that never returns would leave the processor's return-address
+    /// predictor unbalanced on every exit.
     pub(crate) fn exit(&mut self, kind: ExitKind, program_counter: u32) {
         let roles = self.roles;
         self.assembler
@@ -324,7 +334,7 @@ impl MacroAssembler {
         let stub = self.block_word(BlockWord::ExitStub);
         self.assembler
             .load(Width::Word64, roles.idiom_scratch, stub);
-        self.assembler.call_register(roles.idiom_scratch);
+        self.assembler.jump_register(roles.idiom_scratch);
     }
 
     /// Takes `exit(Safepoint, program_counter)` when the heap's safepoint
