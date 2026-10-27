@@ -407,10 +407,6 @@ pub enum ActivationKind<'gc> {
 pub enum Continuation<'gc> {
     /// Hand the value to the send that made the activation.
     Deliver,
-    /// A native `whileTrue:`/`whileFalse:` loop's condition returned.
-    WhileCondition(Box<WhileLoop<'gc>>),
-    /// Its body returned.
-    WhileBody(Box<WhileLoop<'gc>>),
     /// A native `do:` loop's block returned for one element: activate it for
     /// the next, or answer the receiver
     /// (`builtins::collections::after_element`).
@@ -501,19 +497,6 @@ impl<'gc> LoopAction<'gc> {
             _ => LoopAction::Sent(value),
         }
     }
-}
-
-/// A native `whileTrue:`/`whileFalse:` loop in progress: its condition,
-/// what it runs as the body -- a closure it activates, or any other object,
-/// which it sends `value` -- and the condition value that keeps it going.
-///
-/// Boxed in its continuation, and owned by exactly one activation.
-#[derive(Debug, Clone)]
-pub struct WhileLoop<'gc> {
-    /// The condition's closure object.
-    pub(crate) condition: ObjectReference<'gc>,
-    pub(crate) body: LoopAction<'gc>,
-    pub(crate) expect: bool,
 }
 
 /// A native `do:` loop in progress: the array it walks and answers when it

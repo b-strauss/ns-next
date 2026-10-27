@@ -6104,14 +6104,19 @@ class Kernel vmMirror: mirror = Value (
     /// answers anything else, and an ArgumentError, 'wrong number of
     /// block arguments: block takes …, got 0', for a receiver or a
     /// `body` that declares parameters.
+    ///
+    /// The compiler inlines a send of this message whose receiver and
+    /// argument are block literals; this method serves every other
+    /// send, and its own loop is that inlined form, whose guard signals
+    /// the NonBooleanReceiver.
     public whileTrue: body = (
-      ^vmMirror block: self whileTrue: body ifFail: [^super whileTrue: body].
+      ^[self value] whileTrue: [body value].
     )
 
     /// As `whileTrue:`, evaluating `body` while the receiver answers
     /// false.
     public whileFalse: body = (
-      ^vmMirror block: self whileFalse: body ifFail: [^super whileFalse: body].
+      ^[self value] whileFalse: [body value].
     )
 
     /// Evaluates the receiver and answers its value. An exception
@@ -6187,10 +6192,10 @@ class Kernel vmMirror: mirror = Value (
       ^onUnwind value.
     )
 
-    /// Sends `value` to `action` and answers what it answers. A native
-    /// loop activates it for a loop body that is no block, so that the
-    /// loop carries on from this activation's return whatever the send
-    /// decides.
+    /// Sends `value` to `action` and answers what it answers. The
+    /// forcing of a future activates it for a computation that is no
+    /// block, so that the forcing carries on from this activation's
+    /// return whatever the send decides.
     ///
     /// action: any object; sent `value`.
     private valueOf: action = (
@@ -6199,7 +6204,7 @@ class Kernel vmMirror: mirror = Value (
 
     /// Sends `value:` with `element` to `action` and answers what it
     /// answers. `do:` activates it for an action that is no block, as
-    /// `valueOf:` serves a loop body.
+    /// `valueOf:` serves a future's computation.
     ///
     /// action: any object; sent `value:`.
     /// element: the element of this turn of the walk.

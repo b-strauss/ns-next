@@ -1696,7 +1696,16 @@ impl<'gc> Mutator<'gc> {
                 arguments,
                 then,
             } => {
-                let control_flow = matches!(arguments, StepArguments::ControlFlow);
+                // A block a control-flow step activates, or one a
+                // `SendInlinable` sends `value` -- the reference lowering's
+                // loop (`compiler::reference`'s `while_loop`); no other
+                // decision about an inlinable send answers a block with the
+                // send's own arguments.
+                let control_flow = match arguments {
+                    StepArguments::ControlFlow => true,
+                    StepArguments::Send => inlinable,
+                    StepArguments::Owned(_) => false,
+                };
                 let slots = on_slots(&arguments);
                 let owned = arguments.owned();
                 let arguments = arguments.window(send_arguments, &owned);
@@ -2008,10 +2017,6 @@ impl<'gc> Mutator<'gc> {
     ) -> Result<Step<'gc>, Signal<'gc>> {
         match then {
             Continuation::Deliver => Ok(Step::Value(value)),
-            Continuation::WhileCondition(state) => {
-                crate::builtins::block::after_condition(self, state, value)
-            }
-            Continuation::WhileBody(state) => Ok(crate::builtins::block::after_body(state)),
             Continuation::DoElement(state) => {
                 Ok(crate::builtins::collections::after_element(self, state))
             }

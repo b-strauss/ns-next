@@ -255,12 +255,7 @@ impl Primitive {
             // A write stores its element, and a value of the wrong kind is
             // an error rather than `false`.
             Primitive::Element(_) => false,
-            Primitive::Block(
-                BlockPrimitive::Value
-                | BlockPrimitive::ArgumentCount
-                | BlockPrimitive::WhileTrue
-                | BlockPrimitive::WhileFalse,
-            ) => false,
+            Primitive::Block(BlockPrimitive::Value | BlockPrimitive::ArgumentCount) => false,
             Primitive::Platform(
                 PlatformPrimitive::Show
                 | PlatformPrimitive::NewLine
@@ -760,8 +755,6 @@ impl ElementAccess {
 pub enum BlockPrimitive {
     Value,
     ArgumentCount,
-    WhileTrue,
-    WhileFalse,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1333,16 +1326,6 @@ pub const MIRROR: &[MirrorEntry] = &[
         "blockNumArgs:ifFail:",
         "numArgs",
         Primitive::Block(BlockPrimitive::ArgumentCount),
-    ),
-    mirror(
-        "block:whileTrue:ifFail:",
-        "whileTrue:",
-        Primitive::Block(BlockPrimitive::WhileTrue),
-    ),
-    mirror(
-        "block:whileFalse:ifFail:",
-        "whileFalse:",
-        Primitive::Block(BlockPrimitive::WhileFalse),
     ),
     mirror(
         "transcript:show:ifFail:",

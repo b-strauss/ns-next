@@ -1,0 +1,32 @@
+/// Every level recurses from the body of a `whileTrue:` whose receiver
+/// and argument are block literals. The optimized lowering inlines both
+/// blocks; the reference lowering runs them as real closures, each sent
+/// `value` by a `SendInlinable`, and their activations are exempt from the
+/// depth count, so both lowerings count one activation per level and
+/// overflow at the same level (`docs/design/compiler.md`, "How the limit
+/// counts").
+class RecursionThroughALiteralLoop = Object new (
+  |
+    transcript.
+  |
+) (
+  public down: depth = (
+    |
+      going ::= true.
+    |
+    depth = (depth // 10000 * 10000) ifTrue: [
+      transcript
+          show: depth printString;
+          newLine.
+    ].
+    [going] whileTrue: [
+      going:: false.
+      down: depth + 1.
+    ].
+  )
+
+  public main: platform args: arguments = (
+    transcript:: platform transcript.
+    down: 0.
+  )
+)

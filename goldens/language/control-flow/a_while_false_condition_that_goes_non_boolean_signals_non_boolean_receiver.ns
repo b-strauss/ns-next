@@ -1,0 +1,23 @@
+/// A `whileFalse:` loop whose condition, held in a variable, goes
+/// non-Boolean after two rounds signals a `NonBooleanReceiver`, after
+/// exactly two bodies, as its `whileTrue:` twin does.
+class AWhileFalseConditionThatGoesNonBooleanSignalsNonBooleanReceiver = Object new (
+  |
+    count ::= 0.
+  |
+) (
+  public main: platform args: arguments = (
+    |
+      condition
+      body
+    |
+    condition:: [count < 2 ifTrue: [false] ifFalse: [count]].
+    body:: [
+      count:: count + 1.
+      platform transcript
+          show: count printString;
+          newLine.
+    ].
+    condition whileFalse: body.
+  )
+)

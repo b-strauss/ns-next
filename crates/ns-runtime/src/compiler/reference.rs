@@ -731,6 +731,15 @@ impl<'a> Body<'a> {
             // lowers inline is marked too, so that the block's activation is
             // exempt under the same condition as `ifTrue:`'s.
             Some(Binding::Local(_) | Binding::OuterLocal { .. } | Binding::MirrorSend) | None => {
+                match control_flow::recognize(send) {
+                    Some(control_flow::InlineForm::WhileTrue { condition, body }) => {
+                        return self.while_loop(condition, body, true, into);
+                    }
+                    Some(control_flow::InlineForm::WhileFalse { condition, body }) => {
+                        return self.while_loop(condition, body, false, into);
+                    }
+                    _ => {}
+                }
                 let receiver_register = self.value(&send.receiver);
                 if control_flow::recognize(send).is_some()
                     || control_flow::recognize_mirror_send(self.bindings, send).is_some()
@@ -777,6 +786,85 @@ impl<'a> Body<'a> {
             destination,
             call_site,
         })
+    }
+
+    /// `[condition] whileTrue: [body]` (`while_true`) or `whileFalse:`,
+    /// both literal blocks, as the optimized lowering inlines it: a loop,
+    /// since a loop has to bottom out somewhere and `Closure>>whileTrue:`'s
+    /// own body is this same shape. It stays naive: both blocks are real
+    /// closures, made once, and each turn sends `value` to them, marked
+    /// `SendInlinable` so that their activations are exempt from the depth
+    /// count as the inlined bodies have none (`docs/design/compiler.md`,
+    /// "The reference lowering", "How the limit counts"). A non-Boolean
+    /// condition signals as the inlined guard does; the loop answers nil.
+    fn while_loop(
+        &mut self,
+        condition: &ast::BlockExpression,
+        body: &ast::BlockExpression,
+        while_true: bool,
+        into: Option<u16>,
+    ) -> u16 {
+        let condition_register = self.block(condition, None);
+        let body_register = self.block(body, None);
+        let loop_start = self.code.len();
+        let condition_value = self.value_send(condition_register);
+        let not_boolean_jump = self.code.len();
+        self.emit(Instruction::JumpIfNotBoolean {
+            register: condition_value,
+            target: 0,
+        });
+        let exit_branch = self.code.len();
+        self.emit(if while_true {
+            Instruction::BranchIfFalse {
+                register: condition_value,
+                target: 0,
+            }
+        } else {
+            Instruction::BranchIfTrue {
+                register: condition_value,
+                target: 0,
+            }
+        });
+        self.value_send(body_register);
+        self.emit(Instruction::Jump {
+            target: Self::target(loop_start),
+        });
+        self.patch_target(not_boolean_jump, self.code.len());
+        self.emit(Instruction::SignalNonBoolean {
+            register: condition_value,
+        });
+        self.patch_target(exit_branch, self.code.len());
+        self.literal(BytecodeLiteral::Nil, into)
+    }
+
+    /// `value` sent to the closure in `receiver_register`, marked as the
+    /// activation of a block the optimized lowering inlines.
+    fn value_send(&mut self, receiver_register: u16) -> u16 {
+        let argument_base = self.next_register;
+        self.emit_send(None, |destination, call_site| Instruction::SendInlinable {
+            selector: Symbol::VALUE,
+            receiver_register,
+            argument_base,
+            argument_sources: Vec::new(),
+            destination,
+            call_site,
+        })
+    }
+
+    /// An instruction index as a jump target. At most `INSTRUCTION_LIMIT`,
+    /// since `emit` emits nothing past it.
+    fn target(index: usize) -> u32 {
+        u32::try_from(index).expect("internal: a body holds at most INSTRUCTION_LIMIT instructions")
+    }
+
+    /// Points the branch at `instruction_index` at `target`. A body too
+    /// large emits nothing more, so a branch it did not emit is not
+    /// patched; its code is never kept.
+    fn patch_target(&mut self, instruction_index: usize, target: usize) {
+        if instruction_index < self.code.len() {
+            self.code
+                .patch_target(instruction_index, Self::target(target));
+        }
     }
 
     /// The cascade's value is its last send's, produced in `into`.
@@ -861,7 +949,9 @@ impl<'a> Body<'a> {
 
 /// The shape the reference lowering promises (`docs/design/compiler.md`,
 /// "What it emits"), checked on every body in a debug build, which is what
-/// the test suite runs: no branch, since only inlining emits one; every
+/// the test suite runs: no branch but a `whileTrue:` or `whileFalse:`
+/// loop's (`Body::while_loop`), its back edge the one jump backwards and
+/// its two exits the only forward ones; every
 /// register above the named locals written by exactly one instruction; a
 /// named local written only by `StoreLocal`; and a named local read only by `Move`, every other operand being a
 /// scratch register. The last is rule 3, "every read of a local is copied",
@@ -872,7 +962,20 @@ impl<'a> Body<'a> {
 /// its slot, a named local by the `Move` that is its read.
 fn check_shape(instructions: &[Instruction], first_scratch: u16) {
     let mut written = HashSet::new();
-    for instruction in instructions {
+    for (index, instruction) in instructions.iter().enumerate() {
+        match instruction {
+            Instruction::Jump { target } => assert!(
+                (*target as usize) < index,
+                "internal: the reference lowering jumped forwards: {instruction:?}"
+            ),
+            Instruction::JumpIfNotBoolean { target, .. }
+            | Instruction::BranchIfFalse { target, .. }
+            | Instruction::BranchIfTrue { target, .. } => assert!(
+                (*target as usize) > index,
+                "internal: the reference lowering branched backwards: {instruction:?}"
+            ),
+            _ => {}
+        }
         if let Some((argument_base, argument_sources)) = instruction.argument_slots() {
             for (offset, source) in argument_sources.iter().enumerate() {
                 let slot = usize::from(argument_base) + offset;
@@ -883,14 +986,7 @@ fn check_shape(instructions: &[Instruction], first_scratch: u16) {
             }
         }
         assert!(
-            !matches!(
-                instruction,
-                Instruction::Jump { .. }
-                    | Instruction::JumpIfNotBoolean { .. }
-                    | Instruction::BranchIfFalse { .. }
-                    | Instruction::BranchIfTrue { .. }
-                    | Instruction::IntegerBinary { .. }
-            ),
+            !matches!(instruction, Instruction::IntegerBinary { .. }),
             "internal: the reference lowering emitted a branch: {instruction:?}"
         );
         // A `StoreLocal` writes a named local, the one way this lowering
@@ -1081,8 +1177,10 @@ mod tests {
             ("foo: x = ( ^x ifFalse: [1] )", "ifFalse:"),
             ("foo: x = ( ^x and: [x] )", "and:"),
             ("foo: x = ( ^x or: [x] )", "or:"),
-            ("foo: x = ( ^[x] whileTrue: [x] )", "whileTrue:"),
-            ("foo: x = ( ^[x] whileFalse: [x] )", "whileFalse:"),
+            // A loop's two `value` sends, each the activation of a block the
+            // optimized lowering inlines away.
+            ("foo: x = ( ^[x] whileTrue: [x] )", "value"),
+            ("foo: x = ( ^[x] whileFalse: [x] )", "value"),
         ] {
             let code = compile(&method(declaration), 0);
             assert!(
@@ -1092,6 +1190,41 @@ mod tests {
                 "{declaration}: {code:?}"
             );
         }
+    }
+
+    /// `whileFalse:` is `whileTrue:`'s loop with the exit taken on `true`.
+    #[test]
+    fn while_false_leaves_its_loop_on_true() {
+        let code = compile(&method("foo: x = ( [x] whileFalse: [x] )"), 0);
+        let instructions = code.instructions();
+        assert!(
+            instructions
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::BranchIfTrue { .. })),
+            "{code:?}"
+        );
+        assert!(
+            !instructions.iter().any(|instruction| matches!(
+                instruction,
+                Instruction::BranchIfFalse { .. } | Instruction::SendPublic { .. }
+            )),
+            "{code:?}"
+        );
+    }
+
+    /// A loop whose receiver is no block literal is an ordinary send: only
+    /// the shape the optimized lowering inlines becomes a loop.
+    #[test]
+    fn a_loop_over_a_block_in_a_variable_stays_a_send_public() {
+        let code = compile(&method("foo: x = ( x whileTrue: [x] )"), 0);
+        assert!(no_branch(&code), "{code:?}");
+        assert!(
+            code.instructions().iter().any(|instruction| matches!(
+                instruction,
+                Instruction::SendPublic { selector, .. } if selector.as_str() == "whileTrue:"
+            )),
+            "{code:?}"
+        );
     }
 
     fn closure_code(instruction: &Instruction) -> Rc<CompiledCode> {
@@ -1289,12 +1422,11 @@ mod tests {
     }
 
     #[test]
-    fn while_true_is_a_real_send_whose_blocks_reach_the_method_through_their_frames() {
+    fn while_true_is_a_loop_of_value_sends_whose_blocks_reach_the_method_through_their_frames() {
         let code = compile(
             &method("foo = ( | n | n:: 0. [n < 3] whileTrue: [n:: n + 1]. ^n )"),
             0,
         );
-        assert!(no_branch(&code));
         assert_eq!(
             code.instruction(0),
             Instruction::LoadLiteral {
@@ -1323,21 +1455,45 @@ mod tests {
                 ..
             }
         ));
-        assert_eq!(
-            code.instruction(4),
-            inlinable("whileTrue:", 15, 16, vec![16], 17)
-        );
+        assert_eq!(code.instruction(4), inlinable("value", 15, 17, vec![], 17));
         assert_eq!(
             code.instruction(5),
+            Instruction::JumpIfNotBoolean {
+                register: 17,
+                target: 9
+            }
+        );
+        assert_eq!(
+            code.instruction(6),
+            Instruction::BranchIfFalse {
+                register: 17,
+                target: 10
+            }
+        );
+        assert_eq!(code.instruction(7), inlinable("value", 16, 18, vec![], 18));
+        assert_eq!(code.instruction(8), Instruction::Jump { target: 4 });
+        assert_eq!(
+            code.instruction(9),
+            Instruction::SignalNonBoolean { register: 17 }
+        );
+        assert_eq!(
+            code.instruction(10),
+            Instruction::LoadLiteral {
+                destination: 19,
+                literal: BytecodeLiteral::Nil
+            }
+        );
+        assert_eq!(
+            code.instruction(11),
             Instruction::Move {
-                destination: 18,
+                destination: 20,
                 source: 13
             }
         );
-        assert_eq!(code.instruction(6), Instruction::Return { register: 18 });
+        assert_eq!(code.instruction(12), Instruction::Return { register: 20 });
         assert_eq!(
             code.statement_program_counter,
-            vec![(0, 0..2), (1, 2..5), (2, 5..7)]
+            vec![(0, 0..2), (1, 2..11), (2, 11..13)]
         );
         assert_eq!(
             closure_code(&code.instruction(2)).instructions(),
