@@ -265,7 +265,9 @@ pub(super) mod testing {
     }
 }
 
-#[cfg(test)]
+/// These name x64's registers, so they are x64's whatever `cfg(ns_jit)`
+/// says (`build.rs`).
+#[cfg(all(test, target_arch = "x86_64"))]
 mod tests {
     use ns_assembler::x64::{R12, R13, R8, RAX, RBP, RCX, RDI, RDX, RSI};
     use ns_memory::Leaf;

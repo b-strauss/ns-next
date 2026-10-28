@@ -70,7 +70,7 @@ use space::{
 pub use tables::{ApplicationIndex, CodeId, MixinId};
 pub(crate) use tables::{CodeEntry, CodeIdCache, MixinRow, Tables};
 pub(crate) use value::is_small_float_bits;
-#[cfg(target_arch = "x86_64")]
+#[cfg(ns_jit)]
 pub(crate) use value::machine as value_bits;
 use value::{at_rest, branded};
 pub use value::{
@@ -758,7 +758,7 @@ fn assert_live_register(offset: u32, index: u16, bits: u64) {
 /// The refusal of a read of a dead register: the interpreter's
 /// (`assert_live_register`) and machine code's, whose read exits to
 /// `Heap::refuse_dead_register`, so that both say the same.
-#[cfg(any(debug_assertions, target_arch = "x86_64"))]
+#[cfg(any(debug_assertions, ns_jit))]
 #[cold]
 #[inline(never)]
 fn refuse_dead_register_read(offset: u32, index: u16) -> ! {
@@ -8145,28 +8145,28 @@ impl<'gc> Heap<'gc> {
     /// the other addresses machine code is entered with are. Asked for at
     /// every entry, since nothing keeps the heap at one address between
     /// entries.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(ns_jit)]
     pub(crate) fn safepoint_flag_address(&self) -> usize {
         std::ptr::from_ref(&self.safepoint_requested).expose_provenance()
     }
 
     /// The object space's base address, every handle's origin
     /// (`jit::stubs::BlockWord::ObjectSpaceBase`).
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(ns_jit)]
     pub(crate) fn object_space_base_address(&mut self) -> usize {
         self.space.base_address()
     }
 
     /// The activation stack's base address
     /// (`jit::stubs::BlockWord::StackBase`).
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(ns_jit)]
     pub(crate) fn activation_stack_base_address(&mut self) -> usize {
         self.stack.frames.base_address()
     }
 
     /// Where `base`'s registers start, in words from the activation
     /// stack's base (`jit::stubs::BlockWord::RegisterBase`).
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(ns_jit)]
     pub(crate) fn register_base_words(base: RegisterBase) -> u64 {
         u64::from(base.index)
     }
@@ -8176,7 +8176,7 @@ impl<'gc> Heap<'gc> {
     /// the handle (`machine_activation`): its offset, and in a debug build
     /// its generation above it, so that the handle a leaf gets back is
     /// checked as the one the run loop held.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(ns_jit)]
     pub(crate) fn activation_word(activation: ActivationReference) -> u64 {
         #[cfg(debug_assertions)]
         {
@@ -8195,7 +8195,7 @@ impl<'gc> Heap<'gc> {
     ///
     /// On a word `activation_word` did not make, which only a defect of
     /// the JIT passes; a debug build also refuses a frame since popped.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(ns_jit)]
     pub(crate) fn machine_activation(&self, word: u64) -> ActivationReference {
         let Ok(offset) = u32::try_from(word & u64::from(u32::MAX)) else {
             unreachable!("internal: the low half of a word fits 32 bits");
@@ -8220,7 +8220,7 @@ impl<'gc> Heap<'gc> {
     /// header word `RECEIVER`, which lies `argument_count` registers above
     /// register 0, since the header follows the arguments
     /// (`bytecode::HEADER_REGISTERS`).
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(ns_jit)]
     pub(crate) fn receiver_register(argument_count: u16) -> u16 {
         let Ok(receiver) = u16::try_from(frame_header::RECEIVER) else {
             unreachable!("internal: the header's words are numbered from 0 to 12");
@@ -8231,7 +8231,7 @@ impl<'gc> Heap<'gc> {
     /// Refuses machine code's read of `activation`'s dead register
     /// `register` with the interpreter's own refusal
     /// (`assert_live_register`).
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(ns_jit)]
     pub(crate) fn refuse_dead_register(&self, activation: ActivationReference, register: u16) -> ! {
         refuse_dead_register_read(activation.offset, register)
     }

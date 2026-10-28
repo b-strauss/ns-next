@@ -7,24 +7,25 @@
 //! the compile trigger (`note_entry`), and the run loop's one way into
 //! machine code and back (`entered`).
 //!
-//! Only x64 has an encoder, so everything that emits or runs machine code
-//! is compiled for x64 alone; elsewhere `available` answers `false` and
-//! every body stays interpreted.
+//! Everything that emits or runs machine code is compiled only where the
+//! build script sets `cfg(ns_jit)` -- a target with an encoder, x64 today
+//! (`build.rs`); elsewhere `available` answers `false` and every body
+//! stays interpreted.
 #![cfg_attr(
-    not(target_arch = "x86_64"),
+    not(ns_jit),
     expect(
         dead_code,
         reason = "without an encoder no body is compiled, so nothing installs code or maps it"
     )
 )]
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(ns_jit)]
 pub(crate) mod baseline;
-#[cfg(target_arch = "x86_64")]
+#[cfg(ns_jit)]
 pub(crate) mod leaves;
-#[cfg(target_arch = "x86_64")]
+#[cfg(ns_jit)]
 pub(crate) mod macro_assembler;
-#[cfg(target_arch = "x86_64")]
+#[cfg(ns_jit)]
 pub(crate) mod stubs;
 
 use std::cell::Cell;
@@ -53,7 +54,7 @@ const BODY_ALIGNMENT: u32 = 16;
 
 /// Whether this build can compile bodies to machine code.
 pub(crate) fn available() -> bool {
-    cfg!(target_arch = "x86_64")
+    cfg!(ns_jit)
 }
 
 /// What the JIT has done in one interpreter, counted in every build
@@ -388,7 +389,7 @@ impl JitState {
     /// A state with the JIT on and a zone of `bytes`, whatever the
     /// environment says, installing bodies that leave before a loop when
     /// `install_bodies_leaving_before_a_loop` is set.
-    #[cfg(all(test, target_arch = "x86_64"))]
+    #[cfg(all(test, ns_jit))]
     fn for_test(bytes: usize, install_bodies_leaving_before_a_loop: bool) -> JitState {
         let zone = reserve_zone(bytes).expect("a zone");
         JitState {
@@ -405,7 +406,7 @@ impl JitState {
 
 /// A zone of `bytes` with both stubs installed at its base, or `None`
 /// when it cannot be reserved or the stubs do not fit.
-#[cfg(target_arch = "x86_64")]
+#[cfg(ns_jit)]
 fn reserve_zone(bytes: usize) -> Option<Zone> {
     use macro_assembler::Abi;
 
@@ -423,7 +424,7 @@ fn reserve_zone(bytes: usize) -> Option<Zone> {
     Some(zone)
 }
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(ns_jit))]
 fn reserve_zone(_bytes: usize) -> Option<Zone> {
     None
 }
@@ -506,7 +507,7 @@ fn compile_into_slot(state: &mut JitState, code: &CompiledCode) {
 
 /// Compiles `code` and installs it, answering its offset and the index
 /// of its program-counter map.
-#[cfg(target_arch = "x86_64")]
+#[cfg(ns_jit)]
 fn compile(state: &mut JitState, code: &CompiledCode) -> Result<(CodeOffset, u32), Refusal> {
     let Some(zone) = state.zone.as_mut() else {
         panic!("internal: the JIT is on without a zone");
@@ -523,7 +524,7 @@ fn compile(state: &mut JitState, code: &CompiledCode) -> Result<(CodeOffset, u32
     Ok((offset, map))
 }
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(ns_jit))]
 fn compile(_state: &mut JitState, _code: &CompiledCode) -> Result<(CodeOffset, u32), Refusal> {
     Err(Refusal::Unassembled)
 }
@@ -583,7 +584,7 @@ pub(crate) fn entered_at_start(
 ///
 /// On a debug build's read of a dead register, with the interpreter's own
 /// refusal of one (`Heap::refuse_dead_register`).
-#[cfg(target_arch = "x86_64")]
+#[cfg(ns_jit)]
 fn run_machine_code(
     mutator: &mut Mutator<'_>,
     activation: ActivationReference,
@@ -626,7 +627,7 @@ fn run_machine_code(
     }
 }
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(ns_jit))]
 fn run_machine_code(
     _mutator: &mut Mutator<'_>,
     _activation: ActivationReference,
@@ -641,8 +642,8 @@ mod tests {
     use super::{JitSlot, ProgramCounterMap};
 
     #[test]
-    fn the_jit_is_available_exactly_where_machine_code_is_emitted() {
-        assert_eq!(super::available(), cfg!(target_arch = "x86_64"));
+    fn the_jit_is_available_on_x64() {
+        assert!(!cfg!(target_arch = "x86_64") || super::available());
     }
 
     #[test]
@@ -675,8 +676,8 @@ mod tests {
         assert_eq!(format!("{slot:?}"), "JitSlot::Refused");
     }
 
-    /// The machine-code tests, on the one architecture that emits it.
-    #[cfg(target_arch = "x86_64")]
+    /// The machine-code tests, where the build emits machine code.
+    #[cfg(ns_jit)]
     mod machine {
         use crate::bytecode::{CodeKind, CompiledCode, Instruction, Literal};
         use crate::jit::{machine_entry, note_entry, JitState};

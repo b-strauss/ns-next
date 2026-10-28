@@ -3,7 +3,7 @@
 //! is compiled"). What a compiled body computes is the goldens' to pin,
 //! under both lowerings; these pin when a body is compiled, whose zone it
 //! runs from, and what happens when the zone is full.
-#![cfg(target_arch = "x86_64")]
+#![cfg(ns_jit)]
 
 use indoc::{formatdoc, indoc};
 use ns_runtime::{

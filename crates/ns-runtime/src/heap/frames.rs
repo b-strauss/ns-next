@@ -656,7 +656,7 @@ impl FrameStack {
     /// The base never moves, but the answer is asked for at every entry
     /// into machine code all the same, so that no address outlives the
     /// borrow it was taken under.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(ns_jit)]
     pub(super) fn base_address(&mut self) -> usize {
         self.reservation
             .accessible_mut()

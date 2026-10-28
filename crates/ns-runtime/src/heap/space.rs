@@ -187,7 +187,7 @@ impl Space {
     /// The address of the space's first byte, exposed: every handle is a
     /// byte offset from it, so machine code reaches a field as this base
     /// plus a handle (`jit::run_machine_code`).
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(ns_jit)]
     pub(in crate::heap) fn base_address(&mut self) -> usize {
         self.reservation
             .accessible_mut()
