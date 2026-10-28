@@ -9252,9 +9252,11 @@ reads or writes another activation. Before it leaves, the exit walks the
 return addresses on the native stack down to the run loop's entry and writes
 each compiled frame's header but the two words its call wrote: its code, its program counter, its
 caller word, its flags with the compiled bit, its continuation (`Deliver`),
-its feedback base, its guard and entered level (none, so the first
-own-slot access takes the cold check, as a resume does today: "Suspending
-and resuming" above), and its reified word, nil unless the frame reified
+its feedback base, its guard (none, so the first own-slot access takes
+the cold check, as a resume does today: "Suspending and resuming" above)
+and entered level (the current class's application for code that
+addresses its own slots, as the push records it, since the cold check
+verifies the receiver against that level), and its reified word, nil unless the frame reified
 itself, whose reification wrote it then ("Returns" below). Everything it writes is derived: a return
 address names a call site, the call site its code and program counter,
 and a callee's frame lies at a fixed offset of its caller's, the call
