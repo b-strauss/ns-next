@@ -1,0 +1,67 @@
+/// An unbounded recursion through a compiled send overflows the depth
+/// limit where the interpreter's does: a compiled callee's push counts
+/// exactly as the interpreter's, and at the limit it leaves the send to
+/// the interpreter, which raises the overflow (`docs/design/execution.md`,
+/// "Safepoints and the depth limit"). Each method loops once before it
+/// recurses, so that its body is compiled at its second entry, and
+/// recurses through an explicit receiver, so that the recursion runs as
+/// compiled sends. `probe:on:` records every thousandth depth it reaches,
+/// which leaves machine code there and materializes the compiled frames
+/// above the last record; `descend:to:on:` installs a handler near the
+/// limit, and the overflow of the recursion above it is caught there.
+class SendRecursionOverflow = Object new () (
+  class Recursion = (
+    |
+      public deepest ::= 0.
+    |
+  ) (
+    public probe: depth on: recursion = (
+      |
+        index ::= 0.
+      |
+      [index < 1] whileTrue: [index:: index + 1].
+      depth // 1000 * 1000 = depth ifTrue: [deepest:: depth].
+      ^recursion probe: depth + 1 on: recursion.
+    )
+
+    public climb: depth on: recursion = (
+      |
+        index ::= 0.
+      |
+      [index < 1] whileTrue: [index:: index + 1].
+      ^recursion climb: depth + 1 on: recursion.
+    )
+
+    public descend: depth to: bottom on: recursion = (
+      |
+        index ::= 0.
+      |
+      [index < 1] whileTrue: [index:: index + 1].
+      depth = bottom ifTrue: [
+        ^[recursion climb: depth on: recursion] on: Error do: [:error |
+          depth printString , ' ' , error messageText.
+        ].
+      ].
+      ^recursion descend: depth + 1 to: bottom on: recursion.
+    )
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      recursion = Recursion new.
+    |
+    transcript
+        show: ([recursion probe: 1 on: recursion] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: recursion deepest printString;
+        newLine.
+    transcript
+        show: (recursion descend: 1 to: recursion deepest - 500 on: recursion);
+        newLine.
+    transcript
+        show: ([recursion climb: 1 on: recursion] on: Error do: [:error | 'caught again']);
+        newLine.
+  )
+)

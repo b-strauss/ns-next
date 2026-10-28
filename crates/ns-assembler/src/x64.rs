@@ -397,6 +397,13 @@ const POP_REGISTER_BASE: u8 = 0x58;
 /// Intel SDM Vol. 2A, LEA—Load Effective Address.
 const LOAD_EFFECTIVE_ADDRESS: [u8; 1] = [0x8D];
 
+/// The ModRM `r/m` field that, in mode 0 in 64-bit mode, addresses the
+/// instruction pointer of the next instruction plus a 32-bit displacement:
+/// RIP-relative addressing, which takes the place of mode 0's "no base".
+///
+/// Intel SDM Vol. 2A, 2.2.1.6 RIP-Relative Addressing.
+const RIP_RELATIVE: u8 = 0b101;
+
 /// `RET` (`C3`) — near return.
 ///
 /// Intel SDM Vol. 2B, RET—Return From Procedure.
@@ -842,6 +849,15 @@ impl Encoder for X64 {
                     number(RSP),
                     stack,
                 );
+            }
+            Operation::LoadCodeAddress { target } => {
+                // `lea target, [rip + 0]`: the displacement counts from the
+                // end of this instruction, so 0 names the next one.
+                let target = number(target);
+                rex(code, true, target, 0, false);
+                code.extend_from_slice(&LOAD_EFFECTIVE_ADDRESS);
+                code.push(modrm(MODRM_MODE_NO_DISPLACEMENT, target, RIP_RELATIVE));
+                code.extend_from_slice(&0i32.to_le_bytes());
             }
             Operation::Return => code.push(RETURN_NEAR),
             Operation::Trap => code.extend_from_slice(&UNDEFINED_INSTRUCTION),

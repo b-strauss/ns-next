@@ -548,6 +548,9 @@ pub struct Mutator<'gc> {
     /// `Interpreter::resume_unhandled_exceptions`, standing in for the
     /// debugger. Zero outside a test that asks.
     pub(crate) unhandled_exceptions_to_resume: usize,
+    /// The live activations when the last unhandled exception ended a run,
+    /// innermost first (`Interpreter::stack_trace`).
+    pub(crate) last_unhandled_stack: Vec<String>,
     /// The depth limit's reserve (`DEPTH_RESERVE`), while it is held: the
     /// frame of the activation a VM error arose in, whose `signal` -- or,
     /// for a message nothing understood, whose `Object>>doesNotUnderstand:`
@@ -994,14 +997,23 @@ impl Interpreter {
     /// the JIT on later does not revive it.
     #[doc(hidden)]
     pub fn set_jit_enabled(&mut self, enabled: bool) {
-        self.enter(|mutator| mutator.jit.set_enabled(enabled));
+        self.enter(|mutator| {
+            if mutator.jit.set_enabled(enabled) {
+                mutator.caches.invalidate();
+            }
+        });
     }
 
     /// Gives the JIT a fresh code zone that holds at most `bytes` of code,
-    /// stubs included, so that a test can fill it. A test hook.
+    /// stubs included, so that a test can fill it. A test hook. The
+    /// caches are vacated with the old zone, since their cells name
+    /// addresses in it.
     #[doc(hidden)]
     pub fn set_jit_zone_bytes(&mut self, bytes: usize) {
-        self.enter(|mutator| mutator.jit.replace_zone(bytes));
+        self.enter(|mutator| {
+            mutator.jit.replace_zone(bytes);
+            mutator.caches.invalidate();
+        });
     }
 
     /// Turns the JIT stress mode (`NS_NEXT_STRESS_JIT`) on or off for this
@@ -1052,6 +1064,16 @@ impl Interpreter {
     #[doc(hidden)]
     pub fn resume_unhandled_exceptions(&mut self, count: usize) {
         self.enter(|mutator| mutator.unhandled_exceptions_to_resume = count);
+    }
+
+    /// The live activations when the last unhandled exception ended a
+    /// run, innermost first, each a line naming what it runs -- a method's
+    /// selector, or its kind -- and its stored program counter: what a
+    /// debugger would show of the stack. A test hook, as
+    /// `resume_unhandled_exceptions` is; empty before any such exception.
+    #[doc(hidden)]
+    pub fn stack_trace(&mut self) -> Vec<String> {
+        self.enter(|mutator| mutator.last_unhandled_stack.clone())
     }
 
     /// How many of the exceptions `resume_unhandled_exceptions` asked for

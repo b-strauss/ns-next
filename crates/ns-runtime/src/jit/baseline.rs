@@ -11,10 +11,12 @@ use ns_assembler::{Condition, Label, Register};
 
 use crate::bytecode::{successors, CompiledCode, Instruction, IntegerOperation, Literal};
 use crate::heap::{value_bits, Immediate};
+use crate::interpreter::FeedbackBase;
 
 use super::leaves::Leaf;
 use super::macro_assembler::{LeafIndex, MacroAssembler, Operand};
-use super::stubs::{BlockWord, ExitKind};
+use super::sends;
+use super::stubs::ExitKind;
 use super::{CallReturn, ProgramCounterMap, Refusal};
 
 /// A compiled body: its machine code, and where each instruction's code
@@ -33,7 +35,7 @@ pub(crate) struct BaselineBody {
 /// What `lower` did with one instruction, and what `compile` still emits
 /// for it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Lowering {
+pub(super) enum Lowering {
     /// The arm emitted the instruction's template itself.
     Template,
     /// A call of `leaf` with `arguments`, the instruction's own
@@ -57,8 +59,8 @@ const SIGN_SHIFT: u8 = 63;
 /// macro assembler, every instruction's label -- all made before the first
 /// instruction is emitted, so that a forward jump names its target -- and
 /// the instruction being lowered.
-struct BodyAssembler {
-    macro_assembler: MacroAssembler,
+pub(super) struct BodyAssembler {
+    pub(super) macro_assembler: MacroAssembler,
     /// Each instruction's label, by program counter.
     starts: Vec<Label>,
     /// The body's argument count, which places its receiver in the frame.
@@ -72,6 +74,12 @@ struct BodyAssembler {
     /// and the program counter of the send it is the call of, in the order
     /// the calls are emitted (`call_send`).
     call_returns: Vec<(Label, u32)>,
+    /// The feedback base the body's sends' cells are found from, embedded
+    /// in the code: its machine code is entered only by an activation with
+    /// this base (`JitState::interpreter_entry`).
+    pub(super) feedback_base: FeedbackBase,
+    /// The body's family's size, past which a site is uncached.
+    pub(super) family_size: u32,
 }
 
 /// The scratch registers a template uses, by role.
@@ -346,25 +354,23 @@ impl BodyAssembler {
     /// stack finds -- maps back to the send being lowered
     /// (`ProgramCounterMap::program_counter_of_return`). Every call a
     /// send's template emits goes through here, so none is left unmapped.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the sends' templates call through their cells")
-    )]
-    fn call_send(&mut self, target: Register) {
+    pub(super) fn call_send(&mut self, target: Register) {
         let return_address = self.macro_assembler.call_returning(target);
         self.call_returns
             .push((return_address, self.program_counter));
     }
 
     /// The call of the generic leaf, which runs the instruction being
-    /// lowered through the interpreter's own effect function.
+    /// lowered through the interpreter's own effect function in the frame
+    /// whose register 0 the frame register points at, whichever frame of
+    /// the stretch that is, and whose body the code address names.
     fn step(&self) -> Lowering {
         Lowering::Leaf {
             leaf: Leaf::Step.index(),
             arguments: [
-                Operand::Block(BlockWord::Activation),
+                Operand::Register(self.macro_assembler.roles().frame),
                 Operand::Immediate(u64::from(self.program_counter)),
-                Operand::Immediate(0),
+                Operand::CodeAddress,
             ],
         }
     }
@@ -422,11 +428,14 @@ fn allocated_literal(literal: &Literal) -> bool {
     }
 }
 
-/// Compiles `code` with `macro_assembler`: each instruction in turn, at a
-/// label whose offset the program-counter map records.
+/// Compiles `code` with `macro_assembler`, its sends' cells found from
+/// `feedback_base`: the prologue a compiled call enters at, then each
+/// instruction in turn, at a label whose offset the program-counter map
+/// records.
 pub(crate) fn compile(
     code: &CompiledCode,
     mut macro_assembler: MacroAssembler,
+    feedback_base: FeedbackBase,
 ) -> Result<BaselineBody, Refusal> {
     // A program counter of the map, and an exit's, is a `u32`; the bound
     // is the zone's layout's, which a later stage's tables index by
@@ -443,7 +452,10 @@ pub(crate) fn compile(
         program_counter: 0,
         backward_branches: Vec::new(),
         call_returns: Vec::new(),
+        feedback_base,
+        family_size: code.family_size,
     };
+    sends::prologue(&mut body, code);
     let mut exits = Vec::with_capacity(usize::from(count));
     for program_counter in 0..u32::from(count) {
         let start = body.starts[program_counter as usize];
@@ -626,15 +638,33 @@ fn lower(instruction: &Instruction, body: &mut BodyAssembler) -> Lowering {
             body.integer_binary(*operation, *destination, *left, *right, *target);
             Lowering::Template
         }
-        // Sends, returns, the initializers' invocations and the lexical
-        // walk an implicit receiver makes: stage 3, with the caches.
-        Instruction::SendLexical { .. } => Lowering::Exit,
-        Instruction::SendPublic { .. } => Lowering::Exit,
+        Instruction::SendPublic {
+            receiver_register,
+            argument_base,
+            argument_sources,
+            destination,
+            call_site,
+            ..
+        } => sends::send_public(
+            body,
+            *receiver_register,
+            *argument_base,
+            argument_sources,
+            *destination,
+            *call_site,
+        ),
+        // Only the reference lowering emits it, always uncached: an exit,
+        // so that the oracle stays interpreted at its sends.
         Instruction::SendInlinable { .. } => Lowering::Exit,
+        Instruction::Return { register } | Instruction::ImplicitReturn { register } => {
+            sends::return_from(body, *register)
+        }
+        // The lexical and `super` sends, the mirror's, the initializers'
+        // invocations and the lexical walk an implicit receiver makes: the
+        // rest of stage 3.
+        Instruction::SendLexical { .. } => Lowering::Exit,
         Instruction::SendSuper { .. } => Lowering::Exit,
         Instruction::SendMirror { .. } => Lowering::Exit,
-        Instruction::Return { .. } => Lowering::Exit,
-        Instruction::ImplicitReturn { .. } => Lowering::Exit,
         Instruction::InitializeInstance { .. } => Lowering::Exit,
         Instruction::CheckAppliedClause { .. } => Lowering::Exit,
         Instruction::InitializeSuperclass { .. } => Lowering::Exit,
@@ -665,6 +695,7 @@ mod tests {
     use crate::builtins::numbers::checked_floor_divide;
     use crate::bytecode::{CodeKind, CompiledCode, Instruction, IntegerOperation, Literal};
     use crate::heap::{fits_small_integer, Immediate, SMALL_INTEGER_MAX, SMALL_INTEGER_MIN};
+    use crate::interpreter::FeedbackBase;
     use crate::jit::macro_assembler::{Abi, MacroAssembler};
     use crate::jit::stubs::testing::Machine;
     use crate::jit::stubs::MachineExit;
@@ -692,7 +723,7 @@ mod tests {
                     destination: 14,
                     source: 13,
                 },
-                Instruction::Return { register: 14 },
+                Instruction::SignalNonBoolean { register: 14 },
             ],
             0,
         )
@@ -704,12 +735,26 @@ mod tests {
     fn run(code: &CompiledCode, frame: &mut [u64], safepoint_requested: bool) -> MachineExit {
         let mut macro_assembler = MacroAssembler::new(Abi::host());
         macro_assembler.set_exit_at_every_poll(false);
-        let body = super::compile(code, macro_assembler).expect("compiled");
+        let body = compiled(code, macro_assembler);
         let mut machine = Machine::new();
-        let entry = machine.install(&body.code);
+        let entry = interpreter_entry(&body, machine.install(&body.code));
         machine
             .run(entry, frame, 0, safepoint_requested, &mut (), &[])
             .0
+    }
+
+    /// `code` compiled with `macro_assembler`, its sends uncached.
+    fn compiled(code: &CompiledCode, macro_assembler: MacroAssembler) -> super::BaselineBody {
+        super::compile(code, macro_assembler, FeedbackBase::NOT_ASSIGNED).expect("compiled")
+    }
+
+    /// Where the run loop enters `body`, installed at `start`: its first
+    /// instruction, past the prologue a compiled call enters at.
+    fn interpreter_entry(
+        body: &super::BaselineBody,
+        start: ns_memory::CodeOffset,
+    ) -> ns_memory::CodeOffset {
+        ns_memory::CodeOffset(start.0 + body.map.machine_offset(0).expect("mapped"))
     }
 
     /// The bytes of `call rax` and `call rcx`: `FF /2` with the register
@@ -747,6 +792,8 @@ mod tests {
             program_counter: 0,
             backward_branches: Vec::new(),
             call_returns: Vec::new(),
+            feedback_base: FeedbackBase::NOT_ASSIGNED,
+            family_size: 0,
         };
         // Each call is followed by more code of its instruction, so that a
         // label bound anywhere but right after the call would show.
@@ -785,12 +832,11 @@ mod tests {
 
     #[test]
     fn every_instruction_starts_at_its_own_offset_in_order() {
-        let body = super::compile(&three_instructions(), MacroAssembler::new(Abi::host()))
-            .expect("compiled");
+        let body = compiled(&three_instructions(), MacroAssembler::new(Abi::host()));
         let starts: Vec<u32> = (0..3)
             .map(|program_counter| body.map.machine_offset(program_counter).expect("mapped"))
             .collect();
-        assert_eq!(starts[0], 0);
+        assert!(starts[0] > 0, "the prologue comes first");
         assert!(starts[0] < starts[1] && starts[1] < starts[2]);
         assert!(starts[2] < u32::try_from(body.code.bytes.len()).expect("small"));
         for (program_counter, start) in (0..).zip(&starts) {
@@ -831,7 +877,7 @@ mod tests {
                 literal: literal.clone(),
             })
             .collect();
-        instructions.push(Instruction::Return { register: 0 });
+        instructions.push(Instruction::SignalNonBoolean { register: 0 });
         let mut frame = [0u64; 24];
         let exit = run(&method(instructions, 0), &mut frame, false);
         assert_eq!(exit, MachineExit::Reexecute { program_counter: 5 });
@@ -862,7 +908,7 @@ mod tests {
         let code = method(
             vec![
                 Instruction::LoadSelf { destination: 16 },
-                Instruction::Return { register: 16 },
+                Instruction::SignalNonBoolean { register: 16 },
             ],
             2,
         );
@@ -876,14 +922,15 @@ mod tests {
         assert_eq!(frame[16], 0x1230);
     }
 
-    /// A body that runs `instruction` at 0, returns at 1 when it falls
-    /// through and at 2 when it jumps to its target, 2.
+    /// A body that runs `instruction` at 0 and exits at 1 when it falls
+    /// through and at 2 when it jumps to its target, 2: at an instruction
+    /// that always exits.
     fn branching(instruction: Instruction) -> CompiledCode {
         method(
             vec![
                 instruction,
-                Instruction::Return { register: 0 },
-                Instruction::Return { register: 0 },
+                Instruction::SignalNonBoolean { register: 0 },
+                Instruction::SignalNonBoolean { register: 0 },
             ],
             0,
         )
@@ -969,19 +1016,19 @@ mod tests {
     fn a_backward_branch_taken_polls_and_one_not_taken_falls_through() {
         let code = method(
             vec![
-                Instruction::Return { register: 0 },
+                Instruction::SignalNonBoolean { register: 0 },
                 Instruction::BranchIfTrue {
                     register: 0,
                     target: 0,
                 },
-                Instruction::Return { register: 0 },
+                Instruction::SignalNonBoolean { register: 0 },
             ],
             0,
         );
         let compiled = |word: u64| {
             let mut macro_assembler = MacroAssembler::new(Abi::host());
             macro_assembler.set_exit_at_every_poll(false);
-            let body = super::compile(&code, macro_assembler).expect("compiled");
+            let body = compiled(&code, macro_assembler);
             let start = body.map.machine_offset(1).expect("mapped");
             let mut machine = Machine::new();
             let entry = machine.install(&body.code);
@@ -1088,9 +1135,9 @@ mod tests {
             });
             let mut macro_assembler = MacroAssembler::new(Abi::host());
             macro_assembler.set_exit_at_every_poll(false);
-            let body = super::compile(&code, macro_assembler).expect("compiled");
+            let body = compiled(&code, macro_assembler);
             let mut machine = Machine::new();
-            let entry = machine.install(&body.code);
+            let entry = interpreter_entry(&body, machine.install(&body.code));
             for &left in &operands {
                 for &right in &operands {
                     let mut frame = [0u64; 24];

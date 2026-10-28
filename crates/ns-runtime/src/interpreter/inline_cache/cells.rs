@@ -216,10 +216,6 @@ impl Cells {
 
     /// The address of site `index`'s cell: the site cells' base plus
     /// `index` cells, fixed for the reservation's life.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "a compiled send reads its site's cell from it")
-    )]
     pub(crate) fn site_address(&self, index: usize) -> usize {
         self.reservation.base_address() + self.sites.start + index * CELL_BYTES
     }

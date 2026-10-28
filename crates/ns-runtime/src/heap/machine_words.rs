@@ -47,7 +47,7 @@ const IMMEDIATE_GUARDS: usize = IMMEDIATE_CLASSES + IMMEDIATE_COUNT;
 
 /// The words of the area. Every word's index is fixed: the fieldless words
 /// 0 to 3, the immediates' classes 4 to 8 and their guards 9 to 13, the
-/// rest free for the later stages.
+/// next generation 14, the rest free for the later stages.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum MachineWord {
     /// Not zero while the run loop's next safepoint must take its slow
@@ -73,6 +73,10 @@ pub(crate) enum MachineWord {
     /// The dispatch id an inline cache guards a send to immediate `index`
     /// on (`Heap::dispatch_id`).
     ImmediateGuard(usize),
+    /// In a debug build, the generation the last frame pushed took: the
+    /// next push, the heap's or a compiled callee's prologue, takes one
+    /// past it (`Heap::peek_next_generation`). Unused in a release build.
+    NextGeneration,
 }
 
 impl MachineWord {
@@ -92,6 +96,7 @@ impl MachineWord {
                 assert!(index < IMMEDIATE_COUNT);
                 IMMEDIATE_GUARDS + index
             }
+            MachineWord::NextGeneration => IMMEDIATE_GUARDS + IMMEDIATE_COUNT,
         }
     }
 }
@@ -100,7 +105,7 @@ impl MachineWord {
 /// later stages put here, so that adding one moves none.
 const WORD_COUNT: usize = 32;
 
-const _: () = assert!(MachineWord::ImmediateGuard(IMMEDIATE_COUNT - 1).index() < WORD_COUNT);
+const _: () = assert!(MachineWord::NextGeneration.index() < WORD_COUNT);
 
 /// The area. One per heap, created with it and never replaced; a clone
 /// is another handle to the same words, which the activation stack keeps
@@ -166,9 +171,10 @@ mod tests {
         assert_eq!(MachineWords::offset(MachineWord::DepthCount), 8);
         assert_eq!(MachineWords::offset(MachineWord::ImmediateClass(0)), 32);
         assert_eq!(MachineWords::offset(MachineWord::ImmediateGuard(0)), 72);
+        offsets.push(MachineWords::offset(MachineWord::NextGeneration));
         offsets.sort_unstable();
         offsets.dedup();
-        assert_eq!(offsets.len(), 4 + 2 * IMMEDIATE_COUNT);
+        assert_eq!(offsets.len(), 5 + 2 * IMMEDIATE_COUNT);
     }
 
     #[test]

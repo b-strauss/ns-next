@@ -1,27 +1,31 @@
 //! The entry stub, which crosses from the platform's C calling convention
-//! into machine code, and the exit stub, through which machine code leaves
-//! (`docs/design/execution.md`, "The native stack carries the return
-//! addresses"); the entry block they share with `CodeZone::enter`; and the
-//! one decoding of an exit.
+//! into machine code and takes the return of the frame it called, the
+//! exit stub, through which machine code leaves once every compiled frame
+//! is materialized (`docs/design/execution.md`, "The native stack carries
+//! the return addresses", "The exit materializes"), and the stubs a send's
+//! cell names for a target without machine code of its own; the entry
+//! block they share with `CodeZone::enter`; and the one decoding of an
+//! exit.
 
-use ns_assembler::x64::RSP;
-use ns_assembler::{Assembled, Width};
+use ns_assembler::x64::{RCX, RSI, RSP};
+use ns_assembler::{Assembled, Condition, Memory, Width};
 use ns_memory::ENTRY_BLOCK_WORDS;
 
-use super::macro_assembler::{Abi, MacroAssembler};
+use super::leaves::Leaf;
+use super::macro_assembler::{Abi, MacroAssembler, Operand};
+use crate::heap::machine_words::MachineWord;
 
 /// The words of the entry block, by index. `CodeZone::enter` writes the
 /// first four on every entry; the caller of `enter` writes the inputs
 /// (`ObjectSpaceBase` … `MachineEntry`, `MachineWords`, `ExitStub`,
-/// `Activation`, and `BackEdges`' zero) before it, the exit stub the
+/// `Cells`, `PolymorphicStub`, and the counters' zero) before it, the exit stub the
 /// outputs (`ExitProgramCounter`, `ExitKind`, and `ExitRegister` for a
 /// dead register's exit), a leaf call `LeafStackPointer`, and code that
 /// counts its back edges `BackEdges`.
 ///
-/// Words 15 to 29 are free, kept together for what the later stages enter
-/// machine code with -- the depth count and its limit, the native stack's
-/// bound, a base of the cache cells -- so the two words only a debug build
-/// or a test uses sit at the top.
+/// Words 13 and 19 to 28 are free, kept for what the later stages enter
+/// machine code with, so the three words only a debug build or a test
+/// uses sit at the top.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum BlockWord {
     /// The leaf shim's address, which `call_leaf` calls. Words 0, 2 and 3,
@@ -50,14 +54,26 @@ pub(crate) enum BlockWord {
     /// rather than an address of its own, so its code holds no absolute
     /// address and can be moved within the zone.
     ExitStub = 12,
-    /// The running activation, as `Heap::activation_word` makes it, which
-    /// a leaf that steps an instruction is handed.
-    Activation = 13,
     /// The stack pointer a leaf call aligned away from, restored after
     /// it: a word rather than a register, since it is needed only across
     /// the call, and a callee-saved register is worth more to the register
     /// cache.
     LeafStackPointer = 14,
+    /// The address of the site cells (`Cells::site_address` of site 0): a
+    /// send's cell lies its site's index cells past it.
+    Cells = 15,
+    /// The address of the stub a send whose guard is not its cell's calls
+    /// (`JitState::polymorphic_stub_address`).
+    PolymorphicStub = 16,
+    /// The exit's walk over the return addresses on the native stack: the
+    /// address of the next one to materialize the frame of.
+    WalkCursor = 17,
+    /// An address inside the code an exit left, which names the body of
+    /// the innermost frame (`Roles::exit_code_address`).
+    ExitCodeAddress = 18,
+    /// The sends code compiled to count them called compiled code through
+    /// (`JitStatistics::compiled_calls`).
+    CompiledCalls = 29,
     /// The register a dead register's exit read, in a debug build.
     ExitRegister = 30,
     /// The backward jumps code compiled to count them took since the entry
@@ -92,6 +108,15 @@ pub(crate) enum ExitKind {
     /// A debug build's read of a dead register: the interpreter refuses it
     /// as its own read is refused.
     DeadRegister = 2,
+    /// A compiled call was refused before its callee was pushed -- by the
+    /// callee's prologue, at the depth limit, past the stack's room or
+    /// with a safepoint requested, or by a stub, for a target machine
+    /// code does not run -- so the caller re-executes the send and the
+    /// interpreter decides it.
+    PushRefused = 3,
+    /// The frame the entry stub called returned: its value is in the
+    /// block's `ExitProgramCounter`.
+    Returned = 4,
 }
 
 /// An exit, decoded from the block and the kind `enter` answered.
@@ -100,6 +125,8 @@ pub(crate) enum MachineExit {
     Reexecute { program_counter: u32 },
     Safepoint { program_counter: u32 },
     DeadRegister { program_counter: u32, register: u16 },
+    PushRefused,
+    Returned { value: u64 },
 }
 
 /// The exit `kind` and the block an entry left behind describe.
@@ -111,6 +138,12 @@ pub(crate) enum MachineExit {
 /// JIT.
 pub(crate) fn decode_exit(block: &[u64; ENTRY_BLOCK_WORDS], kind: u64) -> MachineExit {
     let word = block[BlockWord::ExitProgramCounter.index()];
+    if kind == ExitKind::Returned as u64 {
+        return MachineExit::Returned { value: word };
+    }
+    if kind == ExitKind::PushRefused as u64 {
+        return MachineExit::PushRefused;
+    }
     let Ok(program_counter) = u32::try_from(word) else {
         panic!("internal: machine code exited at program counter {word}");
     };
@@ -137,10 +170,15 @@ pub(crate) fn decode_exit(block: &[u64; ENTRY_BLOCK_WORDS], kind: u64) -> Machin
 /// general-purpose register the convention has its callee preserve, so a
 /// body may use them all -- but no vector register: on Win64 XMM6-XMM15
 /// are callee-preserved too, so a template that uses one of them requires
-/// this stub to save them; pins the roles from the block; saves the stack pointer for the exit
-/// stub; and calls the body. A body never returns to it: it leaves only
+/// this stub to save them; pins the roles from the block; saves the stack
+/// pointer for the exit stub; and calls the body. The body leaves either
 /// through the exit stub, which unwinds the native stack to the saved
-/// pointer, so what follows the call traps.
+/// pointer, or by returning the frame it was entered at, by `ret` with its
+/// value in `rax`: the stub then answers `ExitKind::Returned` with the
+/// value in the block's `ExitProgramCounter`, so that the run loop pops
+/// the frame and applies its continuation (`vm::finish`). That frame's
+/// `Return` took one off the depth count, as every compiled frame's does,
+/// but the run loop's pop takes it off too, so the stub adds it back.
 pub(crate) fn assemble_entry_stub(abi: Abi) -> Assembled {
     let mut macro_assembler = MacroAssembler::new(abi);
     let roles = macro_assembler.roles();
@@ -162,29 +200,54 @@ pub(crate) fn assemble_entry_stub(abi: Abi) -> Assembled {
     assembler.load(Width::Word64, roles.idiom_scratch, machine_entry);
     assembler.store(Width::Word64, saved_stack_pointer, RSP);
     assembler.call_register(roles.idiom_scratch);
-    assembler.trap();
+    let returned_value = macro_assembler.block_word(BlockWord::ExitProgramCounter);
+    let exit_kind = macro_assembler.block_word(BlockWord::ExitKind);
+    let assembler = macro_assembler.assembler();
+    assembler.store(Width::Word64, returned_value, roles.leaf_result);
+    macro_assembler.load_machine_words(roles.idiom_scratch);
+    let depth = MacroAssembler::machine_word(roles.idiom_scratch, MachineWord::DepthCount);
+    let assembler = macro_assembler.assembler();
+    assembler.load(Width::Word64, RCX, depth);
+    assembler.add_immediate(RCX, 1);
+    assembler.store(Width::Word64, depth, RCX);
+    assembler.move_immediate(roles.leaf_result, ExitKind::Returned as u64);
+    assembler.store(Width::Word64, exit_kind, roles.leaf_result);
+    for register in abi.callee_saved().iter().rev() {
+        assembler.pop(*register);
+    }
+    assembler.return_();
     finish_stub(macro_assembler)
 }
 
-/// A stub's code, which has no label and so always lays out.
+/// A stub's code, whose few short branches always lay out.
 fn finish_stub(macro_assembler: MacroAssembler) -> Assembled {
     match macro_assembler.finish() {
         Ok(assembled) => assembled,
-        Err(error) => panic!("internal: a stub without labels failed to lay out: {error}"),
+        Err(error) => panic!("internal: a stub failed to lay out: {error}"),
     }
 }
 
-/// The exit stub, which a body jumps to with the exit's kind and program
-/// counter in the roles' `exit_kind` and `exit_program_counter`: it writes
-/// both into the block, resets the stack pointer to the one the entry stub
-/// saved -- dropping every return address a body pushed -- restores the registers the entry stub
-/// saved and returns the kind to `enter`'s caller.
+/// The exit stub, which a body jumps to with the exit's kind, program
+/// counter and an address inside it in the roles' `exit_kind`,
+/// `exit_program_counter` and `exit_code_address`: it writes the three
+/// into the block; when compiled frames lie above the frame the entry stub
+/// called -- the stack pointer below the entry's return address -- it
+/// walks their return addresses, outermost first, materializing each
+/// frame (`Leaf::MaterializeFrame`), then the innermost
+/// (`Leaf::MaterializeInnermost`), so that every frame reads as an
+/// interpreted one before the run loop or any observer runs; then it
+/// resets the stack pointer to the one the entry stub saved -- dropping
+/// every return address a body pushed -- restores the registers the entry
+/// stub saved and returns the kind to `enter`'s caller.
 pub(crate) fn assemble_exit_stub(abi: Abi) -> Assembled {
     let mut macro_assembler = MacroAssembler::new(abi);
     let roles = macro_assembler.roles();
     let exit_kind = macro_assembler.block_word(BlockWord::ExitKind);
     let exit_program_counter = macro_assembler.block_word(BlockWord::ExitProgramCounter);
+    let exit_code_address = macro_assembler.block_word(BlockWord::ExitCodeAddress);
     let saved_stack_pointer = macro_assembler.block_word(BlockWord::SavedStackPointer);
+    let cursor = macro_assembler.block_word(BlockWord::WalkCursor);
+    let scratch = roles.idiom_scratch;
     let assembler = macro_assembler.assembler();
     assembler.store(Width::Word64, exit_kind, roles.exit_kind());
     assembler.store(
@@ -192,11 +255,116 @@ pub(crate) fn assemble_exit_stub(abi: Abi) -> Assembled {
         exit_program_counter,
         roles.exit_program_counter(),
     );
+    assembler.store(Width::Word64, exit_code_address, roles.exit_code_address());
+    // The body was called with the stack pointer one word below the saved
+    // one, the entry stub's return address; a compiled frame above it
+    // pushed one more each.
+    let (walk, next, innermost, done) = (
+        assembler.label(),
+        assembler.label(),
+        assembler.label(),
+        assembler.label(),
+    );
+    assembler.move_register(scratch, RSP);
+    assembler.add_immediate(scratch, RETURN_ADDRESS_BYTES);
+    assembler.compare_memory(scratch, saved_stack_pointer);
+    assembler.jump_if(Condition::Equal, done);
+    assembler.bind(walk);
+    // The outermost compiled return address, the entry's body's call, lies
+    // two words below the saved stack pointer.
+    assembler.load(Width::Word64, scratch, saved_stack_pointer);
+    assembler.add_immediate(scratch, -2 * RETURN_ADDRESS_BYTES);
+    assembler.store(Width::Word64, cursor, scratch);
+    assembler.bind(next);
+    assembler.load(Width::Word64, scratch, cursor);
+    assembler.compare(scratch, RSP);
+    assembler.jump_if(Condition::Below, innermost);
+    assembler.load(
+        Width::Word64,
+        RSI,
+        Memory {
+            base: scratch,
+            displacement: 0,
+        },
+    );
+    macro_assembler.call_leaf(
+        Leaf::MaterializeFrame.index(),
+        [
+            Operand::Register(RSI),
+            Operand::Immediate(0),
+            Operand::Immediate(0),
+        ],
+    );
+    let assembler = macro_assembler.assembler();
+    assembler.load(Width::Word64, scratch, cursor);
+    assembler.add_immediate(scratch, -RETURN_ADDRESS_BYTES);
+    assembler.store(Width::Word64, cursor, scratch);
+    assembler.jump(next);
+    assembler.bind(innermost);
+    macro_assembler.call_leaf(
+        Leaf::MaterializeInnermost.index(),
+        [
+            Operand::Block(BlockWord::ExitCodeAddress),
+            Operand::Block(BlockWord::ExitKind),
+            Operand::Block(BlockWord::ExitProgramCounter),
+        ],
+    );
+    let assembler = macro_assembler.assembler();
+    assembler.bind(done);
+    assembler.load(Width::Word64, roles.exit_kind(), exit_kind);
     assembler.load(Width::Word64, RSP, saved_stack_pointer);
     for register in abi.callee_saved().iter().rev() {
         assembler.pop(*register);
     }
     assembler.return_();
+    finish_stub(macro_assembler)
+}
+
+/// The bytes a return address takes on the native stack.
+const RETURN_ADDRESS_BYTES: i32 = 8;
+
+/// The miss stub, which a send's cell names for a method whose body has no
+/// machine code yet, and which a send whose guard is not its cell's calls
+/// until the polymorphic stub exists (`BlockWord::PolymorphicStub`). It is
+/// called as the callee is, the frame register at the callee's register 0
+/// and the send's return address on top of the native stack, which names
+/// the send: the miss leaf decides it (`Leaf::Miss`) and answers the
+/// callee's machine entry, which the stub jumps to as though the send had
+/// called it, or 0, at which the stub refuses the call so that the caller
+/// re-executes the send.
+pub(crate) fn assemble_miss_stub(abi: Abi) -> Assembled {
+    let mut macro_assembler = MacroAssembler::new(abi);
+    let roles = macro_assembler.roles();
+    macro_assembler.assembler().load(
+        Width::Word64,
+        RSI,
+        Memory {
+            base: RSP,
+            displacement: 0,
+        },
+    );
+    macro_assembler.call_leaf(
+        Leaf::Miss.index(),
+        [
+            Operand::Register(roles.frame),
+            Operand::Register(RSI),
+            Operand::Immediate(0),
+        ],
+    );
+    let answer = roles.leaf_result;
+    macro_assembler.assembler().compare_immediate(answer, 0);
+    macro_assembler.exit_if(Condition::Equal, ExitKind::PushRefused, 0);
+    macro_assembler.assembler().jump_register(answer);
+    finish_stub(macro_assembler)
+}
+
+/// The stub a send's cell names for a target machine code does not run: a
+/// method with a fast path, a handler, a body the JIT left out or refused,
+/// every target that is no method. It refuses the call, so that the
+/// caller re-executes the send and the interpreter runs it.
+pub(crate) fn assemble_refusing_stub(abi: Abi) -> Assembled {
+    let mut macro_assembler = MacroAssembler::new(abi);
+    macro_assembler.exit(ExitKind::PushRefused, 0);
     finish_stub(macro_assembler)
 }
 

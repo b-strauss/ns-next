@@ -78,6 +78,16 @@ pub(super) fn stack_reservation() -> usize {
 /// overflow, its handler search and its handler have room to run.
 const RESERVE_FRACTION: usize = 16;
 
+/// How many words past every frame's window the stack keeps committed:
+/// a compiled send writes its callee's receiver and current class, the
+/// first two header words, before the callee's own code compares its
+/// frame's end with the room left (`jit::sends`), and the callee's header
+/// begins at most at its sender's window end. So the room an ordinary
+/// push may end in (`FrameStack::ordinary_end`) stops this many words
+/// short of the committed end, a reserved push commits this many words
+/// past its frame, and the reservation keeps them past its last frame.
+pub(crate) const CALL_MARGIN: usize = 2;
+
 /// The least a growth commits beyond what is committed, in bytes, so that
 /// a shallow program commits once.
 const MINIMUM_GROWTH: usize = 64 << 10;
@@ -168,15 +178,17 @@ pub(super) mod kind_tag {
 
 /// Where each field of `FrameFlags` sits in the flags word's
 /// `SmallInteger`: the kind tag in bits 0-7, the argument count in bits
-/// 8-23, `counted` at 24, `retains_registers` at 25 and, in a debug build,
-/// the 31-bit generation in bits 26-56; 57 bits, inside 61.
+/// 8-23, `counted` at 24, `retains_registers` at 25, `compiled` at 26 and,
+/// in a debug build, the 31-bit generation in bits 27-57; 58 bits, inside
+/// 61.
 const KIND_TAG_MASK: u64 = 0xFF;
-const ARGUMENT_COUNT_SHIFT: u32 = 8;
+pub(crate) const ARGUMENT_COUNT_SHIFT: u32 = 8;
 const ARGUMENT_COUNT_MASK: u64 = 0xFFFF;
-const COUNTED_BIT: u64 = 1 << 24;
+pub(crate) const COUNTED_BIT: u64 = 1 << 24;
 const RETAINS_REGISTERS_BIT: u64 = 1 << 25;
+pub(crate) const COMPILED_BIT: u64 = 1 << 26;
 #[cfg(debug_assertions)]
-const GENERATION_SHIFT: u32 = 26;
+pub(crate) const GENERATION_SHIFT: u32 = 27;
 #[cfg(debug_assertions)]
 const GENERATION_MASK: u64 = 0x7FFF_FFFF;
 /// The bits below a `SmallInteger`'s payload.
@@ -198,6 +210,13 @@ pub(super) struct FrameFlags {
     /// Whether a frame object married to the activation keeps its
     /// registers when the activation returns.
     pub(super) retains_registers: bool,
+    /// Whether the frame stopped in machine code: its body's machine code
+    /// called the frame above it, or an exit materialized it there
+    /// (`jit::materialize`), so that the run loop resumes it in machine
+    /// code when it is returned to (`vm::resume_caller`). A baseline
+    /// frame's words are the interpreter's, so clearing the bit is the
+    /// whole conversion to an interpreted frame.
+    pub(super) compiled: bool,
     /// The activation's generation, which a debug build checks every
     /// `ActivationReference` against; 31 bits.
     #[cfg(debug_assertions)]
@@ -220,6 +239,7 @@ impl FrameFlags {
             argument_count,
             counted,
             retains_registers,
+            compiled: false,
             #[cfg(debug_assertions)]
             generation: 0,
         }
@@ -248,6 +268,9 @@ impl FrameFlags {
         if self.retains_registers {
             payload |= RETAINS_REGISTERS_BIT;
         }
+        if self.compiled {
+            payload |= COMPILED_BIT;
+        }
         #[cfg(debug_assertions)]
         {
             payload |= (u64::from(self.generation) & GENERATION_MASK) << GENERATION_SHIFT;
@@ -265,6 +288,7 @@ impl FrameFlags {
             argument_count: ((payload >> ARGUMENT_COUNT_SHIFT) & ARGUMENT_COUNT_MASK) as u16,
             counted: payload & COUNTED_BIT != 0,
             retains_registers: payload & RETAINS_REGISTERS_BIT != 0,
+            compiled: payload & COMPILED_BIT != 0,
             #[cfg(debug_assertions)]
             generation: ((payload >> GENERATION_SHIFT) & GENERATION_MASK) as u32,
         }
@@ -441,7 +465,7 @@ impl FrameStack {
         machine_words: MachineWords,
     ) -> Result<FrameStack, MemoryError> {
         let reservation = reserve_falling_back(reservation_bytes, Reservation::reserve)?;
-        let limit = reservation.size() / 8;
+        let limit = reservation.size() / 8 - CALL_MARGIN;
         debug_assert!(
             limit <= MAXIMUM_STACK_WORDS,
             "internal: a stack's reservation keeps every frame offset inside 32 bits"
@@ -593,7 +617,7 @@ impl FrameStack {
     ) -> Result<(usize, &[u64], &mut [u64]), ReservationExhausted> {
         let start = self.top;
         let end = start + words;
-        if end > self.committed {
+        if end + CALL_MARGIN > self.committed {
             self.grow(words, self.limit)?;
         }
         self.top = end;
@@ -637,7 +661,9 @@ impl FrameStack {
         let committed_bytes = self.committed * 8;
         // The reservation's size is a whole number of pages, so rounding an
         // end inside it up to a page stays inside it.
-        let needed_bytes = (needed * 8).div_ceil(page) * page;
+        // `needed` lies at or below `limit`, `CALL_MARGIN` words short of
+        // the reservation's end, so the margin past it is inside it.
+        let needed_bytes = ((needed + CALL_MARGIN) * 8).div_ceil(page) * page;
         let growth = committed_bytes.clamp(MINIMUM_GROWTH, MAXIMUM_GROWTH);
         let generous = (committed_bytes + growth)
             .min(ceiling * 8)
@@ -657,7 +683,7 @@ impl FrameStack {
             out_of_memory(needed_bytes - committed_bytes)
         };
         self.committed = self.committed.max(end / 8);
-        self.set_ordinary_end(self.committed.min(self.ordinary_limit));
+        self.set_ordinary_end((self.committed - CALL_MARGIN).min(self.ordinary_limit));
         Ok(())
     }
 
@@ -723,6 +749,40 @@ impl FrameStack {
         }
     }
 
+    /// How many words of the stack are committed.
+    #[cfg(ns_jit)]
+    pub(super) fn committed_words(&self) -> usize {
+        self.committed
+    }
+
+    /// Word `index` of the committed stack, whatever the top: a word of a
+    /// frame machine code pushed, which the stack's top does not cover
+    /// until an exit materializes the frame (`jit::materialize`).
+    #[cfg(ns_jit)]
+    pub(super) fn committed_word(&self, index: usize) -> u64 {
+        self.reservation.accessible()[index]
+    }
+
+    /// Writes word `index` of the committed stack, whatever the top, as
+    /// `committed_word` reads it.
+    #[cfg(ns_jit)]
+    pub(super) fn set_committed_word(&mut self, index: usize, bits: u64) {
+        self.reservation.accessible_mut()[index] = bits;
+    }
+
+    /// Sets the top to `top`, above or below it, inside the committed
+    /// stack: an exit's materialization of the frames machine code pushed
+    /// past it (`jit::materialize`), and a leaf's view of its own frame
+    /// (`Heap::with_machine_frame`).
+    #[cfg(ns_jit)]
+    pub(super) fn set_top(&mut self, top: usize) {
+        debug_assert!(
+            top <= self.committed,
+            "internal: the top lies inside the committed stack"
+        );
+        self.top = top;
+    }
+
     /// Writes word `index` of a live frame, as `word` reads it.
     #[inline(always)]
     pub(super) fn set_word(&mut self, index: usize, bits: u64) {
@@ -770,14 +830,19 @@ mod tests {
         for kind_tag in ALL_KIND_TAGS {
             for argument_count in [0, 1, u16::MAX] {
                 for counted in [false, true] {
-                    for retains_registers in [false, true] {
+                    for (retains_registers, compiled) in
+                        [(false, false), (true, false), (false, true), (true, true)]
+                    {
                         for generation in GENERATIONS {
-                            let flags = FrameFlags::new(
-                                kind_tag,
-                                argument_count,
-                                counted,
-                                retains_registers,
-                            );
+                            let flags = FrameFlags {
+                                compiled,
+                                ..FrameFlags::new(
+                                    kind_tag,
+                                    argument_count,
+                                    counted,
+                                    retains_registers,
+                                )
+                            };
                             #[cfg(debug_assertions)]
                             let flags = flags.with_generation(generation);
                             let _ = generation;
@@ -810,12 +875,19 @@ mod tests {
             payload(FrameFlags::new(kind_tag::METHOD, 0, false, true)),
             1 << 25
         );
+        assert_eq!(
+            payload(FrameFlags {
+                compiled: true,
+                ..FrameFlags::new(kind_tag::METHOD, 0, false, false)
+            }),
+            1 << 26
+        );
         #[cfg(debug_assertions)]
         assert_eq!(
             payload(
                 FrameFlags::new(kind_tag::METHOD, 0, false, false).with_generation(0x7FFF_FFFF)
             ),
-            0x7FFF_FFFF << 26
+            0x7FFF_FFFF << 27
         );
     }
 
@@ -940,6 +1012,24 @@ mod tests {
         assert!(stack.push(frame_words).is_err());
         stack.lower_top(ordinary_top - frame_words);
         assert!(stack.push(frame_words).is_ok());
+    }
+
+    /// A compiled send writes two words of its callee's header before the
+    /// callee checks its room, at most at its sender's window end: every
+    /// push leaves that many words committed past its frame, an ordinary
+    /// one through the ordinary end and a reserved one through its own.
+    #[test]
+    fn the_stack_keeps_two_words_committed_past_every_frame() {
+        let mut stack = FrameStack::new(64 << 10, MachineWords::new()).expect("reserve");
+        let frame_words = frame_header::COUNT + 100;
+        while stack.push(frame_words).is_ok() {
+            assert!(stack.top() <= stack.ordinary_end());
+            assert!(stack.ordinary_end() + CALL_MARGIN <= stack.committed);
+        }
+        while stack.push_reserved(frame_words).is_ok() {
+            assert!(stack.top() + CALL_MARGIN <= stack.committed);
+        }
+        assert!(stack.limit() + CALL_MARGIN <= stack.reservation.size() / 8);
     }
 
     #[test]

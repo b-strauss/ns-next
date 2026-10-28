@@ -79,7 +79,10 @@ pub(crate) fn execute<'gc>(
             mutator.unhandled_exceptions_to_resume -= 1;
             Some(Ok(Step::Value(Value::nil())))
         }
-        ActivationPrimitive::Terminate => Some(Err(terminate(mutator, arguments))),
+        ActivationPrimitive::Terminate => {
+            mutator.last_unhandled_stack = mutator.heap.describe_activations();
+            Some(Err(terminate(mutator, arguments)))
+        }
         ActivationPrimitive::Sender => {
             activation_leaf(mutator, SubjectLeaf::Sender, subject, arguments)
         }

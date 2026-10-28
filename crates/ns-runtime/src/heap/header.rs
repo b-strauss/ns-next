@@ -13,7 +13,7 @@ use crate::mixin::DispatchId;
 /// One past the widest identity hash: the header word holds 22 bits of it.
 pub(crate) const IDENTITY_HASH_LIMIT: u32 = 1 << 22;
 
-const GUARD_MASK: u64 = (1 << 22) - 1;
+pub(super) const GUARD_MASK: u64 = (1 << 22) - 1;
 const FORMAT_SHIFT: u32 = 22;
 const FORMAT_MASK: u64 = 0b1_1111;
 const AGE_SHIFT: u32 = 27;

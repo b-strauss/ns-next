@@ -117,6 +117,12 @@ impl Roles {
     pub(crate) fn exit_program_counter(self) -> Register {
         RCX
     }
+
+    /// The register the exit stub takes an address inside the exiting code
+    /// in, which names the body an exit leaves (`jit::materialize`).
+    pub(crate) fn exit_code_address(self) -> Register {
+        RDX
+    }
 }
 
 /// An index into the leaf table `CodeZone::enter` is given.
@@ -133,6 +139,10 @@ pub(crate) enum Operand {
     /// A word of the entry block: what differs from one entry to the
     /// next, as the running activation does.
     Block(BlockWord),
+    /// An address inside the code making the call, which names its body
+    /// to the leaf (`JitState::body_at`) without the code holding an
+    /// absolute address.
+    CodeAddress,
 }
 
 /// Code placed after the body's last instruction, out of the straight
@@ -354,6 +364,17 @@ impl MacroAssembler {
                         roles.idiom_scratch,
                     );
                 }
+                (Operand::CodeAddress, Place::Register(target)) => {
+                    self.assembler.load_code_address(target);
+                }
+                (Operand::CodeAddress, Place::Stack(displacement)) => {
+                    self.assembler.load_code_address(roles.idiom_scratch);
+                    self.assembler.store(
+                        Width::Word64,
+                        stack_slot(displacement),
+                        roles.idiom_scratch,
+                    );
+                }
                 (Operand::Immediate(word), Place::Register(target)) => {
                     self.assembler.move_immediate(target, word);
                 }
@@ -387,10 +408,6 @@ impl MacroAssembler {
     /// address the processor pushes, with nothing emitted between the two.
     /// A send's call goes through here so that the exit's walk can map
     /// the return address it finds on the native stack back to the send.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the sends' templates call through their cells")
-    )]
     pub(crate) fn call_returning(&mut self, target: Register) -> Label {
         self.assembler.call_register(target);
         let return_address = self.assembler.label();
@@ -398,13 +415,16 @@ impl MacroAssembler {
         return_address
     }
 
-    /// Leaves machine code through the exit stub, which writes `kind` and
-    /// `program_counter` into the block and returns to `enter`'s caller.
+    /// Leaves machine code through the exit stub, which writes `kind`,
+    /// `program_counter` and an address inside this code -- naming the
+    /// body the exit leaves, the innermost frame's -- into the block,
+    /// materializes every compiled frame and returns to `enter`'s caller.
     /// A jump rather than a call: the stub never returns here, and a call
     /// that never returns would leave the processor's return-address
     /// predictor unbalanced on every exit.
     pub(crate) fn exit(&mut self, kind: ExitKind, program_counter: u32) {
         let roles = self.roles;
+        self.assembler.load_code_address(roles.exit_code_address());
         self.assembler
             .move_immediate(roles.exit_kind(), kind as u64);
         self.assembler
@@ -432,14 +452,170 @@ impl MacroAssembler {
     /// back edges (`set_count_back_edges`), and emits nothing otherwise.
     /// Clobbers the flags and the idiom scratch register.
     pub(crate) fn count_back_edge(&mut self) {
+        self.count(BlockWord::BackEdges);
+    }
+
+    /// Adds one to the entry block's `CompiledCalls` when the code counts
+    /// (`set_count_back_edges`), and emits nothing otherwise. Clobbers the
+    /// flags and the idiom scratch register.
+    pub(crate) fn count_compiled_call(&mut self) {
+        self.count(BlockWord::CompiledCalls);
+    }
+
+    /// Adds one to the block's `word` when the code counts.
+    fn count(&mut self, word: BlockWord) {
         if !self.count_back_edges {
             return;
         }
         let scratch = self.roles.idiom_scratch;
-        let count = self.block_word(BlockWord::BackEdges);
+        let count = self.block_word(word);
         self.assembler.load(Width::Word64, scratch, count);
         self.assembler.add_immediate(scratch, 1);
         self.assembler.store(Width::Word64, count, scratch);
+    }
+
+    /// `target :=` the machine words' address (`BlockWord::MachineWords`).
+    /// Keeps the flags.
+    pub(crate) fn load_machine_words(&mut self, target: Register) {
+        let machine_words = self.block_word(BlockWord::MachineWords);
+        self.assembler.load(Width::Word64, target, machine_words);
+    }
+
+    /// The machine word `word`, given the machine words' address in
+    /// `machine_words`.
+    pub(crate) fn machine_word(machine_words: Register, word: MachineWord) -> Memory {
+        Memory {
+            base: machine_words,
+            displacement: MachineWords::offset(word),
+        }
+    }
+
+    /// `target :=` the guard a cell is compared with for the value in
+    /// `value` (`interpreter::inline_cache::cells::Cell`), as
+    /// `Heap::dispatch_id` finds it: an object's header word's low 22
+    /// bits, an immediate's `MachineWord::ImmediateGuard`. Clobbers the
+    /// flags and the idiom scratch register; `value` is kept.
+    pub(crate) fn load_guard(&mut self, target: Register, value: Register) {
+        let layout = crate::heap::Heap::machine_layout();
+        self.load_by_tag(
+            target,
+            value,
+            layout.header_displacement,
+            MachineWord::ImmediateGuard(0),
+            Some(layout.guard_mask),
+        );
+    }
+
+    /// `target :=` the class object of the value in `value`, as the word
+    /// a header place stores it (`Heap::store`), as `Mutator::class_of`
+    /// finds it: an object's class word, an immediate's
+    /// `MachineWord::ImmediateClass`. Clobbers the flags and the idiom
+    /// scratch register; `value` is kept.
+    pub(crate) fn load_class(&mut self, target: Register, value: Register) {
+        let layout = crate::heap::Heap::machine_layout();
+        self.load_by_tag(
+            target,
+            value,
+            layout.class_word_displacement,
+            MachineWord::ImmediateClass(0),
+            None,
+        );
+    }
+
+    /// `target :=` the word at `object_displacement` of the object `value`
+    /// names, masked by `mask` when one is given; or, for an immediate,
+    /// the machine word `first_immediate` is the first of a family of, at
+    /// the immediate's index (`Value::immediate_index`).
+    fn load_by_tag(
+        &mut self,
+        target: Register,
+        value: Register,
+        object_displacement: i32,
+        first_immediate: MachineWord,
+        mask: Option<i32>,
+    ) {
+        debug_assert!(
+            target != value
+                && target != self.roles.idiom_scratch
+                && value != self.roles.idiom_scratch,
+            "internal: the guard and class idioms keep their value and use the idiom scratch register"
+        );
+        let layout = crate::heap::Heap::machine_layout();
+        let object_space = self.roles.object_space;
+        let scratch = self.roles.idiom_scratch;
+        let machine_words = self.block_word(BlockWord::MachineWords);
+        let assembler = &mut self.assembler;
+        let (immediate, have_index, done) =
+            (assembler.label(), assembler.label(), assembler.label());
+        assembler.test_immediate(value, layout.tag_mask);
+        assembler.jump_if(Condition::NotEqual, immediate);
+        assembler.move_register(target, value);
+        assembler.add(target, object_space);
+        assembler.load(
+            Width::Word64,
+            target,
+            Memory {
+                base: target,
+                displacement: object_displacement,
+            },
+        );
+        if let Some(mask) = mask {
+            assembler.and_immediate(target, mask);
+        }
+        assembler.jump(done);
+        assembler.bind(immediate);
+        // The immediate's index: a `SmallInteger`'s, a float's, else the
+        // constant's payload.
+        assembler.move_immediate(target, layout.small_integer_index);
+        assembler.test_immediate(value, layout.small_integer_tag);
+        assembler.jump_if(Condition::NotEqual, have_index);
+        assembler.move_immediate(target, layout.small_float_index);
+        assembler.test_immediate(value, layout.small_float_tag);
+        assembler.jump_if(Condition::NotEqual, have_index);
+        assembler.move_register(target, value);
+        assembler.shift_right_arithmetic(target, layout.tag_bits);
+        assembler.bind(have_index);
+        assembler.shift_left(target, WORD_SHIFT);
+        assembler.load(Width::Word64, scratch, machine_words);
+        assembler.add(target, scratch);
+        assembler.load(
+            Width::Word64,
+            target,
+            Memory {
+                base: target,
+                displacement: MachineWords::offset(first_immediate),
+            },
+        );
+        assembler.bind(done);
+    }
+
+    /// Steps the class object in `class` up its superclass chain as many
+    /// times as `level` says, counting `level` down to 0, as
+    /// `inline_cache::level_above` steps it; jumps to `failed` when a
+    /// superclass is missing before the level is reached, which makes the
+    /// send a miss as it makes the interpreter's. Clobbers the flags.
+    pub(crate) fn walk_superclasses(&mut self, class: Register, level: Register, failed: Label) {
+        let layout = crate::heap::Heap::machine_layout();
+        let object_space = self.roles.object_space;
+        let assembler = &mut self.assembler;
+        let (step, done) = (assembler.label(), assembler.label());
+        assembler.bind(step);
+        assembler.compare_immediate(level, 0);
+        assembler.jump_if(Condition::Equal, done);
+        assembler.add(class, object_space);
+        assembler.load(
+            Width::Word64,
+            class,
+            Memory {
+                base: class,
+                displacement: layout.superclass_displacement,
+            },
+        );
+        assembler.test_immediate(class, layout.tag_mask);
+        assembler.jump_if(Condition::NotEqual, failed);
+        assembler.add_immediate(level, -1);
+        assembler.jump(step);
+        assembler.bind(done);
     }
 
     /// Takes `exit(Safepoint, program_counter)` when the heap's safepoint
@@ -504,6 +680,10 @@ impl MacroAssembler {
         self.assembler.finish()
     }
 }
+
+/// How far an index into the machine words is shifted to be a byte
+/// offset: a word is eight bytes.
+const WORD_SHIFT: u8 = 3;
 
 /// Where an argument of the leaf shim is passed.
 #[derive(Clone, Copy)]

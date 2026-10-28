@@ -140,6 +140,7 @@ impl World {
                 caches: crate::interpreter::inline_cache::InlineCaches::new(),
                 jit: crate::jit::JitState::new(),
                 unhandled_exceptions_to_resume: 0,
+                last_unhandled_stack: Vec::new(),
                 depth_reserve: None,
                 taking_depth_reserve: false,
                 futures_made: false,

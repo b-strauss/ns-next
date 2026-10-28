@@ -9621,10 +9621,13 @@ zone, the AArch64 encoder -- is stages 3 to 7, still planned.
   a full zone and a body exiting mid-way, and `goldens/runtime/jit/` a
   counting loop and an overflow in machine code.
 
-Since compiled code calls no compiled code yet, an entry runs exactly one
-compiled frame, whose words the interpreter's push wrote: the exit writes
-only where the interpreter resumes, and the native stack holds no
-compiled frame's return address to walk.
+Stage 3 has begun (`docs/superpowers/plans/2026-10-28-1928-jit-sends.md`):
+a cached `SendPublic` calls through its site's cell into a callee's
+machine code (`jit/sends.rs`), the callee returns by `ret`, and an exit
+from any depth of compiled frames walks their return addresses and
+materializes every frame before the run loop runs (`jit/materialize.rs`);
+the rest of stage 3, and this section's account of it, follow in that
+plan's later tasks.
 
 ### The machine words
 

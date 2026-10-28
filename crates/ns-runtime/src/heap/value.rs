@@ -174,6 +174,10 @@ pub(crate) mod machine {
     pub(crate) const SMALL_INTEGER_TAG: u64 = super::SMALL_INTEGER_TAG;
     /// How far a `SmallInteger`'s payload is shifted above its tag.
     pub(crate) const TAG_BITS: u32 = super::TAG_BITS;
+    /// The tag bits of every word: 0 for an object's.
+    pub(crate) const TAG_MASK: u64 = super::TAG_MASK;
+    /// A `SmallFloat`'s tag, the one bit no other immediate's has.
+    pub(crate) const SMALL_FLOAT_TAG: u64 = super::SMALL_FLOAT_TAG;
 }
 
 /// A value that holds no handle -- `nil`, a Boolean, a `SmallInteger`, a

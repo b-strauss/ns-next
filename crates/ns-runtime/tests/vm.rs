@@ -1352,6 +1352,10 @@ fn a_stretch_leaves_for_a_requested_safepoint_and_resumes_where_it_stood() {
         ) : ()
     "});
     let probe = new_instance(&mut interpreter, &class);
+    // The interpreter's own switches are counted: machine code running
+    // `callee` through its return would make its push and return one
+    // switch of the loop's.
+    interpreter.set_jit_enabled(false);
     interpreter.set_stress_moves(true);
     let answer = expect_ok(send(&mut interpreter, &probe, "caller", &[]), "caller");
     let safepoints = interpreter.stress_safepoints();

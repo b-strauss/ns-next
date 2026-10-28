@@ -1,0 +1,155 @@
+/// Sends between compiled bodies: each method below loops once before it
+/// does anything else, so that its body is compiled at its second entry,
+/// and sends to an explicit receiver, so that its sends call compiled
+/// code through their cells and are returned to by `ret`
+/// (`docs/design/execution.md`, "Sends in machine code"). A send whose
+/// receiver changes class, one to a slot's accessor, one to a primitive
+/// and one that is not understood leave machine code at the send, and the
+/// frames below go on in machine code once returned to.
+class CompiledSends = Object new () (
+  class Counter = (
+    |
+      count ::= 0.
+    |
+  ) (
+    public bump: amount = (
+      |
+        index ::= 0.
+      |
+      [index < 1] whileTrue: [index:: index + 1].
+      count:: count + amount.
+      ^count.
+    )
+  )
+
+  class Doubler = () (
+    public apply: value = (
+      |
+        index ::= 0.
+      |
+      [index < 1] whileTrue: [index:: index + 1].
+      ^value + value.
+    )
+  )
+
+  class Squarer = () (
+    public apply: value = (
+      |
+        index ::= 0.
+      |
+      [index < 1] whileTrue: [index:: index + 1].
+      ^value * value.
+    )
+  )
+
+  class Arithmetic = () (
+    public add: left to: right = (
+      |
+        index ::= 0.
+      |
+      [index < 1] whileTrue: [index:: index + 1].
+      ^left + right.
+    )
+
+    public twice: value with: arithmetic = (
+      |
+        index ::= 0.
+      |
+      [index < 1] whileTrue: [index:: index + 1].
+      ^arithmetic add: value to: value.
+    )
+
+    /// Falls off its end, answering its receiver.
+    public touch: value = (
+      |
+        index ::= 0.
+      |
+      [index < value] whileTrue: [index:: index + 1].
+    )
+
+    public sumTo: limit with: arithmetic = (
+      |
+        sum ::= 0.
+        index ::= 1.
+      |
+      [index <= limit] whileTrue: [
+        sum:: arithmetic add: sum to: (arithmetic twice: index with: arithmetic).
+        (arithmetic touch: 2) == arithmetic ifFalse: [^nil].
+        index:: index + 1.
+      ].
+      ^sum.
+    )
+
+    public fibonacci: n with: arithmetic = (
+      |
+        index ::= 0.
+      |
+      [index < 1] whileTrue: [index:: index + 1].
+      n < 2 ifTrue: [^n].
+      ^(arithmetic fibonacci: n - 1 with: arithmetic)
+          + (arithmetic fibonacci: n - 2 with: arithmetic).
+    )
+
+    /// One site, two receiver classes in turn.
+    public applyAll: limit to: doubler and: squarer = (
+      |
+        sum ::= 0.
+        index ::= 0.
+        receiver
+      |
+      [index < limit] whileTrue: [
+        receiver:: (index // 2 * 2) = index ifTrue: [doubler] ifFalse: [squarer].
+        sum:: sum + (receiver apply: index).
+        index:: index + 1.
+      ].
+      ^sum.
+    )
+
+    /// A compiled callee that leaves machine code at a send it does not
+    /// run -- a slot's setter -- below a caller that goes on once it
+    /// returns.
+    public countTo: limit with: counter = (
+      |
+        index ::= 0.
+        last ::= 0.
+      |
+      [index < limit] whileTrue: [
+        last:: counter bump: index.
+        index:: index + 1.
+      ].
+      ^last.
+    )
+
+    public safely: value = (
+      |
+        index ::= 0.
+      |
+      [index < 1] whileTrue: [index:: index + 1].
+      ^[value frobnicate] on: Error do: [:error | error messageText].
+    )
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      arithmetic = Arithmetic new.
+    |
+    1 to: 2 do: [:round |
+      transcript
+          show: (arithmetic sumTo: 10000 with: arithmetic) printString;
+          newLine.
+      transcript
+          show: (arithmetic fibonacci: 20 with: arithmetic) printString;
+          newLine.
+      transcript
+          show: (arithmetic applyAll: 1000 to: Doubler new and: Squarer new) printString;
+          newLine.
+      transcript
+          show: (arithmetic countTo: 1000 with: Counter new) printString;
+          newLine.
+      transcript
+          show: (arithmetic safely: 3);
+          newLine.
+    ].
+  )
+)

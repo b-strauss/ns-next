@@ -416,6 +416,32 @@ impl InlineCaches {
         self.sites.len()
     }
 
+    /// The address of site 0's cell, which machine code finds a send's
+    /// cell from (`jit::stubs::BlockWord::Cells`): fixed for the
+    /// reservation's life.
+    pub(crate) fn site_cells_address(&self) -> usize {
+        self.cells.site_address(0)
+    }
+
+    /// Writes site `index`'s cell afresh from its entry, when the entry is
+    /// one for `guard`: the cell copies what the entry records, and its
+    /// entry address follows the JIT's state, which the miss leaf found
+    /// changed -- a body compiled since the entry was filled, so that the
+    /// site's next send calls it directly (`decide_at`).
+    fn refresh_site_cell(&mut self, index: usize, guard: DispatchId, jit: &JitState) {
+        let Some(entry) = self.sites.get(index) else {
+            return;
+        };
+        if entry.guard != guard || matches!(entry.target, Target::Vacant) {
+            return;
+        }
+        let cell = Cell {
+            entry: jit::cell_entry(jit, &entry.target),
+            ..self.cells.site(index)
+        };
+        self.cells.write_site(index, cell);
+    }
+
     /// Moves site `index` on after a miss found `target` for `guard`
     /// (`docs/design/dispatch.md`, "A site's states"): vacant to
     /// monomorphic, monomorphic to a polymorphic block of four in the order
@@ -503,7 +529,13 @@ impl InlineCaches {
                         target: polymorphic,
                     },
                 );
-                let first_cell = self.cells.site(index);
+                // The first entry's cell as its target decides it now: its
+                // entry address follows the JIT's state, which may have
+                // changed since the site's cell was written.
+                let first_cell = Cell {
+                    entry: jit::cell_entry(jit, &first.target),
+                    ..self.cells.site(index)
+                };
                 let slots = &mut self.pool[block as usize];
                 slots[0] = first;
                 slots[1] = CacheEntry { guard, target };
@@ -1601,6 +1633,144 @@ fn miss<'gc>(
     mutator.act(resolved, *key.receiver, selector, arguments)
 }
 
+/// What the miss leaf answers machine code for a send its cell did not
+/// decide (`decide_at`).
+pub(crate) enum MissAnswer {
+    /// Jump to this address, the callee's machine entry, its receiver and
+    /// current class written into its header.
+    Enter(u64),
+    /// Refuse the call: the interpreter runs the send.
+    Refuse,
+}
+
+/// The decision of the `SendPublic` at `program_counter` of `activation`
+/// for machine code (`jit::leaves`'s miss leaf), which `miss` would make
+/// for the interpreter: the site's entry, its polymorphic block, the
+/// global cache, else `resolve` -- filling the site and the global cache
+/// exactly as `miss` fills them -- but no `act`. A method machine code
+/// runs (`jit::runs_in_machine_code`) is its callee: its entry is counted
+/// as a push counts it, compiling its body when it is due (`jit::note_entry`),
+/// and once the body has machine code the site's cell is written afresh,
+/// so that its next send calls the body straight, and the answer is the
+/// body's machine entry, the callee's receiver and current class written
+/// into its header on the send's slots. Every other decision refuses the
+/// call, and the interpreter, running the send again, finds the entry the
+/// fill made.
+pub(crate) fn decide_at<'gc>(
+    mutator: &mut Mutator<'gc>,
+    activation: ActivationReference,
+    program_counter: u32,
+) -> MissAnswer {
+    let code = mutator.heap.activation_code(activation);
+    let Instruction::SendPublic {
+        selector,
+        receiver_register,
+        argument_base,
+        argument_sources,
+        call_site,
+        ..
+    } = code.instruction(program_counter as usize)
+    else {
+        unreachable!("internal: only a cached public send calls through its cell");
+    };
+    let register_base = mutator.heap.activation_register_base(activation);
+    let receiver = mutator.heap.register(register_base, receiver_register);
+    let feedback_base = mutator.heap.activation_feedback_base(activation);
+    let index = site_index(feedback_base, code.family_size, call_site);
+    let key = SendKey {
+        guard: mutator.heap.dispatch_id(receiver),
+        rule: CacheRule::Public,
+        receiver: &receiver,
+        lexical_class: None,
+        superclass: None,
+        current_class: None,
+    };
+    let (resolved, base) = decided(mutator, index, key, selector);
+    let Resolved::Method {
+        method,
+        defining_class,
+        chain,
+    } = resolved
+    else {
+        return MissAnswer::Refuse;
+    };
+    if !jit::runs_in_machine_code(&method, chain) {
+        return MissAnswer::Refuse;
+    }
+    let base = if base == FeedbackBase::NOT_ASSIGNED {
+        mutator.caches.base_for(&method.code)
+    } else {
+        base
+    };
+    jit::note_entry(&mut mutator.jit, &method.code, base, Some(&method));
+    let Some(address) = jit::machine_entry_address(&mutator.jit, &method.code, base) else {
+        return MissAnswer::Refuse;
+    };
+    if let Some(index) = index {
+        mutator
+            .caches
+            .refresh_site_cell(index, key.guard, &mutator.jit);
+    }
+    let Ok(count) = u16::try_from(argument_sources.len()) else {
+        unreachable!("internal: a send's arguments are numbered in 16 bits");
+    };
+    let callee_header = crate::heap::Heap::register_base_index(register_base) as usize
+        + usize::from(argument_base)
+        + usize::from(count);
+    mutator
+        .heap
+        .write_machine_callee(callee_header, receiver, defining_class);
+    MissAnswer::Enter(address)
+}
+
+/// `cached`'s and `miss`'s decision, without `act`: the target the site,
+/// its block or the global cache holds for `key`, materialized, else what
+/// `resolve_public` finds, recorded by `fill` as `miss` records it.
+fn decided<'gc>(
+    mutator: &mut Mutator<'gc>,
+    index: Option<usize>,
+    key: SendKey<'_, 'gc>,
+    selector: Symbol,
+) -> (Resolved<'gc>, FeedbackBase) {
+    let Some(index) = index else {
+        return (
+            mutator.resolve_public(*key.receiver, selector),
+            FeedbackBase::NOT_ASSIGNED,
+        );
+    };
+    if let Some(entry) = mutator.caches.sites.get(index) {
+        if entry.guard == key.guard {
+            let target = entry.target.clone();
+            if let Some(found) = materialize(mutator, target, key) {
+                return found;
+            }
+        }
+    }
+    if key.guard != DispatchId::NONE {
+        if let Some(target) = mutator.caches.polymorphic_hit(index, key.guard) {
+            if let Some(found) = materialize(mutator, target, key) {
+                return found;
+            }
+        }
+        let global = mutator
+            .caches
+            .global_get(key.guard, selector, key.rule)
+            .cloned();
+        if let Some(target) = global {
+            if let Some(found) = materialize(mutator, target.clone(), key) {
+                let cell = cell_for(mutator, key, &target);
+                mutator
+                    .caches
+                    .advance(index, key.guard, target, key.private(), cell, &mutator.jit);
+                return found;
+            }
+        }
+    }
+    let resolved = mutator.resolve_public(*key.receiver, selector);
+    fill(mutator, index, key, selector, &resolved);
+    (resolved, FeedbackBase::NOT_ASSIGNED)
+}
+
 /// Records `resolved` in the global cache and at the site -- unless the key
 /// has no id, or the resolution's privacy is not the site's (only a crafted
 /// image makes a site's N change; refinement 1). Before `act`, which may run
@@ -1880,7 +2050,7 @@ impl InlineCaches {
             }
             let found = Cell::from_words(words);
             match expected_cell(entry.guard, &entry.target, found, application_of, jit) {
-                Ok(Some(expected)) if expected != found => Err(format!(
+                Ok(Some(expected)) if !cell_may_be(found, expected, jit) => Err(format!(
                     "{}: the cell reads {found:?}, its entry's is {expected:?}",
                     place()
                 )),
@@ -1955,7 +2125,12 @@ impl InlineCaches {
                 level: cell.level,
                 chain_start: cell.chain_start,
             };
-            if found != expected || words[cells::ROW_WORDS - 2..] != [0, 0] {
+            let entry_holds = jit.cell_entry_may_be(found.entry, expected.entry);
+            let others_hold = GlobalRow {
+                entry: expected.entry,
+                ..found
+            } == expected;
+            if !others_hold || !entry_holds || words[cells::ROW_WORDS - 2..] != [0, 0] {
                 return Err(format!(
                     "global row {index} reads {words:?}, its entry's is {expected:?}"
                 ));
@@ -2028,6 +2203,18 @@ fn expected_cell(
         level: cell_level(target),
         chain_start: chain_start as u64,
     }))
+}
+
+/// Whether `found` is a cell an entry whose cell is `expected` may hold:
+/// the same, but for an entry address the JIT's state has moved on from
+/// since -- the miss stub of a body since compiled or refused, which the
+/// site's next miss rewrites (`decide_at`).
+fn cell_may_be(found: Cell, expected: Cell, jit: &JitState) -> bool {
+    Cell {
+        entry: expected.entry,
+        ..found
+    } == expected
+        && jit.cell_entry_may_be(found.entry, expected.entry)
 }
 
 /// Whether a polymorphic or megamorphic site's cell is the one its state

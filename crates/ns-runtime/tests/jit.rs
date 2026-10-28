@@ -68,6 +68,9 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
         machine_back_edges: after.machine_back_edges - before.machine_back_edges,
         safepoint_exits: after.safepoint_exits - before.safepoint_exits,
         machine_entries: after.machine_entries - before.machine_entries,
+        compiled_calls: after.compiled_calls - before.compiled_calls,
+        miss_leaf_calls: after.miss_leaf_calls - before.miss_leaf_calls,
+        resumed_entries: after.resumed_entries - before.resumed_entries,
     }
 }
 
@@ -441,4 +444,270 @@ fn a_thread_with_too_little_stack_runs_interpreted() {
     let (answer, entries) = run_the_loop_on_a_thread_of(8 << 20);
     assert_eq!(answer, 500_500);
     assert!(entries > 0, "the loop runs in machine code");
+}
+
+ns_runtime::for_each_lowering! {
+    /// A loop sending `add:` to an object whose `add:` adds: the send's
+    /// cell names the callee's machine entry once the miss has compiled
+    /// it, so the loop's calls reach machine code by `call` and come back
+    /// by `ret`, and the sum is the interpreter's. The reference
+    /// lowering's sends are uncached and exit.
+    fn a_compiled_send_calls_compiled_code(lowering) {
+        let source = indoc! {"
+            class Subject = Object new () (
+              class Adder = () (
+                public add: value = (
+                  ^value + 1
+                )
+                public sumWith: adder = (
+                  |
+                    sum ::= 0.
+                    index ::= 0.
+                  |
+                  [index < 10000] whileTrue: [
+                    sum:: sum + (adder add: index).
+                    index:: index + 1.
+                  ].
+                  ^sum.
+                )
+              )
+              public run = (
+                |
+                  adder = Adder new.
+                |
+                ^adder sumWith: adder.
+              )
+            ) : ()
+        "};
+        let (mut interpreter, class) = load_with(source, lowering);
+        interpreter.set_jit_stress(true);
+        interpreter.set_jit_counting(true);
+        let before = interpreter.jit_statistics();
+        assert_eq!(run(&mut interpreter, &class), 50_005_000);
+        let done = since(interpreter.jit_statistics(), before);
+        if lowering == Lowering::Optimized {
+            // A stress mode that exits at every poll, or that holds the
+            // safepoint request so that every compiled push is refused,
+            // leaves the loop to the interpreter after its first round.
+            let expected = if a_stress_mode_is_on() { 0 } else { 9_000 };
+            assert!(
+                done.compiled_calls >= expected,
+                "the loop's sends call compiled code: {}",
+                done.compiled_calls
+            );
+            assert!(done.miss_leaf_calls >= 1, "the first send missed");
+        }
+    }
+}
+
+/// Whether the environment turns a stress mode on (`NS_NEXT_STRESS_*`
+/// set, and neither empty nor `0`), under which machine code leaves for
+/// the interpreter far more often than a program needs it to.
+fn a_stress_mode_is_on() -> bool {
+    std::env::vars_os().any(|(name, value)| {
+        name.to_string_lossy().starts_with("NS_NEXT_STRESS_") && !value.is_empty() && value != "0"
+    })
+}
+
+/// A chain of compiled sends three deep -- `run:`, `first:with:`,
+/// `second:with:`, `third:with:` -- whose innermost body sends a message
+/// nothing understands,
+/// unhandled: the exit at that send materializes every compiled frame, so
+/// the stack the unhandled exception ends the run on reads as the
+/// interpreter's.
+const THREE_DEEP: &str = indoc! {"
+    class Subject = Object new () (
+      class Chain = () (
+        public first: value with: chain = (
+          ^(chain second: value + 1 with: chain) + 1
+        )
+        public second: value with: chain = (
+          ^(chain third: value + 1 with: chain) + 1
+        )
+        public third: value with: chain = (
+          |
+            index ::= 0.
+          |
+          [index < value] whileTrue: [index:: index + 1].
+          index > 100 ifTrue: [^nil frobnicate].
+          ^index
+        )
+        public run: chain = (
+          |
+            sum ::= 0.
+            index ::= 0.
+          |
+          [index < 200] whileTrue: [
+            sum:: sum + (chain first: index with: chain).
+            index:: index + 1.
+          ].
+          ^sum.
+        )
+      )
+      public run = (
+        |
+          chain = Chain new.
+        |
+        ^chain run: chain.
+      )
+    ) : ()
+"};
+
+/// The stack `THREE_DEEP`'s unhandled exception ended the run on, with the
+/// JIT on (under its stress setting, so that every body is compiled at its
+/// first entry) or off.
+fn three_deep_stack(lowering: Lowering, jit: bool) -> (Vec<String>, JitStatistics) {
+    let (mut interpreter, class) = load_with(THREE_DEEP, lowering);
+    interpreter.set_jit_enabled(jit);
+    interpreter.set_jit_stress(jit);
+    let before = interpreter.jit_statistics();
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    match interpreter.send(&instance, Symbol::intern("run"), &[]) {
+        Err(HostSignal::Error(error)) => {
+            assert!(error.message.contains("frobnicate"), "{}", error.message);
+        }
+        _ => panic!("run: expected the unhandled error"),
+    }
+    let done = since(interpreter.jit_statistics(), before);
+    (interpreter.stack_trace(), done)
+}
+
+ns_runtime::for_each_lowering! {
+    fn an_exit_in_a_callee_materializes_every_frame(lowering) {
+        let (compiled, statistics) = three_deep_stack(lowering, true);
+        let (interpreted, _) = three_deep_stack(lowering, false);
+        assert_eq!(compiled, interpreted);
+        assert!(
+            compiled.iter().any(|frame| frame.starts_with("third:with:")),
+            "the innermost body's frame: {compiled:?}"
+        );
+        assert!(
+            compiled.iter().any(|frame| frame.starts_with("run:")),
+            "the entry's frame: {compiled:?}"
+        );
+        if lowering == Lowering::Optimized {
+            assert!(statistics.compiled_calls >= 1 || statistics.miss_leaf_calls >= 1);
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// `step:`'s send of `printString`, a primitive machine code does not
+    /// run, leaves machine code inside the callee at every call: the exit
+    /// materializes `loop:`'s frame too, and once `step:` returns, `loop:`
+    /// is resumed in its machine code, so that its loop goes on there
+    /// rather than in the interpreter.
+    fn a_returned_to_frame_resumes_in_machine_code(lowering) {
+        let source = indoc! {"
+            class Subject = Object new () (
+              class Stepper = () (
+                public step: value = (
+                  ^value printString size
+                )
+                public loop: stepper = (
+                  |
+                    sum ::= 0.
+                    index ::= 0.
+                  |
+                  [index < 1000] whileTrue: [
+                    sum:: sum + (stepper step: index).
+                    index:: index + 1.
+                  ].
+                  ^sum.
+                )
+              )
+              public run = (
+                |
+                  stepper = Stepper new.
+                |
+                ^stepper loop: stepper.
+              )
+            ) : ()
+        "};
+        let (mut interpreter, class) = load_with(source, lowering);
+        interpreter.set_jit_stress(true);
+        interpreter.set_jit_counting(true);
+        let before = interpreter.jit_statistics();
+        assert_eq!(run(&mut interpreter, &class), 2890);
+        let done = since(interpreter.jit_statistics(), before);
+        if lowering == Lowering::Optimized {
+            assert!(
+                done.resumed_entries >= 900,
+                "`loop:` resumed in machine code after each call: {}",
+                done.resumed_entries
+            );
+            assert!(
+                done.machine_back_edges >= 900,
+                "its loop closes in machine code: {}",
+                done.machine_back_edges
+            );
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// The default trigger, without the stress setting: `add:` has run
+    /// once, interpreted, when `sumWith:count:`'s machine code first sends
+    /// it, so the miss leaf counts its second entry, compiles it and
+    /// installs it from inside the entry, and the send calls it; every
+    /// later send of the loop calls it through the cell the miss rewrote,
+    /// and the interpreter enters no other body.
+    fn a_callee_the_miss_compiles_is_entered_at_its_next_call(lowering) {
+        let source = indoc! {"
+            class Subject = Object new () (
+              class Adder = () (
+                public add: value = (
+                  |
+                    index ::= 0.
+                  |
+                  [index < 1] whileTrue: [index:: index + 1].
+                  ^value + index
+                )
+                public sumWith: adder count: count = (
+                  |
+                    sum ::= 0.
+                    index ::= 0.
+                  |
+                  [index < count] whileTrue: [
+                    sum:: sum + (adder add: index).
+                    index:: index + 1.
+                  ].
+                  ^sum.
+                )
+              )
+              public run: count = (
+                |
+                  adder = Adder new.
+                |
+                ^adder sumWith: adder count: count.
+              )
+            ) : ()
+        "};
+        let (mut interpreter, class) = load_with(source, lowering);
+        interpreter.set_jit_counting(true);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let run_with = |interpreter: &mut Interpreter, count: i64| {
+            let count = interpreter.enter(|mutator| {
+                mutator.stash(ns_runtime::Value::small_integer(count))
+            });
+            let answer = expect_ok(
+                interpreter.send(&instance, Symbol::intern("run:"), &[count]),
+                "run:",
+            );
+            interpreter.enter(|mutator| match mutator.fetch(&answer).kind() {
+                ValueKind::SmallInteger(integer) => integer,
+                _ => panic!("run: expected a small integer"),
+            })
+        };
+        assert_eq!(run_with(&mut interpreter, 1), 1);
+        let before = interpreter.jit_statistics();
+        assert_eq!(run_with(&mut interpreter, 10_000), 50_005_000);
+        let done = since(interpreter.jit_statistics(), before);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(done.compiled_bodies >= 2, "`sumWith:count:`, then `add:` by the miss");
+            assert_eq!(done.miss_leaf_calls, 1, "the one send that found no machine entry");
+            assert!(done.compiled_calls >= 9_000, "{}", done.compiled_calls);
+            assert_eq!(done.machine_entries, 1, "only `sumWith:count:` is entered by the loop");
+        }
+    }
 }
