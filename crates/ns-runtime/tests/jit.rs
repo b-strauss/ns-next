@@ -16,6 +16,9 @@ fn load_with(source: &str, lowering: Lowering) -> (Interpreter, Root) {
     let resolved = ns_runtime::resolve(module, source.into(), SourceOrigin::File("test.ns".into()))
         .expect("resolve");
     let mut interpreter = Interpreter::bootstrap_with(lowering);
+    // On whatever the environment says: these pin the JIT, and the stress
+    // gate runs the suite once with `NS_NEXT_NO_JIT=1`.
+    interpreter.set_jit_enabled(true);
     let class = interpreter.load_module(&resolved);
     (interpreter, class)
 }
