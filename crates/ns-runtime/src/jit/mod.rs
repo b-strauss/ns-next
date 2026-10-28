@@ -474,6 +474,10 @@ pub(crate) fn note_entry(state: &mut JitState, code: &CompiledCode) {
     match slot.state.get() {
         REFUSED | LEAVES_BEFORE_A_LOOP => {}
         COMPILED if slot.zone.get() == state.zone_identity() => {}
+        // A body two interpreters ran in turn would be compiled again at
+        // every switch, each time leaving its old code in the other's
+        // zone; no body is run by two interpreters today
+        // (`docs/OPEN-WORK.md`, road step 8).
         COMPILED => compile_into_slot(state, code),
         entries => {
             let entries = entries + 1;

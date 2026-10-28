@@ -7285,6 +7285,42 @@ builds separated -- `bench_block` -0.6%, `bench_send` -1.7%,
 `bench_megamorphic` -2.3%, Sieve +1.3%, `bench_signal` -1.0% -- and the
 geometric mean -1.0%; the final measurement above confirms it.
 
+**The machine words moved.** Measured 2026-10-28, `39a9113b` -- the
+safepoint request in the machine words, the entry block of thirty-two
+words and the leaf call's stack pointer in it -- against `cc534eac`, by
+the same protocol: three builds a side (`vm::run` spans 40,118, 43,190
+and 46,198 bytes at `cc534eac`, 39,990, 43,062 and 46,262 at
+`39a9113b`, no `run_stretch` or closure of its own in either), five
+rounds in a rotating order over two sittings, `bench_loop`, `bench_send`
+and the Are We Fast Yet programs.
+
+| Source | `cc534eac` (ms) | its builds | `39a9113b` (ms) | its builds | Change | Builds separated |
+|---|---|---|---|---|---|---|
+| `bench_loop` | 2.108 | 2.104–2.111 | 2.073 | 2.071–2.075 | -1.7% | faster |
+| `bench_send` | 3.235 | 3.226–3.243 | 3.184 | 3.182–3.185 | -1.6% | faster |
+| `CD` | 3502.313 | 3493.504–3512.912 | 3493.578 | 3459.110–3520.224 | -0.2% | no |
+| `Havlak` | 3209.688 | 3203.428–3215.764 | 3192.161 | 3181.536–3198.648 | -0.5% | faster |
+| `Mandelbrot` | 2721.996 | 2701.464–2738.962 | 2698.567 | 2678.484–2721.228 | -0.9% | no |
+| `NBody` | 2012.372 | 2009.262–2017.896 | 1989.395 | 1983.920–1999.260 | -1.1% | faster |
+| `DeltaBlue` | 607.923 | 605.425–612.200 | 604.966 | 598.330–609.102 | -0.5% | no |
+| `Bounce` | 1.057 | 1.050–1.066 | 1.035 | 1.034–1.037 | -2.0% | faster |
+| `DeltaBlueTon80` | 6.958 | 6.914–6.982 | 6.877 | 6.832–6.943 | -1.2% | no |
+| `Json` | 9.922 | 9.870–9.964 | 9.980 | 9.786–10.353 | +0.6% | no |
+| `List` | 0.919 | 0.916–0.923 | 0.912 | 0.900–0.921 | -0.8% | no |
+| `Permute` | 2.373 | 2.352–2.394 | 2.371 | 2.368–2.373 | -0.1% | no |
+| `Queens` | 1.946 | 1.934–1.953 | 1.931 | 1.917–1.948 | -0.8% | no |
+| `Richards` | 61.862 | 61.668–62.009 | 61.150 | 60.589–61.482 | -1.2% | faster |
+| `RichardsTon80` | 4.260 | 4.197–4.300 | 4.252 | 4.234–4.263 | -0.2% | no |
+| `Sieve` | 1.360 | 1.357–1.365 | 1.373 | 1.349–1.387 | +1.0% | no |
+| `Storage` | 1.404 | 1.393–1.416 | 1.404 | 1.386–1.434 | +0.1% | no |
+| `Towers` | 3.025 | 2.998–3.070 | 3.035 | 2.989–3.071 | +0.4% | no |
+
+No program is slower with its builds separated; six are faster --
+`bench_loop`, `bench_send`, Bounce, Havlak, NBody and Richards -- and the geometric mean over the eighteen sources is -0.60%. The
+poll's extra load costs nothing measurable; what is faster is the run
+loop's new layout, since nothing machine code runs in these programs
+changed.
+
 What it does not cover: no benchmark program spends its time in a loop
 the templates cover whole, so the measurement shows that the foundation
 costs nothing, not what machine code gains; that is stage 3's and later
@@ -9409,8 +9445,9 @@ and the rest of the body. Since no send, return or closure has a template
 yet, the foundation is not expected to be faster than the interpreter,
 and machine code is entered only where it can loop ("What the baseline
 JIT's foundation moved" has the measurement). Only x64 has an encoder:
-elsewhere `jit::available` answers `false` and every body stays
-interpreted. What the design names beyond this -- the sends and the cache
+the JIT is compiled where `crates/ns-runtime/build.rs` sets `cfg(ns_jit)`,
+on x64 alone, the one line the AArch64 port changes; elsewhere
+`jit::available` answers `false` and every body stays interpreted. What the design names beyond this -- the sends and the cache
 cells, closures and allocation, the exit that materializes several
 compiled frames, on-stack replacement, the register cache, compacting the
 zone, the AArch64 encoder -- is stages 3 to 7, still planned.
@@ -9423,9 +9460,15 @@ zone, the AArch64 encoder -- is stages 3 to 7, still planned.
   AArch64, so no page is ever writable and executable at once. Code is
   installed from the base up, the writer committing pages as it goes and
   flushing the instruction cache over what it wrote when it is dropped
-  (nothing on x64). `CodeZone::enter` calls the entry stub with the
-  platform's C convention, handing it a block of sixteen words, and the
-  leaf shim calls a Rust function `fn(&mut C, [u64; 3]) -> u64` back.
+  (nothing on x64); on Linux the memory object behind the views is
+  closed once both are mapped, and a commit populates its pages through
+  the writable view (`MADV_POPULATE_WRITE`), so that a zone the system
+  cannot back fails as a value rather than by `SIGBUS`. `CodeZone::enter`
+  calls the entry stub with the platform's C convention, handing it a
+  block of thirty-two words -- 0 to 3 its own, 4 to 31 the caller's,
+  15 to 29 of those free and kept together for the later stages' words --
+  and the leaf shim calls a Rust function `fn(&mut C, [u64; 3]) -> u64`
+  back.
   Every zone has an identity of its own, never 0, so that a body records
   which zone its code lies in. The native stack's bounds, which the entry
   is to check once compiled frames nest, are not read yet
@@ -9436,7 +9479,9 @@ zone, the AArch64 encoder -- is stages 3 to 7, still planned.
   `divide_signed`; `Assembler::with_encoder` assembles with a configured
   encoder. The flag contract is stated per operation: each sets, keeps or
   clobbers the condition flags, and `Condition::Overflow` is defined only
-  after an add, a subtract or `multiply_checked`. Every constant of an
+  after an add, a subtract or `multiply_checked` -- which AArch64 is to
+  honour with `smulh`, `mul`, a compare of the high word with the low
+  word's sign and one `ccmp` that sets V alone. Every constant of an
   encoder is a named `const` citing its official source -- the Intel SDM's
   volume and section for x64, the instruction's developer.arm.com page
   for AArch64 -- and no integer literal but 0 and 1 stands outside one,
@@ -9447,9 +9492,12 @@ zone, the AArch64 encoder -- is stages 3 to 7, still planned.
   register plays which role, the same under both x64 conventions, since
   the pinned ones are registers both have a callee preserve: `rbx` the
   address of the frame's register 0, `r14` the entry block, `r15` the
-  object space's base, `r13` the stack pointer a leaf call aligned away
-  from, `r11` the idioms' own scratch, `rax` a leaf's answer, and nine
-  scratch registers for the templates. Its idioms are the only way a
+  object space's base, `r11` the idioms' own scratch, `rax` a leaf's
+  answer, and nine scratch registers for the templates. `r13` plays no
+  role: preserved by both conventions, it is the one free register a
+  value survives a leaf call in, kept for the register cache, and a leaf
+  call keeps the stack pointer it aligned away from in block word
+  `LeafStackPointer` (14) instead. Its idioms are the only way a
   template touches a frame, the block, a leaf, a poll or an exit: load and
   store a frame register, load the receiver, load an immediate word, call
   a leaf (aligning the native stack at run time, as Cog aligns the C
@@ -9457,7 +9505,7 @@ zone, the AArch64 encoder -- is stages 3 to 7, still planned.
   poll, and count a back edge for the tests. In a debug build a frame
   register's load refuses a dead register's poison word as the
   interpreter's read does, by an exit of its own (`ExitKind::DeadRegister`,
-  the register's index in block word `ExitRegister`, 12), after which Rust
+  the register's index in block word `ExitRegister`, 30), after which Rust
   panics with `heap.rs`'s message for it.
 - **The stubs** (`jit/stubs.rs`), at the zone's base: the entry stub saves
   every general-purpose register either convention has its callee
@@ -9465,12 +9513,12 @@ zone, the AArch64 encoder -- is stages 3 to 7, still planned.
   Win64 must have the stub save them first), loads the pinned roles from
   the block, saves the stack pointer in block word `SavedStackPointer`
   (10) and calls the body. A body never returns to it: an exit **jumps**
-  to the exit stub through block word `ExitStub` (13), so no `call` that
+  to the exit stub through block word `ExitStub` (12), so no `call` that
   never returns unbalances the processor's return-address predictor and
   no body holds an absolute address; the exit stub writes the program
   counter and the kind (block words 8 and 9), resets the stack pointer to
   the saved one and returns to `enter`'s caller. The running activation
-  travels in block word `Activation` (14), for the leaves.
+  travels in block word `Activation` (13), for the leaves.
 - **The baseline compiler** (`jit/baseline.rs`) lowers a body instruction
   by instruction through the one exhaustive `match` over `Instruction`
   (`lower`), recording where each instruction's code starts
@@ -9482,7 +9530,8 @@ zone, the AArch64 encoder -- is stages 3 to 7, still planned.
   compares, with their tag checks, declining to the send at the
   instruction's target, before anything is written, on an operand that
   is no `SmallInteger`, an overflow or a zero divisor. A backward jump
-  polls the heap's safepoint flag (block word `PollWord`, 11) first and
+  polls the heap's safepoint request (in the machine words, block word
+  `MachineWords`, 11; "The machine words" below) first and
   exits as a safepoint there, so a loop that makes no send still reaches
   one. The generic leaf, `Leaf::Step` (`jit/leaves.rs`), runs a
   straight-line instruction through the interpreter's own function for
@@ -9531,6 +9580,37 @@ Since compiled code calls no compiled code yet, an entry runs exactly one
 compiled frame, whose words the interpreter's push wrote: the exit writes
 only where the interpreter resumes, and the native stack holds no
 compiled frame's return address to walk.
+
+### The machine words
+
+Machine code runs while `CodeZone::enter` holds the mutator as its
+context, a `&mut` protected for the whole entry, through which the shim
+hands every leaf its `&mut Mutator`. A word machine code reads or writes
+by itself between two leaf calls -- at an address it was entered with,
+not through the shim -- therefore lies outside the mutator's bytes: an
+address into them, taken before the entry, would make every such access
+a foreign one to the protected reference, undefined behaviour under the
+aliasing model once a leaf has written the word, though no processor
+notices and Miri cannot run machine code to find it. Such words are the
+heap's **machine words** (`heap/machine_words.rs`): an allocation of
+their own, `Cell`s behind an `Rc` the heap holds, which Rust reads and
+writes only through shared references and never borrows mutably, and
+which machine code reaches through block word `MachineWords` (11). An
+`Rc` rather than a `Box`, since a `Box` is retagged as unique wherever it
+moves. Today they hold the safepoint request, which the interpreter's
+poll and machine code's both read (`Heap::safepoint_requested`); eden's
+top and limit, which stage 4's bump allocation reads and writes in
+place, and the depth count are to join it in the room the area keeps.
+The object space and the activation stack are `ns-memory` reservations
+outside the mutator likewise, which no leaf holds a mutable borrow of
+once it returns. The argument is written where `CodeZone::enter` is
+documented and at the area's definition, since no tool checks it.
+
+Reading the flag through the area costs the interpreter's poll one load
+more -- the area's address, then the word -- at every backward jump and
+every transfer; `vm::run` measured 7,970 instructions against 7,969 in the
+codegen gate, and no program slower ("What the baseline JIT's foundation
+moved", "The machine words moved").
 
 ## Planned: the baseline JIT
 

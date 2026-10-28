@@ -390,6 +390,14 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     compiled body only counts; once templates make entering the common
     path of a compiled body's push, its placement is to be measured
     again.
+  - **A body shared by two interpreters would ping-pong between their
+    zones.** A body's `JitSlot` names one zone, and `jit::note_entry`
+    compiles a body whose slot names another into the running
+    interpreter's, so two interpreters running one `CompiledCode` in turn
+    would compile it again at every switch, each compile leaving its old
+    code in a zone that nothing reclaims before the zone is compacted. No
+    body is run by two interpreters today; if code comes to be shared,
+    the slot holds code per zone or the stale copy is reclaimed.
   - **`load_frame_register` has no unchecked variant.** Every frame
     register a template loads is checked against the dead-register poison
     in a debug build, as the interpreter checks a read; a copy the

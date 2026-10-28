@@ -407,6 +407,25 @@ it. A lazy slot's getter has no fast path (`Instruction::ReturnSlotIfFilled`
 instead). The reference lowering runs every send uncached and is the oracle
 (`dispatch.md`, "Primitive methods", "3b — The caches").
 
+**Machine code is a lowering of the interpreter's instructions, never a
+second interpreter.** Four rules keep the baseline JIT
+(`crates/ns-runtime/src/jit/`) exact. A template (`baseline.rs`) stores
+into the frame only after its last decline or exit, so an exit, which
+hands the instruction to the interpreter, never re-applies it. A leaf
+(`leaves.rs`) runs no Newspeak code, cannot collect, reads no other
+activation, never pushes and never compiles, and answers "re-execute" only
+before it changed anything. A new instruction is one arm of
+`jit::baseline::lower` plus the macro-assembler idioms it lacks, never a
+second dispatch; machine code is entered only through `jit::entered`
+(`mod.rs`), every address it needs asked of the heap afresh at each entry,
+and it holds no handle. Every word machine code reads or writes between
+two leaf calls lives in the heap's machine words
+(`heap/machine_words.rs`), never inline in `Mutator`: `CodeZone::enter`
+holds the mutator as a protected `&mut`, so machine code's access to a
+word inside it is undefined behaviour once a leaf has written that word,
+which no test and no tool detects (`execution.md`, "The baseline JIT's
+foundation", "The machine words").
+
 **A chain of messages is walked link by link.** `a b + c …` is a left-nested
 `Send` as deep as the chain is long, and every chain length is valid
 Newspeak, so no depth guard bounds it: never recurse along a receiver —

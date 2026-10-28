@@ -474,7 +474,10 @@ absorb that, as they do in Cog and Primordial Soup, and an allocation that
 finds even the reserve spent goes old ("Generations").
 
 **The poll** (in `vm::run_stretch`, forced inline into `vm::run`) is one
-compare of a flag the heap owns, `Heap::safepoint_requested`. When the flag is
+compare of a flag the heap owns, `Heap::safepoint_requested`, a word of its
+machine words, which machine code's poll reads as well and which therefore
+lives apart from the heap's own bytes ([execution.md](execution.md), "The
+machine words"). When the flag is
 set the stretch writes its frame back and leaves its entry, and `run` calls
 `Interpreter::safepoint` (`interpreter/safepoint.rs`), `#[cold]` and out of
 line, so `vm.rs` holds the compare and the call and nothing of what a

@@ -6414,7 +6414,19 @@ loop and an overflow in machine code.
 - `c4a689c0`, `f28c283c` -- the two stress modes.
 - `90fb6ae3` -- the templates and the generic leaf.
 - `56c6e8ac` -- a body leaving before a loop is never entered.
-- The commit that records the measurement and closes the documents.
+- `20efde36`, `38adca8b`, `cc534eac` -- the measurement, the test that
+  the default trigger enters a loop, and the documents.
+- `a1da6b93`, `2aa0955a`, `e78d4a19`, `b9f3ba2e`, `3100f03c`, `39a9113b`,
+  `93fcaab9` and the documents' commit after them, which records their
+  measurement (no program slower than `cc534eac`, the geometric mean
+  -0.60%) -- the whole-branch review's
+  fixes: one `cfg(ns_jit)` for where the JIT is built, an entry block of
+  thirty-two words with the leaf call's stack pointer in it and `r13`
+  free, the safepoint request moved into the machine words apart from
+  the mutator, the code zone entered by exposed provenance and holding no
+  descriptor, AArch64's overflow after a multiply stated, and the stress
+  gate's run of the suite with the JIT off, which the JIT's own tests
+  now pass.
 
 What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): road step
 8's third stage, sends and the caches in machine code, next, and what the
