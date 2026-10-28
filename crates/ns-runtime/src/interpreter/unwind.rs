@@ -931,6 +931,51 @@ mod tests {
         });
     }
 
+    /// The unwind that pops a `signal` which took the reserve gives the
+    /// reserve back at that pop: the limit word is the limit again before
+    /// anything asks whether the reserve is held.
+    #[test]
+    fn the_limit_word_is_exact_right_after_the_signals_pop() {
+        use crate::heap::machine_words::MachineWord;
+        let limit = |mutator: &crate::interpreter::Mutator| {
+            mutator.heap.machine_word(MachineWord::DepthLimit)
+        };
+        let mut interpreter = Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let class = mutator.builtin_class(BuiltinClass::Object);
+            let error = NewspeakError::error(crate::Symbol::SIGNAL, Value::nil(), "boom");
+            let raised = mutator
+                .heap
+                .push_activation(header(class), Arguments::NONE, 1)
+                .expect("the stack holds the frame");
+            let frame = mutator.heap.reify(raised);
+            mutator.set_depth_reserve(Some(frame));
+            let signal = mutator
+                .heap
+                .push_activation(
+                    ActivationHeader {
+                        then: Continuation::VmErrorSignalled(Box::new(error)),
+                        ..header(class)
+                    },
+                    Arguments::NONE,
+                    1,
+                )
+                .expect("the stack holds the frame");
+            assert_eq!(
+                limit(mutator),
+                (crate::interpreter::MAX_ACTIVATION_DEPTH + crate::interpreter::DEPTH_RESERVE)
+                    as u64
+            );
+            mutator.pop_for_unwind(signal);
+            assert_eq!(
+                limit(mutator),
+                crate::interpreter::MAX_ACTIVATION_DEPTH as u64
+            );
+            assert!(mutator.depth_reserve.is_none());
+            mutator.heap.pop_activation(raised);
+        });
+    }
+
     /// A `signal` resumed over the suspended activation that took the
     /// reserve returns to it through `Continuation::ReturnToSuspended`,
     /// which wraps its `VmErrorSignalled`: the reserve is still held, the

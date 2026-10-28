@@ -9614,10 +9614,12 @@ moves. Today they hold the safepoint request, which the interpreter's
 poll and machine code's both read (`Heap::safepoint_requested`); the
 depth count (`DepthCount`, which `Heap::counted_depth` reads and the
 push and pop write, so that the count lives nowhere else), the depth
-limit (`DepthLimit`: L, or L plus `DEPTH_RESERVE` while
-`Mutator::set_depth_reserve` holds the reserve -- a reserve no longer held
-but not yet forgotten leaves it at the higher value until
-`depth_reserve_held` forgets it), the end of the activation stack's
+limit (`DepthLimit`: L, or L plus `DEPTH_RESERVE` exactly while a VM
+error's `signal` holds the reserve -- `Mutator::set_depth_reserve` raises
+it and the unwind's pop of that `signal` (`pop_for_unwind`) gives it back
+at once; the reserve a `doesNotUnderstand:` handler takes never raises
+it, since the handler returns by an ordinary pop, so machine code leaves a
+push at L to the interpreter), the end of the activation stack's
 ordinary room (`OrdinaryStackEnd`, written beside `FrameStack::ordinary_end`
 in `grow_to`) and, for each of the five immediates, its class object as a
 stored word (`ImmediateClass(index)`, rewritten by

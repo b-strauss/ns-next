@@ -1644,16 +1644,23 @@ impl<'gc> Mutator<'gc> {
         }
         if let Some(top) = self.heap.top_activation() {
             let frame = self.heap.reify(top);
-            self.set_depth_reserve(Some(frame));
+            // The handler returns by an ordinary pop, which no hook can
+            // see, so the reserve it holds never raises the limit word:
+            // machine code leaves a push at the limit to the interpreter,
+            // which knows the reserve is held.
+            self.depth_reserve = Some(frame);
+            self.heap.set_depth_limit(MAX_ACTIVATION_DEPTH);
         }
     }
 
-    /// Takes or gives back the depth limit's reserve: `depth_reserve` and
-    /// the `DepthLimit` machine word change together, here alone, so that
-    /// the limit machine code compares a push against is the one the
-    /// reserve implies. A reserve that is no longer held but not yet
-    /// forgotten (`depth_reserve_held` forgets it on the next question)
-    /// leaves the word at the higher limit.
+    /// Takes or gives back the depth limit's reserve for a VM error's
+    /// `signal`: `depth_reserve` and the `DepthLimit` machine word change
+    /// together, so that the limit machine code compares a push against is
+    /// the one the reserve implies. A `signal` never returns -- it leaves
+    /// by an unwind, which pops through `pop_for_unwind`, and that gives the
+    /// reserve back (`release_depth_reserve_if_ended`) the moment it is no
+    /// longer held -- so the word is the higher limit exactly while the
+    /// reserve is held.
     pub(crate) fn set_depth_reserve(&mut self, frame: Option<FrameReference<'gc>>) {
         self.depth_reserve = frame;
         let limit = if frame.is_some() {
@@ -1662,6 +1669,16 @@ impl<'gc> Mutator<'gc> {
             MAX_ACTIVATION_DEPTH
         };
         self.heap.set_depth_limit(limit);
+    }
+
+    /// Gives the reserve back as soon as an unwind's pop has ended it, so
+    /// that the `DepthLimit` word does not wait for the next slow-path
+    /// question (`depth_reserve_held` forgets a reserve it finds ended).
+    #[inline]
+    fn release_depth_reserve_if_ended(&mut self) {
+        if self.depth_reserve.is_some() {
+            self.depth_reserve_held();
+        }
     }
 
     /// Resumes the suspended activation of `frame`
@@ -2150,6 +2167,7 @@ impl<'gc> Mutator<'gc> {
             }
             then => self.abandon(then),
         }
+        self.release_depth_reserve_if_ended();
     }
 
     /// Pushes the activation a continuation decided (`resume`), in place of
