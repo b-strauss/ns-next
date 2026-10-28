@@ -612,6 +612,11 @@ fn run_machine_code(
     let leaves = leaves::table();
     mutator.jit.statistics.machine_entries += 1;
     let kind = code.enter(entry_stub, &mut block, mutator, &leaves);
+    debug_assert_eq!(
+        kind,
+        block[BlockWord::ExitKind.index()],
+        "internal: the exit stub answers the kind it wrote"
+    );
     if mutator.jit.counting {
         mutator.jit.statistics.machine_back_edges += block[BlockWord::BackEdges.index()];
     }

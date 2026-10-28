@@ -25,8 +25,8 @@ pub type Leaf<C> = fn(&mut C, [u64; 3]) -> u64;
 /// The words of the block machine code is entered with. Word 0 is the
 /// context's address, word 1 the shim's, word 2 the leaf table's, word 3
 /// the number of leaves; `CodeZone::enter` writes these four on every
-/// entry. Words 4 to 15 belong to the caller (`jit::stubs` defines them).
-pub const ENTRY_BLOCK_WORDS: usize = 16;
+/// entry. Words 4 to 31 belong to the caller (`jit::stubs` defines them).
+pub const ENTRY_BLOCK_WORDS: usize = 32;
 
 /// The next zone's identity. It starts at 1, so 0 is never an identity and
 /// can stand for "no zone" where one is recorded.

@@ -66,8 +66,6 @@ pub(crate) struct Roles {
     /// The idioms' own scratch register, which no template keeps a value
     /// in across an idiom.
     pub(crate) idiom_scratch: Register,
-    /// The stack pointer a leaf call aligned away from, restored after it.
-    pub(crate) leaf_stack: Register,
     /// Where a leaf call leaves the leaf's answer.
     pub(crate) leaf_result: Register,
     /// The registers templates may use freely; none survives a leaf call
@@ -89,6 +87,10 @@ impl Roles {
     /// register: Win64 has its callee preserve XMM6-XMM15 as well, so a
     /// template that uses one of those requires the entry stub to save
     /// them first.
+    ///
+    /// `r13` plays no role and is no scratch register: preserved by both
+    /// conventions, it is the one free register a value survives a leaf
+    /// call in, which the register cache is to have.
     pub(crate) fn of(abi: Abi) -> Roles {
         match abi {
             Abi::Windows64 | Abi::SystemV => Roles {
@@ -96,7 +98,6 @@ impl Roles {
                 context: R14,
                 object_space: R15,
                 idiom_scratch: R11,
-                leaf_stack: R13,
                 leaf_result: RAX,
                 scratch: &[RAX, RCX, RDX, RSI, RDI, R8, R9, R10, R12],
                 dividend: DIVIDEND,
@@ -298,21 +299,27 @@ impl MacroAssembler {
     /// sit in any register, an argument register included; a block word is
     /// read through the context register, which no argument overwrites.
     ///
+    /// The stack pointer the call aligns away from waits in the block's
+    /// `LeafStackPointer`, so that no register is pinned for it: a leaf
+    /// never enters machine code, so no second leaf call overwrites the
+    /// word before the first restores it.
+    ///
     /// # Panics
     ///
-    /// On an operand in the stack pointer or the roles' `leaf_stack`,
-    /// which the alignment overwrites before the operand is read.
+    /// On an operand in the stack pointer, which the alignment overwrites
+    /// before the operand is read.
     pub(crate) fn call_leaf(&mut self, leaf: LeafIndex, arguments: [Operand; 3]) {
         let roles = self.roles;
         let layout = LeafCallLayout::of(self.abi);
         for argument in arguments {
             assert!(
-                argument != Operand::Register(roles.leaf_stack)
-                    && argument != Operand::Register(RSP),
+                argument != Operand::Register(RSP),
                 "a leaf call's operand cannot be the stack pointer it realigns"
             );
         }
-        self.assembler.move_register(roles.leaf_stack, RSP);
+        let saved_stack_pointer = self.block_word(BlockWord::LeafStackPointer);
+        self.assembler
+            .store(Width::Word64, saved_stack_pointer, RSP);
         self.assembler.and_immediate(RSP, -16);
         self.assembler.add_stack(-layout.frame_bytes);
         let assignments = arguments.into_iter().zip(layout.places).zip(layout.copies);
@@ -371,7 +378,7 @@ impl MacroAssembler {
         self.assembler
             .load(Width::Word64, roles.idiom_scratch, shim);
         self.assembler.call_register(roles.idiom_scratch);
-        self.assembler.move_register(RSP, roles.leaf_stack);
+        self.assembler.load(Width::Word64, RSP, saved_stack_pointer);
     }
 
     /// Leaves machine code through the exit stub, which writes `kind` and

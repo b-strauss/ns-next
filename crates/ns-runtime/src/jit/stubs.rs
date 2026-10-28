@@ -15,7 +15,13 @@ use super::macro_assembler::{Abi, MacroAssembler};
 /// (`ObjectSpaceBase` … `MachineEntry`, `PollWord`, `ExitStub`,
 /// `Activation`, and `BackEdges`' zero) before it, the exit stub the
 /// outputs (`ExitProgramCounter`, `ExitKind`, and `ExitRegister` for a
-/// dead register's exit), and code that counts its back edges `BackEdges`.
+/// dead register's exit), a leaf call `LeafStackPointer`, and code that
+/// counts its back edges `BackEdges`.
+///
+/// Words 15 to 29 are free, kept together for what the later stages enter
+/// machine code with -- the depth count and its limit, the native stack's
+/// bound, a base of the cache cells -- so the two words only a debug build
+/// or a test uses sit at the top.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum BlockWord {
     /// The leaf shim's address, which `call_leaf` calls. Words 0, 2 and 3,
@@ -38,18 +44,23 @@ pub(crate) enum BlockWord {
     SavedStackPointer = 10,
     /// The address of the heap's safepoint flag, one byte, a Rust `bool`.
     PollWord = 11,
-    /// The register a dead register's exit read.
-    ExitRegister = 12,
     /// The exit stub's address. A body reaches the stub through this word
     /// rather than an address of its own, so its code holds no absolute
     /// address and can be moved within the zone.
-    ExitStub = 13,
+    ExitStub = 12,
     /// The running activation, as `Heap::activation_word` makes it, which
     /// a leaf that steps an instruction is handed.
-    Activation = 14,
+    Activation = 13,
+    /// The stack pointer a leaf call aligned away from, restored after
+    /// it: a word rather than a register, since it is needed only across
+    /// the call, and a callee-saved register is worth more to the register
+    /// cache.
+    LeafStackPointer = 14,
+    /// The register a dead register's exit read, in a debug build.
+    ExitRegister = 30,
     /// The backward jumps code compiled to count them took since the entry
     /// (`JitStatistics::machine_back_edges`).
-    BackEdges = 15,
+    BackEdges = 31,
 }
 
 impl BlockWord {
@@ -420,6 +431,26 @@ mod tests {
         let leaves: [Leaf<()>; 1] = [stack_misalignment];
         machine.run(body, &mut frame, 0, &false, &mut (), &leaves);
         assert_eq!(frame[..4], [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn a_value_in_the_free_callee_saved_register_survives_a_leaf_call() {
+        // `r13` plays no role, so a leaf call keeps it, as the register
+        // cache is to rely on: the call saves the stack pointer in the
+        // block, not in a register.
+        let mut machine = Machine::new();
+        let body = machine.body(|macro_assembler| {
+            macro_assembler.load_immediate_word(R13, 0x1234_5678_9ABC);
+            macro_assembler.assembler().push(RAX);
+            macro_assembler.call_leaf(LeafIndex(0), [Operand::Immediate(0); 3]);
+            macro_assembler.assembler().pop(RCX);
+            macro_assembler.store_frame_register(0, R13);
+            macro_assembler.exit(ExitKind::Reexecute, 0);
+        });
+        let mut frame = [0u64; 8];
+        let leaves: [Leaf<()>; 1] = [stack_misalignment];
+        machine.run(body, &mut frame, 0, &false, &mut (), &leaves);
+        assert_eq!(frame[0], 0x1234_5678_9ABC);
     }
 
     #[test]
