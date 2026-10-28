@@ -330,7 +330,8 @@ const RETURN_ADDRESS_BYTES: i32 = 8;
 /// and the send's return address on top of the native stack, which names
 /// the send: the miss leaf decides it (`Leaf::Miss`) and answers the
 /// callee's machine entry, which the stub jumps to as though the send had
-/// called it, or 0, at which the stub refuses the call so that the caller
+/// called it, the callee's receiver and current class the leaf handed over
+/// in the roles' `callee_receiver` and `callee_class`, or 0, at which the stub refuses the call so that the caller
 /// re-executes the send.
 pub(crate) fn assemble_miss_stub(abi: Abi) -> Assembled {
     let mut macro_assembler = MacroAssembler::new(abi);
@@ -354,7 +355,14 @@ pub(crate) fn assemble_miss_stub(abi: Abi) -> Assembled {
     let answer = roles.leaf_result;
     macro_assembler.assembler().compare_immediate(answer, 0);
     macro_assembler.exit_if(Condition::Equal, ExitKind::PushRefused, 0);
-    macro_assembler.assembler().jump_register(answer);
+    let machine_words = roles.idiom_scratch;
+    macro_assembler.load_machine_words(machine_words);
+    let receiver = MacroAssembler::machine_word(machine_words, MachineWord::CalleeReceiver);
+    let class = MacroAssembler::machine_word(machine_words, MachineWord::CalleeClass);
+    let assembler = macro_assembler.assembler();
+    assembler.load(Width::Word64, roles.callee_receiver(), receiver);
+    assembler.load(Width::Word64, roles.callee_class(), class);
+    assembler.jump_register(answer);
     finish_stub(macro_assembler)
 }
 

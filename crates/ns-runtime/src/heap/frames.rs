@@ -78,16 +78,6 @@ pub(super) fn stack_reservation() -> usize {
 /// overflow, its handler search and its handler have room to run.
 const RESERVE_FRACTION: usize = 16;
 
-/// How many words past every frame's window the stack keeps committed:
-/// a compiled send writes its callee's receiver and current class, the
-/// first two header words, before the callee's own code compares its
-/// frame's end with the room left (`jit::sends`), and the callee's header
-/// begins at most at its sender's window end. So the room an ordinary
-/// push may end in (`FrameStack::ordinary_end`) stops this many words
-/// short of the committed end, a reserved push commits this many words
-/// past its frame, and the reservation keeps them past its last frame.
-pub(crate) const CALL_MARGIN: usize = 2;
-
 /// The least a growth commits beyond what is committed, in bytes, so that
 /// a shallow program commits once.
 const MINIMUM_GROWTH: usize = 64 << 10;
@@ -211,9 +201,11 @@ pub(super) struct FrameFlags {
     /// registers when the activation returns.
     pub(super) retains_registers: bool,
     /// Whether the frame stopped in machine code: its body's machine code
-    /// called the frame above it, or an exit materialized it there
+    /// called the frame above it, which an exit materialized
     /// (`jit::materialize`), so that the run loop resumes it in machine
-    /// code when it is returned to (`vm::resume_caller`). A baseline
+    /// code when it is returned to (`vm::resume_caller`). Cleared whenever
+    /// the frame goes on interpreted instead: the innermost frame an exit
+    /// leaves, and one the loop does not resume in machine code. A baseline
     /// frame's words are the interpreter's, so clearing the bit is the
     /// whole conversion to an interpreted frame.
     pub(super) compiled: bool,
@@ -465,7 +457,7 @@ impl FrameStack {
         machine_words: MachineWords,
     ) -> Result<FrameStack, MemoryError> {
         let reservation = reserve_falling_back(reservation_bytes, Reservation::reserve)?;
-        let limit = reservation.size() / 8 - CALL_MARGIN;
+        let limit = reservation.size() / 8;
         debug_assert!(
             limit <= MAXIMUM_STACK_WORDS,
             "internal: a stack's reservation keeps every frame offset inside 32 bits"
@@ -617,7 +609,7 @@ impl FrameStack {
     ) -> Result<(usize, &[u64], &mut [u64]), ReservationExhausted> {
         let start = self.top;
         let end = start + words;
-        if end + CALL_MARGIN > self.committed {
+        if end > self.committed {
             self.grow(words, self.limit)?;
         }
         self.top = end;
@@ -661,9 +653,7 @@ impl FrameStack {
         let committed_bytes = self.committed * 8;
         // The reservation's size is a whole number of pages, so rounding an
         // end inside it up to a page stays inside it.
-        // `needed` lies at or below `limit`, `CALL_MARGIN` words short of
-        // the reservation's end, so the margin past it is inside it.
-        let needed_bytes = ((needed + CALL_MARGIN) * 8).div_ceil(page) * page;
+        let needed_bytes = (needed * 8).div_ceil(page) * page;
         let growth = committed_bytes.clamp(MINIMUM_GROWTH, MAXIMUM_GROWTH);
         let generous = (committed_bytes + growth)
             .min(ceiling * 8)
@@ -683,7 +673,7 @@ impl FrameStack {
             out_of_memory(needed_bytes - committed_bytes)
         };
         self.committed = self.committed.max(end / 8);
-        self.set_ordinary_end((self.committed - CALL_MARGIN).min(self.ordinary_limit));
+        self.set_ordinary_end(self.committed.min(self.ordinary_limit));
         Ok(())
     }
 
@@ -1012,24 +1002,6 @@ mod tests {
         assert!(stack.push(frame_words).is_err());
         stack.lower_top(ordinary_top - frame_words);
         assert!(stack.push(frame_words).is_ok());
-    }
-
-    /// A compiled send writes two words of its callee's header before the
-    /// callee checks its room, at most at its sender's window end: every
-    /// push leaves that many words committed past its frame, an ordinary
-    /// one through the ordinary end and a reserved one through its own.
-    #[test]
-    fn the_stack_keeps_two_words_committed_past_every_frame() {
-        let mut stack = FrameStack::new(64 << 10, MachineWords::new()).expect("reserve");
-        let frame_words = frame_header::COUNT + 100;
-        while stack.push(frame_words).is_ok() {
-            assert!(stack.top() <= stack.ordinary_end());
-            assert!(stack.ordinary_end() + CALL_MARGIN <= stack.committed);
-        }
-        while stack.push_reserved(frame_words).is_ok() {
-            assert!(stack.top() + CALL_MARGIN <= stack.committed);
-        }
-        assert!(stack.limit() + CALL_MARGIN <= stack.reservation.size() / 8);
     }
 
     #[test]

@@ -206,6 +206,7 @@ pub(crate) fn materialize_innermost(
     mutator
         .heap
         .adopt_machine_frames(innermost, walk.top, walk.added);
+    mutator.jit.statistics.materialized_frames += walk.added as u64;
     let Some(activation) = mutator.heap.top_activation() else {
         unreachable!("internal: a walk leaves its innermost frame on the stack");
     };

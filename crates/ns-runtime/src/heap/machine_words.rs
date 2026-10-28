@@ -47,7 +47,8 @@ const IMMEDIATE_GUARDS: usize = IMMEDIATE_CLASSES + IMMEDIATE_COUNT;
 
 /// The words of the area. Every word's index is fixed: the fieldless words
 /// 0 to 3, the immediates' classes 4 to 8 and their guards 9 to 13, the
-/// next generation 14, the rest free for the later stages.
+/// next generation 14, the callee's receiver and class 15 and 16, the
+/// rest free for the later stages.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum MachineWord {
     /// Not zero while the run loop's next safepoint must take its slow
@@ -77,6 +78,13 @@ pub(crate) enum MachineWord {
     /// next push, the heap's or a compiled callee's prologue, takes one
     /// past it (`Heap::peek_next_generation`). Unused in a release build.
     NextGeneration,
+    /// The receiver the miss leaf decided a compiled call's callee to
+    /// have, as a stored word, which the miss stub hands the callee's
+    /// machine entry (`Roles::callee_receiver`). Read only right after the
+    /// leaf wrote it.
+    CalleeReceiver,
+    /// The current class the miss leaf decided, as `CalleeReceiver` is.
+    CalleeClass,
 }
 
 impl MachineWord {
@@ -97,6 +105,8 @@ impl MachineWord {
                 IMMEDIATE_GUARDS + index
             }
             MachineWord::NextGeneration => IMMEDIATE_GUARDS + IMMEDIATE_COUNT,
+            MachineWord::CalleeReceiver => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 1,
+            MachineWord::CalleeClass => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 2,
         }
     }
 }
@@ -105,7 +115,7 @@ impl MachineWord {
 /// later stages put here, so that adding one moves none.
 const WORD_COUNT: usize = 32;
 
-const _: () = assert!(MachineWord::NextGeneration.index() < WORD_COUNT);
+const _: () = assert!(MachineWord::CalleeClass.index() < WORD_COUNT);
 
 /// The area. One per heap, created with it and never replaced; a clone
 /// is another handle to the same words, which the activation stack keeps
@@ -172,9 +182,11 @@ mod tests {
         assert_eq!(MachineWords::offset(MachineWord::ImmediateClass(0)), 32);
         assert_eq!(MachineWords::offset(MachineWord::ImmediateGuard(0)), 72);
         offsets.push(MachineWords::offset(MachineWord::NextGeneration));
+        offsets.push(MachineWords::offset(MachineWord::CalleeReceiver));
+        offsets.push(MachineWords::offset(MachineWord::CalleeClass));
         offsets.sort_unstable();
         offsets.dedup();
-        assert_eq!(offsets.len(), 5 + 2 * IMMEDIATE_COUNT);
+        assert_eq!(offsets.len(), 7 + 2 * IMMEDIATE_COUNT);
     }
 
     #[test]

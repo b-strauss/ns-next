@@ -71,6 +71,7 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
         compiled_calls: after.compiled_calls - before.compiled_calls,
         miss_leaf_calls: after.miss_leaf_calls - before.miss_leaf_calls,
         resumed_entries: after.resumed_entries - before.resumed_entries,
+        materialized_frames: after.materialized_frames - before.materialized_frames,
     }
 }
 
@@ -586,7 +587,11 @@ ns_runtime::for_each_lowering! {
             "the entry's frame: {compiled:?}"
         );
         if lowering == Lowering::Optimized {
-            assert!(statistics.compiled_calls >= 1 || statistics.miss_leaf_calls >= 1);
+            assert!(
+                statistics.materialized_frames >= 3,
+                "`first:with:`, `second:with:` and `third:with:` were compiled frames: {}",
+                statistics.materialized_frames
+            );
         }
     }
 }
@@ -708,6 +713,86 @@ ns_runtime::for_each_lowering! {
             assert_eq!(done.miss_leaf_calls, 1, "the one send that found no machine entry");
             assert!(done.compiled_calls >= 9_000, "{}", done.compiled_calls);
             assert_eq!(done.machine_entries, 1, "only `sumWith:count:` is entered by the loop");
+        }
+    }
+}
+
+/// Three compiled frames deep, `third:` allocates in a loop: under the
+/// scavenge stress mode its back edge polls a held request, exits, the
+/// exit materializes `second:`, `first:` and `third:` above `run:`, and
+/// the scavenge -- its remembered set and cells verified first -- traces
+/// them; each frame goes on, and the sum is the interpreter's.
+#[cfg(debug_assertions)]
+const COLLECTED_DEEP: &str = indoc! {"
+    class Subject = Object new () (
+      class Chain = () (
+        public first: value with: chain = (
+          ^(chain second: value with: chain) + 1
+        )
+        public second: value with: chain = (
+          ^(chain third: value with: chain) + 1
+        )
+        public third: value with: chain = (
+          |
+            index ::= 0.
+            sum ::= 0.
+            pair
+          |
+          [index < 20] whileTrue: [
+            pair:: {index. value}.
+            sum:: sum + (pair at: 1) + (pair at: 2).
+            index:: index + 1.
+          ].
+          ^sum
+        )
+        public run: chain = (
+          |
+            sum ::= 0.
+            index ::= 0.
+          |
+          [index < 30] whileTrue: [
+            sum:: sum + (chain first: index with: chain).
+            index:: index + 1.
+          ].
+          ^sum.
+        )
+      )
+      public run = (
+        |
+          chain = Chain new.
+        |
+        ^chain run: chain.
+      )
+    ) : ()
+"};
+
+/// `COLLECTED_DEEP` under the scavenge stress mode, with the JIT on (its
+/// stress setting) or off: the answer and what the JIT did.
+#[cfg(debug_assertions)]
+fn collected_deep(lowering: Lowering, jit: bool) -> (i64, JitStatistics) {
+    let (mut interpreter, class) = load_with(COLLECTED_DEEP, lowering);
+    interpreter.set_jit_enabled(jit);
+    interpreter.set_jit_stress(jit);
+    interpreter.set_stress_scavenge(true);
+    let before = interpreter.jit_statistics();
+    let answer = run(&mut interpreter, &class);
+    interpreter.set_stress_scavenge(false);
+    (answer, since(interpreter.jit_statistics(), before))
+}
+
+#[cfg(debug_assertions)]
+ns_runtime::for_each_lowering! {
+    fn a_scavenge_inside_a_three_deep_compiled_stretch_matches_the_interpreter(lowering) {
+        let (compiled, statistics) = collected_deep(lowering, true);
+        let (interpreted, _) = collected_deep(lowering, false);
+        assert_eq!(compiled, interpreted);
+        if lowering == Lowering::Optimized {
+            assert!(statistics.safepoint_exits >= 1, "a back edge took the held request");
+            assert!(
+                statistics.materialized_frames >= 3,
+                "the stretch was three compiled frames deep: {}",
+                statistics.materialized_frames
+            );
         }
     }
 }

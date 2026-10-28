@@ -137,8 +137,10 @@ impl Interpreter {
             // clears the safepoint request there.
             return rebuilt;
         }
+        // The request served, a stress mode holds it again, as its own.
         #[cfg(debug_assertions)]
         if stressed {
+            self.world.set_safepoint_requested(true);
             return rebuilt;
         }
         self.world.clear_safepoint_request();

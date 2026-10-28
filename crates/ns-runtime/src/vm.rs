@@ -2562,6 +2562,11 @@ fn machine_code_switch<'gc>(
                         if mutator.heap.safepoint_requested()
                             || !(resume || (program_counter == 0 && code.jit.is_armed()))
                         {
+                            // Interpreted from here, even the frame that
+                            // stopped in machine code: its bit goes.
+                            if resume {
+                                mutator.heap.clear_compiled(activation);
+                            }
                             return Switched::Run(FrameRegisters {
                                 activation,
                                 code,

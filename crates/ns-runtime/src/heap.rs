@@ -388,6 +388,12 @@ impl BuiltinGuards {
 /// guard an immediate one dispatches on, both instances of `Float`.
 const FLOAT_DISPATCH_INDEX: usize = 4;
 
+/// What `MachineWord::SafepointRequested` reads while only a stress mode
+/// holds the request (`Heap::set_safepoint_requested`); a real request
+/// writes 1 over it.
+#[cfg(debug_assertions)]
+pub(crate) const STRESS_HOLD: u64 = 2;
+
 /// `Value::immediate_index`'s for a `SmallInteger`, which machine code's
 /// guard and class idioms compute as it does.
 #[cfg(ns_jit)]
@@ -8353,10 +8359,17 @@ impl<'gc> Heap<'gc> {
         self.machine_words.set(MachineWord::SafepointRequested, 0);
     }
 
+    /// Holds the request set for a stress mode, or drops it. A held
+    /// request reads `STRESS_HOLD`, not a real request's 1: every poll
+    /// takes it, but a compiled callee's machine entry refuses only a real
+    /// one (`jit::sends::prologue`), so that under a stress mode compiled
+    /// frames still nest, and the collections the mode makes at the polls
+    /// inside them run over the frames the exit materializes.
     #[cfg(debug_assertions)]
     pub(crate) fn set_safepoint_requested(&mut self, requested: bool) {
+        let word = if requested { STRESS_HOLD } else { 0 };
         self.machine_words
-            .set(MachineWord::SafepointRequested, u64::from(requested));
+            .set(MachineWord::SafepointRequested, word);
     }
 
     /// Asks the run loop's next safepoint to take its slow path.
@@ -8644,7 +8657,6 @@ impl<'gc> Heap<'gc> {
     /// Clears `activation`'s compiled bit: the whole conversion of a
     /// baseline frame to an interpreted one, whose words are the
     /// interpreter's already.
-    #[cfg(ns_jit)]
     pub(crate) fn clear_compiled(&mut self, activation: ActivationReference) {
         self.check_activation(activation);
         let flags = FrameFlags {
@@ -8691,25 +8703,19 @@ impl<'gc> Heap<'gc> {
         self.stack.innermost = innermost;
     }
 
-    /// Writes the receiver and the current class into the header of the
-    /// callee machine code is about to enter at `header_offset`, as a
-    /// compiled call writes them: what the miss leaf does for a send whose
-    /// call reached it without them (`jit::leaves`).
+    /// Hands machine code the receiver and the current class of the
+    /// callee the miss leaf decided (`MachineWord::CalleeReceiver`,
+    /// `MachineWord::CalleeClass`), which the miss stub passes to the
+    /// callee's machine entry as a compiled call passes them: nothing is
+    /// written into the callee's frame before its checks pass.
     #[cfg(ns_jit)]
-    pub(crate) fn write_machine_callee(
-        &mut self,
-        header_offset: usize,
-        receiver: Value<'gc>,
-        class: ClassReference<'gc>,
-    ) {
+    pub(crate) fn hand_machine_callee(&self, receiver: Value<'gc>, class: ClassReference<'gc>) {
         let receiver = self.store(receiver);
         let class = self.store(Value::object(class));
-        self.stack
-            .frames
-            .set_committed_word(header_offset + frame_header::RECEIVER, receiver.bits());
-        self.stack
-            .frames
-            .set_committed_word(header_offset + frame_header::CURRENT_CLASS, class.bits());
+        self.machine_words
+            .set(MachineWord::CalleeReceiver, receiver.bits());
+        self.machine_words
+            .set(MachineWord::CalleeClass, class.bits());
     }
 
     /// The value machine code answered as the word `bits`

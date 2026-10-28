@@ -12,12 +12,12 @@
 //! class, which nothing can derive later. Every other header word is
 //! written when an exit materializes the frame (`jit::materialize`).
 
-use ns_assembler::x64::{R10, R12, R8, R9, RAX, RCX, RDI, RDX, RSI};
+use ns_assembler::x64::{R10, R12, R8, R9, RAX, RCX, RDX};
 use ns_assembler::{Condition, Memory, Register, Width};
 
 use crate::bytecode::{CallSite, CompiledCode, HEADER_REGISTERS};
 use crate::heap::machine_words::MachineWord;
-use crate::heap::Immediate;
+use crate::heap::{Heap, Immediate};
 use crate::interpreter::inline_cache::cells::{CELL_BYTES, CELL_WORDS};
 use crate::interpreter::inline_cache::site_index;
 
@@ -80,8 +80,19 @@ pub(super) fn prologue(body: &mut BodyAssembler, code: &CompiledCode) {
         scratch,
         word(MachineWord::SafepointRequested),
     );
-    assembler.compare_immediate(scratch, 0);
-    macro_assembler.exit_if(Condition::NotEqual, ExitKind::PushRefused, 0);
+    // A debug build refuses a real request alone, never the hold of a stress
+    // mode, which the polls of the frames it lets nest take
+    // (`Heap::set_safepoint_requested`).
+    #[cfg(debug_assertions)]
+    {
+        assembler.compare_immediate(scratch, 1);
+        macro_assembler.exit_if(Condition::Equal, ExitKind::PushRefused, 0);
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        assembler.compare_immediate(scratch, 0);
+        macro_assembler.exit_if(Condition::NotEqual, ExitKind::PushRefused, 0);
+    }
     let assembler = macro_assembler.assembler();
     assembler.move_register(scratch, roles.frame);
     assembler.load(Width::Word64, end, stack_base);
@@ -94,6 +105,19 @@ pub(super) fn prologue(body: &mut BodyAssembler, code: &CompiledCode) {
     let assembler = macro_assembler.assembler();
     assembler.add_immediate(depth, 1);
     assembler.store(Width::Word64, word(MachineWord::DepthCount), depth);
+    // Only now, every check passed: the receiver and the current class the
+    // call handed over.
+    let receiver_place = Heap::receiver_register(code.argument_count);
+    assembler.store(
+        Width::Word64,
+        frame_slot(roles.frame, receiver_place),
+        roles.callee_receiver(),
+    );
+    assembler.store(
+        Width::Word64,
+        frame_slot(roles.frame, receiver_place + 1),
+        roles.callee_class(),
+    );
     let header_end = code.argument_count + HEADER_REGISTERS;
     for register in header_end..code.local_count.max(header_end) {
         let nil = i32::try_from(Immediate::NIL.bits()).expect("internal: nil is a small word");
@@ -215,13 +239,13 @@ impl Placement {
 /// `SendPublic` through its site's cell
 /// (`docs/design/execution.md`, "Sends in machine code"): the receiver's
 /// guard compared with the cell's; on a match the callee's current class,
-/// `level` superclass steps up the receiver's class, and the receiver
-/// written into the callee's header, then a call of the cell's entry
-/// address; otherwise a call of the polymorphic stub
+/// `level` superclass steps up the receiver's class, then a call of the
+/// cell's entry address; otherwise a call of the polymorphic stub
 /// (`BlockWord::PolymorphicStub`), which decides the send itself. The
 /// frame register moves to the callee's register 0 on the send's slots
-/// for the call and back after it, and the value the callee returns is
-/// stored into `destination`. A send whose site is uncached -- the
+/// for the call and back after it, the receiver and the current class
+/// travelling in the roles' `callee_receiver` and `callee_class`, and the
+/// value the callee returns is stored into `destination`. A send whose site is uncached -- the
 /// reference lowering's, or past its family's range -- exits, and so does
 /// one whose arguments cannot be placed without a register to spare.
 pub(super) fn send_public(
@@ -250,10 +274,10 @@ pub(super) fn send_public(
     {
         return Lowering::Exit;
     }
-    let (value, guard, cells, class, level, entry) = (RSI, RDI, R8, R9, R10, RCX);
-    let callee_header = argument_base + count;
     let macro_assembler = &mut body.macro_assembler;
     let roles = macro_assembler.roles();
+    let (value, class) = (roles.callee_receiver(), roles.callee_class());
+    let (guard, cells, level, entry) = (R9, R8, R10, RCX);
     macro_assembler.load_frame_register(value, receiver_register);
     place(macro_assembler, &placement);
     macro_assembler.load_guard(guard, value);
@@ -275,12 +299,6 @@ pub(super) fn send_public(
         .load(Width::Word64, level, cell_word(CELL_LEVEL));
     macro_assembler.walk_superclasses(class, level, call);
     let assembler = macro_assembler.assembler();
-    assembler.store(Width::Word64, frame_slot(roles.frame, callee_header), value);
-    assembler.store(
-        Width::Word64,
-        frame_slot(roles.frame, callee_header + 1),
-        class,
-    );
     assembler.load(Width::Word64, entry, cell_word(CELL_ENTRY));
     macro_assembler.count_compiled_call();
     let slots = i32::from(argument_base) * REGISTER_BYTES;
@@ -292,8 +310,33 @@ pub(super) fn send_public(
     macro_assembler
         .assembler()
         .add_immediate(roles.frame, -slots);
+    #[cfg(debug_assertions)]
+    give_back_dead_registers(body, argument_base + count);
+    let macro_assembler = &mut body.macro_assembler;
     macro_assembler.store_frame_register(destination, roles.leaf_result);
     Lowering::Template
+}
+
+/// A debug build's poison over the registers a callee that lay on the
+/// send's slots gives back, its header's register on: the dead register's
+/// word, as the interpreter's pop writes it (`Heap::pop_activation`'s
+/// `FrameStack::give_back_dead_registers`, from the callee's header to
+/// the top it was pushed at), so that a read of one is refused. The
+/// sender's own window is what its code can read; past it lie the
+/// registers of a frame below, which its own callee's return, compiled
+/// or popped by the loop, poisons in turn before that frame runs again.
+/// The value register is left alone.
+#[cfg(debug_assertions)]
+fn give_back_dead_registers(body: &mut BodyAssembler, callee_header: u16) {
+    let window_end = body.window_end;
+    let macro_assembler = &mut body.macro_assembler;
+    let roles = macro_assembler.roles();
+    let poison = RDX;
+    let assembler = macro_assembler.assembler();
+    assembler.move_immediate(poison, crate::heap::Word::DEAD_REGISTER_BITS);
+    for register in callee_header..window_end {
+        assembler.store(Width::Word64, frame_slot(roles.frame, register), poison);
+    }
 }
 
 /// Moves each source of `placement` into its slot: every source loaded

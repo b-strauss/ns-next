@@ -80,6 +80,12 @@ pub(super) struct BodyAssembler {
     pub(super) feedback_base: FeedbackBase,
     /// The body's family's size, past which a site is uncached.
     pub(super) family_size: u32,
+    /// One past the frame's last register: its window's end.
+    #[cfg_attr(
+        not(debug_assertions),
+        expect(dead_code, reason = "only a debug build's poison reads it")
+    )]
+    pub(super) window_end: u16,
 }
 
 /// The scratch registers a template uses, by role.
@@ -454,6 +460,10 @@ pub(crate) fn compile(
         call_returns: Vec::new(),
         feedback_base,
         family_size: code.family_size,
+        window_end: code.register_count.max(
+            code.argument_count
+                .saturating_add(crate::bytecode::HEADER_REGISTERS),
+        ),
     };
     sends::prologue(&mut body, code);
     let mut exits = Vec::with_capacity(usize::from(count));
@@ -794,6 +804,7 @@ mod tests {
             call_returns: Vec::new(),
             feedback_base: FeedbackBase::NOT_ASSIGNED,
             family_size: 0,
+            window_end: 0,
         };
         // Each call is followed by more code of its instruction, so that a
         // label bound anywhere but right after the call would show.

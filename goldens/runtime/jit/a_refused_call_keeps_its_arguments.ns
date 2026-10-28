@@ -1,0 +1,62 @@
+/// A compiled call writes nothing into its callee's frame before the
+/// callee's checks pass: `store:`'s argument is an assignment's value,
+/// which lies above the send's slots, where the callee's header goes, and
+/// a call refused there -- the callee's own checks, or a target machine
+/// code does not run -- has the interpreter run the send again, reading
+/// that value where it lies (`docs/design/compiler.md`, "Registers").
+class ARefusedCallKeepsItsArguments = Object new () (
+  class Box = (
+    |
+      public store ::= 0.
+    |
+  ) (
+    public fetch = (
+      |
+        index ::= 0.
+      |
+      [index < 1] whileTrue: [index:: index + 1].
+      ^store.
+    )
+  )
+
+  class Base = (
+    |
+      public count ::= 0.
+    |
+  ) ()
+
+  class Driver = Base () (
+    public count: value = (
+      |
+        index ::= 0.
+      |
+      [index < 1] whileTrue: [index:: index + 1].
+      ^super count: value.
+    )
+
+    public assign: box = (
+      |
+        index ::= 0.
+        sum ::= 0.
+      |
+      [index < 50] whileTrue: [
+        sum:: sum + box fetch.
+        box store: (count:: index + 1).
+        index:: index + 1.
+      ].
+      ^sum.
+    )
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      driver = Driver new.
+    |
+    1 to: 3 do: [:round |
+      transcript
+          show: (driver assign: Box new) printString;
+          newLine.
+    ].
+  )
+)

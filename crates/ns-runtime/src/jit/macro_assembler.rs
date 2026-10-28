@@ -123,6 +123,23 @@ impl Roles {
     pub(crate) fn exit_code_address(self) -> Register {
         RDX
     }
+
+    /// The register a compiled call hands its callee's receiver in, as the
+    /// word its header place 0 stores. The call writes nothing into the
+    /// callee's frame: the callee's machine entry stores it there once its
+    /// checks have passed (`jit::sends::prologue`), so that a refused call
+    /// leaves the sender's registers -- a source of the send among them --
+    /// as they were. A scratch register everywhere else.
+    pub(crate) fn callee_receiver(self) -> Register {
+        RSI
+    }
+
+    /// The register a compiled call hands its callee's current class in,
+    /// as the word its header place 1 stores, under `callee_receiver`'s
+    /// rule. A scratch register everywhere else.
+    pub(crate) fn callee_class(self) -> Register {
+        RDI
+    }
 }
 
 /// An index into the leaf table `CodeZone::enter` is given.

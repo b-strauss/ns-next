@@ -7,8 +7,10 @@
 /// recurses through an explicit receiver, so that the recursion runs as
 /// compiled sends. `probe:on:` records every thousandth depth it reaches,
 /// which leaves machine code there and materializes the compiled frames
-/// above the last record; `descend:to:on:` installs a handler near the
-/// limit, and the overflow of the recursion above it is caught there.
+/// above the last record, and every depth in the last thousand below the
+/// limit, so that the depth printed is exact; `descend:to:on:` installs a
+/// handler near the limit, and the overflow of the recursion above it is
+/// caught there.
 class SendRecursionOverflow = Object new () (
   class Recursion = (
     |
@@ -20,7 +22,11 @@ class SendRecursionOverflow = Object new () (
         index ::= 0.
       |
       [index < 1] whileTrue: [index:: index + 1].
-      depth // 1000 * 1000 = depth ifTrue: [deepest:: depth].
+      depth > 99000 ifTrue: [
+        deepest:: depth.
+      ] ifFalse: [
+        depth // 1000 * 1000 = depth ifTrue: [deepest:: depth].
+      ].
       ^recursion probe: depth + 1 on: recursion.
     )
 

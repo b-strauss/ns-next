@@ -103,9 +103,11 @@ pub struct JitStatistics {
     /// Entries into machine code, counted on the cold path of a push that
     /// found compiled code, whatever the code did next.
     pub machine_entries: u64,
-    /// Sends machine code made through a cell straight into a callee's
-    /// machine code, counted, as `machine_back_edges` is, only by the code
-    /// compiled while `Interpreter::set_jit_counting` is on.
+    /// Sends machine code made through a cell whose guard matched, counted,
+    /// as `machine_back_edges` is, only by the code compiled while
+    /// `Interpreter::set_jit_counting` is on: calls of a callee's machine
+    /// entry, or of the stub the cell names until it has one -- whether or
+    /// not the callee's checks then let the call through.
     pub compiled_calls: u64,
     /// Calls of the miss leaf (`jit::leaves`), which decides a send machine
     /// code's cell did not.
@@ -113,6 +115,9 @@ pub struct JitStatistics {
     /// Entries into machine code at a frame returned to, which an exit
     /// above it had materialized (`vm::resume_caller`).
     pub resumed_entries: u64,
+    /// Frames machine code pushed that an exit materialized
+    /// (`jit::materialize`).
+    pub materialized_frames: u64,
 }
 
 /// What a body's `JitSlot` says once it is compiled.
@@ -892,6 +897,30 @@ pub(crate) fn note_entry(
     }
 }
 
+/// `note_entry` for a compiled call that found no machine code for its
+/// callee (`inline_cache::decide_at`): the entry is counted only when it is
+/// the one that compiles the body -- its `COMPILE_AT_ENTRY`th, or a body
+/// compiled into another zone -- since the call is then made in machine
+/// code. Otherwise nothing is counted: the call is refused, and the
+/// interpreter's push of the callee, running the send again, counts it, so
+/// that each push counts once.
+pub(crate) fn note_entry_by_call(
+    state: &mut JitState,
+    code: &Rc<CompiledCode>,
+    feedback_base: FeedbackBase,
+    method: Option<&Rc<MixinMethod>>,
+) {
+    let compiles = state.enabled
+        && match code.jit.state.get() {
+            REFUSED | LEAVES_BEFORE_A_LOOP => false,
+            COMPILED => code.jit.zone.get() != state.zone_identity(),
+            entries => entries + 1 >= state.compile_at_entry,
+        };
+    if compiles {
+        note_entry(state, code, feedback_base, method);
+    }
+}
+
 /// Compiles `code` into the zone and records the outcome in its slot and
 /// the statistics.
 fn compile_into_slot(
@@ -1029,7 +1058,6 @@ pub(crate) fn resumed(
             run_machine_code(mutator, activation, register_base, entry)
         }
         _ => {
-            #[cfg(ns_jit)]
             mutator.heap.clear_compiled(activation);
             Resumption::Interpreted {
                 activation,
@@ -1098,7 +1126,13 @@ fn run_machine_code(
     // The innermost frame the exit materialized, or the entry's when no
     // compiled frame lay above it.
     let innermost = mutator.jit.take_walked().unwrap_or(activation);
-    match stubs::decode_exit(&block, kind) {
+    let exit = stubs::decode_exit(&block, kind);
+    // The innermost frame goes on interpreted from here: it no longer
+    // stands in machine code, which only the frames below it still do.
+    if !matches!(exit, MachineExit::Returned { .. }) {
+        mutator.heap.clear_compiled(innermost);
+    }
+    match exit {
         MachineExit::Returned { value } => Resumption::Returned { value },
         MachineExit::Reexecute { program_counter } => Resumption::Interpreted {
             activation: innermost,

@@ -1637,7 +1637,8 @@ fn miss<'gc>(
 /// decide (`decide_at`).
 pub(crate) enum MissAnswer {
     /// Jump to this address, the callee's machine entry, its receiver and
-    /// current class written into its header.
+    /// current class handed over in the machine words
+    /// (`Heap::hand_machine_callee`).
     Enter(u64),
     /// Refuse the call: the interpreter runs the send.
     Refuse,
@@ -1648,12 +1649,12 @@ pub(crate) enum MissAnswer {
 /// for the interpreter: the site's entry, its polymorphic block, the
 /// global cache, else `resolve` -- filling the site and the global cache
 /// exactly as `miss` fills them -- but no `act`. A method machine code
-/// runs (`jit::runs_in_machine_code`) is its callee: its entry is counted
-/// as a push counts it, compiling its body when it is due (`jit::note_entry`),
+/// runs (`jit::runs_in_machine_code`) is its callee: its body is compiled
+/// when this entry is the one that compiles it (`jit::note_entry_by_call`),
 /// and once the body has machine code the site's cell is written afresh,
 /// so that its next send calls the body straight, and the answer is the
-/// body's machine entry, the callee's receiver and current class written
-/// into its header on the send's slots. Every other decision refuses the
+/// body's machine entry, the callee's receiver and current class handed
+/// over for its machine entry to store. Every other decision refuses the
 /// call, and the interpreter, running the send again, finds the entry the
 /// fill made.
 pub(crate) fn decide_at<'gc>(
@@ -1665,8 +1666,6 @@ pub(crate) fn decide_at<'gc>(
     let Instruction::SendPublic {
         selector,
         receiver_register,
-        argument_base,
-        argument_sources,
         call_site,
         ..
     } = code.instruction(program_counter as usize)
@@ -1702,7 +1701,7 @@ pub(crate) fn decide_at<'gc>(
     } else {
         base
     };
-    jit::note_entry(&mut mutator.jit, &method.code, base, Some(&method));
+    jit::note_entry_by_call(&mut mutator.jit, &method.code, base, Some(&method));
     let Some(address) = jit::machine_entry_address(&mutator.jit, &method.code, base) else {
         return MissAnswer::Refuse;
     };
@@ -1711,15 +1710,7 @@ pub(crate) fn decide_at<'gc>(
             .caches
             .refresh_site_cell(index, key.guard, &mutator.jit);
     }
-    let Ok(count) = u16::try_from(argument_sources.len()) else {
-        unreachable!("internal: a send's arguments are numbered in 16 bits");
-    };
-    let callee_header = crate::heap::Heap::register_base_index(register_base) as usize
-        + usize::from(argument_base)
-        + usize::from(count);
-    mutator
-        .heap
-        .write_machine_callee(callee_header, receiver, defining_class);
+    mutator.heap.hand_machine_callee(receiver, defining_class);
     MissAnswer::Enter(address)
 }
 
