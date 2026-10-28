@@ -249,6 +249,40 @@ ns_runtime::for_each_lowering! {
 }
 
 ns_runtime::for_each_lowering! {
+    /// The default trigger, without the stress setting: `run`'s counting
+    /// loop is all templates, so its code can jump back before it leaves,
+    /// and the second run -- `run`'s second entry -- compiles it and enters
+    /// its machine code. The reference lowering's loop starts with a send,
+    /// so there `run` leaves before a loop and is never entered.
+    fn a_body_that_loops_is_entered_at_its_second_entry(lowering) {
+        let source = indoc! {"
+            class Subject = Object new () (
+              public run = (
+                |
+                  sum ::= 0.
+                  index ::= 1.
+                |
+                [index <= 1000] whileTrue: [
+                  sum:: sum + index.
+                  index:: index + 1.
+                ].
+                ^sum.
+              )
+            ) : ()
+        "};
+        let (mut interpreter, class) = load_with(source, lowering);
+        assert_eq!(run(&mut interpreter, &class), 500_500);
+        let before = interpreter.jit_statistics();
+        assert_eq!(run(&mut interpreter, &class), 500_500);
+        let done = since(interpreter.jit_statistics(), before);
+        if lowering == Lowering::Optimized {
+            assert!(done.machine_entries > 0, "the loop runs in machine code");
+            assert!(done.compiled_bodies >= 1, "`run`, at its second entry");
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
     /// `goldens/runtime/jit/overflow.ns` in brief: the largest
     /// `SmallInteger` plus one, inside a loop body run compiled, declines
     /// to the send, which answers the `LargeInteger`.

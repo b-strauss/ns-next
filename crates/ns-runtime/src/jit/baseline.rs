@@ -1024,4 +1024,68 @@ mod tests {
             }
         }
     }
+
+    /// A loop whose head lies past an instruction that exits: its back edge
+    /// is reached only by the interpreter, after the exit.
+    fn loop_past_an_instruction(exiting: bool) -> (CompiledCode, Vec<bool>) {
+        let code = method(
+            vec![
+                Instruction::LoadLiteral {
+                    destination: 13,
+                    literal: Literal::Boolean(false),
+                },
+                Instruction::LoadLiteral {
+                    destination: 14,
+                    literal: Literal::SmallInteger(1),
+                },
+                Instruction::BranchIfTrue {
+                    register: 13,
+                    target: 1,
+                },
+                Instruction::Return { register: 14 },
+            ],
+            0,
+        );
+        (code, vec![false, exiting, false, true])
+    }
+
+    #[test]
+    fn a_loop_reachable_only_past_an_exit_is_no_reason_to_enter() {
+        let (code, exits) = loop_past_an_instruction(true);
+        assert!(!super::takes_a_backward_jump_before_an_exit(&code, &exits));
+        let (code, exits) = loop_past_an_instruction(false);
+        assert!(
+            super::takes_a_backward_jump_before_an_exit(&code, &exits),
+            "the same loop through a template is"
+        );
+    }
+
+    #[test]
+    fn a_forward_diamond_without_a_loop_is_no_reason_to_enter() {
+        let code = method(
+            vec![
+                Instruction::LoadLiteral {
+                    destination: 13,
+                    literal: Literal::Boolean(true),
+                },
+                Instruction::BranchIfTrue {
+                    register: 13,
+                    target: 4,
+                },
+                Instruction::LoadLiteral {
+                    destination: 14,
+                    literal: Literal::SmallInteger(1),
+                },
+                Instruction::Jump { target: 5 },
+                Instruction::LoadLiteral {
+                    destination: 14,
+                    literal: Literal::SmallInteger(2),
+                },
+                Instruction::Return { register: 14 },
+            ],
+            0,
+        );
+        let exits = [false, false, false, false, false, true];
+        assert!(!super::takes_a_backward_jump_before_an_exit(&code, &exits));
+    }
 }
