@@ -136,7 +136,10 @@ impl Mutator<'_> {
         self.heap.truncate_application_rows();
         self.reclaim_mixins(&gathered);
         // Step 4: codes. The marked closures and frames and the running
-        // activations are every holder of one.
+        // activations are every holder of one, and so is the JIT's zone,
+        // which names every body installed in it by id -- after step 3,
+        // since machine code alone keeps no body's mixin.
+        gathered.running_codes(&self.jit.installed_code_ids());
         self.heap.free_unnamed_codes(&gathered.codes);
         // Step 5: feedback ranges. Whether or not anything above was freed:
         // a body steps 3 and 4 let go of can end a family on its own.

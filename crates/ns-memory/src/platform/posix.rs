@@ -114,6 +114,93 @@ pub(crate) unsafe fn release(address: *mut u8, bytes: usize) {
     debug_assert!(answer == 0, "munmap failed: {}", errno());
 }
 
+/// The lowest address of the running thread's stack, as its attributes
+/// report it (`pthread_getattr_np`; since glibc 2.27 the guard lies below
+/// what it reports). `None` when the call fails.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub(crate) fn thread_stack_lowest_usable_address() -> Option<usize> {
+    // SAFETY: `pthread_attr_t` is plain data, which `pthread_getattr_np`
+    // initializes whole.
+    let mut attributes: libc::pthread_attr_t = unsafe { std::mem::zeroed() };
+    // SAFETY: the call fills the attributes of the running thread.
+    if unsafe { libc::pthread_getattr_np(libc::pthread_self(), &mut attributes) } != 0 {
+        return None;
+    }
+    lowest_address_of(&mut attributes)
+}
+
+/// The lowest address of the running thread's stack, as its attributes
+/// report it (`pthread_attr_get_np` into attributes made by
+/// `pthread_attr_init`). `None` when a call fails.
+#[cfg(any(target_os = "freebsd", target_os = "dragonfly", target_os = "netbsd"))]
+pub(crate) fn thread_stack_lowest_usable_address() -> Option<usize> {
+    // SAFETY: `pthread_attr_t` is plain data, which `pthread_attr_init`
+    // initializes.
+    let mut attributes: libc::pthread_attr_t = unsafe { std::mem::zeroed() };
+    // SAFETY: the attributes are the caller's own, initialized here.
+    if unsafe { libc::pthread_attr_init(&mut attributes) } != 0 {
+        return None;
+    }
+    // SAFETY: the call fills initialized attributes with the running
+    // thread's.
+    if unsafe { libc::pthread_attr_get_np(libc::pthread_self(), &mut attributes) } != 0 {
+        // SAFETY: the attributes were initialized above.
+        unsafe { libc::pthread_attr_destroy(&mut attributes) };
+        return None;
+    }
+    lowest_address_of(&mut attributes)
+}
+
+/// The stack's lowest address in `attributes`, which are initialized and
+/// destroyed here.
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "freebsd",
+    target_os = "dragonfly",
+    target_os = "netbsd"
+))]
+fn lowest_address_of(attributes: &mut libc::pthread_attr_t) -> Option<usize> {
+    let mut address: *mut libc::c_void = std::ptr::null_mut();
+    let mut size: libc::size_t = 0;
+    // SAFETY: the attributes are initialized, and the call writes the two
+    // words it is given.
+    let outcome = unsafe { libc::pthread_attr_getstack(attributes, &mut address, &mut size) };
+    // SAFETY: the attributes are initialized, and not used again.
+    unsafe { libc::pthread_attr_destroy(attributes) };
+    (outcome == 0 && !address.is_null() && size > 0).then(|| address.addr())
+}
+
+/// The lowest address of the running thread's stack: its highest
+/// (`pthread_get_stackaddr_np`) less its size (`pthread_get_stacksize_np`).
+#[cfg(target_vendor = "apple")]
+pub(crate) fn thread_stack_lowest_usable_address() -> Option<usize> {
+    // SAFETY: both read the running thread's own record.
+    let (highest, size) = unsafe {
+        let thread = libc::pthread_self();
+        (
+            libc::pthread_get_stackaddr_np(thread).addr(),
+            libc::pthread_get_stacksize_np(thread),
+        )
+    };
+    (highest != 0 && size > 0)
+        .then(|| highest.checked_sub(size))
+        .flatten()
+}
+
+/// Unknown on every other system: the JIT runs interpreted there.
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "freebsd",
+    target_os = "dragonfly",
+    target_os = "netbsd",
+    target_vendor = "apple"
+)))]
+pub(crate) fn thread_stack_lowest_usable_address() -> Option<usize> {
+    None
+}
+
 /// The executable view's protection on the platforms that map the zone
 /// twice. It never includes write, which is what keeps a stray store from
 /// rewriting code that runs.
@@ -132,7 +219,7 @@ pub(crate) fn executable_view_is_writable(_mapping: &CodeMapping, _committed: us
 /// Always `false`, by definition rather than by observation: the one
 /// `MAP_JIT` mapping is mapped readable, writable and executable, and what
 /// keeps a thread from writing it is the thread's write protection, which
-/// only a live `CodeWriter` switches off.
+/// only a `CodeWriter`'s write switches off, for the write.
 #[cfg(all(test, target_vendor = "apple", target_arch = "aarch64"))]
 pub(crate) fn executable_view_is_writable(_mapping: &CodeMapping, _committed: usize) -> bool {
     false
@@ -368,11 +455,11 @@ pub(crate) unsafe fn unmap_code(mapping: &CodeMapping, bytes: usize) {
 
 #[cfg(all(target_vendor = "apple", target_arch = "aarch64"))]
 thread_local! {
-    /// How many writers the calling thread holds. The switch is one per
-    /// thread, not one per writer, so only the first writer switches it to
-    /// writing and only the last switches it back: a writer that ended
-    /// while another lived would otherwise leave the other storing into
-    /// pages its thread may only execute.
+    /// How many writes the calling thread is in. The switch is one per
+    /// thread, not one per write, so only the outermost write switches it
+    /// to writing and back: a write that ended inside another would
+    /// otherwise leave the other storing into pages its thread may only
+    /// execute.
     static WRITERS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
@@ -383,14 +470,15 @@ pub(crate) fn begin_code_write() {
     let writers = WRITERS.get();
     if writers == 0 {
         // SAFETY: the switch affects only the calling thread's access to
-        // `MAP_JIT` pages, and no machine code runs while a writer lives.
+        // `MAP_JIT` pages, and the thread runs no machine code while it
+        // writes: a write is one call that switches back before it returns.
         unsafe { libc::pthread_jit_write_protect_np(0) };
     }
     WRITERS.set(writers + 1);
 }
 
 /// Switches the calling thread back to executing its `MAP_JIT` pages when
-/// its last writer ends.
+/// its outermost write ends.
 #[cfg(all(target_vendor = "apple", target_arch = "aarch64"))]
 pub(crate) fn end_code_write() {
     let writers = WRITERS.get();

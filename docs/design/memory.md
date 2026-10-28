@@ -2252,9 +2252,10 @@ and an interpreter, which holds `Rc`s throughout, is not `Send` either.
   which machine code calls Rust ([execution.md](execution.md), "The
   baseline JIT's foundation", "Executable memory"). Only the x64 Windows
   path runs here; the Linux, BSD and Apple AArch64 paths are checked by
-  clippy alone (the `memory` gate). Reading the bounds of the native
-  stack, which the entry is to check once compiled frames nest, comes with
-  road step 8's third stage ([OPEN-WORK.md](../OPEN-WORK.md)).
+  clippy alone (the `memory` gate). The bounds of the running thread's
+  native stack are read there too (`native_stack.rs`), for the entry's
+  check of its room ([execution.md](execution.md), "The native stack
+  carries the return addresses").
 
 ### The allocator of the Rust side
 

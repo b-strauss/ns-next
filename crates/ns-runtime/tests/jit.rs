@@ -389,3 +389,56 @@ ns_runtime::for_each_lowering! {
         }
     }
 }
+
+/// A counting loop all of templates, so that its body is entered at its
+/// second entry wherever the thread has the room.
+const COUNTING_LOOP: &str = indoc! {"
+    class Subject = Object new () (
+      public run = (
+        |
+          sum ::= 0.
+          index ::= 1.
+        |
+        [index <= 1000] whileTrue: [
+          sum:: sum + index.
+          index:: index + 1.
+        ].
+        ^sum.
+      )
+    ) : ()
+"};
+
+/// Runs `COUNTING_LOOP` twice on a thread of `stack_bytes`, answering the
+/// second run's answer and its entries into machine code.
+fn run_the_loop_on_a_thread_of(stack_bytes: usize) -> (i64, u64) {
+    std::thread::Builder::new()
+        .stack_size(stack_bytes)
+        .spawn(|| {
+            let (mut interpreter, class) = load_with(COUNTING_LOOP, Lowering::Optimized);
+            assert_eq!(run(&mut interpreter, &class), 500_500);
+            let before = interpreter.jit_statistics();
+            let answer = run(&mut interpreter, &class);
+            (
+                answer,
+                since(interpreter.jit_statistics(), before).machine_entries,
+            )
+        })
+        .expect("a thread")
+        .join()
+        .expect("the run finished")
+}
+
+/// A compiled frame's return address lies on the native stack, so an
+/// entry first checks that the thread has the room the depth limit can
+/// take (`jit::NATIVE_STACK_NEED`, about 0.86 MB): a thread of 512 KiB
+/// runs the same program interpreted, with the same answer, where one of
+/// 8 MiB, the size `ns-next` runs programs on, enters machine code.
+#[test]
+fn a_thread_with_too_little_stack_runs_interpreted() {
+    let (answer, entries) = run_the_loop_on_a_thread_of(512 << 10);
+    assert_eq!(answer, 500_500);
+    assert_eq!(entries, 0, "no room for the compiled frames");
+    let (answer, entries) = run_the_loop_on_a_thread_of(8 << 20);
+    assert_eq!(answer, 500_500);
+    assert!(entries > 0, "the loop runs in machine code");
+}

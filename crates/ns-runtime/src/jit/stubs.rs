@@ -205,7 +205,7 @@ pub(crate) fn assemble_exit_stub(abi: Abi) -> Assembled {
 #[cfg(test)]
 pub(super) mod testing {
     use ns_assembler::Assembled;
-    use ns_memory::{CodeOffset, CodeZone, Leaf, ENTRY_BLOCK_WORDS};
+    use ns_memory::{CodeOffset, CodeWriter, CodeZone, Leaf, ENTRY_BLOCK_WORDS};
 
     use super::{assemble_entry_stub, assemble_exit_stub, decode_exit, BlockWord, MachineExit};
     use crate::heap::machine_words::{MachineWord, MachineWords};
@@ -215,7 +215,7 @@ pub(super) mod testing {
     const ALIGNMENT: u32 = 64;
 
     pub(crate) struct Machine {
-        zone: CodeZone,
+        zone: CodeWriter,
         entry: CodeOffset,
         exit: CodeOffset,
         next: u32,
@@ -237,10 +237,7 @@ pub(super) mod testing {
 
         pub(crate) fn install(&mut self, assembled: &Assembled) -> CodeOffset {
             let offset = CodeOffset(self.next);
-            self.zone
-                .writer()
-                .write(offset, &assembled.bytes)
-                .expect("written");
+            self.zone.write(offset, &assembled.bytes).expect("written");
             let length = u32::try_from(assembled.bytes.len()).expect("small");
             self.next = (self.next + length).next_multiple_of(ALIGNMENT);
             offset
@@ -265,21 +262,51 @@ pub(super) mod testing {
             context: &mut C,
             leaves: &[Leaf<C>],
         ) -> (MachineExit, [u64; ENTRY_BLOCK_WORDS]) {
-            let mut block = [0u64; ENTRY_BLOCK_WORDS];
-            block[BlockWord::StackBase.index()] = frame.as_mut_ptr().expose_provenance() as u64;
-            block[BlockWord::RegisterBase.index()] = register_base;
-            block[BlockWord::MachineEntry.index()] = self.zone.executable_address(body) as u64;
-            block[BlockWord::ExitStub.index()] = self.zone.executable_address(self.exit) as u64;
-            let machine_words = MachineWords::new();
-            machine_words.set(
-                MachineWord::SafepointRequested,
-                u64::from(safepoint_requested),
-            );
-            block[BlockWord::MachineWords.index()] = machine_words.address() as u64;
-            let kind = self.zone.enter(self.entry, &mut block, context, leaves);
-            assert_eq!(kind, block[BlockWord::ExitKind.index()]);
-            (decode_exit(&block, kind), block)
+            run_in(
+                self.zone.zone(),
+                [self.entry, self.exit],
+                body,
+                frame,
+                register_base,
+                safepoint_requested,
+                context,
+                leaves,
+            )
         }
+    }
+
+    /// Runs `body` of `zone`, whose entry and exit stubs are `stubs`, on
+    /// `frame`, its registers starting `register_base` words into it, and
+    /// answers the exit and the block.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a test's one way to run code; each argument is a part of the fake frame"
+    )]
+    pub(crate) fn run_in<C>(
+        zone: &CodeZone,
+        stubs: [CodeOffset; 2],
+        body: CodeOffset,
+        frame: &mut [u64],
+        register_base: u64,
+        safepoint_requested: bool,
+        context: &mut C,
+        leaves: &[Leaf<C>],
+    ) -> (MachineExit, [u64; ENTRY_BLOCK_WORDS]) {
+        let [entry, exit] = stubs;
+        let mut block = [0u64; ENTRY_BLOCK_WORDS];
+        block[BlockWord::StackBase.index()] = frame.as_mut_ptr().expose_provenance() as u64;
+        block[BlockWord::RegisterBase.index()] = register_base;
+        block[BlockWord::MachineEntry.index()] = zone.executable_address(body) as u64;
+        block[BlockWord::ExitStub.index()] = zone.executable_address(exit) as u64;
+        let machine_words = MachineWords::new();
+        machine_words.set(
+            MachineWord::SafepointRequested,
+            u64::from(safepoint_requested),
+        );
+        block[BlockWord::MachineWords.index()] = machine_words.address() as u64;
+        let kind = zone.enter(entry, &mut block, context, leaves);
+        assert_eq!(kind, block[BlockWord::ExitKind.index()]);
+        (decode_exit(&block, kind), block)
     }
 }
 

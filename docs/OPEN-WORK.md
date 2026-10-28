@@ -382,10 +382,6 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     to 31% on the send benchmarks ("What the baseline JIT's foundation
     moved"). Once a body's code runs to its return, the rule has to admit
     it; stage 3 decides and measures the rule then.
-  - **Installing code while machine code runs.** `jit::install` takes the
-    zone through `Rc::get_mut` and panics when machine code holds it, so
-    no leaf may yet trigger a compilation; a leaf that can reach a push --
-    stage 3's miss and send stubs -- needs the install restructured first.
   - **`jit::entered` is `#[cold]`**, right while almost every push of a
     compiled body only counts; once templates make entering the common
     path of a compiled body's push, its placement is to be measured

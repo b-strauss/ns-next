@@ -2,11 +2,17 @@
 //! twice -- an executable view code runs from and a writable view the one
 //! writer stores through -- so that no page is writable and executable at
 //! once (docs/design/execution.md, "Executable memory"). On Apple AArch64
-//! the two views are one `MAP_JIT` mapping, and the writer switches its
-//! thread between writing and executing.
+//! the two views are one `MAP_JIT` mapping, and each write switches its
+//! thread to writing and back.
+//!
+//! A zone is reserved with its one writer, which owns it, and shared with
+//! whatever runs it as an `Rc<CodeZone>` (`CodeWriter::zone`): the writer
+//! stores only through the writable view, and nothing borrows the
+//! executable view's bytes, so code is installed while machine code
+//! entered from the zone runs -- from a leaf it calls.
 
-use std::marker::PhantomData;
 use std::ops::Range;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::platform;
@@ -32,13 +38,11 @@ pub const ENTRY_BLOCK_WORDS: usize = 32;
 /// can stand for "no zone" where one is recorded.
 static NEXT_IDENTITY: AtomicU64 = AtomicU64::new(1);
 
-/// One code zone: its two views, its size, and how much of it, from the
-/// base, is committed. Code is installed from the base up, so the committed
-/// pages are a prefix.
+/// One code zone: its two views and its size. What of it is committed is
+/// its writer's to know.
 pub struct CodeZone {
     mapping: platform::CodeMapping,
     size: usize,
-    committed: usize,
     identity: u64,
 }
 
@@ -49,10 +53,10 @@ impl CodeZone {
     pub const MAXIMUM_BYTES: usize = 128 << 20;
 
     /// Reserves a zone of at least `bytes`, rounded up to the platform's
-    /// reservation granularity, committing none of it. `InvalidRange` for 0
-    /// or more than `MAXIMUM_BYTES`, so that every offset into a zone fits
-    /// a `u32`.
-    pub fn reserve(bytes: usize) -> Result<CodeZone, MemoryError> {
+    /// reservation granularity, committing none of it, and answers its one
+    /// writer, which owns it. `InvalidRange` for 0 or more than
+    /// `MAXIMUM_BYTES`, so that every offset into a zone fits a `u32`.
+    pub fn reserve(bytes: usize) -> Result<CodeWriter, MemoryError> {
         if bytes == 0 || bytes > Self::MAXIMUM_BYTES {
             return Err(MemoryError::InvalidRange);
         }
@@ -67,11 +71,13 @@ impl CodeZone {
             operation: Operation::Map,
             code,
         })?;
-        Ok(CodeZone {
-            mapping,
-            size,
+        Ok(CodeWriter {
+            zone: Rc::new(CodeZone {
+                mapping,
+                size,
+                identity: NEXT_IDENTITY.fetch_add(1, Ordering::Relaxed),
+            }),
             committed: 0,
-            identity: NEXT_IDENTITY.fetch_add(1, Ordering::Relaxed),
         })
     }
 
@@ -102,38 +108,6 @@ impl CodeZone {
             .expose_provenance()
     }
 
-    /// The bytes of `range` read through the executable view, when the
-    /// range is committed; `None` otherwise -- for tests, and for the
-    /// disassembly of a body.
-    pub fn bytes(&self, range: Range<u32>) -> Option<&[u8]> {
-        let start = range.start as usize;
-        let end = range.end as usize;
-        if start > end || end > self.committed {
-            return None;
-        }
-        // SAFETY: the range is inside the committed prefix, which the
-        // executable view maps readable and which is initialized (zero or
-        // written); the writer takes `&mut self`, so no store into it
-        // happens while the slice lives.
-        Some(unsafe {
-            std::slice::from_raw_parts(
-                self.mapping.executable.as_ptr().wrapping_add(start),
-                end - start,
-            )
-        })
-    }
-
-    /// The zone's one writer. It takes `&mut self`, so no slice of the
-    /// executable view is lent while code is written.
-    pub fn writer(&mut self) -> CodeWriter<'_> {
-        platform::begin_code_write();
-        CodeWriter {
-            zone: self,
-            written: None,
-            same_thread: PhantomData,
-        }
-    }
-
     /// Runs the code at `stub` with the platform's C calling convention, as
     /// an `extern "C" fn(*mut u64) -> u64` given the block's address, and
     /// answers what it answers. Words 0 to 3 of the block are written first
@@ -143,11 +117,16 @@ impl CodeZone {
     /// Safe on one trust: the code at `stub` was written by `ns-runtime`'s
     /// JIT, which is the contract -- a complete function of the C calling
     /// convention that touches only the block, its own frame and what its
-    /// leaves hand it, and returns. That is `unsafe` behind a safe
-    /// abstraction, as `docs/design/README.md`, "Principles", accepts: no
-    /// caller can check machine code, so no caller is asked to. Panics, as
-    /// `executable_address` does, on a stub past the zone. No writer can be
-    /// alive meanwhile: a writer holds the zone mutably.
+    /// leaves hand it, and returns, and that a leaf installing code while
+    /// it runs never writes over code it will still run -- installs append.
+    /// That is `unsafe` behind a safe abstraction, as
+    /// `docs/design/README.md`, "Principles", accepts: no caller can check
+    /// machine code, so no caller is asked to. Panics, as
+    /// `executable_address` does, on a stub past the zone. A write from a
+    /// leaf meanwhile breaks no borrow: it stores through the writable
+    /// view, a pointer of the mapping's, and no slice of the executable
+    /// view is alive (only `CodeWriter::bytes` lends one, and it borrows
+    /// the writer).
     ///
     /// Aliasing: `context` is a `&mut C` held for the whole run, a
     /// protected reference, and the code and the shim reach the context
@@ -193,37 +172,6 @@ impl CodeZone {
         let code =
             unsafe { std::mem::transmute::<*const (), extern "C" fn(*mut u64) -> u64>(code) };
         code(block)
-    }
-
-    /// The executable view's committed pages are writable: on Windows as
-    /// the system reports them now, elsewhere as the view was mapped (see
-    /// each platform's `executable_view_is_writable`). Only committed pages
-    /// are asked about, so a test writes before it asks.
-    #[cfg(test)]
-    pub fn executable_view_is_writable(&self) -> bool {
-        platform::executable_view_is_writable(&self.mapping, self.committed)
-    }
-
-    /// Commits the pages from the committed prefix's end through `end`.
-    fn commit_through(&mut self, end: usize) -> Result<(), MemoryError> {
-        if end <= self.committed {
-            return Ok(());
-        }
-        let page = platform::page_size();
-        // The size is a multiple of the reservation granularity, itself a
-        // multiple of the page, so rounding up stays inside the zone.
-        let new_end = end.div_ceil(page) * page;
-        // SAFETY: `committed..new_end` is page-aligned and inside the zone,
-        // and `&mut self` means no slice into it is alive.
-        let outcome = unsafe {
-            platform::commit_code(&self.mapping, self.committed, new_end - self.committed)
-        };
-        outcome.map_err(|code| MemoryError::Refused {
-            operation: Operation::Commit,
-            code,
-        })?;
-        self.committed = new_end;
-        Ok(())
     }
 }
 
@@ -277,21 +225,27 @@ fn word_as_address(word: u64) -> usize {
     usize::try_from(word).unwrap_or_else(|_| std::process::abort())
 }
 
-/// The one way code is written into a zone. Dropping it makes what it
-/// wrote visible to the instruction fetch, once over everything written,
-/// and on Apple AArch64 switches the thread back to executing.
-pub struct CodeWriter<'zone> {
-    zone: &'zone mut CodeZone,
-    /// The smallest range covering every write, flushed on drop.
-    written: Option<Range<usize>>,
-    /// Keeps the writer from being sent to another thread, whatever the
-    /// zone is: on Apple AArch64 the thread it switched to writing is the
-    /// thread its drop switches back.
-    same_thread: PhantomData<*const ()>,
+/// The one way code is written into a zone, and its owner: `reserve`
+/// makes exactly one per zone. Each write makes what it wrote visible to
+/// the instruction fetch, and on Apple AArch64 switches its thread to
+/// writing for the write alone, so a writer may live for the zone's whole
+/// life beside the code that runs from it. It is neither `Send` nor
+/// `Sync`, as the zone it holds by `Rc` is not.
+pub struct CodeWriter {
+    zone: Rc<CodeZone>,
+    /// The bytes from the base the writer committed: code is installed
+    /// from the base up, so the committed pages are a prefix.
+    committed: usize,
 }
 
-impl CodeWriter<'_> {
-    /// Stores `bytes` at `offset`, committing the pages it needs.
+impl CodeWriter {
+    /// The zone this writer writes, to share with whatever runs its code.
+    pub fn zone(&self) -> &Rc<CodeZone> {
+        &self.zone
+    }
+
+    /// Stores `bytes` at `offset`, committing the pages it needs, and
+    /// flushes the instruction cache over them (nothing on x64).
     /// `InvalidRange`, nothing written, when the range ends past the zone.
     pub fn write(&mut self, offset: CodeOffset, bytes: &[u8]) -> Result<(), MemoryError> {
         let start = offset.0 as usize;
@@ -302,13 +256,14 @@ impl CodeWriter<'_> {
         if bytes.is_empty() {
             return Ok(());
         }
-        self.zone.commit_through(end)?;
+        self.commit_through(end)?;
+        platform::begin_code_write();
         // SAFETY: `start..end` is inside the committed prefix, which the
         // writable view maps read-write -- on Apple AArch64 for this thread,
-        // whose write switch stays on while any writer of it lives, this one
-        // included, however writers nest; `bytes` is the caller's own memory
-        // and cannot overlap the zone, which lends nothing while the writer
-        // holds it mutably.
+        // switched to writing just above until just below; `bytes` is the
+        // caller's own memory and cannot overlap the zone, and no slice of
+        // the zone is alive: only `bytes` lends one, borrowing this writer,
+        // which `write` holds mutably.
         unsafe {
             std::ptr::copy_nonoverlapping(
                 bytes.as_ptr(),
@@ -316,31 +271,70 @@ impl CodeWriter<'_> {
                 bytes.len(),
             );
         }
-        self.written = Some(match self.written.take() {
-            Some(written) => written.start.min(start)..written.end.max(end),
-            None => start..end,
-        });
-        Ok(())
-    }
-}
-
-impl Drop for CodeWriter<'_> {
-    fn drop(&mut self) {
-        if let Some(written) = self.written.take() {
-            // SAFETY: the range is inside the zone's committed prefix,
-            // flushed at the addresses it runs from.
-            unsafe {
-                platform::flush_instruction_cache(
-                    self.zone
-                        .mapping
-                        .executable
-                        .as_ptr()
-                        .wrapping_add(written.start),
-                    written.len(),
-                );
-            }
+        // SAFETY: the range is inside the zone's committed prefix, flushed
+        // at the addresses it runs from.
+        unsafe {
+            platform::flush_instruction_cache(
+                self.zone.mapping.executable.as_ptr().wrapping_add(start),
+                bytes.len(),
+            );
         }
         platform::end_code_write();
+        Ok(())
+    }
+
+    /// The bytes of `range` read through the executable view, when the
+    /// range is committed; `None` otherwise -- for tests, and for the
+    /// disassembly of a body.
+    pub fn bytes(&self, range: Range<u32>) -> Option<&[u8]> {
+        let start = range.start as usize;
+        let end = range.end as usize;
+        if start > end || end > self.committed {
+            return None;
+        }
+        // SAFETY: the range is inside the committed prefix, which the
+        // executable view maps readable and which is initialized (zero or
+        // written); only this writer stores into the zone, and `write`
+        // takes it mutably, so no store happens while the slice lives.
+        Some(unsafe {
+            std::slice::from_raw_parts(
+                self.zone.mapping.executable.as_ptr().wrapping_add(start),
+                end - start,
+            )
+        })
+    }
+
+    /// The executable view's committed pages are writable: on Windows as
+    /// the system reports them now, elsewhere as the view was mapped (see
+    /// each platform's `executable_view_is_writable`). Only committed pages
+    /// are asked about, so a test writes before it asks.
+    #[cfg(test)]
+    pub fn executable_view_is_writable(&self) -> bool {
+        platform::executable_view_is_writable(&self.zone.mapping, self.committed)
+    }
+
+    /// Commits the pages from the committed prefix's end through `end`.
+    fn commit_through(&mut self, end: usize) -> Result<(), MemoryError> {
+        if end <= self.committed {
+            return Ok(());
+        }
+        let page = platform::page_size();
+        // The size is a multiple of the reservation granularity, itself a
+        // multiple of the page, so rounding up stays inside the zone.
+        let new_end = end.div_ceil(page) * page;
+        // SAFETY: `committed..new_end` is page-aligned and inside the zone,
+        // past every byte written so far, and no slice into the zone is
+        // alive: only `bytes` lends one, borrowing this writer, which
+        // `commit_through` holds mutably.
+        let outcome = unsafe {
+            platform::commit_code(&self.zone.mapping, self.committed, new_end - self.committed)
+        };
+        outcome.map_err(|code| MemoryError::Refused {
+            operation: Operation::Commit,
+            code,
+        })?;
+        self.committed = new_end;
+        Ok(())
     }
 }
 
@@ -351,17 +345,15 @@ mod tests {
     #[test]
     fn a_written_byte_reads_back_through_the_executable_view() {
         let mut zone = CodeZone::reserve(1 << 20).expect("a zone");
-        zone.writer()
-            .write(CodeOffset(64), &[0xC3, 0x90])
-            .expect("written");
+        zone.write(CodeOffset(64), &[0xC3, 0x90]).expect("written");
         assert_eq!(zone.bytes(64..66), Some(&[0xC3, 0x90][..]));
     }
 
     #[test]
     fn a_write_past_the_zone_is_refused() {
         let mut zone = CodeZone::reserve(1 << 16).expect("a zone");
-        let end = u32::try_from(zone.size()).expect("small");
-        assert!(zone.writer().write(CodeOffset(end - 1), &[0, 0]).is_err());
+        let end = u32::try_from(zone.zone().size()).expect("small");
+        assert!(zone.write(CodeOffset(end - 1), &[0, 0]).is_err());
     }
 
     #[test]
@@ -373,8 +365,8 @@ mod tests {
     fn two_zones_have_two_identities() {
         let first = CodeZone::reserve(1 << 16).expect("a zone");
         let second = CodeZone::reserve(1 << 16).expect("a zone");
-        assert_ne!(first.identity(), second.identity());
-        assert_ne!(first.identity(), 0);
+        assert_ne!(first.zone().identity(), second.zone().identity());
+        assert_ne!(first.zone().identity(), 0);
     }
 
     #[test]
@@ -383,35 +375,50 @@ mod tests {
         // (`VirtualQuery`), so the write comes first; elsewhere what the view
         // was mapped with, POSIX having no portable query.
         let mut zone = CodeZone::reserve(1 << 16).expect("a zone");
-        zone.writer()
-            .write(CodeOffset(0), &[0xC3])
-            .expect("written");
+        zone.write(CodeOffset(0), &[0xC3]).expect("written");
         assert!(zone.bytes(0..1).is_some(), "a page is committed");
         assert!(!zone.executable_view_is_writable());
     }
 
     #[test]
-    fn nested_writers_on_one_thread_both_write() {
-        // The first writer must still write after the second ended: on Apple
-        // AArch64 the thread's write switch is shared by both.
-        let mut first_zone = CodeZone::reserve(1 << 16).expect("a zone");
-        let mut second_zone = CodeZone::reserve(1 << 16).expect("a zone");
-        let mut first = first_zone.writer();
-        let mut second = second_zone.writer();
+    fn two_writers_on_one_thread_both_write() {
+        // Each write switches the thread on Apple AArch64, whose switch the
+        // two writers share, so the first still writes after the second.
+        let mut first = CodeZone::reserve(1 << 16).expect("a zone");
+        let mut second = CodeZone::reserve(1 << 16).expect("a zone");
         second.write(CodeOffset(0), &[2]).expect("written");
-        drop(second);
         first.write(CodeOffset(0), &[1]).expect("written");
-        drop(first);
-        assert_eq!(first_zone.bytes(0..1), Some(&[1][..]));
-        assert_eq!(second_zone.bytes(0..1), Some(&[2][..]));
+        second.write(CodeOffset(1), &[3]).expect("written");
+        assert_eq!(first.bytes(0..1), Some(&[1][..]));
+        assert_eq!(second.bytes(0..2), Some(&[2, 3][..]));
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn code_written_while_the_zone_is_shared_runs() {
+        // What a leaf does while code of the zone runs: the zone is shared
+        // with the code, and the writer still writes and the code runs.
+        let mut writer = CodeZone::reserve(1 << 16).expect("a zone");
+        let shared = std::rc::Rc::clone(writer.zone());
+        // mov eax, 7; ret
+        writer
+            .write(CodeOffset(0), &[0xB8, 7, 0, 0, 0, 0xC3])
+            .expect("written");
+        let address =
+            std::ptr::with_exposed_provenance::<()>(shared.executable_address(CodeOffset(0)));
+        // SAFETY: the address is the start of the six bytes above, a
+        // complete function of the C calling convention, in the zone's
+        // executable view, which `shared` keeps alive.
+        let function = unsafe { std::mem::transmute::<*const (), extern "C" fn() -> u32>(address) };
+        assert_eq!(function(), 7);
     }
 
     #[test]
     #[should_panic(expected = "an offset past the code zone")]
     fn an_executable_address_past_the_zone_panics() {
         let zone = CodeZone::reserve(1 << 16).expect("a zone");
-        let end = u32::try_from(zone.size()).expect("small");
-        zone.executable_address(CodeOffset(end));
+        let end = u32::try_from(zone.zone().size()).expect("small");
+        zone.zone().executable_address(CodeOffset(end));
     }
 
     #[test]
@@ -419,9 +426,7 @@ mod tests {
         let page = platform::page_size();
         let mut zone = CodeZone::reserve(4 * page).expect("a zone");
         let offset = u32::try_from(page - 1).expect("small");
-        zone.writer()
-            .write(CodeOffset(offset), &[1, 2])
-            .expect("written");
+        zone.write(CodeOffset(offset), &[1, 2]).expect("written");
         assert_eq!(zone.bytes(offset..offset + 2), Some(&[1, 2][..]));
         assert_eq!(zone.bytes(0..1), Some(&[0][..]), "committed reads zero");
         let past = u32::try_from(2 * page).expect("small");
@@ -436,11 +441,10 @@ mod tests {
     fn written_code_runs_from_the_executable_view() {
         let mut zone = CodeZone::reserve(1 << 16).expect("a zone");
         // mov eax, 42; ret
-        zone.writer()
-            .write(CodeOffset(16), &[0xB8, 42, 0, 0, 0, 0xC3])
+        zone.write(CodeOffset(16), &[0xB8, 42, 0, 0, 0, 0xC3])
             .expect("written");
         let address =
-            std::ptr::with_exposed_provenance::<()>(zone.executable_address(CodeOffset(16)));
+            std::ptr::with_exposed_provenance::<()>(zone.zone().executable_address(CodeOffset(16)));
         // SAFETY: the address is the start of the six bytes above, a
         // complete function of the C calling convention, in the zone's
         // executable view, which lives until the end of the test.
@@ -468,32 +472,36 @@ mod tests {
         let code = [0x48, 0x8B, 0x41, 0x20, 0xC3];
         #[cfg(not(windows))]
         let code = [0x48, 0x8B, 0x47, 0x20, 0xC3];
-        zone.writer().write(CodeOffset(0), &code).expect("written");
+        zone.write(CodeOffset(0), &code).expect("written");
         let mut block = [0u64; ENTRY_BLOCK_WORDS];
         block[4] = 42;
         let mut context = ();
-        assert_eq!(zone.enter(CodeOffset(0), &mut block, &mut context, &[]), 42);
+        assert_eq!(
+            zone.zone()
+                .enter(CodeOffset(0), &mut block, &mut context, &[]),
+            42
+        );
     }
 
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn the_entry_writes_the_context_and_the_shim_into_the_block() {
         let mut zone = CodeZone::reserve(1 << 16).expect("a zone");
-        zone.writer()
-            .write(CodeOffset(0), &a_body_answering_the_block_word(0))
+        zone.write(CodeOffset(0), &a_body_answering_the_block_word(0))
             .expect("written");
-        zone.writer()
-            .write(CodeOffset(16), &a_body_answering_the_block_word(1))
+        zone.write(CodeOffset(16), &a_body_answering_the_block_word(1))
             .expect("written");
         let mut block = [0u64; ENTRY_BLOCK_WORDS];
         let mut context: u64 = 7;
         let context_address = std::ptr::addr_of_mut!(context) as u64;
         assert_eq!(
-            zone.enter(CodeOffset(0), &mut block, &mut context, &[]),
+            zone.zone()
+                .enter(CodeOffset(0), &mut block, &mut context, &[]),
             context_address
         );
         assert_eq!(
-            zone.enter(CodeOffset(16), &mut block, &mut context, &[]),
+            zone.zone()
+                .enter(CodeOffset(16), &mut block, &mut context, &[]),
             (leaf_shim::<u64> as *const ()).expose_provenance() as u64
         );
     }
@@ -530,21 +538,21 @@ mod tests {
             arguments[0]
         }
         let mut zone = CodeZone::reserve(1 << 16).expect("a zone");
-        zone.writer()
-            .write(CodeOffset(0), &a_body_answering_the_block_word(2))
+        zone.write(CodeOffset(0), &a_body_answering_the_block_word(2))
             .expect("written");
-        zone.writer()
-            .write(CodeOffset(16), &a_body_answering_the_block_word(3))
+        zone.write(CodeOffset(16), &a_body_answering_the_block_word(3))
             .expect("written");
         let leaves: [Leaf<u64>; 2] = [add_one, add_one];
         let mut block = [0u64; ENTRY_BLOCK_WORDS];
         let mut context: u64 = 0;
         assert_eq!(
-            zone.enter(CodeOffset(0), &mut block, &mut context, &leaves),
+            zone.zone()
+                .enter(CodeOffset(0), &mut block, &mut context, &leaves),
             leaves.as_ptr() as u64
         );
         assert_eq!(
-            zone.enter(CodeOffset(16), &mut block, &mut context, &leaves),
+            zone.zone()
+                .enter(CodeOffset(16), &mut block, &mut context, &leaves),
             2
         );
     }

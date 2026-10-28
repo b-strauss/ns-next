@@ -7823,7 +7823,7 @@ impl<'gc> Heap<'gc> {
     /// The code table's row of the body `activation` runs: its frame's
     /// code word.
     #[inline(always)]
-    fn activation_code_id(&self, activation: ActivationReference) -> CodeId {
+    pub(crate) fn activation_code_id(&self, activation: ActivationReference) -> CodeId {
         CodeId::from_raw(frames::number_as_u32(
             self.stack
                 .header_word(activation.offset, frame_header::CODE),

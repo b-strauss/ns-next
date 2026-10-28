@@ -9469,12 +9469,19 @@ zone, the AArch64 encoder -- is stages 3 to 7, still planned.
   `bl` reach), mapped twice on Windows and Linux -- an executable view
   code runs from and a writable view the zone's one `CodeWriter` stores
   through -- and one `MAP_JIT` mapping with the per-thread switch on Apple
-  AArch64, so no page is ever writable and executable at once. Code is
+  AArch64, so no page is ever writable and executable at once. A zone
+  is reserved with its one writer, which owns it and is held by the
+  JIT's state, while an entry runs the code from the zone it shares as
+  an `Rc<CodeZone>` (`CodeWriter::zone`); since a write stores only
+  through the writable view and nothing borrows the executable view's
+  bytes, code is installed while machine code runs -- from a leaf it
+  calls -- and machine code holds no address an install moves. Code is
   installed from the base up, the writer committing pages as it goes and
-  flushing the instruction cache over what it wrote when it is dropped
-  (nothing on x64); on Linux each zone keeps the memory object behind
-  its views open for its life, one descriptor, so that a commit
-  allocates its pages with `fallocate` and a zone the system cannot back
+  flushing the instruction cache over each write (nothing on x64), the
+  Apple switch turned for the write alone; on Linux each zone keeps the
+  memory object behind its views open for its life, one descriptor, so
+  that a commit allocates its pages with `fallocate` and a zone the
+  system cannot back
   fails as a value rather than by `SIGBUS`, on every kernel with `memfd`.
   `CodeZone::enter` calls the entry stub with the platform's C
   convention, handing it a
@@ -9483,9 +9490,20 @@ zone, the AArch64 encoder -- is stages 3 to 7, still planned.
   and the leaf shim calls a Rust function `fn(&mut C, [u64; 3]) -> u64`
   back.
   Every zone has an identity of its own, never 0, so that a body records
-  which zone its code lies in. The native stack's bounds, which the entry
-  is to check once compiled frames nest, are not read yet
-  ([OPEN-WORK.md](../OPEN-WORK.md)).
+  which zone its code lies in.
+- **The native stack's room** (`crates/ns-memory/src/native_stack.rs`):
+  `remaining_bytes` answers what is left of the running thread's stack
+  below the caller, from the bounds the system reports --
+  `GetCurrentThreadStackLimits` less the guard pages and the overflow
+  handler's guarantee on Windows, `pthread_getattr_np` on Linux,
+  `pthread_attr_get_np` on FreeBSD and NetBSD,
+  `pthread_get_stackaddr_np` and `pthread_get_stacksize_np` on Apple --
+  asked once per thread; `None` elsewhere. Every entry into machine code
+  compares it with `jit::NATIVE_STACK_NEED`, a return address of eight
+  bytes per activation the depth limit and its reserve count plus 64 KiB
+  for the deepest leaf, about 0.86 MB, and a thread with less runs the
+  body interpreted ("The native stack carries the return addresses"
+  below).
 - **`ns-assembler`** (`crates/ns-assembler`): the abstract operations and
   the x64 encoder (`X64`), branches sized in one pass, among them
   `jump_register`, `add_immediate`, `move_if` (a conditional move) and
@@ -9534,8 +9552,10 @@ zone, the AArch64 encoder -- is stages 3 to 7, still planned.
   travels in block word `Activation` (13), for the leaves.
 - **The baseline compiler** (`jit/baseline.rs`) lowers a body instruction
   by instruction through the one exhaustive `match` over `Instruction`
-  (`lower`), recording where each instruction's code starts
-  (`ProgramCounterMap`). Templates: `LoadLiteral` of a literal whose value
+  (`lower`), recording where each instruction's code starts and, for
+  every call a send's template is to emit, the program counter of the
+  send its return address belongs to (`ProgramCounterMap`,
+  `program_counter_of_return`, recorded by `record_call_return`). Templates: `LoadLiteral` of a literal whose value
   is a word (`nil`, a Boolean, a `SmallInteger`, an immediate float),
   `LoadSelf`, `Move`, `StoreLocal`, `Jump`, `JumpIfNotBoolean`,
   `BranchIfFalse`, `BranchIfTrue`, and `IntegerBinary`'s `SmallInteger`
@@ -9556,9 +9576,14 @@ zone, the AArch64 encoder -- is stages 3 to 7, still planned.
   carries a `JitSlot`, never encoded, which a clone answers fresh,
   counting its entries; at the second, `note_entry` compiles the body
   into the zone of the running interpreter, whose state -- the zone, 16
-  MiB by default (`DEFAULT_ZONE_BYTES`, a first guess), the
-  program-counter maps and the statistics (`Interpreter::jit_statistics`)
-  -- is held on the `Mutator`. A push in `vm::run_stretch` pays one load
+  MiB by default (`DEFAULT_ZONE_BYTES`, a first guess), the bodies
+  installed in it, each with its code id, its range and its
+  program-counter map, so that `JitState::body_at` answers the body an
+  address of the zone lies in, and the statistics
+  (`Interpreter::jit_statistics`) -- is held on the `Mutator`. An
+  installed body's code id is kept by every full collection while its
+  code lies in the zone (`Mutator::reclaim_ids`), so the id a return
+  address maps to never names another body. A push in `vm::run_stretch` pays one load
   and one compare (`JitSlot::is_armed`); everything else is
   `jit::entered`, out of line and `#[cold]`. A run's base activation,
   which the host pushed, is entered at `vm::run`'s start like any push,
