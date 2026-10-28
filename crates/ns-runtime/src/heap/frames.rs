@@ -10,6 +10,7 @@
 //! frame's words (`Heap::trace_stack`), so that the trace takes every word
 //! below the top as a value, with no stack map.
 
+use super::machine_words::{MachineWord, MachineWords};
 use super::space::reserve_falling_back;
 use super::{out_of_memory, Word};
 use ns_memory::{MemoryError, Reservation};
@@ -426,13 +427,19 @@ pub(super) struct FrameStack {
     /// of the hot path also refuses a frame that would use the reserve,
     /// though a reserved push has committed past it.
     ordinary_end: usize,
+    /// The machine words, whose `OrdinaryStackEnd` mirrors `ordinary_end`
+    /// for machine code (`set_ordinary_end`).
+    machine_words: MachineWords,
 }
 
 impl FrameStack {
     /// Reserves `reservation_bytes` of address space -- less when the
     /// operating system refuses that much, falling back as the object
     /// space does -- committing none of it.
-    pub(super) fn new(reservation_bytes: usize) -> Result<FrameStack, MemoryError> {
+    pub(super) fn new(
+        reservation_bytes: usize,
+        machine_words: MachineWords,
+    ) -> Result<FrameStack, MemoryError> {
         let reservation = reserve_falling_back(reservation_bytes, Reservation::reserve)?;
         let limit = reservation.size() / 8;
         debug_assert!(
@@ -446,7 +453,23 @@ impl FrameStack {
             limit,
             ordinary_limit: limit - limit / RESERVE_FRACTION,
             ordinary_end: 0,
+            machine_words,
         })
+    }
+
+    /// Sets `ordinary_end` and the machine word that mirrors it: the one
+    /// writer of both, so that machine code compares an end the hot path
+    /// of Rust also sees.
+    fn set_ordinary_end(&mut self, end: usize) {
+        self.ordinary_end = end;
+        self.machine_words
+            .set(MachineWord::OrdinaryStackEnd, end as u64);
+    }
+
+    /// `ordinary_end`, for a test that holds it to its machine word.
+    #[cfg(test)]
+    pub(super) fn ordinary_end(&self) -> usize {
+        self.ordinary_end
     }
 
     /// The first word past the innermost frame.
@@ -634,7 +657,7 @@ impl FrameStack {
             out_of_memory(needed_bytes - committed_bytes)
         };
         self.committed = self.committed.max(end / 8);
-        self.ordinary_end = self.committed.min(self.ordinary_limit);
+        self.set_ordinary_end(self.committed.min(self.ordinary_limit));
         Ok(())
     }
 
@@ -842,7 +865,7 @@ mod tests {
 
     #[test]
     fn the_stack_reservation_is_reserved_and_commits_nothing_until_a_push() {
-        let stack = FrameStack::new(STACK_RESERVATION).expect("reserve");
+        let stack = FrameStack::new(STACK_RESERVATION, MachineWords::new()).expect("reserve");
         assert!(stack.limit() > 0);
         assert_eq!(stack.top(), 0);
         assert!(stack.words().is_empty());
@@ -850,7 +873,7 @@ mod tests {
 
     #[test]
     fn a_push_past_the_committed_end_commits_the_words_it_answers() {
-        let mut stack = FrameStack::new(1 << 20).expect("reserve");
+        let mut stack = FrameStack::new(1 << 20, MachineWords::new()).expect("reserve");
         let frame_words = usize::from(u16::MAX) + frame_header::COUNT;
         assert!(frame_words * 8 > Reservation::page_size());
         let before = stack.top();
@@ -863,7 +886,7 @@ mod tests {
 
     #[test]
     fn a_push_the_reservation_cannot_hold_is_refused_and_leaves_the_top() {
-        let mut stack = FrameStack::new(64 << 10).expect("reserve");
+        let mut stack = FrameStack::new(64 << 10, MachineWords::new()).expect("reserve");
         let frame_words = frame_header::COUNT + 100;
         let mut pushed = 0;
         loop {
@@ -887,7 +910,7 @@ mod tests {
 
     #[test]
     fn a_reserved_push_may_use_the_room_an_ordinary_push_leaves() {
-        let mut stack = FrameStack::new(64 << 10).expect("reserve");
+        let mut stack = FrameStack::new(64 << 10, MachineWords::new()).expect("reserve");
         let frame_words = frame_header::COUNT + 100;
         while stack.push(frame_words).is_ok() {}
         let ordinary_top = stack.top();
@@ -921,7 +944,7 @@ mod tests {
 
     #[test]
     fn lowering_the_top_then_pushing_reuses_the_offset() {
-        let mut stack = FrameStack::new(1 << 20).expect("reserve");
+        let mut stack = FrameStack::new(1 << 20, MachineWords::new()).expect("reserve");
         let frame_words = frame_header::COUNT + 4;
         stack.push(frame_words).expect("push");
         let (offset, _, _) = stack.push(frame_words).expect("push");

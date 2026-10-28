@@ -687,11 +687,14 @@ struct ActivationStack {
     /// How many frames are on the stack: what `Heap::activation_depth`
     /// answers, since an offset is no count.
     live: usize,
-    /// How many of the live activations, and of the activations suspended
-    /// into their frames, count against the depth limit. One running total,
-    /// since the limit is checked on every push: suspending and resuming an
+    /// The machine words, whose `MachineWord::DepthCount` is how many of
+    /// the live activations, and of the activations suspended into their
+    /// frames, count against the depth limit. One running total, since the
+    /// limit is checked on every push: suspending and resuming an
     /// activation leave it alone, as a suspended one counts all along.
-    counted: usize,
+    /// Machine code reads and writes the count in place, so it lives
+    /// there and nowhere else.
+    machine_words: MachineWords,
     #[cfg(debug_assertions)]
     next_generation: u32,
 }
@@ -1144,13 +1147,13 @@ impl ActivationStack {
     /// An empty stack in a reservation of its own, or running out of
     /// memory when the operating system grants no address space, as the
     /// object space does.
-    fn new() -> ActivationStack {
+    fn new(machine_words: &MachineWords) -> ActivationStack {
         ActivationStack {
-            frames: FrameStack::new(frames::stack_reservation())
+            frames: FrameStack::new(frames::stack_reservation(), machine_words.clone())
                 .unwrap_or_else(|_| out_of_memory(frames::stack_reservation())),
             innermost: NO_FRAME,
             live: 0,
-            counted: 0,
+            machine_words: machine_words.clone(),
             #[cfg(debug_assertions)]
             next_generation: 0,
         }
@@ -2049,9 +2052,14 @@ impl<'gc> Heap<'gc> {
     /// Private to the heap module: `World` builds the one heap an interpreter
     /// has, and only this module's own tests build a bare one.
     fn new() -> Heap<'gc> {
+        let machine_words = MachineWords::new();
+        machine_words.set(
+            MachineWord::DepthLimit,
+            crate::interpreter::MAX_ACTIVATION_DEPTH as u64,
+        );
         let mut heap = Heap {
             next_identity_hash: 1,
-            stack: ActivationStack::new(),
+            stack: ActivationStack::new(&machine_words),
             suspensions: Suspensions::default(),
             continuations: Continuations::default(),
             space: Space::new(space::DEFAULT_RESERVATION)
@@ -2075,7 +2083,7 @@ impl<'gc> Heap<'gc> {
                 slots: Vec::new(),
                 sweep_at: MIN_ROOT_SWEEP,
             }),
-            machine_words: MachineWords::new(),
+            machine_words,
             next_collection: COLLECTION_FLOOR,
             collection_requested: false,
             collection_floor: COLLECTION_FLOOR,
@@ -5713,8 +5721,46 @@ impl<'gc> Heap<'gc> {
             .map_or(DispatchIds::NONE, |application| application.dispatch_ids)
     }
 
+    /// Records the dispatch ids of the immediates, here and as the
+    /// `ImmediateGuard` words machine code compares a receiver's against.
     pub(crate) fn set_immediate_dispatch_ids(&mut self, ids: [DispatchId; 5]) {
         self.immediate_dispatch_ids = ids;
+        for (index, id) in ids.into_iter().enumerate() {
+            self.machine_words
+                .set(MachineWord::ImmediateGuard(index), u64::from(id.bits()));
+        }
+    }
+
+    /// Records the class objects of the immediates, indexed as
+    /// `immediate_dispatch_ids` is, as the `ImmediateClass` words machine
+    /// code hands a send's miss path. A stored word is a handle, so the
+    /// step state calls this again after every scavenge, compaction and
+    /// move (`Mutator::rewrite_immediate_classes`).
+    pub(crate) fn set_immediate_classes(&self, classes: [ClassReference<'gc>; 5]) {
+        for (index, class) in classes.into_iter().enumerate() {
+            let word = self.store(Value::object(class));
+            self.machine_words
+                .set(MachineWord::ImmediateClass(index), word.bits());
+        }
+    }
+
+    /// Sets the depth limit's word: the limit with the reserve free, or
+    /// past the reserve while it is held (`Mutator::set_depth_reserve`).
+    pub(crate) fn set_depth_limit(&self, limit: usize) {
+        self.machine_words
+            .set(MachineWord::DepthLimit, limit as u64);
+    }
+
+    /// The word of the machine words `word` names, for a test.
+    #[cfg(test)]
+    pub(crate) fn machine_word(&self, word: MachineWord) -> u64 {
+        self.machine_words.get(word)
+    }
+
+    /// The frame stack's ordinary end, for a test.
+    #[cfg(test)]
+    pub(crate) fn ordinary_stack_end(&self) -> usize {
+        self.stack.frames.ordinary_end()
     }
 
     /// The guards a closure's and a frame's headers carry, read off the
@@ -6570,7 +6616,10 @@ impl<'gc> Heap<'gc> {
         let stack = &mut self.stack;
         stack.innermost = offset;
         stack.live += 1;
-        stack.counted += usize::from(counted);
+        let count = stack.machine_words.get(MachineWord::DepthCount);
+        stack
+            .machine_words
+            .set(MachineWord::DepthCount, count + u64::from(counted));
         #[cfg(debug_assertions)]
         {
             stack.next_generation = stack.next_generation.wrapping_add(1) & GENERATION_MASK;
@@ -6912,7 +6961,10 @@ impl<'gc> Heap<'gc> {
         // by side, and subtracting both at once is one 16-byte load over
         // the push's two narrower stores, which no store forwards.
         if flags.counted {
-            self.stack.counted -= 1;
+            let count = self.stack.machine_words.get(MachineWord::DepthCount);
+            self.stack
+                .machine_words
+                .set(MachineWord::DepthCount, count - 1);
         }
         // A delivering frame names no row, so a send's return reaches no
         // table; every other continuation is taken out of line.
@@ -7071,8 +7123,12 @@ impl<'gc> Heap<'gc> {
     /// How many activations count against the depth limit: the live ones
     /// that do, and the suspended ones that do, which count all along so
     /// that resuming one never has to check the limit.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the count never exceeds the depth limit plus its reserve, far below the pointer width"
+    )]
     pub fn counted_depth(&self) -> usize {
-        self.stack.counted
+        self.stack.machine_words.get(MachineWord::DepthCount) as usize
     }
 
     // ---------- Suspended activations ----------
@@ -16756,6 +16812,50 @@ mod tests {
         let resumed = heap.resume_activation(lowest_frame, FeedbackBase::NOT_ASSIGNED);
         heap.pop_activation(resumed);
         heap.pop_activation(below);
+    }
+
+    #[test]
+    fn the_depth_count_is_a_machine_word() {
+        let mut heap = frame_heap();
+        let class = named_class(&mut heap, "Counted");
+        assert_eq!(heap.machine_word(MachineWord::DepthCount), 0);
+        let mut pushed = Vec::new();
+        for _ in 0..3 {
+            pushed.push(
+                heap.push_activation(suspendable_header(class, 0, 1), Arguments::NONE, 1)
+                    .expect("the stack holds the frame"),
+            );
+        }
+        assert_eq!(heap.machine_word(MachineWord::DepthCount), 3);
+        assert_eq!(heap.counted_depth(), 3);
+        heap.pop_activation(pushed.pop().expect("three were pushed"));
+        assert_eq!(heap.machine_word(MachineWord::DepthCount), 2);
+        assert_eq!(heap.counted_depth(), 2);
+        while let Some(activation) = pushed.pop() {
+            heap.pop_activation(activation);
+        }
+        assert_eq!(heap.machine_word(MachineWord::DepthCount), 0);
+    }
+
+    #[test]
+    fn the_ordinary_end_follows_growth() {
+        let mut heap = frame_heap();
+        let class = named_class(&mut heap, "Growing");
+        assert_eq!(heap.machine_word(MachineWord::OrdinaryStackEnd), 0);
+        let mut ends = std::collections::BTreeSet::new();
+        for _ in 0..100_000 {
+            heap.push_activation(suspendable_header(class, 0, 1), Arguments::NONE, 200)
+                .expect("the stack holds the frame");
+            assert_eq!(
+                heap.machine_word(MachineWord::OrdinaryStackEnd),
+                heap.ordinary_stack_end() as u64
+            );
+            ends.insert(heap.ordinary_stack_end());
+            if ends.len() >= 3 {
+                break;
+            }
+        }
+        assert!(ends.len() >= 3, "the stack grew more than once");
     }
 
     #[test]

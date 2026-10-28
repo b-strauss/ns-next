@@ -869,7 +869,7 @@ impl Interpreter {
                 // Every activation of the run has been popped, so whatever
                 // held the reserve is gone: released here rather than left
                 // to the next check to find so.
-                self.enter(|mutator| mutator.depth_reserve = None);
+                self.enter(|mutator| mutator.set_depth_reserve(None));
                 result
             }
         };
@@ -1111,11 +1111,28 @@ impl<'gc> Mutator<'gc> {
             instances(self, BuiltinClass::Float),
         ];
         self.heap.set_immediate_dispatch_ids(ids);
+        self.rewrite_immediate_classes();
         let guards = crate::heap::BuiltinGuards {
             closure: instances(self, BuiltinClass::Closure),
             frame: instances(self, BuiltinClass::Activation),
         };
         self.heap.set_builtin_guards(guards);
+    }
+
+    /// Writes the immediates' class objects into their machine words, from
+    /// the builtin classes: at the bootstrap and again after every mover
+    /// (`World::scavenge`, `collect`, `move_everything`, `forward_identity`),
+    /// since a word a heap object stores is a handle the collector does not
+    /// trace.
+    pub(crate) fn rewrite_immediate_classes(&mut self) {
+        let classes = [
+            self.builtin_class(BuiltinClass::UndefinedObject),
+            self.builtin_class(BuiltinClass::False),
+            self.builtin_class(BuiltinClass::True),
+            self.builtin_class(BuiltinClass::Integer),
+            self.builtin_class(BuiltinClass::Float),
+        ];
+        self.heap.set_immediate_classes(classes);
     }
 
     /// The smallest freed dispatch id, else the next never minted, or
@@ -1532,7 +1549,7 @@ impl<'gc> Mutator<'gc> {
                     .activation_above_frame(frame)
                     .is_some_and(|above| self.holds_the_depth_reserve(above)));
         if !held {
-            self.depth_reserve = None;
+            self.set_depth_reserve(None);
         }
         held
     }
@@ -1626,8 +1643,25 @@ impl<'gc> Mutator<'gc> {
             return;
         }
         if let Some(top) = self.heap.top_activation() {
-            self.depth_reserve = Some(self.heap.reify(top));
+            let frame = self.heap.reify(top);
+            self.set_depth_reserve(Some(frame));
         }
+    }
+
+    /// Takes or gives back the depth limit's reserve: `depth_reserve` and
+    /// the `DepthLimit` machine word change together, here alone, so that
+    /// the limit machine code compares a push against is the one the
+    /// reserve implies. A reserve that is no longer held but not yet
+    /// forgotten (`depth_reserve_held` forgets it on the next question)
+    /// leaves the word at the higher limit.
+    pub(crate) fn set_depth_reserve(&mut self, frame: Option<FrameReference<'gc>>) {
+        self.depth_reserve = frame;
+        let limit = if frame.is_some() {
+            MAX_ACTIVATION_DEPTH + DEPTH_RESERVE
+        } else {
+            MAX_ACTIVATION_DEPTH
+        };
+        self.heap.set_depth_limit(limit);
     }
 
     /// Resumes the suspended activation of `frame`

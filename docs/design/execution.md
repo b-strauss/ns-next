@@ -134,8 +134,9 @@ struct ActivationStack {
                                // live activation a frame, innermost highest
     innermost: u32,            // the innermost frame's offset, or none
     live: usize,               // how many frames: `activation_depth`
-    counted: usize,            // how many activations, live or suspended,
-                               // count against the depth limit
+    machine_words: MachineWords, // its `DepthCount` word: how many
+                               // activations, live or suspended, count
+                               // against the depth limit
 }
 
 a frame on the stack           // every word tagged
@@ -9610,9 +9611,21 @@ writes only through shared references and never borrows mutably, and
 which machine code reaches through block word `MachineWords` (11). An
 `Rc` rather than a `Box`, since a `Box` is retagged as unique wherever it
 moves. Today they hold the safepoint request, which the interpreter's
-poll and machine code's both read (`Heap::safepoint_requested`); eden's
-top and limit, which stage 4's bump allocation reads and writes in
-place, and the depth count are to join it in the room the area keeps.
+poll and machine code's both read (`Heap::safepoint_requested`); the
+depth count (`DepthCount`, which `Heap::counted_depth` reads and the
+push and pop write, so that the count lives nowhere else), the depth
+limit (`DepthLimit`: L, or L plus `DEPTH_RESERVE` while
+`Mutator::set_depth_reserve` holds the reserve -- a reserve no longer held
+but not yet forgotten leaves it at the higher value until
+`depth_reserve_held` forgets it), the end of the activation stack's
+ordinary room (`OrdinaryStackEnd`, written beside `FrameStack::ordinary_end`
+in `grow_to`) and, for each of the five immediates, its class object as a
+stored word (`ImmediateClass(index)`, rewritten by
+`Mutator::rewrite_immediate_classes` after every scavenge, compaction,
+move and bulk forward, since a stored word is a handle the collector does
+not trace) and its dispatch id (`ImmediateGuard(index)`). Eden's top and
+limit, which stage 4's bump allocation reads and writes in place, are to
+join them in the room the area keeps (32 words).
 The object space and the activation stack, whose words are the object
 fields and frame registers machine code reads and writes, are `ns-memory`
 reservations outside the mutator likewise, and their addresses come from

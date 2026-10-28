@@ -446,7 +446,7 @@ impl MacroAssembler {
         self.assembler.load(Width::Word64, scratch, machine_words);
         let requested = Memory {
             base: scratch,
-            displacement: MachineWords::displacement(MachineWord::SafepointRequested),
+            displacement: MachineWords::offset(MachineWord::SafepointRequested),
         };
         self.assembler.load(Width::Word64, scratch, requested);
         self.assembler.compare_immediate(scratch, 0);
