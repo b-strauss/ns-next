@@ -635,6 +635,103 @@ impl MacroAssembler {
         assembler.bind(done);
     }
 
+    /// `target :=` §3.3's enclosing object at lexical `depth` of the frame
+    /// whose code takes `argument_count` arguments, as
+    /// `dispatch::kth_enclosing_object` finds it from
+    /// `LexicalOrigin::Class`, instruction for instruction: the receiver,
+    /// header place 0, at depth 0; otherwise the walk out from the current
+    /// class, header place 1, along the declaring-class fields, each
+    /// level's enclosing-object field the object one step out, and `nil`
+    /// where a level, or the object, is missing -- a top-level
+    /// activation's, a module root's. Both header places are written by
+    /// the time the frame's code runs. Clobbers the flags and the idiom
+    /// scratch register.
+    pub(crate) fn load_enclosing_object(
+        &mut self,
+        target: Register,
+        argument_count: u16,
+        depth: u16,
+    ) {
+        let receiver_place = crate::heap::Heap::receiver_register(argument_count);
+        let receiver = self.frame_slot(receiver_place);
+        let current_class = self.frame_slot(receiver_place + 1);
+        let layout = crate::heap::Heap::machine_layout();
+        let object_space = self.roles.object_space;
+        let scratch = self.roles.idiom_scratch;
+        let assembler = &mut self.assembler;
+        if depth == 0 {
+            assembler.load(Width::Word64, target, receiver);
+            return;
+        }
+        let (missing, done) = (assembler.label(), assembler.label());
+        assembler.load(Width::Word64, target, current_class);
+        for step in 1..=depth {
+            // The level: the current class, then each declaring class.
+            assembler.test_immediate(target, layout.tag_mask);
+            assembler.jump_if(Condition::NotEqual, missing);
+            assembler.move_register(scratch, target);
+            assembler.add(scratch, object_space);
+            assembler.load(
+                Width::Word64,
+                target,
+                Memory {
+                    base: scratch,
+                    displacement: layout.enclosing_displacement,
+                },
+            );
+            assembler.test_immediate(target, layout.tag_mask);
+            assembler.jump_if(Condition::NotEqual, missing);
+            if step < depth {
+                assembler.load(
+                    Width::Word64,
+                    target,
+                    Memory {
+                        base: scratch,
+                        displacement: layout.declaring_class_displacement,
+                    },
+                );
+            }
+        }
+        assembler.jump(done);
+        assembler.bind(missing);
+        assembler.move_immediate(target, crate::heap::Immediate::NIL.bits());
+        assembler.bind(done);
+    }
+
+    /// `target :=` §5.9's N at lexical `depth` of the frame whose code
+    /// takes `argument_count` arguments, as `dispatch::kth_lexical_class`
+    /// finds it from `LexicalOrigin::Class`, instruction for instruction:
+    /// the current class, header place 1, then `depth` steps out along the
+    /// declaring-class fields; `nil` where the chain is shorter, which the
+    /// caller tests for as it tests for an object. Clobbers the flags.
+    pub(crate) fn load_lexical_class(&mut self, target: Register, argument_count: u16, depth: u16) {
+        let current_class =
+            self.frame_slot(crate::heap::Heap::receiver_register(argument_count) + 1);
+        let layout = crate::heap::Heap::machine_layout();
+        let object_space = self.roles.object_space;
+        let assembler = &mut self.assembler;
+        let (missing, done) = (assembler.label(), assembler.label());
+        assembler.load(Width::Word64, target, current_class);
+        for _ in 0..depth {
+            assembler.test_immediate(target, layout.tag_mask);
+            assembler.jump_if(Condition::NotEqual, missing);
+            assembler.add(target, object_space);
+            assembler.load(
+                Width::Word64,
+                target,
+                Memory {
+                    base: target,
+                    displacement: layout.declaring_class_displacement,
+                },
+            );
+        }
+        assembler.test_immediate(target, layout.tag_mask);
+        assembler.jump_if(Condition::Equal, done);
+        assembler.bind(missing);
+        assembler.move_immediate(target, crate::heap::Immediate::NIL.bits());
+        assembler.bind(done);
+    }
+
     /// Takes `exit(Safepoint, program_counter)` when the heap's safepoint
     /// request (`MachineWord::SafepointRequested`) is set, and falls
     /// through otherwise. Clobbers the flags and

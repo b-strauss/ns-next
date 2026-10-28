@@ -13,12 +13,12 @@
 //! written when an exit materializes the frame (`jit::materialize`).
 
 use ns_assembler::x64::{R10, R12, R8, R9, RAX, RCX, RDX};
-use ns_assembler::{Condition, Memory, Register, Width};
+use ns_assembler::{Condition, Label, Memory, Register, Width};
 
 use crate::bytecode::{CallSite, CompiledCode, HEADER_REGISTERS};
 use crate::heap::machine_words::MachineWord;
 use crate::heap::{Heap, Immediate};
-use crate::interpreter::inline_cache::cells::{CELL_BYTES, CELL_WORDS};
+use crate::interpreter::inline_cache::cells::{ChainStart, CELL_BYTES, CELL_WORDS};
 use crate::interpreter::inline_cache::site_index;
 
 use super::baseline::{BodyAssembler, Lowering};
@@ -32,6 +32,7 @@ const REGISTER_BYTES: i32 = 8;
 const CELL_GUARD: i32 = 0;
 const CELL_ENTRY: i32 = REGISTER_BYTES;
 const CELL_LEVEL: i32 = 2 * REGISTER_BYTES;
+const CELL_CHAIN_START: i32 = 3 * REGISTER_BYTES;
 
 const _: () = assert!(CELL_WORDS == 4 && CELL_BYTES == 32);
 
@@ -236,6 +237,21 @@ impl Placement {
     }
 }
 
+/// Whom a send through its site's cell sends to, which decides how its
+/// receiver is found and what its guard compares.
+#[derive(Clone, Copy)]
+enum Receiver {
+    /// `SendPublic`'s, in a frame register: its guard compared.
+    Register(u16),
+    /// `SendLexical`'s, the enclosing object at the lexical depth: its
+    /// guard compared at a site its cell says is not private, N's
+    /// application word at a private one (`ChainStart::LexicalClass`).
+    Lexical(u16),
+    /// `SendSuper`'s, `self`: S's application word compared, S the
+    /// superclass of the frame's current class.
+    Super,
+}
+
 /// `SendPublic` through its site's cell
 /// (`docs/design/execution.md`, "Sends in machine code"): the receiver's
 /// guard compared with the cell's; on a match the callee's current class,
@@ -245,12 +261,95 @@ impl Placement {
 /// frame register moves to the callee's register 0 on the send's slots
 /// for the call and back after it, the receiver and the current class
 /// travelling in the roles' `callee_receiver` and `callee_class`, and the
-/// value the callee returns is stored into `destination`. A send whose site is uncached -- the
-/// reference lowering's, or past its family's range -- exits, and so does
-/// one whose arguments cannot be placed without a register to spare.
+/// value the callee returns is stored into `destination`. A send whose
+/// site is uncached -- the reference lowering's, or past its family's
+/// range -- exits, and so does one whose arguments cannot be placed
+/// without a register to spare.
 pub(super) fn send_public(
     body: &mut BodyAssembler,
     receiver_register: u16,
+    argument_base: u16,
+    argument_sources: &[u16],
+    destination: u16,
+    call_site: CallSite,
+) -> Lowering {
+    send_through_cell(
+        body,
+        Receiver::Register(receiver_register),
+        argument_base,
+        argument_sources,
+        destination,
+        call_site,
+    )
+}
+
+/// `SendLexical` through its site's cell, as `inline_cache::send_lexical`
+/// sends it (§5.7-§5.9): the receiver the enclosing object at `depth`
+/// (`MacroAssembler::load_enclosing_object`), and the guard the cell's
+/// `chain_start` chooses -- N's application word at a private site, N
+/// found by `MacroAssembler::load_lexical_class`, and the enclosing
+/// object's guard at every other, a vacant one included, whose guard
+/// nothing matches, so that the miss leaf decides its first send as
+/// `send_lexical_first` does. On a match the callee's current class is
+/// `level` steps up from N, or from the enclosing object's class. A
+/// body-less declaration's own code walks out from its declaration's
+/// scope and runs its lexical sends uncached, so they exit, as does an
+/// uncached site.
+pub(super) fn send_lexical(
+    body: &mut BodyAssembler,
+    depth: u16,
+    argument_base: u16,
+    argument_sources: &[u16],
+    destination: u16,
+    call_site: CallSite,
+) -> Lowering {
+    if body.declaration_code {
+        return Lowering::Exit;
+    }
+    send_through_cell(
+        body,
+        Receiver::Lexical(depth),
+        argument_base,
+        argument_sources,
+        destination,
+        call_site,
+    )
+}
+
+/// `SendSuper` through its site's cell, as `inline_cache::send_super`
+/// sends it (§5.10): S, the superclass of the frame's current class
+/// (`interpreter::sends::super_start`), its application word compared
+/// with the cell's guard, and on a match the callee's current class
+/// `level` steps up from S, the receiver `self`. A frame with no current
+/// class, or whose current class has no superclass, exits before
+/// anything is written, so that the interpreter raises the error; so does
+/// an uncached site.
+pub(super) fn send_super(
+    body: &mut BodyAssembler,
+    argument_base: u16,
+    argument_sources: &[u16],
+    destination: u16,
+    call_site: CallSite,
+) -> Lowering {
+    send_through_cell(
+        body,
+        Receiver::Super,
+        argument_base,
+        argument_sources,
+        destination,
+        call_site,
+    )
+}
+
+/// The send through its site's cell that `send_public`, `send_lexical`
+/// and `send_super` lower: the receiver found -- and for `super` S --
+/// before any argument is placed, so that an exit leaves the frame as it
+/// was; the arguments placed; the guard `receiver` says compared with the
+/// cell's; then the call of the cell's entry on a match whose level
+/// exists, of the polymorphic stub otherwise.
+fn send_through_cell(
+    body: &mut BodyAssembler,
+    receiver: Receiver,
     argument_base: u16,
     argument_sources: &[u16],
     destination: u16,
@@ -269,18 +368,30 @@ pub(super) fn send_public(
         return Lowering::Exit;
     };
     let placement = Placement::of(argument_base, argument_sources);
-    if placement.writes(receiver_register)
+    let writes_receiver =
+        matches!(receiver, Receiver::Register(register) if placement.writes(register));
+    if writes_receiver
         || (placement.moves.len() > PLACEMENT_REGISTERS.len() && placement.overlaps())
     {
         return Lowering::Exit;
     }
+    let (argument_count, program_counter) = (body.argument_count, body.program_counter);
     let macro_assembler = &mut body.macro_assembler;
     let roles = macro_assembler.roles();
+    let tag_mask = Heap::machine_layout().tag_mask;
     let (value, class) = (roles.callee_receiver(), roles.callee_class());
     let (guard, cells, level, entry) = (R9, R8, R10, RCX);
-    macro_assembler.load_frame_register(value, receiver_register);
+    match receiver {
+        Receiver::Register(register) => macro_assembler.load_frame_register(value, register),
+        Receiver::Lexical(depth) => {
+            macro_assembler.load_enclosing_object(value, argument_count, depth);
+        }
+        Receiver::Super => {
+            load_superclass(macro_assembler, class, argument_count, program_counter);
+            macro_assembler.load_receiver(value, argument_count);
+        }
+    }
     place(macro_assembler, &placement);
-    macro_assembler.load_guard(guard, value);
     let cells_word = macro_assembler.block_word(BlockWord::Cells);
     let polymorphic_stub = macro_assembler.block_word(BlockWord::PolymorphicStub);
     let cell_word = |displacement: i32| Memory {
@@ -288,15 +399,38 @@ pub(super) fn send_public(
         displacement: cell + displacement,
     };
     let assembler = macro_assembler.assembler();
-    let call = assembler.label();
+    let (call, hit) = (assembler.label(), assembler.label());
     assembler.load(Width::Word64, cells, cells_word);
     assembler.load(Width::Word64, entry, polymorphic_stub);
-    assembler.compare_memory(guard, cell_word(CELL_GUARD));
-    assembler.jump_if(Condition::NotEqual, call);
-    macro_assembler.load_class(class, value);
-    macro_assembler
-        .assembler()
-        .load(Width::Word64, level, cell_word(CELL_LEVEL));
+    match receiver {
+        Receiver::Register(_) => {
+            compare_receiver_guard(macro_assembler, guard, value, cell_word(CELL_GUARD), call);
+            macro_assembler.load_class(class, value);
+        }
+        Receiver::Lexical(depth) => {
+            let assembler = macro_assembler.assembler();
+            let private = assembler.label();
+            assembler.load(Width::Word64, level, cell_word(CELL_CHAIN_START));
+            assembler.compare_immediate(level, ChainStart::LexicalClass as i32);
+            assembler.jump_if(Condition::Equal, private);
+            compare_receiver_guard(macro_assembler, guard, value, cell_word(CELL_GUARD), call);
+            macro_assembler.load_class(class, value);
+            let assembler = macro_assembler.assembler();
+            assembler.jump(hit);
+            assembler.bind(private);
+            macro_assembler.load_lexical_class(class, argument_count, depth);
+            let assembler = macro_assembler.assembler();
+            assembler.test_immediate(class, tag_mask);
+            assembler.jump_if(Condition::NotEqual, call);
+            compare_application_word(macro_assembler, guard, class, cell_word(CELL_GUARD), call);
+        }
+        Receiver::Super => {
+            compare_application_word(macro_assembler, guard, class, cell_word(CELL_GUARD), call);
+        }
+    }
+    let assembler = macro_assembler.assembler();
+    assembler.bind(hit);
+    assembler.load(Width::Word64, level, cell_word(CELL_LEVEL));
     macro_assembler.walk_superclasses(class, level, call);
     let assembler = macro_assembler.assembler();
     assembler.load(Width::Word64, entry, cell_word(CELL_ENTRY));
@@ -312,9 +446,86 @@ pub(super) fn send_public(
         .add_immediate(roles.frame, -slots);
     #[cfg(debug_assertions)]
     give_back_dead_registers(body, argument_base + count);
+    #[cfg(not(debug_assertions))]
+    let _ = count;
     let macro_assembler = &mut body.macro_assembler;
     macro_assembler.store_frame_register(destination, roles.leaf_result);
     Lowering::Template
+}
+
+/// `target :=` S, the superclass of the current class of the frame whose
+/// code takes `argument_count` arguments
+/// (`interpreter::sends::super_start`), exiting at the send,
+/// `program_counter`, where there is no current class or no superclass,
+/// so that the interpreter raises the error the uncached `super` send
+/// raises. Clobbers the flags.
+fn load_superclass(
+    macro_assembler: &mut MacroAssembler,
+    target: Register,
+    argument_count: u16,
+    program_counter: u32,
+) {
+    let layout = Heap::machine_layout();
+    let roles = macro_assembler.roles();
+    let current_class = frame_slot(roles.frame, Heap::receiver_register(argument_count) + 1);
+    let assembler = macro_assembler.assembler();
+    assembler.load(Width::Word64, target, current_class);
+    assembler.test_immediate(target, layout.tag_mask);
+    macro_assembler.exit_if(Condition::NotEqual, ExitKind::Reexecute, program_counter);
+    let assembler = macro_assembler.assembler();
+    assembler.add(target, roles.object_space);
+    assembler.load(
+        Width::Word64,
+        target,
+        Memory {
+            base: target,
+            displacement: layout.superclass_displacement,
+        },
+    );
+    assembler.test_immediate(target, layout.tag_mask);
+    macro_assembler.exit_if(Condition::NotEqual, ExitKind::Reexecute, program_counter);
+}
+
+/// Jumps to `missed` unless the guard of the value in `value` is the
+/// cell's `cell_guard`, `guard` its scratch register; `value` is kept.
+fn compare_receiver_guard(
+    macro_assembler: &mut MacroAssembler,
+    guard: Register,
+    value: Register,
+    cell_guard: Memory,
+    missed: Label,
+) {
+    macro_assembler.load_guard(guard, value);
+    let assembler = macro_assembler.assembler();
+    assembler.compare_memory(guard, cell_guard);
+    assembler.jump_if(Condition::NotEqual, missed);
+}
+
+/// Jumps to `missed` unless the application field of the class object in
+/// `class` holds the cell's `cell_guard` (`Heap::class_application_word`),
+/// `guard` its scratch register; `class` is kept.
+fn compare_application_word(
+    macro_assembler: &mut MacroAssembler,
+    guard: Register,
+    class: Register,
+    cell_guard: Memory,
+    missed: Label,
+) {
+    let layout = Heap::machine_layout();
+    let object_space = macro_assembler.roles().object_space;
+    let assembler = macro_assembler.assembler();
+    assembler.move_register(guard, class);
+    assembler.add(guard, object_space);
+    assembler.load(
+        Width::Word64,
+        guard,
+        Memory {
+            base: guard,
+            displacement: layout.application_displacement,
+        },
+    );
+    assembler.compare_memory(guard, cell_guard);
+    assembler.jump_if(Condition::NotEqual, missed);
 }
 
 /// A debug build's poison over the registers a callee that lay on the

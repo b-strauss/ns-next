@@ -96,18 +96,37 @@ ns_runtime::for_each_lowering! {
     /// The JIT stress mode's setting compiles every body at its first
     /// entry and enters machine code that leaves before a loop, so that a program
     /// runs the entry stub, the exit and the resumption on every push and
-    /// still answers right.
+    /// still answers right. The optimized lowering's `self answer` is a
+    /// cached lexical send, which `run`'s machine code makes itself, so
+    /// that the interpreter pushes `answer` only where the reference
+    /// lowering leaves every send uncached.
     fn the_stress_setting_enters_machine_code_on_every_push(lowering) {
         let (mut interpreter, class) = load_with(THREE_ANSWERS, lowering);
         interpreter.set_jit_stress(true);
+        interpreter.set_jit_counting(true);
         let before = interpreter.jit_statistics();
         assert_eq!(run(&mut interpreter, &class), 42);
         let done = since(interpreter.jit_statistics(), before);
-        assert_eq!(
-            done.machine_entries, 5,
-            "`answer`, entered three times, runs its machine code from the first, and so do \
-             the two base activations the host pushes, the factory's and `run`'s"
-        );
+        if lowering == Lowering::Optimized {
+            assert_eq!(
+                done.machine_entries, 2,
+                "the two base activations the host pushes, the factory's and `run`'s, run \
+                 their machine code from the first"
+            );
+            if !a_stress_mode_is_on() {
+                assert_eq!(
+                    done.miss_leaf_calls + done.compiled_calls,
+                    3,
+                    "`run` calls `answer`'s machine code three times, the first through the miss"
+                );
+            }
+        } else {
+            assert_eq!(
+                done.machine_entries, 5,
+                "`answer`, entered three times, runs its machine code from the first, and so \
+                 do the two base activations the host pushes, the factory's and `run`'s"
+            );
+        }
         assert_eq!(done.bodies_leaving_before_a_loop, 0, "installed, not left out");
         assert!(done.compiled_bodies >= 1);
         assert_eq!(done.refused_bodies, 0);
@@ -635,7 +654,9 @@ ns_runtime::for_each_lowering! {
         let before = interpreter.jit_statistics();
         assert_eq!(run(&mut interpreter, &class), 2890);
         let done = since(interpreter.jit_statistics(), before);
-        if lowering == Lowering::Optimized {
+        // The exit stress mode leaves at every back edge, so that `loop:`'s
+        // loop goes on in the interpreter after its first exit.
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
             assert!(
                 done.resumed_entries >= 900,
                 "`loop:` resumed in machine code after each call: {}",
@@ -713,6 +734,162 @@ ns_runtime::for_each_lowering! {
             assert_eq!(done.miss_leaf_calls, 1, "the one send that found no machine entry");
             assert!(done.compiled_calls >= 9_000, "{}", done.compiled_calls);
             assert_eq!(done.machine_entries, 1, "only `sumWith:count:` is entered by the loop");
+        }
+    }
+}
+
+/// Implicit-receiver sends at lexical depths 0 to 3 -- `self` included --
+/// a private one and an explicit `outer` one, each callee's body taking
+/// its argument, so that it has no fast path and a compiled call enters
+/// its machine code; a second `Middle` makes the depth-1 sites see
+/// another enclosing object.
+const LEXICAL_DEPTHS: &str = indoc! {"
+    class Subject = Object new () (
+      class Outer = () (
+        class Middle offset: offset = (
+          |
+            middleOffset = offset.
+          |
+        ) (
+          class Inner = () (
+            atOwn: value = (
+              ^value + 1
+            )
+            private secret: value = (
+              ^value + 1000000
+            )
+            public sumOver: count = (
+              |
+                total ::= 0.
+                index ::= 0.
+              |
+              [index < count] whileTrue: [
+                total:: total + (atOwn: index) + (self atOwn: index)
+                    + (atMiddle: index) + (outer Middle atMiddle: index)
+                    + (atOuter: index) + (atModule: index) + (secret: index).
+                index:: index + 1.
+              ].
+              ^total.
+            )
+          )
+          atMiddle: value = (
+            ^value + middleOffset
+          )
+          public inner = (
+            ^Inner new
+          )
+        )
+        atOuter: value = (
+          ^value + 100
+        )
+        public middle: offset = (
+          ^Middle offset: offset
+        )
+      )
+      atModule: value = (
+        ^value + 1000
+      )
+      public run = (
+        |
+          container = Outer new.
+        |
+        ^((container middle: 10) inner sumOver: 1000)
+            + ((container middle: 20) inner sumOver: 1000)
+      )
+    ) : ()
+"};
+
+/// `source`'s `run` with the JIT on, every body compiled at its first
+/// entry and the compiled calls counted, or with the JIT off; and what
+/// the JIT did meanwhile.
+fn run_compiled(source: &str, lowering: Lowering, jit: bool) -> (i64, JitStatistics) {
+    let (mut interpreter, class) = load_with(source, lowering);
+    interpreter.set_jit_enabled(jit);
+    interpreter.set_jit_stress(jit);
+    interpreter.set_jit_counting(jit);
+    let before = interpreter.jit_statistics();
+    let answer = run(&mut interpreter, &class);
+    (answer, since(interpreter.jit_statistics(), before))
+}
+
+ns_runtime::for_each_lowering! {
+    /// Every lexical send of `sumOver:`'s loop calls its callee through
+    /// its site's cell once the miss leaf has decided its first send --
+    /// seven sends an iteration, two thousand iterations -- and the sum is
+    /// the interpreter's.
+    fn a_lexical_send_in_machine_code_matches_the_interpreter_at_every_depth(lowering) {
+        let (compiled, statistics) = run_compiled(LEXICAL_DEPTHS, lowering, true);
+        let (interpreted, _) = run_compiled(LEXICAL_DEPTHS, lowering, false);
+        assert_eq!(interpreted, 2_009_257_000);
+        assert_eq!(compiled, interpreted);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(
+                statistics.compiled_calls >= 13_000,
+                "the lexical sends call through their cells: {}",
+                statistics.compiled_calls
+            );
+        }
+    }
+}
+
+/// A mixin applied twice in one chain, whose method's `super` send starts
+/// at the Middle level from the upper application and at Base from the
+/// lower one, and whose `outer` send reaches the module from both.
+const SUPER_AT_TWO_LEVELS: &str = indoc! {"
+    class Subject = Object new () (
+      class Base = Object new () (
+        public step: value = (
+          ^value + 1
+        )
+      )
+      class Marker = Object new () (
+        public step: value = (
+          ^(super step: value) * 2 + (bonus: value)
+        )
+      )
+      class Middle = Object new () (
+        public step: value = (
+          ^(super step: value) + 1000
+        )
+      )
+      class Twice = Base new <: Marker <: Middle <: Marker () ()
+      bonus: value = (
+        ^value + 3
+      )
+      sumWith: twice = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < 1000] whileTrue: [
+          sum:: sum + (twice step: index).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+      public run = (
+        ^self sumWith: Twice new
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// `Marker`'s `bonus:` send calls its callee through its cell at both
+    /// of its levels, and `Middle`'s `super step:` through its own; the
+    /// `super` site of `Marker`, which sees two superclasses, is
+    /// polymorphic and decided by the miss leaf at every send. The sum is
+    /// the interpreter's.
+    fn a_super_send_in_machine_code_matches_the_interpreter_at_both_levels(lowering) {
+        let (compiled, statistics) = run_compiled(SUPER_AT_TWO_LEVELS, lowering, true);
+        let (interpreted, _) = run_compiled(SUPER_AT_TWO_LEVELS, lowering, false);
+        assert_eq!(interpreted, 5_509_500);
+        assert_eq!(compiled, interpreted);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(
+                statistics.compiled_calls >= 3_900,
+                "`twice step:`, `Middle`'s `super` send and `Marker`'s `bonus:` call through                  their cells: {}",
+                statistics.compiled_calls
+            );
         }
     }
 }

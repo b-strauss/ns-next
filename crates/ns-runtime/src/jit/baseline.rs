@@ -64,8 +64,13 @@ pub(super) struct BodyAssembler {
     /// Each instruction's label, by program counter.
     starts: Vec<Label>,
     /// The body's argument count, which places its receiver in the frame.
-    argument_count: u16,
-    program_counter: u32,
+    pub(super) argument_count: u16,
+    /// The instruction being lowered.
+    pub(super) program_counter: u32,
+    /// Whether the body is a body-less declaration's own code
+    /// (`CompiledCode::is_declaration_code`), whose lexical walk starts at
+    /// its declaration's scope.
+    pub(super) declaration_code: bool,
     /// The backward jumps taken out of a conditional, each a label bound
     /// after the last instruction and the target it polls before and
     /// jumps to, so that the branch not taken falls straight through.
@@ -456,6 +461,7 @@ pub(crate) fn compile(
         starts,
         argument_count: code.argument_count,
         program_counter: 0,
+        declaration_code: code.is_declaration_code(),
         backward_branches: Vec::new(),
         call_returns: Vec::new(),
         feedback_base,
@@ -669,11 +675,36 @@ fn lower(instruction: &Instruction, body: &mut BodyAssembler) -> Lowering {
         Instruction::Return { register } | Instruction::ImplicitReturn { register } => {
             sends::return_from(body, *register)
         }
-        // The lexical and `super` sends, the mirror's, the initializers'
-        // invocations and the lexical walk an implicit receiver makes: the
-        // rest of stage 3.
-        Instruction::SendLexical { .. } => Lowering::Exit,
-        Instruction::SendSuper { .. } => Lowering::Exit,
+        Instruction::SendLexical {
+            depth,
+            argument_base,
+            argument_sources,
+            destination,
+            call_site,
+            ..
+        } => sends::send_lexical(
+            body,
+            *depth,
+            *argument_base,
+            argument_sources,
+            *destination,
+            *call_site,
+        ),
+        Instruction::SendSuper {
+            argument_base,
+            argument_sources,
+            destination,
+            call_site,
+            ..
+        } => sends::send_super(
+            body,
+            *argument_base,
+            argument_sources,
+            *destination,
+            *call_site,
+        ),
+        // The mirror's send, the initializers' invocations and the lexical
+        // walk an implicit receiver makes: the rest of stage 3.
         Instruction::SendMirror { .. } => Lowering::Exit,
         Instruction::InitializeInstance { .. } => Lowering::Exit,
         Instruction::CheckAppliedClause { .. } => Lowering::Exit,
@@ -800,6 +831,7 @@ mod tests {
             starts,
             argument_count: 0,
             program_counter: 0,
+            declaration_code: false,
             backward_branches: Vec::new(),
             call_returns: Vec::new(),
             feedback_base: FeedbackBase::NOT_ASSIGNED,

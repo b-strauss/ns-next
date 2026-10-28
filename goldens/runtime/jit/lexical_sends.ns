@@ -1,0 +1,115 @@
+/// Implicit-receiver sends from compiled code at lexical depths 0 to 3,
+/// to a private method and through an explicit `outer`, each through its
+/// site's cell (`docs/design/execution.md`, "Sends in machine code").
+/// Every method loops once before it does anything else, so that its body
+/// is compiled at its second entry.
+///
+/// newspeak-spec.pdf 5.7 makes an implicit receiver send `m` inside
+/// `Inner` the send `outer N m`, N the innermost enclosing declaration
+/// that declares `m`; 5.9 sends it to N's enclosing object at that depth:
+/// `atOwn:` to the `Inner` itself (depth 0, as 5.8 makes `self atOwn:`),
+/// `atMiddle:` to the `Middle` that made it (depth 1, as
+/// `outer Middle atMiddle:` is), `atOuter:` to the `Outer` (depth 2) and
+/// `atModule:` to the module (depth 3), each the kth enclosing object of
+/// 3.3 with respect to the activation's current class. 5.9's private rule
+/// finds `secret:`, which `Inner` declares private, on the `Inner`. Each
+/// answers its argument plus a distinct power of ten, so one at the wrong depth
+/// changes the sum: per index, 7 index + 1001122, over the indices
+/// 0 to 999 the sum 1004618500. A second `Middle` and its own `Inner`
+/// answer their own depth-1 value, 20 rather than 10, at the same sites:
+/// 1004638500.
+class LexicalSends = Object new () (
+  class Outer = () (
+    class Middle offset: offset = (
+      |
+        middleOffset = offset.
+      |
+    ) (
+      class Inner = () (
+        atOwn: value = (
+          |
+            index ::= 0.
+          |
+          [index < 1] whileTrue: [index:: index + 1].
+          ^value + 1.
+        )
+
+        private secret: value = (
+          |
+            index ::= 0.
+          |
+          [index < 1] whileTrue: [index:: index + 1].
+          ^value + 1000000.
+        )
+
+        public sumOver: count = (
+          |
+            total ::= 0.
+            index ::= 0.
+          |
+          [index < count] whileTrue: [
+            total:: total
+                + (atOwn: index)
+                + (self atOwn: index)
+                + (atMiddle: index)
+                + (outer Middle atMiddle: index)
+                + (atOuter: index)
+                + (atModule: index)
+                + (secret: index).
+            index:: index + 1.
+          ].
+          ^total.
+        )
+      )
+
+      atMiddle: value = (
+        |
+          index ::= 0.
+        |
+        [index < 1] whileTrue: [index:: index + 1].
+        ^value + middleOffset.
+      )
+
+      public inner = (
+        ^Inner new.
+      )
+    )
+
+    atOuter: value = (
+      |
+        index ::= 0.
+      |
+      [index < 1] whileTrue: [index:: index + 1].
+      ^value + 100.
+    )
+
+    public middle: offset = (
+      ^Middle offset: offset.
+    )
+  )
+
+  atModule: value = (
+    |
+      index ::= 0.
+    |
+    [index < 1] whileTrue: [index:: index + 1].
+    ^value + 1000.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      container = Outer new.
+      first = (container middle: 10) inner.
+      second = (container middle: 20) inner.
+    |
+    1 to: 2 do: [:round |
+      transcript
+          show: (first sumOver: 1000) printString;
+          newLine.
+      transcript
+          show: (second sumOver: 1000) printString;
+          newLine.
+    ].
+  )
+)

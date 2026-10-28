@@ -77,6 +77,10 @@ pub(crate) enum MachineWord {
     /// In a debug build, the generation the last frame pushed took: the
     /// next push, the heap's or a compiled callee's prologue, takes one
     /// past it (`Heap::peek_next_generation`). Unused in a release build.
+    #[cfg_attr(
+        not(debug_assertions),
+        expect(dead_code, reason = "only a debug build's generation reads it")
+    )]
     NextGeneration,
     /// The receiver the miss leaf decided a compiled call's callee to
     /// have, as a stored word, which the miss stub hands the callee's

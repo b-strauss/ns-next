@@ -751,6 +751,15 @@ pub(crate) struct MachineLayout {
     pub(crate) class_word_displacement: i32,
     /// A class object's superclass field's displacement from its offset.
     pub(crate) superclass_displacement: i32,
+    /// A class object's enclosing-object field's displacement from its
+    /// offset (`Heap::class_enclosing`).
+    pub(crate) enclosing_displacement: i32,
+    /// A class object's declaring-class field's displacement from its
+    /// offset (`Heap::class_declaring`).
+    pub(crate) declaring_class_displacement: i32,
+    /// A class object's application field's displacement from its offset
+    /// (`Heap::class_application_word`).
+    pub(crate) application_displacement: i32,
     /// A word's tag bits, 0 for an object.
     pub(crate) tag_mask: i32,
     /// A `SmallInteger`'s tag bit.
@@ -8422,8 +8431,9 @@ impl<'gc> Heap<'gc> {
     }
 
     /// Where machine code finds what it reads of an object and a value
-    /// (`jit::macro_assembler`'s `load_guard`, `load_class` and
-    /// `walk_superclasses`): the words of an object at its handle's offset
+    /// (`jit::macro_assembler`'s `load_guard`, `load_class`,
+    /// `walk_superclasses`, `load_enclosing_object` and
+    /// `load_lexical_class`, and the guards of `jit::sends`): the words of an object at its handle's offset
     /// from the object space's base, and the tags of a value's word.
     #[cfg(ns_jit)]
     pub(crate) fn machine_layout() -> MachineLayout {
@@ -8444,6 +8454,9 @@ impl<'gc> Heap<'gc> {
             guard_mask: small(header::GUARD_MASK),
             class_word_displacement: displacement(CLASS),
             superclass_displacement: displacement(FIELDS + class_field::SUPERCLASS),
+            enclosing_displacement: displacement(FIELDS + class_field::ENCLOSING),
+            declaring_class_displacement: displacement(FIELDS + class_field::DECLARING_CLASS),
+            application_displacement: displacement(FIELDS + class_field::APPLICATION),
             tag_mask: small(value::machine::TAG_MASK),
             small_integer_tag: small(value::machine::SMALL_INTEGER_TAG),
             small_float_tag: small(value::machine::SMALL_FLOAT_TAG),

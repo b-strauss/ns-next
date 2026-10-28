@@ -722,12 +722,12 @@ fn install(zone: &mut Zone, bytes: &[u8]) -> Result<CodeOffset, Refusal> {
 /// that the cell copies what the lookup decided. A site state that holds
 /// no target of its own -- vacant, megamorphic -- answers 0, as every
 /// target does where there is no zone. A method machine code can run --
-/// one with no fast path, found on a public or protected chain, whose
-/// body takes the method's arguments -- is reached through its body's
-/// machine entry once its body has machine code in this zone compiled
-/// against the entry's feedback base, and through the miss stub while
-/// its body may still be compiled, which compiles it and rewrites the
-/// site's cell (`inline_cache::decide_at`); every other target, for now,
+/// one with no fast path, found on any chain but a `doesNotUnderstand:`
+/// handler's, whose body takes the method's arguments -- is reached
+/// through its body's machine entry once its body has machine code in
+/// this zone compiled against the entry's feedback base, and through the
+/// miss stub while its body may still be compiled, which compiles it and
+/// rewrites the site's cell (`inline_cache::decide_at`); every other target, for now,
 /// through the stub that refuses the call, so that the interpreter runs
 /// the send.
 pub(crate) fn cell_entry(
@@ -768,8 +768,10 @@ pub(crate) fn runs_in_machine_code(
     chain: crate::interpreter::resolve::Chain,
 ) -> bool {
     use crate::interpreter::resolve::Chain;
-    matches!(chain, Chain::Public | Chain::Protected)
-        && method.fast_path.is_none()
+    matches!(
+        chain,
+        Chain::Public | Chain::Protected | Chain::Private | Chain::Super
+    ) && method.fast_path.is_none()
         && method.argument_count == usize::from(method.code.argument_count)
 }
 
