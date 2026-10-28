@@ -6270,8 +6270,9 @@ observer of an activation runs only after machine code's exit to the run
 loop, and the exit materializes every compiled frame as interpreted
 ones, so the hot path writes nothing only an observer needs: compiled
 frames lie at the interpreter's positions on the activation stack and a
-call writes no header word, the return addresses lie on a machine stack
-of their own and are mapped to program counters at the exit, a frame
+call writes no header word, the return addresses lie on the native
+stack of the thread that runs the interpreter and are mapped to program
+counters at the exit, a frame
 pushed by compiled code returns by a bare `ret`, a poll spills only when
 it is taken, and the depth count stays exact with an inlined scope's
 depth folded in as a constant. A baseline frame becomes interpreted, and
@@ -6392,7 +6393,7 @@ literals, jumps with a poll on every back edge and `IntegerBinary`'s
 `SmallInteger` arithmetic have one. Two stress modes, the seventh and
 eighth, compile and enter every body at its first entry and take the
 exit at every poll. Entering every body whose first instruction had a
-template measured up to 31% slower on the send benchmarks, so a body is
+template measured `bench_block` 31.5% and `bench_send` 21.7% slower, so a body is
 entered only when its code can loop before its first exit; after that,
 measured with three builds a side, no program is slower than `master`
 with its builds separated and the geometric mean over twenty-two sources

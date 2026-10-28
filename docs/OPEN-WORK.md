@@ -341,7 +341,8 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
   ([execution.md](design/execution.md), "Planned: the deoptimization
   contract") -- compiled frames at the interpreter's positions on the
   activation stack, no header word written on the hot path, return
-  addresses on a machine stack of their own, every compiled frame
+  addresses on the native stack of the thread that runs the
+  interpreter, every compiled frame
   materialized as interpreted ones at machine code's exit to the run
   loop, before any observer runs; deoptimization and on-stack
   replacement of baseline frames in place, of optimized frames lazily

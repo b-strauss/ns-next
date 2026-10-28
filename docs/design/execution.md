@@ -7266,7 +7266,7 @@ and the rest are never entered. `bench_loop` and `bench_block` are
 nearly as much faster with the JIT off, so they are the run loop's new
 layout, not machine code.
 
-**Entering every body cost up to 31%.** The first measurement of this
+**Entering every body cost `bench_block` 31.5%.** The first measurement of this
 branch, before `56c6e8ac` (one round, three builds a side), entered every
 body whose first instruction had a template. Such a body -- `tick: x`'s
 `^x + 1`, an `IntegerBinary` and a return -- runs one or two templates,
@@ -7278,8 +7278,12 @@ geometric mean over seventeen sources +7.3%, while the same binaries with
 `NS_NEXT_NO_JIT=1` measured -1.3%. `bench_send`'s 0.7 ms over its
 50,000 entries of `tick:` is about 14 ns an entry and exit. Since then a
 body is entered only when its code can take a backward jump before its
-first exit ("The baseline JIT's foundation"), and the interim
-measurement after it already found every program level.
+first exit ("The baseline JIT's foundation"). An interim measurement
+of `56c6e8ac` in the same form (one round of the seventeen sources that
+take milliseconds, three builds a side) found no program slower with its
+builds separated -- `bench_block` -0.6%, `bench_send` -1.7%,
+`bench_megamorphic` -2.3%, Sieve +1.3%, `bench_signal` -1.0% -- and the
+geometric mean -1.0%; the final measurement above confirms it.
 
 What it does not cover: no benchmark program spends its time in a loop
 the templates cover whole, so the measurement shows that the foundation
@@ -9197,7 +9201,7 @@ request, sends to a body that has no machine code, meets a continuation
 other than `Deliver`, unwinds what it cannot cut itself ("Non-local
 return and unwinding" below), raises an error, or calls a leaf that
 reads or writes another activation. Before it leaves, the exit walks the
-machine stack's return addresses down to the run loop's entry and writes
+return addresses on the native stack down to the run loop's entry and writes
 each compiled frame's whole header: its code, its program counter, its
 caller word, its flags with the compiled bit, its continuation (`Deliver`),
 its feedback base, its guard and entered level (none, so the first
@@ -9208,7 +9212,7 @@ address names a call site, the call site its code and program counter,
 and a callee's frame lies at a fixed offset of its caller's, the call
 site's, so the caller word follows. Each compiled frame's registers hold
 by then every value an observer can need, spilled at its send. The exit
-then drops the machine stack.
+then resets the native stack to where the run loop entered machine code.
 
 From the exit on, **every frame on the activation stack reads as an
 interpreted frame**: a baseline frame exactly, word for word, an
@@ -9500,9 +9504,9 @@ zone, the AArch64 encoder -- is stages 3 to 7, still planned.
   code cannot take a backward jump before its first exit is neither
   installed nor entered** (`JitStatistics::bodies_leaving_before_a_loop`):
   such code runs a few straight-line instructions the interpreter runs as
-  fast, for an entry and an exit on every push, which measured up to 31%
-  slower on the programs that send most ("What the baseline JIT's
-  foundation moved"). A body the compiler refuses -- more instructions
+  fast, for an entry and an exit on every push, which measured
+  `bench_block` 31.5% and `bench_send` 21.7% slower ("What the baseline
+  JIT's foundation moved"). A body the compiler refuses -- more instructions
   than a `u16` counts, code the assembler cannot lay out, no room left in
   the zone -- stays interpreted for good, and so does one entered while
   the JIT is off (`NS_NEXT_NO_JIT=1` for a process,
@@ -9525,8 +9529,8 @@ zone, the AArch64 encoder -- is stages 3 to 7, still planned.
 
 Since compiled code calls no compiled code yet, an entry runs exactly one
 compiled frame, whose words the interpreter's push wrote: the exit writes
-only where the interpreter resumes, and the machine stack holds nothing
-to walk.
+only where the interpreter resumes, and the native stack holds no
+compiled frame's return address to walk.
 
 ## Planned: the baseline JIT
 
@@ -9647,9 +9651,9 @@ per-architecture idioms; nothing above changes.
 
 ### The native stack carries the return addresses
 
-This revises "Where a compiled frame lives" above, which put the return
-addresses on a reservation of their own: they are on the **native stack
-of the thread that runs the interpreter**. HotSpot and V8 call their
+The return addresses of compiled frames are on the **native stack of
+the thread that runs the interpreter**, so that a call into Rust needs
+no switch of stacks. HotSpot and V8 call their
 runtime on the same stack their compiled code runs on, with no switch
 (`cpu/x86/c1_Runtime1_x86.cpp:78`; `src/builtins/x64/builtins-x64.cc:4524`,
 switching only for WebAssembly), while Cog switches to the C stack on
