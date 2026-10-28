@@ -418,9 +418,11 @@ before it changed anything. A new instruction is one arm of
 `jit::baseline::lower` plus the macro-assembler idioms it lacks, never a
 second dispatch; machine code is entered only through `jit::entered`
 (`mod.rs`), every address it needs asked of the heap afresh at each entry,
-and it holds no handle. Every word machine code reads or writes between
-two leaf calls lives in the heap's machine words
-(`heap/machine_words.rs`), never inline in `Mutator`: `CodeZone::enter`
+and it holds no handle. No word machine code reads or writes between two
+leaf calls lives inline in `Mutator`: frame registers and object fields
+lie in the activation stack's and the object space's reservations, which
+are outside it, and every other such word lives in the heap's machine
+words (`heap/machine_words.rs`). `CodeZone::enter`
 holds the mutator as a protected `&mut`, so machine code's access to a
 word inside it is undefined behaviour once a leaf has written that word,
 which no test and no tool detects (`execution.md`, "The baseline JIT's

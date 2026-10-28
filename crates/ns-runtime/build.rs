@@ -52,9 +52,6 @@ fn main() {
     let bytes = read(&artifact).unwrap_or_default();
     write(out.join("shipped-code.bin"), bytes).expect("OUT_DIR is writable");
 
-    // Directories, not the artifact itself: Cargo reruns a script whose
-    // named file is missing on every build, and a directory's scan sees the
-    // artifact appear.
     // `ns_jit`: this target has a JIT back end, so the JIT's machinery
     // and the heap's accessors for machine code are compiled; elsewhere
     // every body stays interpreted (`jit::available`). The one switch the
@@ -69,6 +66,9 @@ fn main() {
         println!("cargo::rustc-cfg=ns_jit");
     }
 
+    // Directories, not the artifact itself: Cargo reruns a script whose
+    // named file is missing on every build, and a directory's scan sees the
+    // artifact appear.
     println!("cargo:rerun-if-changed=core-library");
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=Cargo.toml");

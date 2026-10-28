@@ -1,8 +1,10 @@
-//! The machine words: every word of the heap that machine code reads or
-//! writes between two leaf calls -- today the safepoint request, which a
-//! back edge polls; eden's top and limit, which bump allocation is to
-//! read and write in place, and the depth count, are to join it -- held
-//! in an allocation of their own rather than inline in the heap
+//! The machine words: every word machine code reads or writes between two
+//! leaf calls other than frame registers and object fields, which lie in
+//! the activation stack's and the object space's reservations -- today
+//! the safepoint request, which a back edge polls; eden's top and limit,
+//! which bump allocation is to read and write in place, and the depth
+//! count, are to join it -- held in an allocation of their own rather
+//! than inline in the heap
 //! (`docs/design/execution.md`, "The machine words").
 //!
 //! # Why apart from the heap
