@@ -6423,8 +6423,7 @@ loop and an overflow in machine code.
   fixes: one `cfg(ns_jit)` for where the JIT is built, an entry block of
   thirty-two words with the leaf call's stack pointer in it and `r13`
   free, the safepoint request moved into the machine words apart from
-  the mutator, the code zone entered by exposed provenance and holding no
-  descriptor, AArch64's overflow after a multiply stated, and the stress
+  the mutator, the code zone entered by exposed provenance, AArch64's overflow after a multiply stated, and the stress
   gate's run of the suite with the JIT off, which the JIT's own tests
   now pass.
 
