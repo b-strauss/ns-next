@@ -87,15 +87,19 @@ impl CodeZone {
         self.identity
     }
 
-    /// The address code at `offset` runs from. Panics on an offset past the
-    /// zone, in every build: what is called at the answer would be memory
-    /// the zone does not own.
+    /// The address code at `offset` runs from, its provenance exposed.
+    /// Panics on an offset past the zone, in every build: what is called
+    /// at the answer would be memory the zone does not own.
     pub fn executable_address(&self, offset: CodeOffset) -> usize {
         assert!(
             (offset.0 as usize) < self.size,
             "an offset past the code zone"
         );
-        self.mapping.executable.as_ptr() as usize + offset.0 as usize
+        self.mapping
+            .executable
+            .as_ptr()
+            .wrapping_add(offset.0 as usize)
+            .expose_provenance()
     }
 
     /// The bytes of `range` read through the executable view, when the
@@ -177,10 +181,13 @@ impl CodeZone {
         block[2] = leaves.as_ptr().expose_provenance() as u64;
         block[3] = leaves.len() as u64;
         let block = block.as_mut_ptr();
-        // SAFETY: `address` is inside the zone's executable view, which
+        // The view's provenance, which `executable_address` exposed.
+        let code = std::ptr::with_exposed_provenance::<()>(address);
+        // SAFETY: `code` points into the zone's executable view, which
         // lives while `&self` does; that it holds a complete C function of
         // this signature is the JIT's contract stated above.
-        let code = unsafe { std::mem::transmute::<usize, extern "C" fn(*mut u64) -> u64>(address) };
+        let code =
+            unsafe { std::mem::transmute::<*const (), extern "C" fn(*mut u64) -> u64>(code) };
         code(block)
     }
 
@@ -428,11 +435,12 @@ mod tests {
         zone.writer()
             .write(CodeOffset(16), &[0xB8, 42, 0, 0, 0, 0xC3])
             .expect("written");
-        let address = zone.executable_address(CodeOffset(16));
+        let address =
+            std::ptr::with_exposed_provenance::<()>(zone.executable_address(CodeOffset(16)));
         // SAFETY: the address is the start of the six bytes above, a
         // complete function of the C calling convention, in the zone's
         // executable view, which lives until the end of the test.
-        let function = unsafe { std::mem::transmute::<usize, extern "C" fn() -> u32>(address) };
+        let function = unsafe { std::mem::transmute::<*const (), extern "C" fn() -> u32>(address) };
         assert_eq!(function(), 42);
     }
 

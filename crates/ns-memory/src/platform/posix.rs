@@ -138,13 +138,12 @@ pub(crate) fn executable_view_is_writable(_mapping: &CodeMapping, _committed: us
     false
 }
 
-/// The views of one code zone, and on Linux the memory object behind them,
-/// kept so that a commit can allocate its pages.
+/// The views of one code zone. The memory object behind them is closed
+/// once both are mapped: the views keep it alive, and a zone held open
+/// for its life would spend a descriptor per interpreter.
 pub(crate) struct CodeMapping {
     pub(crate) executable: NonNull<u8>,
     pub(crate) writable: NonNull<u8>,
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    descriptor: libc::c_int,
 }
 
 /// An anonymous memory object no other process can open: `memfd_create`
@@ -246,22 +245,12 @@ pub(crate) unsafe fn map_code(bytes: usize) -> Result<CodeMapping, i32> {
             return Err(close(code));
         }
     };
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    let mapping = CodeMapping {
+    // The views keep the object alive, and nothing more is asked of it.
+    close(0);
+    Ok(CodeMapping {
         executable,
         writable,
-        descriptor,
-    };
-    // The views keep the object alive, and nothing more is asked of it.
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    let mapping = {
-        close(0);
-        CodeMapping {
-            executable,
-            writable,
-        }
-    };
-    Ok(mapping)
+    })
 }
 
 /// # Safety
@@ -293,10 +282,13 @@ pub(crate) unsafe fn map_code(bytes: usize) -> Result<CodeMapping, i32> {
     })
 }
 
-/// Allocates the pages of `offset..offset + bytes` in the memory object, so
-/// that a zone the system cannot back fails here as a value rather than a
-/// later store into it with `SIGBUS`. A file system that does not allocate
-/// ahead leaves the store to find out, as on other Unix systems.
+/// Allocates the pages of `offset..offset + bytes` behind the writable
+/// view, so that a zone the system cannot back fails here as a value
+/// rather than a later store into it with `SIGBUS`: populating a range
+/// for writing allocates its pages and answers an error where a store
+/// would fault. It needs no descriptor, so the memory object is closed
+/// once mapped. A kernel older than 5.14, which does not know the advice,
+/// leaves the store to find out, as on other Unix systems.
 ///
 /// # Safety
 /// `offset..offset + bytes` lies inside the mapping's zone and is
@@ -307,14 +299,15 @@ pub(crate) unsafe fn commit_code(
     offset: usize,
     bytes: usize,
 ) -> Result<(), i32> {
-    let start = libc::off_t::try_from(offset).map_err(|_| libc::EINVAL)?;
-    let length = libc::off_t::try_from(bytes).map_err(|_| libc::EINVAL)?;
-    // SAFETY: allocating inside our own object's size keeps its contents.
-    if unsafe { libc::fallocate(mapping.descriptor, 0, start, length) } == 0 {
+    let start = mapping.writable.as_ptr().wrapping_add(offset);
+    // SAFETY: the range lies inside our own writable view, as the caller
+    // guarantees; populating it allocates its pages and keeps their
+    // contents.
+    if unsafe { libc::madvise(start.cast(), bytes, libc::MADV_POPULATE_WRITE) } == 0 {
         return Ok(());
     }
     match errno() {
-        libc::EOPNOTSUPP => Ok(()),
+        libc::EINVAL => Ok(()),
         code => Err(code),
     }
 }
@@ -344,11 +337,6 @@ pub(crate) unsafe fn unmap_code(mapping: &CodeMapping, bytes: usize) {
         // SAFETY: as above.
         let answer = unsafe { libc::munmap(mapping.writable.as_ptr().cast(), bytes) };
         debug_assert!(answer == 0, "munmap failed: {}", errno());
-    }
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    {
-        // SAFETY: the descriptor is ours, and the views it backed are gone.
-        unsafe { libc::close(mapping.descriptor) };
     }
 }
 
