@@ -77,6 +77,45 @@ pub(crate) struct Roles {
     pub(crate) dividend: Register,
     /// The scratch register a division leaves its remainder in.
     pub(crate) remainder: Register,
+    /// The registers a send's argument placement holds the moved values
+    /// in, every source loaded before any slot is stored; the first is
+    /// also the one a placement made move after move goes through. None
+    /// is `callee_receiver` or `callee_class`, which hold the send's
+    /// receiver, and a `super` send's S, across the placement.
+    pub(crate) placement: [Register; 6],
+    /// A send's cells' address (`BlockWord::Cells`), from its load before
+    /// the guard's compare to the load of the cell's entry, across
+    /// `load_guard`, `load_class`, `load_lexical_class` and
+    /// `walk_superclasses`.
+    pub(crate) send_cells: Register,
+    /// The guard a send compares with its cell's: the receiver's, or a
+    /// class object's application word.
+    pub(crate) send_guard: Register,
+    /// A lexical send's cell's chain start, then the cell's level, which
+    /// `walk_superclasses` counts down.
+    pub(crate) send_level: Register,
+    /// The address a send calls: the polymorphic stub's, replaced by the
+    /// cell's entry on a hit, from its first load to the call, across the
+    /// guard's compare and `walk_superclasses`.
+    pub(crate) send_entry: Register,
+    /// The activation count (`MachineWord::DepthCount`) while a prologue,
+    /// a return or the entry stub counts it.
+    pub(crate) depth_count: Register,
+    /// The prologue's safepoint request word, then the end of the frame
+    /// it pushes as a byte offset from the activation stack's base.
+    pub(crate) frame_extent: Register,
+    /// The prologue's bound on `frame_extent`, the ordinary stack's end.
+    pub(crate) stack_end: Register,
+    /// The dead register's word a debug build stores into the registers a
+    /// frame does not read before it writes them.
+    pub(crate) poison: Register,
+    /// A return address a stub reads off the native stack and hands a
+    /// leaf as its argument; free once the leaf is called.
+    pub(crate) return_address: Register,
+    /// The native stack pointer the processor's `call` and `ret` move,
+    /// which the entry stub saves and the exit stub resets, and through
+    /// which a stub reads the return address on top of the stack.
+    pub(crate) stack_pointer: Register,
 }
 
 impl Roles {
@@ -103,6 +142,17 @@ impl Roles {
                 scratch: &[RAX, RCX, RDX, RSI, RDI, R8, R9, R10, R12],
                 dividend: DIVIDEND,
                 remainder: REMAINDER,
+                placement: [RAX, RDX, R8, R9, R10, R12],
+                send_cells: R8,
+                send_guard: R9,
+                send_level: R10,
+                send_entry: RCX,
+                depth_count: RCX,
+                frame_extent: RAX,
+                stack_end: RDX,
+                poison: RDX,
+                return_address: RSI,
+                stack_pointer: RSP,
             },
         }
     }
@@ -654,7 +704,8 @@ impl MacroAssembler {
     ) {
         let receiver_place = crate::heap::Heap::receiver_register(argument_count);
         let receiver = self.frame_slot(receiver_place);
-        let current_class = self.frame_slot(receiver_place + 1);
+        let current_class =
+            self.frame_slot(crate::heap::Heap::current_class_register(argument_count));
         let layout = crate::heap::Heap::machine_layout();
         let object_space = self.roles.object_space;
         let scratch = self.roles.idiom_scratch;
@@ -702,15 +753,20 @@ impl MacroAssembler {
     /// takes `argument_count` arguments, as `dispatch::kth_lexical_class`
     /// finds it from `LexicalOrigin::Class`, instruction for instruction:
     /// the current class, header place 1, then `depth` steps out along the
-    /// declaring-class fields; `nil` where the chain is shorter, which the
-    /// caller tests for as it tests for an object. Clobbers the flags.
-    pub(crate) fn load_lexical_class(&mut self, target: Register, argument_count: u16, depth: u16) {
+    /// declaring-class fields; a jump to `missing` where the chain is
+    /// shorter, where the Rust answers `None`. Clobbers the flags.
+    pub(crate) fn load_lexical_class(
+        &mut self,
+        target: Register,
+        argument_count: u16,
+        depth: u16,
+        missing: Label,
+    ) {
         let current_class =
-            self.frame_slot(crate::heap::Heap::receiver_register(argument_count) + 1);
+            self.frame_slot(crate::heap::Heap::current_class_register(argument_count));
         let layout = crate::heap::Heap::machine_layout();
         let object_space = self.roles.object_space;
         let assembler = &mut self.assembler;
-        let (missing, done) = (assembler.label(), assembler.label());
         assembler.load(Width::Word64, target, current_class);
         for _ in 0..depth {
             assembler.test_immediate(target, layout.tag_mask);
@@ -726,10 +782,107 @@ impl MacroAssembler {
             );
         }
         assembler.test_immediate(target, layout.tag_mask);
-        assembler.jump_if(Condition::Equal, done);
-        assembler.bind(missing);
-        assembler.move_immediate(target, crate::heap::Immediate::NIL.bits());
-        assembler.bind(done);
+        assembler.jump_if(Condition::NotEqual, missing);
+    }
+
+    /// `target :=` S, the superclass of the current class of the frame
+    /// whose code takes `argument_count` arguments, as
+    /// `interpreter::sends::super_start` finds it, exiting at the send,
+    /// `program_counter`, where there is no current class or no
+    /// superclass, so that the interpreter raises the error the uncached
+    /// `super` send raises. Clobbers the flags.
+    pub(crate) fn load_superclass(
+        &mut self,
+        target: Register,
+        argument_count: u16,
+        program_counter: u32,
+    ) {
+        let layout = crate::heap::Heap::machine_layout();
+        let current_class =
+            self.frame_slot(crate::heap::Heap::current_class_register(argument_count));
+        let object_space = self.roles.object_space;
+        self.assembler.load(Width::Word64, target, current_class);
+        self.assembler.test_immediate(target, layout.tag_mask);
+        self.exit_if(Condition::NotEqual, ExitKind::Reexecute, program_counter);
+        self.assembler.add(target, object_space);
+        self.assembler.load(
+            Width::Word64,
+            target,
+            Memory {
+                base: target,
+                displacement: layout.superclass_displacement,
+            },
+        );
+        self.assembler.test_immediate(target, layout.tag_mask);
+        self.exit_if(Condition::NotEqual, ExitKind::Reexecute, program_counter);
+    }
+
+    /// Jumps to `missed` unless the guard of the value in `value`
+    /// (`load_guard`) is the word at `cell_guard`, `guard` its register.
+    /// Clobbers the flags and the idiom scratch register; `value` is kept.
+    pub(crate) fn compare_receiver_guard(
+        &mut self,
+        guard: Register,
+        value: Register,
+        cell_guard: Memory,
+        missed: Label,
+    ) {
+        self.load_guard(guard, value);
+        self.assembler.compare_memory(guard, cell_guard);
+        self.assembler.jump_if(Condition::NotEqual, missed);
+    }
+
+    /// Jumps to `missed` unless the application field of the class object
+    /// in `class` (`Heap::class_application_word`) holds the word at
+    /// `cell_guard`, `guard` its register. Clobbers the flags; `class` is
+    /// kept.
+    pub(crate) fn compare_application_word(
+        &mut self,
+        guard: Register,
+        class: Register,
+        cell_guard: Memory,
+        missed: Label,
+    ) {
+        let layout = crate::heap::Heap::machine_layout();
+        let object_space = self.roles.object_space;
+        let assembler = &mut self.assembler;
+        assembler.move_register(guard, class);
+        assembler.add(guard, object_space);
+        assembler.load(
+            Width::Word64,
+            guard,
+            Memory {
+                base: guard,
+                displacement: layout.application_displacement,
+            },
+        );
+        assembler.compare_memory(guard, cell_guard);
+        assembler.jump_if(Condition::NotEqual, missed);
+    }
+
+    /// A debug build's flags word of a frame a compiled prologue pushes,
+    /// for code that takes `argument_count` arguments: the generation one
+    /// past the machine words' `NextGeneration`, which it advances, as the
+    /// heap's push takes it, so that a handle to a frame since returned
+    /// and pushed again is refused. Clobbers the flags, the idiom scratch
+    /// register, `poison` and `depth_count`, whose values are dead here.
+    #[cfg(debug_assertions)]
+    pub(crate) fn store_frame_generation(&mut self, argument_count: u16) {
+        let (generation, constant) = crate::heap::Heap::machine_flags(argument_count);
+        let (word, constant_word) = (self.roles.poison, self.roles.depth_count);
+        let machine_words = self.roles.idiom_scratch;
+        self.load_machine_words(machine_words);
+        let next = Self::machine_word(machine_words, MachineWord::NextGeneration);
+        let flags = self.frame_slot(argument_count + generation.flags_register);
+        let assembler = &mut self.assembler;
+        assembler.load(Width::Word64, word, next);
+        assembler.add_immediate(word, 1);
+        assembler.and_immediate(word, generation.mask);
+        assembler.store(Width::Word64, next, word);
+        assembler.shift_left(word, generation.shift);
+        assembler.move_immediate(constant_word, constant);
+        assembler.add(word, constant_word);
+        assembler.store(Width::Word64, flags, word);
     }
 
     /// Takes `exit(Safepoint, program_counter)` when the heap's safepoint

@@ -7,7 +7,6 @@
 //! block they share with `CodeZone::enter`; and the one decoding of an
 //! exit.
 
-use ns_assembler::x64::{RCX, RSI, RSP};
 use ns_assembler::{Assembled, Condition, Memory, Width};
 use ns_memory::ENTRY_BLOCK_WORDS;
 
@@ -198,7 +197,7 @@ pub(crate) fn assemble_entry_stub(abi: Abi) -> Assembled {
     assembler.add(roles.frame, roles.idiom_scratch);
     assembler.load(Width::Word64, roles.object_space, object_space_base);
     assembler.load(Width::Word64, roles.idiom_scratch, machine_entry);
-    assembler.store(Width::Word64, saved_stack_pointer, RSP);
+    assembler.store(Width::Word64, saved_stack_pointer, roles.stack_pointer);
     assembler.call_register(roles.idiom_scratch);
     let returned_value = macro_assembler.block_word(BlockWord::ExitProgramCounter);
     let exit_kind = macro_assembler.block_word(BlockWord::ExitKind);
@@ -207,9 +206,10 @@ pub(crate) fn assemble_entry_stub(abi: Abi) -> Assembled {
     macro_assembler.load_machine_words(roles.idiom_scratch);
     let depth = MacroAssembler::machine_word(roles.idiom_scratch, MachineWord::DepthCount);
     let assembler = macro_assembler.assembler();
-    assembler.load(Width::Word64, RCX, depth);
-    assembler.add_immediate(RCX, 1);
-    assembler.store(Width::Word64, depth, RCX);
+    let count = roles.depth_count;
+    assembler.load(Width::Word64, count, depth);
+    assembler.add_immediate(count, 1);
+    assembler.store(Width::Word64, depth, count);
     assembler.move_immediate(roles.leaf_result, ExitKind::Returned as u64);
     assembler.store(Width::Word64, exit_kind, roles.leaf_result);
     for register in abi.callee_saved().iter().rev() {
@@ -265,7 +265,7 @@ pub(crate) fn assemble_exit_stub(abi: Abi) -> Assembled {
         assembler.label(),
         assembler.label(),
     );
-    assembler.move_register(scratch, RSP);
+    assembler.move_register(scratch, roles.stack_pointer);
     assembler.add_immediate(scratch, RETURN_ADDRESS_BYTES);
     assembler.compare_memory(scratch, saved_stack_pointer);
     assembler.jump_if(Condition::Equal, done);
@@ -277,11 +277,11 @@ pub(crate) fn assemble_exit_stub(abi: Abi) -> Assembled {
     assembler.store(Width::Word64, cursor, scratch);
     assembler.bind(next);
     assembler.load(Width::Word64, scratch, cursor);
-    assembler.compare(scratch, RSP);
+    assembler.compare(scratch, roles.stack_pointer);
     assembler.jump_if(Condition::Below, innermost);
     assembler.load(
         Width::Word64,
-        RSI,
+        roles.return_address,
         Memory {
             base: scratch,
             displacement: 0,
@@ -290,7 +290,7 @@ pub(crate) fn assemble_exit_stub(abi: Abi) -> Assembled {
     macro_assembler.call_leaf(
         Leaf::MaterializeFrame.index(),
         [
-            Operand::Register(RSI),
+            Operand::Register(roles.return_address),
             Operand::Immediate(0),
             Operand::Immediate(0),
         ],
@@ -312,7 +312,7 @@ pub(crate) fn assemble_exit_stub(abi: Abi) -> Assembled {
     let assembler = macro_assembler.assembler();
     assembler.bind(done);
     assembler.load(Width::Word64, roles.exit_kind(), exit_kind);
-    assembler.load(Width::Word64, RSP, saved_stack_pointer);
+    assembler.load(Width::Word64, roles.stack_pointer, saved_stack_pointer);
     for register in abi.callee_saved().iter().rev() {
         assembler.pop(*register);
     }
@@ -338,9 +338,9 @@ pub(crate) fn assemble_miss_stub(abi: Abi) -> Assembled {
     let roles = macro_assembler.roles();
     macro_assembler.assembler().load(
         Width::Word64,
-        RSI,
+        roles.return_address,
         Memory {
-            base: RSP,
+            base: roles.stack_pointer,
             displacement: 0,
         },
     );
@@ -348,7 +348,7 @@ pub(crate) fn assemble_miss_stub(abi: Abi) -> Assembled {
         Leaf::Miss.index(),
         [
             Operand::Register(roles.frame),
-            Operand::Register(RSI),
+            Operand::Register(roles.return_address),
             Operand::Immediate(0),
         ],
     );

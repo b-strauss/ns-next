@@ -11,10 +11,10 @@
 /// Marker's step: runs at both, and 5.10 starts its `super step:` at the
 /// superclass of the activation's current class: from the upper level
 /// it reaches Middle's step:, from the lower one Base's -- one site, two
-/// superclasses. Its `bonus` is an implicit receiver send at depth 1,
-/// which 5.9 sends to Marker's enclosing object, the module, at both
-/// levels, since 6.2 makes the enclosing object of each application
-/// Marker's. So Base answers value + 1, the lower Marker twice that plus
+/// superclasses. Its `outer MixinAppliedTwice bonus` is an outer send at
+/// depth 1, which 5.9 sends to Marker's enclosing object, the module, at
+/// both levels, since 6.2 makes the enclosing object of each
+/// application Marker's. So Base answers value + 1, the lower Marker twice that plus
 /// 3, Middle that plus 1000, and the upper Marker twice that plus 3:
 /// 4 value + 2013, over the values 0 to 999 the sum 4011000. The lower
 /// level's step: alone, through Middle's `super`, answers
@@ -36,7 +36,7 @@ class MixinAppliedTwice = Object new () (
         index ::= 0.
       |
       [index < 1] whileTrue: [index:: index + 1].
-      ^(super step: value) * 2 + bonus.
+      ^(super step: value) * 2 + (outer MixinAppliedTwice bonus).
     )
   )
 

@@ -12,8 +12,7 @@
 //! class, which nothing can derive later. Every other header word is
 //! written when an exit materializes the frame (`jit::materialize`).
 
-use ns_assembler::x64::{R10, R12, R8, R9, RAX, RCX, RDX};
-use ns_assembler::{Condition, Label, Memory, Register, Width};
+use ns_assembler::{Condition, Memory, Register, Width};
 
 use crate::bytecode::{CallSite, CompiledCode, HEADER_REGISTERS};
 use crate::heap::machine_words::MachineWord;
@@ -35,11 +34,6 @@ const CELL_LEVEL: i32 = 2 * REGISTER_BYTES;
 const CELL_CHAIN_START: i32 = 3 * REGISTER_BYTES;
 
 const _: () = assert!(CELL_WORDS == 4 && CELL_BYTES == 32);
-
-/// The registers an argument placement holds the moved values in, all
-/// loaded before any is stored, so that no slot is written before every
-/// source is read.
-const PLACEMENT_REGISTERS: [Register; 6] = [RAX, RDX, R8, R9, R10, R12];
 
 /// The callee's prologue, at its machine entry -- the body's first byte --
 /// where a compiled call enters it, the frame register at the callee's
@@ -63,7 +57,7 @@ pub(super) fn prologue(body: &mut BodyAssembler, code: &CompiledCode) {
     let macro_assembler = &mut body.macro_assembler;
     let roles = macro_assembler.roles();
     let machine_words = roles.idiom_scratch;
-    let (depth, scratch, end) = (RAX, RCX, RDX);
+    let (depth, scratch, end) = (roles.depth_count, roles.frame_extent, roles.stack_end);
     let word = |name| MacroAssembler::machine_word(machine_words, name);
     let frame_end_bytes = (i32::from(code.argument_count)
         + i32::from(HEADER_REGISTERS)
@@ -116,7 +110,10 @@ pub(super) fn prologue(body: &mut BodyAssembler, code: &CompiledCode) {
     );
     assembler.store(
         Width::Word64,
-        frame_slot(roles.frame, receiver_place + 1),
+        frame_slot(
+            roles.frame,
+            Heap::current_class_register(code.argument_count),
+        ),
         roles.callee_class(),
     );
     let header_end = code.argument_count + HEADER_REGISTERS;
@@ -140,28 +137,13 @@ fn debug_frame_words(body: &mut BodyAssembler, code: &CompiledCode) {
     let header_end = code.argument_count + HEADER_REGISTERS;
     let first_scratch = code.local_count.max(header_end);
     let window_end = header_end + u16::try_from(code.registers_above_header()).unwrap_or(u16::MAX);
+    let poison = roles.poison;
     let assembler = macro_assembler.assembler();
-    assembler.move_immediate(RAX, crate::heap::Word::DEAD_REGISTER_BITS);
+    assembler.move_immediate(poison, crate::heap::Word::DEAD_REGISTER_BITS);
     for register in first_scratch..window_end {
-        assembler.store(Width::Word64, frame_slot(roles.frame, register), RAX);
+        assembler.store(Width::Word64, frame_slot(roles.frame, register), poison);
     }
-    let (generation, constant) = crate::heap::Heap::machine_flags(code.argument_count);
-    let machine_words = roles.idiom_scratch;
-    macro_assembler.load_machine_words(machine_words);
-    let next = MacroAssembler::machine_word(machine_words, MachineWord::NextGeneration);
-    let assembler = macro_assembler.assembler();
-    assembler.load(Width::Word64, RAX, next);
-    assembler.add_immediate(RAX, 1);
-    assembler.and_immediate(RAX, generation.mask);
-    assembler.store(Width::Word64, next, RAX);
-    assembler.shift_left(RAX, generation.shift);
-    assembler.move_immediate(RCX, constant);
-    assembler.add(RAX, RCX);
-    assembler.store(
-        Width::Word64,
-        frame_slot(roles.frame, code.argument_count + generation.flags_register),
-        RAX,
-    );
+    macro_assembler.store_frame_generation(code.argument_count);
 }
 
 /// How far an index into the machine words is shifted to be a byte
@@ -197,9 +179,10 @@ pub(super) fn return_from(body: &mut BodyAssembler, register: u16) -> Lowering {
     macro_assembler.load_machine_words(machine_words);
     let depth = MacroAssembler::machine_word(machine_words, MachineWord::DepthCount);
     let assembler = macro_assembler.assembler();
-    assembler.load(Width::Word64, RCX, depth);
-    assembler.add_immediate(RCX, -1);
-    assembler.store(Width::Word64, depth, RCX);
+    let count = roles.depth_count;
+    assembler.load(Width::Word64, count, depth);
+    assembler.add_immediate(count, -1);
+    assembler.store(Width::Word64, depth, count);
     assembler.return_();
     Lowering::Template
 }
@@ -370,24 +353,27 @@ fn send_through_cell(
     let placement = Placement::of(argument_base, argument_sources);
     let writes_receiver =
         matches!(receiver, Receiver::Register(register) if placement.writes(register));
-    if writes_receiver
-        || (placement.moves.len() > PLACEMENT_REGISTERS.len() && placement.overlaps())
-    {
+    let placement_registers = body.macro_assembler.roles().placement.len();
+    if writes_receiver || (placement.moves.len() > placement_registers && placement.overlaps()) {
         return Lowering::Exit;
     }
     let (argument_count, program_counter) = (body.argument_count, body.program_counter);
     let macro_assembler = &mut body.macro_assembler;
     let roles = macro_assembler.roles();
-    let tag_mask = Heap::machine_layout().tag_mask;
     let (value, class) = (roles.callee_receiver(), roles.callee_class());
-    let (guard, cells, level, entry) = (R9, R8, R10, RCX);
+    let (guard, cells, level, entry) = (
+        roles.send_guard,
+        roles.send_cells,
+        roles.send_level,
+        roles.send_entry,
+    );
     match receiver {
         Receiver::Register(register) => macro_assembler.load_frame_register(value, register),
         Receiver::Lexical(depth) => {
             macro_assembler.load_enclosing_object(value, argument_count, depth);
         }
         Receiver::Super => {
-            load_superclass(macro_assembler, class, argument_count, program_counter);
+            macro_assembler.load_superclass(class, argument_count, program_counter);
             macro_assembler.load_receiver(value, argument_count);
         }
     }
@@ -404,7 +390,7 @@ fn send_through_cell(
     assembler.load(Width::Word64, entry, polymorphic_stub);
     match receiver {
         Receiver::Register(_) => {
-            compare_receiver_guard(macro_assembler, guard, value, cell_word(CELL_GUARD), call);
+            macro_assembler.compare_receiver_guard(guard, value, cell_word(CELL_GUARD), call);
             macro_assembler.load_class(class, value);
         }
         Receiver::Lexical(depth) => {
@@ -413,19 +399,16 @@ fn send_through_cell(
             assembler.load(Width::Word64, level, cell_word(CELL_CHAIN_START));
             assembler.compare_immediate(level, ChainStart::LexicalClass as i32);
             assembler.jump_if(Condition::Equal, private);
-            compare_receiver_guard(macro_assembler, guard, value, cell_word(CELL_GUARD), call);
+            macro_assembler.compare_receiver_guard(guard, value, cell_word(CELL_GUARD), call);
             macro_assembler.load_class(class, value);
             let assembler = macro_assembler.assembler();
             assembler.jump(hit);
             assembler.bind(private);
-            macro_assembler.load_lexical_class(class, argument_count, depth);
-            let assembler = macro_assembler.assembler();
-            assembler.test_immediate(class, tag_mask);
-            assembler.jump_if(Condition::NotEqual, call);
-            compare_application_word(macro_assembler, guard, class, cell_word(CELL_GUARD), call);
+            macro_assembler.load_lexical_class(class, argument_count, depth, call);
+            macro_assembler.compare_application_word(guard, class, cell_word(CELL_GUARD), call);
         }
         Receiver::Super => {
-            compare_application_word(macro_assembler, guard, class, cell_word(CELL_GUARD), call);
+            macro_assembler.compare_application_word(guard, class, cell_word(CELL_GUARD), call);
         }
     }
     let assembler = macro_assembler.assembler();
@@ -453,81 +436,6 @@ fn send_through_cell(
     Lowering::Template
 }
 
-/// `target :=` S, the superclass of the current class of the frame whose
-/// code takes `argument_count` arguments
-/// (`interpreter::sends::super_start`), exiting at the send,
-/// `program_counter`, where there is no current class or no superclass,
-/// so that the interpreter raises the error the uncached `super` send
-/// raises. Clobbers the flags.
-fn load_superclass(
-    macro_assembler: &mut MacroAssembler,
-    target: Register,
-    argument_count: u16,
-    program_counter: u32,
-) {
-    let layout = Heap::machine_layout();
-    let roles = macro_assembler.roles();
-    let current_class = frame_slot(roles.frame, Heap::receiver_register(argument_count) + 1);
-    let assembler = macro_assembler.assembler();
-    assembler.load(Width::Word64, target, current_class);
-    assembler.test_immediate(target, layout.tag_mask);
-    macro_assembler.exit_if(Condition::NotEqual, ExitKind::Reexecute, program_counter);
-    let assembler = macro_assembler.assembler();
-    assembler.add(target, roles.object_space);
-    assembler.load(
-        Width::Word64,
-        target,
-        Memory {
-            base: target,
-            displacement: layout.superclass_displacement,
-        },
-    );
-    assembler.test_immediate(target, layout.tag_mask);
-    macro_assembler.exit_if(Condition::NotEqual, ExitKind::Reexecute, program_counter);
-}
-
-/// Jumps to `missed` unless the guard of the value in `value` is the
-/// cell's `cell_guard`, `guard` its scratch register; `value` is kept.
-fn compare_receiver_guard(
-    macro_assembler: &mut MacroAssembler,
-    guard: Register,
-    value: Register,
-    cell_guard: Memory,
-    missed: Label,
-) {
-    macro_assembler.load_guard(guard, value);
-    let assembler = macro_assembler.assembler();
-    assembler.compare_memory(guard, cell_guard);
-    assembler.jump_if(Condition::NotEqual, missed);
-}
-
-/// Jumps to `missed` unless the application field of the class object in
-/// `class` holds the cell's `cell_guard` (`Heap::class_application_word`),
-/// `guard` its scratch register; `class` is kept.
-fn compare_application_word(
-    macro_assembler: &mut MacroAssembler,
-    guard: Register,
-    class: Register,
-    cell_guard: Memory,
-    missed: Label,
-) {
-    let layout = Heap::machine_layout();
-    let object_space = macro_assembler.roles().object_space;
-    let assembler = macro_assembler.assembler();
-    assembler.move_register(guard, class);
-    assembler.add(guard, object_space);
-    assembler.load(
-        Width::Word64,
-        guard,
-        Memory {
-            base: guard,
-            displacement: layout.application_displacement,
-        },
-    );
-    assembler.compare_memory(guard, cell_guard);
-    assembler.jump_if(Condition::NotEqual, missed);
-}
-
 /// A debug build's poison over the registers a callee that lay on the
 /// send's slots gives back, its header's register on: the dead register's
 /// word, as the interpreter's pop writes it (`Heap::pop_activation`'s
@@ -542,7 +450,7 @@ fn give_back_dead_registers(body: &mut BodyAssembler, callee_header: u16) {
     let window_end = body.window_end;
     let macro_assembler = &mut body.macro_assembler;
     let roles = macro_assembler.roles();
-    let poison = RDX;
+    let poison = roles.poison;
     let assembler = macro_assembler.assembler();
     assembler.move_immediate(poison, crate::heap::Word::DEAD_REGISTER_BITS);
     for register in callee_header..window_end {
@@ -555,17 +463,19 @@ fn give_back_dead_registers(body: &mut BodyAssembler, callee_header: u16) {
 /// one after another otherwise, which `send_public` allows only where no
 /// slot written is a source still to be read.
 fn place(macro_assembler: &mut MacroAssembler, placement: &Placement) {
-    if placement.moves.len() <= PLACEMENT_REGISTERS.len() {
-        for ((source, _), register) in placement.moves.iter().zip(PLACEMENT_REGISTERS) {
+    let registers = macro_assembler.roles().placement;
+    if placement.moves.len() <= registers.len() {
+        for ((source, _), register) in placement.moves.iter().zip(registers) {
             macro_assembler.load_frame_register(register, *source);
         }
-        for ((_, slot), register) in placement.moves.iter().zip(PLACEMENT_REGISTERS) {
+        for ((_, slot), register) in placement.moves.iter().zip(registers) {
             macro_assembler.store_frame_register(*slot, register);
         }
     } else {
+        let [register, ..] = registers;
         for (source, slot) in &placement.moves {
-            macro_assembler.load_frame_register(RAX, *source);
-            macro_assembler.store_frame_register(*slot, RAX);
+            macro_assembler.load_frame_register(register, *source);
+            macro_assembler.store_frame_register(*slot, register);
         }
     }
 }

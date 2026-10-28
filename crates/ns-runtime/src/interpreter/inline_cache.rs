@@ -1258,6 +1258,21 @@ fn materialize<'gc>(
     })
 }
 
+/// The key of an explicit-receiver send to `receiver` (§5.5): its guard
+/// the receiver's own dispatch id. The one place that builds it, for
+/// `send_public` and the miss leaf's `decide_at`.
+#[inline(always)]
+fn public_key<'send, 'gc>(heap: &Heap<'gc>, receiver: &'send Value<'gc>) -> SendKey<'send, 'gc> {
+    SendKey {
+        guard: heap.dispatch_id(*receiver),
+        rule: CacheRule::Public,
+        receiver,
+        lexical_class: None,
+        superclass: None,
+        current_class: None,
+    }
+}
+
 /// An explicit-receiver send (§5.5), cached (`docs/design/dispatch.md`, "A
 /// send, step by step").
 #[inline(always)]
@@ -1273,14 +1288,7 @@ pub(crate) fn send_public<'gc>(
     let Some(index) = site_index(feedback_base, family_size, site) else {
         return mutator.decide_send(receiver, selector, arguments);
     };
-    let key = SendKey {
-        guard: mutator.heap.dispatch_id(receiver),
-        rule: CacheRule::Public,
-        receiver: &receiver,
-        lexical_class: None,
-        superclass: None,
-        current_class: None,
-    };
+    let key = public_key(&mutator.heap, &receiver);
     cached(
         mutator,
         index,
@@ -1296,12 +1304,116 @@ pub(crate) fn send_public<'gc>(
     )
 }
 
-/// A lexical send (§5.7-§5.9), cached. The site's privacy, decided when it
-/// was first filled, chooses the guard: N's application for a private site,
-/// `o`'s otherwise, so a non-private *hit* still never computes N -- `miss`
-/// only calls its `lexical_of` closure on an actual miss, once N is needed
-/// for the `Lexical` rule's payload (`docs/design/dispatch.md`, "3b -- The
+/// A lexical send's cached site and its §5.9 privacy, `None` while the
+/// site is vacant -- or `None` for an uncached send: the one place that
+/// decides them, for `send_lexical` and the miss leaf's `decide_at`. A
+/// body-less declaration's own code runs once per instantiation of its
+/// class and starts its walk from the declaration's scope: it runs
+/// uncached, so that every cached send starts at its class.
+#[inline(always)]
+fn lexical_site(
+    caches: &InlineCaches,
+    feedback_base: FeedbackBase,
+    family_size: u32,
+    site: CallSite,
+    declaration_code: bool,
+) -> Option<(usize, Option<bool>)> {
+    site_index(feedback_base, family_size, site)
+        .filter(|_| !declaration_code)
+        .and_then(|index| {
+            caches
+                .sites
+                .get(index)
+                .map(|entry| (index, entry.target.site_privacy()))
+        })
+}
+
+/// The enclosing object a cached lexical send of `activation` at lexical
+/// `depth` is sent to, and where its walk started -- decided by
+/// `sends::lexical_origin`, for the uncached path and this one.
+#[inline(always)]
+fn lexical_receiver<'gc>(
+    heap: &Heap<'gc>,
+    activation: ActivationReference,
+    depth: u16,
+) -> (Value<'gc>, LexicalOrigin<'gc>) {
+    let (self_value, origin) = super::sends::lexical_origin(heap, activation, false);
+    let enclosing = dispatch::kth_enclosing_object(heap, self_value, origin, depth);
+    (enclosing, origin)
+}
+
+/// The key of a lexical send to `enclosing` at a site whose privacy is
+/// decided: N's application for a private site, `o`'s otherwise, so a
+/// non-private *hit* still never computes N -- `miss` only calls its
+/// `lexical_of` closure on an actual miss, once N is needed for the
+/// `Lexical` rule's payload (`docs/design/dispatch.md`, "3b -- The
 /// caches").
+#[inline(always)]
+fn lexical_key<'send, 'gc>(
+    heap: &Heap<'gc>,
+    enclosing: &'send Value<'gc>,
+    origin: LexicalOrigin<'gc>,
+    depth: u16,
+    private: bool,
+) -> SendKey<'send, 'gc> {
+    if private {
+        let lexical_class = dispatch::kth_lexical_class(heap, origin, depth);
+        SendKey {
+            guard: lexical_dispatch_id(heap, lexical_class),
+            rule: CacheRule::LexicalPrivate,
+            receiver: enclosing,
+            lexical_class,
+            superclass: None,
+            current_class: None,
+        }
+    } else {
+        SendKey {
+            guard: heap.dispatch_id(*enclosing),
+            // A placeholder payload: `miss` fills it in only on a genuine
+            // miss, so a monomorphic hit still never computes N.
+            rule: CacheRule::Lexical(DispatchId::NONE),
+            receiver: enclosing,
+            lexical_class: None,
+            superclass: None,
+            current_class: None,
+        }
+    }
+}
+
+/// N for a lexical send's `Lexical` payload, which `miss` asks only on a
+/// genuine miss. The closure borrows the send's locals, as one written in
+/// place would, so that handing it to `miss` copies a pointer rather than
+/// the walk's origin.
+#[inline(always)]
+fn lexical_class_of<'send, 'gc>(
+    origin: &'send LexicalOrigin<'gc>,
+    depth: &'send u16,
+) -> impl FnOnce(&Mutator<'gc>) -> Option<ClassReference<'gc>> + 'send {
+    move |mutator| dispatch::kth_lexical_class(&mutator.heap, *origin, *depth)
+}
+
+/// A lexical send's lookup, handed N where the miss already knows it;
+/// borrowing as `lexical_class_of` does.
+#[inline(always)]
+fn resolve_lexical_send<'send, 'gc>(
+    enclosing: &'send Value<'gc>,
+    origin: &'send LexicalOrigin<'gc>,
+    depth: &'send u16,
+    selector: &'send Symbol,
+) -> impl FnOnce(&mut Mutator<'gc>, LexicalClass<'gc>) -> Resolved<'gc> + 'send {
+    move |mutator, known_lexical_class| {
+        let lexical_class = match known_lexical_class {
+            LexicalClass::Known(lexical_class) => lexical_class,
+            LexicalClass::NotComputed => {
+                dispatch::kth_lexical_class(&mutator.heap, *origin, *depth)
+            }
+        };
+        mutator.resolve_lexical(*enclosing, lexical_class, *selector)
+    }
+}
+
+/// A lexical send (§5.7-§5.9), cached. The site's privacy, decided when it
+/// was first filled, chooses the guard (`lexical_key`).
 #[expect(
     clippy::too_many_arguments,
     reason = "the site, its guard and the closures that decide a miss are passed separately so the hit path builds nothing"
@@ -1318,19 +1430,13 @@ pub(crate) fn send_lexical<'gc>(
     selector: Symbol,
     arguments: Arguments<'_, 'gc>,
 ) -> Result<Step<'gc>, Signal<'gc>> {
-    // A body-less declaration's own code runs once per instantiation of
-    // its class and starts its walk from the declaration's scope: it runs
-    // uncached, so that every cached send below starts at its class.
-    let privacy = site_index(feedback_base, family_size, site)
-        .filter(|_| !declaration_code)
-        .and_then(|index| {
-            mutator
-                .caches
-                .sites
-                .get(index)
-                .map(|entry| (index, entry.target.site_privacy()))
-        });
-    let Some((index, privacy)) = privacy else {
+    let Some((index, privacy)) = lexical_site(
+        &mutator.caches,
+        feedback_base,
+        family_size,
+        site,
+        declaration_code,
+    ) else {
         return decide_lexical_send(
             mutator,
             activation,
@@ -1340,53 +1446,21 @@ pub(crate) fn send_lexical<'gc>(
             arguments,
         );
     };
-    // As in `decide_lexical_send`: where the walk starts is decided once,
-    // by `sends::lexical_origin`, for the uncached path and this one.
-    let (self_value, origin) = super::sends::lexical_origin(&mutator.heap, activation, false);
-    let enclosing = dispatch::kth_enclosing_object(&mutator.heap, self_value, origin, depth);
+    let (enclosing, origin) = lexical_receiver(&mutator.heap, activation, depth);
     let Some(private) = privacy else {
         return send_lexical_first(
             mutator, index, enclosing, origin, depth, selector, arguments,
         );
     };
-    let key = if private {
-        let lexical_class = dispatch::kth_lexical_class(&mutator.heap, origin, depth);
-        SendKey {
-            guard: lexical_dispatch_id(&mutator.heap, lexical_class),
-            rule: CacheRule::LexicalPrivate,
-            receiver: &enclosing,
-            lexical_class,
-            superclass: None,
-            current_class: None,
-        }
-    } else {
-        SendKey {
-            guard: mutator.heap.dispatch_id(enclosing),
-            // A placeholder payload: `miss` fills it in only on a genuine
-            // miss, so a monomorphic hit still never computes N.
-            rule: CacheRule::Lexical(DispatchId::NONE),
-            receiver: &enclosing,
-            lexical_class: None,
-            superclass: None,
-            current_class: None,
-        }
-    };
+    let key = lexical_key(&mutator.heap, &enclosing, origin, depth, private);
     cached(
         mutator,
         index,
         key,
         selector,
         arguments,
-        |mutator| dispatch::kth_lexical_class(&mutator.heap, origin, depth),
-        |mutator, known_lexical_class| {
-            let lexical_class = match known_lexical_class {
-                LexicalClass::Known(lexical_class) => lexical_class,
-                LexicalClass::NotComputed => {
-                    dispatch::kth_lexical_class(&mutator.heap, origin, depth)
-                }
-            };
-            mutator.resolve_lexical(enclosing, lexical_class, selector)
-        },
+        lexical_class_of(&origin, &depth),
+        resolve_lexical_send(&enclosing, &origin, &depth, &selector),
     )
 }
 
@@ -1403,14 +1477,8 @@ fn lexical_dispatch_id<'gc>(
     })
 }
 
-/// A vacant lexical site's first send. Whether §5.9's private rule applies
-/// is not known until N is: §5.9's private rule depends only on N and the
-/// selector, never on `o`, so once N's application is the `Lexical` rule's
-/// payload, a match there is right regardless of which site left it -- and
-/// the two rows this checks, `LexicalPrivate` keyed by N alone and
-/// `Lexical` keyed by (`o`, N), are the only ones N's decision could have
-/// filled. Only a genuine miss on both falls to resolving here, exactly as
-/// before the entries existed.
+/// A vacant lexical site's first send: `decided_lexical_first`'s
+/// decision, acted on.
 #[inline(never)]
 fn send_lexical_first<'gc>(
     mutator: &mut Mutator<'gc>,
@@ -1421,6 +1489,29 @@ fn send_lexical_first<'gc>(
     selector: Symbol,
     arguments: Arguments<'_, 'gc>,
 ) -> Result<Step<'gc>, Signal<'gc>> {
+    let (resolved, base, _) =
+        decided_lexical_first(mutator, index, enclosing, origin, depth, selector);
+    mutator.act_with_base(resolved, base, enclosing, selector, arguments)
+}
+
+/// A vacant lexical site's first decision, for `send_lexical_first` and
+/// the miss leaf's `decide_at`, with the guard the site's entry is found
+/// under. Whether §5.9's private rule applies is not known until N is:
+/// §5.9's private rule depends only on N and the selector, never on `o`,
+/// so once N's application is the `Lexical` rule's payload, a match there
+/// is right regardless of which site left it -- and the two rows this
+/// checks, `LexicalPrivate` keyed by N alone and `Lexical` keyed by (`o`,
+/// N), are the only ones N's decision could have filled. Only a genuine
+/// miss on both falls to resolving here, recorded under the key its
+/// privacy chooses.
+fn decided_lexical_first<'gc>(
+    mutator: &mut Mutator<'gc>,
+    index: usize,
+    enclosing: Value<'gc>,
+    origin: LexicalOrigin<'gc>,
+    depth: u16,
+    selector: Symbol,
+) -> (Resolved<'gc>, FeedbackBase, DispatchId) {
     let lexical_class = dispatch::kth_lexical_class(&mutator.heap, origin, depth);
     let lexical_id = lexical_dispatch_id(&mutator.heap, lexical_class);
     if lexical_id != DispatchId::NONE {
@@ -1432,8 +1523,8 @@ fn send_lexical_first<'gc>(
             superclass: None,
             current_class: None,
         };
-        if let Some(step) = global_hit(mutator, index, private_key, selector, arguments) {
-            return step;
+        if let Some((resolved, base)) = global_found(mutator, index, private_key, selector) {
+            return (resolved, base, lexical_id);
         }
     }
     let guard = mutator.heap.dispatch_id(enclosing);
@@ -1446,8 +1537,8 @@ fn send_lexical_first<'gc>(
             superclass: None,
             current_class: None,
         };
-        if let Some(step) = global_hit(mutator, index, public_key, selector, arguments) {
-            return step;
+        if let Some((resolved, base)) = global_found(mutator, index, public_key, selector) {
+            return (resolved, base, guard);
         }
     }
     let resolved = mutator.resolve_lexical(enclosing, lexical_class, selector);
@@ -1466,26 +1557,12 @@ fn send_lexical_first<'gc>(
         current_class: None,
     };
     fill(mutator, index, key, selector, &resolved);
-    mutator.act(resolved, enclosing, selector, arguments)
+    (resolved, FeedbackBase::NOT_ASSIGNED, guard)
 }
 
-/// `key`'s global-cache row, materialized and acted on, if it already holds
-/// an answer -- advancing the still-vacant site `index` to it. `None` on a
-/// miss, which leaves the site untouched for the caller to resolve instead.
-fn global_hit<'gc>(
-    mutator: &mut Mutator<'gc>,
-    index: usize,
-    key: SendKey<'_, 'gc>,
-    selector: Symbol,
-    arguments: Arguments<'_, 'gc>,
-) -> Option<Result<Step<'gc>, Signal<'gc>>> {
-    let (resolved, base) = global_found(mutator, index, key, selector)?;
-    Some(mutator.act_with_base(resolved, base, *key.receiver, selector, arguments))
-}
-
-/// `global_hit`'s decision, without `act`: `key`'s global-cache row
-/// materialized, the still-vacant site `index` advanced to it; `None` on a
-/// miss, which leaves the site untouched.
+/// `key`'s global-cache row materialized, the still-vacant site `index`
+/// advanced to it; `None` on a miss, which leaves the site untouched for
+/// the caller to resolve instead.
 fn global_found<'gc>(
     mutator: &mut Mutator<'gc>,
     index: usize,
@@ -1504,13 +1581,51 @@ fn global_found<'gc>(
     Some(found)
 }
 
+/// A `super` send's cached site, its activation's current class and S
+/// (`sends::super_start`): the one place that decides them, for
+/// `send_super` and the miss leaf's `decide_at`. `None` for an uncached
+/// site, and where there is no current class or no superclass, whose
+/// errors the uncached path raises.
+#[inline(always)]
+fn super_site<'gc>(
+    mutator: &Mutator<'gc>,
+    activation: ActivationReference,
+    feedback_base: FeedbackBase,
+    family_size: u32,
+    site: CallSite,
+) -> Option<(usize, ClassReference<'gc>, ClassReference<'gc>)> {
+    site_index(feedback_base, family_size, site).and_then(|index| {
+        let current_class = mutator.heap.activation_current_class(activation)?;
+        let superclass = super::sends::super_start(&mutator.heap, current_class)?;
+        Some((index, current_class, superclass))
+    })
+}
+
+/// The key of a `super` send of `self_value`, keyed by S's application:
+/// everything §5.10 finds, and the step `level_above` takes from S on a
+/// hit, is a function of S alone.
+#[inline(always)]
+fn super_key<'send, 'gc>(
+    heap: &Heap<'gc>,
+    self_value: &'send Value<'gc>,
+    current_class: ClassReference<'gc>,
+    superclass: ClassReference<'gc>,
+) -> SendKey<'send, 'gc> {
+    SendKey {
+        guard: heap.class_dispatch_ids(superclass).instances,
+        rule: CacheRule::Super,
+        receiver: self_value,
+        lexical_class: None,
+        superclass: Some(superclass),
+        current_class: Some(current_class),
+    }
+}
+
 /// A `super` send (§5.10), cached, keyed by S's application
-/// (`sends::super_start`): everything §5.10 finds, and the step `level_above`
-/// takes from S on a hit, is a function of S alone. A body-less
-/// declaration's own code is cached like any other: its S is its class
-/// object's superclass, as every code's is. Its two errors are raised by
-/// the uncached path, which is where a send without a `current_class` or
-/// a superclass goes.
+/// (`super_key`). A body-less declaration's own code is cached like any
+/// other: its S is its class object's superclass, as every code's is. Its
+/// two errors are raised by the uncached path, which is where a send
+/// without a `current_class` or a superclass goes.
 #[inline(always)]
 pub(crate) fn send_super<'gc>(
     mutator: &mut Mutator<'gc>,
@@ -1521,25 +1636,13 @@ pub(crate) fn send_super<'gc>(
     selector: Symbol,
     arguments: Arguments<'_, 'gc>,
 ) -> Result<Step<'gc>, Signal<'gc>> {
-    // The classes are read only for a cached site; the uncached path reads
-    // them itself.
-    let cached_site = site_index(feedback_base, family_size, site).and_then(|index| {
-        let current_class = mutator.heap.activation_current_class(activation)?;
-        let superclass = super::sends::super_start(&mutator.heap, current_class)?;
-        Some((index, current_class, superclass))
-    });
-    let Some((index, current_class, superclass)) = cached_site else {
+    let Some((index, current_class, superclass)) =
+        super_site(mutator, activation, feedback_base, family_size, site)
+    else {
         return decide_super_send(mutator, activation, selector, arguments);
     };
     let self_value = mutator.heap.activation_receiver(activation);
-    let key = SendKey {
-        guard: mutator.heap.class_dispatch_ids(superclass).instances,
-        rule: CacheRule::Super,
-        receiver: &self_value,
-        lexical_class: None,
-        superclass: Some(superclass),
-        current_class: Some(current_class),
-    };
+    let key = super_key(&mutator.heap, &self_value, current_class, superclass);
     cached(
         mutator,
         index,
@@ -1565,6 +1668,23 @@ enum LexicalClass<'gc> {
     Known(Option<ClassReference<'gc>>),
 }
 
+/// The site's own entry for `key`, materialized: a monomorphic hit, or
+/// `None`.
+#[inline(always)]
+fn site_hit<'gc>(
+    mutator: &mut Mutator<'gc>,
+    index: usize,
+    key: SendKey<'_, 'gc>,
+) -> Option<(Resolved<'gc>, FeedbackBase)> {
+    if let Some(entry) = mutator.caches.sites.get(index) {
+        if entry.guard == key.guard {
+            let target = entry.target.clone();
+            return materialize(mutator, target, key);
+        }
+    }
+    None
+}
+
 /// A monomorphic hit, or everything else out of line. `lexical_of` answers
 /// N, for the `Lexical` rule's payload; it is never called here, only handed
 /// to `miss`, so a hit costs nothing for it.
@@ -1578,38 +1698,52 @@ fn cached<'gc>(
     lexical_of: impl FnOnce(&Mutator<'gc>) -> Option<ClassReference<'gc>>,
     resolve: impl FnOnce(&mut Mutator<'gc>, LexicalClass<'gc>) -> Resolved<'gc>,
 ) -> Result<Step<'gc>, Signal<'gc>> {
-    if let Some(entry) = mutator.caches.sites.get(index) {
-        if entry.guard == key.guard {
-            let target = entry.target.clone();
-            if let Some((resolved, base)) = materialize(mutator, target, key) {
-                return mutator.act_with_base(resolved, base, *key.receiver, selector, arguments);
-            }
-        }
+    if let Some((resolved, base)) = site_hit(mutator, index, key) {
+        return mutator.act_with_base(resolved, base, *key.receiver, selector, arguments);
     }
     miss(
         mutator, index, key, selector, arguments, lexical_of, resolve,
     )
 }
 
-/// The site's polymorphic block, then the global cache, then `resolve`,
-/// whose answer is recorded in both before it is acted on. Out of line so
-/// that a monomorphic hit keeps its registers; not `#[cold]`, since a
-/// polymorphic hit comes through here. `lexical_of` is called at most once,
-/// only once a miss is certain and the `Lexical` rule's payload is actually
-/// needed -- and not at all for a `Public` or `Super` key, whose rule has no
-/// payload to fill. `resolve` is handed N where it is already known -- a
-/// private key's, or the payload's -- so that a lexical miss computes it
-/// once.
+/// `decided_miss`'s decision, acted on. Out of line so that a monomorphic
+/// hit keeps its registers; not `#[cold]`, since a polymorphic hit comes
+/// through here.
 #[inline(never)]
 fn miss<'gc>(
     mutator: &mut Mutator<'gc>,
     index: usize,
-    mut key: SendKey<'_, 'gc>,
+    key: SendKey<'_, 'gc>,
     selector: Symbol,
     arguments: Arguments<'_, 'gc>,
     lexical_of: impl FnOnce(&Mutator<'gc>) -> Option<ClassReference<'gc>>,
     resolve: impl FnOnce(&mut Mutator<'gc>, LexicalClass<'gc>) -> Resolved<'gc>,
 ) -> Result<Step<'gc>, Signal<'gc>> {
+    let (resolved, base) = decided_miss(mutator, index, key, selector, lexical_of, resolve);
+    mutator.check_super_handler_slot(&resolved, *key.receiver)?;
+    mutator.act_with_base(resolved, base, *key.receiver, selector, arguments)
+}
+
+/// A send's decision past its site's own entry, for `miss` and the miss
+/// leaf's `decided`: the site's polymorphic block, then the global cache,
+/// then `resolve`, whose answer is recorded in both. `lexical_of` is
+/// called at most once, only once a miss is certain and the `Lexical`
+/// rule's payload is actually needed -- and not at all for a `Public` or
+/// `Super` key, whose rule has no payload to fill. `resolve` is handed N
+/// where it is already known -- a private key's, or the payload's -- so
+/// that a lexical miss computes it once. Only a resolution can be a
+/// `super` `doesNotUnderstand:` slot handler, which is never recorded, so
+/// that `miss`'s check of it after any of the three is the uncached
+/// send's.
+#[inline(always)]
+fn decided_miss<'gc>(
+    mutator: &mut Mutator<'gc>,
+    index: usize,
+    mut key: SendKey<'_, 'gc>,
+    selector: Symbol,
+    lexical_of: impl FnOnce(&Mutator<'gc>) -> Option<ClassReference<'gc>>,
+    resolve: impl FnOnce(&mut Mutator<'gc>, LexicalClass<'gc>) -> Resolved<'gc>,
+) -> (Resolved<'gc>, FeedbackBase) {
     let mut known_lexical_class = if key.private() {
         LexicalClass::Known(key.lexical_class)
     } else {
@@ -1617,8 +1751,8 @@ fn miss<'gc>(
     };
     if key.guard != DispatchId::NONE {
         if let Some(target) = mutator.caches.polymorphic_hit(index, key.guard) {
-            if let Some((resolved, base)) = materialize(mutator, target, key) {
-                return mutator.act_with_base(resolved, base, *key.receiver, selector, arguments);
+            if let Some(found) = materialize(mutator, target, key) {
+                return found;
             }
         }
         if let CacheRule::Lexical(ref mut lexical) = key.rule {
@@ -1631,19 +1765,18 @@ fn miss<'gc>(
             .global_get(key.guard, selector, key.rule)
             .cloned();
         if let Some(target) = global {
-            if let Some((resolved, base)) = materialize(mutator, target.clone(), key) {
+            if let Some(found) = materialize(mutator, target.clone(), key) {
                 let cell = cell_for(mutator, key, &target);
                 mutator
                     .caches
                     .advance(index, key.guard, target, key.private(), cell, &mutator.jit);
-                return mutator.act_with_base(resolved, base, *key.receiver, selector, arguments);
+                return found;
             }
         }
     }
     let resolved = resolve(mutator, known_lexical_class);
     fill(mutator, index, key, selector, &resolved);
-    mutator.check_super_handler_slot(&resolved, *key.receiver)?;
-    mutator.act(resolved, *key.receiver, selector, arguments)
+    (resolved, FeedbackBase::NOT_ASSIGNED)
 }
 
 /// What the miss leaf answers machine code for a send its cell did not
@@ -1659,21 +1792,23 @@ pub(crate) enum MissAnswer {
 
 /// The decision of the send at `program_counter` of `activation` -- a
 /// `SendPublic`, `SendLexical` or `SendSuper` -- for machine code
-/// (`jit::leaves`'s miss leaf), which the interpreter's cached send would
-/// make (`send_public`, `send_lexical`, `send_super`): its key built as
-/// theirs is, then the site's entry, its polymorphic block, the global
-/// cache, else the lookup -- filling the site and the global cache
-/// exactly as `miss`, or a vacant lexical site's `send_lexical_first`,
-/// fills them -- but no `act`. A method machine code runs
-/// (`jit::runs_in_machine_code`) is its callee: its body is compiled when
-/// this entry is the one that compiles it (`jit::note_entry_by_call`),
-/// and once the body has machine code the site's cell is written afresh,
-/// so that its next send calls the body straight, and the answer is the
-/// body's machine entry, the callee's receiver and current class handed
-/// over for its machine entry to store. Every other decision refuses the
-/// call, and the interpreter, running the send again, finds the entry
-/// the fill made, or raises the error a `super` send without a current
-/// class or a superclass raises.
+/// (`jit::leaves`'s miss leaf): the decision the interpreter's cached
+/// send makes (`send_public`, `send_lexical`, `send_super`), through the
+/// same functions -- its site and key (`public_key`, `lexical_site`,
+/// `lexical_receiver` and `lexical_key`, `super_site` and `super_key`), the site's entry
+/// (`site_hit`), the rest (`decided_miss`, or a vacant lexical site's
+/// `decided_lexical_first`), filling the caches as they fill them -- but
+/// no `act`. Only a cached site calls through its cell, so an uncached
+/// one, which the interpreter decides uncached, refuses. A method machine
+/// code runs (`jit::runs_in_machine_code`) is its callee: its body is
+/// compiled when this entry is the one that compiles it
+/// (`jit::note_entry_by_call`), and once the body has machine code the
+/// site's cell is written afresh, so that its next send calls the body
+/// straight, and the answer is the body's machine entry, the callee's
+/// receiver and current class handed over for its machine entry to
+/// store. Every other decision refuses the call, and the interpreter,
+/// running the send again, finds the entry the fill made, or raises the
+/// error a `super` send without a current class or a superclass raises.
 pub(crate) fn decide_at<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
@@ -1681,32 +1816,30 @@ pub(crate) fn decide_at<'gc>(
 ) -> MissAnswer {
     let code = mutator.heap.activation_code(activation);
     let feedback_base = mutator.heap.activation_feedback_base(activation);
-    let decision = match code.instruction(program_counter as usize) {
+    let family_size = code.family_size;
+    let (resolved, base, receiver, guard, index) = match code.instruction(program_counter as usize)
+    {
         Instruction::SendPublic {
             selector,
             receiver_register,
             call_site,
             ..
         } => {
+            let Some(index) = site_index(feedback_base, family_size, call_site) else {
+                return MissAnswer::Refuse;
+            };
             let register_base = mutator.heap.activation_register_base(activation);
             let receiver = mutator.heap.register(register_base, receiver_register);
-            let index = site_index(feedback_base, code.family_size, call_site);
-            let key = SendKey {
-                guard: mutator.heap.dispatch_id(receiver),
-                rule: CacheRule::Public,
-                receiver: &receiver,
-                lexical_class: None,
-                superclass: None,
-                current_class: None,
-            };
-            decided(
+            let key = public_key(&mutator.heap, &receiver);
+            let (resolved, base) = decided(
                 mutator,
                 index,
                 key,
                 selector,
                 |_mutator| None,
                 |mutator, _| mutator.resolve_public(receiver, selector),
-            )
+            );
+            (resolved, base, receiver, key.guard, index)
         }
         Instruction::SendLexical {
             depth,
@@ -1714,52 +1847,60 @@ pub(crate) fn decide_at<'gc>(
             call_site,
             ..
         } => {
-            debug_assert!(
-                !code.is_declaration_code(),
-                "internal: a body-less declaration's own code runs its lexical sends uncached"
-            );
-            let index = site_index(feedback_base, code.family_size, call_site);
-            decided_lexical(mutator, activation, index, depth, selector)
+            let Some((index, privacy)) = lexical_site(
+                &mutator.caches,
+                feedback_base,
+                family_size,
+                call_site,
+                code.is_declaration_code(),
+            ) else {
+                return MissAnswer::Refuse;
+            };
+            let (enclosing, origin) = lexical_receiver(&mutator.heap, activation, depth);
+            match privacy {
+                None => {
+                    let (resolved, base, guard) =
+                        decided_lexical_first(mutator, index, enclosing, origin, depth, selector);
+                    (resolved, base, enclosing, guard, index)
+                }
+                Some(private) => {
+                    let key = lexical_key(&mutator.heap, &enclosing, origin, depth, private);
+                    let (resolved, base) = decided(
+                        mutator,
+                        index,
+                        key,
+                        selector,
+                        lexical_class_of(&origin, &depth),
+                        resolve_lexical_send(&enclosing, &origin, &depth, &selector),
+                    );
+                    (resolved, base, enclosing, key.guard, index)
+                }
+            }
         }
         Instruction::SendSuper {
             selector,
             call_site,
             ..
         } => {
-            let Some(current_class) = mutator.heap.activation_current_class(activation) else {
-                return MissAnswer::Refuse;
-            };
-            let Some(superclass) = super::sends::super_start(&mutator.heap, current_class) else {
+            let Some((index, current_class, superclass)) =
+                super_site(mutator, activation, feedback_base, family_size, call_site)
+            else {
                 return MissAnswer::Refuse;
             };
             let self_value = mutator.heap.activation_receiver(activation);
-            let index = site_index(feedback_base, code.family_size, call_site);
-            let key = SendKey {
-                guard: mutator.heap.class_dispatch_ids(superclass).instances,
-                rule: CacheRule::Super,
-                receiver: &self_value,
-                lexical_class: None,
-                superclass: Some(superclass),
-                current_class: Some(current_class),
-            };
-            decided(
+            let key = super_key(&mutator.heap, &self_value, current_class, superclass);
+            let (resolved, base) = decided(
                 mutator,
                 index,
                 key,
                 selector,
                 |_mutator| None,
                 |mutator, _| mutator.resolve_super(superclass, selector),
-            )
+            );
+            (resolved, base, self_value, key.guard, index)
         }
         _ => unreachable!("internal: only a cached send calls through its cell"),
     };
-    let Decided {
-        resolved,
-        base,
-        receiver,
-        guard,
-        index,
-    } = decision;
     let Resolved::Method {
         method,
         defining_class,
@@ -1780,232 +1921,25 @@ pub(crate) fn decide_at<'gc>(
     let Some(address) = jit::machine_entry_address(&mutator.jit, &method.code, base) else {
         return MissAnswer::Refuse;
     };
-    if let Some(index) = index {
-        mutator.caches.refresh_site_cell(index, guard, &mutator.jit);
-    }
+    mutator.caches.refresh_site_cell(index, guard, &mutator.jit);
     mutator.heap.hand_machine_callee(receiver, defining_class);
     MissAnswer::Enter(address)
 }
 
-/// A send's decision for the miss leaf (`decide_at`): what it resolves
-/// to, with the base a method's activation takes, the receiver it is
-/// sent to, and the guard and site its entry is found under.
-struct Decided<'gc> {
-    resolved: Resolved<'gc>,
-    base: FeedbackBase,
-    receiver: Value<'gc>,
-    guard: DispatchId,
-    index: Option<usize>,
-}
-
-/// `decide_at`'s decision of a `SendLexical` of `activation` at site
-/// `index`, as `send_lexical` makes it: the enclosing object at `depth`
-/// the receiver, a vacant site decided by `decided_lexical_first`, a
-/// private one keyed by N's application, every other by the enclosing
-/// object's guard.
-fn decided_lexical<'gc>(
-    mutator: &mut Mutator<'gc>,
-    activation: ActivationReference,
-    index: Option<usize>,
-    depth: u16,
-    selector: Symbol,
-) -> Decided<'gc> {
-    let (self_value, origin) = super::sends::lexical_origin(&mutator.heap, activation, false);
-    let enclosing = dispatch::kth_enclosing_object(&mutator.heap, self_value, origin, depth);
-    let privacy = index.and_then(|index| {
-        mutator
-            .caches
-            .sites
-            .get(index)
-            .map(|entry| (index, entry.target.site_privacy()))
-    });
-    let Some((index, privacy)) = privacy else {
-        let lexical_class = dispatch::kth_lexical_class(&mutator.heap, origin, depth);
-        return Decided {
-            resolved: mutator.resolve_lexical(enclosing, lexical_class, selector),
-            base: FeedbackBase::NOT_ASSIGNED,
-            receiver: enclosing,
-            guard: DispatchId::NONE,
-            index: None,
-        };
-    };
-    let Some(private) = privacy else {
-        return decided_lexical_first(mutator, index, enclosing, origin, depth, selector);
-    };
-    let key = if private {
-        let lexical_class = dispatch::kth_lexical_class(&mutator.heap, origin, depth);
-        SendKey {
-            guard: lexical_dispatch_id(&mutator.heap, lexical_class),
-            rule: CacheRule::LexicalPrivate,
-            receiver: &enclosing,
-            lexical_class,
-            superclass: None,
-            current_class: None,
-        }
-    } else {
-        SendKey {
-            guard: mutator.heap.dispatch_id(enclosing),
-            rule: CacheRule::Lexical(DispatchId::NONE),
-            receiver: &enclosing,
-            lexical_class: None,
-            superclass: None,
-            current_class: None,
-        }
-    };
-    decided(
-        mutator,
-        Some(index),
-        key,
-        selector,
-        |mutator| dispatch::kth_lexical_class(&mutator.heap, origin, depth),
-        |mutator, known_lexical_class| {
-            let lexical_class = match known_lexical_class {
-                LexicalClass::Known(lexical_class) => lexical_class,
-                LexicalClass::NotComputed => {
-                    dispatch::kth_lexical_class(&mutator.heap, origin, depth)
-                }
-            };
-            mutator.resolve_lexical(enclosing, lexical_class, selector)
-        },
-    )
-}
-
-/// `send_lexical_first`'s decision, without `act`: the two global rows N's
-/// decision could have filled, else the lookup, recorded under the key its
-/// privacy chooses.
-fn decided_lexical_first<'gc>(
-    mutator: &mut Mutator<'gc>,
-    index: usize,
-    enclosing: Value<'gc>,
-    origin: LexicalOrigin<'gc>,
-    depth: u16,
-    selector: Symbol,
-) -> Decided<'gc> {
-    let lexical_class = dispatch::kth_lexical_class(&mutator.heap, origin, depth);
-    let lexical_id = lexical_dispatch_id(&mutator.heap, lexical_class);
-    let found = |resolved: Resolved<'gc>, base: FeedbackBase, guard: DispatchId| Decided {
-        resolved,
-        base,
-        receiver: enclosing,
-        guard,
-        index: Some(index),
-    };
-    if lexical_id != DispatchId::NONE {
-        let private_key = SendKey {
-            guard: lexical_id,
-            rule: CacheRule::LexicalPrivate,
-            receiver: &enclosing,
-            lexical_class,
-            superclass: None,
-            current_class: None,
-        };
-        if let Some((resolved, base)) = global_found(mutator, index, private_key, selector) {
-            return found(resolved, base, lexical_id);
-        }
-    }
-    let guard = mutator.heap.dispatch_id(enclosing);
-    if guard != DispatchId::NONE {
-        let public_key = SendKey {
-            guard,
-            rule: CacheRule::Lexical(lexical_id),
-            receiver: &enclosing,
-            lexical_class: None,
-            superclass: None,
-            current_class: None,
-        };
-        if let Some((resolved, base)) = global_found(mutator, index, public_key, selector) {
-            return found(resolved, base, guard);
-        }
-    }
-    let resolved = mutator.resolve_lexical(enclosing, lexical_class, selector);
-    let private = resolved.chain() == Some(Chain::Private);
-    let (guard, rule) = if private {
-        (lexical_id, CacheRule::LexicalPrivate)
-    } else {
-        (guard, CacheRule::Lexical(lexical_id))
-    };
-    let key = SendKey {
-        guard,
-        rule,
-        receiver: &enclosing,
-        lexical_class,
-        superclass: None,
-        current_class: None,
-    };
-    fill(mutator, index, key, selector, &resolved);
-    found(resolved, FeedbackBase::NOT_ASSIGNED, guard)
-}
-
-/// `cached`'s and `miss`'s decision, without `act`: the target the site,
-/// its block or the global cache holds for `key`, materialized, else what
-/// `resolve` finds, recorded by `fill` as `miss` records it, `lexical_of`
-/// filling a `Lexical` rule's payload first as `miss` fills it.
+/// `cached`'s decision, without `act`: the site's own entry
+/// (`site_hit`), else `decided_miss`.
 fn decided<'gc>(
     mutator: &mut Mutator<'gc>,
-    index: Option<usize>,
-    mut key: SendKey<'_, 'gc>,
+    index: usize,
+    key: SendKey<'_, 'gc>,
     selector: Symbol,
     lexical_of: impl FnOnce(&Mutator<'gc>) -> Option<ClassReference<'gc>>,
     resolve: impl FnOnce(&mut Mutator<'gc>, LexicalClass<'gc>) -> Resolved<'gc>,
-) -> Decided<'gc> {
-    let receiver = *key.receiver;
-    let found = |(resolved, base): (Resolved<'gc>, FeedbackBase), guard: DispatchId| Decided {
-        resolved,
-        base,
-        receiver,
-        guard,
-        index,
-    };
-    let Some(site) = index else {
-        return found(
-            (
-                resolve(mutator, LexicalClass::NotComputed),
-                FeedbackBase::NOT_ASSIGNED,
-            ),
-            key.guard,
-        );
-    };
-    if let Some(entry) = mutator.caches.sites.get(site) {
-        if entry.guard == key.guard {
-            let target = entry.target.clone();
-            if let Some(materialized) = materialize(mutator, target, key) {
-                return found(materialized, key.guard);
-            }
-        }
+) -> (Resolved<'gc>, FeedbackBase) {
+    if let Some(found) = site_hit(mutator, index, key) {
+        return found;
     }
-    let mut known_lexical_class = if key.private() {
-        LexicalClass::Known(key.lexical_class)
-    } else {
-        LexicalClass::NotComputed
-    };
-    if key.guard != DispatchId::NONE {
-        if let Some(target) = mutator.caches.polymorphic_hit(site, key.guard) {
-            if let Some(materialized) = materialize(mutator, target, key) {
-                return found(materialized, key.guard);
-            }
-        }
-        if let CacheRule::Lexical(ref mut lexical) = key.rule {
-            let lexical_class = lexical_of(mutator);
-            *lexical = lexical_dispatch_id(&mutator.heap, lexical_class);
-            known_lexical_class = LexicalClass::Known(lexical_class);
-        }
-        let global = mutator
-            .caches
-            .global_get(key.guard, selector, key.rule)
-            .cloned();
-        if let Some(target) = global {
-            if let Some(materialized) = materialize(mutator, target.clone(), key) {
-                let cell = cell_for(mutator, key, &target);
-                mutator
-                    .caches
-                    .advance(site, key.guard, target, key.private(), cell, &mutator.jit);
-                return found(materialized, key.guard);
-            }
-        }
-    }
-    let resolved = resolve(mutator, known_lexical_class);
-    fill(mutator, site, key, selector, &resolved);
-    found((resolved, FeedbackBase::NOT_ASSIGNED), key.guard)
+    decided_miss(mutator, index, key, selector, lexical_of, resolve)
 }
 
 /// Records `resolved` in the global cache and at the site -- unless the key

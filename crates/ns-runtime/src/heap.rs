@@ -8418,6 +8418,17 @@ impl<'gc> Heap<'gc> {
         u64::from(base.index)
     }
 
+    /// The register number machine code reads a frame's current class at:
+    /// the header word `CURRENT_CLASS`, placed as `receiver_register`
+    /// places the receiver.
+    #[cfg(ns_jit)]
+    pub(crate) fn current_class_register(argument_count: u16) -> u16 {
+        let Ok(current_class) = u16::try_from(frame_header::CURRENT_CLASS) else {
+            unreachable!("internal: the header's words are numbered from 0 to 12");
+        };
+        argument_count + current_class
+    }
+
     /// The register number machine code reads a frame's receiver at: the
     /// header word `RECEIVER`, which lies `argument_count` registers above
     /// register 0, since the header follows the arguments

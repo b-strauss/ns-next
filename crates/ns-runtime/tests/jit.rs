@@ -529,6 +529,20 @@ fn a_stress_mode_is_on() -> bool {
     })
 }
 
+/// Whether the environment turns on a stress mode under which every poll
+/// leaves machine code: the exit stress mode, whose polls exit
+/// unconditionally, and every mode that holds the safepoint request,
+/// which a poll takes (`Interpreter::hold_safepoints_for_stress`). The
+/// JIT's and the wide encoding's stress modes leave the polls alone.
+fn a_stress_mode_polls_out() -> bool {
+    ["EXIT", "MOVES", "CACHES", "COLLECT", "SCAVENGE", "SUSPEND"]
+        .iter()
+        .any(|mode| {
+            std::env::var_os(format!("NS_NEXT_STRESS_{mode}"))
+                .is_some_and(|value| !value.is_empty() && value != "0")
+        })
+}
+
 /// A chain of compiled sends three deep -- `run:`, `first:with:`,
 /// `second:with:`, `third:with:` -- whose innermost body sends a message
 /// nothing understands,
@@ -654,9 +668,9 @@ ns_runtime::for_each_lowering! {
         let before = interpreter.jit_statistics();
         assert_eq!(run(&mut interpreter, &class), 2890);
         let done = since(interpreter.jit_statistics(), before);
-        // The exit stress mode leaves at every back edge, so that `loop:`'s
-        // loop goes on in the interpreter after its first exit.
-        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+        // A stress mode whose polls leave at every back edge sends `loop:`'s
+        // loop on in the interpreter after its first exit.
+        if lowering == Lowering::Optimized && !a_stress_mode_polls_out() {
             assert!(
                 done.resumed_entries >= 900,
                 "`loop:` resumed in machine code after each call: {}",
@@ -887,7 +901,8 @@ ns_runtime::for_each_lowering! {
         if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
             assert!(
                 statistics.compiled_calls >= 3_900,
-                "`twice step:`, `Middle`'s `super` send and `Marker`'s `bonus:` call through                  their cells: {}",
+                "`twice step:`, `Middle`'s `super` send and `Marker`'s `bonus:` call through \
+                 their cells: {}",
                 statistics.compiled_calls
             );
         }
