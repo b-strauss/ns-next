@@ -954,3 +954,111 @@ fn a_fresh_bootstrap_leaves_twenty_seven_sites_and_twenty_two_global_entries() {
         assert_eq!(statistics.filled_global_entries, 22);
     }
 }
+
+/// Every entry's machine-readable cell (`docs/design/execution.md`, "Inline
+/// caches") agrees with the entry after programs that leave every kind of
+/// site behind -- monomorphic, polymorphic and megamorphic public sites, a
+/// `super` site under two applications, a private lexical site, slot
+/// accessors -- and again after a full collection, which scrubs the
+/// entries naming freed ids and drops the families nothing runs.
+#[test]
+fn every_cell_agrees_with_its_entry() {
+    let private_lexical = indoc! {"
+        class Subject = Object new () (
+          class Outer named: label = Object new (| name = label. |) (
+            private secret = ( ^name )
+            public class Inner = Object new () (
+              public reveal = ( ^secret )
+            )
+          )
+          public run = (
+            | sum |
+            sum:: 0.
+            {Outer named: 1. Outer named: 2} do: [:each | sum:: sum + each Inner new reveal].
+            ^sum
+          )
+        ) : ()
+    "};
+    for (source, selector, argument) in [
+        (FIVE_KINDS, "run:", Some(3)),
+        (FIVE_KINDS, "run:", Some(5)),
+        (TWO_APPLICATIONS, "run", None),
+        (private_lexical, "run", None),
+    ] {
+        let (mut interpreter, class) = load(source);
+        let instance = instantiate(&mut interpreter, &class);
+        let arguments: Vec<Root> = argument
+            .map(|integer| integer_argument(&interpreter, integer))
+            .into_iter()
+            .collect();
+        send(&mut interpreter, &instance, selector, &arguments);
+        if let Err(message) = interpreter.verify_cells() {
+            panic!("{selector} {argument:?}: {message}");
+        }
+        interpreter.collect_now();
+        if let Err(message) = interpreter.verify_cells() {
+            panic!("{selector} {argument:?}, after a collection: {message}");
+        }
+    }
+}
+
+/// An edit installed through a MirrorBuilder vacates every cell with every
+/// entry, so that a compiled caller holding the cell of the edited method
+/// reaches the new one: the `answer` site's cell reads vacant after the
+/// install, and the next send fills it again with the new method's answer.
+#[test]
+fn an_install_vacates_every_cell() {
+    let source = indoc! {"
+        class Subject usingPlatform: platform = Object new (
+          |
+            ClassMirror = platform mirrors ClassMirror.
+          |
+        ) (
+          class Answerer = Object new () (
+            public answer = ( ^1 )
+          )
+          public answerer = ( ^Answerer new )
+          public ask: answerer = ( ^answerer answer )
+          public edit = (
+            | builder |
+            builder:: (ClassMirror reflecting: Answerer) mixin declaration asBuilder.
+            builder instanceSide methods addFromSource: 'public answer = ( ^2 )'.
+            builder install.
+          )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let platform = interpreter.platform();
+    let subject = send(&mut interpreter, &class, "usingPlatform:", &[platform]);
+    let answerer = send(&mut interpreter, &subject, "answerer", &[]);
+    let cells = |interpreter: &mut Interpreter| {
+        interpreter.call_site_cells(
+            &class,
+            MethodSide::Instance,
+            Symbol::intern("ask:"),
+            Symbol::intern("answer"),
+        )
+    };
+    let answer = send(
+        &mut interpreter,
+        &subject,
+        "ask:",
+        std::slice::from_ref(&answerer),
+    );
+    assert_eq!(small_integer(&mut interpreter, &answer), 1);
+    let filled = cells(&mut interpreter);
+    assert_eq!(filled.len(), 1);
+    assert!(!filled[0].is_vacant(), "the send filled the site's cell");
+    send(&mut interpreter, &subject, "edit", &[]);
+    assert!(
+        cells(&mut interpreter).iter().all(|cell| cell.is_vacant()),
+        "the install vacated the site's cell"
+    );
+    if let Err(message) = interpreter.verify_cells() {
+        panic!("after the install: {message}");
+    }
+    let answer = send(&mut interpreter, &subject, "ask:", &[answerer]);
+    assert_eq!(small_integer(&mut interpreter, &answer), 2);
+    let refilled = cells(&mut interpreter);
+    assert!(!refilled[0].is_vacant(), "the next send fills it again");
+}

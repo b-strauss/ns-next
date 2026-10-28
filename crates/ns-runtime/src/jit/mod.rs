@@ -449,6 +449,36 @@ fn install(zone: &mut Zone, bytes: &[u8]) -> Result<CodeOffset, Refusal> {
     Ok(CodeOffset(offset))
 }
 
+/// The address a hit on an entry for `target` calls, its cell's `entry`
+/// word (`inline_cache::cells::Cell`): a function of the target and of
+/// this interpreter's JIT state, never of the send or the receiver, so
+/// that the cell copies what the lookup decided. A site state that holds
+/// no target of its own -- vacant, megamorphic -- answers 0. Every other
+/// target is to be reached through its stub, or for a method with
+/// machine code through its machine entry, and until a target has one
+/// through the miss stub; no stub exists yet and machine code calls
+/// through no cell, so every target answers 0, as where there is no
+/// zone.
+pub(crate) fn cell_entry(
+    state: &JitState,
+    target: &crate::interpreter::inline_cache::Target,
+) -> u64 {
+    use crate::interpreter::inline_cache::Target;
+    match target {
+        Target::Vacant | Target::Megamorphic { .. } => 0,
+        _ => state.miss_stub_address(),
+    }
+}
+
+impl JitState {
+    /// The address of the stub a cell's entry names for a target that has
+    /// no machine code or stub of its own: 0 where there is no zone, and 0
+    /// while the zone has no miss stub, which it does not have yet.
+    fn miss_stub_address(&self) -> u64 {
+        0
+    }
+}
+
 /// Where `code`'s machine code starts, when it is compiled into this
 /// interpreter's zone and the JIT is on: a body compiled by another
 /// interpreter, or into a zone since replaced, names a zone that is not

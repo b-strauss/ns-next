@@ -90,6 +90,7 @@ impl Interpreter {
             if let Some(stress) = &mut self.stress_scavenge {
                 if stress.due(self.world.traced_size()) {
                     self.world.verify_remembered_set();
+                    self.world.verify_cells();
                     self.world.scavenge(false);
                 }
                 stressed = true;

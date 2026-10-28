@@ -299,6 +299,20 @@ impl World {
         self.mutator.heap.verify_remembered_set();
     }
 
+    /// Asserts that every inline-cache entry's cell agrees with it
+    /// (`InlineCaches::verify_cells`): the scavenge stress mode's check
+    /// beside the remembered set's.
+    #[cfg(debug_assertions)]
+    pub(crate) fn verify_cells(&self) {
+        if let Err(problem) = self
+            .mutator
+            .caches
+            .verify_cells(&self.mutator.heap, &self.mutator.jit)
+        {
+            panic!("internal: an inline-cache cell disagrees with its entry: {problem}");
+        }
+    }
+
     /// Sets eden's occupied bytes at which an allocation asks for a
     /// scavenge (`Interpreter::set_scavenge_threshold`).
     #[cfg(debug_assertions)]

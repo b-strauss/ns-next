@@ -46,7 +46,7 @@ pub use inline_cache::FeedbackBase;
 // (`Interpreter::cache_statistics`), public through `interpreter` for the
 // same reason.
 pub use inline_cache::{
-    CacheStatistics, CachedTarget, CachedTargetKind, CallSiteState, MethodSide,
+    CacheStatistics, CachedTarget, CachedTargetKind, CallSiteCell, CallSiteState, MethodSide,
 };
 
 pub(crate) enum Signal<'gc> {
@@ -912,25 +912,33 @@ impl Interpreter {
         sent: Symbol,
     ) -> Vec<CallSiteState> {
         self.enter(|mutator| {
-            let Some(object) = mutator.fetch(class).as_object() else {
-                return Vec::new();
-            };
-            let Some(application) = mutator.heap.class_application(object) else {
-                return Vec::new();
-            };
-            let mixin = match side {
-                MethodSide::Instance => Some(application.mixin.clone()),
-                MethodSide::Class => application.mixin.class_side.clone(),
-            };
-            let Some(code) = mixin.and_then(|mixin| {
-                mixin
-                    .compiled_method(method)
-                    .map(|found| found.code.clone())
-            }) else {
-                return Vec::new();
-            };
-            mutator.caches.states_of(&code, sent)
+            method_code(mutator, class, side, method)
+                .map_or_else(Vec::new, |code| mutator.caches.states_of(&code, sent))
         })
+    }
+
+    /// The cells of `method`'s sends of `sent` (`call_site_states`'s
+    /// sites): the words machine code reads beside each entry. A test hook.
+    #[doc(hidden)]
+    pub fn call_site_cells(
+        &mut self,
+        class: &Root,
+        side: MethodSide,
+        method: Symbol,
+        sent: Symbol,
+    ) -> Vec<CallSiteCell> {
+        self.enter(|mutator| {
+            method_code(mutator, class, side, method)
+                .map_or_else(Vec::new, |code| mutator.caches.cells_of(&code, sent))
+        })
+    }
+
+    /// Whether every inline-cache entry's machine-readable cell agrees with
+    /// the entry (`docs/design/execution.md`, "Inline caches"); the first
+    /// disagreement, described, otherwise. A test hook.
+    #[doc(hidden)]
+    pub fn verify_cells(&mut self) -> Result<(), String> {
+        self.enter(|mutator| mutator.caches.verify_cells(&mutator.heap, &mutator.jit))
     }
 
     /// The `platform` object, rooted for a host.
@@ -2984,6 +2992,27 @@ fn build_self_referential_object_class<'gc>(
         superclass: None,
         builtin: Some(BuiltinClass::Object),
     })
+}
+
+/// The body of `method` on `class`'s own mixin, `side` choosing the class
+/// side: what the cache test hooks (`Interpreter::call_site_states`,
+/// `Interpreter::call_site_cells`) read the sites of. `None` when `class`
+/// is no class object or has no such method.
+fn method_code(
+    mutator: &Mutator<'_>,
+    class: &Root,
+    side: MethodSide,
+    method: Symbol,
+) -> Option<Rc<crate::bytecode::CompiledCode>> {
+    let object = mutator.fetch(class).as_object()?;
+    let application = mutator.heap.class_application(object)?;
+    let mixin = match side {
+        MethodSide::Instance => Some(application.mixin.clone()),
+        MethodSide::Class => application.mixin.class_side.clone(),
+    }?;
+    mixin
+        .compiled_method(method)
+        .map(|found| found.code.clone())
 }
 
 #[cfg(test)]

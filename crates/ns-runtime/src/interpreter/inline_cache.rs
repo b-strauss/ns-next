@@ -8,6 +8,8 @@
 //! on a `Resolved` rebuilt from an entry, so it can do nothing a miss would
 //! not (`resolve.rs`).
 
+pub(crate) mod cells;
+
 use super::Arguments;
 use std::collections::BTreeSet;
 use std::hash::BuildHasher;
@@ -19,6 +21,7 @@ use crate::dispatch::{self, LexicalOrigin};
 use crate::hash::IdentityMap;
 use crate::heap::reclaim::FreedIds;
 use crate::heap::{ActivationReference, ApplicationIndex, Heap};
+use crate::jit::{self, JitState};
 use crate::mixin::{AccessorKind, DispatchId, Mixin, MixinMethod};
 use crate::types::*;
 use crate::Symbol;
@@ -26,6 +29,7 @@ use crate::Symbol;
 use super::resolve::{Chain, Resolved};
 use super::sends::{decide_lexical_send, decide_super_send};
 use super::{Mutator, Signal, Step};
+use cells::{Cell, Cells, ChainStart, GlobalRow, VACANT_GUARD};
 
 /// Where an activation's code family starts in its heap's cache table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -238,6 +242,10 @@ pub(crate) struct InlineCaches {
     /// Ranges of `sites` whose family died, served first by `fresh_range`.
     free_ranges: FreeRanges,
     global: GlobalCache,
+    /// Every entry's machine-readable cell -- the sites', the blocks' and
+    /// the global cache's -- in a reservation of its own (`cells.rs`),
+    /// written wherever the entry is.
+    cells: Cells,
     /// The last receiver guard a private or super slot accessor's cold
     /// check found to have a level, with that level
     /// (`Mutator::slot_level_holds`): a verification the check made, not a
@@ -271,12 +279,15 @@ struct Family {
 
 impl InlineCaches {
     pub(crate) fn new() -> InlineCaches {
+        let mut cells = Cells::new();
+        cells.vacate_global_rows(0..GLOBAL_CACHE_ENTRIES);
         InlineCaches {
             sites: Vec::new(),
             pool: Vec::new(),
             free_blocks: Vec::new(),
             free_ranges: FreeRanges::default(),
             global: GlobalCache::with_groups(GLOBAL_CACHE_ENTRIES / 2),
+            cells,
             verified_slot_level: None,
             families: IdentityMap::default(),
         }
@@ -329,6 +340,7 @@ impl InlineCaches {
             pool,
             free_blocks,
             free_ranges,
+            cells,
             ..
         } = self;
         for (base, size) in freed {
@@ -338,15 +350,18 @@ impl InlineCaches {
             if size == 0 || base == FeedbackBase::NOT_ASSIGNED {
                 continue;
             }
-            for entry in &mut sites[base.index()..][..size as usize] {
+            let range = base.index()..base.index() + size as usize;
+            for entry in &mut sites[range.clone()] {
                 if let Target::Polymorphic { block, .. } = entry.target {
                     if let Some(slots) = pool.get_mut(block as usize) {
                         *slots = CacheEntry::vacant_block();
+                        cells.vacate_blocks(block as usize..block as usize + 1);
                         free_blocks.push(block);
                     }
                 }
                 *entry = CacheEntry::vacant();
             }
+            cells.vacate_sites(range);
             free_ranges.free(base.raw(), size);
         }
         let mut end = u32::try_from(sites.len()).expect("the site table fits a u32");
@@ -358,7 +373,8 @@ impl InlineCaches {
 
     /// A range of `size` sites: the first free one that fits, else a new one
     /// at the end of the table. `NOT_ASSIGNED` if the table cannot grow that
-    /// far, which leaves every site of the family uncached.
+    /// far -- past `cells::MAXIMUM_SITES`, the sites its cells have room
+    /// for -- which leaves every site of the family uncached.
     pub(crate) fn fresh_range(&mut self, size: u32) -> FeedbackBase {
         if let Some(start) = self.free_ranges.take_first_fit(size) {
             return FeedbackBase(start);
@@ -366,10 +382,12 @@ impl InlineCaches {
         let start = self.sites.len();
         match start
             .checked_add(size as usize)
+            .filter(|end| *end <= cells::MAXIMUM_SITES)
             .and_then(|end| u32::try_from(end).ok())
         {
             Some(end) if end < FeedbackBase::NOT_ASSIGNED.0 => {
                 self.sites.resize(end as usize, CacheEntry::vacant());
+                self.cells.vacate_sites(start..end as usize);
                 // `end` fits 32 bits, and `start` lies `size` below it.
                 FeedbackBase(end - size)
             }
@@ -404,7 +422,20 @@ impl InlineCaches {
     /// first seen, a full block to megamorphic, which stays so -- Strongtalk's
     /// and V8's transitions. A site whose §5.9 decision differs from
     /// `private` is left alone: only a crafted image makes one.
-    fn advance(&mut self, index: usize, guard: DispatchId, target: Target, private: bool) {
+    ///
+    /// `cell` is the new entry's cell, which the caller computes from the
+    /// send's key and `jit::cell_entry` (`cell_for`); it is written beside
+    /// the entry wherever the entry lands, and the site's own cell follows
+    /// the site's state, its entry address from `jit`.
+    fn advance(
+        &mut self,
+        index: usize,
+        guard: DispatchId,
+        target: Target,
+        private: bool,
+        cell: Cell,
+        jit: &JitState,
+    ) {
         let Some(entry) = self.sites.get_mut(index) else {
             return;
         };
@@ -416,7 +447,10 @@ impl InlineCaches {
             return;
         }
         match entry.target {
-            Target::Vacant => *entry = CacheEntry { guard, target },
+            Target::Vacant => {
+                *entry = CacheEntry { guard, target };
+                self.cells.write_site(index, cell);
+            }
             Target::Megamorphic { .. } => {}
             Target::Polymorphic { block, .. } => {
                 let Some(slots) = self.pool.get_mut(block as usize) else {
@@ -426,41 +460,56 @@ impl InlineCaches {
                 // be materialized for this receiver; the fresh answer
                 // replaces it rather than taking a second slot.
                 if let Some(slot) = slots
-                    .iter_mut()
-                    .find(|slot| slot.guard == guard || matches!(slot.target, Target::Vacant))
+                    .iter()
+                    .position(|slot| slot.guard == guard || matches!(slot.target, Target::Vacant))
                 {
-                    *slot = CacheEntry { guard, target };
+                    slots[slot] = CacheEntry { guard, target };
+                    self.cells.write_block_cell(block, slot, cell);
                     return;
                 }
                 *slots = CacheEntry::vacant_block();
+                self.cells.vacate_blocks(block as usize..block as usize + 1);
                 self.free_blocks.push(block);
+                let megamorphic = Target::Megamorphic { private };
+                self.cells
+                    .write_site(index, site_state_cell(jit, &megamorphic, cell.chain_start));
                 *entry = CacheEntry {
                     guard: DispatchId::VACANT,
-                    target: Target::Megamorphic { private },
+                    target: megamorphic,
                 };
             }
-            _ if entry.guard == guard => *entry = CacheEntry { guard, target },
+            _ if entry.guard == guard => {
+                *entry = CacheEntry { guard, target };
+                self.cells.write_site(index, cell);
+            }
             _ => {
                 let block = match self.free_blocks.pop() {
                     Some(block) => block,
                     None => match u32::try_from(self.pool.len()) {
-                        Ok(block) => {
+                        Ok(block) if self.pool.len() < cells::MAXIMUM_BLOCKS => {
                             self.pool.push(CacheEntry::vacant_block());
+                            self.cells.vacate_blocks(block as usize..block as usize + 1);
                             block
                         }
-                        Err(_) => return,
+                        _ => return,
                     },
                 };
+                let polymorphic = Target::Polymorphic { block, private };
+                let site_cell = site_state_cell(jit, &polymorphic, cell.chain_start);
                 let first = std::mem::replace(
                     entry,
                     CacheEntry {
                         guard: DispatchId::VACANT,
-                        target: Target::Polymorphic { block, private },
+                        target: polymorphic,
                     },
                 );
+                let first_cell = self.cells.site(index);
                 let slots = &mut self.pool[block as usize];
                 slots[0] = first;
                 slots[1] = CacheEntry { guard, target };
+                self.cells.write_block_cell(block, 0, first_cell);
+                self.cells.write_block_cell(block, 1, cell);
+                self.cells.write_site(index, site_cell);
             }
         }
     }
@@ -491,9 +540,11 @@ impl InlineCaches {
         for entry in &mut self.sites {
             *entry = CacheEntry::vacant();
         }
+        self.cells.vacate_sites(0..self.sites.len());
+        self.cells.vacate_blocks(0..self.pool.len());
         self.pool.clear();
         self.free_blocks.clear();
-        self.global.clear();
+        self.global.clear(&mut self.cells);
         self.verified_slot_level = None;
     }
 
@@ -511,24 +562,28 @@ impl InlineCaches {
         let names_freed = |entry: &CacheEntry| {
             freed.guards.contains(&entry.guard) || target_names(&entry.target, freed)
         };
-        for entry in &mut self.sites {
+        for (index, entry) in self.sites.iter_mut().enumerate() {
             match entry.target {
                 Target::Vacant | Target::Megamorphic { .. } => {}
                 Target::Polymorphic { block, .. } => {
                     if let Some(slots) = self.pool.get_mut(block as usize) {
-                        for slot in slots.iter_mut().filter(|slot| names_freed(slot)) {
-                            *slot = CacheEntry::vacant();
+                        for (position, slot) in slots.iter_mut().enumerate() {
+                            if names_freed(slot) {
+                                *slot = CacheEntry::vacant();
+                                self.cells.write_block_cell(block, position, Cell::VACANT);
+                            }
                         }
                     }
                 }
                 _ => {
                     if names_freed(entry) {
                         *entry = CacheEntry::vacant();
+                        self.cells.write_site(index, Cell::VACANT);
                     }
                 }
             }
         }
-        self.global.retain(|entry| {
+        self.global.retain(&mut self.cells, |entry| {
             let lexical_freed =
                 matches!(entry.rule, CacheRule::Lexical(guard) if freed.guards.contains(&guard));
             !(freed.guards.contains(&entry.guard)
@@ -587,7 +642,40 @@ impl InlineCaches {
             entries.is_multiple_of(2) && (entries / 2).is_power_of_two(),
             "the global cache must be sized to twice a power of two, not {entries}"
         );
+        assert!(
+            entries <= cells::MAXIMUM_GLOBAL_ROWS,
+            "the global cache's mirror has room for {} entries, not {entries}",
+            cells::MAXIMUM_GLOBAL_ROWS
+        );
+        let old_entries = self.global.entries.len();
         self.global = GlobalCache::with_groups(entries / 2);
+        self.cells.vacate_global_rows(0..old_entries.max(entries));
+    }
+
+    /// The global cache's entry for the key, promoting it within its group
+    /// (`GlobalCache::get`), its mirror row moving with it.
+    fn global_get(
+        &mut self,
+        guard: DispatchId,
+        selector: Symbol,
+        rule: CacheRule,
+    ) -> Option<&Target> {
+        self.global.get(&mut self.cells, guard, selector, rule)
+    }
+
+    /// Records `target` for the key in the global cache, and `cell`, the
+    /// target's cell for the send that found it, in its mirror row
+    /// (`GlobalCache::insert`).
+    fn global_insert(
+        &mut self,
+        guard: DispatchId,
+        selector: Symbol,
+        rule: CacheRule,
+        target: Target,
+        cell: Cell,
+    ) {
+        self.global
+            .insert(&mut self.cells, guard, selector, rule, target, cell);
     }
 }
 
@@ -697,13 +785,20 @@ impl GlobalCache {
     /// colliding key evicts last. A read costs at most the two comparisons
     /// plus, on a second-slot hit, one swap (`docs/design/dispatch.md`, "3b
     /// -- The caches").
-    fn get(&mut self, guard: DispatchId, selector: Symbol, rule: CacheRule) -> Option<&Target> {
+    fn get(
+        &mut self,
+        cells: &mut Cells,
+        guard: DispatchId,
+        selector: Symbol,
+        rule: CacheRule,
+    ) -> Option<&Target> {
         let first = self.group(guard, selector, rule);
         if self.entries[first].holds(guard, selector, rule) {
             return Some(&self.entries[first].target);
         }
         if self.entries[first + 1].holds(guard, selector, rule) {
             self.entries.swap(first, first + 1);
+            cells.swap_global_rows(first, first + 1);
             return Some(&self.entries[first].target);
         }
         None
@@ -726,7 +821,19 @@ impl GlobalCache {
     /// second slot -- the displaced first entry overwrites it, so no group
     /// can come to hold one key twice -- and a case that cannot arise is
     /// better handled than asserted against on the send path.
-    fn insert(&mut self, guard: DispatchId, selector: Symbol, rule: CacheRule, target: Target) {
+    ///
+    /// `cell` is the target's cell for the send that found it (`cell_for`),
+    /// whose `entry`, `level` and `chain_start` the mirror row records
+    /// beside the key.
+    fn insert(
+        &mut self,
+        cells: &mut Cells,
+        guard: DispatchId,
+        selector: Symbol,
+        rule: CacheRule,
+        target: Target,
+        cell: Cell,
+    ) {
         let first = self.group(guard, selector, rule);
         let second = first + 1;
         let entry = GlobalEntry {
@@ -735,27 +842,39 @@ impl GlobalCache {
             rule,
             target,
         };
+        let row = GlobalRow {
+            guard: u64::from(guard.bits()),
+            selector: selector.index() as u64,
+            rule: rule_word(rule),
+            entry: cell.entry,
+            level: cell.level,
+            chain_start: cell.chain_start,
+        };
         if self.entries[first].holds(guard, selector, rule) {
             self.entries[first] = entry;
         } else {
             self.entries[second] = std::mem::replace(&mut self.entries[first], entry);
+            cells.write_global_row(second, cells.global_row(first));
         }
+        cells.write_global_row(first, row);
     }
 
     /// Vacates every entry: `InlineCaches::invalidate`'s global half.
-    fn clear(&mut self) {
+    fn clear(&mut self, cells: &mut Cells) {
         for entry in &mut self.entries {
             *entry = GlobalEntry::vacant();
         }
+        cells.vacate_global_rows(0..self.entries.len());
     }
 
     /// Vacates every entry `keep` refuses: `InlineCaches::forget_freed`'s
     /// global half. A group whose first slot is vacated keeps its second,
     /// which `get` still finds there.
-    fn retain(&mut self, keep: impl Fn(&GlobalEntry) -> bool) {
-        for entry in &mut self.entries {
+    fn retain(&mut self, cells: &mut Cells, keep: impl Fn(&GlobalEntry) -> bool) {
+        for (index, entry) in self.entries.iter_mut().enumerate() {
             if !entry.is_vacant() && !keep(entry) {
                 *entry = GlobalEntry::vacant();
+                cells.write_global_row(index, GlobalRow::VACANT);
             }
         }
     }
@@ -1330,13 +1449,13 @@ fn global_hit<'gc>(
 ) -> Option<Result<Step<'gc>, Signal<'gc>>> {
     let target = mutator
         .caches
-        .global
-        .get(key.guard, selector, key.rule)
+        .global_get(key.guard, selector, key.rule)
         .cloned()?;
     let (resolved, base) = materialize(mutator, target.clone(), key)?;
+    let cell = cell_for(mutator, key, &target);
     mutator
         .caches
-        .advance(index, key.guard, target, key.private());
+        .advance(index, key.guard, target, key.private(), cell, &mutator.jit);
     Some(mutator.act_with_base(resolved, base, *key.receiver, selector, arguments))
 }
 
@@ -1464,14 +1583,14 @@ fn miss<'gc>(
         }
         let global = mutator
             .caches
-            .global
-            .get(key.guard, selector, key.rule)
+            .global_get(key.guard, selector, key.rule)
             .cloned();
         if let Some(target) = global {
             if let Some((resolved, base)) = materialize(mutator, target.clone(), key) {
+                let cell = cell_for(mutator, key, &target);
                 mutator
                     .caches
-                    .advance(index, key.guard, target, key.private());
+                    .advance(index, key.guard, target, key.private(), cell, &mutator.jit);
                 return mutator.act_with_base(resolved, base, *key.receiver, selector, arguments);
             }
         }
@@ -1503,13 +1622,87 @@ fn fill<'gc>(
         return;
     }
     if let Some(target) = record(mutator, resolved, key) {
+        let cell = cell_for(mutator, key, &target);
         mutator
             .caches
-            .global
-            .insert(key.guard, selector, key.rule, target.clone());
+            .global_insert(key.guard, selector, key.rule, target.clone(), cell);
         mutator
             .caches
-            .advance(index, key.guard, target, key.private());
+            .advance(index, key.guard, target, key.private(), cell, &mutator.jit);
+    }
+}
+
+/// The cell an entry for `target` takes at a site with `key`: its guard
+/// (the key's dispatch id, or for a `super` or private lexical site the
+/// key class's application word, as `Cell` says), its entry address from
+/// the JIT (`jit::cell_entry`), and where its `current_class` is found.
+fn cell_for<'gc>(mutator: &Mutator<'gc>, key: SendKey<'_, 'gc>, target: &Target) -> Cell {
+    let application_word = |class: Option<ClassReference<'gc>>| {
+        class
+            .and_then(|class| mutator.heap.class_application_word(class))
+            .unwrap_or(VACANT_GUARD)
+    };
+    let chain_start = rule_chain_start(key.rule);
+    let guard = match key.rule {
+        CacheRule::Public | CacheRule::Lexical(_) => u64::from(key.guard.bits()),
+        CacheRule::LexicalPrivate => application_word(key.lexical_class),
+        CacheRule::Super => application_word(key.superclass),
+    };
+    Cell {
+        guard,
+        entry: jit::cell_entry(&mutator.jit, target),
+        level: cell_level(target),
+        chain_start: chain_start as u64,
+    }
+}
+
+/// The cell of a site that holds no entry of its own -- polymorphic or
+/// megamorphic -- whose guard no receiver matches, so that machine code
+/// takes the stub its entry names; `chain_start` is the site's, kept so
+/// that a lexical site's cell still says which guard its sends compare.
+fn site_state_cell(jit: &JitState, target: &Target, chain_start: u64) -> Cell {
+    Cell {
+        guard: VACANT_GUARD,
+        entry: jit::cell_entry(jit, target),
+        level: cell_level(target),
+        chain_start,
+    }
+}
+
+/// A cell's `level` word for `target`: its superclass steps from the
+/// chain's start, 0 for a target that counts none -- a slot, which runs
+/// no body, and a factory, which instantiates the receiver -- and a
+/// polymorphic site's block number.
+fn cell_level(target: &Target) -> u64 {
+    match target {
+        Target::Method { level, .. }
+        | Target::NestedClass { level, .. }
+        | Target::Primitive { level, .. } => u64::from(*level),
+        Target::Polymorphic { block, .. } => u64::from(*block),
+        Target::Vacant
+        | Target::Megamorphic { .. }
+        | Target::Slot { .. }
+        | Target::Factory { .. } => 0,
+    }
+}
+
+/// Where a target found on `chain` counts its levels from, for its cell.
+fn chain_start_of(chain: Chain) -> ChainStart {
+    match chain {
+        Chain::Public | Chain::Protected | Chain::DoesNotUnderstand => ChainStart::ReceiverClass,
+        Chain::Private => ChainStart::LexicalClass,
+        Chain::Super | Chain::SuperDoesNotUnderstand => ChainStart::Superclass,
+    }
+}
+
+/// A global row's `rule` word: the rule in the low two bits, and a
+/// `Lexical` rule's N -- its application's dispatch id -- above them.
+fn rule_word(rule: CacheRule) -> u64 {
+    match rule {
+        CacheRule::Public => 0,
+        CacheRule::Lexical(lexical) => 1 | (u64::from(lexical.bits()) << 2),
+        CacheRule::LexicalPrivate => 2,
+        CacheRule::Super => 3,
     }
 }
 
@@ -1557,11 +1750,63 @@ pub enum MethodSide {
     Class,
 }
 
+/// A call site's cell as a test reads it (`Interpreter::call_site_cells`):
+/// the four words machine code reads (`cells::Cell`).
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CallSiteCell {
+    pub guard: u64,
+    pub entry: u64,
+    pub level: u64,
+    pub chain_start: u64,
+}
+
+impl CallSiteCell {
+    /// Whether the cell reads as a vacant site's: no receiver matches it.
+    pub fn is_vacant(&self) -> bool {
+        let vacant = Cell::VACANT;
+        (self.guard, self.entry, self.level, self.chain_start)
+            == (vacant.guard, vacant.entry, vacant.level, vacant.chain_start)
+    }
+}
+
 impl InlineCaches {
     /// The states of the sites in `code`'s family that send `sent`, in
     /// emission order, or all vacant when the family has not run. For tests
     /// (`Interpreter::call_site_states`).
     pub(crate) fn states_of(&self, code: &Rc<CompiledCode>, sent: Symbol) -> Vec<CallSiteState> {
+        self.site_indices_of(code, sent)
+            .into_iter()
+            .map(
+                |index| match index.and_then(|index| self.sites.get(index)) {
+                    None => CallSiteState::Vacant,
+                    Some(entry) => self.state_of(entry),
+                },
+            )
+            .collect()
+    }
+
+    /// The cells of the sites in `code`'s family that send `sent`, in
+    /// emission order, each vacant while the family has not run. For tests
+    /// (`Interpreter::call_site_cells`).
+    pub(crate) fn cells_of(&self, code: &Rc<CompiledCode>, sent: Symbol) -> Vec<CallSiteCell> {
+        self.site_indices_of(code, sent)
+            .into_iter()
+            .map(|index| {
+                let cell = index.map_or(Cell::VACANT, |index| self.cells.site(index));
+                CallSiteCell {
+                    guard: cell.guard,
+                    entry: cell.entry,
+                    level: cell.level,
+                    chain_start: cell.chain_start,
+                }
+            })
+            .collect()
+    }
+
+    /// The table index of each site in `code`'s family that sends `sent`,
+    /// in emission order; `None` for each while the family has not run.
+    fn site_indices_of(&self, code: &Rc<CompiledCode>, sent: Symbol) -> Vec<Option<usize>> {
         // Call-site numbers are dense in emission order across the family,
         // so sorting by number is emission order.
         let mut numbers = Vec::new();
@@ -1588,15 +1833,135 @@ impl InlineCaches {
             .map_or(FeedbackBase::NOT_ASSIGNED, |family| family.base);
         numbers
             .into_iter()
-            .map(|number| {
-                match site_index(base, code.family_size, CallSite { number })
-                    .and_then(|index| self.sites.get(index))
-                {
-                    None => CallSiteState::Vacant,
-                    Some(entry) => self.state_of(entry),
-                }
-            })
+            .map(|number| site_index(base, code.family_size, CallSite { number }))
             .collect()
+    }
+
+    /// Whether every cell agrees with its entry -- each site's, each
+    /// polymorphic block slot's, each global row's -- as the writes beside
+    /// the entries are to keep it: the first disagreement found, described,
+    /// otherwise. Run by `Interpreter::verify_cells` and, in a debug build,
+    /// before every scavenge of the scavenge stress mode.
+    pub(crate) fn verify_cells(&self, heap: &Heap<'_>, jit: &JitState) -> Result<(), String> {
+        self.verify_cells_against(&|word| heap.application_dispatch_id_for_word(word), jit)
+    }
+
+    /// `verify_cells`, with `application_of` answering the instances id
+    /// of the application whose class objects hold a word in their
+    /// application field (`Heap::application_dispatch_id_for_word`).
+    fn verify_cells_against(
+        &self,
+        application_of: &dyn Fn(u64) -> Option<DispatchId>,
+        jit: &JitState,
+    ) -> Result<(), String> {
+        let site_words = self.cells.site_words(self.sites.len());
+        let block_words = self.cells.block_words(self.pool.len());
+        let global_words = self.cells.global_words(self.global.entries.len());
+        // Every table's cells were written vacant as it grew, so each slice
+        // holds one cell or row per entry.
+        if site_words.len() != self.sites.len() * cells::CELL_WORDS
+            || block_words.len() != self.pool.len() * POLYMORPHIC_WIDTH * cells::CELL_WORDS
+            || global_words.len() != self.global.entries.len() * cells::ROW_WORDS
+        {
+            return Err("the cells of a table were never written".to_owned());
+        }
+        // Most entries are vacant, and what a vacant entry's cell must hold
+        // is the guard no receiver matches: one comparison each, which the
+        // scavenge stress mode makes at nearly every safepoint.
+        let check_cell = |entry: &CacheEntry, words: &[u64], place: &dyn Fn() -> String| {
+            if matches!(entry.target, Target::Vacant) {
+                if words[0] != VACANT_GUARD {
+                    return Err(format!(
+                        "{}: a vacant entry's cell reads {words:?}",
+                        place()
+                    ));
+                }
+                return Ok(None);
+            }
+            let found = Cell::from_words(words);
+            match expected_cell(entry.guard, &entry.target, found, application_of, jit) {
+                Ok(Some(expected)) if expected != found => Err(format!(
+                    "{}: the cell reads {found:?}, its entry's is {expected:?}",
+                    place()
+                )),
+                Ok(Some(_)) => Ok(None),
+                Ok(None) => Ok(Some(found)),
+                Err(problem) => Err(format!("{}: {problem}", place())),
+            }
+        };
+        for (index, (entry, words)) in self
+            .sites
+            .iter()
+            .zip(site_words.as_chunks::<{ cells::CELL_WORDS }>().0)
+            .enumerate()
+        {
+            if let Some(found) = check_cell(entry, words, &|| format!("site {index}"))? {
+                verify_site_state_cell(entry, found, jit)
+                    .map_err(|problem| format!("site {index}: {problem}"))?;
+            }
+        }
+        for (block, (slots, words)) in self
+            .pool
+            .iter()
+            .zip(
+                block_words
+                    .as_chunks::<{ POLYMORPHIC_WIDTH * cells::CELL_WORDS }>()
+                    .0,
+            )
+            .enumerate()
+        {
+            for (position, (slot, words)) in slots
+                .iter()
+                .zip(words.as_chunks::<{ cells::CELL_WORDS }>().0)
+                .enumerate()
+            {
+                let place = || format!("block {block} slot {position}");
+                if check_cell(slot, words, &place)?.is_some() {
+                    return Err(format!("{}: a block holds a site state", place()));
+                }
+            }
+        }
+        for (index, entry) in self.global.entries.iter().enumerate() {
+            let words = &global_words[index * cells::ROW_WORDS..][..cells::ROW_WORDS];
+            if entry.is_vacant() {
+                if words[0] != VACANT_GUARD {
+                    return Err(format!(
+                        "global row {index} of a vacant entry reads {words:?}"
+                    ));
+                }
+                continue;
+            }
+            let found = GlobalRow::from_words(words);
+            let found_cell = Cell {
+                guard: found.guard,
+                entry: found.entry,
+                level: found.level,
+                chain_start: found.chain_start,
+            };
+            // A row's guard is the key's dispatch id whatever the rule,
+            // compared below, so the cell's guard is not asked about.
+            let any_guard = |_: u64| Some(entry.guard);
+            let cell = expected_cell(entry.guard, &entry.target, found_cell, &any_guard, jit)
+                .map_err(|problem| format!("global entry {index}: {problem}"))?
+                .ok_or_else(|| format!("global entry {index} holds a site state"))?;
+            if cell.chain_start != rule_chain_start(entry.rule) as u64 {
+                return Err(format!("global entry {index}'s rule is not its target's"));
+            }
+            let expected = GlobalRow {
+                guard: u64::from(entry.guard.bits()),
+                selector: entry.selector.index() as u64,
+                rule: rule_word(entry.rule),
+                entry: cell.entry,
+                level: cell.level,
+                chain_start: cell.chain_start,
+            };
+            if found != expected || words[cells::ROW_WORDS - 2..] != [0, 0] {
+                return Err(format!(
+                    "global row {index} reads {words:?}, its entry's is {expected:?}"
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn state_of(&self, entry: &CacheEntry) -> CallSiteState {
@@ -1616,6 +1981,82 @@ impl InlineCaches {
                 None => CallSiteState::Vacant,
             },
         }
+    }
+}
+
+/// The cell an entry with `guard` and `target` is to have, `found` the
+/// one it has, or `None` for a site state, whose cell
+/// `verify_site_state_cell` checks: `Cell::VACANT` for a vacant entry,
+/// and for a filled one its guard -- the entry's own, or for a target
+/// counted from N or S a word of the application whose id the entry's
+/// guard is, as `application_of` finds -- with the entry address, level
+/// and chain start its target decides. A global row's guard is the
+/// entry's own whatever the rule, and its caller compares it so.
+fn expected_cell(
+    guard: DispatchId,
+    target: &Target,
+    found: Cell,
+    application_of: &dyn Fn(u64) -> Option<DispatchId>,
+    jit: &JitState,
+) -> Result<Option<Cell>, String> {
+    let chain = match target {
+        Target::Vacant => return Ok(Some(Cell::VACANT)),
+        Target::Polymorphic { .. } | Target::Megamorphic { .. } => return Ok(None),
+        Target::Method { chain, .. }
+        | Target::Slot { chain, .. }
+        | Target::NestedClass { chain, .. }
+        | Target::Primitive { chain, .. }
+        | Target::Factory { chain, .. } => *chain,
+    };
+    let chain_start = chain_start_of(chain);
+    let guard = match chain_start {
+        ChainStart::ReceiverClass => u64::from(guard.bits()),
+        ChainStart::LexicalClass | ChainStart::Superclass => {
+            if application_of(found.guard) != Some(guard) {
+                return Err(format!(
+                    "the guard {} is no word of the application with id {}",
+                    found.guard,
+                    guard.bits()
+                ));
+            }
+            found.guard
+        }
+    };
+    Ok(Some(Cell {
+        guard,
+        entry: jit::cell_entry(jit, target),
+        level: cell_level(target),
+        chain_start: chain_start as u64,
+    }))
+}
+
+/// Whether a polymorphic or megamorphic site's cell is the one its state
+/// is to have (`site_state_cell`): no receiver matches its guard, its
+/// entry and level are its state's, and it counts from N exactly when the
+/// site is private -- the one thing its chain start must say, since
+/// whether the site is a `super` one its instruction says.
+fn verify_site_state_cell(entry: &CacheEntry, found: Cell, jit: &JitState) -> Result<(), String> {
+    let private = entry.target.site_privacy() == Some(true);
+    let lexical = found.chain_start == ChainStart::LexicalClass as u64;
+    let expected = Cell {
+        chain_start: found.chain_start,
+        ..site_state_cell(jit, &entry.target, 0)
+    };
+    if found != expected || private != lexical {
+        return Err(format!(
+            "the site state's cell reads {found:?}, its state's is {expected:?} (private: {private})"
+        ));
+    }
+    Ok(())
+}
+
+/// Where a target recorded under `rule` counts its levels from: the
+/// `chain_start_of` its chain, which `fill` keeps consistent with the rule.
+fn rule_chain_start(rule: CacheRule) -> ChainStart {
+    match rule {
+        CacheRule::Public | CacheRule::Lexical(_) => ChainStart::ReceiverClass,
+        CacheRule::LexicalPrivate => ChainStart::LexicalClass,
+        CacheRule::Super => ChainStart::Superclass,
     }
 }
 
@@ -1669,6 +2110,66 @@ mod tests {
     use super::*;
     use crate::bytecode::{CodeKind, CompiledCode, Instruction};
     use ns_syntax::Span;
+
+    /// The cell a public site's entry for `target` takes with `guard`.
+    pub(super) fn public_cell(guard: DispatchId, target: &Target, jit: &JitState) -> Cell {
+        Cell {
+            guard: u64::from(guard.bits()),
+            entry: jit::cell_entry(jit, target),
+            level: cell_level(target),
+            chain_start: ChainStart::ReceiverClass as u64,
+        }
+    }
+
+    impl InlineCaches {
+        /// `advance` with the cell a public site's entry takes, for the
+        /// tests of the caches themselves.
+        fn advance_public(
+            &mut self,
+            index: usize,
+            guard: DispatchId,
+            target: Target,
+            private: bool,
+            jit: &JitState,
+        ) {
+            let cell = public_cell(guard, &target, jit);
+            self.advance(index, guard, target, private, cell, jit);
+        }
+    }
+
+    /// A global cache with its cells, for the tests of the global cache
+    /// alone, whose entries are filed as a public site's.
+    struct TestGlobal {
+        global: GlobalCache,
+        cells: Cells,
+        jit: JitState,
+    }
+
+    impl TestGlobal {
+        fn with_groups(groups: usize) -> TestGlobal {
+            let mut cells = Cells::new();
+            cells.vacate_global_rows(0..groups * 2);
+            TestGlobal {
+                global: GlobalCache::with_groups(groups),
+                cells,
+                jit: JitState::new(),
+            }
+        }
+
+        fn get(&mut self, guard: DispatchId, selector: Symbol, rule: CacheRule) -> Option<&Target> {
+            self.global.get(&mut self.cells, guard, selector, rule)
+        }
+
+        fn insert(&mut self, guard: DispatchId, selector: Symbol, rule: CacheRule, target: Target) {
+            let cell = public_cell(guard, &target, &self.jit);
+            self.global
+                .insert(&mut self.cells, guard, selector, rule, target, cell);
+        }
+
+        fn clear(&mut self) {
+            self.global.clear(&mut self.cells);
+        }
+    }
 
     /// A factory target on `chain`, for the tests of the caches themselves,
     /// which read only its chain.
@@ -1792,10 +2293,10 @@ mod tests {
     /// when a third arrives, and `clear` vacates every key at once.
     #[test]
     fn a_global_cache_keeps_colliding_keys_apart() {
-        let mut global = GlobalCache::with_groups(1);
+        let mut global = TestGlobal::with_groups(1);
         let selector = Symbol::NEW;
         let guards: Vec<DispatchId> = (3..6).map(DispatchId::from_counter).collect();
-        let chain_of = |global: &mut GlobalCache, guard: DispatchId, rule: CacheRule| match global
+        let chain_of = |global: &mut TestGlobal, guard: DispatchId, rule: CacheRule| match global
             .get(guard, selector, rule)
         {
             Some(Target::Factory { chain, .. }) => Some(*chain),
@@ -1859,7 +2360,7 @@ mod tests {
     /// own N yet (`docs/design/dispatch.md`, "3b -- The caches").
     #[test]
     fn a_global_cache_keys_a_lexical_entry_by_its_lexical_application_too() {
-        let mut global = GlobalCache::with_groups(2);
+        let mut global = TestGlobal::with_groups(2);
         let selector = Symbol::NEW;
         let guard = DispatchId::from_counter(3);
         let (first_lexical, second_lexical) =
@@ -1898,7 +2399,7 @@ mod tests {
     /// use).
     #[test]
     fn a_group_keeps_the_more_recently_used_of_two_keys() {
-        let mut cache = GlobalCache::with_groups(1);
+        let mut cache = TestGlobal::with_groups(1);
         let selector = Symbol::NEW;
         let (first, second, third) = (
             DispatchId::from_counter(3),
@@ -1986,13 +2487,38 @@ mod tests {
             recorded_guard,
         };
         let kept = level(9);
+        let jit = JitState::new();
         let base = caches.fresh_range(5).index();
-        caches.advance(base, guard(0), slot(kept, DispatchId::NONE), false);
-        caches.advance(base + 1, guard(1), slot(level(1), DispatchId::NONE), false);
-        caches.advance(base + 2, guard(1), slot(kept, guard(2)), false);
-        caches.advance(base + 3, guard(1), slot(kept, DispatchId::NONE), false);
-        caches.advance(base + 4, guard(0), slot(kept, DispatchId::NONE), false);
-        caches.advance(base + 4, guard(1), slot(kept, DispatchId::NONE), false);
+        caches.advance_public(base, guard(0), slot(kept, DispatchId::NONE), false, &jit);
+        caches.advance_public(
+            base + 1,
+            guard(1),
+            slot(level(1), DispatchId::NONE),
+            false,
+            &jit,
+        );
+        caches.advance_public(base + 2, guard(1), slot(kept, guard(2)), false, &jit);
+        caches.advance_public(
+            base + 3,
+            guard(1),
+            slot(kept, DispatchId::NONE),
+            false,
+            &jit,
+        );
+        caches.advance_public(
+            base + 4,
+            guard(0),
+            slot(kept, DispatchId::NONE),
+            false,
+            &jit,
+        );
+        caches.advance_public(
+            base + 4,
+            guard(1),
+            slot(kept, DispatchId::NONE),
+            false,
+            &jit,
+        );
         let selector = Symbol::intern("value");
         let lexical = CacheRule::Lexical(guard(0));
         for (key, rule) in [
@@ -2000,9 +2526,9 @@ mod tests {
             (guard(1), lexical),
             (guard(1), CacheRule::Public),
         ] {
-            caches
-                .global
-                .insert(key, selector, rule, slot(kept, DispatchId::NONE));
+            let target = slot(kept, DispatchId::NONE);
+            let cell = public_cell(key, &target, &jit);
+            caches.global_insert(key, selector, rule, target, cell);
         }
         caches.record_slot_level(guard(1), level(1));
         let mut freed = FreedIds::default();
@@ -2020,15 +2546,14 @@ mod tests {
         assert!(caches.polymorphic_hit(base + 4, guard(0)).is_none());
         assert!(caches.polymorphic_hit(base + 4, guard(1)).is_some());
         assert!(caches
-            .global
-            .get(guard(0), selector, CacheRule::Public)
+            .global_get(guard(0), selector, CacheRule::Public)
             .is_none());
-        assert!(caches.global.get(guard(1), selector, lexical).is_none());
+        assert!(caches.global_get(guard(1), selector, lexical).is_none());
         assert!(caches
-            .global
-            .get(guard(1), selector, CacheRule::Public)
+            .global_get(guard(1), selector, CacheRule::Public)
             .is_some());
         assert!(!caches.slot_level_verified(guard(1), level(1)));
+        assert_eq!(caches.verify_cells_against(&|_| None, &jit), Ok(()));
     }
 
     /// A site moves vacant, monomorphic, polymorphic in the order first
@@ -2046,7 +2571,8 @@ mod tests {
             recorded_guard: DispatchId::NONE,
         };
         let guard = |number: u32| DispatchId::from_counter(DispatchId::FIRST_MINTED + number);
-        caches.advance(index, guard(0), slot(0), false);
+        let jit = JitState::new();
+        caches.advance_public(index, guard(0), slot(0), false, &jit);
         assert_eq!(
             caches.state_of(&caches.sites[index]),
             CallSiteState::Monomorphic(CachedTarget {
@@ -2055,7 +2581,7 @@ mod tests {
             })
         );
         for number in 1..4 {
-            caches.advance(index, guard(number), slot(number), false);
+            caches.advance_public(index, guard(number), slot(number), false, &jit);
         }
         let fields = match caches.state_of(&caches.sites[index]) {
             CallSiteState::Polymorphic(targets) => targets
@@ -2074,7 +2600,8 @@ mod tests {
             caches.polymorphic_hit(index, guard(2)),
             Some(Target::Slot { field: 2, .. })
         ));
-        caches.advance(index, guard(4), slot(4), false);
+        assert_eq!(caches.verify_cells_against(&|_| None, &jit), Ok(()));
+        caches.advance_public(index, guard(4), slot(4), false, &jit);
         assert_eq!(
             caches.state_of(&caches.sites[index]),
             CallSiteState::Megamorphic
@@ -2082,13 +2609,14 @@ mod tests {
         assert_eq!(caches.free_blocks, vec![0]);
         assert!(caches.polymorphic_hit(index, guard(2)).is_none());
         // A private target never enters a site decided non-private.
-        caches.advance(index, guard(5), slot(5), true);
+        caches.advance_public(index, guard(5), slot(5), true, &jit);
         assert_eq!(
             caches.state_of(&caches.sites[index]),
             CallSiteState::Megamorphic
         );
         // Out of range is a no-op, not a panic.
-        caches.advance(usize::MAX, guard(0), slot(0), false);
+        caches.advance_public(usize::MAX, guard(0), slot(0), false, &jit);
+        assert_eq!(caches.verify_cells_against(&|_| None, &jit), Ok(()));
     }
 
     /// An entry holds no handle and is the size the pool's blocks are laid

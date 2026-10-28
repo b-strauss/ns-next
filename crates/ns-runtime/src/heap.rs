@@ -1980,7 +1980,7 @@ struct FrameFields<'gc> {
 /// `bytes` is what the failed request asked for: an allocation's size, or
 /// what a commit asked for beyond what was committed.
 #[cold]
-fn out_of_memory(bytes: usize) -> ! {
+pub(crate) fn out_of_memory(bytes: usize) -> ! {
     std::alloc::handle_alloc_error(
         std::alloc::Layout::from_size_align(bytes, 8)
             .unwrap_or_else(|_| std::alloc::Layout::new::<u64>()),
@@ -5253,6 +5253,31 @@ impl<'gc> Heap<'gc> {
             .class_field(class, class_field::APPLICATION)?
             .as_small_integer()?;
         ApplicationIndex::from_index(usize::try_from(index).ok()?)
+    }
+
+    /// The word `class`'s application field holds, as machine code reads
+    /// it from the class object: the guard a `super` or private lexical
+    /// site's cell compares (`inline_cache::cells::Cell`). `None` for a
+    /// handle that is no class object.
+    pub(crate) fn class_application_word(&self, class: ClassReference<'gc>) -> Option<u64> {
+        self.pointer_words(class, Format::Class)?
+            .get(class_field::APPLICATION)
+            .copied()
+    }
+
+    /// The instances id of the registered application whose class objects
+    /// hold `word` in their application field (`class_application_word`);
+    /// `None` for a word no class object of an application holds. For
+    /// `InlineCaches::verify_cells`, which holds a `super` or private
+    /// lexical cell's guard to its entry's.
+    pub(crate) fn application_dispatch_id_for_word(&self, word: u64) -> Option<DispatchId> {
+        let word = Word::from_bits(word);
+        if !word.is_small_integer() {
+            return None;
+        }
+        let index = usize::try_from(self.load(word).as_small_integer()?).ok()?;
+        let application = self.tables.applications.get(index)?.as_ref()?;
+        (count_word(index).bits() == word.bits()).then_some(application.dispatch_ids.instances)
     }
 
     /// §3.1.1's "its class inherits from class `Value`", read off the
