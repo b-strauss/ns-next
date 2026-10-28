@@ -606,7 +606,7 @@ fn run_machine_code(
     block[BlockWord::StackBase.index()] = mutator.heap.activation_stack_base_address() as u64;
     block[BlockWord::RegisterBase.index()] = crate::heap::Heap::register_base_words(register_base);
     block[BlockWord::MachineEntry.index()] = code.executable_address(entry) as u64;
-    block[BlockWord::PollWord.index()] = mutator.heap.safepoint_flag_address() as u64;
+    block[BlockWord::MachineWords.index()] = mutator.heap.machine_words_address() as u64;
     block[BlockWord::ExitStub.index()] = code.executable_address(exit_stub) as u64;
     block[BlockWord::Activation.index()] = crate::heap::Heap::activation_word(activation);
     let leaves = leaves::table();

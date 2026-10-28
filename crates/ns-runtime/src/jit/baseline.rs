@@ -671,7 +671,7 @@ mod tests {
         let mut machine = Machine::new();
         let entry = machine.install(&body.code);
         machine
-            .run(entry, frame, 0, &safepoint_requested, &mut (), &[])
+            .run(entry, frame, 0, safepoint_requested, &mut (), &[])
             .0
     }
 
@@ -894,7 +894,7 @@ mod tests {
                     ns_memory::CodeOffset(entry.0 + start),
                     &mut frame,
                     0,
-                    &true,
+                    true,
                     &mut (),
                     &[],
                 )
@@ -999,7 +999,7 @@ mod tests {
                     frame[0] = left;
                     frame[1] = right;
                     frame[2] = 0x5A5A;
-                    let (exit, _) = machine.run(entry, &mut frame, 0, &false, &mut (), &[]);
+                    let (exit, _) = machine.run(entry, &mut frame, 0, false, &mut (), &[]);
                     let what = format!("{operation:?} {left:#x} {right:#x}");
                     match expected(operation, left, right) {
                         Some(word) => {

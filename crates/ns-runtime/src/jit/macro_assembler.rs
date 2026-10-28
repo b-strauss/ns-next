@@ -15,6 +15,7 @@ use ns_assembler::{
 };
 
 use super::stubs::{BlockWord, ExitKind};
+use crate::heap::machine_words::{MachineWord, MachineWords};
 
 /// The platform calling convention the stubs and leaf calls cross.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -426,7 +427,8 @@ impl MacroAssembler {
     }
 
     /// Takes `exit(Safepoint, program_counter)` when the heap's safepoint
-    /// flag is set, and falls through otherwise. Clobbers the flags and
+    /// request (`MachineWord::SafepointRequested`) is set, and falls
+    /// through otherwise. Clobbers the flags and
     /// the idiom scratch register. The exit is out of line, so a poll that
     /// finds nothing costs two loads, a compare and a branch not taken.
     ///
@@ -440,13 +442,13 @@ impl MacroAssembler {
         }
         let label = self.assembler.label();
         let scratch = self.roles.idiom_scratch;
-        let flag = self.block_word(BlockWord::PollWord);
-        self.assembler.load(Width::Word64, scratch, flag);
+        let machine_words = self.block_word(BlockWord::MachineWords);
+        self.assembler.load(Width::Word64, scratch, machine_words);
         let requested = Memory {
             base: scratch,
-            displacement: 0,
+            displacement: MachineWords::displacement(MachineWord::SafepointRequested),
         };
-        self.assembler.load(Width::Byte, scratch, requested);
+        self.assembler.load(Width::Word64, scratch, requested);
         self.assembler.compare_immediate(scratch, 0);
         self.assembler.jump_if(Condition::NotEqual, label);
         self.cold_paths.push(ColdPath::Exit {
@@ -565,7 +567,7 @@ mod tests {
             macro_assembler.exit(ExitKind::Reexecute, 1);
         });
         let mut frame = [10, 11, 12, 13, 14, 15, 16, 17];
-        let (exit, _) = machine.run(body, &mut frame, 0, &false, &mut (), &[]);
+        let (exit, _) = machine.run(body, &mut frame, 0, false, &mut (), &[]);
         assert_eq!(exit, MachineExit::Reexecute { program_counter: 1 });
         assert_eq!(frame, [10, 11, 12, 13, 14, 12, 16, 17]);
     }
@@ -579,7 +581,7 @@ mod tests {
             macro_assembler.exit(ExitKind::Reexecute, 1);
         });
         let mut frame = [10, 11, 12, 13, 14, 15, 16, 17];
-        machine.run(body, &mut frame, 3, &false, &mut (), &[]);
+        machine.run(body, &mut frame, 3, false, &mut (), &[]);
         assert_eq!(frame, [10, 11, 12, 13, 13, 15, 16, 17]);
     }
 
@@ -595,7 +597,7 @@ mod tests {
             macro_assembler.exit(ExitKind::Reexecute, 0);
         });
         let mut frame = [1u64; 8];
-        machine.run(body, &mut frame, 0, &false, &mut (), &[]);
+        machine.run(body, &mut frame, 0, false, &mut (), &[]);
         assert_eq!(frame[..5], words);
     }
 
@@ -611,7 +613,7 @@ mod tests {
         });
         let mut frame = [0u64; 8];
         frame[3] = crate::heap::Word::DEAD_REGISTER_BITS;
-        let (exit, _) = machine.run(body, &mut frame, 0, &false, &mut (), &[]);
+        let (exit, _) = machine.run(body, &mut frame, 0, false, &mut (), &[]);
         assert_eq!(
             exit,
             MachineExit::DeadRegister {

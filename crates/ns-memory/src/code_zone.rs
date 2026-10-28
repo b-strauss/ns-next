@@ -144,6 +144,22 @@ impl CodeZone {
     /// caller can check machine code, so no caller is asked to. Panics, as
     /// `executable_address` does, on a stub past the zone. No writer can be
     /// alive meanwhile: a writer holds the zone mutably.
+    ///
+    /// Aliasing: `context` is a `&mut C` held for the whole run, a
+    /// protected reference, and the code and the shim reach the context
+    /// only through the one pointer derived from it here, so every
+    /// `&mut C` the shim hands a leaf is derived from it in turn. Hence
+    /// no word the code reads or writes by an address of its own --
+    /// between leaf calls, without the shim -- may lie inside `*context`:
+    /// that address, taken before the entry, would make the code's access
+    /// a foreign one to the protected reference, undefined behaviour once
+    /// a leaf wrote the word, though no processor notices and Miri cannot
+    /// run machine code to say so. Such words live in allocations the
+    /// context only points to, which no retag of it covers and which Rust
+    /// never borrows mutably while code runs: `ns-runtime`'s machine words
+    /// (`heap/machine_words.rs`, cells behind an `Rc`), and the object
+    /// space and the activation stack, reservations of this crate's that
+    /// no leaf holds a mutable borrow of once it returns.
     pub fn enter<C>(
         &self,
         stub: CodeOffset,

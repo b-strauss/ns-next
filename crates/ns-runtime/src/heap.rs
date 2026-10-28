@@ -36,6 +36,7 @@ mod frames;
 pub(crate) use frames::with_stack_reservation;
 mod header;
 mod ids;
+pub(crate) mod machine_words;
 pub(crate) mod mark;
 mod object;
 mod pending;
@@ -53,6 +54,7 @@ use frames::{frame_header, kind_tag, FrameFlags, FrameStack};
 pub(crate) use header::IDENTITY_HASH_LIMIT;
 use header::{Format, Header, MAX_AGE, WORD_COUNT_OVERFLOW};
 pub(crate) use ids::{DispatchIdAllocator, FreeIndices};
+use machine_words::{MachineWord, MachineWords};
 pub use object::Element;
 use object::{
     class_field, closure_field, frame_field, trace_block, PackedString, CLASS, FIELDS, HEADER,
@@ -1683,21 +1685,24 @@ pub struct Heap<'gc> {
     /// take `&self`, which lets a host stash an argument inside the call that
     /// sends it.
     host_roots: std::cell::RefCell<HostRoots>,
-    /// Whether the run loop's next safepoint must take its slow path
-    /// (`Interpreter::safepoint`). The poll is one compare of this flag
+    /// The words machine code reads or writes between leaf calls, in an
+    /// allocation of their own, never inline here (`machine_words.rs` has
+    /// why). Among them `MachineWord::SafepointRequested`: whether the run
+    /// loop's next safepoint must take its slow path
+    /// (`Interpreter::safepoint`). The poll is one compare of that word
     /// (`docs/design/memory.md`, "Where a collection can happen"). An
     /// allocation that reaches the limit sets it, in every build
     /// (`request_collection`); in a debug build a stress mode additionally
     /// holds it set for its own reasons, for as long as the mode is on.
     /// Otherwise the safepoint that takes a request clears it.
-    safepoint_requested: bool,
+    machine_words: MachineWords,
     /// The bytes the objects take, from the space's start to its top, at
     /// which the next allocation asks for a collection. Checked against the
     /// top the allocation already has in hand, so the hot path pays one
     /// predictable branch and carries no counter.
     next_collection: usize,
     /// Whether a limit has been reached since the last collection. Separate
-    /// from `safepoint_requested`, which only means "take the slow path" and
+    /// from the safepoint request, which only means "take the slow path" and
     /// which a stress mode holds set for its own reasons.
     collection_requested: bool,
     /// The smallest limit a collection will set, in bytes. A program that
@@ -2070,7 +2075,7 @@ impl<'gc> Heap<'gc> {
                 slots: Vec::new(),
                 sweep_at: MIN_ROOT_SWEEP,
             }),
-            safepoint_requested: false,
+            machine_words: MachineWords::new(),
             next_collection: COLLECTION_FLOOR,
             collection_requested: false,
             collection_floor: COLLECTION_FLOOR,
@@ -8125,29 +8130,34 @@ impl<'gc> Heap<'gc> {
 
     #[inline]
     pub(crate) fn safepoint_requested(&self) -> bool {
-        self.safepoint_requested
+        self.machine_words.get(MachineWord::SafepointRequested) != 0
     }
 
     /// A request served (`Interpreter::safepoint`).
     pub(crate) fn clear_safepoint_request(&mut self) {
-        self.safepoint_requested = false;
+        self.machine_words.set(MachineWord::SafepointRequested, 0);
     }
 
     #[cfg(debug_assertions)]
     pub(crate) fn set_safepoint_requested(&mut self, requested: bool) {
-        self.safepoint_requested = requested;
+        self.machine_words
+            .set(MachineWord::SafepointRequested, u64::from(requested));
+    }
+
+    /// Asks the run loop's next safepoint to take its slow path.
+    fn request_safepoint(&mut self) {
+        self.machine_words.set(MachineWord::SafepointRequested, 1);
     }
 
     // ---------- What machine code is entered with ----------
 
-    /// The address of the safepoint flag, a Rust `bool`, which machine
-    /// code's poll reads (`jit::stubs::BlockWord::PollWord`), exposed as
-    /// the other addresses machine code is entered with are. Asked for at
-    /// every entry, since nothing keeps the heap at one address between
-    /// entries.
+    /// The address of the machine words (`machine_words.rs`), whose
+    /// safepoint request machine code's poll reads
+    /// (`jit::stubs::BlockWord::MachineWords`), exposed as the other
+    /// addresses machine code is entered with are.
     #[cfg(ns_jit)]
-    pub(crate) fn safepoint_flag_address(&self) -> usize {
-        std::ptr::from_ref(&self.safepoint_requested).expose_provenance()
+    pub(crate) fn machine_words_address(&self) -> usize {
+        self.machine_words.address()
     }
 
     /// The object space's base address, every handle's origin
@@ -8281,7 +8291,7 @@ impl<'gc> Heap<'gc> {
     fn request_scavenge(&mut self, tenure_all: bool) {
         self.scavenge_requested = true;
         self.tenure_all_requested |= tenure_all;
-        self.safepoint_requested = true;
+        self.request_safepoint();
     }
 
     /// The image decoder's graph pass allocates old: everything it names was
@@ -8693,10 +8703,10 @@ impl<'gc> Heap<'gc> {
     }
 
     /// An allocation never collects; it asks, and the run loop's next
-    /// safepoint serves the request (decided 2026-09-13). Setting
-    /// `safepoint_requested` is what makes the poll take its slow path.
+    /// safepoint serves the request (decided 2026-09-13). Setting the
+    /// safepoint request is what makes the poll take its slow path.
     ///
-    /// Must do nothing but set these two booleans: its call site raises the
+    /// Must do nothing but set these two flags: its call site raises the
     /// request while the object just allocated is still half-wired --
     /// `allocate_block` before `object_handle` names it, and for a frame object
     /// `reify` before the writes that make it reachable from its stack
@@ -8710,7 +8720,7 @@ impl<'gc> Heap<'gc> {
     /// see a weak slot cleared.
     pub(crate) fn request_collection(&mut self) {
         self.collection_requested = true;
-        self.safepoint_requested = true;
+        self.request_safepoint();
     }
 
     pub(crate) fn collection_requested(&self) -> bool {

@@ -12,7 +12,7 @@ use super::macro_assembler::{Abi, MacroAssembler};
 
 /// The words of the entry block, by index. `CodeZone::enter` writes the
 /// first four on every entry; the caller of `enter` writes the inputs
-/// (`ObjectSpaceBase` … `MachineEntry`, `PollWord`, `ExitStub`,
+/// (`ObjectSpaceBase` … `MachineEntry`, `MachineWords`, `ExitStub`,
 /// `Activation`, and `BackEdges`' zero) before it, the exit stub the
 /// outputs (`ExitProgramCounter`, `ExitKind`, and `ExitRegister` for a
 /// dead register's exit), a leaf call `LeafStackPointer`, and code that
@@ -42,8 +42,10 @@ pub(crate) enum BlockWord {
     /// The stack pointer the entry stub called the body with, which the
     /// exit stub returns to.
     SavedStackPointer = 10,
-    /// The address of the heap's safepoint flag, one byte, a Rust `bool`.
-    PollWord = 11,
+    /// The address of the heap's machine words (`heap/machine_words.rs`),
+    /// the words machine code reads and writes between leaf calls, among
+    /// them the safepoint request a poll reads.
+    MachineWords = 11,
     /// The exit stub's address. A body reaches the stub through this word
     /// rather than an address of its own, so its code holds no absolute
     /// address and can be moved within the zone.
@@ -206,6 +208,7 @@ pub(super) mod testing {
     use ns_memory::{CodeOffset, CodeZone, Leaf, ENTRY_BLOCK_WORDS};
 
     use super::{assemble_entry_stub, assemble_exit_stub, decode_exit, BlockWord, MachineExit};
+    use crate::heap::machine_words::{MachineWord, MachineWords};
     use crate::jit::macro_assembler::{Abi, MacroAssembler};
 
     /// Every piece of code starts at a multiple of this.
@@ -258,7 +261,7 @@ pub(super) mod testing {
             body: CodeOffset,
             frame: &mut [u64],
             register_base: u64,
-            safepoint_requested: &bool,
+            safepoint_requested: bool,
             context: &mut C,
             leaves: &[Leaf<C>],
         ) -> (MachineExit, [u64; ENTRY_BLOCK_WORDS]) {
@@ -267,8 +270,12 @@ pub(super) mod testing {
             block[BlockWord::RegisterBase.index()] = register_base;
             block[BlockWord::MachineEntry.index()] = self.zone.executable_address(body) as u64;
             block[BlockWord::ExitStub.index()] = self.zone.executable_address(self.exit) as u64;
-            block[BlockWord::PollWord.index()] =
-                std::ptr::from_ref(safepoint_requested).expose_provenance() as u64;
+            let machine_words = MachineWords::new();
+            machine_words.set(
+                MachineWord::SafepointRequested,
+                u64::from(safepoint_requested),
+            );
+            block[BlockWord::MachineWords.index()] = machine_words.address() as u64;
             let kind = self.zone.enter(self.entry, &mut block, context, leaves);
             assert_eq!(kind, block[BlockWord::ExitKind.index()]);
             (decode_exit(&block, kind), block)
@@ -304,7 +311,7 @@ mod tests {
         let mut other = std::hint::black_box(1u64);
         for iteration in 0..1000u64 {
             for _ in 0..2 {
-                let (exit, block) = machine.run(body, &mut frame, 0, &false, &mut (), &[]);
+                let (exit, block) = machine.run(body, &mut frame, 0, false, &mut (), &[]);
                 assert_eq!(exit, MachineExit::Reexecute { program_counter: 7 });
                 assert_eq!(block[BlockWord::ExitProgramCounter.index()], 7);
                 assert_eq!(
@@ -343,7 +350,7 @@ mod tests {
         let mut frame = [0u64; 8];
         let mut counter = 100u64;
         let leaves: [Leaf<u64>; 1] = [add_arguments];
-        let (exit, _) = machine.run(body, &mut frame, 0, &false, &mut counter, &leaves);
+        let (exit, _) = machine.run(body, &mut frame, 0, false, &mut counter, &leaves);
         assert_eq!(exit, MachineExit::Reexecute { program_counter: 1 });
         assert_eq!(counter, 118);
         assert_eq!(frame[0], 118, "the leaf's answer");
@@ -393,7 +400,7 @@ mod tests {
         let mut frame = [11, 22, 33, 0, 0, 0, 0, 0];
         let mut recorded = [[0u64; 3]; 2];
         let leaves: [Leaf<[[u64; 3]; 2]>; 2] = [record_first_call, record_second_call];
-        let (exit, _) = machine.run(body, &mut frame, 0, &false, &mut recorded, &leaves);
+        let (exit, _) = machine.run(body, &mut frame, 0, false, &mut recorded, &leaves);
         assert_eq!(exit, MachineExit::Reexecute { program_counter: 2 });
         assert_eq!(recorded[0], [33, 11, 22]);
         assert_eq!(recorded[1], [1 << 40, 22, u64::MAX - (1 << 40)]);
@@ -429,7 +436,7 @@ mod tests {
         });
         let mut frame = [u64::MAX; 8];
         let leaves: [Leaf<()>; 1] = [stack_misalignment];
-        machine.run(body, &mut frame, 0, &false, &mut (), &leaves);
+        machine.run(body, &mut frame, 0, false, &mut (), &leaves);
         assert_eq!(frame[..4], [0, 0, 0, 0]);
     }
 
@@ -449,7 +456,7 @@ mod tests {
         });
         let mut frame = [0u64; 8];
         let leaves: [Leaf<()>; 1] = [stack_misalignment];
-        machine.run(body, &mut frame, 0, &false, &mut (), &leaves);
+        machine.run(body, &mut frame, 0, false, &mut (), &leaves);
         assert_eq!(frame[0], 0x1234_5678_9ABC);
     }
 
@@ -464,10 +471,10 @@ mod tests {
             macro_assembler.exit(ExitKind::Reexecute, 4);
         });
         let mut frame = [0u64; 8];
-        let (exit, _) = machine.run(body, &mut frame, 0, &true, &mut (), &[]);
+        let (exit, _) = machine.run(body, &mut frame, 0, true, &mut (), &[]);
         assert_eq!(exit, MachineExit::Safepoint { program_counter: 3 });
         assert_eq!(frame[0], 0, "nothing after the poll ran");
-        let (exit, _) = machine.run(body, &mut frame, 0, &false, &mut (), &[]);
+        let (exit, _) = machine.run(body, &mut frame, 0, false, &mut (), &[]);
         assert_eq!(exit, MachineExit::Reexecute { program_counter: 4 });
         assert_eq!(frame[0], 42);
     }
@@ -483,7 +490,7 @@ mod tests {
             macro_assembler.exit(ExitKind::Reexecute, 4);
         });
         let mut frame = [0u64; 8];
-        let (exit, _) = machine.run(body, &mut frame, 0, &false, &mut (), &[]);
+        let (exit, _) = machine.run(body, &mut frame, 0, false, &mut (), &[]);
         assert_eq!(exit, MachineExit::Safepoint { program_counter: 3 });
         assert_eq!(frame[0], 0, "nothing after the poll ran");
     }
