@@ -9194,16 +9194,27 @@ section are to the generated C under
   resumes them. The header word that tells them apart is a bit in the
   flags word, since the code word is a `CodeId` and not an address Cog
   could compare against its code zone (`cointerp.c:19944-19947`).
-- **The hot path writes no header word.** A compiled call places its
-  callee on its argument slots as the interpreter's send does, and
-  writes nothing else of the callee's frame; a value that lives across a
-  send the code did not inline -- the receiver among them, in its header
-  place -- is stored into its slot before the send, as HotSpot and V8
-  spill every live value across a call, since their calling conventions
-  keep no register across one. The header is written when the frame is
-  materialized ("The exit materializes" below). A call so costs what
-  HotSpot's costs, and less than Cog's machine-code frame, which writes
-  five words (`cointerp.c:216`).
+- **The hot path writes two header words: the receiver and the current
+  class.** A compiled call places its callee on its argument slots as the
+  interpreter's send does, and writes the callee's receiver and current
+  class into their header places; every other header word is written when
+  the frame is materialized ("The exit materializes" below). The current
+  class cannot be derived later: a class object exists per enclosing
+  instance, a cache cell holds no handle, a return address names only the
+  call site, and a walk of the receiver's chain for the code's mixin --
+  Primordial Soup's -- answers the wrong level where one mixin is applied
+  twice in a chain; and a lexical or `super` miss inside the callee needs
+  it before any exit. The call computes it as the interpreter's
+  materialization does, from the chain's start and the entry's level
+  (decided with the user on 2026-10-28). Every system read writes its
+  frame's identifying words eagerly -- Cog's prologue four (the method,
+  the context, the receiver, the saved frame pointer;
+  `cogitX64SysV.c:31390-31443`), Sparkplug's six, the interpreter frame's
+  (`prior-art/v8/src/builtins/x64/builtins-x64.cc:1906-1929`) -- so a
+  call costs two stores more than HotSpot's and less than Cog's. A value
+  that lives across a send the code did not inline is stored into its
+  slot before the send, as HotSpot and V8 spill every live value across
+  a call.
 - **The return addresses are on the native stack** of the thread that
   runs the interpreter, on which compiled code calls and returns with the
   processor's `call` and `ret`, so a return is predicted by the return
@@ -9238,7 +9249,7 @@ other than `Deliver`, unwinds what it cannot cut itself ("Non-local
 return and unwinding" below), raises an error, or calls a leaf that
 reads or writes another activation. Before it leaves, the exit walks the
 return addresses on the native stack down to the run loop's entry and writes
-each compiled frame's whole header: its code, its program counter, its
+each compiled frame's header but the two words its call wrote: its code, its program counter, its
 caller word, its flags with the compiled bit, its continuation (`Deliver`),
 its feedback base, its guard and entered level (none, so the first
 own-slot access takes the cold check, as a resume does today: "Suspending
@@ -9804,7 +9815,17 @@ decides" holds unchanged.
   guard and an entry address, written whenever the Rust side fills,
   widens or clears the entry. The entry address is the callee's machine
   entry for a method with code, else a stub that acts on the entry's
-  `Target` through the leaf shim.
+  `Target` ("Sends in machine code" below).
+- **The cells lie in a reservation of their own** (decided with the user
+  on 2026-10-28), an `ns-memory` reservation parallel to the site table
+  and the polymorphic pool, committed as they grow, so a site's cell is
+  at a fixed address -- the table's base plus the site's index -- while
+  `sites`, a `Vec` inside the mutator, moves when it grows, and machine
+  code may read no word inside the mutator ("The machine words" above).
+  A heap object, V8's feedback vector, would cost tracing and object
+  space for nothing a cell holds: a cell names no handle. Cog, Strongtalk
+  and HotSpot keep the state in the call instruction's target, which
+  "Executable memory" above rules out.
 - **A send in machine code** loads the receiver's guard (the header
   word's low 22 bits, one load), compares it with the cell's, and calls
   through the cell's entry address; a mismatch calls the polymorphic
@@ -9831,6 +9852,57 @@ decides" holds unchanged.
   Strongtalk inlined on its caches' contents and callee invocation counts
   alone (`compiler/rscope.cpp:318-355`). Whether road step 9 needs counts
   is decided there.
+
+### Sends in machine code
+
+Stage 3, decided with the user on 2026-10-28 after reading Cog,
+Strongtalk, V8 and HotSpot again for it.
+
+- **`SendPublic`, `SendLexical`, `SendSuper` and `SendInlinable` call
+  through their cells.** `SendInlinable`, which the interpreter sent
+  uncached, takes a site and an entry like `SendPublic`, under both
+  lowerings and in the interpreter too, so machine code has a cell to
+  call through and road step 9 one profile to read.
+- **A callee with no machine code is compiled by the miss.** The leaf
+  that fills an entry counts the callee's entry as a push would and
+  compiles it at its second, as Cog's `ceSend` compiles a method its
+  send finds in the method cache (`cointerp.c:16708-16807`); only a body
+  the compiler refuses leaves the call to an exit, which the run loop
+  turns into an interpreted push. So installing code no longer needs the
+  zone unshared: it is installed while machine code runs, which never
+  holds an address an install moves.
+- **A target that is no method with code** is reached through a stub
+  chosen from the entry's target alone, when it is filled: a slot getter
+  loads the field; a constant, the receiver or a parameter answers it --
+  Cog's quick methods (`genQuickReturnConst`, `genQuickReturnInstVar`,
+  `genQuickReturnSelf`, `cogitX64SysV.c:30418-30463`); a slot setter and
+  a primitive whose mirror row is leaf-safe run their interpreter step
+  through the leaf shim, the setter until stage 4 emits the write
+  barrier; every other target -- a block-activating fast path, a nested
+  class, a factory, a `doesNotUnderstand:` handler, an unsafe row --
+  takes an exit, and the interpreter runs the send. The stub is chosen
+  from the target because the target is immutable: a `MixinMethod` is
+  never changed in place, so the fast path it carries is the one a fresh
+  read would find.
+- **`SendMirror` runs a leaf-safe row through the leaf shim** and exits
+  for every other row. A row is leaf-safe when its leaf answers a value
+  or declines before it changed anything, runs no Newspeak code, pushes
+  nothing and reads no other activation; each row says so, and the
+  default is the exit.
+- **The depth count and the activation stack's committed end are machine
+  words** (decided with the user on 2026-10-28): a compiled push compares
+  the count with the limit and the frame's end with the committed end,
+  one compare each, and exits when either fails, so the interpreter
+  raises the overflow or grows the stack. The innermost frame and the
+  number of live frames are derived by the exit's walk. Whether the
+  count lives in a machine register is stage 5's measurement.
+- **The megamorphic stub probes a machine-readable mirror of the global
+  cache** beside the cells, written wherever the global cache is, as
+  Cog's open PIC probes the method cache (`cogitX64SysV.c:29031-29150`),
+  Strongtalk's megamorphic stub its lookup cache
+  (`prior-art/strongtalk/vm/code/stubRoutines.cpp:315-435`), V8's
+  megamorphic load its stub cache and HotSpot's vtable stub the vtable;
+  a probe that misses calls the lookup as the miss does.
 
 ### The register cache
 
