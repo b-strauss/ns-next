@@ -29,11 +29,13 @@ Create a todo for each item.
    every instruction in its wide form, SUSPEND suspends every activation into
    its frame and runs on from the frames, JIT compiles every body at its first
    entry and enters machine code that leaves before a loop, EXIT makes every poll in
-   machine code take its exit. `stress` runs the eight suites at once,
+   machine code take its exit; beside them the suite runs once with
+   `NS_NEXT_NO_JIT=1`, the interpreter alone. `stress` runs the nine suites at once,
    because each ends in a long tail of a few depth-limit tests that leaves most
    cores idle and the tails overlap (measured 2026-10-01 for the first three:
    277 s, MOVES the longest, against 703 s, the sum of the three per-mode times,
-   one after another), each into `.temp/stress-<MODE>.log`, and prints each
+   one after another), each into `.temp/stress-<MODE>.log` (`NO_JIT` for the
+   run without the JIT), and prints each
    summary line; each must report every test passed, and `run-corpus` "ran 6,
    failed 0, skipped 205". Report failures with their output.
 3. **Open work.** Remove from `docs/OPEN-WORK.md` every item the batch closed;

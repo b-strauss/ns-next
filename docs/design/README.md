@@ -248,7 +248,11 @@ or a project golden, a directory holding a `newspeak.json`
 `status`, `stdout` and `stderr`, each defaulting to the success case (`0`,
 empty, empty), so an ordinary golden's file is just its `stdout` and one that
 raises writes its `status` and `stderr`. Both lowerings must produce it, byte
-for byte and exit status included (`crates/ns-cli/tests/run_goldens.rs`).
+for byte and exit status included (`crates/ns-cli/tests/run_goldens.rs`),
+and so must machine code, which the suite runs wherever the JIT is built.
+A new golden's `.toml` is recorded from the interpreter, with
+`NS_NEXT_NO_JIT=1`, so that what pins machine code was never produced by
+it.
 That runner is a `harness = false` binary on `libtest-mimic`, one test per
 golden per lowering named by its path below `goldens/` --
 `golden::optimized::<path>` and `golden::reference::<path>`, with `<path>`
@@ -387,7 +391,8 @@ part, the end of a batch -- is the table "The gates" in `CLAUDE.md`, the one
 place it is kept; the suite there is every crate's, ns-analyzer's included,
 whose `disasm` and `inspect` tests guard the compiler's output and the image
 format. The stress modes run the whole suite again, each with one of the
-runtime's own stress switches set:
+runtime's own stress switches set, and the stress gate runs it once more
+with the JIT off, the one run in which the interpreter runs every body:
 
 ```bash
 NS_NEXT_STRESS_MOVES=1 cargo nextest run --workspace    # moving everything at the run loop's safepoints
@@ -398,9 +403,11 @@ NS_NEXT_STRESS_WIDE=1 cargo nextest run --workspace     # every instruction in i
 NS_NEXT_STRESS_SUSPEND=1 cargo nextest run --workspace  # suspending every activation into its frame at safepoints
 NS_NEXT_STRESS_JIT=1 cargo nextest run --workspace      # every body compiled at its first entry, and entered even when its machine code leaves before a loop
 NS_NEXT_STRESS_EXIT=1 cargo nextest run --workspace     # every poll in machine code -- every backward jump it takes -- taking its exit, as if a safepoint were requested
-# and `cargo run -p ns-cli -- run-corpus corpus/modules` under each, as plain:
-# "ran 6, failed 0, skipped 205" -- every row under both lowerings
-# `cargo xtask gates stress` runs the eight at once, each into its own log
+NS_NEXT_NO_JIT=1 cargo nextest run --workspace          # the JIT off: every body interpreted, in every build
+# and `cargo run -p ns-cli -- run-corpus corpus/modules` under each mode, as
+# plain: "ran 6, failed 0, skipped 205" -- every row under both lowerings
+# `cargo xtask gates stress` runs the nine suites at once, each into its own
+# log, `.temp/stress-NO_JIT.log` the last's
 ```
 
 A check that runs over many inputs is split into trials that nextest runs
@@ -416,9 +423,9 @@ its own, so cheap inputs share one. What bounds the suite's wall time is
 the longest test that cannot be split: the compilations of a body past the
 register ceiling, a few seconds each in a debug build.
 
-The eight stress modes, sixteen gate invocations, are Git Bash syntax and do
-anything only in a debug build ([memory.md](memory.md), "The move stress
-mode", "The gates the collector needs", "Generations";
+The invocations above are Git Bash syntax; the eight stress modes, sixteen
+of them, do anything only in a debug build, `NS_NEXT_NO_JIT` in every
+build ([memory.md](memory.md), "The move stress mode", "The gates the collector needs", "Generations";
 [dispatch.md](dispatch.md), "Invalidation"; [execution.md](execution.md),
 "The compact instruction encoding", "Suspending and resuming"). Clippy's gate
 includes `min_ident_chars` (`clippy.toml`), which refuses identifiers of one

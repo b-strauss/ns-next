@@ -31,7 +31,7 @@ groups (CLAUDE.md, \"The gates\", says when each runs):
   caches               every golden with a two-entry global cache (profile caches)
   memory               ns-memory's clippy for Linux and macOS
   benchmarks           the benchmark programs verified at full size (profile benchmarks-verify)
-  stress               the eight stress modes over the suite, then run-corpus plain and under each
+  stress               the suite under the eight stress modes and without the JIT, then run-corpus plain and under each mode
   release-checks       the suite without debug assertions (cargo profile release-checks)
   codegen              the hot path's machine code against its budgets (cargo asm, release)
   plugin-verification  the plugin against several IDEs (verifyPlugin buildPlugin)
@@ -42,6 +42,22 @@ groups (CLAUDE.md, \"The gates\", says when each runs):
 const STRESS_MODES: [&str; 8] = [
     "MOVES", "CACHES", "COLLECT", "SCAVENGE", "WIDE", "SUSPEND", "JIT", "EXIT",
 ];
+
+/// The suite run beside the stress modes with the JIT off: every other
+/// run compiles bodies where the JIT is built, so without this one no
+/// gate would run the interpreter alone. Its log's name and its variable.
+const WITHOUT_JIT: (&str, &str) = ("NO_JIT", "NS_NEXT_NO_JIT");
+
+/// The stress group's runs of the suite: each log's name, `stress-<name>.log`,
+/// and the variable it sets to `1`.
+fn stress_suite_runs() -> Vec<(String, String)> {
+    let mut runs: Vec<(String, String)> = STRESS_MODES
+        .iter()
+        .map(|mode| (mode.to_string(), format!("NS_NEXT_STRESS_{mode}")))
+        .collect();
+    runs.push((WITHOUT_JIT.0.to_string(), WITHOUT_JIT.1.to_string()));
+    runs
+}
 
 /// Where `ns-runtime`'s `build.rs` looks for the shipped modules' compiled
 /// mixins, relative to the repository root.
@@ -96,9 +112,9 @@ impl Step {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Part {
     Steps(Vec<Step>),
-    /// The suite under every stress mode at once: each ends in a long tail
-    /// of a few depth-limit tests that leaves most cores idle, and the tails
-    /// overlap.
+    /// The suite under every stress mode, and without the JIT, at once
+    /// (`stress_suite_runs`): each ends in a long tail of a few depth-limit
+    /// tests that leaves most cores idle, and the tails overlap.
     StressSuites,
     /// `cargo xtask shipped-code`. The shipped code's fingerprint covers
     /// Rust sources, so it runs after the one step that rewrites them,
@@ -432,23 +448,25 @@ fn run_codegen(root: &Path, times: &mut Vec<(String, Duration)>) -> Result<(), S
     outcome
 }
 
-/// The suite under each stress mode at once, each into its own log under
-/// `.temp/`; then each log's summary line.
+/// The suite under each stress mode and without the JIT at once, each
+/// into its own log under `.temp/`; then each log's summary line.
 fn run_stress_suites(root: &Path, times: &mut Vec<(String, Duration)>) -> Result<(), String> {
-    println!("\n==> the suite under {}, at once", STRESS_MODES.join(", "));
+    let runs = stress_suite_runs();
+    let names: Vec<&str> = runs.iter().map(|(name, _)| name.as_str()).collect();
+    println!("\n==> the suite under {}, at once", names.join(", "));
     let logs = root.join(".temp");
     std::fs::create_dir_all(&logs).map_err(|error| format!("create .temp/: {error}"))?;
     let started = Instant::now();
     let mut children = Vec::new();
-    for mode in STRESS_MODES {
+    for (mode, variable) in &runs {
         let log_path = logs.join(format!("stress-{mode}.log"));
         let log = std::fs::File::create(&log_path)
             .map_err(|error| format!("create {}: {error}", log_path.display()))?;
         let error_log = log
             .try_clone()
             .map_err(|error| format!("{}: {error}", log_path.display()))?;
-        let step = Step::cargo("", &["nextest", "run", "--workspace"])
-            .with_environment(&format!("NS_NEXT_STRESS_{mode}"), "1");
+        let step =
+            Step::cargo("", &["nextest", "run", "--workspace"]).with_environment(variable, "1");
         let child = command_of(&step, root)
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(error_log))
@@ -600,6 +618,17 @@ mod tests {
         for mode in ["JIT", "EXIT"] {
             assert!(STRESS_MODES.contains(&mode), "no stress mode {mode}");
         }
+    }
+
+    #[test]
+    fn the_stress_group_also_runs_the_suite_without_the_jit() {
+        let runs = stress_suite_runs();
+        assert_eq!(runs.len(), STRESS_MODES.len() + 1);
+        assert!(runs.contains(&("NO_JIT".to_string(), "NS_NEXT_NO_JIT".to_string())));
+        assert!(runs.contains(&("JIT".to_string(), "NS_NEXT_STRESS_JIT".to_string())));
+        let names: std::collections::HashSet<&str> =
+            runs.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names.len(), runs.len(), "every run has a log of its own");
     }
 
     #[test]
