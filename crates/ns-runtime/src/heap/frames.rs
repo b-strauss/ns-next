@@ -653,15 +653,12 @@ impl FrameStack {
 
     /// The address of the stack's first word, exposed: machine code
     /// addresses a frame's registers from it (`jit::run_machine_code`).
-    /// The base never moves, but the answer is asked for at every entry
-    /// into machine code all the same, so that no address outlives the
-    /// borrow it was taken under.
+    /// From the reservation's own pointer, never a slice of it, so that
+    /// the slices leaves borrow meanwhile leave it valid
+    /// (`Reservation::base_address`).
     #[cfg(ns_jit)]
-    pub(super) fn base_address(&mut self) -> usize {
-        self.reservation
-            .accessible_mut()
-            .as_mut_ptr()
-            .expose_provenance()
+    pub(super) fn base_address(&self) -> usize {
+        self.reservation.base_address()
     }
 
     /// Word `index` of a live frame. The register access of the run loop,

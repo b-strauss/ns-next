@@ -464,6 +464,30 @@ impl Reservation {
         }
     }
 
+    /// The reservation's base address, its provenance exposed, for machine
+    /// code that addresses the memory itself -- the JIT's, which reaches
+    /// the object space's fields and the activation stack's frames from it.
+    /// It creates no reference to the memory: no slice, and so no retag.
+    ///
+    /// Aliasing: machine code reaches the memory through this address while
+    /// Rust code reborrows the reservation through `accessible` and
+    /// `accessible_mut` between two leaf calls. The address is taken from
+    /// the pointer the reservation keeps, which it obtained from the
+    /// mapping, and every slice those accessors lend is derived from that
+    /// same pointer afresh. So a write through a slice is an access by a
+    /// child of the pointer the address carries, never a foreign one to
+    /// it, and leaves the address valid; the machine code's access is
+    /// foreign only to slices, none of which is alive then -- each lives
+    /// within one accessor's caller, which returned before the code went
+    /// on. An address taken from such a slice instead (`as_mut_ptr` on
+    /// `accessible_mut`) would be a child of that `&mut` retag, which the
+    /// next sibling slice's write invalidates under Tree Borrows: undefined
+    /// behaviour that no processor notices and Miri cannot run machine
+    /// code to find.
+    pub fn base_address(&self) -> usize {
+        self.base.as_ptr().expose_provenance()
+    }
+
     /// A non-empty range inside the reservation, on page boundaries.
     fn check_pages(&self, range: &Range<usize>) -> Result<(), MemoryError> {
         let page = platform::page_size();

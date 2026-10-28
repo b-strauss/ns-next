@@ -163,7 +163,11 @@ impl CodeZone {
     /// never borrows mutably while code runs: `ns-runtime`'s machine words
     /// (`heap/machine_words.rs`, cells behind an `Rc`), and the object
     /// space and the activation stack, reservations of this crate's that
-    /// no leaf holds a mutable borrow of once it returns.
+    /// no leaf holds a mutable borrow of once it returns. Their addresses
+    /// come from `Reservation::base_address`, the reservation's own
+    /// pointer rather than a slice of it, so the slices Rust reborrows
+    /// between leaf calls, all derived from that pointer, never invalidate
+    /// the address the code holds (that method has the argument in full).
     pub fn enter<C>(
         &self,
         stub: CodeOffset,

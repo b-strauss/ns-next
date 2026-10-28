@@ -9601,10 +9601,19 @@ moves. Today they hold the safepoint request, which the interpreter's
 poll and machine code's both read (`Heap::safepoint_requested`); eden's
 top and limit, which stage 4's bump allocation reads and writes in
 place, and the depth count are to join it in the room the area keeps.
-The object space and the activation stack are `ns-memory` reservations
-outside the mutator likewise, which no leaf holds a mutable borrow of
-once it returns. The argument is written where `CodeZone::enter` is
-documented and at the area's definition, since no tool checks it.
+The object space and the activation stack, whose words are the object
+fields and frame registers machine code reads and writes, are `ns-memory`
+reservations outside the mutator likewise, and their addresses come from
+`Reservation::base_address`: the reservation's own pointer, obtained from
+the mapping, never a slice of it. Every slice Rust borrows of the
+reservation between two leaf calls is derived afresh from that same
+pointer, so a write through one is a child's access, which leaves the
+address machine code holds valid, and none of those slices is alive while
+machine code runs. An address taken from a slice instead would be a child
+of that `&mut` retag, invalidated by the next sibling's write. The
+argument is written where `CodeZone::enter` is documented, at
+`Reservation::base_address` and at the area's definition, since no tool
+checks it.
 
 Reading the flag through the area costs the interpreter's poll one load
 more -- the area's address, then the word -- at every backward jump and

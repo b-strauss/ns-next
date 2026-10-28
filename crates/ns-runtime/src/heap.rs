@@ -8163,14 +8163,14 @@ impl<'gc> Heap<'gc> {
     /// The object space's base address, every handle's origin
     /// (`jit::stubs::BlockWord::ObjectSpaceBase`).
     #[cfg(ns_jit)]
-    pub(crate) fn object_space_base_address(&mut self) -> usize {
+    pub(crate) fn object_space_base_address(&self) -> usize {
         self.space.base_address()
     }
 
     /// The activation stack's base address
     /// (`jit::stubs::BlockWord::StackBase`).
     #[cfg(ns_jit)]
-    pub(crate) fn activation_stack_base_address(&mut self) -> usize {
+    pub(crate) fn activation_stack_base_address(&self) -> usize {
         self.stack.frames.base_address()
     }
 

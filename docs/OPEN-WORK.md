@@ -398,24 +398,6 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     code in a zone that nothing reclaims before the zone is compacted. No
     body is run by two interpreters today; if code comes to be shared,
     the slot holds code per zone or the stale copy is reclaimed.
-  - **The aliasing argument for the object space's and the activation
-    stack's base addresses is not written.** Machine code addresses
-    object fields and frame registers from the base addresses
-    `jit::run_machine_code` hands it, which `Space::base_address`
-    (`heap/space.rs`) and `FrameStack::base_address` (`heap/frames.rs`)
-    expose from `accessible_mut()`, so each address is derived through a
-    `&mut` retag; within one entry a leaf calls such `&mut` accessors
-    again, deriving sibling `&mut` borrows of the same reservation. Under
-    Tree Borrows a write through a sibling may disable the borrow the
-    exposed address came from, and machine code's next access through it
-    would be undefined behaviour that no test and no tool detects (Miri
-    cannot run machine code). It matters more with every stage, since
-    stage 3's sends and stage 4's allocation make machine code and
-    leaves interleave writes to both reservations. Either the argument is
-    written -- at `CodeZone::enter` and at the two accessors, as the
-    machine words' is (`heap/machine_words.rs`; execution.md, "The
-    machine words") -- or the addresses are taken without a `&mut`
-    retag, from the reservation's own pointer.
   - **`load_frame_register` has no unchecked variant.** Every frame
     register a template loads is checked against the dead-register poison
     in a debug build, as the interpreter checks a read; a copy the
