@@ -317,13 +317,19 @@ pub(crate) unsafe fn commit_code(
 ) -> Result<(), i32> {
     let start = libc::off_t::try_from(offset).map_err(|_| libc::EINVAL)?;
     let length = libc::off_t::try_from(bytes).map_err(|_| libc::EINVAL)?;
-    // SAFETY: allocating inside our own object's size keeps its contents.
-    if unsafe { libc::fallocate(mapping.descriptor, 0, start, length) } == 0 {
-        return Ok(());
-    }
-    match errno() {
-        libc::EOPNOTSUPP => Ok(()),
-        code => Err(code),
+    // A signal pending during the allocation interrupts it (tmpfs, behind
+    // a memfd, checks for one) without saying anything about the memory,
+    // so the call is made again rather than the commit refused.
+    loop {
+        // SAFETY: allocating inside our own object's size keeps its contents.
+        if unsafe { libc::fallocate(mapping.descriptor, 0, start, length) } == 0 {
+            return Ok(());
+        }
+        match errno() {
+            libc::EINTR => {}
+            libc::EOPNOTSUPP => return Ok(()),
+            code => return Err(code),
+        }
     }
 }
 

@@ -9463,8 +9463,9 @@ zone, the AArch64 encoder -- is stages 3 to 7, still planned.
   (nothing on x64); on Linux each zone keeps the memory object behind
   its views open for its life, one descriptor, so that a commit
   allocates its pages with `fallocate` and a zone the system cannot back
-  fails as a value rather than by `SIGBUS`, on every kernel with `memfd`. `CodeZone::enter`
-  calls the entry stub with the platform's C convention, handing it a
+  fails as a value rather than by `SIGBUS`, on every kernel with `memfd`.
+  `CodeZone::enter` calls the entry stub with the platform's C
+  convention, handing it a
   block of thirty-two words -- 0 to 3 its own, 4 to 31 the caller's,
   15 to 29 of those free and kept together for the later stages' words --
   and the leaf shim calls a Rust function `fn(&mut C, [u64; 3]) -> u64`
