@@ -52,6 +52,20 @@ fn main() {
     let bytes = read(&artifact).unwrap_or_default();
     write(out.join("shipped-code.bin"), bytes).expect("OUT_DIR is writable");
 
+    // `ns_jit`: this target has a JIT back end, so the JIT's machinery
+    // and the heap's accessors for machine code are compiled; elsewhere
+    // every body stays interpreted (`jit::available`). The one switch the
+    // AArch64 port turns on. It says nothing about which encoder: the x64
+    // encoder is named only inside the JIT's own modules (the macro
+    // assembler's roles and calling conventions, the stubs), which a port
+    // gives its own counterparts, and by the tests that write x64
+    // registers by name, which keep a `target_arch = "x86_64"` gate of
+    // their own, since they are x64 code on any target the JIT runs on.
+    println!("cargo::rustc-check-cfg=cfg(ns_jit)");
+    if std::env::var("CARGO_CFG_TARGET_ARCH").is_ok_and(|architecture| architecture == "x86_64") {
+        println!("cargo::rustc-cfg=ns_jit");
+    }
+
     // Directories, not the artifact itself: Cargo reruns a script whose
     // named file is missing on every build, and a directory's scan sees the
     // artifact appear.

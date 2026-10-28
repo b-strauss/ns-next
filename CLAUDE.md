@@ -2,7 +2,7 @@
 
 A native Rust runtime for [Newspeak](https://newspeaklanguage.org/): lexer, parser,
 resolver, bytecode compiler and register VM, and a versioned image format.
-Rust 1.98.0, edition 2021, six crates:
+Rust 1.98.0, edition 2021, seven crates:
 
 - `crates/ns-syntax` — lexer, recursive-descent + Pratt parser, AST, `Span`;
   the AST is lossless except for layout -- parentheses, literal spellings,
@@ -18,7 +18,14 @@ Rust 1.98.0, edition 2021, six crates:
   checked against the reference lowering in `compiler/reference.rs`), the
   instructions (`bytecode.rs`, stored and run in the eight-byte encoding of
   `bytecode/compact.rs`; what a callee leaves in a frame's registers is
-  `bytecode/leftovers.rs`'s analysis), the VM (`vm.rs`) and the send machinery it calls
+  `bytecode/leftovers.rs`'s analysis), the VM (`vm.rs`), the baseline JIT
+  (`jit/`, x64 only so far: a body compiled at its second entry through
+  the one exhaustive `match` over `Instruction` in `jit/baseline.rs`, each
+  instruction a template, the generic leaf of `jit/leaves.rs` or an exit
+  that hands the frame to the interpreter; the VM's idioms in
+  `jit/macro_assembler.rs`, the entry and exit stubs in `jit/stubs.rs`,
+  the trigger and the entry in `jit/mod.rs`; `execution.md`, "The baseline
+  JIT's foundation") and the send machinery it calls
   (`interpreter/`: inline caches in `inline_cache.rs` in front of the lookups
   in `resolve.rs`, the one unwinder in `unwind.rs`, the VM mirror in
   `mirror.rs` and its leaves in `builtins/`, a MirrorBuilder's edit
@@ -92,9 +99,21 @@ Rust 1.98.0, edition 2021, six crates:
   of its own so the analyzer's server dependencies never reach `ns-next`; it depends
   on `ns-syntax` and `ns-runtime` only.
 - `crates/ns-memory` — the memory layer (page-range reservation on Windows and
-  POSIX) and the bump cursor eden's young allocations take their memory from. The only crate with `unsafe`; `ns-runtime`, `ns-tooling` and `ns-analyzer` forbid it.
+  POSIX), the bump cursor eden's young allocations take their memory from,
+  and the JIT's code zone (`code_zone.rs`): one reservation mapped twice,
+  an executable view and a writable one its one writer stores through, the
+  entry into machine code and the shim through which machine code calls a
+  Rust leaf. The only crate with `unsafe`; `ns-runtime`, `ns-assembler`,
+  `ns-tooling` and `ns-analyzer` forbid it.
   The heap's object space is its user (`docs/design/memory.md`, "The memory
-  layer", "The object space").
+  layer", "The object space"), and the JIT (`execution.md`, "Executable
+  memory").
+- `crates/ns-assembler` — the abstract machine operations the JIT emits and
+  the x64 encoder, knowing nothing of the VM: labels, branches sized in one
+  pass, a stated contract on the condition flags, every encoding constant
+  named and sourced (Conventions, below), every encoding checked against
+  `iced-x86`, a dev-dependency only (`execution.md`, "The foundation and
+  the one extension point").
 
 `xtask/` — the repository's own tasks, run as `cargo xtask <task>`: the gates
 of "The gates" below, grouped, and `shipped-code`, which writes that
@@ -134,6 +153,8 @@ both the optimized and the reference lowering, and `run-corpus` likewise. A
 change that alters one is a behaviour change: establish that the new output is
 right before updating the golden, never because the code now produces it
 (`docs/design/README.md`, "The goldens"; `compiler.md`, "The reference lowering").
+A new golden's `.toml` is recorded with `NS_NEXT_NO_JIT=1`, from the
+interpreter, so that machine code is held to what it never produced.
 
 **`vm.rs` holds no dispatch logic.** Send, `doesNotUnderstand:`, lexical, super
 and native dispatch, frame construction, `instantiate` and the inline caches live
@@ -386,6 +407,27 @@ it. A lazy slot's getter has no fast path (`Instruction::ReturnSlotIfFilled`
 instead). The reference lowering runs every send uncached and is the oracle
 (`dispatch.md`, "Primitive methods", "3b — The caches").
 
+**Machine code is a lowering of the interpreter's instructions, never a
+second interpreter.** Four rules keep the baseline JIT
+(`crates/ns-runtime/src/jit/`) exact. A template (`baseline.rs`) stores
+into the frame only after its last decline or exit, so an exit, which
+hands the instruction to the interpreter, never re-applies it. A leaf
+(`leaves.rs`) runs no Newspeak code, cannot collect, reads no other
+activation, never pushes and never compiles, and answers "re-execute" only
+before it changed anything. A new instruction is one arm of
+`jit::baseline::lower` plus the macro-assembler idioms it lacks, never a
+second dispatch; machine code is entered only through `jit::entered`
+(`mod.rs`), every address it needs asked of the heap afresh at each entry,
+and it holds no handle. No word machine code reads or writes between two
+leaf calls lives inline in `Mutator`: frame registers and object fields
+lie in the activation stack's and the object space's reservations, which
+are outside it, and every other such word lives in the heap's machine
+words (`heap/machine_words.rs`). `CodeZone::enter`
+holds the mutator as a protected `&mut`, so machine code's access to a
+word inside it is undefined behaviour once a leaf has written that word,
+which no test and no tool detects (`execution.md`, "The baseline JIT's
+foundation", "The machine words").
+
 **A chain of messages is walked link by link.** `a b + c …` is a left-nested
 `Send` as deep as the chain is long, and every chain length is valid
 Newspeak, so no depth guard bounds it: never recurse along a receiver —
@@ -423,7 +465,7 @@ every one runs on 18 threads.
 | `memory` | `ns-memory`'s clippy for `x86_64-unknown-linux-gnu` and `aarch64-apple-darwin` | a commit touching `crates/ns-memory` |
 | `benchmarks` | the benchmark programs verified at full size, and their Java counterparts; needs a JDK (`JAVA_HOME` or `PATH`); profile `benchmarks-verify`; it measures nothing and never runs under a stress mode (`execution.md`, "The Are We Fast Yet benchmarks") | when benchmarking; the end of a batch that changed the runtime |
 | `release-checks` | the suite built without debug assertions, profile `release-checks` of `Cargo.toml` (release without its fat LTO), which runs the size tests (below) | when a change touches a type a size test pins; the end of a batch that changed the runtime |
-| `stress` | the suite under the six stress modes at once, each into `.temp/stress-<MODE>.log`, then `run-corpus` plain and under each (`docs/design/README.md`, "Gates") | the end of a batch that changed the runtime |
+| `stress` | the suite under the eight stress modes and once with `NS_NEXT_NO_JIT=1`, all at once, each into `.temp/stress-<MODE>.log` (`NO_JIT` the last's), then `run-corpus` plain and under each mode (`docs/design/README.md`, "Gates") | the end of a batch that changed the runtime |
 | `codegen` | `cargo asm` (`cargo install cargo-show-asm --locked`) over `ns-runtime`'s lib in the `release` profile for `x86_64-pc-windows-msvc`, into `target/codegen`: each hot function of the send, push and return path held to a budget of instructions and of wide stack loads over narrower stores (`xtask/src/codegen.rs`; `execution.md`, "Keeping the hot path in registers") | a commit touching `vm.rs`, `interpreter/mod.rs`, `interpreter/sends.rs`, `heap.rs`, `heap/frames.rs` or `bytecode/compact.rs` (under `crates/ns-runtime/src/`); the end of a batch that changed the runtime |
 | `plugin-verification` | `gradlew --no-daemon verifyPlugin buildPlugin`, which downloads several IDEs | the end of a batch that changed `editors/jetbrains/` |
 
@@ -536,6 +578,11 @@ and Are We Fast Yet (`benchmarks/are-we-fast-yet/java/`).
   explains a decision, as the rule above asks, goes after it.
   `crates/ns-runtime/tests/core_library_documentation.rs` holds every
   member to having one.
+- **Every encoding constant of `ns-assembler` is a named `const` documented with its
+  official source** -- the Intel SDM volume and section title for x64, the
+  developer.arm.com page of the instruction for AArch64 -- and no integer literal
+  other than 0 and 1 stands outside a `const`; held, for every encoder file under
+  `src/`, by `crates/ns-assembler/tests/encoding_sources.rs`.
 - **Object, frame and activation access goes through
   `crates/ns-runtime/src/heap.rs`.** The handles' inner index is private to the
   `heap` module (`heap.rs` and its submodules, `heap/value.rs` among them, which

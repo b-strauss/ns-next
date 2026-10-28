@@ -651,6 +651,16 @@ impl FrameStack {
         &mut self.reservation.accessible_mut()[..self.top]
     }
 
+    /// The address of the stack's first word, exposed: machine code
+    /// addresses a frame's registers from it (`jit::run_machine_code`).
+    /// From the reservation's own pointer, never a slice of it, so that
+    /// the slices leaves borrow meanwhile leave it valid
+    /// (`Reservation::base_address`).
+    #[cfg(ns_jit)]
+    pub(super) fn base_address(&self) -> usize {
+        self.reservation.base_address()
+    }
+
     /// Word `index` of a live frame. The register access of the run loop,
     /// so it makes one bounds check, against the committed end (the
     /// reservation's accessible words); that

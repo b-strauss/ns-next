@@ -538,6 +538,11 @@ pub struct Mutator<'gc> {
     /// The inline caches (`inline_cache.rs`): per heap, since a dispatch id
     /// means nothing in another heap.
     pub(crate) caches: inline_cache::InlineCaches,
+    /// The JIT's state (`jit::JitState`): per interpreter, since its
+    /// machine code lives in a code zone of its own; on the mutator,
+    /// since the run loop, which counts a body's entries and enters its
+    /// machine code, reaches nothing else.
+    pub(crate) jit: crate::jit::JitState,
     /// How many more unhandled exceptions `defaultAction` resumes with
     /// `nil` instead of ending the run: the test hook
     /// `Interpreter::resume_unhandled_exceptions`, standing in for the
@@ -966,6 +971,46 @@ impl Interpreter {
     /// (`--cache-statistics`, and the pinning tests).
     pub fn cache_statistics(&mut self) -> CacheStatistics {
         self.world.cache_statistics()
+    }
+
+    /// What the JIT has done: bodies compiled and refused, and the exits
+    /// it counts. Available in every build, like `heap_statistics`.
+    pub fn jit_statistics(&self) -> crate::jit::JitStatistics {
+        self.world.jit_statistics()
+    }
+
+    /// Turns the JIT on or off for the bodies entered from now on, as
+    /// `NS_NEXT_NO_JIT=1` turns it off for a new interpreter. A test hook,
+    /// set before the code it is meant for runs: a body entered while the
+    /// JIT is off is refused and stays interpreted for good, so turning
+    /// the JIT on later does not revive it.
+    #[doc(hidden)]
+    pub fn set_jit_enabled(&mut self, enabled: bool) {
+        self.enter(|mutator| mutator.jit.set_enabled(enabled));
+    }
+
+    /// Gives the JIT a fresh code zone that holds at most `bytes` of code,
+    /// stubs included, so that a test can fill it. A test hook.
+    #[doc(hidden)]
+    pub fn set_jit_zone_bytes(&mut self, bytes: usize) {
+        self.enter(|mutator| mutator.jit.replace_zone(bytes));
+    }
+
+    /// Turns the JIT stress mode (`NS_NEXT_STRESS_JIT`) on or off for this
+    /// interpreter: every body compiled at its first entry, and one whose
+    /// machine code leaves before a loop entered all the same. A test
+    /// hook, set before the code it is meant for runs.
+    #[doc(hidden)]
+    pub fn set_jit_stress(&mut self, stress: bool) {
+        self.enter(|mutator| mutator.jit.set_stress(stress));
+    }
+
+    /// Makes machine code count its backward jumps
+    /// (`JitStatistics::machine_back_edges`), which it otherwise leaves
+    /// uncounted so that a loop pays nothing for the count. A test hook.
+    #[doc(hidden)]
+    pub fn set_jit_counting(&mut self, counting: bool) {
+        self.enter(|mutator| mutator.jit.set_counting(counting));
     }
 
     /// The object space's occupancy. Available in every build: it is what a

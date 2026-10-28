@@ -98,6 +98,20 @@ impl Word {
     #[cfg(debug_assertions)]
     pub(super) const DEAD_REGISTER: Word = Word((0x5EAD_5EAD << TAG_BITS) | DEAD_REGISTER_TAG);
 
+    /// `DEAD_REGISTER`'s bits, which machine code compares a loaded
+    /// register with, so that a compiled read of a dead register is
+    /// refused as the interpreter's is (`jit::macro_assembler`'s
+    /// `load_frame_register`).
+    #[cfg(debug_assertions)]
+    #[cfg_attr(
+        not(ns_jit),
+        expect(
+            dead_code,
+            reason = "machine code is emitted only where `cfg(ns_jit)` is set"
+        )
+    )]
+    pub(crate) const DEAD_REGISTER_BITS: u64 = Word::DEAD_REGISTER.0;
+
     /// Whether this is the debug build's dead register word.
     #[cfg(debug_assertions)]
     pub(super) fn is_dead_register(self) -> bool {
@@ -150,6 +164,18 @@ impl std::fmt::Debug for Word {
     }
 }
 
+/// What machine code's `SmallInteger` arithmetic reads off a word
+/// (`jit::baseline`'s templates), as `Value`'s own tagged arithmetic
+/// does: the tag in the low bits, and how many bits it takes.
+#[cfg(ns_jit)]
+pub(crate) mod machine {
+    /// Bit 0, set in every `SmallInteger` and in no other word a value
+    /// can be.
+    pub(crate) const SMALL_INTEGER_TAG: u64 = super::SMALL_INTEGER_TAG;
+    /// How far a `SmallInteger`'s payload is shifted above its tag.
+    pub(crate) const TAG_BITS: u32 = super::TAG_BITS;
+}
+
 /// A value that holds no handle -- `nil`, a Boolean, a `SmallInteger`, a
 /// `SmallFloat64` -- kept as the word it is, so that compiled code can
 /// carry its constants beside its instructions
@@ -171,6 +197,14 @@ pub enum ImmediateKind {
 impl Immediate {
     /// `nil`, as an immediate word.
     pub const NIL: Immediate = Immediate(NIL_WORD);
+
+    /// The word itself, which machine code writes into a register as it
+    /// is: an immediate names no object, so it means the same in every
+    /// heap and across every move.
+    #[cfg(ns_jit)]
+    pub(crate) const fn bits(self) -> u64 {
+        self.0
+    }
 
     /// `true` or `false`, as an immediate word.
     pub const fn boolean(value: bool) -> Immediate {

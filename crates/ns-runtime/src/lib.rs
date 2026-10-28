@@ -18,6 +18,7 @@ pub mod hash;
 pub mod heap;
 pub mod image;
 pub mod interpreter;
+mod jit;
 pub mod mixin;
 pub(crate) mod numeric;
 pub mod platform;
@@ -81,6 +82,7 @@ pub use interpreter::{
     CacheStatistics, CachedTarget, CachedTargetKind, CallSiteState, HostError, HostResult,
     HostSignal, Interpreter, MethodSide, Mutator,
 };
+pub use jit::JitStatistics;
 pub use mixin::{DispatchId, DispatchIds, Mixin, MixinApplication};
 pub use resolver::{resolve, resolve_for_editor, root_class_is_value};
 pub use symbol::Symbol;

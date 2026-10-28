@@ -36,6 +36,7 @@ mod frames;
 pub(crate) use frames::with_stack_reservation;
 mod header;
 mod ids;
+pub(crate) mod machine_words;
 pub(crate) mod mark;
 mod object;
 mod pending;
@@ -53,6 +54,7 @@ use frames::{frame_header, kind_tag, FrameFlags, FrameStack};
 pub(crate) use header::IDENTITY_HASH_LIMIT;
 use header::{Format, Header, MAX_AGE, WORD_COUNT_OVERFLOW};
 pub(crate) use ids::{DispatchIdAllocator, FreeIndices};
+use machine_words::{MachineWord, MachineWords};
 pub use object::Element;
 use object::{
     class_field, closure_field, frame_field, trace_block, PackedString, CLASS, FIELDS, HEADER,
@@ -70,6 +72,8 @@ use space::{
 pub use tables::{ApplicationIndex, CodeId, MixinId};
 pub(crate) use tables::{CodeEntry, CodeIdCache, MixinRow, Tables};
 pub(crate) use value::is_small_float_bits;
+#[cfg(ns_jit)]
+pub(crate) use value::machine as value_bits;
 use value::{at_rest, branded};
 pub use value::{
     fits_small_integer, Immediate, ImmediateKind, Value, ValueKind, Word, SMALL_INTEGER_MAX,
@@ -748,11 +752,22 @@ fn dead_register() -> Word {
 #[cfg(debug_assertions)]
 #[inline(always)]
 fn assert_live_register(offset: u32, index: u16, bits: u64) {
-    assert!(
-        !Word::from_bits(bits).is_dead_register(),
+    if Word::from_bits(bits).is_dead_register() {
+        refuse_dead_register_read(offset, index);
+    }
+}
+
+/// The refusal of a read of a dead register: the interpreter's
+/// (`assert_live_register`) and machine code's, whose read exits to
+/// `Heap::refuse_dead_register`, so that both say the same.
+#[cfg(any(debug_assertions, ns_jit))]
+#[cold]
+#[inline(never)]
+fn refuse_dead_register_read(offset: u32, index: u16) -> ! {
+    panic!(
         "internal: the frame at stack word {offset} reads r{index}, which nothing wrote since \
          its push or its callee's return (the leftover analysis says nothing reads it)"
-    );
+    )
 }
 
 /// Refuses, in a debug build, a push that hands `code` other than its own
@@ -1670,21 +1685,24 @@ pub struct Heap<'gc> {
     /// take `&self`, which lets a host stash an argument inside the call that
     /// sends it.
     host_roots: std::cell::RefCell<HostRoots>,
-    /// Whether the run loop's next safepoint must take its slow path
-    /// (`Interpreter::safepoint`). The poll is one compare of this flag
+    /// The words machine code reads or writes between leaf calls, in an
+    /// allocation of their own, never inline here (`machine_words.rs` has
+    /// why). Among them `MachineWord::SafepointRequested`: whether the run
+    /// loop's next safepoint must take its slow path
+    /// (`Interpreter::safepoint`). The poll is one compare of that word
     /// (`docs/design/memory.md`, "Where a collection can happen"). An
     /// allocation that reaches the limit sets it, in every build
     /// (`request_collection`); in a debug build a stress mode additionally
     /// holds it set for its own reasons, for as long as the mode is on.
     /// Otherwise the safepoint that takes a request clears it.
-    safepoint_requested: bool,
+    machine_words: MachineWords,
     /// The bytes the objects take, from the space's start to its top, at
     /// which the next allocation asks for a collection. Checked against the
     /// top the allocation already has in hand, so the hot path pays one
     /// predictable branch and carries no counter.
     next_collection: usize,
     /// Whether a limit has been reached since the last collection. Separate
-    /// from `safepoint_requested`, which only means "take the slow path" and
+    /// from the safepoint request, which only means "take the slow path" and
     /// which a stress mode holds set for its own reasons.
     collection_requested: bool,
     /// The smallest limit a collection will set, in bytes. A program that
@@ -2057,7 +2075,7 @@ impl<'gc> Heap<'gc> {
                 slots: Vec::new(),
                 sweep_at: MIN_ROOT_SWEEP,
             }),
-            safepoint_requested: false,
+            machine_words: MachineWords::new(),
             next_collection: COLLECTION_FLOOR,
             collection_requested: false,
             collection_floor: COLLECTION_FLOOR,
@@ -8112,17 +8130,120 @@ impl<'gc> Heap<'gc> {
 
     #[inline]
     pub(crate) fn safepoint_requested(&self) -> bool {
-        self.safepoint_requested
+        self.machine_words.get(MachineWord::SafepointRequested) != 0
     }
 
     /// A request served (`Interpreter::safepoint`).
     pub(crate) fn clear_safepoint_request(&mut self) {
-        self.safepoint_requested = false;
+        self.machine_words.set(MachineWord::SafepointRequested, 0);
     }
 
     #[cfg(debug_assertions)]
     pub(crate) fn set_safepoint_requested(&mut self, requested: bool) {
-        self.safepoint_requested = requested;
+        self.machine_words
+            .set(MachineWord::SafepointRequested, u64::from(requested));
+    }
+
+    /// Asks the run loop's next safepoint to take its slow path.
+    fn request_safepoint(&mut self) {
+        self.machine_words.set(MachineWord::SafepointRequested, 1);
+    }
+
+    // ---------- What machine code is entered with ----------
+
+    /// The address of the machine words (`machine_words.rs`), whose
+    /// safepoint request machine code's poll reads
+    /// (`jit::stubs::BlockWord::MachineWords`), exposed as the other
+    /// addresses machine code is entered with are.
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_words_address(&self) -> usize {
+        self.machine_words.address()
+    }
+
+    /// The object space's base address, every handle's origin
+    /// (`jit::stubs::BlockWord::ObjectSpaceBase`).
+    #[cfg(ns_jit)]
+    pub(crate) fn object_space_base_address(&self) -> usize {
+        self.space.base_address()
+    }
+
+    /// The activation stack's base address
+    /// (`jit::stubs::BlockWord::StackBase`).
+    #[cfg(ns_jit)]
+    pub(crate) fn activation_stack_base_address(&self) -> usize {
+        self.stack.frames.base_address()
+    }
+
+    /// Where `base`'s registers start, in words from the activation
+    /// stack's base (`jit::stubs::BlockWord::RegisterBase`).
+    #[cfg(ns_jit)]
+    pub(crate) fn register_base_words(base: RegisterBase) -> u64 {
+        u64::from(base.index)
+    }
+
+    /// The word machine code carries `activation` in
+    /// (`jit::stubs::BlockWord::Activation`), which a leaf turns back into
+    /// the handle (`machine_activation`): its offset, and in a debug build
+    /// its generation above it, so that the handle a leaf gets back is
+    /// checked as the one the run loop held.
+    #[cfg(ns_jit)]
+    pub(crate) fn activation_word(activation: ActivationReference) -> u64 {
+        #[cfg(debug_assertions)]
+        {
+            u64::from(activation.offset) | (u64::from(activation.generation) << 32)
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            u64::from(activation.offset)
+        }
+    }
+
+    /// The running activation machine code named by `word`
+    /// (`activation_word`).
+    ///
+    /// # Panics
+    ///
+    /// On a word `activation_word` did not make, which only a defect of
+    /// the JIT passes; a debug build also refuses a frame since popped.
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_activation(&self, word: u64) -> ActivationReference {
+        let Ok(offset) = u32::try_from(word & u64::from(u32::MAX)) else {
+            unreachable!("internal: the low half of a word fits 32 bits");
+        };
+        #[cfg(not(debug_assertions))]
+        if word >> 32 != 0 {
+            panic!("internal: machine code named activation word {word:#x}");
+        }
+        let activation = ActivationReference {
+            offset,
+            #[cfg(debug_assertions)]
+            origin: self.heap_id,
+            #[cfg(debug_assertions)]
+            generation: u32::try_from(word >> 32)
+                .expect("internal: the high half of a word fits 32 bits"),
+        };
+        self.check_activation(activation);
+        activation
+    }
+
+    /// The register number machine code reads a frame's receiver at: the
+    /// header word `RECEIVER`, which lies `argument_count` registers above
+    /// register 0, since the header follows the arguments
+    /// (`bytecode::HEADER_REGISTERS`).
+    #[cfg(ns_jit)]
+    pub(crate) fn receiver_register(argument_count: u16) -> u16 {
+        let Ok(receiver) = u16::try_from(frame_header::RECEIVER) else {
+            unreachable!("internal: the header's words are numbered from 0 to 12");
+        };
+        argument_count + receiver
+    }
+
+    /// Refuses machine code's read of `activation`'s dead register
+    /// `register` with the interpreter's own refusal
+    /// (`assert_live_register`).
+    #[cfg(ns_jit)]
+    pub(crate) fn refuse_dead_register(&self, activation: ActivationReference, register: u16) -> ! {
+        refuse_dead_register_read(activation.offset, register)
     }
 
     /// The write barrier: `holder` now stores `word`. An old object that
@@ -8170,7 +8291,7 @@ impl<'gc> Heap<'gc> {
     fn request_scavenge(&mut self, tenure_all: bool) {
         self.scavenge_requested = true;
         self.tenure_all_requested |= tenure_all;
-        self.safepoint_requested = true;
+        self.request_safepoint();
     }
 
     /// The image decoder's graph pass allocates old: everything it names was
@@ -8582,10 +8703,10 @@ impl<'gc> Heap<'gc> {
     }
 
     /// An allocation never collects; it asks, and the run loop's next
-    /// safepoint serves the request (decided 2026-09-13). Setting
-    /// `safepoint_requested` is what makes the poll take its slow path.
+    /// safepoint serves the request (decided 2026-09-13). Setting the
+    /// safepoint request is what makes the poll take its slow path.
     ///
-    /// Must do nothing but set these two booleans: its call site raises the
+    /// Must do nothing but set these two flags: its call site raises the
     /// request while the object just allocated is still half-wired --
     /// `allocate_block` before `object_handle` names it, and for a frame object
     /// `reify` before the writes that make it reachable from its stack
@@ -8599,7 +8720,7 @@ impl<'gc> Heap<'gc> {
     /// see a weak slot cleared.
     pub(crate) fn request_collection(&mut self) {
         self.collection_requested = true;
-        self.safepoint_requested = true;
+        self.request_safepoint();
     }
 
     pub(crate) fn collection_requested(&self) -> bool {

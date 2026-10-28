@@ -13,15 +13,22 @@
 //! stack access is the index's. The heap's young allocations bump a cursor
 //! the reservation holds (`Reservation::bump`), one comparison against a
 //! limit inside that prefix.
+//!
+//! The JIT's machine code lives in a `CodeZone`, mapped twice, one view
+//! executable and one writable, and written only through its `CodeWriter`
+//! (docs/design/execution.md, "Executable memory"); `CodeZone::enter` runs
+//! it, and it calls Rust back through the zone's leaf shim.
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(clippy::undocumented_unsafe_blocks)]
 
+mod code_zone;
 mod page_map;
 mod platform;
 
 use std::ops::Range;
 use std::ptr::NonNull;
 
+pub use code_zone::{CodeOffset, CodeWriter, CodeZone, Leaf, ENTRY_BLOCK_WORDS};
 use page_map::PageMap;
 
 /// How a committed page range may be accessed.
@@ -44,6 +51,8 @@ pub enum Operation {
     Commit,
     Decommit,
     Protect,
+    /// Creating and mapping a code zone's views.
+    Map,
 }
 
 /// Why an operation on a reservation did not happen. Nothing here panics:
@@ -76,6 +85,7 @@ impl std::fmt::Display for MemoryError {
                     Operation::Commit => "commit",
                     Operation::Decommit => "decommit",
                     Operation::Protect => "protect",
+                    Operation::Map => "map",
                 };
                 write!(
                     formatter,
@@ -452,6 +462,30 @@ impl Reservation {
         unsafe {
             std::slice::from_raw_parts_mut(self.base.as_ptr().cast::<u64>(), self.accessible_words)
         }
+    }
+
+    /// The reservation's base address, its provenance exposed, for machine
+    /// code that addresses the memory itself -- the JIT's, which reaches
+    /// the object space's fields and the activation stack's frames from it.
+    /// It creates no reference to the memory: no slice, and so no retag.
+    ///
+    /// Aliasing: machine code reaches the memory through this address while
+    /// Rust code reborrows the reservation through `accessible` and
+    /// `accessible_mut` between two leaf calls. The address is taken from
+    /// the pointer the reservation keeps, which it obtained from the
+    /// mapping, and every slice those accessors lend is derived from that
+    /// same pointer afresh. So a write through a slice is an access by a
+    /// child of the pointer the address carries, never a foreign one to
+    /// it, and leaves the address valid; the machine code's access is
+    /// foreign only to slices, none of which is alive then -- each lives
+    /// within one accessor's caller, which returned before the code went
+    /// on. An address taken from such a slice instead (`as_mut_ptr` on
+    /// `accessible_mut`) would be a child of that `&mut` retag, which the
+    /// next sibling slice's write invalidates under Tree Borrows: undefined
+    /// behaviour that no processor notices and Miri cannot run machine
+    /// code to find.
+    pub fn base_address(&self) -> usize {
+        self.base.as_ptr().expose_provenance()
     }
 
     /// A non-empty range inside the reservation, on page boundaries.

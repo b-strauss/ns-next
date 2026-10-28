@@ -184,6 +184,16 @@ impl Space {
         Ok(space)
     }
 
+    /// The address of the space's first byte, exposed: every handle is a
+    /// byte offset from it, so machine code reaches a field as this base
+    /// plus a handle (`jit::run_machine_code`). From the reservation's
+    /// own pointer, never a slice of it, so that the slices leaves borrow
+    /// meanwhile leave it valid (`Reservation::base_address`).
+    #[cfg(ns_jit)]
+    pub(in crate::heap) fn base_address(&self) -> usize {
+        self.reservation.base_address()
+    }
+
     pub(in crate::heap) fn region(&self, name: RegionName) -> Region {
         match name {
             RegionName::PastSurvivor => self.survivors[self.past],

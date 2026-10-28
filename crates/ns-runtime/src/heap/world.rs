@@ -137,6 +137,7 @@ impl World {
                 dispatch_ids: crate::heap::DispatchIdAllocator::new(),
                 next_creation_serial: 1,
                 caches: crate::interpreter::inline_cache::InlineCaches::new(),
+                jit: crate::jit::JitState::new(),
                 unhandled_exceptions_to_resume: 0,
                 depth_reserve: None,
                 taking_depth_reserve: false,
@@ -229,6 +230,11 @@ impl World {
     /// cache stress mode's safepoint).
     pub(crate) fn invalidate_caches(&mut self) {
         self.mutator.caches.invalidate();
+    }
+
+    /// What the JIT has done (`Interpreter::jit_statistics`).
+    pub(crate) fn jit_statistics(&self) -> crate::jit::JitStatistics {
+        self.mutator.jit.statistics()
     }
 
     /// The inline caches' sizes (`Interpreter::cache_statistics`).

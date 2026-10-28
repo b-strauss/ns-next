@@ -1,0 +1,1091 @@
+//! The baseline compiler: a body's instructions, one after another, each
+//! lowered on its own through the one exhaustive `match` over
+//! `Instruction` (`lower`), the extension point every instruction is
+//! added through (`docs/design/execution.md`, "The foundation and the one
+//! extension point"). A baseline frame's registers are the interpreter's
+//! frame words, so each instruction's code starts and ends with every
+//! value in its slot, and any instruction can hand the frame to the
+//! interpreter at its own program counter.
+
+use ns_assembler::{Condition, Label, Register};
+
+use crate::bytecode::{successors, CompiledCode, Instruction, IntegerOperation, Literal};
+use crate::heap::{value_bits, Immediate};
+
+use super::leaves::Leaf;
+use super::macro_assembler::{LeafIndex, MacroAssembler, Operand};
+use super::stubs::{BlockWord, ExitKind};
+use super::{ProgramCounterMap, Refusal};
+
+/// A compiled body: its machine code, and where each instruction's code
+/// starts in it.
+pub(crate) struct BaselineBody {
+    pub(crate) code: ns_assembler::Assembled,
+    pub(crate) map: ProgramCounterMap,
+    /// Whether the code leaves before it can take a backward jump: every
+    /// path from the first instruction reaches an exit first, so the
+    /// code runs at most a few straight-line instructions the interpreter
+    /// would have run for less than the entry and the exit cost
+    /// (`jit::note_entry`).
+    pub(crate) leaves_before_a_loop: bool,
+}
+
+/// What `lower` did with one instruction, and what `compile` still emits
+/// for it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Lowering {
+    /// The arm emitted the instruction's template itself.
+    Template,
+    /// A call of `leaf` with `arguments`, the instruction's own
+    /// interpreter step, which answers 0 when it ran the instruction and
+    /// anything else, having changed nothing, to have the interpreter run
+    /// it instead.
+    Leaf {
+        leaf: LeafIndex,
+        arguments: [Operand; 3],
+    },
+    /// An exit that hands the frame to the interpreter, which runs the
+    /// instruction.
+    Exit,
+}
+
+/// The sign of a 64-bit word spread over all of it by an arithmetic
+/// shift: 0 for a word of zero or more, -1 for a negative one.
+const SIGN_SHIFT: u8 = 63;
+
+/// The body being compiled, as the arms of `lower` emit into it: the
+/// macro assembler, every instruction's label -- all made before the first
+/// instruction is emitted, so that a forward jump names its target -- and
+/// the instruction being lowered.
+struct BodyAssembler {
+    macro_assembler: MacroAssembler,
+    /// Each instruction's label, by program counter.
+    starts: Vec<Label>,
+    /// The body's argument count, which places its receiver in the frame.
+    argument_count: u16,
+    program_counter: u32,
+    /// The backward jumps taken out of a conditional, each a label bound
+    /// after the last instruction and the target it polls before and
+    /// jumps to, so that the branch not taken falls straight through.
+    backward_branches: Vec<(Label, u32)>,
+}
+
+/// The scratch registers a template uses, by role.
+#[derive(Clone, Copy)]
+struct TemplateRegisters {
+    dividend: Register,
+    remainder: Register,
+    first: Register,
+    second: Register,
+    third: Register,
+}
+
+impl BodyAssembler {
+    /// A jump to the instruction at `target`. A backward one closes a
+    /// loop, so it polls first, as the interpreter's backward jump tests
+    /// the safepoint, so that a loop that makes no send still reaches one;
+    /// its poll exits at `target`, where the interpreter takes the
+    /// safepoint (`vm::run_stretch`'s `jump_to!`).
+    fn jump_to(&mut self, target: u32) {
+        if target <= self.program_counter {
+            self.macro_assembler.count_back_edge();
+            self.macro_assembler.poll(target);
+        }
+        let label = self.starts[target as usize];
+        self.macro_assembler.assembler().jump(label);
+    }
+
+    /// A jump to the instruction at `target` when `condition` holds, a
+    /// backward one polling as `jump_to`'s does; the code falls through
+    /// when it does not hold. A backward jump's poll lies after the last
+    /// instruction (`emit_backward_branches`), so that the branch not
+    /// taken costs what a forward one's does.
+    fn jump_to_if(&mut self, condition: Condition, target: u32) {
+        if target <= self.program_counter {
+            let label = self.macro_assembler.assembler().label();
+            self.macro_assembler.assembler().jump_if(condition, label);
+            self.backward_branches.push((label, target));
+        } else {
+            let label = self.starts[target as usize];
+            self.macro_assembler.assembler().jump_if(condition, label);
+        }
+    }
+
+    /// The backward jumps `jump_to_if` set aside, each bound and taken.
+    fn emit_backward_branches(&mut self) {
+        for (label, target) in std::mem::take(&mut self.backward_branches) {
+            self.macro_assembler.assembler().bind(label);
+            self.macro_assembler.count_back_edge();
+            self.macro_assembler.poll(target);
+            let start = self.starts[target as usize];
+            self.macro_assembler.assembler().jump(start);
+        }
+    }
+
+    /// The scratch registers a template takes: the two a division fixes,
+    /// then three others in the roles' order.
+    fn registers(&self) -> TemplateRegisters {
+        let roles = self.macro_assembler.roles();
+        let mut others = roles
+            .scratch
+            .iter()
+            .copied()
+            .filter(|register| *register != roles.dividend && *register != roles.remainder);
+        let mut next = || {
+            others
+                .next()
+                .expect("internal: the roles leave a template three scratch registers")
+        };
+        let (first, second, third) = (next(), next(), next());
+        TemplateRegisters {
+            dividend: roles.dividend,
+            remainder: roles.remainder,
+            first,
+            second,
+            third,
+        }
+    }
+
+    /// Loads the frame's registers `left.1` and `right.1` into `left.0`
+    /// and `right.0`, jumping to `target` unless both hold a
+    /// `SmallInteger`: `integer_into`'s decline of any other operand.
+    fn load_small_integers(&mut self, left: (Register, u16), right: (Register, u16), target: u32) {
+        let tag = small_integer_tag();
+        self.macro_assembler.load_frame_register(left.0, left.1);
+        self.macro_assembler.load_frame_register(right.0, right.1);
+        self.macro_assembler.assembler().test_immediate(left.0, tag);
+        self.jump_to_if(Condition::Equal, target);
+        self.macro_assembler
+            .assembler()
+            .test_immediate(right.0, tag);
+        self.jump_to_if(Condition::Equal, target);
+    }
+
+    /// `IntegerBinary`: `integer_into`'s `SmallInteger` fast path. Every
+    /// case it declines jumps to `target` before the destination is
+    /// written, so the send there runs on the operands as they were.
+    fn integer_binary(
+        &mut self,
+        operation: IntegerOperation,
+        destination: u16,
+        left: u16,
+        right: u16,
+        target: u32,
+    ) {
+        let registers = self.registers();
+        // The left operand sits where a division wants its dividend.
+        let (left_value, right_value) = (registers.dividend, registers.first);
+        self.load_small_integers((left_value, left), (right_value, right), target);
+        let tag = small_integer_tag();
+        let result = match operation {
+            // `(a << 3 | 1) + ((b << 3 | 1) - 1)` is `(a + b) << 3 | 1`,
+            // and overflows exactly when `a + b` leaves 61 bits:
+            // `Value::small_integer_sum`. The difference likewise.
+            IntegerOperation::Add | IntegerOperation::Subtract => {
+                let untagged = registers.second;
+                let assembler = self.macro_assembler.assembler();
+                assembler.move_register(untagged, right_value);
+                assembler.add_immediate(untagged, -tag);
+                if operation == IntegerOperation::Add {
+                    assembler.add(left_value, untagged);
+                } else {
+                    assembler.subtract(left_value, untagged);
+                }
+                self.jump_to_if(Condition::Overflow, target);
+                left_value
+            }
+            // `a * (b << 3)` is `(a * b) << 3`, overflowing exactly when
+            // `a * b` leaves 61 bits: `Value::small_integer_product`.
+            IntegerOperation::Multiply => {
+                let untagged = registers.second;
+                let assembler = self.macro_assembler.assembler();
+                assembler.shift_right_arithmetic(left_value, tag_bits());
+                assembler.move_register(untagged, right_value);
+                assembler.add_immediate(untagged, -tag);
+                assembler.multiply_checked(left_value, untagged);
+                self.jump_to_if(Condition::Overflow, target);
+                self.macro_assembler
+                    .assembler()
+                    .or_immediate(left_value, tag);
+                left_value
+            }
+            IntegerOperation::FloorDivide => self.floor_divide(registers, target),
+            // Tagging keeps the order, so the words compare as the
+            // integers do: `Value::small_integer_order`.
+            IntegerOperation::Less => self.compare_into(registers, Condition::Less),
+            IntegerOperation::Greater => self.compare_into(registers, Condition::Greater),
+            IntegerOperation::LessOrEqual => self.compare_into(registers, Condition::LessOrEqual),
+            IntegerOperation::GreaterOrEqual => {
+                self.compare_into(registers, Condition::GreaterOrEqual)
+            }
+            IntegerOperation::Equal => self.compare_into(registers, Condition::Equal),
+        };
+        self.macro_assembler
+            .store_frame_register(destination, result);
+    }
+
+    /// The Boolean of comparing the `SmallInteger`s in
+    /// `registers.dividend` and `registers.first` by `condition`, in the
+    /// register it answers.
+    fn compare_into(&mut self, registers: TemplateRegisters, condition: Condition) -> Register {
+        let (answer, truth) = (registers.second, registers.third);
+        let assembler = self.macro_assembler.assembler();
+        assembler.move_immediate(answer, Immediate::boolean(false).bits());
+        assembler.move_immediate(truth, Immediate::boolean(true).bits());
+        assembler.compare(registers.dividend, registers.first);
+        assembler.move_if(condition, answer, truth);
+        answer
+    }
+
+    /// The floor quotient of the `SmallInteger`s in `registers.dividend`
+    /// and `registers.first`, tagged, in the register it answers:
+    /// `Value::small_integer_floor_quotient`, declining to `target` for a
+    /// zero divisor and for the one quotient that leaves 61 bits, the
+    /// smallest `SmallInteger` over -1.
+    fn floor_divide(&mut self, registers: TemplateRegisters, target: u32) -> Register {
+        let (dividend, divisor) = (registers.dividend, registers.first);
+        let assembler = self.macro_assembler.assembler();
+        assembler.shift_right_arithmetic(dividend, tag_bits());
+        assembler.shift_right_arithmetic(divisor, tag_bits());
+        assembler.compare_immediate(divisor, 0);
+        self.jump_to_if(Condition::Equal, target);
+        // Both are 61-bit integers, so the division cannot fault.
+        let assembler = self.macro_assembler.assembler();
+        assembler.divide_signed(dividend, registers.remainder, divisor);
+        // `checked_floor_divide`: no remainder, or one of the divisor's
+        // sign, leaves the truncated quotient; any other rounds it down.
+        let (remainder_sign, divisor_sign) = (registers.second, registers.third);
+        let floored = assembler.label();
+        assembler.compare_immediate(registers.remainder, 0);
+        assembler.jump_if(Condition::Equal, floored);
+        assembler.move_register(remainder_sign, registers.remainder);
+        assembler.shift_right_arithmetic(remainder_sign, SIGN_SHIFT);
+        assembler.move_register(divisor_sign, divisor);
+        assembler.shift_right_arithmetic(divisor_sign, SIGN_SHIFT);
+        assembler.compare(remainder_sign, divisor_sign);
+        assembler.jump_if(Condition::Equal, floored);
+        assembler.add_immediate(dividend, -1);
+        assembler.bind(floored);
+        // Tagged, the quotient comes back unchanged from its shift unless
+        // it leaves 61 bits.
+        let (tagged, untagged) = (registers.second, registers.third);
+        assembler.move_register(tagged, dividend);
+        assembler.shift_left(tagged, tag_bits());
+        assembler.move_register(untagged, tagged);
+        assembler.shift_right_arithmetic(untagged, tag_bits());
+        assembler.compare(untagged, dividend);
+        self.jump_to_if(Condition::NotEqual, target);
+        self.macro_assembler
+            .assembler()
+            .or_immediate(tagged, small_integer_tag());
+        tagged
+    }
+
+    /// `BranchIfFalse` and `BranchIfTrue`: to `target` when the frame's
+    /// `register` holds `boolean`, on otherwise -- a non-Boolean included,
+    /// which the instruction before has sent elsewhere
+    /// (`vm::run_stretch`'s arms over `boolean_in`).
+    fn branch_if(&mut self, register: u16, boolean: bool, target: u32) {
+        let value = self.registers().first;
+        self.macro_assembler.load_frame_register(value, register);
+        self.macro_assembler
+            .assembler()
+            .compare_immediate(value, boolean_word(boolean));
+        self.jump_to_if(Condition::Equal, target);
+    }
+
+    /// `JumpIfNotBoolean`: on when the frame's `register` holds either
+    /// Boolean, to `target` otherwise, where the non-Boolean is
+    /// signalled.
+    fn jump_if_not_boolean(&mut self, register: u16, target: u32) {
+        let value = self.registers().first;
+        self.macro_assembler.load_frame_register(value, register);
+        let assembler = self.macro_assembler.assembler();
+        let boolean = assembler.label();
+        assembler.compare_immediate(value, boolean_word(true));
+        assembler.jump_if(Condition::Equal, boolean);
+        assembler.compare_immediate(value, boolean_word(false));
+        self.jump_to_if(Condition::NotEqual, target);
+        self.macro_assembler.assembler().bind(boolean);
+    }
+
+    /// The frame's `destination :=` its `source`: `copy_register`.
+    fn copy(&mut self, destination: u16, source: u16) {
+        let value = self.registers().first;
+        self.macro_assembler.load_frame_register(value, source);
+        self.macro_assembler
+            .store_frame_register(destination, value);
+    }
+
+    /// The frame's `destination :=` `immediate`: `load_literal_into` for a
+    /// literal whose value is the word itself.
+    fn load_immediate(&mut self, destination: u16, immediate: Immediate) {
+        let value = self.registers().first;
+        self.macro_assembler
+            .load_immediate_word(value, immediate.bits());
+        self.macro_assembler
+            .store_frame_register(destination, value);
+    }
+
+    /// The frame's `destination :=` its receiver: `load_self_into`.
+    fn load_self(&mut self, destination: u16) {
+        let value = self.registers().first;
+        self.macro_assembler
+            .load_receiver(value, self.argument_count);
+        self.macro_assembler
+            .store_frame_register(destination, value);
+    }
+
+    /// The call of the generic leaf, which runs the instruction being
+    /// lowered through the interpreter's own effect function.
+    fn step(&self) -> Lowering {
+        Lowering::Leaf {
+            leaf: Leaf::Step.index(),
+            arguments: [
+                Operand::Block(BlockWord::Activation),
+                Operand::Immediate(u64::from(self.program_counter)),
+                Operand::Immediate(0),
+            ],
+        }
+    }
+}
+
+/// The `SmallInteger` tag, as an immediate operand.
+fn small_integer_tag() -> i32 {
+    i32::try_from(value_bits::SMALL_INTEGER_TAG).expect("internal: the tag is a low bit")
+}
+
+/// How far a `SmallInteger`'s payload lies above its tag, as a shift
+/// count.
+fn tag_bits() -> u8 {
+    u8::try_from(value_bits::TAG_BITS).expect("internal: the tag takes a few bits")
+}
+
+/// The word of `true` or `false`, as an immediate operand.
+fn boolean_word(boolean: bool) -> i32 {
+    i32::try_from(Immediate::boolean(boolean).bits())
+        .expect("internal: a Boolean's word is a small constant")
+}
+
+/// The word a literal is when `make_value` makes it without allocating:
+/// `nil`, a Boolean, a `SmallInteger` and an immediate float. `None` for
+/// every other literal.
+fn immediate_literal(literal: &Literal) -> Option<Immediate> {
+    match literal {
+        Literal::Nil => Some(Immediate::NIL),
+        Literal::Boolean(boolean) => Some(Immediate::boolean(*boolean)),
+        Literal::SmallInteger(integer) => Immediate::small_integer(*integer),
+        Literal::Float(float) => Immediate::small_float(*float),
+        Literal::String(_)
+        | Literal::Symbol(_)
+        | Literal::LargeInteger(_)
+        | Literal::UnresolvedIdentifier(_)
+        | Literal::BodyTooLarge(_) => None,
+    }
+}
+
+/// Whether the generic leaf may load `literal`, one `make_value`
+/// allocates and that cannot fail. A literal that raises an error, and a
+/// `SmallInteger` literal outside 61 bits, which no lowering makes and
+/// `Value::small_integer` refuses with a panic a leaf could not unwind
+/// from, are left to the interpreter.
+fn allocated_literal(literal: &Literal) -> bool {
+    match literal {
+        Literal::String(_) | Literal::Symbol(_) | Literal::LargeInteger(_) | Literal::Float(_) => {
+            true
+        }
+        Literal::Nil
+        | Literal::Boolean(_)
+        | Literal::SmallInteger(_)
+        | Literal::UnresolvedIdentifier(_)
+        | Literal::BodyTooLarge(_) => false,
+    }
+}
+
+/// Compiles `code` with `macro_assembler`: each instruction in turn, at a
+/// label whose offset the program-counter map records.
+pub(crate) fn compile(
+    code: &CompiledCode,
+    mut macro_assembler: MacroAssembler,
+) -> Result<BaselineBody, Refusal> {
+    // A program counter of the map, and an exit's, is a `u32`; the bound
+    // is the zone's layout's, which a later stage's tables index by
+    // `u16`.
+    let count =
+        u16::try_from(code.instruction_count()).map_err(|_| Refusal::TooManyInstructions)?;
+    let starts = (0..count)
+        .map(|_| macro_assembler.assembler().label())
+        .collect();
+    let mut body = BodyAssembler {
+        macro_assembler,
+        starts,
+        argument_count: code.argument_count,
+        program_counter: 0,
+        backward_branches: Vec::new(),
+    };
+    let mut exits = Vec::with_capacity(usize::from(count));
+    for program_counter in 0..u32::from(count) {
+        let start = body.starts[program_counter as usize];
+        body.macro_assembler.assembler().bind(start);
+        body.program_counter = program_counter;
+        body.macro_assembler.set_program_counter(program_counter);
+        let instruction = code.instruction(program_counter as usize);
+        // What every lowering ends with, not a second dispatch on the
+        // instruction: the instruction was decided by `lower`'s arm.
+        let lowering = lower(&instruction, &mut body);
+        exits.push(lowering == Lowering::Exit);
+        match lowering {
+            Lowering::Template => {}
+            Lowering::Leaf { leaf, arguments } => {
+                let macro_assembler = &mut body.macro_assembler;
+                macro_assembler.call_leaf(leaf, arguments);
+                let answer = macro_assembler.roles().leaf_result;
+                macro_assembler.assembler().compare_immediate(answer, 0);
+                macro_assembler.exit_if(Condition::NotEqual, ExitKind::Reexecute, program_counter);
+            }
+            Lowering::Exit => {
+                body.macro_assembler
+                    .exit(ExitKind::Reexecute, program_counter);
+            }
+        }
+    }
+    let leaves_before_a_loop = !takes_a_backward_jump_before_an_exit(code, &exits);
+    body.emit_backward_branches();
+    let assembled = body
+        .macro_assembler
+        .finish()
+        .map_err(|_| Refusal::Unassembled)?;
+    let starts = body
+        .starts
+        .into_iter()
+        .map(|label| {
+            assembled.label_offsets[label.index()]
+                .expect("internal: every instruction's label is bound")
+        })
+        .collect();
+    Ok(BaselineBody {
+        code: assembled,
+        map: ProgramCounterMap::new(starts),
+        leaves_before_a_loop,
+    })
+}
+
+/// Whether the code of `code`, whose instructions at the program counters
+/// `exits` marks lower to exits, can take a backward jump before its
+/// first exit: whether some instruction reachable from the first through
+/// templates and leaves alone jumps back. Only such code does work in
+/// machine code that pays for entering it; a leaf that declines exits,
+/// but is counted as falling through, since it declines only what the
+/// interpreter must run.
+fn takes_a_backward_jump_before_an_exit(code: &CompiledCode, exits: &[bool]) -> bool {
+    let mut reached = vec![false; exits.len()];
+    let mut pending = Vec::new();
+    if let Some(first) = reached.first_mut() {
+        *first = true;
+        pending.push(0_u32);
+    }
+    while let Some(program_counter) = pending.pop() {
+        if exits[program_counter as usize] {
+            continue;
+        }
+        let instruction = code.instruction(program_counter as usize);
+        for successor in successors(program_counter, &instruction) {
+            if successor <= program_counter {
+                return true;
+            }
+            if let Some(seen) = reached.get_mut(successor as usize) {
+                if !*seen {
+                    *seen = true;
+                    pending.push(successor);
+                }
+            }
+        }
+    }
+    false
+}
+
+/// The lowering of `instruction`. One of three, by what the instruction
+/// may do (`docs/design/execution.md`, "The foundation and the one
+/// extension point"):
+///
+/// 1. **A template** -- machine code written against the macro
+///    assembler's idioms and the register cache's operand interface,
+///    never against an encoder -- for an instruction whose work machine
+///    code does itself.
+/// 2. **A leaf call** -- the instruction's own interpreter step, a Rust
+///    function shared with `vm::run`, called through the leaf stub with
+///    the frame's registers flushed -- only for an instruction that runs
+///    no Newspeak code, cannot collect and reads no other activation.
+/// 3. **An exit that re-executes it** -- the frame handed to the
+///    interpreter at that instruction -- for every other one. Always
+///    correct, so every instruction has a lowering from the day it is
+///    added.
+///
+/// The match has an arm per instruction and no `_` arm, so a new
+/// instruction cannot compile until it chooses one, and it is the only
+/// dispatch on the instruction: a template's arm emits the template
+/// through `body` and answers `Lowering::Template`, a leaf's answers the
+/// leaf and its operands, an exit's emits nothing.
+///
+/// A template leaves the frame as the interpreter's arm does, and writes
+/// it only once nothing can decline or exit any more: an exit or a
+/// decline hands the interpreter an instruction no part of which ran, so
+/// it never applies the instruction's effect twice.
+fn lower(instruction: &Instruction, body: &mut BodyAssembler) -> Lowering {
+    match instruction {
+        Instruction::LoadLiteral {
+            destination,
+            literal,
+        } => match immediate_literal(literal) {
+            Some(immediate) => {
+                body.load_immediate(*destination, immediate);
+                Lowering::Template
+            }
+            None if allocated_literal(literal) => body.step(),
+            None => Lowering::Exit,
+        },
+        Instruction::LoadSelf { destination } => {
+            body.load_self(*destination);
+            Lowering::Template
+        }
+        Instruction::Move {
+            destination,
+            source,
+        }
+        | Instruction::StoreLocal {
+            source,
+            slot: destination,
+        } => {
+            body.copy(*destination, *source);
+            Lowering::Template
+        }
+        Instruction::MakeArray { .. }
+        | Instruction::MakeVector { .. }
+        | Instruction::LoadVector { .. }
+        | Instruction::StoreVector { .. } => body.step(),
+        Instruction::Jump { target } => {
+            body.jump_to(*target);
+            Lowering::Template
+        }
+        Instruction::JumpIfNotBoolean { register, target } => {
+            body.jump_if_not_boolean(*register, *target);
+            Lowering::Template
+        }
+        Instruction::BranchIfFalse { register, target } => {
+            body.branch_if(*register, false, *target);
+            Lowering::Template
+        }
+        Instruction::BranchIfTrue { register, target } => {
+            body.branch_if(*register, true, *target);
+            Lowering::Template
+        }
+        Instruction::IntegerBinary {
+            operation,
+            destination,
+            left,
+            right,
+            target,
+        } => {
+            body.integer_binary(*operation, *destination, *left, *right, *target);
+            Lowering::Template
+        }
+        // Sends, returns, the initializers' invocations and the lexical
+        // walk an implicit receiver makes: stage 3, with the caches.
+        Instruction::SendLexical { .. } => Lowering::Exit,
+        Instruction::SendPublic { .. } => Lowering::Exit,
+        Instruction::SendInlinable { .. } => Lowering::Exit,
+        Instruction::SendSuper { .. } => Lowering::Exit,
+        Instruction::SendMirror { .. } => Lowering::Exit,
+        Instruction::Return { .. } => Lowering::Exit,
+        Instruction::ImplicitReturn { .. } => Lowering::Exit,
+        Instruction::InitializeInstance { .. } => Lowering::Exit,
+        Instruction::CheckAppliedClause { .. } => Lowering::Exit,
+        Instruction::InitializeSuperclass { .. } => Lowering::Exit,
+        Instruction::InitializeAppliedLevel { .. } => Lowering::Exit,
+        Instruction::LoadEnclosingObject { .. } => Lowering::Exit,
+        // Closures, what reads another activation, and non-local return:
+        // stage 4.
+        Instruction::MakeClosure { .. } => Lowering::Exit,
+        Instruction::LoadOuterLocal { .. } => Lowering::Exit,
+        Instruction::StoreOuterLocal { .. } => Lowering::Exit,
+        Instruction::NonLocalReturn { .. } => Lowering::Exit,
+        // Allocation, and the slots and futures behind the write barrier:
+        // stage 4.
+        Instruction::AllocateInstance { .. } => Lowering::Exit,
+        Instruction::InitializeSlot { .. } => Lowering::Exit,
+        Instruction::ReturnSlotIfFilled { .. } => Lowering::Exit,
+        Instruction::MakeFuture { .. } => Lowering::Exit,
+        Instruction::ResolveFuture { .. } => Lowering::Exit,
+        Instruction::LoadOwnSlot { .. } => Lowering::Exit,
+        Instruction::InitializeSlotProvisionally { .. } => Lowering::Exit,
+        // An error, which the interpreter raises: an exit in every stage.
+        Instruction::SignalNonBoolean { .. } => Lowering::Exit,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::builtins::numbers::checked_floor_divide;
+    use crate::bytecode::{CodeKind, CompiledCode, Instruction, IntegerOperation, Literal};
+    use crate::heap::{fits_small_integer, Immediate, SMALL_INTEGER_MAX, SMALL_INTEGER_MIN};
+    use crate::jit::macro_assembler::{Abi, MacroAssembler};
+    use crate::jit::stubs::testing::Machine;
+    use crate::jit::stubs::MachineExit;
+
+    fn method(instructions: Vec<Instruction>, argument_count: u16) -> CompiledCode {
+        CompiledCode::new(
+            CodeKind::Method,
+            instructions,
+            argument_count,
+            argument_count + 20,
+            0,
+            Vec::new(),
+            ns_syntax::Span::new(0, 0),
+        )
+    }
+
+    fn three_instructions() -> CompiledCode {
+        method(
+            vec![
+                Instruction::LoadLiteral {
+                    destination: 13,
+                    literal: Literal::SmallInteger(3),
+                },
+                Instruction::Move {
+                    destination: 14,
+                    source: 13,
+                },
+                Instruction::Return { register: 14 },
+            ],
+            0,
+        )
+    }
+
+    /// Compiles `code`, polls exiting only on a requested safepoint
+    /// whatever `NS_NEXT_STRESS_EXIT` says, and runs it on `frame` with
+    /// `safepoint_requested`.
+    fn run(code: &CompiledCode, frame: &mut [u64], safepoint_requested: bool) -> MachineExit {
+        let mut macro_assembler = MacroAssembler::new(Abi::host());
+        macro_assembler.set_exit_at_every_poll(false);
+        let body = super::compile(code, macro_assembler).expect("compiled");
+        let mut machine = Machine::new();
+        let entry = machine.install(&body.code);
+        machine
+            .run(entry, frame, 0, safepoint_requested, &mut (), &[])
+            .0
+    }
+
+    fn integer(value: i64) -> u64 {
+        Immediate::small_integer(value)
+            .expect("a SmallInteger")
+            .bits()
+    }
+
+    fn boolean(value: bool) -> u64 {
+        Immediate::boolean(value).bits()
+    }
+
+    #[test]
+    fn every_instruction_starts_at_its_own_offset_in_order() {
+        let body = super::compile(&three_instructions(), MacroAssembler::new(Abi::host()))
+            .expect("compiled");
+        let starts: Vec<u32> = (0..3)
+            .map(|program_counter| body.map.machine_offset(program_counter).expect("mapped"))
+            .collect();
+        assert_eq!(starts[0], 0);
+        assert!(starts[0] < starts[1] && starts[1] < starts[2]);
+        assert!(starts[2] < u32::try_from(body.code.bytes.len()).expect("small"));
+        for (program_counter, start) in (0..).zip(&starts) {
+            assert_eq!(body.map.program_counter_at(*start), Some(program_counter));
+        }
+    }
+
+    #[test]
+    fn a_compiled_body_runs_its_templates_and_exits_at_the_first_without_one() {
+        let mut frame = [0u64; 16];
+        let exit = run(&three_instructions(), &mut frame, false);
+        assert_eq!(exit, MachineExit::Reexecute { program_counter: 2 });
+        let mut expected = [0u64; 16];
+        expected[13] = integer(3);
+        expected[14] = integer(3);
+        assert_eq!(frame, expected);
+    }
+
+    #[test]
+    fn every_immediate_literal_is_its_word() {
+        let literals = [
+            (Literal::Nil, Immediate::NIL),
+            (Literal::Boolean(true), Immediate::boolean(true)),
+            (Literal::Boolean(false), Immediate::boolean(false)),
+            (
+                Literal::SmallInteger(SMALL_INTEGER_MIN),
+                Immediate::small_integer(SMALL_INTEGER_MIN).expect("fits"),
+            ),
+            (
+                Literal::Float(2.5),
+                Immediate::small_float(2.5).expect("immediate"),
+            ),
+        ];
+        let mut instructions: Vec<Instruction> = (0u16..)
+            .zip(&literals)
+            .map(|(destination, (literal, _))| Instruction::LoadLiteral {
+                destination,
+                literal: literal.clone(),
+            })
+            .collect();
+        instructions.push(Instruction::Return { register: 0 });
+        let mut frame = [0u64; 24];
+        let exit = run(&method(instructions, 0), &mut frame, false);
+        assert_eq!(exit, MachineExit::Reexecute { program_counter: 5 });
+        for (index, (_, immediate)) in literals.iter().enumerate() {
+            assert_eq!(frame[index], immediate.bits());
+        }
+    }
+
+    #[test]
+    fn a_literal_that_raises_exits_before_it_writes() {
+        let code = method(
+            vec![Instruction::LoadLiteral {
+                destination: 3,
+                literal: Literal::UnresolvedIdentifier("missing".into()),
+            }],
+            0,
+        );
+        let mut frame = [0u64; 24];
+        assert_eq!(
+            run(&code, &mut frame, false),
+            MachineExit::Reexecute { program_counter: 0 }
+        );
+        assert_eq!(frame, [0u64; 24]);
+    }
+
+    #[test]
+    fn load_self_reads_the_receiver_above_the_arguments() {
+        let code = method(
+            vec![
+                Instruction::LoadSelf { destination: 16 },
+                Instruction::Return { register: 16 },
+            ],
+            2,
+        );
+        let mut frame = [0u64; 24];
+        let receiver = crate::heap::Heap::receiver_register(2);
+        frame[usize::from(receiver)] = 0x1230;
+        assert_eq!(
+            run(&code, &mut frame, false),
+            MachineExit::Reexecute { program_counter: 1 }
+        );
+        assert_eq!(frame[16], 0x1230);
+    }
+
+    /// A body that runs `instruction` at 0, returns at 1 when it falls
+    /// through and at 2 when it jumps to its target, 2.
+    fn branching(instruction: Instruction) -> CompiledCode {
+        method(
+            vec![
+                instruction,
+                Instruction::Return { register: 0 },
+                Instruction::Return { register: 0 },
+            ],
+            0,
+        )
+    }
+
+    /// Where `instruction` went with `word` in register 0: 1 on, 2 to its
+    /// target.
+    fn branch_taken(instruction: Instruction, word: u64) -> u32 {
+        let mut frame = [0u64; 24];
+        frame[0] = word;
+        match run(&branching(instruction), &mut frame, false) {
+            MachineExit::Reexecute { program_counter } => program_counter,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_conditional_jumps_test_their_register_as_the_interpreter_does() {
+        let words = [
+            boolean(true),
+            boolean(false),
+            Immediate::NIL.bits(),
+            integer(1),
+            0x40,
+        ];
+        for word in words {
+            let as_boolean = (word == boolean(true))
+                .then_some(true)
+                .or((word == boolean(false)).then_some(false));
+            let target = 2;
+            let jump_if_not_boolean = Instruction::JumpIfNotBoolean {
+                register: 0,
+                target,
+            };
+            assert_eq!(
+                branch_taken(jump_if_not_boolean, word),
+                if as_boolean.is_some() { 1 } else { 2 }
+            );
+            let branch_if_false = Instruction::BranchIfFalse {
+                register: 0,
+                target,
+            };
+            assert_eq!(
+                branch_taken(branch_if_false, word),
+                if as_boolean == Some(false) { 2 } else { 1 }
+            );
+            let branch_if_true = Instruction::BranchIfTrue {
+                register: 0,
+                target,
+            };
+            assert_eq!(
+                branch_taken(branch_if_true, word),
+                if as_boolean == Some(true) { 2 } else { 1 }
+            );
+        }
+    }
+
+    #[test]
+    fn a_backward_jump_polls_and_exits_at_its_target() {
+        let code = method(
+            vec![
+                Instruction::LoadLiteral {
+                    destination: 1,
+                    literal: Literal::SmallInteger(7),
+                },
+                Instruction::Jump { target: 0 },
+            ],
+            0,
+        );
+        let mut frame = [0u64; 24];
+        assert_eq!(
+            run(&code, &mut frame, true),
+            MachineExit::Safepoint { program_counter: 0 }
+        );
+        assert_eq!(
+            frame[1],
+            integer(7),
+            "the loop's body ran before its back edge"
+        );
+    }
+
+    #[test]
+    fn a_backward_branch_taken_polls_and_one_not_taken_falls_through() {
+        let code = method(
+            vec![
+                Instruction::Return { register: 0 },
+                Instruction::BranchIfTrue {
+                    register: 0,
+                    target: 0,
+                },
+                Instruction::Return { register: 0 },
+            ],
+            0,
+        );
+        let compiled = |word: u64| {
+            let mut macro_assembler = MacroAssembler::new(Abi::host());
+            macro_assembler.set_exit_at_every_poll(false);
+            let body = super::compile(&code, macro_assembler).expect("compiled");
+            let start = body.map.machine_offset(1).expect("mapped");
+            let mut machine = Machine::new();
+            let entry = machine.install(&body.code);
+            let mut frame = [0u64; 24];
+            frame[0] = word;
+            machine
+                .run(
+                    ns_memory::CodeOffset(entry.0 + start),
+                    &mut frame,
+                    0,
+                    true,
+                    &mut (),
+                    &[],
+                )
+                .0
+        };
+        assert_eq!(
+            compiled(boolean(true)),
+            MachineExit::Safepoint { program_counter: 0 }
+        );
+        assert_eq!(
+            compiled(boolean(false)),
+            MachineExit::Reexecute { program_counter: 2 }
+        );
+    }
+
+    /// The operands at the edges of every `SmallInteger` operation, and
+    /// words that are no `SmallInteger`.
+    fn operands() -> Vec<u64> {
+        let integers = [
+            0,
+            1,
+            -1,
+            2,
+            -2,
+            3,
+            -3,
+            7,
+            -7,
+            8,
+            1 << 30,
+            -(1 << 30),
+            (1 << 31) + 5,
+            1 << 40,
+            -(1 << 40) - 3,
+            SMALL_INTEGER_MAX,
+            SMALL_INTEGER_MIN,
+            SMALL_INTEGER_MAX - 1,
+            SMALL_INTEGER_MIN + 1,
+            SMALL_INTEGER_MAX / 2,
+            SMALL_INTEGER_MIN / 2,
+        ];
+        let mut words: Vec<u64> = integers.into_iter().map(integer).collect();
+        words.extend([Immediate::NIL.bits(), boolean(true), 0x40]);
+        words
+    }
+
+    /// What `integer_into` answers for `operation` on two words: the word
+    /// it writes, or `None` where it declines.
+    fn expected(operation: IntegerOperation, left: u64, right: u64) -> Option<u64> {
+        let payload = |word: u64| {
+            (word & 1 == 1).then(|| word.cast_signed() >> crate::heap::value_bits::TAG_BITS)
+        };
+        let (left, right) = (payload(left)?, payload(right)?);
+        let integer_word = |value: Option<i64>| {
+            value
+                .filter(|value| fits_small_integer(*value))
+                .map(integer)
+        };
+        match operation {
+            IntegerOperation::Add => integer_word(left.checked_add(right)),
+            IntegerOperation::Subtract => integer_word(left.checked_sub(right)),
+            IntegerOperation::Multiply => integer_word(left.checked_mul(right)),
+            IntegerOperation::FloorDivide => integer_word(checked_floor_divide(left, right)),
+            IntegerOperation::Less => Some(boolean(left < right)),
+            IntegerOperation::Greater => Some(boolean(left > right)),
+            IntegerOperation::LessOrEqual => Some(boolean(left <= right)),
+            IntegerOperation::GreaterOrEqual => Some(boolean(left >= right)),
+            IntegerOperation::Equal => Some(boolean(left == right)),
+        }
+    }
+
+    #[test]
+    fn integer_arithmetic_answers_what_the_interpreter_answers_or_declines() {
+        let operations = [
+            IntegerOperation::Add,
+            IntegerOperation::Subtract,
+            IntegerOperation::Multiply,
+            IntegerOperation::FloorDivide,
+            IntegerOperation::Less,
+            IntegerOperation::Greater,
+            IntegerOperation::LessOrEqual,
+            IntegerOperation::GreaterOrEqual,
+            IntegerOperation::Equal,
+        ];
+        let operands = operands();
+        for operation in operations {
+            let code = branching(Instruction::IntegerBinary {
+                operation,
+                destination: 2,
+                left: 0,
+                right: 1,
+                target: 2,
+            });
+            let mut macro_assembler = MacroAssembler::new(Abi::host());
+            macro_assembler.set_exit_at_every_poll(false);
+            let body = super::compile(&code, macro_assembler).expect("compiled");
+            let mut machine = Machine::new();
+            let entry = machine.install(&body.code);
+            for &left in &operands {
+                for &right in &operands {
+                    let mut frame = [0u64; 24];
+                    frame[0] = left;
+                    frame[1] = right;
+                    frame[2] = 0x5A5A;
+                    let (exit, _) = machine.run(entry, &mut frame, 0, false, &mut (), &[]);
+                    let what = format!("{operation:?} {left:#x} {right:#x}");
+                    match expected(operation, left, right) {
+                        Some(word) => {
+                            assert_eq!(
+                                exit,
+                                MachineExit::Reexecute { program_counter: 1 },
+                                "{what}"
+                            );
+                            assert_eq!(frame[2], word, "{what}");
+                        }
+                        None => {
+                            assert_eq!(
+                                exit,
+                                MachineExit::Reexecute { program_counter: 2 },
+                                "{what}"
+                            );
+                            assert_eq!(frame[2], 0x5A5A, "{what}: a decline writes nothing");
+                        }
+                    }
+                    assert_eq!((frame[0], frame[1]), (left, right), "{what}: operands kept");
+                }
+            }
+        }
+    }
+
+    /// A loop whose head lies past an instruction that exits: its back edge
+    /// is reached only by the interpreter, after the exit.
+    fn loop_past_an_instruction(exiting: bool) -> (CompiledCode, Vec<bool>) {
+        let code = method(
+            vec![
+                Instruction::LoadLiteral {
+                    destination: 13,
+                    literal: Literal::Boolean(false),
+                },
+                Instruction::LoadLiteral {
+                    destination: 14,
+                    literal: Literal::SmallInteger(1),
+                },
+                Instruction::BranchIfTrue {
+                    register: 13,
+                    target: 1,
+                },
+                Instruction::Return { register: 14 },
+            ],
+            0,
+        );
+        (code, vec![false, exiting, false, true])
+    }
+
+    #[test]
+    fn a_loop_reachable_only_past_an_exit_is_no_reason_to_enter() {
+        let (code, exits) = loop_past_an_instruction(true);
+        assert!(!super::takes_a_backward_jump_before_an_exit(&code, &exits));
+        let (code, exits) = loop_past_an_instruction(false);
+        assert!(
+            super::takes_a_backward_jump_before_an_exit(&code, &exits),
+            "the same loop through a template is"
+        );
+    }
+
+    #[test]
+    fn a_forward_diamond_without_a_loop_is_no_reason_to_enter() {
+        let code = method(
+            vec![
+                Instruction::LoadLiteral {
+                    destination: 13,
+                    literal: Literal::Boolean(true),
+                },
+                Instruction::BranchIfTrue {
+                    register: 13,
+                    target: 4,
+                },
+                Instruction::LoadLiteral {
+                    destination: 14,
+                    literal: Literal::SmallInteger(1),
+                },
+                Instruction::Jump { target: 5 },
+                Instruction::LoadLiteral {
+                    destination: 14,
+                    literal: Literal::SmallInteger(2),
+                },
+                Instruction::Return { register: 14 },
+            ],
+            0,
+        );
+        let exits = [false, false, false, false, false, true];
+        assert!(!super::takes_a_backward_jump_before_an_exit(&code, &exits));
+    }
+}

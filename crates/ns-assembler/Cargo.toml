@@ -1,0 +1,18 @@
+[package]
+name = "ns-assembler"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The abstract machine operations ns-next's JIT emits, and their encoding per architecture"
+
+# Tests only: every encoding is checked against an independent disassembler,
+# so a wrong prefix, ModRM or SIB byte shows as the wrong instruction text
+# rather than as a crash of generated code. The decoder and the Intel
+# formatter are all the tests use; the encoder and the other formatters stay
+# out of the build.
+[dev-dependencies]
+iced-x86 = { version = "1.21", default-features = false, features = ["decoder", "intel", "std"] }
+
+[lints]
+workspace = true

@@ -122,8 +122,9 @@ cargo xtask gates benchmarks
 cargo xtask gates release-checks
 # the hot path's machine code against its budgets; needs cargo-show-asm
 cargo xtask gates codegen
-# the suite under the six stress modes, each into .temp/stress-<MODE>.log,
-# then run-corpus plain and under each
+# the suite under the eight stress modes and once without the JIT, each into
+# .temp/stress-<MODE>.log (NO_JIT for the last), then run-corpus plain and
+# under each mode
 cargo xtask gates stress
 # the JetBrains plugin against several IDEs, which it downloads
 cargo xtask gates plugin-verification

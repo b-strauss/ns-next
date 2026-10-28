@@ -68,14 +68,16 @@
 > traces, marking, forwarding and scavenging alike, in every build),
 > `interpreter/safepoint.rs`
 > (the safepoint, `Interpreter::tenure_now`, `Interpreter::collect_now` and
-> the switches of the six stress modes: moves, caches, collection,
-> scavenges, every instruction wide, and suspensions),
+> the switches of the memory-facing stress modes: moves, caches, collection,
+> scavenges, every instruction wide, and suspensions; the two JIT modes' are
+> in `jit/mod.rs`),
 > `vm.rs` (one entry per stretch between two safepoints, and the poll),
 > `heap/value.rs` (`Value`, and `Word`, what a heap object stores),
 > `mixin.rs` (layout, and the one remaining iterative
 > `Drop`), and the memory layer's `crates/ns-memory/src/lib.rs`
 > (`Reservation`, and the bump cursor it holds, `Reservation::bump`),
-> `page_map.rs` and `platform/{mod,windows,posix}.rs`.
+> `page_map.rs`, `code_zone.rs` (the JIT's code zone and the entry into
+> machine code) and `platform/{mod,windows,posix}.rs`.
 
 ## What exists
 
@@ -472,7 +474,10 @@ absorb that, as they do in Cog and Primordial Soup, and an allocation that
 finds even the reserve spent goes old ("Generations").
 
 **The poll** (in `vm::run_stretch`, forced inline into `vm::run`) is one
-compare of a flag the heap owns, `Heap::safepoint_requested`. When the flag is
+compare of a flag the heap owns, `Heap::safepoint_requested`, a word of its
+machine words, which machine code's poll reads as well and which therefore
+lives apart from the heap's own bytes ([execution.md](execution.md), "The
+machine words"). When the flag is
 set the stretch writes its frame back and leaves its entry, and `run` calls
 `Interpreter::safepoint` (`interpreter/safepoint.rs`), `#[cold]` and out of
 line, so `vm.rs` holds the compare and the call and nothing of what a
@@ -1883,15 +1888,20 @@ are different: **premature reclamation** — a missed root, a reachable object
 gone, silent wrong output at exit status 0 — and **false retention**, which no
 test sees at all and only a measurement shows.
 
-There are six stress modes, each a gate of its own at the end of a batch,
+There are eight stress modes, each a gate of its own at the end of a batch,
 each set by an environment variable to anything but empty or `0`, all of
 them debug builds only: `NS_NEXT_STRESS_MOVES` ("The move stress mode"),
 `NS_NEXT_STRESS_CACHES` ([dispatch.md](dispatch.md), "Invalidation"),
 `NS_NEXT_STRESS_COLLECT`, `NS_NEXT_STRESS_SCAVENGE` ("Finding a missed
 barrier: the scavenge stress mode"), `NS_NEXT_STRESS_SUSPEND`, each of
-these five keeping the safepoint flag set while it is on, and
+these five keeping the safepoint flag set while it is on,
 `NS_NEXT_STRESS_WIDE`, which emits every instruction in a wide form
-([execution.md](execution.md), "The compact instruction encoding").
+([execution.md](execution.md), "The compact instruction encoding"),
+`NS_NEXT_STRESS_JIT`, which compiles every body at its first entry and
+enters its machine code even when that leaves before a loop, and
+`NS_NEXT_STRESS_EXIT`, which makes every poll in machine code -- every
+backward jump it takes -- take its exit, as if a safepoint were
+requested.
 
 `NS_NEXT_STRESS_COLLECT=1` runs a full collection at every safepoint rather
 than at a limit, paced by heap size like `STRESS_MOVE_BUDGET`
@@ -2233,8 +2243,18 @@ and an interpreter, which holds `Rc`s throughout, is not `Send` either.
   accessor's bounds check at once. The crate supplies `Protection::NoAccess`
   and the slice refusal; why the heap protects nothing is in "The object
   space" and, for the nursery a scavenge vacates, "Generations".
-- **Executable memory for the JIT tiers** comes to the same crate when they
-  do, with its `unsafe` entry into generated code.
+- **Executable memory for the JIT tiers** is in the same crate, with its
+  `unsafe` entry into generated code (`code_zone.rs`): a code zone of at
+  most 128 MiB mapped twice, one view executable and one writable
+  (`MAP_JIT` with its per-thread switch on Apple AArch64), the one writer
+  of code, which commits pages as code is installed and flushes the
+  instruction cache over what it wrote, the entry, and the shim through
+  which machine code calls Rust ([execution.md](execution.md), "The
+  baseline JIT's foundation", "Executable memory"). Only the x64 Windows
+  path runs here; the Linux, BSD and Apple AArch64 paths are checked by
+  clippy alone (the `memory` gate). Reading the bounds of the native
+  stack, which the entry is to check once compiled frames nest, comes with
+  road step 8's third stage ([OPEN-WORK.md](../OPEN-WORK.md)).
 
 ### The allocator of the Rust side
 
@@ -2447,7 +2467,7 @@ after the last tenure, and never polls a safepoint, so the peak argument
 stands; the handle paragraphs describe a 64-bit byte offset and name no
 frame arena; "A cache records what the lookup decided" reads the builtin
 tag as a field of the class object, which `act` still reads afresh on every
-send; the end-of-batch gates name six stress modes, `SCAVENGE` among them;
+send; the end-of-batch gates name eight stress modes, `SCAVENGE` among them;
 and "Every store into an existing object goes through `heap.rs`'s store
 accessors and their write barrier" is an invariant of its own; and "The
 VM mirror is a capability" says that the MirrorBuilder refuses every edit
@@ -3104,7 +3124,7 @@ moved".
   `ns-runtime` keeps `#![forbid(unsafe_code)]`: a crate boundary is one the compiler checks,
   where a crate-level `deny` with a scoped `allow` admits the next `allow`
   without anyone noticing. The executable memory and the entry into generated
-  code of the JIT tiers are to go to the same crate. Its operating-system calls
+  code of the JIT tiers are in the same crate (`code_zone.rs`). Its operating-system calls
   come from `windows-sys` and `libc`, declaration-only crates, rather than
   hand-written declarations whose constants differ per platform and would be
   wrong only on the platforms nobody here runs.
