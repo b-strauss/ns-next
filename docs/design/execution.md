@@ -9858,11 +9858,11 @@ decides" holds unchanged.
 Stage 3, decided with the user on 2026-10-28 after reading Cog,
 Strongtalk, V8 and HotSpot again for it.
 
-- **`SendPublic`, `SendLexical`, `SendSuper` and `SendInlinable` call
-  through their cells.** `SendInlinable`, which the interpreter sent
-  uncached, takes a site and an entry like `SendPublic`, under both
-  lowerings and in the interpreter too, so machine code has a cell to
-  call through and road step 9 one profile to read.
+- **`SendPublic`, `SendLexical` and `SendSuper` call through their
+  cells.** A send whose call site is `CallSite::UNCACHED` -- every send
+  of the reference lowering, `SendInlinable` among them, which only that
+  lowering emits -- has no cell and takes an exit, so the oracle stays
+  interpreted at its sends.
 - **A callee with no machine code is compiled by the miss.** The leaf
   that fills an entry counts the callee's entry as a push would and
   compiles it at its second, as Cog's `ceSend` compiles a method its
