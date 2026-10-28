@@ -85,7 +85,16 @@ pub struct Memory {
 /// - **Sets, only `Overflow` and `NoOverflow` defined**: `add`,
 ///   `add_immediate`, `subtract` and `multiply_checked`. No other
 ///   condition may be read after them: the carry of an addition means
-///   opposite things on x64 and AArch64.
+///   opposite things on x64 and AArch64. AArch64 has no multiply that
+///   sets the flags, and honours `Overflow` after `multiply_checked`
+///   with four instructions: `smulh` for the product's high word into a
+///   register the encoder keeps for itself, then `mul` for its low word
+///   into `target`; a `cmp` of the
+///   high word with the low word's sign (`asr #63`), equal exactly when
+///   the product fits; then `ccmp xzr, xzr, #0b0001, eq`, which on equal
+///   compares zero with zero, clearing V, and otherwise sets the flags
+///   to V alone. So the contract holds as x64's `imul` sets it, and the
+///   operation needs no other condition.
 /// - **Clobbers**, the flags undefined afterwards: `and_immediate`,
 ///   `or_immediate`, `shift_left`, `shift_right_arithmetic` -- x64's
 ///   instructions set the flags, AArch64's plain `and`, `orr`, `lsl` and
